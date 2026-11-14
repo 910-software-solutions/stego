@@ -212,7 +212,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.103.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
+	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.104.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -444,6 +444,10 @@ func TestTables(t *testing.T) {
 		onPostgres(t, "ST-SUP-RC01-OC22-T05")
 	})
 
+	t.Run("ST-SUP-RC01-OC22-T09 The validate migration of an add step checks each row of an owned table for a new foreign key, past row-level security", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC22-T09")
+	})
+
 	t.Run("ST-SUP-RC01-OC38-T02 An index of an add step is built concurrently, and a failed build drops its invalid index at once", func(t *testing.T) {
 		onPostgres(t, "ST-SUP-RC01-OC38-T02")
 	})
@@ -481,6 +485,38 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC39-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T01") })
 	t.Run("ST-SUP-RC01-OC24-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T03") })
 	t.Run("ST-SUP-RC01-OC24-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T04") })
+	t.Run("ST-SUP-RC01-OC24-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T05") })
+	t.Run("ST-SUP-RC01-OC24-T06 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T06") })
+	t.Run("ST-SUP-RC01-OC40-T04 The schema manifest names the tenant key of each owned table, which holds on PostgreSQL with row-level security", func(t *testing.T) {
+		files, _, err := new(postgresadapter.Generator).Generate(widgetService(widgetEntities()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := generated(t, files, "widgets/schema_manifest.go")
+		for _, want := range []string{
+			`{Name: "widgets_tenant_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"}`,
+			`TenantKey: &manifest.TenantKey{Name: "widgets_tenant_id_fkey", Column: "tenant_id"}`,
+			`TenantKey: &manifest.TenantKey{Name: "orders_tenant_id_fkey", Column: "tenant_id"}`,
+		} {
+			// gofmt aligns the values of the fields of a table.
+			if !strings.Contains(strings.ReplaceAll(source, "TenantKey:   &", "TenantKey: &"), want) {
+				t.Errorf("the schema manifest does not hold %s:\n%s", want, source)
+			}
+		}
+		if n := strings.Count(strings.ReplaceAll(source, "TenantKey:   &", "TenantKey: &"), "TenantKey: &manifest.TenantKey{"); n != 2 {
+			t.Errorf("the schema manifest names %d tenant keys, want one for each owned table and none for the shared catalogs", n)
+		}
+		// pg_get_constraintdef quotes a tenant column that is a keyword, so the manifest does too.
+		keyword := orderService("storage")
+		keyword.Tenancy = &gen.Tenancy{Key: "user"}
+		if files, _, err = new(postgresadapter.Generator).Generate(keyword); err != nil {
+			t.Fatal(err)
+		}
+		if source := generated(t, files, "storage/schema_manifest.go"); !strings.Contains(source, `Definition: "FOREIGN KEY (\"user\") REFERENCES public.stego_tenants(tenant_id)"`) {
+			t.Errorf("the tenant key of the tenant column user is not quoted:\n%s", source)
+		}
+		onPostgres(t, "ST-SUP-RC01-OC40-T04")
+	})
 	t.Run("ST-SUP-RC01-OC39-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T03") })
 	t.Run("ST-SUP-RP15-LC01-T15 The release before accepts each emitted step form, NOT VALID and validated, and the release of the step refuses NOT VALID", func(t *testing.T) {
 		onSteps(t, "ST-SUP-RP15-LC01-T15")
