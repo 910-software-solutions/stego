@@ -124,7 +124,7 @@ func (h *OrgActivityHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	key, err := idempotency.KeyFrom(r.Header, false)
 	if err != nil {
-		keyMissing(w, r)
+		keyMissing(w, r, err)
 		return
 	}
 	requestID := command.NewID()

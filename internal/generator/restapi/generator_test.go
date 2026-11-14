@@ -4333,7 +4333,7 @@ func TestRuntimeProblemAnswers(t *testing.T) {
 			}
 		}
 		answer := extractMethodBody(string(files["api/runtime.go"]), "func (rt *Runtime) answerWrite(")
-		for _, part := range []string{"handleError(w, r, invalid.problem)", "handleError(w, r, errorForStatus(status, refused.detail))", "handleError(w, r, NotFound(kind, req.Resource))", "handleError(w, r, Conflict(", "handleError(w, r, InternalError("} {
+		for _, part := range []string{"handleError(w, r, invalid.problem)", "handleError(w, r, errorForStatus(status, refused.detail))", "handleError(w, r, missing(kind, req))", "handleError(w, r, Conflict(", "handleError(w, r, InternalError("} {
 			if !strings.Contains(answer, part) {
 				t.Errorf("answerWrite does not answer %s", part)
 			}
