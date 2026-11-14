@@ -54,27 +54,29 @@ type tenantProvisioning struct {
 	gate        *tenant.Gate
 	exempt      *http.ServeMux
 	marker      *exemptRoute
+	patterns    map[string]bool
 	provision   http.Handler
 	retire      http.Handler
 	problemType string
 }
 
-// newProvisioning makes the gate and the handlers of the declared provisioning p on the command runtime rt, whose
-// pool reads the tenant list in schema.
-func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema string) (*tenantProvisioning, error) {
+// newProvisioning makes the handlers of the declared provisioning p on the command runtime rt, whose tenant list in
+// schema gate reads.
+func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema string, gate *tenant.Gate) (*tenantProvisioning, error) {
 	if err := p.check(); err != nil {
 		return nil, err
 	}
-	gate, err := tenant.NewGate(svc.pool, schema, tenant.MaxGateAge)
-	if err != nil {
-		return nil, err
+	if gate == nil {
+		return nil, errors.New("service: the tenant provisioning needs the gate of the tenant list")
 	}
-	tp := &tenantProvisioning{gate: gate, exempt: http.NewServeMux(), problemType: svc.parts.ProblemType}
+	tp := &tenantProvisioning{gate: gate, exempt: http.NewServeMux(), problemType: svc.parts.ProblemType,
+		patterns: map[string]bool{p.ProvisionRoute: true, p.RetireRoute: true}}
 	tp.marker = &exemptRoute{}
 	tp.exempt.Handle(p.ProvisionRoute, tp.marker)
 	tp.exempt.Handle(p.RetireRoute, tp.marker)
 	spec := command.TenantSpec{ResourceType: p.ResourceType, Schema: schema, SubjectType: svc.parts.SubjectType,
-		Changed: gate.Forget}
+		Changed: gate.Forget, Active: gate.Active}
+	var err error
 	spec.Action, spec.Permission = tenant.ProvisionAction, p.Provision
 	if tp.provision, err = command.ServeTenant(rt, spec); err != nil {
 		return nil, err
@@ -91,8 +93,9 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 var errNotProvisioned = errors.New("service: the tenant of the request is not provisioned")
 
 // admit checks the tenant of the verified identity of ctx against the tenant list: it refuses a context with no
-// verified identity or no tenant claim, a tenant that is absent or retired, and a failed read of the list, so the
-// check fails closed.
+// verified identity, a tenant that is absent or retired, and a failed read of the list, so the check fails closed. A
+// verified identity whose tenant claim is missing or is not a valid tenant ID names no tenant of the list, so it is
+// refused as not provisioned, as an absent tenant is, and not as an internal error.
 func (tp *tenantProvisioning) admit(ctx context.Context) error {
 	identity, ok := authn.FromContext(ctx)
 	if !ok {
@@ -100,7 +103,7 @@ func (tp *tenantProvisioning) admit(ctx context.Context) error {
 	}
 	t, err := tenant.New(tenant.Claim(identity))
 	if err != nil {
-		return err
+		return errNotProvisioned
 	}
 	active, err := tp.gate.Active(ctx, t)
 	if err != nil {
@@ -120,21 +123,32 @@ func (*exemptRoute) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNotFound)
 }
 
-// exempted tells whether r is a request of one of the two provisioning routes, as a ServeMux with only those two
-// routes matches it. A path that the ServeMux would clean or redirect first is not exempt.
-func (tp *tenantProvisioning) exempted(r *http.Request) bool {
+// exempted tells whether r is a request of one of the two provisioning routes: a ServeMux with only those two
+// routes matches it, so a path that a ServeMux would clean or redirect first is not exempt, and the main router of
+// the service, router, matches it to the pattern of Provision or of Retire, the pattern that r.Pattern holds when the
+// router serves it. So a route of another handler that the router holds under <base path>/stego/, which would match
+// first, is not exempt. With no router, no request is exempt.
+func (tp *tenantProvisioning) exempted(router *http.ServeMux, r *http.Request) bool {
+	if router == nil {
+		return false
+	}
 	h, pattern := tp.exempt.Handler(r)
 	route, ok := h.(*exemptRoute)
-	return pattern != "" && ok && route == tp.marker
+	if pattern == "" || !ok || route != tp.marker {
+		return false
+	}
+	_, matched := router.Handler(r)
+	return tp.patterns[matched]
 }
 
 // gated serves next only for a request whose verified tenant is an active tenant of the tenant list, after the
-// verifier and before any handler, decision or fill; the two provisioning routes are exempt, because they are
-// decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11). It answers any other request with
-// 403 and the code tenant.not_provisioned, or 500 when the list cannot be read, with Cache-Control no-store.
-func (tp *tenantProvisioning) gated(next http.Handler) http.Handler {
+// verifier and before any handler, decision or fill; the two provisioning routes of the main router are exempt,
+// because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11). It answers any
+// other request with 403 and the code tenant.not_provisioned, also a verified token with no valid tenant claim, or 500
+// when the list cannot be read, with Cache-Control no-store.
+func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tp.exempted(r) {
+		if tp.exempted(router, r) {
 			next.ServeHTTP(w, r)
 			return
 		}

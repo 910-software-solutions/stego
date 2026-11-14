@@ -477,15 +477,15 @@ func wantCode(t *testing.T, err error, code codes.Code, what string) {
 	}
 }
 
-// provisioned provisions the tenant of c through the provisioning route, as an operator who holds provision on the
-// service-level resource of its own tenant, which is never provisioned (ST-SUP-RC27-OC09).
+// provisioned provisions the tenant of c through the provisioning route, as an operator of a tenant that is never
+// provisioned, who holds provision on the service-level resource service:grpc-shop, whose ID is not tenant-qualified
+// (ST-SUP-RC27-OC09, ST-SUP-RP06-LC22).
 func (s *service) provisioned(c caller) {
 	t := s.t
 	t.Helper()
 	operator := s.as("op-"+uuid.NewString()[:8], "ops-"+uuid.NewString()[:8])
-	resourceID, err := authz.ResourceID(operator.tenant, "grpc-shop")
-	must(t, err)
-	_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+	const resourceID = "grpc-shop"
+	_, err := v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
 		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
 		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "service", ObjectId: resourceID}, Relation: "operator",
 			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: operator.subject}}}}}})

@@ -13,6 +13,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // Handler delivers one message to its destination. tx is a transaction of the message's tenant, which the worker
@@ -37,6 +39,17 @@ type Destination struct {
 	// StateHook, when set, follows the state of the destination's messages in the transaction of each change
 	// (ST-SUP-RP01-LC25).
 	StateHook StateHook
+	// ActiveTenants, when true, sends the handler only a message of a tenant that WorkerConfig.Tenants holds as an
+	// active tenant of the tenant list: a message of a tenant that it does not hold as active, such as a retired
+	// tenant, is parked with an alert before the handler runs, also for a destination that must land, and a failed
+	// read of the list sends the message back to pending (ST-SUP-RC27-OC12). With no WorkerConfig.Tenants it checks
+	// nothing.
+	ActiveTenants bool
+}
+
+// TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
+type TenantList interface {
+	Active(ctx context.Context, t tenant.Tenant) (bool, error)
 }
 
 // WorkerConfig holds the limits of the worker. NewWorker refuses a value outside its bounds (ST-SUP-RP01-LC05, ST-SUP-RP01-LC23).
@@ -67,6 +80,9 @@ type WorkerConfig struct {
 	Retention time.Duration
 	// PurgeEvery is the period of the purge timer, 1 s to 1 h. DefaultWorkerConfig gives one minute.
 	PurgeEvery time.Duration
+	// Tenants is the tenant list that a destination registered with ActiveTenants checks, such as the tenant gate of
+	// a service that declares its provisioning (ST-SUP-RC27-OC12). Nil checks no tenant.
+	Tenants TenantList
 }
 
 // DefaultRetention is the retention of a done message when the configuration does not change it.

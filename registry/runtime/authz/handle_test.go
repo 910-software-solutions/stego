@@ -912,7 +912,7 @@ func TestHandleEvaluation(t *testing.T) {
 		allowed := mustPerson(t, "u-1").Subject()
 		fake := &recorder{allow: func(r EvaluationRequest) bool { return r.Subject == allowed }}
 		rt := newUnitRuntime(t, fake)
-		platform := Resource{Type: "platform", ID: qualify("t1", "main")}
+		platform := Resource{Type: "platform", ID: "main"}
 		decision, ok, err := bindUnit(t, rt, nil, mustPerson(t, "u-1")).DecideTenant(ctx, tenant.ProvisionAction, "ta", platform, nil)
 		if err != nil || !ok || decision == nil {
 			t.Fatalf("the allow gave %v, %t, %v", decision, ok, err)
@@ -949,7 +949,7 @@ func TestHandleEvaluation(t *testing.T) {
 	t.Run("ST-SUP-RP06-LC17-T02 DecideTenant decides the permission of the action it is given and binds the mark to it", func(t *testing.T) {
 		fake := &recorder{allow: func(r EvaluationRequest) bool { return r.Action.Name == "provision" }}
 		handle := bindUnit(t, newUnitRuntime(t, fake), nil, mustPerson(t, "u-1"))
-		platform := Resource{Type: "platform", ID: qualify("t1", "main")}
+		platform := Resource{Type: "platform", ID: "main"}
 		provision, ok, err := handle.DecideTenant(ctx, tenant.ProvisionAction, "ta", platform, nil)
 		if err != nil || !ok {
 			t.Fatalf("the provision gave %v, %t, %v", provision, ok, err)

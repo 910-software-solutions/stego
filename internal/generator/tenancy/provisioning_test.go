@@ -23,5 +23,16 @@ func TestProvisioningRoutes(t *testing.T) {
 		if err := CheckOwnRoute("/stego"); err == nil {
 			t.Error("a route with no method is accepted")
 		}
+		// A route of a component holds the base path, such as the route of a collection with a path_prefix.
+		for _, pattern := range []string{"POST /api/shop/v1/stego/tenants/x/retire", "GET /api/shop/v1/stego", "/api/shop/v1/stego/other"} {
+			if err := CheckOwnPattern("/api/shop/v1/", pattern); err == nil {
+				t.Errorf("the component route %q under /stego/ is accepted", pattern)
+			}
+		}
+		for _, pattern := range []string{"POST /api/shop/v1/orders", "GET /api/shop/v1/stegosaurus", "GET /stego/tenants", "GET /livez"} {
+			if err := CheckOwnPattern("/api/shop/v1", pattern); err != nil {
+				t.Errorf("the component route %q is refused: %v", pattern, err)
+			}
+		}
 	})
 }

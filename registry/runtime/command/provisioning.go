@@ -12,12 +12,15 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/internal/txhold"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -65,6 +68,11 @@ type TenantSpec struct {
 	// Changed, when it is not nil, gets the tenant ID after a commit that changed the tenant list, such as the
 	// Forget of the tenant gate.
 	Changed func(id string)
+	// Active, when it is not nil, tells whether the caller's own tenant is an active tenant of the tenant list, such
+	// as the Active of the tenant gate. A denied or failed call of a caller whose tenant is not active, or whose
+	// tenant cannot be read, writes no audit row: it writes a counted log line instead (ST-SUP-RC27-OC10), so the
+	// claim of a verified token never starts the audit chain of a tenant that the list does not hold.
+	Active func(ctx context.Context, t tenant.Tenant) (bool, error)
 }
 
 func (s TenantSpec) command() string {
@@ -117,13 +125,15 @@ func tenantOutcome(err error) Outcome {
 // (401), requires an Idempotency-Key (400), takes the tenant ID from the member tenant_id of the body of a Provision
 // or the path value tenantId of a Retire and checks it with tenant.ValidID before any decision (400 invalid with the
 // field tenant_id). It decides the declared permission on the service-level resource <resource type>:<service
-// name> of the caller's tenant through the authorization port at the floor (ST-SUP-RP06-LC17), and only on an allow
+// name>, whose ID is not tenant-qualified (ST-SUP-RP06-LC22), through the authorization port at the floor
+// (ST-SUP-RP06-LC17), and only on an allow
 // builds the tenant from the decision with tenant.Requested; then tenant.Provision or tenant.Retire changes the
 // tenant list with a hook that runs the idempotency wrapper and writes the one audit row of the change in the same
 // transaction, with the command as the action, the caller as the actor and the tenant as the resource
 // (ST-SUP-RC27-OC10). A deny is 404 and changes nothing. A denied or failed call writes its outcome row in its own
 // short transaction in the caller's tenant, so a caller without the permission writes no row into the tenant it
-// names. A Provision of a tenant that the list holds, active or retired, and a Retire of a tenant that the list does
+// names; when the caller's own tenant is not an active tenant of the list (Active), it writes no row at all, only a
+// counted log line (UnlistedOutcomes). A Provision of a tenant that the list holds, active or retired, and a Retire of a tenant that the list does
 // not hold as active are 409, unless the key of the request holds the answer of an earlier call, which is replayed.
 // Retire deletes no row (ST-SUP-RC27-OC12).
 func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
@@ -172,7 +182,11 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		result, err := runTenant(r.Context(), rt, spec, req)
 		if err != nil {
 			o := tenantOutcome(err)
-			_ = rt.RecordFailure(r.Context(), req, spec.command(), TenantResourceType, o)
+			if spec.callerListed(r.Context(), b.Tenant) {
+				_ = rt.RecordFailure(r.Context(), req, spec.command(), TenantResourceType, o)
+			} else {
+				rt.unlistedOutcome(r.Context(), spec.command(), o)
+			}
 			writeProblem(w, o.Status, "", o.AnswerCode())
 			return
 		}
@@ -188,6 +202,42 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		_, _ = w.Write(result.Response.Body)
 	}), nil
 }
+
+// callerListed tells whether the outcome row of a denied or failed call goes into the chain of the caller's tenant
+// t: always when the spec has no Active, else only when Active holds t as an active tenant of the list. A failed
+// read of the list is not active, so no row is written.
+func (s TenantSpec) callerListed(ctx context.Context, t tenant.Tenant) bool {
+	if s.Active == nil {
+		return true
+	}
+	active, err := s.Active(ctx, t)
+	return err == nil && active
+}
+
+// unlistedOutcome counts and logs a denied or failed Provision or Retire of a caller whose tenant is not an active
+// tenant of the list, which writes no audit row (ST-SUP-RC27-OC10). The log line holds the command, the outcome and
+// the fixed code only, and no tenant ID, principal or tenant that the request names.
+func (rt *Runtime) unlistedOutcome(ctx context.Context, command string, o Outcome) {
+	otel.SetErrorCode(ctx, o.AnswerCode())
+	rt.unlistedOutcomes.Add(1)
+	if rt.logger == nil {
+		return
+	}
+	var record otellog.Record
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetEventName("command.tenant_outcome.unlisted")
+	record.SetBody(attribute.StringValue("a provisioning call of a caller whose tenant is not active wrote no audit row"))
+	record.AddAttributes(
+		attribute.String("stego.action", command),
+		attribute.String("stego.outcome", string(o.Audit)),
+		attribute.String("stego.error_code", o.Code),
+	)
+	rt.logger.Emit(ctx, record)
+}
+
+// UnlistedOutcomes returns how many denied or failed provisioning calls of a caller whose tenant is not active wrote
+// no audit row (ST-SUP-RC27-OC10).
+func (rt *Runtime) UnlistedOutcomes() int64 { return rt.unlistedOutcomes.Load() }
 
 // tenantBody is the body of a Provision request; a Retire takes no body, or one whose tenant_id is its path value.
 type tenantBody struct {
@@ -288,9 +338,11 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (
 	return Result{}, internalf("the tenant list was not changed")
 }
 
-// decideTenant decides the declared permission of the request on the service-level resource of the caller's tenant
-// in a read-only transaction of the caller's tenant, through a handle bound with no relation, and gives the decision
-// that tenant.Requested takes, or ErrDenied (ST-SUP-RC27-OC09, ST-SUP-RP06-LC17).
+// decideTenant decides the declared permission of the request on the service-level resource <resource type>:<service
+// name>, which is of the whole service and not of a tenant, so its ID is not tenant-qualified (authz.ServiceResource,
+// ST-SUP-RP06-LC22). It reads the floor in a read-only transaction of the caller's tenant, through a handle bound with
+// no relation, and gives the decision that tenant.Requested takes, or ErrDenied (ST-SUP-RC27-OC09,
+// ST-SUP-RP06-LC17). A grant on a resource of one tenant, such as service:<tenant>/<service name>, decides nothing.
 func decideTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (tenant.Decision, error) {
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, req.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true})
 	if err != nil {
@@ -301,7 +353,7 @@ func decideTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request
 	if err != nil {
 		return nil, internalf("the authorization handle was not bound")
 	}
-	resource, err := authz.NewResource(req.Tenant, spec.ResourceType, rt.cfg.Service)
+	resource, err := authz.ServiceResource(spec.ResourceType, rt.cfg.Service)
 	if err != nil {
 		return nil, internalf("the service-level resource was not built")
 	}

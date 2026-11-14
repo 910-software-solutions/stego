@@ -10,6 +10,8 @@ import (
 	"time"
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
+
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 func TestTenantProvisioning(t *testing.T) {
@@ -391,4 +393,39 @@ func randomReachSchema(r *rand.Rand) string {
 		b.WriteString("}\n")
 	}
 	return b.String()
+}
+
+func TestOwnRoutes(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC09-T04 A declared route or path_prefix under <base path>/stego/ is refused", func(t *testing.T) {
+		service := &types.ServiceDeclaration{BasePath: "/api/shop/v1",
+			Commands: []types.Command{{Name: "retire-order", Route: "POST /stego/tenants/x/retire"}, {Name: "add-note", Route: "POST /orders/{id}/notes"}},
+			Queries:  []types.Query{{Name: "own", Route: "GET /stego"}, {Name: "list-orders", Route: "GET /orders"}, {Name: "beside", Route: "GET /stegosaurus"}},
+			Collections: []types.Collection{{Name: "user-activity", Entity: "ActivityEntry", PathPrefix: "/stego/tenants/x/retire"},
+				{Name: "org-activity", Entity: "ActivityEntry", PathPrefix: "/org-activity"},
+				{Name: "nested", Entity: "ActivityEntry", PathPrefix: "/stego/{org_id}/activity"},
+				{Name: "near", Entity: "ActivityEntry", PathPrefix: "/orders/stego/tenants"}}}
+		got := map[string]string{}
+		for _, fault := range ValidateComposition(service, Facts{}) {
+			if fault.Rule == "own-route" {
+				got[fault.Path] = fault.Found
+				if !strings.Contains(fault.Message, "/stego/") {
+					t.Errorf("the fault at %s does not name the path it keeps: %s", fault.Path, fault.Message)
+				}
+			}
+		}
+		want := map[string]string{
+			"commands[0].route":                     "POST /stego/tenants/x/retire",
+			"queries[0].route":                      "GET /stego",
+			"collections.user-activity.path_prefix": "/stego/tenants/x/retire",
+			"collections.nested.path_prefix":        "/stego/{org_id}/activity",
+		}
+		if len(got) != len(want) {
+			t.Errorf("the own-route faults are %v, want %v", got, want)
+		}
+		for path, found := range want {
+			if got[path] != found {
+				t.Errorf("the fault at %s found %q, want %q", path, got[path], found)
+			}
+		}
+	})
 }

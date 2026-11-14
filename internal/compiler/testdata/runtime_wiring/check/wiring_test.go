@@ -313,7 +313,7 @@ func start(t *testing.T) *service {
 	s.secondMigration = run(binary, migration("verify-full", u), "migrate")
 
 	s.key = authntest.NewKey(t, "k1")
-	// The operator op-1 of the tenant ops holds provision and retire on service:wiring-shop of its tenant; the
+	// The operator op-1 of the tenant ops holds provision and retire on service:wiring-shop, which is of no tenant; the
 	// tenant ops is never provisioned.
 	s.operator = s.as("op-"+uuid.NewString()[:8], "ops-"+uuid.NewString()[:8])
 	s.grantOperator(s.operator)
@@ -443,11 +443,21 @@ func (s *service) own(c caller, id string) {
 // serviceName is the name of the service, the ID of its service-level resource (ST-SUP-RC27-OC09).
 const serviceName = "wiring-shop"
 
-// grantOperator writes the relation operator of c on the service-level resource of c's tenant in SpiceDB.
-func (s *service) grantOperator(c caller) {
+// grantOperator writes the relation operator of c on the service-level resource service:wiring-shop in SpiceDB, whose
+// ID is not tenant-qualified (ST-SUP-RP06-LC22), as the operator of the platform does.
+func (s *service) grantOperator(c caller) { s.grantOn(c, serviceName) }
+
+// grantTenantOperator writes the relation operator of c on service:<c's tenant>/wiring-shop, the tenant-qualified
+// form in c's own tenant, which no provisioning decides on.
+func (s *service) grantTenantOperator(c caller) {
 	resourceID, err := authz.ResourceID(c.tenant, serviceName)
 	must(s.t, err)
-	_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+	s.grantOn(c, resourceID)
+}
+
+// grantOn writes the relation operator of c on the resource of type service and ID resourceID in SpiceDB.
+func (s *service) grantOn(c caller, resourceID string) {
+	_, err := v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
 		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
 		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "service", ObjectId: resourceID}, Relation: "operator",
 			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}}}}})
@@ -729,11 +739,6 @@ func TestWiring(t *testing.T) {
 	// The checks of the tenant provisioning (ST-SUP-RC27-OC09 to OC11, ST-DECL-UC10). The first two run while the
 	// tenant list holds no active tenant.
 	short := func() string { return uuid.NewString()[:8] }
-	serviceResource := func(c caller) string {
-		id, err := authz.ResourceID(c.tenant, serviceName)
-		must(s.t, err)
-		return id
-	}
 	refusedTenant := func(t *testing.T, got reply, what string) {
 		t.Helper()
 		if got.status != http.StatusForbidden || got.member(t, "code") != "tenant.not_provisioned" {
@@ -746,7 +751,7 @@ func TestWiring(t *testing.T) {
 		if n := count(t, s.admin, `SELECT count(*) FROM stego_tenants`); n != 0 {
 			t.Fatalf("the tenant list holds %d tenants before the first provision, want none", n)
 		}
-		id, resource := "org-a-"+short(), serviceResource(s.operator)
+		id, resource := "org-a-"+short(), serviceName
 		provisions, retires := s.checks.decisions("service", resource, "provision"), s.checks.decisions("service", resource, "retire")
 		if got := s.provision(&s.operator, id, "k-"+uuid.NewString()); got.status != http.StatusCreated || got.member(t, "tenant_id") != id {
 			t.Fatalf("the provision of %s by the operator of a tenant that is not provisioned answered %d %s, want 201", id, got.status, got.body)
@@ -769,7 +774,7 @@ func TestWiring(t *testing.T) {
 			t.Fatalf("the tenant list holds %d active tenants before the first provision, want none", n)
 		}
 		u1 := s.as("u1-"+short(), "org-a-"+short())
-		resource := serviceResource(s.operator)
+		resource := serviceName
 		before := s.checks.decisions("service", resource, "provision")
 		s.provisioned(t, u1.tenant.ID())
 		if n := s.checks.decisions("service", resource, "provision"); n != before+1 {
@@ -785,7 +790,7 @@ func TestWiring(t *testing.T) {
 
 	decided := func(t *testing.T) {
 		u2 := s.as("u2-"+short(), "org-b-"+short())
-		id, resource := "org-c-"+short(), serviceResource(s.operator)
+		id, resource := "org-c-"+short(), serviceName
 		before := s.checks.decisions("service", resource, "provision")
 		key := "k-" + uuid.NewString()
 		first := s.provision(&s.operator, id, key)
@@ -814,11 +819,11 @@ func TestWiring(t *testing.T) {
 			t.Error("the provision of a malformed tenant ID was decided")
 		}
 		other := "org-d-" + short()
-		denied := s.checks.decisions("service", serviceResource(u2), "provision")
+		denied := s.checks.decisions("service", serviceName, "provision")
 		if got := s.provision(&u2, other, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
 			t.Errorf("the provision by u2, whom the provider denies, answered %d %s, want 404", got.status, got.body)
 		}
-		if n := s.checks.decisions("service", serviceResource(u2), "provision"); n != denied+1 {
+		if n := s.checks.decisions("service", serviceName, "provision"); n != denied+1 {
 			t.Errorf("the provision by u2 made %d decisions, want one", n-denied)
 		}
 		if held, _ := s.listed(t, other); held {
@@ -845,6 +850,43 @@ func TestWiring(t *testing.T) {
 	t.Run("ST-DECL-UC10-R01-T01 A caller without the provision permission cannot provision a tenant", func(t *testing.T) {
 		s.t = t
 		decided(t)
+	})
+
+	t.Run("ST-SUP-RC27-OC09-T03 A grant on the service-level resource of one tenant provisions and retires no tenant", func(t *testing.T) {
+		s.t = t
+		// alice of the provisioned tenant org-a holds operator on service:<org-a>/wiring-shop, the resource of her own
+		// tenant, in SpiceDB; org-b is a tenant of another customer.
+		alice := s.as("alice-"+short(), "org-a-"+short())
+		s.provisioned(t, alice.tenant.ID())
+		victim := "org-b-" + short()
+		s.provisioned(t, victim)
+		s.grantTenantOperator(alice)
+		perTenant, err := authz.ResourceID(alice.tenant, serviceName)
+		must(t, err)
+		decided := s.checks.decisions("service", serviceName, "")
+		if got := s.retire(&alice, victim, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the retire of %s by alice answered %d %s, want 404", victim, got.status, got.body)
+		}
+		if held, retired := s.listed(t, victim); !held || retired {
+			t.Errorf("the retire by alice changed %s: held %t, retired %t", victim, held, retired)
+		}
+		if got := s.retire(&alice, alice.tenant.ID(), "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the retire of her own tenant by alice answered %d %s, want 404", got.status, got.body)
+		}
+		squat := "org-future-" + short()
+		if got := s.provision(&alice, squat, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the provision of %s by alice answered %d %s, want 404", squat, got.status, got.body)
+		}
+		if held, _ := s.listed(t, squat); held {
+			t.Errorf("the provision by alice added %s to the tenant list", squat)
+		}
+		// Each of the three calls was decided once on service:wiring-shop, and none on the resource of her tenant.
+		if n := s.checks.decisions("service", serviceName, ""); n != decided+3 {
+			t.Errorf("the calls of alice made %d decisions on service:%s, want three", n-decided, serviceName)
+		}
+		if n := s.checks.decisions("service", perTenant, ""); n != 0 {
+			t.Errorf("%d decisions named the tenant-qualified service:<org-a>/%s", n, serviceName)
+		}
 	})
 
 	audited := func(t *testing.T) {

@@ -144,8 +144,9 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		// The readiness of the modes, outside the request wrappers (ST-SUP-RP09-LC05).
 		DiscoveryRoutes:       []string{`topMux.Handle("GET /readyz/modes", service.Readiness())`},
 		MiddlewareConstructor: new(int),
-		MiddlewareWrapExpr:    "%s.Middleware(%s)",
-		MigrationJob:          &gen.MigrationJobSpec{Namespace: RuntimeWiringNamespace, Function: "Migrate", Stage: "MigrationStage"},
+		// The tenant check reads the pattern that the main router, mux, matches (ST-SUP-RC27-OC11).
+		MiddlewareWrapExpr: "%s.Middleware(mux, %s)",
+		MigrationJob:       &gen.MigrationJobSpec{Namespace: RuntimeWiringNamespace, Function: "Migrate", Stage: "MigrationStage"},
 		GoModRequires: map[string]string{
 			"google.golang.org/grpc": "v1.83.2",
 		},

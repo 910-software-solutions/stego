@@ -20,10 +20,14 @@ const MaxGateEntries = 10000
 // not hold, or holds as retired (ST-SUP-RC27-OC11).
 const ErrNotProvisionedCode = "tenant.not_provisioned"
 
-// gateEntry is one cached answer of the tenant list.
+// gateEntry is one cached answer of the tenant list, or only the generation of a tenant whose answer Forget dropped
+// (cached false). Each Forget of the tenant increments generation, so a lookup that read the list before the Forget
+// does not store its answer after it.
 type gateEntry struct {
-	active bool
-	at     time.Time
+	active     bool
+	cached     bool
+	at         time.Time
+	generation uint64
 }
 
 // Gate tells whether a tenant is an active tenant of the tenant list stego_tenants of a schema: a tenant that the
@@ -35,9 +39,14 @@ type Gate struct {
 	query  string
 	maxAge time.Duration
 	now    func() time.Time
+	// read, when set by a test, runs after each read of the list and before its answer is stored.
+	read func(id string)
 
 	mu      sync.Mutex
 	entries map[string]gateEntry
+	// epoch counts the clears of entries, which drop the generations too, so a lookup in flight across a clear does
+	// not store its answer.
+	epoch uint64
 }
 
 // NewGate returns the gate of the tenant list of schema on db, whose cached answers are at most maxAge old. It
@@ -66,8 +75,9 @@ func (g *Gate) Active(ctx context.Context, t Tenant) (bool, error) {
 	now := g.now()
 	g.mu.Lock()
 	entry, ok := g.entries[t.id]
+	epoch := g.epoch
 	g.mu.Unlock()
-	if ok && now.Sub(entry.at) >= 0 && now.Sub(entry.at) < g.maxAge {
+	if ok && entry.cached && now.Sub(entry.at) >= 0 && now.Sub(entry.at) < g.maxAge {
 		return entry.active, nil
 	}
 	var active bool
@@ -78,21 +88,37 @@ func (g *Gate) Active(ctx context.Context, t Tenant) (bool, error) {
 	case err != nil:
 		return false, fmt.Errorf("tenant: read the tenant list for %s: %w", t.id, err)
 	}
+	if g.read != nil {
+		g.read(t.id)
+	}
 	g.mu.Lock()
+	defer g.mu.Unlock()
+	// The answer is stored only when no Forget of the tenant and no clear came after the lookup began: the read may
+	// be older than the change that the Forget follows.
+	if current := g.entries[t.id]; g.epoch != epoch || current.generation != entry.generation {
+		return active, nil
+	}
 	if _, held := g.entries[t.id]; !held && len(g.entries) >= MaxGateEntries {
 		clear(g.entries)
+		g.epoch++
 	}
-	g.entries[t.id] = gateEntry{active: active, at: now}
-	g.mu.Unlock()
+	g.entries[t.id] = gateEntry{active: active, cached: true, at: now, generation: entry.generation}
 	return active, nil
 }
 
-// Forget drops the cached answer of the tenant ID id, so the next lookup reads the list. Provision and Retire call it
-// after their commit, so the replica that served them answers from the list at once.
+// Forget drops the cached answer of the tenant ID id and increments its generation, so the next lookup reads the
+// list, and a lookup that began before Forget, whose read may be older than the change, gives its answer but does
+// not store it. Provision and Retire call it after their commit, so on the replica that served them no lookup after
+// the commit answers from a read before it. Another replica answers from its cache for at most MaxGateAge.
 func (g *Gate) Forget(id string) {
 	g.mu.Lock()
-	delete(g.entries, id)
-	g.mu.Unlock()
+	defer g.mu.Unlock()
+	entry, held := g.entries[id]
+	if !held && len(g.entries) >= MaxGateEntries {
+		clear(g.entries)
+		g.epoch++
+	}
+	g.entries[id] = gateEntry{generation: entry.generation + 1}
 }
 
 // ValidID checks a tenant ID by the rule of New and of the CHECK of stego_tenants: from 1 to 255 bytes of valid

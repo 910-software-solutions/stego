@@ -275,6 +275,11 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		config = *c.WorkerConfig
 	}
 	config.Meter, config.Logger = svc.telemetry.MeterProvider(), svc.telemetry.LoggerProvider()
+	if svc.tenants != nil {
+		// A destination registered with ActiveTenants, such as the after slots, gets no message of a tenant that is
+		// not active (ST-SUP-RC27-OC12).
+		config.Tenants = svc.tenants.gate
+	}
 	cfg, err := svc.parts.TenantConfig(c.Workers.WorkerDatabaseURL)
 	if err != nil {
 		return nil, err

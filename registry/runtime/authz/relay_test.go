@@ -1266,10 +1266,6 @@ func TestTenantResources(t *testing.T) {
 				return err
 			},
 			"List": func(r Resource) error { _, err := handle.List("view", nil).Page(ctx, []Row{{Resource: r}}); return err },
-			"DecideTenant": func(r Resource) error {
-				_, _, err := handle.DecideTenant(ctx, tenant.ProvisionAction, "t9", r, nil)
-				return err
-			},
 			"Relate": func(r Resource) error {
 				_, err := handle.Relate(ctx, Tuple{Resource: r, Relation: "viewer", Subject: user("bob")})
 				return err
@@ -1503,6 +1499,82 @@ func TestTenantResources(t *testing.T) {
 			if tenantID, key, ok := splitResourceID(id); ok {
 				t.Errorf("the ID %q, not a canonical form, reads back as %q, %q", id, tenantID, key)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RP06-LC22-T08 The service-level resource of the provisioning is decided unqualified, and no handle or relay writes a tuple on it", func(t *testing.T) {
+		service, err := ServiceResource("service", "orders")
+		if err != nil || service.ID != "orders" {
+			t.Fatalf("ServiceResource of orders gave %v, %v; want service:orders with the ID orders", service, err)
+		}
+		perTenant := Resource{Type: "service", ID: qualify("t1", "orders")}
+		if _, err := ServiceResource("service", perTenant.ID); !errors.Is(err, ErrQualifiedService) {
+			t.Fatalf("ServiceResource of a tenant-qualified ID gave %v, want ErrQualifiedService", err)
+		}
+		for _, id := range []string{"", "a b", "orders/x"} {
+			if _, err := ServiceResource("service", id); err == nil {
+				t.Errorf("ServiceResource of the ID %q is accepted", id)
+			}
+		}
+		// The provider allows only a grant on the resource of one tenant, as an operator on service:<t1>/orders
+		// holds: no tenant decision reaches it, so none is allowed.
+		fake := &recorder{allow: func(r EvaluationRequest) bool { return r.Resource == perTenant }}
+		rt := newUnitRuntime(t, fake)
+		handle := bindUnit(t, rt, nil, mustPerson(t, "alice"), rel("service#operator"))
+		for _, action := range []tenant.RequestAction{tenant.ProvisionAction, tenant.RetireAction} {
+			decision, ok, err := handle.DecideTenantPermission(ctx, action, string(action), "t2", service, nil)
+			if err != nil || ok || decision != nil {
+				t.Errorf("the %s of t2 with a grant on service:<t1>/orders gave %v, %t, %v; want a deny", action, decision, ok, err)
+			}
+			if _, _, err := handle.DecideTenantPermission(ctx, action, string(action), "t2", perTenant, nil); !errors.Is(err, ErrQualifiedService) {
+				t.Errorf("the %s decided on the tenant-qualified service:<t1>/orders gave %v, want ErrQualifiedService", action, err)
+			}
+		}
+		if len(fake.evaluations) != 2 {
+			t.Fatalf("the provider got %d evaluations, want the two on the service-level resource only", len(fake.evaluations))
+		}
+		for _, e := range fake.evaluations {
+			if e.Resource != service {
+				t.Errorf("the provider decided %s, want service:orders", e.Resource)
+			}
+		}
+		// Only the tenant decision names it: every other evaluation, and every write, refuses its ID.
+		before := fake.requests()
+		if _, err := handle.Evaluate(ctx, "provision", service, Token{}, nil); !errors.Is(err, ErrNotQualified) {
+			t.Errorf("Evaluate of service:orders gave %v, want ErrNotQualified", err)
+		}
+		if _, err := rt.Port().Evaluate(ctx, EvaluationRequest{Subject: user("alice"), Action: Action{Name: "provision"},
+			Resource: service, Consistency: Fresh()}); !errors.Is(err, ErrNotQualified) {
+			t.Errorf("Port.Evaluate of service:orders gave %v, want ErrNotQualified", err)
+		}
+		grant := Tuple{Resource: service, Relation: "operator", Subject: user("mallory")}
+		if _, err := handle.Relate(ctx, grant); !errors.Is(err, ErrNotQualified) {
+			t.Errorf("Relate of operator on service:orders gave %v, want ErrNotQualified", err)
+		}
+		if _, err := handle.Unrelate(ctx, grant); !errors.Is(err, ErrNotQualified) {
+			t.Errorf("Unrelate of operator on service:orders gave %v, want ErrNotQualified", err)
+		}
+		if fake.requests() != before {
+			t.Fatal("a refused call on service:orders reached the provider")
+		}
+		// A tuple on it that reaches the outbox all the same, written by hand, is refused by the relay and parked.
+		relationships := &fakeRelationships{}
+		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: relationships, DB: fakeDB(t), Schema: "public"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(payload{Version: payloadVersion, Operation: OperationTouch, Revocation: uuid.New(),
+			Tuple: tupleJSON{ResourceType: "service", ResourceID: "orders", Relation: "operator", SubjectType: "user", SubjectID: "mallory"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = relay.Deliver(ctx, floorTx(t, &floorSeq{}), outbox.Delivery{Message: outbox.Message{ID: uuid.New(),
+			Destination: DestinationName, ResourceKey: "service:orders", Payload: body}, Tenant: mustTenant(t, "t1")})
+		if !errors.Is(err, ErrNotQualified) || !outbox.IsPermanent(err) {
+			t.Errorf("the delivery of operator on service:orders gave %v, want a permanent ErrNotQualified", err)
+		}
+		if relationships.starts != 0 || len(relationships.touches) != 0 {
+			t.Fatalf("the relay wrote %d tuples on service:orders", len(relationships.touches))
 		}
 	})
 }

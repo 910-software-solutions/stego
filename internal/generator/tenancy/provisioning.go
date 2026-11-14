@@ -30,6 +30,22 @@ func ProvisioningRoutes(basePath string) (provision, retire string) {
 	return "POST " + base + ProvisionPath, "POST " + base + RetirePath
 }
 
+// CheckOwnPattern refuses a route pattern of a component, METHOD /path or /path with the base path, such as the
+// route of a collection that the REST API registers, whose path is under <base path>/stego/, which the generated
+// service keeps for its own routes: a route there would match a request of Provision or Retire, or one near them,
+// and answer it with a handler that the tenant check does not expect (ST-SUP-RC27-OC09, ST-SUP-RC27-OC11).
+func CheckOwnPattern(basePath, pattern string) error {
+	target := pattern
+	if _, rest, ok := strings.Cut(pattern, " "); ok {
+		target = rest
+	}
+	own := strings.TrimSuffix(basePath, "/") + ownPrefix
+	if target == own || strings.HasPrefix(target, own+"/") {
+		return fmt.Errorf("the route %q is under %s/, which the generated service keeps for its own routes, such as the tenant provisioning; give it another path", pattern, own)
+	}
+	return nil
+}
+
 // CheckOwnRoute refuses a declared route, METHOD /path after the base path, that is under /stego/, which the
 // generated service keeps for its own routes, such as Provision and Retire: a declared route there would take a
 // path of the service or answer it with a handler the tenant check does not expect (ST-SUP-RC27-OC09,

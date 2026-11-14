@@ -4424,3 +4424,30 @@ func readTestFill(path string) (string, error) {
 	}
 	return m.Collection, nil
 }
+
+func TestValidateOwnRoutes(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC09-T05 A component route under <base path>/stego/ stops the validation", func(t *testing.T) {
+		_, _, input := setupValidateProject(t)
+		input.Generators["stub-api"] = &routeProvider{stubGenerator: stubGenerator{wiring: &gen.Wiring{}},
+			routes: []gen.HTTPRoute{{Pattern: "POST /widgets"}, {Pattern: "POST /stego/tenants/x/retire"}, {Pattern: "GET /stegosaurus"}}}
+		result, err := Validate(input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found []string
+		for _, fault := range result.Errors {
+			if fault.Rule == "own-route" {
+				found = append(found, fault.Found)
+			}
+		}
+		if len(found) != 1 || found[0] != "POST /stego/tenants/x/retire" {
+			t.Fatalf("the own-route faults are %v, want the one route under /stego/; all faults:\n%s", found, FormatValidation(result))
+		}
+		// The same routes without the one under /stego/ are valid.
+		input.Generators["stub-api"] = &routeProvider{stubGenerator: stubGenerator{wiring: &gen.Wiring{}},
+			routes: []gen.HTTPRoute{{Pattern: "POST /widgets"}, {Pattern: "GET /stegosaurus"}}}
+		if result, err := Validate(input); err != nil || result.HasErrors() {
+			t.Fatalf("the routes beside /stego/ were refused: %v\n%s", err, FormatValidation(result))
+		}
+	})
+}
