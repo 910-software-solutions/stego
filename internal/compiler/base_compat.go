@@ -370,14 +370,47 @@ func collectionIndexFaults(base, head *types.ServiceDeclaration) []BaseFault {
 }
 
 // collectionIndexes describes the indexes that the collections of the declaration give the entity, with the field
-// names of the declaration before its renames: whether a collection lists it, the scope and implicit fields of each
-// collection that lists it, and each upsert key, each part in a fixed order.
+// names of the declaration before its renames: whether a collection lists it, the fields with a search index when a
+// collection lists it, and each upsert key, each part in a fixed order. The fields with a search index are those
+// that 001_initial indexes, as the postgres-adapter's searchColumns gives them: the scope and implicit fields of each
+// collection that lists the entity, and each field that the search takes (postgresadapter.Searchable) and that no
+// add step adds, as the migration of that step builds its index. A field goes back through the renames of the entity
+// in the order of the schema history, the last step first, so renames of one field one after the other give the
+// name of the base whatever the order of their schema changes (review of PR #263, L11).
 func collectionIndexes(service *types.ServiceDeclaration, entity string) string {
+	position := map[string]int{}
+	for i, step := range service.SchemaHistory {
+		if _, seen := position[step.Change]; !seen {
+			position[step.Change] = i
+		}
+	}
+	var renames []types.SchemaChange
+	added := map[string]bool{}
+	for _, change := range service.SchemaChanges {
+		if change.Entity != entity {
+			continue
+		}
+		switch change.Kind {
+		case "rename":
+			renames = append(renames, change)
+		case "add":
+			if change.Field != "" {
+				added[change.Field] = true
+			}
+		}
+	}
+	// A rename with no step yet comes after each one with a step, in the order of the schema changes.
+	at := func(change types.SchemaChange) int {
+		if i, ok := position[change.ID]; ok {
+			return i
+		}
+		return len(service.SchemaHistory)
+	}
+	slices.SortStableFunc(renames, func(a, b types.SchemaChange) int { return at(a) - at(b) })
 	original := func(field string) string {
-		for i := len(service.SchemaChanges) - 1; i >= 0; i-- {
-			change := service.SchemaChanges[i]
-			if change.Kind == "rename" && change.Entity == entity && change.Field == field {
-				field = change.From
+		for i := len(renames) - 1; i >= 0; i-- {
+			if renames[i].Field == field {
+				field = renames[i].From
 			}
 		}
 		return field
@@ -404,6 +437,13 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 				key = append(key, original(field))
 			}
 			upserts = append(upserts, "("+strings.Join(key, ", ")+")")
+		}
+	}
+	if declared, ok := findStoredEntity(service, entity); ok && listed {
+		for _, field := range declared.Fields {
+			if !added[field.Name] && postgresadapter.Searchable(field) {
+				filtered[original(field.Name)] = true
+			}
 		}
 	}
 	fields := slices.Sorted(maps.Keys(filtered))
