@@ -316,7 +316,10 @@ func canonicalNumber(n string) (string, error) {
 // FieldFingerprint returns the fingerprint of a request over the declared body fields only (ST-SUP-RP07-LC10): it
 // decodes the JSON body, keeps the top-level members that fields names, and returns Fingerprint over the method, the
 // path of target without its query and the canonical form of the kept body. An empty body keeps nothing. A body
-// that is not one JSON object is an error.
+// that is not one JSON object is an error. A member is kept under the field's name when its name equals the field's
+// name under case folding, as encoding/json matches a member to a field (bytes.EqualFold), so a member that the
+// service decodes, such as DUE_AT for due_at, is in the fingerprint (low of the security review of PR 324). Two
+// members that fold to one name are refused before (readValue), so each field keeps at most one member.
 func FieldFingerprint(method, target string, body []byte, fields []string) (string, error) {
 	path, _, _ := strings.Cut(target, "?")
 	kept := []byte{}
@@ -334,10 +337,14 @@ func FieldFingerprint(method, target string, body []byte, fields []string) (stri
 		if !ok {
 			return "", errors.New("idempotency: the body is not a JSON object")
 		}
+		byFold := make(map[string]string, len(all))
+		for key := range all {
+			byFold[foldKey(key)] = key
+		}
 		named := object{}
 		for _, f := range fields {
-			if member, ok := all[f]; ok {
-				named[f] = member
+			if key, ok := byFold[foldKey(f)]; ok {
+				named[f] = all[key]
 			}
 		}
 		var out bytes.Buffer
