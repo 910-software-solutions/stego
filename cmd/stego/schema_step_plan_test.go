@@ -127,6 +127,30 @@ func TestSchemaStepPlan(t *testing.T) {
 			t.Errorf("a .git link to a removed worktree: %v, want a refusal, not a plan with no check:\n%s%s", err, stdout, stderr)
 		}
 	})
+	t.Run("ST-DECL-UC03-R03-T02 Plan refuses a declaration that checking refuses, also when it needs add steps", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// A new optional field needs an add step, and the runtime data path serves no money field yet, so checking
+		// refuses it.
+		s.write(t, "service.yaml", strings.Replace(smallServiceDeclaration, "fields: [{name: title, type: string}]", "fields: [{name: title, type: string}, {name: price, type: money, currency: EUR, optional: true}]", 1))
+		const fault = "has the field price of type money"
+		if stdout, stderr, err := s.stego(t, "validate"); err == nil || !strings.Contains(stdout+stderr, fault) {
+			t.Fatalf("stego validate: %v, want a refusal that names the money field:\n%s%s", err, stdout, stderr)
+		}
+		before := tree(t, s.service)
+		for _, args := range [][]string{{"plan"}, {"plan", "--base", "HEAD"}, {"apply", "--base", "HEAD"}} {
+			stdout, stderr, err := s.stego(t, args...)
+			if err == nil || !strings.Contains(stdout+stderr, fault) {
+				t.Errorf("stego %s: %v, want the refusal of validate:\n%s%s", strings.Join(args, " "), err, stdout, stderr)
+			}
+			if strings.Contains(stdout, "Apply writes the") {
+				t.Errorf("stego %s lists the add steps of a declaration that checking refuses:\n%s", strings.Join(args, " "), stdout)
+			}
+		}
+		if after := tree(t, s.service); !maps.Equal(before, after) {
+			t.Error("a refused plan or apply changed a file of the service folder")
+		}
+	})
 	t.Run("ST-GEN-UC12-R06-T01 Apply writes the same add steps for a new entity and a new optional field each time", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)
