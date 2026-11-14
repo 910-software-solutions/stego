@@ -1402,6 +1402,10 @@ func TestCrud(t *testing.T) {
 			{`{"title":"bad","starts_at":1764583200}`, "starts_at"},
 			{`{"title":"bad","Starts_At":"tomorrow"}`, "starts_at"},
 			{`{"title":"bad","starts_at":"0001-01-01T00:00:00Z"}`, "starts_at"},
+			// An offset that moves the UTC year outside 1 to 9999: the answer in UTC cannot encode it.
+			{`{"title":"bad","starts_at":"9999-12-31T23:59:59-14:00"}`, "starts_at must be an RFC 3339 time whose UTC year is from 1 to 9999"},
+			{`{"title":"bad","starts_at":"0000-01-01T00:00:00+01:00"}`, "starts_at must be an RFC 3339 time whose UTC year is from 1 to 9999"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00Z","ends_at":"9999-12-31T23:00:00-01:30"}`, "ends_at must be an RFC 3339 time whose UTC year is from 1 to 9999"},
 			{`{"title":"bad"}`, "starts_at is required"},
 			{`{"title":"bad","starts_at":null}`, "starts_at is required"},
 			{`{"title":"bad","starts_at":"2026-12-01T10:00:00Z","ends_at":"soon"}`, "ends_at"},
@@ -1426,7 +1430,7 @@ func TestCrud(t *testing.T) {
 		}
 		patched := e.send(a, http.MethodPatch, "/api/v1/meetings/"+id, "k-"+uuid.NewString(), `{"ends_at":"2026-12-02T16:00:00+01:00"}`)
 		answered("the patch", patched, map[string]string{"starts_at": "2026-12-02T14:00:00Z", "ends_at": "2026-12-02T15:00:00Z"})
-		for _, bad := range []string{`{"starts_at":"later"}`, `{"ends_at":"0001-01-01T00:00:00Z"}`} {
+		for _, bad := range []string{`{"starts_at":"later"}`, `{"ends_at":"0001-01-01T00:00:00Z"}`, `{"ends_at":"9999-12-31T23:59:59-14:00"}`} {
 			if r := e.send(a, http.MethodPatch, "/api/v1/meetings/"+id, "k-"+uuid.NewString(), bad); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), "RFC 3339") {
 				t.Errorf("the patch %s answered %d %s, want 400", bad, r.status, r.body)
 			}

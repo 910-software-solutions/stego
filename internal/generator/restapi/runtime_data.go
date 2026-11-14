@@ -1347,7 +1347,8 @@ func (w *runtimeHandlerWriter) decodesClientTime() bool {
 
 // clientTimeText writes, in the decode of a body before the body is decoded, the check of each client-set timestamp
 // of fields (ST-DECL-Q16): a member that is not null must be a JSON string that holds an RFC 3339 time, else the
-// request is refused with a 400 problem that names the field. The JSON decoder matches a member name to a field
+// request is refused with a 400 problem that names the field. A time whose offset moves its UTC year outside 1 to
+// 9999, such as 9999-12-31T23:59:59-14:00, is refused the same way, as the answer in UTC cannot encode it. The JSON decoder matches a member name to a field
 // with no regard to case, so each member whose name is the field's name in any case is checked.
 func (w *runtimeHandlerWriter) clientTimeText(zero string, fields []types.Field) {
 	for _, f := range fields {
@@ -1357,7 +1358,9 @@ func (w *runtimeHandlerWriter) clientTimeText(zero string, fields []types.Field)
 		invalid := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time, such as "+clientTimeExample)
 		w.f("\tfor member, raw := range rawMap {\n\t\tif !strings.EqualFold(member, %q) || string(raw) == \"null\" {\n\t\t\tcontinue\n\t\t}\n", f.Name)
 		w.f("\t\tvar text string\n\t\tif err := json.Unmarshal(raw, &text); err != nil {\n\t\t\treturn %s, %s\n\t\t}\n", zero, invalid)
-		w.f("\t\tif _, err := time.Parse(time.RFC3339, text); err != nil {\n\t\t\treturn %s, %s\n\t\t}\n\t}\n", zero, invalid)
+		w.f("\t\tparsed, err := time.Parse(time.RFC3339, text)\n\t\tif err != nil {\n\t\t\treturn %s, %s\n\t\t}\n", zero, invalid)
+		year := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time whose UTC year is from 1 to 9999, such as "+clientTimeExample)
+		w.f("\t\tif utcYear := parsed.UTC().Year(); utcYear < 1 || utcYear > 9999 {\n\t\t\treturn %s, %s\n\t\t}\n\t}\n", zero, year)
 	}
 }
 
