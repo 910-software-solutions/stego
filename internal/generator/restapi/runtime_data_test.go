@@ -517,19 +517,19 @@ func TestTopLevelCreate(t *testing.T) {
 		decided := func() gen.Context {
 			c := crudContext()
 			c.Tenancy = &gen.Tenancy{Key: "tenant_id", Provisioning: &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire"}}
-			c.Entities[3].Permissions[types.OpCreate] = "provision"
+			c.Entities[3].Permissions[types.OpCreate] = "create"
 			return c
 		}
 		files := crudFiles(t, decided())
 		folders := string(files["api/folders_handler.go"])
-		want := regexp.MustCompile(`\tPermission: +"provision",\n\tResource: +&command\.Resource\{Type: "service", Service: "crud"\},\n\}\)\)$`)
+		want := regexp.MustCompile(`\tPermission: +"create",\n\tResource: +&command\.Resource\{Type: "service", Service: "crud"\},\n\}\)\)$`)
 		start := strings.Index(folders, "var foldersCreateCommand = ")
 		if start < 0 {
 			t.Fatal("the handler of folders declares no create command")
 		}
 		end := strings.Index(folders[start:], "}))")
 		if spec := folders[start : start+end+3]; !want.MatchString(spec) {
-			t.Errorf("the create command of folders is\n%s\nwant it to decide provision on service:crud", spec)
+			t.Errorf("the create command of folders is\n%s\nwant it to decide create on service:crud", spec)
 		}
 		// A create under a parent stays decided on the parent through its reference, and a public create decides
 		// nothing of its own.
@@ -599,6 +599,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC28-OC01-T03 A secret field reaches neither before, after nor the stored row",
 	"ST-SUP-RC20-OC38-T01 A list on the runtime data path pages by cursor in the requested order, with no total",
 	"ST-SUP-RC20-OC37-T08 A jsonb field is written, read and patched as JSON on the runtime data path",
+	"ST-SUP-RC20-OC37-T11 A denied create answers 404 with no empty ID, and a bad Idempotency-Key names its fault",
 	"ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC",
 	"ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response",
 	"ST-SUP-RC28-OC01-T07 A pii jsonb field is the redaction marker in the before, the after and the patch",

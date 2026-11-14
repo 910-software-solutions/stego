@@ -247,15 +247,15 @@ func TestOperations(t *testing.T) {
 
 func TestTopLevelCreate(t *testing.T) {
 	t.Run("ST-SUP-RC29-OC01-T03 The create of an entity with no parent is decided on the service-level resource", func(t *testing.T) {
-		// create: provision, a permission that only the service-level resource type declares, is accepted.
+		// create: create, a permission that only the service-level resource type declares, is accepted.
 		ctx := documentContext(t)
-		ctx.Entities[0].Permissions[types.OpCreate] = "provision"
+		ctx.Entities[0].Permissions[types.OpCreate] = "create"
 		found := false
 		for _, e := range operationEntries(t, emitted(t, generate(t, ctx), "authz.go")) {
 			if e["Collection"] == "documents" && e["Operation"] == "create" {
 				found = true
-				if e["ResourceType"] != "service" || e["Permission"] != "provision" {
-					t.Errorf("the create of documents is %v, want provision on the resource type service", e)
+				if e["ResourceType"] != "service" || e["Permission"] != "create" {
+					t.Errorf("the create of documents is %v, want create on the resource type service", e)
 				}
 			}
 		}
@@ -282,6 +282,25 @@ func TestTopLevelCreate(t *testing.T) {
 				t.Errorf("the create of documents under a project is %v, want edit on the resource type document", e)
 			}
 		}
+	})
+}
+
+func TestTopLevelCreatePermission(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC01-T05 A top-level create that names the provision or retire permission is refused at checking", func(t *testing.T) {
+		for _, permission := range []string{"provision", "retire"} {
+			ctx := documentContext(t)
+			ctx.Entities[0].Permissions[types.OpCreate] = permission
+			refused(t, ctx, "Document", `"`+permission+`"`, "tenancy.provisioning."+permission, "permission of its own")
+		}
+		// The rule follows the declared names, not the words provision and retire.
+		ctx := documentContext(t)
+		ctx.Tenancy.Provisioning = &types.TenantProvisioning{ResourceType: "service", Provision: "create", Retire: "retire"}
+		ctx.Entities[0].Permissions[types.OpCreate] = "create"
+		refused(t, ctx, "Document", `"create"`, "tenancy.provisioning.provision")
+		ctx = documentContext(t)
+		ctx.Tenancy.Provisioning = &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "create"}
+		ctx.Entities[0].Permissions[types.OpCreate] = "create"
+		refused(t, ctx, "Document", `"create"`, "tenancy.provisioning.retire")
 	})
 }
 

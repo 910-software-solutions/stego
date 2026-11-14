@@ -1238,6 +1238,34 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC37-T11 A denied create answers 404 with no empty ID, and a bad Idempotency-Key names its fault", func(t *testing.T) {
+		e := service(t)
+		tenantID := newTenant()
+		owner, other := e.as("owner", tenantID), e.as("other", tenantID)
+		folder := e.create(owner, "folders", "folder", `{"name":"own"}`)
+		e.relate(other, "viewer", "folder", folder)
+		// The other caller may view the folder but not edit it, so the create of a book in it is denied on the parent.
+		denied := e.send(other, http.MethodPost, "/api/v1/folders/"+folder+"/books", "k-"+uuid.NewString(), `{"title":"t"}`)
+		detail, _ := denied.object(t)["detail"].(string)
+		if denied.status != http.StatusNotFound || strings.Contains(detail, "''") || !strings.Contains(detail, "Book was not written") {
+			t.Errorf("the denied create answered %d %s, want 404 that names the Book that was not written and no empty ID", denied.status, denied.body)
+		}
+		for _, c := range []struct{ header, want string }{
+			{"", "the Idempotency-Key header is absent"},
+			{"k-unquoted", "put the key in double quotes"},
+		} {
+			headers := map[string]string{}
+			if c.header != "" {
+				headers["Idempotency-Key"] = c.header
+			}
+			r := e.sendWith(owner, http.MethodPost, "/api/v1/orders", "", `{"sku":"s","qty":1}`, headers)
+			problem := r.object(t)
+			if detail, _ := problem["detail"].(string); r.status != http.StatusBadRequest || !strings.Contains(detail, c.want) || !strings.HasSuffix(problem["type"].(string), "idempotency-key-missing") {
+				t.Errorf("a create with the Idempotency-Key %q answered %d %s, want 400 of the missing type that says %q", c.header, r.status, r.body, c.want)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T08 A jsonb field is written, read and patched as JSON on the runtime data path", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())

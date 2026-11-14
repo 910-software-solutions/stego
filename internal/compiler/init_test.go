@@ -73,7 +73,7 @@ func TestInitializeComposedRegistry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Created) != 1 || result.Created[0] != "service.yaml" {
+			if len(result.Created) != 2 || result.Created[0] != ".stego/.gitignore" || result.Created[1] != "service.yaml" {
 				t.Fatalf("unexpected created files: %v", result.Created)
 			}
 			assertInitService(t, project, archetype)
@@ -98,7 +98,7 @@ func TestInitializeDefaultRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Created) != 3 {
+	if len(result.Created) != 4 {
 		t.Fatalf("unexpected created files: %v", result.Created)
 	}
 	assertInitService(t, project, "example")
