@@ -221,6 +221,32 @@ func TestBaseCompat(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-INV33-T The index check of the collections, where generation cannot compare the indexes, traces renames in history order and counts the fields that a list indexes anyway", func(t *testing.T) {
+		t.Parallel()
+		// Review of PR #263, L11: two renames of one field whose schema changes are listed in the other order than
+		// their steps, and a new implicit field that the search of the list indexes already, were refused.
+		td01 := string(userManagementBase(t))
+		base := parseHead(t, td01)
+		chained := withChanges(strings.ReplaceAll(strings.Replace(td01, "{ name: source_type, type: string, max_length: 50 }", "{ name: kind_type, type: string, max_length: 50 }", 1), "implicit: { source_type:", "implicit: { kind_type:"),
+			"  - {id: activityentry-origin-type-rename, kind: rename, entity: ActivityEntry, field: kind_type, from: origin_type}\n"+
+				"  - {id: activityentry-source-type-rename, kind: rename, entity: ActivityEntry, field: origin_type, from: source_type}\n",
+			"  - {change: activityentry-source-type-rename, phase: expand}\n  - {change: activityentry-origin-type-rename, phase: expand}\n")
+		for _, c := range []struct {
+			name, head string
+			fault      bool
+		}{
+			{"two renames of an implicit field, listed in the other order than their steps", chained, false},
+			{"a searchable field that an add step adds, whose step migration builds its index", withChanges(addNickname(td01), nicknameAdd, nicknameAddExpand), false},
+			{"a new implicit field of a list that the search of the list indexes already", strings.Replace(td01, "    implicit: { source_type: \"User\" }\n", "    implicit: { source_type: \"User\", action: \"login\" }\n", 1), false},
+			{"a searched field of a listed entity marked pii", strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: pii }", 1), true},
+			{"list taken from the only collection that lists an entity", strings.Replace(td01, "    operations: [create, read, delete, list]\n", "    operations: [create, read, delete]\n", 1), true},
+		} {
+			faults := collectionIndexFaults(base, parseHead(t, c.head))
+			if (len(faults) > 0) != c.fault {
+				t.Errorf("%s: the faults are %+v, want a fault %v", c.name, faults, c.fault)
+			}
+		}
+	})
 	t.Run("ST-GEN-INV33-T A new order of the fields of a base entity, which changes 001_initial and the marker, is refused", func(t *testing.T) {
 		t.Parallel()
 		td01 := string(userManagementBase(t))
