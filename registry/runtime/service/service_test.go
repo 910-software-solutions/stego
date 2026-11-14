@@ -163,7 +163,8 @@ func TestNew(t *testing.T) {
 		}
 		relate(t, endpoint, key, "service", "todo-svc", "operator", "user:u-7")
 		relate(t, endpoint, key, "order", "o1", "owner", "user:u-7")
-		if _, err := f.admin.Exec(`INSERT INTO public.orders (tenant_id, id, status) VALUES ('t1', 'o1', 'open')`); err != nil {
+		// The tenant t1 is in the tenant list, as its tenant key needs (ST-SUP-Q124 (a)).
+		if _, err := f.admin.Exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('t1'); INSERT INTO public.orders (tenant_id, id, status) VALUES ('t1', 'o1', 'open')`); err != nil {
 			t.Fatal(err)
 		}
 		signing := authntest.NewKey(t, "k1")
@@ -317,6 +318,8 @@ func TestNew(t *testing.T) {
 		t.Run("ST-SUP-RP14-LC06-T01 New starts on a database that does not hold the schema manifest, and logs and alerts each fault with its class and no row value", func(t *testing.T) {
 			orders := manifest.Table{Schema: "public", Name: "orders", RowSecurity: true,
 				Indexes: []manifest.Index{{Name: "orders_pkey", Columns: []string{"tenant_id", "id"}}},
+				// The tenant key that the migration job made (ST-SUP-Q124 (a)).
+				Constraints: ordersManifest().Tables[0].Constraints, TenantKey: ordersManifest().Tables[0].TenantKey,
 				Columns: []manifest.Column{{Name: "tenant_id", Type: "text", NotNull: true}, {Name: "status", Type: "text", NotNull: true},
 					{Name: "version", Type: "bigint", Default: "1"}, {Name: "authz_token", Type: "text", Default: "''::text"}},
 				Policies: []manifest.Policy{{Name: "orders_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))",
@@ -448,6 +451,8 @@ func TestNew(t *testing.T) {
 			declared := parts(nil, nil)
 			declared.Schema = manifest.Manifest{Tables: []manifest.Table{{Schema: "public", Name: "orders", RowSecurity: true,
 				Indexes: []manifest.Index{{Name: "orders_pkey", Columns: []string{"tenant_id", "id"}}},
+				// The tenant key that the migration job made (ST-SUP-Q124 (a)).
+				Constraints: ordersManifest().Tables[0].Constraints, TenantKey: ordersManifest().Tables[0].TenantKey,
 				Columns: []manifest.Column{{Name: "tenant_id", Type: "text", NotNull: true}, {Name: "status", Type: "text", NotNull: true},
 					{Name: "version", Type: "bigint", Default: "1"}, {Name: "authz_token", Type: "text", Default: "''::text"}},
 				Policies: []manifest.Policy{{Name: "orders_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))",

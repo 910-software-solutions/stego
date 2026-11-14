@@ -35,6 +35,8 @@ const (
 	StepLedgerCheck         = "ledger_check"
 	StepAuthorizationSchema = "authorization_schema"
 	StepTables              = "tables"
+	StepTenantKeys          = "tenant_keys"
+	StepTenantKeysValidate  = "tenant_keys_validate"
 	StepOutboxQueue         = "outbox_queue"
 	StepOutboxSequence      = "outbox_sequence"
 	StepAuditTables         = "audit_tables"
@@ -165,7 +167,9 @@ const (
 // connection configuration, and runs, as the owner role and in this order: the read-only ledger check, which
 // refuses a database whose tables this release did not make and writes nothing; WriteSchema, which SpiceDB refuses
 // for a schema that removes what has relationships, so a refused schema leaves the database as it was; the ledger of
-// the adapter and then the tenant list of the tenant runtime (tenant.Migration) in TenantSchema; the outbox, audit, idempotency and authorization migrations, each in one transaction, the audit step
+// the adapter and then the tenant list of the tenant runtime (tenant.Migration) in TenantSchema; the foreign key of
+// each owned table to the tenant list that the joined schema manifest names (manifest.Table.TenantKey), added NOT
+// VALID (StepTenantKeys) and then validated (StepTenantKeysValidate); the outbox, audit, idempotency and authorization migrations, each in one transaction, the audit step
 // with the lease table and the row of the controller lease (ControllerLease); the grants of
 // the runtime role; the audit partitions of this month and the next; the delete of the release reports older than
 // one day (lease.CleanReleases); WriteSchema again, so the release ends on
@@ -213,11 +217,12 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 			stepped(name, conn)
 		}
 		if err := run(); err != nil {
-			// A refused contract step says why in a text that names the change, counts and release labels and no
-			// row value, which the job logs, as its failure record names the step only (ST-SUP-RC01-OC24).
+			// A refused step says why in a text that names the change or the table, counts and release labels and
+			// no row value, which the job logs, as its failure record names the step only (ST-SUP-RC01-OC24,
+			// ST-SUP-Q124 (a)).
 			var refused interface{ Refusal() string }
 			if errors.As(err, &refused) {
-				slog.ErrorContext(ctx, "migrate: the contract step of a schema change is refused", "step", name, "refusal", refused.Refusal())
+				slog.ErrorContext(ctx, "migrate: the step is refused", "step", name, "refusal", refused.Refusal())
 			}
 			return failed(name, err)
 		}
@@ -273,6 +278,19 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		// (ST-SUP-Q97).
 		return textStep(ctx, conn, m.OwnerRole, StepTables, tenantList)
 	}); err != nil {
+		return err
+	}
+	// After the tenant list, the foreign key of each owned table to it: added NOT VALID, which scans no row under its
+	// short strong lock, and then validated, which blocks no write (decision on ST-SUP-Q124 (a), orchestrator under
+	// the owner's delegation, 2026-11-14).
+	listKeys, err := tenantKeys(*m.Parts, m.RuntimeRole)
+	if err != nil {
+		return failed(StepSettings, err)
+	}
+	if err := step(StepTenantKeys, func() error { return addTenantKeys(ctx, conn, m.OwnerRole, tenants, listKeys) }); err != nil {
+		return err
+	}
+	if err := step(StepTenantKeysValidate, func() error { return validateTenantKeys(ctx, conn, m.OwnerRole, tenants, listKeys) }); err != nil {
 		return err
 	}
 	texts := []struct{ name, text string }{
@@ -609,13 +627,21 @@ func ownerStep(ctx context.Context, conn *sql.Conn, owner string, run func(*sql.
 // again after a pause when a lock wait ends at the timeout (SQLSTATE 55P03), at most textAttempts times. Each text
 // runs again on a database that it made, so a run that the timeout ended changes nothing that the next run needs.
 func textStep(ctx context.Context, conn *sql.Conn, owner, name, text string) error {
+	return lockedStep(ctx, conn, owner, name, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, text)
+		return err
+	})
+}
+
+// lockedStep runs run as the owner role in one transaction under the lock timeout of a text, and again after a
+// pause when a lock wait ends at the timeout, at most textAttempts times, as textStep runs a text.
+func lockedStep(ctx context.Context, conn *sql.Conn, owner, name string, run func(*sql.Tx) error) error {
 	for attempt := 1; ; attempt++ {
 		err := ownerStep(ctx, conn, owner, func(tx *sql.Tx) error {
 			if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true)", textLockTimeout); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, text)
-			return err
+			return run(tx)
 		})
 		if err == nil || !lockTimedOut(err) || attempt >= textAttempts {
 			return err
@@ -722,3 +748,113 @@ func CopyBackfills(copies []lease.Copy, tenantSchema string) ([]Backfill, error)
 // the running release and for the replicas (decision on finding F6, orchestrator under the owner's delegation,
 // 2026-11-13).
 const BackfillPause = 50 * time.Millisecond
+
+// tenantKey is the foreign key of one owned table to the tenant list, as the joined schema manifest names it
+// (manifest.Table.TenantKey).
+type tenantKey struct {
+	schema, table string
+	key           manifest.TenantKey
+}
+
+// tenantKeys gives the tenant key of each table of the joined schema manifest of the declared parts that names one.
+func tenantKeys(declared Parts, runtimeRole string) ([]tenantKey, error) {
+	want, err := joinedManifest(declared, runtimeRole)
+	if err != nil {
+		return nil, err
+	}
+	if err := want.Validate(); err != nil {
+		return nil, err
+	}
+	var keys []tenantKey
+	for _, t := range want.Tables {
+		if t.TenantKey != nil {
+			keys = append(keys, tenantKey{schema: t.Schema, table: t.Name, key: *t.TenantKey})
+		}
+	}
+	return keys, nil
+}
+
+// keyState reads whether the table of k has a constraint of the name of k, and whether it is validated. It reads
+// the catalog with the operators of pg_catalog and takes no lock on the table.
+func keyState(ctx context.Context, tx *sql.Tx, k tenantKey) (present, validated bool, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT k.convalidated FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) k.conrelid
+  JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+  WHERE n.nspname OPERATOR(pg_catalog.=) $1::pg_catalog.name AND c.relname OPERATOR(pg_catalog.=) $2::pg_catalog.name AND k.conname OPERATOR(pg_catalog.=) $3::pg_catalog.name`,
+		k.schema, k.table, k.key.Name).Scan(&validated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	return err == nil, validated, err
+}
+
+// addTenantKeys adds, for each tenant key that its table does not have, the foreign key from the tenant column to
+// stego_tenants of the schema tenants, ON DELETE NO ACTION and ON UPDATE NO ACTION, so no delete or change of a
+// list row writes a row of a tenant, and NOT VALID, so it scans no row under the SHARE ROW EXCLUSIVE lock that it
+// takes on both tables. Each key is one transaction under the lock timeout of a text and its retry, so no write of
+// the running release queues long behind it; a run again finds the key and takes no lock (decision on ST-SUP-Q124
+// (a), orchestrator under the owner's delegation, 2026-11-14).
+func addTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants string, keys []tenantKey) error {
+	for _, k := range keys {
+		statement := "ALTER TABLE ONLY " + quote(k.schema) + "." + quote(k.table) + " ADD CONSTRAINT " + quote(k.key.Name) +
+			" FOREIGN KEY (" + quote(k.key.Column) + ") REFERENCES " + quote(tenants) + ".stego_tenants (tenant_id) ON DELETE NO ACTION ON UPDATE NO ACTION NOT VALID"
+		if err := lockedStep(ctx, conn, owner, StepTenantKeys, func(tx *sql.Tx) error {
+			present, _, err := keyState(ctx, tx, k)
+			if err != nil || present {
+				return err
+			}
+			_, err = tx.ExecContext(ctx, statement)
+			return err
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// tenantKeyRefusal is the refusal of the validation of a tenant key: its text names the table, the key and the
+// remedy, and no row value, so the migration job may log it.
+type tenantKeyRefusal struct{ text string }
+
+func (r *tenantKeyRefusal) Error() string   { return r.text }
+func (r *tenantKeyRefusal) Refusal() string { return r.text }
+
+// validateTenantKeys validates each tenant key that is not validated, each in one transaction under the lock
+// timeout of a text and its retry, with VALIDATE CONSTRAINT, which takes a lock that blocks no read and no write. A
+// row of a tenant that the tenant list does not hold fails it (SQLSTATE 23503), and the step refuses with the
+// remedy, to provision the tenant or remove its rows, in a text that names no row value (decision on ST-SUP-Q124
+// (a), orchestrator under the owner's delegation, 2026-11-14). A key that the step before did not leave on its table
+// is a fault.
+//
+// PostgreSQL 17 validates a foreign key with one query as the current role, which under FORCE ROW LEVEL SECURITY
+// sees only the rows of the tenant setting, so the owner role would validate a key over a table with rows of unlisted
+// tenants. The step therefore validates each key with tenant.ValidateForeignKey, which revokes SELECT on the table
+// from the owner role in the transaction of the step, so PostgreSQL checks every row past row-level security, fails
+// when the owner role can still read a column of the table, runs the validation with row_security off and grants
+// SELECT again after it (ST-SUP-RP04-LC10; security review of PR #320, L2 and info, orchestrator under the owner's
+// delegation, 2026-11-14).
+func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants string, keys []tenantKey) error {
+	for _, k := range keys {
+		table := quote(k.schema) + "." + quote(k.table)
+		err := lockedStep(ctx, conn, owner, StepTenantKeysValidate, func(tx *sql.Tx) error {
+			present, validated, err := keyState(ctx, tx, k)
+			switch {
+			case err != nil:
+				return err
+			case !present:
+				return fmt.Errorf("%s.%s has no tenant key %s", k.schema, k.table, k.key.Name)
+			case validated:
+				return nil
+			}
+			return tenant.ValidateForeignKey(ctx, tx, table, k.key.Name)
+		})
+		var state interface{ SQLState() string }
+		if errors.As(err, &state) && state.SQLState() == "23503" {
+			return &tenantKeyRefusal{text: fmt.Sprintf("a row of %s.%s has a tenant that the tenant list of the schema %s does not hold, so the tenant key %s is not validated; provision the tenant or remove its rows, then run the migration job again",
+				k.schema, k.table, tenants, k.key.Name)}
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
