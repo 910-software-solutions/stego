@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -42,6 +43,7 @@ const (
 	StepAuthorizationTables = "authorization_tables"
 	StepRuntimeGrants       = "runtime_grants"
 	StepAuditPartitions     = "audit_partitions"
+	StepReleaseReports      = "release_reports"
 	StepSchemaAgain         = "authorization_schema_again"
 	StepManifestBefore      = "manifest_before_backfill"
 	StepBackfill            = "backfill"
@@ -165,7 +167,8 @@ const (
 // for a schema that removes what has relationships, so a refused schema leaves the database as it was; the ledger of
 // the adapter and then the tenant list of the tenant runtime (tenant.Migration) in TenantSchema; the outbox, audit, idempotency and authorization migrations, each in one transaction, the audit step
 // with the lease table and the row of the controller lease (ControllerLease); the grants of
-// the runtime role; the audit partitions of this month and the next; WriteSchema again, so the release ends on
+// the runtime role; the audit partitions of this month and the next; the delete of the release reports older than
+// one day (lease.CleanReleases); WriteSchema again, so the release ends on
 // its own schema; the schema manifest check before the backfills (StepManifestBefore); the backfills; and the schema
 // manifest check again (StepManifest). It stops at the first step that fails, with a StepError that names the step. After the owner role
 // it takes the job lock, which it holds until the backfill, so a second job of the database waits for it (StepJobLock); and
@@ -210,6 +213,12 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 			stepped(name, conn)
 		}
 		if err := run(); err != nil {
+			// A refused contract step says why in a text that names the change, counts and release labels and no
+			// row value, which the job logs, as its failure record names the step only (ST-SUP-RC01-OC24).
+			var refused interface{ Refusal() string }
+			if errors.As(err, &refused) {
+				slog.ErrorContext(ctx, "migrate: the contract step of a schema change is refused", "step", name, "refusal", refused.Refusal())
+			}
 			return failed(name, err)
 		}
 		return nil
@@ -285,6 +294,18 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		}
 	}
 	if err := step(StepAuditPartitions, func() error { return maintainAudit(ctx, conn, m.OwnerRole) }); err != nil {
+		return err
+	}
+	// The job, not the runtime role, deletes the old release reports, and passes over a row that a session holds
+	// (security review of PR #316, M1).
+	if err := step(StepReleaseReports, func() error {
+		return ownerStep(ctx, conn, m.OwnerRole, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true)", textLockTimeout); err != nil {
+				return err
+			}
+			return lease.CleanReleases(ctx, tx)
+		})
+	}); err != nil {
 		return err
 	}
 	if err := step(StepSchemaAgain, func() error { return m.WriteSchema(ctx, spice) }); err != nil {

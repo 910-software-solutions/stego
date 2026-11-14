@@ -35,6 +35,11 @@ type MigrationFunc func(ctx context.Context, tx *sql.Tx) error
 // on a table with rows, is the qualified name of the index: the migration
 // runs CREATE INDEX CONCURRENTLY outside a transaction (ST-SUP-RC01-OC38), and
 // Definition is the definition of that index as pg_get_indexdef gives it.
+//
+// Contract, for the contract step of a schema change, is what the step
+// checks and runs, each statement in its own short transaction outside the
+// transaction of the ledger row (applyContract, ST-SUP-RC01-OC24,
+// ST-SUP-RC01-OC39).
 type Migration struct {
 	Name             string
 	Digest           string
@@ -45,7 +50,38 @@ type Migration struct {
 	Index            string
 	Definition       string
 	Body             string
+	Contract         *ContractStep
 }
+
+// ContractStep is what the contract step of a rename checks before it
+// changes the schema, and its statements in order: the change, the qualified
+// table, the completeness CHECK, its definition as pg_get_constraintdef gives
+// it and the sync trigger of its expand step, the expand migration, the name
+// of the old column, the old and the new column as quoted identifiers, and,
+// for an owned table, the tenant column and the qualified tenant list, by
+// which the check counts the rows left of each tenant.
+type ContractStep struct {
+	Change, Table, Check, Definition, Trigger, Expand string
+	From, Old, New, TenantColumn, Tenants             string
+	Statements                                        []ContractStatement
+}
+
+// ContractStatement is one statement of a contract step: SQL; When, a query
+// that gives whether the statement still has to run, or empty; Long for the
+// long statement timeout of a VALIDATE; Guard for the check of the step again
+// in the same transaction before the statement; and Also, the statements that
+// run after SQL in the same transaction, so that the drop of the sync trigger
+// and the drop of the old column commit together (security review of PR #316,
+// H1).
+type ContractStatement struct {
+	SQL, When   string
+	Long, Guard bool
+	Also        []string
+}
+
+// releaseWindow is how many report intervals a release report stays
+// current (registry/runtime/lease.ReleaseWindow).
+const releaseWindow = 3
 
 // The limits of a migration of a schema step (ST-SUP-RC01-OC22): it waits at
 // most stepLockTimeout for a lock, so the statements that queue behind it wait
@@ -129,6 +165,33 @@ func RegisterIndexStep(name, index, body, definition string) {
 			return err
 		}
 		return indexBuilt(ctx, tx, index, definition)
+	}})
+}
+
+// RegisterContractStep adds the contract migration of a schema change, whose
+// compatible_with set is the expand migration of its change
+// (ST-SUP-RC01-OC27). A new database applies every migration in one
+// transaction on tables with no row and with no release running, so there it
+// runs each statement that still has to run, with no check.
+func RegisterContractStep(name, body string, step ContractStep) {
+	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: []string{step.Expand}, StatementTimeout: stepStatementTimeout, Body: body, Contract: &step, Func: func(ctx context.Context, tx *sql.Tx) error {
+		for _, s := range step.Statements {
+			if s.When != "" {
+				var run bool
+				if err := tx.QueryRowContext(ctx, s.When).Scan(&run); err != nil {
+					return err
+				}
+				if !run {
+					continue
+				}
+			}
+			for _, statement := range append([]string{s.SQL}, s.Also...) {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}})
 }
 
@@ -416,7 +479,7 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 				return nil
 			}
 			m := ordered[len(applied)]
-			if m.Index != "" {
+			if m.Index != "" || m.Contract != nil {
 				index = &m
 				return nil
 			}
@@ -430,7 +493,9 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 			}
 			return recordMigration(ctx, tx, m)
 		})
-		if err == nil && index != nil {
+		if err == nil && index != nil && index.Contract != nil {
+			err = applyContract(ctx, db, ordered, *index)
+		} else if err == nil && index != nil {
 			err = applyIndex(ctx, db, ordered, *index)
 		}
 		if err != nil {
@@ -565,6 +630,283 @@ func applyIndex(ctx context.Context, db Database, ordered []Migration, m Migrati
 		}
 		return recordMigration(ctx, tx, m)
 	})
+}
+
+// applyContract runs the contract migration m of a schema change
+// (ST-SUP-RC01-OC24, ST-SUP-RC01-OC39). It holds the ledger lock for its
+// session on one connection, reads the ledger again and runs nothing when
+// another job has applied m. It first checks the step in its own transaction
+// (checkContract), and refuses with the change and the count of rows left,
+// changes no schema and writes no ledger row when the check fails. Then it
+// runs each statement in its own short transaction under the lock timeout and
+// the statement timeout of a step, again after a pause when the lock wait ends
+// at the timeout, at most stepAttempts times; the statement that drops the
+// sync trigger checks the step again in its transaction, and drops the
+// completeness CHECK and the old column in that same transaction, so no write
+// of the release before can change the old column alone after the trigger is
+// gone (security review of PR #316, H1). It writes the ledger row last.
+func applyContract(ctx context.Context, db Database, ordered []Migration, m Migration) error {
+	conn, release, err := sessionOf(ctx, db)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_catalog.pg_advisory_lock("+ledgerLockKey+")"); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_catalog.pg_advisory_unlock("+ledgerLockKey+")")
+	}()
+	position := -1
+	for i := range ordered {
+		if ordered[i].Name == m.Name {
+			position = i
+		}
+	}
+	pending := func(tx *sql.Tx) (bool, error) {
+		applied, err := appliedMigrations(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if err := checkLedger(applied, ordered); err != nil {
+			return false, err
+		}
+		return len(applied) == position, nil
+	}
+	next := false
+	if err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(tx *sql.Tx) error {
+		var err error
+		next, err = pending(tx)
+		return err
+	}); err != nil || !next {
+		return err
+	}
+	c := *m.Contract
+	if err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+		if err := stepTimeouts(ctx, tx, m); err != nil {
+			return err
+		}
+		return checkContract(ctx, tx, c)
+	}); err != nil {
+		return fmt.Errorf("migration %s: %w", m.Name, err)
+	}
+	for _, s := range c.Statements {
+		if err := contractStatementRun(ctx, conn, m, c, s); err != nil {
+			return fmt.Errorf("migration %s: %w", m.Name, err)
+		}
+	}
+	return inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+		next, err := pending(tx)
+		if err != nil || !next {
+			return err
+		}
+		return recordMigration(ctx, tx, m)
+	})
+}
+
+// contractStatementRun runs one statement s of the contract step c of the
+// migration m, with its statements Also, in its own transaction, when its
+// query When gives that it still has to run, after the check of the step when
+// it is a Guard, under the lock
+// timeout of a step and the statement timeout of m, or the long one; it runs
+// it again after a pause when the lock wait ends at the timeout, at most
+// stepAttempts times. The last failure is wrapped as text, so the caller does
+// not take it for one more lock wait to retry.
+func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c ContractStep, s ContractStatement) error {
+	timeout := m.StatementTimeout
+	if s.Long {
+		timeout = longStatementTimeout
+	}
+	for attempt := 1; ; attempt++ {
+		err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", stepLockTimeout, timeout); err != nil {
+				return err
+			}
+			if s.When != "" {
+				var run bool
+				if err := tx.QueryRowContext(ctx, s.When).Scan(&run); err != nil {
+					return err
+				}
+				if !run {
+					return nil
+				}
+			}
+			if s.Guard {
+				if err := checkContract(ctx, tx, c); err != nil {
+					return err
+				}
+			}
+			for _, statement := range append([]string{s.SQL}, s.Also...) {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err == nil {
+			return nil
+		}
+		if !lockTimedOut(err) {
+			return err
+		}
+		if attempt >= stepAttempts {
+			return fmt.Errorf("%s waited for its lock %d times, and the last wait ended with: %v", s.SQL, attempt, err)
+		}
+		if err := pause(ctx, attempt); err != nil {
+			return err
+		}
+	}
+}
+
+// contractRefusal is the refusal of a contract step: its text names the
+// change, the counts and the labels of the running releases, and no row
+// value, so the migration job may log it (Refusal).
+type contractRefusal struct{ text string }
+
+func (r *contractRefusal) Error() string   { return r.text }
+func (r *contractRefusal) Refusal() string { return r.text }
+
+// checkContract checks the contract step c in the transaction tx
+// (ST-SUP-RC01-OC24): while the sync trigger of the change or the old column
+// is there, the backfill row of the change must be complete with no failed
+// row, the completeness CHECK of the expand step must be there with its exact
+// definition, as inherited, and validated, which proves that no row of any
+// tenant has the old column set and the new one empty (decision on
+// ST-SUP-Q120 (c); security review of PR #316, L1), and no release that does
+// not know the change may run (runningReleases). A refusal gives the rows left
+// of each listed tenant. When the trigger and the old column are both gone, a
+// run before passed this check and dropped them in one transaction, so the
+// check passes and the rerun goes on; when only the trigger is gone, the check
+// runs in full again (security review of PR #316, H1).
+func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
+	var trigger, column bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &column); err != nil {
+		return err
+	}
+	if !trigger && !column {
+		return nil
+	}
+	var complete bool
+	var failed int64
+	err := tx.QueryRowContext(ctx, "SELECT b.completed_at IS NOT NULL, b.failed_rows FROM stego_schema.backfills b WHERE b.change_id = $1", c.Change).Scan(&complete, &failed)
+	found := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var definition string
+	var noInherit, validated bool
+	err = tx.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_constraintdef(k.oid), k.contype <> 'c' OR k.connoinherit, k.convalidated FROM pg_catalog.pg_constraint k WHERE k.conrelid = pg_catalog.to_regclass($1) AND k.conname = $2", c.Table, c.Check).Scan(&definition, &noInherit, &validated)
+	present := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	exact := present && !noInherit && strings.TrimSuffix(definition, " NOT VALID") == c.Definition
+	state := ""
+	switch {
+	case !found:
+		state = "the backfill has no checkpoint row"
+	case failed > 0:
+		state = fmt.Sprintf("the backfill has %d failed rows", failed)
+	case !complete:
+		state = "the backfill is not complete"
+	case !present:
+		state = "the completeness CHECK " + c.Check + " is not there"
+	case !exact:
+		state = "the constraint " + c.Check + " is not the completeness CHECK of the change"
+	case !validated:
+		state = "the completeness CHECK " + c.Check + " is not validated"
+	}
+	if state != "" {
+		left, err := rowsLeft(ctx, tx, c)
+		count := "unknown"
+		if err == nil {
+			count = fmt.Sprint(left)
+		}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: %s; rows of the listed tenants with the old column set and the new one empty: %s; run the migration job of the release before until the backfill completes", c.Change, state, count)}
+	}
+	return runningReleases(ctx, tx, c)
+}
+
+// rowsLeft counts the rows of the table of c whose old column is set and
+// whose new column is empty: on an owned table, which has row-level security,
+// for each tenant of the tenant list in turn under its tenant setting.
+func rowsLeft(ctx context.Context, tx *sql.Tx, c ContractStep) (int64, error) {
+	count := "SELECT pg_catalog.count(*) FROM " + c.Table + " WHERE " + c.Old + " IS NOT NULL AND " + c.New + " IS NULL"
+	if c.TenantColumn == "" {
+		var n int64
+		err := tx.QueryRowContext(ctx, count).Scan(&n)
+		return n, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT t.tenant_id FROM "+c.Tenants+" t ORDER BY t.tenant_id COLLATE \"C\"")
+	if err != nil {
+		return 0, err
+	}
+	var tenants []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		tenants = append(tenants, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, id := range tenants {
+		var n int64
+		if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('app.tenant', $1, true)", id); err != nil {
+			return 0, err
+		}
+		if err := tx.QueryRowContext(ctx, count).Scan(&n); err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	_, err = tx.ExecContext(ctx, "SELECT pg_catalog.set_config('app.tenant', '', true)")
+	return total, err
+}
+
+// runningReleases refuses while a process of a release that does not know
+// the change reports itself in stego_schema.releases (decision on finding F8
+// of the schema-change research, owner, 2026-11-13; ST-SUP-RP09-LC14): a
+// release whose last migration sorts before the expand migration of the
+// change, with a report younger than releaseWindow of its intervals. It
+// refuses when the table is missing, as the expand migration makes it.
+func runningReleases(ctx context.Context, tx *sql.Tx, c ContractStep) error {
+	var table bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&table); err != nil {
+		return err
+	}
+	if !table {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s finds no table stego_schema.releases of the release reports, which the expand migration of the change makes", c.Change)}
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT r.version, pg_catalog.count(*) FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < $1 COLLATE \"C\" AND r.seen_at > pg_catalog.clock_timestamp() - r.every_ms * $2::integer * interval '1 millisecond' GROUP BY r.version ORDER BY r.version COLLATE \"C\"", c.Expand, releaseWindow)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var running []string
+	for rows.Next() {
+		var version string
+		var n int64
+		if err := rows.Scan(&version, &n); err != nil {
+			return err
+		}
+		if version == "" {
+			version = "with no version"
+		}
+		running = append(running, fmt.Sprintf("%s (%d processes)", version, n))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(running) > 0 {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need the old column; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand)}
+	}
+	return nil
 }
 
 // dropAfterFailure drops the invalid index index that a failed build left,

@@ -38,6 +38,29 @@ type schemaStep struct {
 	Index      string
 	Definition string
 	Validate   bool
+	// Contract is the contract step of a rename, which runs each statement in its own short transaction after its
+	// check (ST-SUP-RC01-OC24, ST-SUP-RC01-OC39); Expand is the migration of the expand step of its change.
+	Contract *contractStep
+	Expand   string
+}
+
+// contractStep is what the contract migration of a rename checks and runs: the change, the qualified table, the
+// completeness CHECK, its definition as pg_get_constraintdef gives it and the sync trigger of the expand step, the
+// name of the old column, the old and the new column as quoted identifiers, the tenant column of an owned table and
+// the qualified tenant list, and its statements in their order.
+type contractStep struct {
+	change, table, check, definition, trigger, from, old, new, tenant, tenants string
+	statements                                                                 []contractStatement
+}
+
+// contractStatement is one statement of a contract step: its SQL; when, a query that gives whether the statement
+// still has to run, or empty; long, for the long statement timeout of a VALIDATE; guard, for the check of the step
+// again in its transaction, before the first statement after which the release before can no longer write; and
+// also, the statements that run after it in the same transaction.
+type contractStatement struct {
+	sql, when   string
+	long, guard bool
+	also        []string
 }
 
 // stepAddition is what an add step gives: the SQL of its own migration, each index that it builds on a table with
@@ -129,12 +152,37 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema_history[%d] names the schema change %q, which schema_changes does not declare", i, step.Change)
 		}
-		if (change.Kind != "add" && change.Kind != "rename") || step.Phase != "expand" {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add and of a rename", i, step.Phase, change.ID, change.Kind)
+		if (change.Kind != "add" && change.Kind != "rename") || (step.Phase != "expand" && (step.Phase != "contract" || change.Kind != "rename")) {
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add and the expand and contract steps of a rename", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {
 			return nil, err
+		}
+		if step.Phase == "contract" {
+			expand := ""
+			for j, earlier := range ctx.SchemaHistory[:i] {
+				if earlier.Change == change.ID && earlier.Phase == "expand" {
+					expand = StepMigrationName(j+1, change.ID, earlier.Phase)
+				}
+			}
+			if expand == "" {
+				return nil, fmt.Errorf("schema_history[%d]: the contract step of %s has no expand step before it", i, change.ID)
+			}
+			contract, err := contractSQL(ctx, before, after, change)
+			if err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+			var body strings.Builder
+			for _, statement := range contract.statements {
+				for _, text := range append([]string{statement.sql}, statement.also...) {
+					body.WriteString(text + ";\n")
+				}
+			}
+			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase,
+				Body: body.String(), Contract: contract, Expand: expand})
+			before = after
+			continue
 		}
 		var added *stepAddition
 		if change.Kind == "rename" {
@@ -399,6 +447,42 @@ REVOKE ALL ON FUNCTION stego_schema.backfill_read(text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION stego_schema.backfill_checkpoint(text, bytea, bigint, bigint, bigint, text, boolean, bigint, text, text, text) FROM PUBLIC;
 `
 
+// releasesText is the text of the table of the release reports and its two functions of the runtime library
+// (registry/runtime/lease.Releases, ST-SUP-RP09-LC14), with %[1]s the runtime role, quoted; a copy, as the template
+// is, which TestSyncTemplateCopy compares with the runtime's text. The migration of a rename at expand runs it, so a
+// release before the step reports itself from then on, and the contract step can refuse while it runs (decision on
+// finding F8 of the schema-change research, owner, 2026-11-13).
+const releasesText = `CREATE TABLE IF NOT EXISTS stego_schema.releases (
+	holder text PRIMARY KEY,
+	release text NOT NULL,
+	version text NOT NULL,
+	every_ms integer NOT NULL,
+	seen_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS releases_seen_at ON stego_schema.releases (seen_at);
+REVOKE ALL ON TABLE stego_schema.releases FROM PUBLIC;
+CREATE OR REPLACE FUNCTION stego_schema.release_beat(text, text, text, integer)
+ RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
+ AS $stego_release$BEGIN
+  IF $1 IS NULL OR $2 IS NULL OR $3 IS NULL OR $4 IS NULL OR $1 !~ '^[0-9a-f]{32}$' OR $2 !~ '^[0-9a-z_-]{1,200}$'
+   OR $3 !~ '^[ -~]{0,64}$' OR $4 < 1000 OR $4 > 60000 THEN
+    RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'stego release report: an argument is out of range';
+  END IF;
+  INSERT INTO stego_schema.releases AS r (holder, release, version, every_ms, seen_at)
+   VALUES ($1, $2, $3, $4, pg_catalog.clock_timestamp())
+   ON CONFLICT (holder) DO UPDATE SET release = EXCLUDED.release, version = EXCLUDED.version, every_ms = EXCLUDED.every_ms,
+   seen_at = EXCLUDED.seen_at;
+END$stego_release$;
+CREATE OR REPLACE FUNCTION stego_schema.release_stop(text)
+ RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
+ AS $stego_release$DELETE FROM stego_schema.releases r WHERE r.holder = $1$stego_release$;
+REVOKE ALL ON FUNCTION stego_schema.release_beat(text, text, text, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION stego_schema.release_stop(text) FROM PUBLIC;
+GRANT USAGE ON SCHEMA stego_schema TO %[1]s;
+GRANT EXECUTE ON FUNCTION stego_schema.release_beat(text, text, text, integer) TO %[1]s;
+GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
+`
+
 // renameSQL gives the migrations of the expand step of a rename (ST-GEN-UC12-R02, ST-GEN-UC12-R03,
 // ST-SUP-RC01-OC23, ST-SUP-RC01-OC25): its own migration adds the new column U nullable and with no default, and the
 // CHECK of its field after the change NOT VALID, which a later migration validates; it changes nothing that is
@@ -410,7 +494,7 @@ REVOKE ALL ON FUNCTION stego_schema.backfill_checkpoint(text, bytea, bigint, big
 // migrations of their own (decision on finding F2, orchestrator under the owner's delegation, 2026-11-13). The
 // migration job runs it as the owner role, which owns each object it makes.
 func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaChange) (*stepAddition, error) {
-	_, owner, err := serviceRoles(ctx)
+	runtime, owner, err := serviceRoles(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -476,6 +560,8 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	// orchestrator under the owner's delegation, 2026-11-14).
 	out.sync.WriteString(backfillsTable + ";\n" + backfillFunctions)
 	fmt.Fprintf(&out.sync, "INSERT INTO stego_schema.backfills (change_id) VALUES (%s) ON CONFLICT (change_id) DO NOTHING;\n", sqlString(change.ID))
+	// The table of the release reports, with EXECUTE on its two functions for the runtime role (ST-SUP-RP09-LC14).
+	fmt.Fprintf(&out.sync, releasesText, sqlIdentifier(runtime))
 	if slices.Contains(next.search, change.Field) {
 		out.indexes = append(out.indexes, stepIndex{name: "public." + sqlIdentifier(searchName(next.name, change.Field)),
 			statement: concurrently(searchIndexSQL(next, change.Field)), definition: searchIndexDefinition(next, change.Field)})
@@ -487,6 +573,73 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 		}
 	}
 	return out, nil
+}
+
+// contractSQL gives the contract step of a rename (ST-GEN-UC15-R02, ST-SUP-RC01-OC24, ST-SUP-RC01-OC39): before is
+// the tables of the expand step, with the old column K, and after the tables of the declaration after the step, with
+// the new column U alone. A required field makes U NOT NULL with a CHECK (U IS NOT NULL) NOT VALID, which a later
+// statement validates, then SET NOT NULL and the drop of the CHECK; then K becomes nullable, so a write of the
+// release of the rename, which leaves K out, meets no NOT NULL once the trigger stops filling K; then the step drops
+// the sync trigger, after its check again, the completeness CHECK and K with its CHECK and its indexes, all in that
+// one transaction, so that no write of the release before changes K alone after the trigger is gone (security review
+// of PR #316, H1); then the function of the trigger. Each statement is IF EXISTS or has a query that tells whether it
+// still has to run, so a rerun after a failure part way recovers. It refuses a field with a default, which the
+// manifest of the release of the rename does not give U.
+func contractSQL(ctx gen.Context, before, after []tableModel, change types.SchemaChange) (*contractStep, error) {
+	name := tableName(change.Entity)
+	old, okOld := findTable(before, name)
+	next, okNext := findTable(after, name)
+	if !okOld || !okNext {
+		return nil, fmt.Errorf("the rename names the entity %s, whose table is not there", change.Entity)
+	}
+	k, okK := findColumn(old, change.From)
+	u, okU := findColumn(next, change.Field)
+	if !okK || !okU {
+		return nil, fmt.Errorf("the contract of the rename of %s.%s to %s finds no column %s before the step or %s after it", change.Entity, change.From, change.Field, change.From, change.Field)
+	}
+	if _, kept := findColumn(next, change.From); kept {
+		return nil, fmt.Errorf("the table %s keeps the column %s after the contract of its rename", name, change.From)
+	}
+	if u.defaultClause != "" {
+		return nil, fmt.Errorf("the contract of the rename of %s.%s to %s is of a field with a default, which the schema manifest of the release of the rename does not give the new column; it is not built", change.Entity, change.From, change.Field)
+	}
+	table := "public." + sqlIdentifier(name)
+	regclass := sqlString(table) + "::pg_catalog.regclass"
+	trigger := SyncTriggerName(change.Entity, change.Field)
+	complete := CompleteCheckName(change.Entity, change.Field)
+	notNull := NotNullCheckName(change.Entity, change.Field)
+	attribute := func(column, test string) string {
+		return "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = " + regclass + " AND a.attname = " + sqlString(column) +
+			" AND a.attnum > 0 AND NOT a.attisdropped" + test + ")"
+	}
+	constraint := "SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = " + regclass + " AND c.conname = " + sqlString(notNull)
+	out := &contractStep{change: change.ID, table: table, check: complete, definition: completeDefinition(k.name, u.name), trigger: trigger,
+		from: k.name, old: sqlIdentifier(k.name), new: sqlIdentifier(u.name)}
+	if old.owned {
+		out.tenant, out.tenants = sqlIdentifier(tenantColumn(ctx)), "public.stego_tenants"
+	}
+	add := func(s contractStatement) { out.statements = append(out.statements, s) }
+	if u.notNull {
+		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s IS NOT NULL) NOT VALID", table, sqlIdentifier(notNull), sqlIdentifier(u.name)),
+			when: attribute(u.name, " AND NOT a.attnotnull") + " AND NOT EXISTS (" + constraint + ")"})
+		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s VALIDATE CONSTRAINT %s", table, sqlIdentifier(notNull)), when: "SELECT EXISTS (" + constraint + ")", long: true})
+		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET NOT NULL", table, sqlIdentifier(u.name)), when: attribute(u.name, " AND NOT a.attnotnull")})
+		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(notNull))})
+	}
+	if k.notNull {
+		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s DROP NOT NULL", table, sqlIdentifier(k.name)), when: attribute(k.name, " AND a.attnotnull")})
+	}
+	add(contractStatement{sql: fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON %s", sqlIdentifier(trigger), table), guard: true,
+		also: []string{fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(complete)),
+			fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, sqlIdentifier(k.name))}})
+	add(contractStatement{sql: fmt.Sprintf("DROP FUNCTION IF EXISTS %s.%s()", StepSchema, sqlIdentifier(trigger))})
+	return out, nil
+}
+
+// NotNullCheckName gives the name of the CHECK (U IS NOT NULL) that the contract step of a rename of a required field
+// adds NOT VALID, validates and drops after SET NOT NULL: <table>_<column>_not_null, cut as sqlName cuts a name.
+func NotNullCheckName(entity, column string) string {
+	return sqlName(tableName(entity), column, "not_null")
 }
 
 // CompleteCheckName gives the name of the completeness CHECK of the expand step of a rename that adds the column

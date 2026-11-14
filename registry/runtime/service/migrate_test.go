@@ -58,7 +58,7 @@ func TestMigrate(t *testing.T) {
 		f := newFixture(t)
 		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
 		want := []string{StepOwnerRole, StepJobLock, StepLedgerCheck, StepAuthorizationSchema, StepTables, StepOutboxQueue, StepOutboxSequence, StepAuditTables, StepAuditSink,
-			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepSchemaAgain, StepManifestBefore, StepBackfill, StepManifest}
+			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepManifestBefore, StepBackfill, StepManifest}
 		run := func(m Migration) (*steps, error) {
 			s := &steps{backends: map[int]bool{}}
 			stepped = s.record(t)
@@ -77,6 +77,26 @@ func TestMigrate(t *testing.T) {
 		}
 		if writes != 4 {
 			t.Fatalf("the schema was written %d times in two runs, want twice in each", writes)
+		}
+		// The release reports step deletes, as the owner role, the reports older than one day and keeps the current
+		// ones (ST-SUP-RP09-LC14; security review of PR #316, M1).
+		releases, err := lease.Releases(f.runtime)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{"SET ROLE " + f.owner, "CREATE SCHEMA IF NOT EXISTS stego_schema", releases,
+			"INSERT INTO stego_schema.releases VALUES ('old', 'step_0001_x_expand', 'v0', 10000, now() - interval '25 hours'), ('current', 'step_0001_x_expand', 'v1', 10000, now())",
+			"RESET ROLE"} {
+			if _, err := f.admin.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+		if _, err := run(f.migration(nil)); err != nil {
+			t.Fatalf("Migrate with release reports: %v", err)
+		}
+		var reports string
+		if err := f.admin.QueryRow("SELECT string_agg(holder, ',' ORDER BY holder) FROM stego_schema.releases").Scan(&reports); err != nil || reports != "current" {
+			t.Fatalf("after the job the release reports are %q (%v), want only the current one", reports, err)
 		}
 		// The job made the objects and the grants of the runtime role, and the partitions of the audit table.
 		var granted bool

@@ -151,6 +151,70 @@ on each insert, so it fails the check. Every other change to such a table still 
 this rule refuses these forms: during the first rolling deploy of a step
 after it, do not restart the pods of a release that does not have it.
 
+## Contract steps
+
+The contract step of a rename comes in the release after its expand step.
+Put it at the end of the schema history:
+
+```yaml
+schema_history:
+  - {change: note-title-rename, phase: expand}
+  - {change: note-title-rename, phase: contract}
+```
+
+`stego plan` lists its one migration,
+`step_<position>_<change ID>_contract`. The migration job runs it, and the
+migration first checks, in its own transaction:
+
+- the backfill row of the change is complete, with no failed row;
+- the completeness CHECK of the expand step is there with its exact
+  definition and validated, so no row of any tenant has the old column set
+  and the new one empty;
+- no process of a release that does not know the change runs. Each process
+  of a service reports its release in `stego_schema.releases` every 10 s and
+  deletes its report when it stops. A release that does not register the
+  expand migration of the change reads the old column, so the step waits for
+  it. A report that is older than three of its intervals does not count.
+
+When a check fails, the job exits non-zero, writes no ledger row, changes no
+schema and logs why: the change, the rows left in the tenants of the tenant
+list, or the version label (`STEGO_SERVICE_VERSION`) and the count of the
+processes that still run. Run the migration job of the release before until
+its backfill completes, or stop the release before, and run the job again.
+
+Then the step runs each statement in its own short transaction, under a lock
+timeout of 1 s, and again after a pause when a lock wait ends at that
+timeout, at most 10 times. For a required field it adds
+`CHECK (<new> IS NOT NULL) NOT VALID`, validates it, sets NOT NULL and drops
+the CHECK. Then it makes the old column nullable. Then one transaction
+checks the step again, drops the sync trigger, the completeness CHECK and the
+old column with its CHECK and its indexes. Thus a process of the release
+before that starts after the check gets an error on its first write of the
+old column, and loses no edit. Last, the step drops the function of the
+trigger. When a run finds the trigger gone and the old column still there,
+for example after a change by hand, it does all the checks again. A run that
+stops part way recovers on the next run, and the ledger row comes last. The release of the expand step accepts the schema between
+each two statements, so its pods keep running and can restart. The release
+before the expand step can no longer run its migration job.
+
+The migration job, as the owner role, deletes the reports that are older
+than one day. It passes over a report that a session holds, so a session of
+the runtime role cannot stop the job or the reports of other processes.
+
+The runtime role cannot read the reports, but the text of a statement shows
+in `pg_stat_activity`, which other sessions of the same role can read. The
+runtime library sends the holder of a report as a parameter of the extended
+query protocol, so `pg_stat_activity` shows `$1` and not the holder. Do not
+set `default_query_exec_mode=simple_protocol` (for example, for PgBouncer in
+transaction mode): with the simple protocol, the holders show in
+`pg_stat_activity`, and another session of the runtime role can delete the
+report of a process with `release_stop`. Use the extended protocol.
+
+Limits: a release on a runtime library before v0.103.0 writes no report,
+and an expand step from a postgres-adapter before 6.4.0 made no table of the
+reports (ST-SUP-Q126). A contract step of a rename of a field with a default
+is not built yet.
+
 ## The job lock of the migration job
 
 The migration job holds a session advisory lock, the job lock, from its

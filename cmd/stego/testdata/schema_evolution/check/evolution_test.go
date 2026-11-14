@@ -102,8 +102,8 @@ var roles = []string{stegoruntime.RuntimeRole, stegoruntime.WorkerRole, stegorun
 // it as the owner role, and loads the rows of seed.sql (ST-GEN-TD04 prepare).
 func prepared(t *testing.T) *database {
 	dsn, endpoint := os.Getenv("STEGO_TEST_POSTGRES_DSN"), os.Getenv("STEGO_TEST_SPICEDB")
-	if dsn == "" || endpoint == "" || os.Getenv("STEGO_TD04_V1") == "" || os.Getenv("STEGO_TD04_V2") == "" || os.Getenv("STEGO_TD04_SEED") == "" {
-		t.Fatal("the check needs STEGO_TEST_POSTGRES_DSN, STEGO_TEST_SPICEDB, STEGO_TD04_V1, STEGO_TD04_V2 and STEGO_TD04_SEED: a missing result is not a pass")
+	if dsn == "" || endpoint == "" || os.Getenv("STEGO_TD04_V1") == "" || os.Getenv("STEGO_TD04_V2") == "" || os.Getenv("STEGO_TD04_V3") == "" || os.Getenv("STEGO_TD04_SEED") == "" {
+		t.Fatal("the check needs STEGO_TEST_POSTGRES_DSN, STEGO_TEST_SPICEDB, STEGO_TD04_V1, STEGO_TD04_V2, STEGO_TD04_V3 and STEGO_TD04_SEED: a missing result is not a pass")
 	}
 	server, err := url.Parse(dsn)
 	must(t, err)
@@ -229,6 +229,7 @@ func (j *job) running() bool {
 type api struct {
 	base string
 	log  *buffer
+	stop func()
 }
 
 // freePort gives a free port of the loopback address.
@@ -256,13 +257,19 @@ func (d *database) serve(release string) *api {
 	must(t, process.Start())
 	exited := make(chan struct{})
 	go func() { _ = process.Wait(); close(exited) }()
+	var once sync.Once
+	a.stop = func() {
+		once.Do(func() {
+			_ = process.Process.Signal(os.Interrupt)
+			select {
+			case <-exited:
+			case <-time.After(10 * time.Second):
+				_ = process.Process.Kill()
+			}
+		})
+	}
 	t.Cleanup(func() {
-		_ = process.Process.Signal(os.Interrupt)
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
-			_ = process.Process.Kill()
-		}
+		a.stop()
 		if t.Failed() {
 			t.Logf("%s api log:\n%s", release, a.log)
 		}
@@ -905,5 +912,206 @@ func TestBackfillProgress(t *testing.T) {
 		if moved != 10000 || completed != 1 {
 			t.Fatalf("the jobs report %v moved rows and %d completions, want 10000 and 1", moved, completed)
 		}
+	})
+}
+
+// The tests of the contract step run the migration job of v3 of ST-GEN-TD04, which drops the old column email and
+// the sync trigger of user-email-rename, each on a database of its own after the migration job of v2.
+
+// backfilled runs the migration job of v2 to its end: the expand steps and the whole backfill.
+func (d *database) backfilled() {
+	d.t.Helper()
+	if j := d.migrate("v2"); j.wait(5*time.Minute) != nil {
+		d.t.Fatalf("the migration job of v2 failed:\n%s", j.out)
+	}
+}
+
+// snapshot reads the schema of the users table and the ledger: the columns, the unique indexes, the triggers, the
+// constraints with their validation, and the ledger rows.
+func (d *database) snapshot() string {
+	t := d.t
+	t.Helper()
+	columns, unique, triggers := d.catalog()
+	var lines []string
+	for _, query := range []string{`SELECT conname || ' ' || convalidated::text FROM pg_catalog.pg_constraint WHERE conrelid = 'public.users'::regclass ORDER BY 1`,
+		`SELECT version || ' ' || digest FROM stego_schema.migrations ORDER BY version COLLATE "C"`} {
+		rows, err := d.admin.Query(query)
+		must(t, err)
+		for rows.Next() {
+			var line string
+			must(t, rows.Scan(&line))
+			lines = append(lines, line)
+		}
+		rows.Close()
+	}
+	return fmt.Sprint(columns, unique, triggers, lines)
+}
+
+// contractRows counts the ledger rows of the contract step.
+func (d *database) contractRows() int {
+	return d.count(`SELECT count(*) FROM stego_schema.migrations WHERE version LIKE '%_contract'`)
+}
+
+// unsetOne leaves one user with email set and contact_email empty after the backfill, as a session that passes the
+// trigger and the completeness CHECK can, and adds the CHECK again NOT VALID.
+func (d *database) unsetOne() {
+	t := d.t
+	tx, err := d.admin.Begin()
+	must(t, err)
+	defer tx.Rollback()
+	for _, statement := range []string{"SET LOCAL session_replication_role = replica",
+		`ALTER TABLE public.users DROP CONSTRAINT users_contact_email_complete`,
+		`UPDATE public.users SET contact_email = NULL WHERE id = (SELECT id FROM public.users ORDER BY id LIMIT 1)`,
+		`ALTER TABLE public.users ADD CONSTRAINT users_contact_email_complete CHECK ((contact_email IS NOT NULL) OR (email IS NULL)) NOT VALID`} {
+		_, err := tx.Exec(statement)
+		must(t, err)
+	}
+	must(t, tx.Commit())
+}
+
+// refused runs the migration job of v3, which must end non-zero within a minute; it gives its output.
+func (d *database) refused(what string) string {
+	t := d.t
+	t.Helper()
+	j := d.migrate("v3")
+	if err := j.wait(2 * time.Minute); err == nil {
+		t.Fatalf("the migration job of v3 ends with 0 %s, want a refusal:\n%s", what, j.out)
+	}
+	return j.out.String()
+}
+
+func TestContract(t *testing.T) {
+	t.Run("ST-GEN-UC15-R01-T01 The contract migration refuses while rows are left and writes no ledger row", func(t *testing.T) {
+		d := prepared(t)
+		first, release := d.held("t-03")
+		until(t, time.Minute, "the job moves 3,000 rows", func() bool { return d.checkpoint().moved == 3000 })
+		must(t, first.cmd.Process.Kill())
+		_ = first.wait(10 * time.Second)
+		release()
+		before := d.snapshot()
+		out := d.refused("with 7,000 rows left")
+		if !strings.Contains(out, change) || !strings.Contains(out, "new one empty: 7000;") || strings.Contains(out, "@seed.test") {
+			t.Errorf("the refusal with 7,000 rows left does not name the change and the count, or holds a row value:\n%s", out)
+		}
+		if after := d.snapshot(); after != before || d.contractRows() != 0 {
+			t.Errorf("the refused job changed the schema or the ledger:\n%s\n%s", before, after)
+		}
+		d.backfilled()
+		d.unsetOne()
+		before = d.snapshot()
+		out = d.refused("with one row left after completion")
+		if !strings.Contains(out, change) || !strings.Contains(out, "new one empty: 1;") || !strings.Contains(out, "is not validated") {
+			t.Errorf("the refusal with one row left does not name the change, the count and the CHECK:\n%s", out)
+		}
+		if after := d.snapshot(); after != before || d.contractRows() != 0 {
+			t.Errorf("the refused job changed the schema or the ledger:\n%s\n%s", before, after)
+		}
+	})
+
+	t.Run("ST-GEN-UC15-R02-T01 After contract the old column and the trigger are gone and the contract release does not need them", func(t *testing.T) {
+		d := prepared(t)
+		owner := d.caller("u-owner", "t-02", "admin")
+		org := "00000000-0000-0000-0000-000000000002"
+		d.relate(owner, "organization", org, "owner")
+		d.backfilled()
+		if j := d.migrate("v3"); j.wait(5*time.Minute) != nil {
+			t.Fatalf("the migration job of v3 failed:\n%s", j.out)
+		}
+		columns, unique, triggers := d.catalog()
+		if _, ok := columns["email"]; ok || len(triggers) != 0 || !columns["contact_email"].notNull ||
+			!strings.Contains(unique["users_contact_email_key"], "(tenant_id, contact_email)") {
+			t.Fatalf("after the contract the users table has the columns %v, the unique indexes %v and the triggers %v; want no email, no trigger, contact_email NOT NULL with its unique index",
+				columns, unique, triggers)
+		}
+		v3api := d.serve("v3")
+		created := d.send(v3api, owner, http.MethodPost, "/organizations/"+org+"/users", `{"email":"r02@acme.test","display_name":"R","role":"viewer"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("a create through v3 answered %d %s", created.status, created.body)
+		}
+		id, _ := created.object(t)["id"].(string)
+		d.relate(owner, "member", id, "owner")
+		if read := d.send(v3api, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, ""); read.status != http.StatusOK || read.object(t)["email"] != "r02@acme.test" {
+			t.Fatalf("a read through v3 answered %d %s", read.status, read.body)
+		}
+		if changed := d.send(v3api, owner, http.MethodPut, "/organizations/"+org+"/users/"+id, `{"email":"r02b@acme.test","display_name":"R","role":"viewer"}`); changed.status != http.StatusOK {
+			t.Fatalf("a change through v3 answered %d %s", changed.status, changed.body)
+		}
+		if list := d.send(v3api, owner, http.MethodGet, "/organizations/"+org+"/users", ""); list.status != http.StatusOK || !strings.Contains(string(list.body), "r02b@acme.test") {
+			t.Fatalf("a list through v3 answered %d %s", list.status, list.body)
+		}
+		if strings.Contains(v3api.log.String(), "does not satisfy the schema manifest") {
+			t.Errorf("v3 alerts a schema mismatch after its contract:\n%s", v3api.log)
+		}
+	})
+
+	t.Run("ST-GEN-UC15-FL-T The email rename finishes while v2 and v3 both run, and v1 can no longer start", func(t *testing.T) {
+		d := prepared(t)
+		owner := d.caller("u-owner", "t-04", "admin")
+		org := "00000000-0000-0000-0000-000000000004"
+		d.relate(owner, "organization", org, "owner")
+		v1api := d.serve("v1")
+		d.backfilled()
+		v2api := d.serve("v2")
+		// v1 reports itself once the expand migration made the table of the reports; the contract waits for it to
+		// stop (decision on finding F8 of the schema-change research, owner, 2026-11-13).
+		until(t, 30*time.Second, "v1 reports itself", func() bool {
+			return d.count(`SELECT count(*) FROM stego_schema.releases WHERE version = 'v1'`) == 1
+		})
+		before := d.snapshot()
+		out := d.refused("while v1 runs")
+		if !strings.Contains(out, change) || !strings.Contains(out, "v1 (1 processes)") || strings.Contains(out, "v2 (") {
+			t.Errorf("the refusal while v1 runs does not name the change and v1 alone:\n%s", out)
+		}
+		if after := d.snapshot(); after != before || d.contractRows() != 0 {
+			t.Errorf("the job refused while v1 runs changed the schema or the ledger")
+		}
+		v1api.stop()
+		if n := d.count(`SELECT count(*) FROM stego_schema.releases WHERE version = 'v1'`); n != 0 {
+			t.Fatalf("v1 stopped and its report is still there (%d)", n)
+		}
+		if j := d.migrate("v3"); j.wait(5*time.Minute) != nil {
+			t.Fatalf("the migration job of v3 failed while v2 runs:\n%s", j.out)
+		}
+		v3api := d.serve("v3")
+		create := func(a *api, email string) string {
+			r := d.send(a, owner, http.MethodPost, "/organizations/"+org+"/users", `{"email":"`+email+`","display_name":"F","role":"viewer"}`)
+			if r.status != http.StatusCreated {
+				t.Fatalf("a create answered %d %s, want 201", r.status, r.body)
+			}
+			id, _ := r.object(t)["id"].(string)
+			d.relate(owner, "member", id, "owner")
+			return id
+		}
+		read := func(a *api, id string) any {
+			return d.send(a, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, "").object(t)["email"]
+		}
+		a, b := create(v2api, "a@contract.test"), create(v3api, "b@contract.test")
+		if got := read(v3api, a); got != "a@contract.test" {
+			t.Errorf("v3 reads the write of v2 as %v", got)
+		}
+		if got := read(v2api, b); got != "b@contract.test" {
+			t.Errorf("v2 reads the write of v3 as %v", got)
+		}
+		// v2 restarts on the contracted schema, and its schema manifest accepts it.
+		v2api.stop()
+		again := d.serve("v2")
+		if got := read(again, b); got != "b@contract.test" {
+			t.Errorf("the restarted v2 reads %v", got)
+		}
+		for name, a := range map[string]*api{"v2": v2api, "restarted v2": again, "v3": v3api} {
+			if strings.Contains(a.log.String(), "does not satisfy the schema manifest") {
+				t.Errorf("%s alerts a schema mismatch on the contracted schema:\n%s", name, a.log)
+			}
+		}
+		// v1 can no longer start: its migration job refuses the ledger, and an api replica alerts the schema
+		// mismatch, as the start of a pod alerts and does not refuse (decision on finding F10, owner, 2026-11-13).
+		j := d.migrate("v1")
+		if err := j.wait(time.Minute); err == nil || !strings.Contains(j.out.String(), `"stage":"migrate.ledger_check"`) {
+			t.Errorf("the migration job of v1 after the contract ends with %v:\n%s\nwant a refusal at its ledger check", err, j.out)
+		}
+		late := d.serve("v1")
+		until(t, 10*time.Second, "v1 alerts the schema mismatch", func() bool {
+			return strings.Contains(late.log.String(), "does not satisfy the schema manifest")
+		})
 	})
 }
