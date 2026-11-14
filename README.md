@@ -141,7 +141,10 @@ git init
 stego init --archetype rest-crud
 ```
 
-Make the project in its own Git repository. Each shipped archetype generates
+Make the project in its own Git repository. `stego init` writes
+`.stego/.gitignore`, so the apply lock and the saved plan, which are local
+state, stay out of the commit and out of the build. Commit `.stego/config.yaml`
+(the registry pin) and `.stego/state.yaml` (the record). Each shipped archetype generates
 the service on the runtime data path: generated commands and queries carry all
 data access, in the transaction of one tenant, and each operation is decided
 for the verified caller. Until the former data path is removed, STEGO reads the
