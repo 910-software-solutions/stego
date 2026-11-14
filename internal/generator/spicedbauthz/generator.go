@@ -220,8 +220,13 @@ func read(ctx gen.Context) (plan, error) {
 		for _, op := range collection.Operations {
 			permission := entity.Permissions[op]
 			o := operationPlan{Collection: collection.Name, Operation: string(op), ResourceType: entity.ResourceType, Permission: permission}
-			if permission == types.PermissionPublic {
+			switch {
+			case permission == types.PermissionPublic:
 				o.Public, o.Permission, o.Reason = true, "", entity.PublicReasons[op]
+			case op == types.OpCreate && len(collection.Scope) == 0 && ctx.Tenancy.Provisioning != nil:
+				// A create of an entity with no parent is decided on the service-level resource of the tenant
+				// provisioning (ST-SUP-RC29-OC01); checking refuses it when the declaration has no provisioning.
+				o.ResourceType = ctx.Tenancy.Provisioning.ResourceType
 			}
 			p.Operations = append(p.Operations, o)
 		}

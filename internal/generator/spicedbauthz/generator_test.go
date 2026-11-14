@@ -44,7 +44,21 @@ definition project {
 	permission view = owner
 	permission edit = owner
 }
+
+definition service {
+	relation operator: user
+	relation creator: user
+	permission provision = operator
+	permission retire = operator
+	permission create = creator
+}
 `
+
+// provisioning is the tenant provisioning of the RC29 test records: the service-level resource type service, on
+// which Provision, Retire and the create of an entity with no parent are decided (ST-SUP-RC29-OC01).
+func provisioning() *types.TenantProvisioning {
+	return &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire"}
+}
 
 // component reads the spicedb-authz component of the registry.
 func component(t *testing.T) *registry.Component {
@@ -75,9 +89,10 @@ func permissions(read, list, create, update, delete string) map[types.Operation]
 	return map[types.Operation]string{types.OpRead: read, types.OpList: list, types.OpCreate: create, types.OpUpdate: update, types.OpDelete: delete}
 }
 
-// documentContext is the declaration of the RC29 test records: a rest-crud service with pooled tenancy and the
-// spicedb-authz component, the schema authz/schema.zed, and the owned entity Document with the resource type
-// document, the permissions read: view, list: view, create: edit, update: edit and delete: edit, and the
+// documentContext is the declaration of the RC29 test records: a rest-crud service with pooled tenancy, the tenant
+// provisioning on the resource type service and the spicedb-authz component, the schema authz/schema.zed, and the
+// owned entity Document with the resource type document, the permissions read: view, list: view, create: create
+// (on service, since Document has no parent), update: edit and delete: edit, and the
 // relationship owner from the field owner_id with the subject type user. Project is a second protected entity with
 // a resource type of its own, and Note is an entity that no collection reads, so it is not protected.
 func documentContext(t *testing.T) gen.Context {
@@ -87,7 +102,7 @@ func documentContext(t *testing.T) gen.Context {
 		OutputNamespace: "internal/authz",
 		ServiceName:     "documents",
 		ComponentConfig: componentConfig(t),
-		Tenancy:         &gen.Tenancy{Key: "tenant_id"},
+		Tenancy:         &gen.Tenancy{Key: "tenant_id", Provisioning: provisioning()},
 		Authorization:   &types.Authorization{Provider: "spicedb", SchemaPath: "authz/schema.zed", SubjectFromIdentity: "user"},
 		Inputs:          map[string][]byte{"authz/schema.zed": []byte(documentSchema)},
 		Entities: []types.Entity{
@@ -95,12 +110,12 @@ func documentContext(t *testing.T) gen.Context {
 				{Name: "title", Type: types.FieldTypeString},
 				{Name: "owner_id", Type: types.FieldTypeString}},
 				EntityAuthorization: types.EntityAuthorization{ResourceType: "document",
-					Permissions: permissions("view", "view", "edit", "edit", "edit"),
+					Permissions: permissions("view", "view", "create", "edit", "edit"),
 					Relationships: []types.Relationship{{Relation: "owner", SubjectSource: types.SubjectSourceField,
 						SubjectField: "owner_id", SubjectType: "user"}}}},
 			{Name: "Project", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}},
 				EntityAuthorization: types.EntityAuthorization{ResourceType: "project",
-					Permissions: permissions("view", "view", "edit", "edit", "edit")}},
+					Permissions: permissions("view", "view", "create", "edit", "edit")}},
 			{Name: "Note", Fields: []types.Field{{Name: "text", Type: types.FieldTypeString}}},
 		},
 		Collections: []types.Collection{
@@ -189,14 +204,15 @@ func operationEntries(t *testing.T, source string) []map[string]string {
 func TestOperations(t *testing.T) {
 	t.Run("ST-SUP-RC29-OC01-T01 Each declared operation maps to one permission of the resource type", func(t *testing.T) {
 		entries := operationEntries(t, emitted(t, generate(t, documentContext(t)), "authz.go"))
-		want := map[string]string{"read": "view", "list": "view", "create": "edit", "update": "edit", "delete": "edit"}
+		want := map[string]string{"read": "view", "list": "view", "create": "create", "update": "edit", "delete": "edit"}
 		got := map[string]string{}
 		projects := 0
 		for _, e := range entries {
 			switch e["Collection"] {
 			case "documents":
-				if e["ResourceType"] != "document" {
-					t.Errorf("the entry %v is not on the resource type document", e)
+				// Document has no parent, so its create is decided on the service-level resource (ST-SUP-RC29-OC01).
+				if on := map[bool]string{true: "service", false: "document"}[e["Operation"] == "create"]; e["ResourceType"] != on {
+					t.Errorf("the entry %v is not on the resource type %s", e, on)
 				}
 				if _, twice := got[e["Operation"]]; twice {
 					t.Errorf("the operation %s has two entries", e["Operation"])
@@ -204,8 +220,8 @@ func TestOperations(t *testing.T) {
 				got[e["Operation"]] = e["Permission"]
 			case "projects":
 				projects++
-				if e["ResourceType"] != "project" {
-					t.Errorf("the entry %v is not on the resource type project", e)
+				if on := map[bool]string{true: "service", false: "project"}[e["Operation"] == "create"]; e["ResourceType"] != on {
+					t.Errorf("the entry %v is not on the resource type %s", e, on)
 				}
 			}
 		}
@@ -226,6 +242,46 @@ func TestOperations(t *testing.T) {
 		ctx := documentContext(t)
 		ctx.Entities[0].Permissions[types.OpUpdate] = "rename"
 		refused(t, ctx, "Document", "update", "rename")
+	})
+}
+
+func TestTopLevelCreate(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC01-T03 The create of an entity with no parent is decided on the service-level resource", func(t *testing.T) {
+		// create: provision, a permission that only the service-level resource type declares, is accepted.
+		ctx := documentContext(t)
+		ctx.Entities[0].Permissions[types.OpCreate] = "provision"
+		found := false
+		for _, e := range operationEntries(t, emitted(t, generate(t, ctx), "authz.go")) {
+			if e["Collection"] == "documents" && e["Operation"] == "create" {
+				found = true
+				if e["ResourceType"] != "service" || e["Permission"] != "provision" {
+					t.Errorf("the create of documents is %v, want provision on the resource type service", e)
+				}
+			}
+		}
+		if !found {
+			t.Error("the table has no entry of the create of documents")
+		}
+		// edit, a permission of document that the service-level resource type lacks, is refused for the create.
+		ctx = documentContext(t)
+		ctx.Entities[0].Permissions[types.OpCreate] = "edit"
+		refused(t, ctx, "Document", "create", `"edit"`, "service")
+		// With no tenant provisioning there is no service-level resource, so only a public create is accepted.
+		ctx = documentContext(t)
+		ctx.Tenancy.Provisioning = nil
+		refused(t, ctx, "Document", "create", "tenancy.provisioning")
+		// A create under a parent is looked up on the entity's own resource type.
+		ctx = documentContext(t)
+		ctx.Entities[0].Permissions[types.OpCreate] = "edit"
+		ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "project_id", Type: types.FieldTypeRef, To: "Project"})
+		ctx.Entities[0].References = map[string]types.Reference{"project_id": {Relation: "project", Permission: "edit"}}
+		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(documentSchema, "relation viewer: user\n", "relation viewer: user\n\trelation project: project\n", 1))}
+		ctx.Collections[0].Scope = map[string]string{"project_id": "Project"}
+		for _, e := range operationEntries(t, emitted(t, generate(t, ctx), "authz.go")) {
+			if e["Collection"] == "documents" && e["Operation"] == "create" && (e["ResourceType"] != "document" || e["Permission"] != "edit") {
+				t.Errorf("the create of documents under a project is %v, want edit on the resource type document", e)
+			}
+		}
 	})
 }
 
@@ -290,6 +346,14 @@ definition audit_event {
 	permission view = reader
 	permission write = reader
 }
+
+definition service {
+	relation operator: user
+	permission provision = operator
+	permission retire = operator
+	permission manage = operator
+	permission write = operator
+}
 `
 	all := map[types.Operation]string{}
 	for _, op := range []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate, types.OpDelete, types.OpList, types.OpUpsert, types.OpPatch} {
@@ -302,7 +366,7 @@ definition audit_event {
 		OutputNamespace: "internal/authz",
 		ServiceName:     "user-management",
 		ComponentConfig: componentConfig(t),
-		Tenancy:         &gen.Tenancy{Key: "tenant_id"},
+		Tenancy:         &gen.Tenancy{Key: "tenant_id", Provisioning: provisioning()},
 		Authorization:   &types.Authorization{Provider: "spicedb", SchemaPath: "authz/schema.zed", SubjectFromIdentity: "user"},
 		Inputs:          map[string][]byte{"authz/schema.zed": []byte(schema)},
 		Entities: []types.Entity{
