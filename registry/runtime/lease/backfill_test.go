@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 const backfillChange = "ST-CHG-01"
@@ -1102,6 +1104,198 @@ func TestBackfillComplete(t *testing.T) {
 		}
 		if got := checkpointRow(t, d); !got.completed.Valid {
 			t.Fatal("the change is not complete after the validation")
+		}
+	})
+}
+
+func TestBackfillTriggers(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC09-T05 A batch refuses a trigger on its table that its settings do not name before its step, and no trigger can be made on the table while a batch runs", func(t *testing.T) {
+		d := openDatabase(t)
+		it := newItems(t, d, 10)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		for _, statement := range []string{
+			"CREATE TABLE public.trigger_log (fired text)",
+			`CREATE FUNCTION public.items_named() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN INSERT INTO public.trigger_log VALUES ('named'); RETURN NEW; END$$`,
+			`CREATE FUNCTION public.items_other() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN INSERT INTO public.trigger_log VALUES ('other'); RETURN NEW; END$$`,
+			"CREATE TRIGGER items_named BEFORE UPDATE ON public.items FOR EACH ROW EXECUTE FUNCTION public.items_named()",
+		} {
+			d.exec(t, statement)
+		}
+		settings := BackfillSettings{BatchSize: 4, Schema: "public", Table: "items", Triggers: map[string]string{"items_named": "public.items_named"}}
+		held := heldLease(t, d, "h1", Settings{})
+		fired := func() int {
+			t.Helper()
+			var n int
+			if err := d.other.QueryRowContext(ctx, "SELECT count(*) FROM public.trigger_log").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		refused := func(what, name string) {
+			t.Helper()
+			err := newBackfill(t, it, settings).Run(ctx, d.db, held)
+			if !errors.Is(err, ErrTrigger) || !strings.Contains(err.Error(), `trigger "`+name+`" on public.items`) {
+				t.Fatalf("Run with %s gave %v, want ErrTrigger that names the trigger %s", what, err, name)
+			}
+			if got := checkpointRow(t, d); len(it.allCalls()) != 0 || got.moved != 0 || got.completed.Valid || fired() != 0 {
+				t.Fatalf("Run with %s ran the step %d times, moved %d rows, complete %v, fired %d triggers, want nothing", what, len(it.allCalls()), got.moved, got.completed.Valid, fired())
+			}
+		}
+		// A trigger that the settings do not name, of the kind of review of PR #305 (M1): it would run as the role
+		// of the backfill on each batch.
+		d.exec(t, "CREATE TRIGGER items_extra AFTER UPDATE ON public.items FOR EACH STATEMENT EXECUTE FUNCTION public.items_other()")
+		refused("a trigger that the settings do not name", "items_extra")
+		d.exec(t, "DROP TRIGGER items_extra ON public.items")
+		// A trigger of a name that the settings name, which runs another function.
+		d.exec(t, "CREATE OR REPLACE TRIGGER items_named BEFORE UPDATE ON public.items FOR EACH ROW EXECUTE FUNCTION public.items_other()")
+		refused("a named trigger that runs another function", "items_named")
+		d.exec(t, "CREATE OR REPLACE TRIGGER items_named BEFORE UPDATE ON public.items FOR EACH ROW EXECUTE FUNCTION public.items_named()")
+		// While the first batch runs its step, after the check, a trigger cannot be made on the table: CREATE
+		// TRIGGER waits for the lock of the batch and ends at its lock timeout.
+		var made error
+		it.gate = func(n int) {
+			if n != 0 {
+				return
+			}
+			tx, err := d.other.BeginTx(ctx, nil)
+			if err != nil {
+				made = err
+				return
+			}
+			defer func() { _ = tx.Rollback() }()
+			if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '200ms'"); err != nil {
+				made = err
+				return
+			}
+			_, made = tx.ExecContext(ctx, "CREATE TRIGGER items_late AFTER UPDATE ON public.items FOR EACH STATEMENT EXECUTE FUNCTION public.items_other()")
+		}
+		if err := newBackfill(t, it, settings).Run(ctx, d.db, held); err != nil {
+			t.Fatalf("Run with the named trigger alone gave %v, want the change complete", err)
+		}
+		var state interface{ SQLState() string }
+		if !errors.As(made, &state) || state.SQLState() != "55P03" {
+			t.Fatalf("CREATE TRIGGER while a batch ran its step gave %v, want the lock timeout 55P03", made)
+		}
+		var other int
+		if err := d.other.QueryRowContext(ctx, "SELECT count(*) FILTER (WHERE fired = 'other') FROM public.trigger_log").Scan(&other); err != nil {
+			t.Fatal(err)
+		}
+		if got := checkpointRow(t, d); !got.completed.Valid || got.moved != 10 || fired() != 10 || other != 0 {
+			t.Fatalf("the change is complete %v with %d rows moved, %d triggers fired, %d of another function, want complete, 10, 10 and 0", got.completed.Valid, got.moved, fired(), other)
+		}
+	})
+}
+
+func TestBackfillSessionTimeouts(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC10-T06 A batch session that the idle in transaction timeout or the transaction timeout ends ends Run with ErrSession at once", func(t *testing.T) {
+		// The fence of each batch sets the idle in transaction timeout of its transaction to the time left on the
+		// lease, so the first batch sets a shorter one in its transaction; the transaction timeout applies from the
+		// start of a transaction, so the sessions of the first Run get it as a connection parameter.
+		for _, c := range []struct {
+			code, setting string
+			local         bool
+		}{{"25P03", "idle_in_transaction_session_timeout", true}, {"25P04", "transaction_timeout", false}} {
+			t.Run(c.code, func(t *testing.T) {
+				d := openDatabase(t)
+				it := newItems(t, d, 10)
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				config, err := pgx.ParseConfig(d.dsn)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !c.local {
+					config.RuntimeParams[c.setting] = "500ms"
+				}
+				timedDB := stdlib.OpenDB(*config)
+				defer func() { _ = timedDB.Close() }()
+				timed := false
+				step := func(ctx context.Context, tx *sql.Tx, key *Key, limit int) (Batch, error) {
+					if !timed {
+						// The first batch waits past the timeout, so the server ends its session.
+						timed = true
+						if c.local {
+							if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config($1, '500ms', true)", c.setting); err != nil {
+								return Batch{}, err
+							}
+						}
+						time.Sleep(2 * time.Second)
+					}
+					return it.step(ctx, tx, key, limit)
+				}
+				b, err := NewBackfill(backfillChange, step, BackfillSettings{Key: KeyInteger, BatchSize: 20})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// A retry period of 20 s: a batch that failed for another reason would run again only after it.
+				held := heldLease(t, d, "h1", Settings{TTL: 60 * time.Second, Renew: 20 * time.Second, Retry: 20 * time.Second})
+				start := time.Now()
+				err = b.Run(ctx, timedDB, held)
+				var state interface{ SQLState() string }
+				if !errors.Is(err, ErrSession) || !errors.As(err, &state) || state.SQLState() != c.code {
+					t.Fatalf("Run after %s ended the session gave %v, want ErrSession with SQLSTATE %s", c.setting, err, c.code)
+				}
+				if took := time.Since(start); took > 10*time.Second {
+					t.Fatalf("Run took %v, want it to end at once and not after the retry period", took)
+				}
+				if got := checkpointRow(t, d); got.moved != 0 || got.completed.Valid {
+					t.Fatalf("after the ended session %d rows moved, complete %v, want none", got.moved, got.completed.Valid)
+				}
+				if err := b.Run(ctx, d.db, held); err != nil {
+					t.Fatalf("the Run on a new session gave %v, want the change complete", err)
+				}
+				if got := checkpointRow(t, d); !got.completed.Valid || got.moved != 10 {
+					t.Fatalf("after the second Run the change is complete %v with %d rows moved", got.completed.Valid, got.moved)
+				}
+			})
+		}
+	})
+}
+
+func TestBackfillTriggerOperator(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC09-T06 The trigger check of a batch reads the catalog with the operators of pg_catalog, so an operator of another schema does not run in it", func(t *testing.T) {
+		d := openDatabase(t)
+		it := newItems(t, d, 10)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		// Review of PR #311 (L1): an operator public.||(name, text) is a better match for name || text than
+		// pg_catalog.||(text, text), and it ran in the trigger check with the role of the backfill.
+		for _, statement := range []string{
+			"CREATE TABLE public.operator_log (n int)",
+			`CREATE FUNCTION public.logged_cat(name, text) RETURNS text LANGUAGE plpgsql AS $$BEGIN INSERT INTO public.operator_log VALUES (1); RETURN $1::text || $2; END$$`,
+			"CREATE OPERATOR public.|| (LEFTARG = name, RIGHTARG = text, FUNCTION = public.logged_cat)",
+			// A named trigger, so the catalog read of each check has a row whose names it joins.
+			`CREATE FUNCTION public.items_named() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NEW; END$$`,
+			"CREATE TRIGGER items_named BEFORE UPDATE ON public.items FOR EACH ROW EXECUTE FUNCTION public.items_named()",
+		} {
+			d.exec(t, statement)
+		}
+		calls := func() int {
+			t.Helper()
+			var n int
+			if err := d.other.QueryRowContext(ctx, "SELECT count(*) FROM public.operator_log").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		// The operator is live for a plain query of the session of the backfill.
+		var joined string
+		if err := d.db.QueryRowContext(ctx, "SELECT n.nspname || '.x' FROM pg_catalog.pg_namespace n WHERE n.nspname = 'public'").Scan(&joined); err != nil || calls() != 1 {
+			t.Fatalf("a plain name || text gave %q (error %v) with %d operator calls, want the operator of public to run once", joined, err, calls())
+		}
+		d.exec(t, "TRUNCATE public.operator_log")
+		settings := BackfillSettings{BatchSize: 4, Schema: "public", Table: "items", Triggers: map[string]string{"items_named": "public.items_named"}}
+		if err := newBackfill(t, it, settings).Run(ctx, d.db, heldLease(t, d, "h1", Settings{})); err != nil {
+			t.Fatalf("Run gave %v, want the change complete", err)
+		}
+		if got := checkpointRow(t, d); !got.completed.Valid || got.moved != 10 || calls() != 0 {
+			t.Fatalf("the change is complete %v with %d rows moved, and the operator of public ran %d times in the trigger checks, want none", got.completed.Valid, got.moved, calls())
+		}
+		// The step after the check runs with the search path of the session again.
+		var path string
+		if err := d.db.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil || path == "pg_catalog, pg_temp" {
+			t.Fatalf("the session search path is %q (error %v) after the backfill", path, err)
 		}
 	})
 }

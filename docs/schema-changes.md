@@ -151,6 +151,35 @@ on each insert, so it fails the check. Every other change to such a table still 
 this rule refuses these forms: during the first rolling deploy of a step
 after it, do not restart the pods of a release that does not have it.
 
+## The job lock of the migration job
+
+The migration job holds a session advisory lock, the job lock, from its
+start to its backfill step. A second job of the same database waits for the
+first. PostgreSQL gives an advisory lock to each role that can connect to
+the database, with no other privilege. Thus each role with CONNECT on the
+database, the runtime role too, can take the job lock and stop the migration
+jobs until it releases the lock. This is a known risk (review of PR #295,
+I1), and STEGO does not prevent it.
+
+To make the risk small:
+
+- Give CONNECT on the database of the service only to the roles that must
+  connect to it: the login of the migration job, the runtime role and the
+  worker role. Revoke CONNECT from PUBLIC.
+- Do not give CONNECT to the confined roles of STEGO, such as the outbox
+  relay role and the idempotency purge role, on a database that they do not
+  use.
+- A job that waits for the job lock longer than its time limit fails with
+  "another migration job holds the job lock". Find the session that holds
+  the lock, and stop it if it is not a migration job:
+
+  ```sql
+  SELECT a.pid, a.usename, a.application_name, a.backend_start
+  FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+  WHERE l.locktype = 'advisory' AND l.granted
+    AND l.classid = 1937007983 AND l.objid = 1785684555 AND l.objsubid = 2;
+  ```
+
 ## The check against the base
 
 `stego compat --base <ref>` checks the declaration against the declaration at
