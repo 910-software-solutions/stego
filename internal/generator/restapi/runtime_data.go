@@ -1001,7 +1001,8 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	hasBody := c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpPatch] || c.ops[types.OpUpsert]
 	needTime, needFmt := false, false
 	for _, f := range e.Fields {
-		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret") {
+		// An optional timestamp that a read can answer needs the conversion of its view value (viewTime).
+		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret" || f.Optional) {
 			needTime = true
 		}
 	}
@@ -1223,15 +1224,29 @@ func (w *runtimeHandlerWriter) helpers() {
 		switch {
 		case f.Optional && f.Type == types.FieldTypeJsonb:
 			expr = c.camel + "JSON(" + expr + ")"
+		case f.Optional && f.Type == types.FieldTypeTimestamp:
+			expr = c.camel + "Time(" + expr + ")"
 		case f.Optional:
 			expr = "ptrOf(" + expr + ")"
 		}
 		w.f(", %s: %s", name, expr)
 	}
 	w.f("}\n}\n\n")
+	w.viewTime()
 	w.converters()
 	w.f("// %sPresented gives the response value of one %s: its secret fields are cleared, so no response and no stored\n// response holds them.\n", c.camel, e.Name)
 	w.f("func %sPresented(v %s) any {\n", c.camel, e.Name)
+	// A timestamp is answered in UTC, whatever offset the database driver gave it.
+	for _, f := range e.Fields {
+		if f.Type != types.FieldTypeTimestamp || f.Sensitivity == "secret" {
+			continue
+		}
+		if name := toPascalCase(f.Name); f.Optional {
+			w.f("\tif v.%s != nil {\n\t\tutc := v.%s.UTC()\n\t\tv.%s = &utc\n\t}\n", name, name, name)
+		} else {
+			w.f("\tv.%s = v.%s.UTC()\n", name, name)
+		}
+	}
 	for _, f := range e.Fields {
 		if f.Sensitivity != "secret" {
 			continue
@@ -1322,6 +1337,19 @@ func (w *runtimeHandlerWriter) fromData(expr string) string {
 // converters writes, for an entity with a jsonb field, the field by field conversions between the API value and the
 // command runtime's row value. An optional jsonb field that is not set is nil in both, so it is NULL in its column
 // and absent from a response.
+// viewTime writes the conversion of the view value of an optional timestamp to its API value, when the entity has one
+// that a read answers: the view reads NULL as the zero time, which is answered as no value, so the field is absent
+// from the answer as the API schema allows, and not "0001-01-01T00:00:00Z" (finding G2 of the walkthrough re-run).
+func (w *runtimeHandlerWriter) viewTime() {
+	for _, f := range w.c.entity.Fields {
+		if f.Type == types.FieldTypeTimestamp && f.Optional && f.Sensitivity != "secret" {
+			w.f("// %sTime gives the API value of an optional timestamp of a read-only %s: nil when the column is NULL, which the\n// view reads as the zero time.\n", w.c.camel, w.c.entity.Name)
+			w.f("func %sTime(v time.Time) *time.Time {\n\tif v.IsZero() {\n\t\treturn nil\n\t}\n\treturn &v\n}\n\n", w.c.camel)
+			return
+		}
+	}
+}
+
 func (w *runtimeHandlerWriter) converters() {
 	if !w.hasJSON() {
 		return
