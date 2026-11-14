@@ -188,11 +188,19 @@ func validateRuntimeData(ctx gen.Context, entities map[string]types.Entity) erro
 					return fmt.Errorf("rest-api: collection %s declares %s with the permission %q; on the runtime data path a write of a row decides a permission of %s on it", c.Name, op, p, e.ResourceType)
 				}
 			case types.OpCreate:
-				// A top-level create is decided on the service-level resource of the tenant provisioning
-				// (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09), whose resource type the declaration does not name until the
-				// tenant provisioning is built (ST-DECL-UC10); until then it must be public.
+				// A create of an entity with no parent, in a collection with no scope, is decided on the service-level
+				// resource of the tenant provisioning (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09). A create under a parent is
+				// decided on the parent through its reference, so it declares no permission of its own.
 				if e.Permissions[op] != types.PermissionPublic {
-					return fmt.Errorf("rest-api: collection %s declares create with the permission %q; on the runtime data path a create of a top-level entity is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration cannot name yet (ST-DECL-UC10), so it must be public with a reason", c.Name, e.Permissions[op])
+					if len(c.Scope) > 0 {
+						return fmt.Errorf("rest-api: collection %s declares create with the permission %q; on the runtime data path a create under the parent %s is decided on the parent through its reference, so it must be public with a reason", c.Name, e.Permissions[op], c.ParentEntity())
+					}
+					if ctx.Tenancy == nil || ctx.Tenancy.Provisioning == nil || ctx.Tenancy.Provisioning.ResourceType == "" {
+						return fmt.Errorf("rest-api: collection %s declares create with the permission %q; a create of an entity with no parent is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration does not declare", c.Name, e.Permissions[op])
+					}
+					// A create that decides its permission may write a field-sourced relationship, as a declared
+					// command with a permission may (ST-SUP-Q118).
+					continue
 				}
 				// A command that declares no permission may not write a field-sourced relationship: the client would
 				// choose the subject (ST-SUP-Q118).
@@ -1018,7 +1026,8 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	hasBody := c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpPatch] || c.ops[types.OpUpsert]
 	needTime, needFmt := false, false
 	for _, f := range e.Fields {
-		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret") {
+		// An optional timestamp that a read can answer needs the conversion of its view value (viewTime).
+		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret" || f.Optional) {
 			needTime = true
 		}
 	}
@@ -1156,8 +1165,13 @@ func (w *runtimeHandlerWriter) declarations() {
 			if len(destinations) > 0 {
 				w.f("\tDestinations: []command.Destination{%s},\n", strings.Join(destinations, ", "))
 			}
-			// A create and an upsert have no row to decide on before the fill: an upsert decides its permission on
-			// the stored row in the fill.
+			// A create of an entity with no parent names no row: Run decides its permission on the service-level
+			// resource <resource type>:<service name> of the tenant provisioning (ST-SUP-RC29-OC01, ST-SUP-RP10-LC31).
+			if p := c.permission(op); p != "" && op == types.OpCreate && c.scope == "" {
+				w.f("\tPermission: %q,\n\tResource: &command.Resource{Type: %q, Service: %q},\n", p, w.ctx.Tenancy.Provisioning.ResourceType, w.ctx.ServiceName)
+			}
+			// An upsert has no row to decide on before the fill: it decides its permission on the stored row in the
+			// fill.
 			if p := c.permission(op); p != "" && op != types.OpCreate && op != types.OpUpsert {
 				// The table is named with its schema, so no relation of the same name earlier on the search path
 				// stands in for it.
@@ -1240,15 +1254,29 @@ func (w *runtimeHandlerWriter) helpers() {
 		switch {
 		case f.Optional && f.Type == types.FieldTypeJsonb:
 			expr = c.camel + "JSON(" + expr + ")"
+		case f.Optional && f.Type == types.FieldTypeTimestamp:
+			expr = c.camel + "Time(" + expr + ")"
 		case f.Optional:
 			expr = "ptrOf(" + expr + ")"
 		}
 		w.f(", %s: %s", name, expr)
 	}
 	w.f("}\n}\n\n")
+	w.viewTime()
 	w.converters()
 	w.f("// %sPresented gives the response value of one %s: its secret fields are cleared, so no response and no stored\n// response holds them.\n", c.camel, e.Name)
 	w.f("func %sPresented(v %s) any {\n", c.camel, e.Name)
+	// A timestamp is answered in UTC, whatever offset the database driver gave it.
+	for _, f := range e.Fields {
+		if f.Type != types.FieldTypeTimestamp || f.Sensitivity == "secret" {
+			continue
+		}
+		if name := toPascalCase(f.Name); f.Optional {
+			w.f("\tif v.%s != nil {\n\t\tutc := v.%s.UTC()\n\t\tv.%s = &utc\n\t}\n", name, name, name)
+		} else {
+			w.f("\tv.%s = v.%s.UTC()\n", name, name)
+		}
+	}
 	for _, f := range e.Fields {
 		if f.Sensitivity != "secret" {
 			continue
@@ -1339,6 +1367,19 @@ func (w *runtimeHandlerWriter) fromData(expr string) string {
 // converters writes, for an entity with a jsonb field, the field by field conversions between the API value and the
 // command runtime's row value. An optional jsonb field that is not set is nil in both, so it is NULL in its column
 // and absent from a response.
+// viewTime writes the conversion of the view value of an optional timestamp to its API value, when the entity has one
+// that a read answers: the view reads NULL as the zero time, which is answered as no value, so the field is absent
+// from the answer as the API schema allows, and not "0001-01-01T00:00:00Z" (finding G2 of the walkthrough re-run).
+func (w *runtimeHandlerWriter) viewTime() {
+	for _, f := range w.c.entity.Fields {
+		if f.Type == types.FieldTypeTimestamp && f.Optional && f.Sensitivity != "secret" {
+			w.f("// %sTime gives the API value of an optional timestamp of a read-only %s: nil when the column is NULL, which the\n// view reads as the zero time.\n", w.c.camel, w.c.entity.Name)
+			w.f("func %sTime(v time.Time) *time.Time {\n\tif v.IsZero() {\n\t\treturn nil\n\t}\n\treturn &v\n}\n\n", w.c.camel)
+			return
+		}
+	}
+}
+
 func (w *runtimeHandlerWriter) converters() {
 	if !w.hasJSON() {
 		return

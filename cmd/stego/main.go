@@ -392,6 +392,11 @@ func runPlan(args []string) error {
 			return err
 		}
 		if len(gate.steps) > 0 {
+			// Plan saves no plan here, so it does not reconcile; it runs the checks of stego validate instead, so it
+			// never exits 0 on a declaration that validate refuses (ST-DECL-UC03-R03; N2 of the walkthrough re-run).
+			if err := checkBeforeSteps(os.Stdout); err != nil {
+				return err
+			}
 			printSchemaSteps(os.Stdout, "Apply writes the", gate.steps)
 			fmt.Println("\nThe declaration needs these add steps, so plan saved no plan; run stego apply, which writes them in service.yaml.")
 			return nil
@@ -435,6 +440,24 @@ func runPlan(args []string) error {
 	fmt.Print(compiler.FormatPlan(plan))
 	printNewSchemaSteps(os.Stdout, gate, plan)
 	fmt.Println("\nSaved the plan in .stego/plan.yaml; stego apply --saved-plan carries it out.")
+	return nil
+}
+
+// checkBeforeSteps runs the checks of stego validate on the declaration in the working folder, and prints the faults
+// and refuses when it has one.
+func checkBeforeSteps(stdout io.Writer) error {
+	input, err := buildReconcilerInput()
+	if err != nil {
+		return err
+	}
+	result, err := compiler.Validate(input)
+	if err != nil {
+		return err
+	}
+	if result.HasErrors() {
+		fmt.Fprint(stdout, declaration.NewFaultsReader(result).Prose())
+		return fmt.Errorf("validation failed with %d error(s), so plan saved no plan", len(result.Errors))
+	}
 	return nil
 }
 

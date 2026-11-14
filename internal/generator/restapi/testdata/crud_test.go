@@ -659,6 +659,12 @@ func (e *env) count(query string, args ...any) int {
 	return n
 }
 
+// checkZone is the local time zone of the checks, 5 hours west of UTC, so a time that the database driver gives in
+// the local zone is not in UTC (ST-SUP-RC20-OC37-T10). It is set before any check starts a goroutine.
+var checkZone = time.FixedZone("check-zone", -5*60*60)
+
+func init() { time.Local = checkZone }
+
 func TestCrud(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC37-T01 A collection create runs as a command", func(t *testing.T) {
 		e := service(t)
@@ -1297,6 +1303,47 @@ func TestCrud(t *testing.T) {
 		list := e.send(a, http.MethodGet, "/api/v1/todos", "", "")
 		if list.status != http.StatusOK || !strings.Contains(string(list.body), `"meta":[1,2]`) {
 			t.Errorf("the list answered %d %s, want 200 with the jsonb value of the row", list.status, list.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		if time.Now().Location() != checkZone {
+			t.Fatal("the checks do not run in the zone west of UTC")
+		}
+		utc := func(what string, r reply) {
+			t.Helper()
+			for _, field := range []string{"due_at", "seen_at"} {
+				value, _ := r.object(t)[field].(string)
+				at, err := time.Parse(time.RFC3339Nano, value)
+				if err != nil || !strings.HasSuffix(value, "Z") || time.Since(at) > time.Hour || time.Since(at) < -time.Minute {
+					t.Errorf("%s answered %s %q in %s, want the time of the create in UTC", what, field, value, r.body)
+				}
+			}
+		}
+		// A timestamp is server-managed (ST-SUP-RC20-OC17): the create sets it, and each answer gives it in UTC.
+		created := e.send(a, http.MethodPost, "/api/v1/todos", "k-"+uuid.NewString(), `{"title":"due"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "todo", id)
+		utc("the create", created)
+		utc("the read", e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", ""))
+		utc("the update", e.send(a, http.MethodPut, "/api/v1/todos/"+id, "", `{"title":"due again"}`))
+		utc("the patch", e.send(a, http.MethodPatch, "/api/v1/todos/"+id, "k-"+uuid.NewString(), `{"title":"due patched"}`))
+		// A row of an earlier release holds NULL: the read and the list answer no due_at member, and not the zero time.
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE todos SET due_at = NULL WHERE id = $1::uuid`, id); err != nil {
+			t.Fatal(err)
+		}
+		read := e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", "")
+		if _, ok := read.object(t)["due_at"]; ok || read.status != http.StatusOK {
+			t.Errorf("the read of a Todo with a NULL due_at answered %d %s, want 200 with no due_at member", read.status, read.body)
+		}
+		list := e.send(a, http.MethodGet, "/api/v1/todos", "", "")
+		if list.status != http.StatusOK || strings.Contains(string(list.body), "0001-01-01") || strings.Contains(string(list.body), `"due_at"`) {
+			t.Errorf("the list answered %d %s, want 200 with no due_at member", list.status, list.body)
 		}
 	})
 
@@ -1944,7 +1991,7 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 	t.Run("ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
-		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO todos (tenant_id, id, title) SELECT $1, gen_random_uuid(), 't-' || g FROM generate_series(1, 20000) g`, a.tenant.ID()); err != nil {
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO todos (tenant_id, id, title, seen_at) SELECT $1, gen_random_uuid(), 't-' || g, now() FROM generate_series(1, 20000) g`, a.tenant.ID()); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := e.admin.ExecContext(e.ctx, `ANALYZE todos`); err != nil {

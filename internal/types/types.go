@@ -269,6 +269,18 @@ func (c Collection) ParentEntity() string {
 	return ""
 }
 
+// CreatesTopLevel tells whether a collection of collections serves the create of entity with no scope: the create
+// of an entity with no parent. No row names it, so it is decided on the service-level resource of the tenant
+// provisioning, <resource type>:<service name> (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09).
+func CreatesTopLevel(collections []Collection, entity string) bool {
+	for _, c := range collections {
+		if c.Entity == entity && len(c.Scope) == 0 && slices.Contains(c.Operations, OpCreate) {
+			return true
+		}
+	}
+	return false
+}
+
 // SlotDeclaration describes how a slot is bound in a service declaration.
 type SlotDeclaration struct {
 	Slot         string   `yaml:"slot"`

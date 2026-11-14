@@ -57,7 +57,7 @@ func crudContext() gen.Context {
 			{Name: "contact", Type: types.FieldTypeJsonb, Sensitivity: "pii", Optional: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "customer", Permissions: permissions(types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 		{Name: "Todo", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "done", Type: types.FieldTypeBool, Optional: true},
-			{Name: "meta", Type: types.FieldTypeJsonb, Optional: true}},
+			{Name: "meta", Type: types.FieldTypeJsonb, Optional: true}, {Name: "due_at", Type: types.FieldTypeTimestamp, Optional: true}, {Name: "seen_at", Type: types.FieldTypeTimestamp}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "todo", Permissions: permissions(types.OpPatch, types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 	}
 	// Folder and Book give a scoped collection: each book is of one folder, and its create is decided on edit of the
@@ -512,6 +512,47 @@ func TestCrudService(t *testing.T) {
 	}
 }
 
+func TestTopLevelCreate(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC01-T04 The create command of an entity with no parent decides its permission on the service-level resource", func(t *testing.T) {
+		decided := func() gen.Context {
+			c := crudContext()
+			c.Tenancy = &gen.Tenancy{Key: "tenant_id", Provisioning: &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire"}}
+			c.Entities[3].Permissions[types.OpCreate] = "provision"
+			return c
+		}
+		files := crudFiles(t, decided())
+		folders := string(files["api/folders_handler.go"])
+		want := regexp.MustCompile(`\tPermission: +"provision",\n\tResource: +&command\.Resource\{Type: "service", Service: "crud"\},\n\}\)\)$`)
+		start := strings.Index(folders, "var foldersCreateCommand = ")
+		if start < 0 {
+			t.Fatal("the handler of folders declares no create command")
+		}
+		end := strings.Index(folders[start:], "}))")
+		if spec := folders[start : start+end+3]; !want.MatchString(spec) {
+			t.Errorf("the create command of folders is\n%s\nwant it to decide provision on service:crud", spec)
+		}
+		// A create under a parent stays decided on the parent through its reference, and a public create decides
+		// nothing of its own.
+		books := string(files["api/folder_books_handler.go"])
+		if strings.Contains(books, "Service:") {
+			t.Error("the create of folder-books, a collection under a parent, is decided on the service-level resource")
+		}
+		if orders := string(files["api/orders_handler.go"]); strings.Contains(orders, "Service:") {
+			t.Error("the public create of orders decides a permission")
+		}
+		for name, change := range map[string]func(*gen.Context){
+			"a create under a parent that is not public": func(c *gen.Context) { c.Entities[4].Permissions[types.OpCreate] = "edit" },
+			"no tenant provisioning":                     func(c *gen.Context) { c.Tenancy.Provisioning = nil },
+		} {
+			c := decided()
+			change(&c)
+			if files, _, err := new(Generator).Generate(c); err == nil || files != nil {
+				t.Errorf("%s: generation gave %d files and %v, want a refusal", name, len(files), err)
+			}
+		}
+	})
+}
+
 func TestFieldRelationship(t *testing.T) {
 	t.Run("ST-SUP-RC29-OC05-T06 A public create of an entity with a field-sourced relationship is refused, and a refused field value is 400 naming the field", func(t *testing.T) {
 		c := crudContext()
@@ -559,6 +600,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC38-T01 A list on the runtime data path pages by cursor in the requested order, with no total",
 	"ST-SUP-RC20-OC37-T08 A jsonb field is written, read and patched as JSON on the runtime data path",
 	"ST-SUP-RC20-OC37-T11 A denied create answers 404 with no empty ID, and a bad Idempotency-Key names its fault",
+	"ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC",
 	"ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response",
 	"ST-SUP-RC28-OC01-T07 A pii jsonb field is the redaction marker in the before, the after and the patch",
 	"ST-SUP-RC20-OC24-T05 A scoped collection on the runtime data path checks each row against the parent of the path",
