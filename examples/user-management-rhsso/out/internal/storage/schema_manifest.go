@@ -27,6 +27,7 @@ var SchemaManifest = manifest.Manifest{Schemas: []manifest.Schema{{Name: "stego_
 			Constraints: []manifest.Constraint{
 				{Name: "organizations_pkey", Kind: manifest.KindPrimaryKey, Definition: "PRIMARY KEY (tenant_id, id)"},
 				{Name: "organizations_name_check", Kind: manifest.KindCheck, Definition: "CHECK ((char_length((name)::text) >= 1))"},
+				{Name: "organizations_tenant_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"},
 			},
 			Indexes: []manifest.Index{
 				{Name: "organizations_pkey", Columns: []string{"tenant_id", "id"}},
@@ -36,6 +37,7 @@ var SchemaManifest = manifest.Manifest{Schemas: []manifest.Schema{{Name: "stego_
 			},
 			RowSecurity: true,
 			Policies:    []manifest.Policy{{Name: "stego_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))", WithCheck: "(tenant_id = current_setting('app.tenant'::text, true))"}},
+			TenantKey:   &manifest.TenantKey{Name: "organizations_tenant_id_fkey", Column: "tenant_id"},
 		},
 		{Schema: "public", Name: "org_settings", Entity: true,
 			Columns: []manifest.Column{
@@ -53,6 +55,7 @@ var SchemaManifest = manifest.Manifest{Schemas: []manifest.Schema{{Name: "stego_
 			Constraints: []manifest.Constraint{
 				{Name: "org_settings_pkey", Kind: manifest.KindPrimaryKey, Definition: "PRIMARY KEY (tenant_id, id)"},
 				{Name: "org_settings_org_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id, org_id) REFERENCES public.organizations(tenant_id, id)"},
+				{Name: "org_settings_tenant_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"},
 			},
 			Indexes: []manifest.Index{
 				{Name: "org_settings_pkey", Columns: []string{"tenant_id", "id"}},
@@ -63,6 +66,7 @@ var SchemaManifest = manifest.Manifest{Schemas: []manifest.Schema{{Name: "stego_
 			},
 			RowSecurity: true,
 			Policies:    []manifest.Policy{{Name: "stego_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))", WithCheck: "(tenant_id = current_setting('app.tenant'::text, true))"}},
+			TenantKey:   &manifest.TenantKey{Name: "org_settings_tenant_id_fkey", Column: "tenant_id"},
 		},
 		{Schema: "public", Name: "users", Entity: true,
 			Columns: []manifest.Column{
@@ -83,6 +87,7 @@ var SchemaManifest = manifest.Manifest{Schemas: []manifest.Schema{{Name: "stego_
 				{Name: "users_display_name_check", Kind: manifest.KindCheck, Definition: "CHECK ((char_length((display_name)::text) >= 1))"},
 				{Name: "users_role_check", Kind: manifest.KindCheck, Definition: "CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text, 'viewer'::text])))"},
 				{Name: "users_org_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id, org_id) REFERENCES public.organizations(tenant_id, id)"},
+				{Name: "users_tenant_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"},
 			},
 			Indexes: []manifest.Index{
 				{Name: "users_pkey", Columns: []string{"tenant_id", "id"}},
@@ -94,6 +99,7 @@ var SchemaManifest = manifest.Manifest{Schemas: []manifest.Schema{{Name: "stego_
 			},
 			RowSecurity: true,
 			Policies:    []manifest.Policy{{Name: "stego_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))", WithCheck: "(tenant_id = current_setting('app.tenant'::text, true))"}},
+			TenantKey:   &manifest.TenantKey{Name: "users_tenant_id_fkey", Column: "tenant_id"},
 		},
 	}}
 
