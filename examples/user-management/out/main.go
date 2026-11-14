@@ -151,7 +151,7 @@ func run() (stegoErr error) {
 	topMux.HandleFunc("GET /livez", monitor.Live)
 	topMux.HandleFunc("GET /readyz", monitor.Ready)
 	topMux.Handle("GET /readyz/modes", service.Readiness())
-	topMux.Handle("/", tracingRuntime.Handler(cORSMiddleware(service.Middleware(tracingRuntime.Route(validationMiddleware(mux))))))
+	topMux.Handle("/", tracingRuntime.Handler(cORSMiddleware(service.Middleware(mux, tracingRuntime.Route(validationMiddleware(mux))))))
 	stegoStage = "http.configure"
 	httpTLS, err := stegoHTTPTransport()
 	if err != nil {

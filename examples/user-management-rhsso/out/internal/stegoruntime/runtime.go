@@ -159,8 +159,10 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 				if err != nil {
 					return nil, err
 				}
+				// An after slot runs only for an active tenant: the message of a retired tenant is parked before its
+				// fill (ST-SUP-RC27-OC12).
 				if err := w.Register(outbox.Destination{Name: api.AfterSlotsDestination, Idempotent: true, MustLand: true,
-					Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
+					ActiveTenants: true, Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
 					return nil, err
 				}
 				return w, nil
@@ -240,16 +242,18 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 // default.
 const retention = 0
 
-// Middleware verifies the bearer token of each request before next; a request whose token the verifier refuses is
-// answered 401 and reaches no handler. A process that does not run the api mode serves no request of the service:
-// each is answered 503, and only the probes answer (ST-SUP-RP09-LC01).
-func (rt *Runtime) Middleware(next http.Handler) http.Handler {
+// Middleware verifies the bearer token of each request before next, which ends in router, the main router of
+// main.go; a request whose token the verifier refuses is answered 401 and reaches no handler. For a service that
+// declares its provisioning, the tenant check exempts a request only when router matches it to the pattern of
+// Provision or of Retire (ST-SUP-RC27-OC11). A process that does not run the api mode serves no request of the
+// service: each is answered 503, and only the probes answer (ST-SUP-RP09-LC01).
+func (rt *Runtime) Middleware(router *http.ServeMux, next http.Handler) http.Handler {
 	if !rt.selection.Has(modes.API) {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "this process does not run the api mode", http.StatusServiceUnavailable)
 		})
 	}
-	return rt.svc.Middleware(next)
+	return rt.svc.RoutedMiddleware(router, next)
 }
 
 // ShutdownBound bounds the shutdown of the workers after the process is told to stop.
