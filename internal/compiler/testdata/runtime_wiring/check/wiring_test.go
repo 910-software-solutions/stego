@@ -863,7 +863,7 @@ func TestWiring(t *testing.T) {
 		s.grantTenantOperator(alice)
 		perTenant, err := authz.ResourceID(alice.tenant, serviceName)
 		must(t, err)
-		decided := s.checks.decisions("service", serviceName, "")
+		decided := s.checks.decisions("service", serviceName, "provision") + s.checks.decisions("service", serviceName, "retire")
 		if got := s.retire(&alice, victim, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
 			t.Errorf("the retire of %s by alice answered %d %s, want 404", victim, got.status, got.body)
 		}
@@ -881,10 +881,10 @@ func TestWiring(t *testing.T) {
 			t.Errorf("the provision by alice added %s to the tenant list", squat)
 		}
 		// Each of the three calls was decided once on service:wiring-shop, and none on the resource of her tenant.
-		if n := s.checks.decisions("service", serviceName, ""); n != decided+3 {
+		if n := s.checks.decisions("service", serviceName, "provision") + s.checks.decisions("service", serviceName, "retire"); n != decided+3 {
 			t.Errorf("the calls of alice made %d decisions on service:%s, want three", n-decided, serviceName)
 		}
-		if n := s.checks.decisions("service", perTenant, ""); n != 0 {
+		if n := s.checks.decisions("service", perTenant, "provision") + s.checks.decisions("service", perTenant, "retire"); n != 0 {
 			t.Errorf("%d decisions named the tenant-qualified service:<org-a>/%s", n, serviceName)
 		}
 	})
@@ -914,12 +914,17 @@ func TestWiring(t *testing.T) {
 		if row, list := xmin(auditRow, id, "retire-tenant"), xmin(`SELECT xmin::text FROM stego_tenants WHERE tenant_id = $1`, id); row != list {
 			t.Errorf("the audit row of the retire is of the transaction %s and the tenant row of %s, want one transaction", row, list)
 		}
-		// A provision whose hook fails: the audit write of its transaction is refused for org-d.
+		// A provision whose hook fails: the audit write of its transaction is refused for org-d. The caller is an
+		// operator of a provisioned tenant, so its outcome row goes into the chain of its tenant; a caller of a tenant
+		// that the list does not hold, such as the operator of ops, writes no row (ST-SUP-RC27-OC10-T02).
+		listedOp := s.as("op-"+short(), "org-ops-"+short())
+		s.provisioned(t, listedOp.tenant.ID())
+		s.grantOperator(listedOp)
 		failing := "org-d-" + short()
 		execAll(t, s.admin, `CREATE FUNCTION public.wiring_fail_hook() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN
 	IF NEW.tenant_id = '`+failing+`' THEN RAISE EXCEPTION 'the hook of the check fails'; END IF; RETURN NEW; END $f$`,
 			`CREATE TRIGGER wiring_fail_hook BEFORE INSERT ON public.audit_event FOR EACH ROW EXECUTE FUNCTION public.wiring_fail_hook()`)
-		got := s.provision(&s.operator, failing, "k-"+uuid.NewString())
+		got := s.provision(&listedOp, failing, "k-"+uuid.NewString())
 		execAll(t, s.admin, `DROP TRIGGER wiring_fail_hook ON public.audit_event`, `DROP FUNCTION public.wiring_fail_hook()`)
 		if got.status != http.StatusInternalServerError {
 			t.Errorf("the provision whose hook fails answered %d %s, want 500", got.status, got.body)
@@ -927,7 +932,7 @@ func TestWiring(t *testing.T) {
 		if held, _ := s.listed(t, failing); held {
 			t.Errorf("the failed provision left %s in the tenant list", failing)
 		}
-		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'provision-tenant' AND resource_id = $2 AND outcome = 'failed'`, s.operator.tenant.ID(), failing); n != 1 {
+		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'provision-tenant' AND resource_id = $2 AND outcome = 'failed'`, listedOp.tenant.ID(), failing); n != 1 {
 			t.Errorf("the failed provision left %d outcome rows of failure, want one", n)
 		}
 	}
