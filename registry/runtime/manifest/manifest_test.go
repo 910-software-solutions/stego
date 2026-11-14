@@ -668,6 +668,35 @@ func TestValidateNewFields(t *testing.T) {
 	})
 }
 
+func TestValidateTenantKey(t *testing.T) {
+	t.Run("ST-SUP-RP15-LC01-T19 A tenant key needs row-level security, its foreign key among the constraints and an index that leads with its tenant column", func(t *testing.T) {
+		table := func(change func(*Table)) Manifest {
+			tb := Table{Schema: "public", Name: "t", RowSecurity: true,
+				Constraints: []Constraint{{Name: "t_tenant_id_fkey", Kind: KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"}},
+				Indexes:     []Index{{Name: "t_pkey", Columns: []string{"tenant_id", "id"}}},
+				TenantKey:   &TenantKey{Name: "t_tenant_id_fkey", Column: "tenant_id"}}
+			change(&tb)
+			return Manifest{Tables: []Table{tb}}
+		}
+		if err := table(func(*Table) {}).Validate(); err != nil {
+			t.Fatalf("Validate refused the tenant key of an owned table: %v", err)
+		}
+		for name, m := range map[string]Manifest{
+			"no row-level security":       table(func(t *Table) { t.RowSecurity = false }),
+			"no name":                     table(func(t *Table) { t.TenantKey.Name = "" }),
+			"no tenant column":            table(func(t *Table) { t.TenantKey.Column = "" }),
+			"a key that is no constraint": table(func(t *Table) { t.TenantKey.Name = "other" }),
+			"a key that is a CHECK":       table(func(t *Table) { t.Constraints[0].Kind = KindCheck }),
+			"no index of the column":      table(func(t *Table) { t.Indexes[0].Columns = []string{"id", "tenant_id"} }),
+			"only a partial index":        table(func(t *Table) { t.Indexes[0].Predicate = "(id IS NOT NULL)" }),
+		} {
+			if err := m.Validate(); err == nil {
+				t.Errorf("%s: Validate took it", name)
+			}
+		}
+	})
+}
+
 func TestSchemas(t *testing.T) {
 	t.Run("ST-SUP-RP15-LC01-T07 Check refuses a held schema with another function, owner or privilege, and a confined role that owns what the manifest does not name", func(t *testing.T) {
 		ctx := context.Background()

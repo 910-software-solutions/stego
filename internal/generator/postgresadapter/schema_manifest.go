@@ -24,6 +24,7 @@ const (
 	schemaManifestVariable = "SchemaManifest"
 	manifestImport         = "github.com/jsell-rh/stego/registry/runtime/manifest"
 	leaseImport            = "github.com/jsell-rh/stego/registry/runtime/lease"
+	runtimeTenantImport    = "github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // StepSchema is the held schema of the sync functions of the schema steps (ST-SUP-RP15-LC02): the manifest names it,
@@ -31,6 +32,15 @@ const (
 // it. Each table of the manifest is the table of a declared entity, on which the schema check accepts the sync
 // trigger, the foreign key and the constant default of a later step in their exact form.
 const StepSchema = "stego_steps"
+
+// TenantKeyName gives the name of the foreign key from the tenant column key of an owned table to the tenant list:
+// <table>_<key>_fkey, cut as sqlName cuts a name. No declared field has the name of the key (validateTenantColumn),
+// so no foreign key of a reference has this name.
+func TenantKeyName(table, key string) string { return sqlName(table, key, "fkey") }
+
+// tenantList is the tenant list of the migration job, in public, as pg_get_constraintdef names it with the search
+// path pg_catalog (the generated wiring gives the job the tenant schema public).
+const tenantList = "public.stego_tenants"
 
 // TenantPolicy is the name of the one tenant policy that the tenancy component makes on each owned table
 // (ST-SUP-RC27-OC03); the manifest names it.
@@ -204,6 +214,10 @@ func manifestSource(models []tableModel, key string, optional map[string][]syncT
 			fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindForeignKey, Definition: %q},\n", fk.name,
 				"FOREIGN KEY ("+deparsedList(fk.from)+") REFERENCES public."+deparsedName(fk.table)+"("+deparsedList(fk.to)+")")
 		}
+		if table.owned {
+			fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindForeignKey, Definition: %q},\n", TenantKeyName(table.name, key),
+				"FOREIGN KEY ("+deparsedName(key)+") REFERENCES "+tenantList+"(tenant_id)")
+		}
 		b.WriteString("},\nIndexes: []manifest.Index{\n")
 		fmt.Fprintf(&b, "{Name: %q, Columns: %#v},\n", primaryName(table.name), append(append([]string{}, table.lead...), keyColumn))
 		for _, columns := range table.unique {
@@ -236,6 +250,9 @@ func manifestSource(models []tableModel, key string, optional map[string][]syncT
 			expression := tenantPolicyExpression(key)
 			fmt.Fprintf(&b, "RowSecurity: true,\nPolicies: []manifest.Policy{{Name: %q, Command: \"*\", Using: %q, WithCheck: %q}},\n",
 				TenantPolicy, expression, expression)
+			// The migration job adds the tenant key after the tenant list and validates it (decision on ST-SUP-Q124
+			// (a), orchestrator under the owner's delegation, 2026-11-14).
+			fmt.Fprintf(&b, "TenantKey: &manifest.TenantKey{Name: %q, Column: %q},\n", TenantKeyName(table.name, key), key)
 		}
 		b.WriteString("},\n")
 	}

@@ -279,23 +279,75 @@ func TestLeaseIsOneRow(t *testing.T) {
 		if err := h.Renew(ctx); err != nil {
 			t.Fatal(err)
 		}
-		wantAcquire := "UPDATE public.leases SET holder=$1, expires_at=now()+ttl, token=token+1 WHERE name=$2 AND (holder=$1 OR expires_at<now()) RETURNING token"
-		wantRenew := "UPDATE public.leases SET expires_at=now()+ttl, token=token+1 WHERE name=$2 AND holder=$1 AND token=$3 AND expires_at>=now() RETURNING token"
+		wantAcquire := "UPDATE public.leases SET holder=$1, expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) ttl, token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND (holder OPERATOR(pg_catalog.=) $1 OR expires_at OPERATOR(pg_catalog.<) pg_catalog.now()) RETURNING token"
+		wantRenew := "UPDATE public.leases SET expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) ttl, token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND holder OPERATOR(pg_catalog.=) $1 AND token OPERATOR(pg_catalog.=) $3 AND expires_at OPERATOR(pg_catalog.>=) pg_catalog.now() RETURNING token"
 		sent := d.rec.all()
 		if len(sent) != 2 {
 			t.Fatalf("Acquire and Renew sent %d statements, want 2: %v", len(sent), sent)
 		}
-		if got := strings.Replace(sent[0].sql, "make_interval(secs => $3)", "ttl", 1); got != wantAcquire {
+		if got := strings.Replace(sent[0].sql, "pg_catalog.make_interval(secs => $3)", "ttl", 1); got != wantAcquire {
 			t.Errorf("Acquire sent %q, want %q with ttl as $3", sent[0].sql, wantAcquire)
 		}
 		if a := sent[0].args; len(a) != 3 || a[0] != "h1" || a[1] != "stego.controller" || a[2] != 15.0 {
 			t.Errorf("Acquire binds %v, want h1, stego.controller and the lease of 15 s", a)
 		}
-		if got := strings.Replace(sent[1].sql, "make_interval(secs => $4)", "ttl", 1); got != wantRenew {
+		if got := strings.Replace(sent[1].sql, "pg_catalog.make_interval(secs => $4)", "ttl", 1); got != wantRenew {
 			t.Errorf("Renew sent %q, want %q with ttl as $4", sent[1].sql, wantRenew)
 		}
 		if a := sent[1].args; len(a) != 4 || a[0] != "h1" || a[1] != "stego.controller" || a[2] != h.Token()-1 || a[3] != 15.0 {
 			t.Errorf("Renew binds %v, want h1, stego.controller, the token it held and the lease of 15 s", a)
+		}
+	})
+
+	t.Run("ST-SUP-RP09-LC02-T08 Acquire and Renew run the functions and operators of pg_catalog on a search path that puts another schema before it", func(t *testing.T) {
+		d := openDatabase(t)
+		ctx := context.Background()
+		if err := Declare(ctx, d.db, "stego.controller"); err != nil {
+			t.Fatal(err)
+		}
+		// A schema before pg_catalog on the path has its own now(), make_interval and + of bigint and integer, each
+		// an exact match for the statements, which would set the lease far into the future and add 100 to the token.
+		for _, statement := range []string{
+			"CREATE SCHEMA hostile",
+			"CREATE FUNCTION hostile.now() RETURNS timestamptz LANGUAGE sql AS $$SELECT pg_catalog.now() + interval '100 years'$$",
+			"CREATE FUNCTION hostile.make_interval(secs double precision) RETURNS interval LANGUAGE sql AS $$SELECT interval '100 years'$$",
+			"CREATE FUNCTION hostile.add(bigint, integer) RETURNS bigint LANGUAGE sql AS $$SELECT $1 OPERATOR(pg_catalog.+) 100$$",
+			"CREATE OPERATOR hostile.+ (LEFTARG = bigint, RIGHTARG = integer, FUNCTION = hostile.add)",
+			"CREATE FUNCTION hostile.lt(timestamptz, timestamptz) RETURNS boolean LANGUAGE sql AS $$SELECT true$$",
+			"CREATE OPERATOR hostile.< (LEFTARG = timestamptz, RIGHTARG = timestamptz, FUNCTION = hostile.lt)",
+		} {
+			d.exec(t, statement)
+		}
+		conn, err := d.db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET search_path = hostile, pg_catalog, public"); err != nil {
+			t.Fatal(err)
+		}
+		// The schema is live for a plain statement of the session.
+		var far bool
+		if err := conn.QueryRowContext(ctx, "SELECT now() > pg_catalog.now() + interval '50 years'").Scan(&far); err != nil || !far {
+			t.Fatalf("the hostile now() is not live on the path (error %v)", err)
+		}
+		_, before, _ := d.leaseRow(t, "stego.controller")
+		h1 := acquire(t, newClient(t, conn, "stego.controller", "h1", Settings{TTL: 15 * time.Second}))
+		check := func(what string, want int64) {
+			t.Helper()
+			holder, token, expires := d.leaseRow(t, "stego.controller")
+			if holder != "h1" || token != want || h1.Token() != want || time.Until(expires) > time.Minute {
+				t.Fatalf("after %s the row holds %s with the token %d (the holder has %d) until %v, want h1 with %d for at most 15 s", what, holder, token, h1.Token(), expires, want)
+			}
+		}
+		check("the acquire", before+1)
+		if err := h1.Renew(ctx); err != nil {
+			t.Fatal(err)
+		}
+		check("the renew", before+2)
+		// Another holder cannot take the unexpired lease through the hostile < either.
+		if _, err := newClient(t, conn, "stego.controller", "h2", Settings{}).Acquire(ctx); !errors.Is(err, ErrTaken) {
+			t.Fatalf("h2 acquired the unexpired lease of h1 on the hostile path: %v", err)
 		}
 	})
 

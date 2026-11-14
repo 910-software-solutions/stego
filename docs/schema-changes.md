@@ -178,6 +178,9 @@ migration first checks, in its own transaction:
 - the completeness CHECK of the expand step is there with its exact
   definition and validated, so no row of any tenant has the old column set
   and the new one empty;
+- while the sync trigger of the change is there, it is enabled (not
+  disabled and not for a replica only) and runs the sync function of the
+  change, so each write of the release before is copied;
 - no process of a release that does not know the change runs. Each process
   of a service reports its release in `stego_schema.releases` every 10 s and
   deletes its report when it stops. A release that does not register the
@@ -222,6 +225,41 @@ Limits: a release on a runtime library before v0.103.0 writes no report,
 and an expand step from a postgres-adapter before 6.4.0 made no table of the
 reports (ST-SUP-Q126). A contract step of a rename of a field with a default
 is not built yet.
+
+## The tenant key of each owned table
+
+In a pooled service, each owned table has a foreign key, the tenant key,
+from its tenant column to `stego_tenants (tenant_id)`, ON DELETE NO ACTION
+and ON UPDATE NO ACTION. Thus a row of a tenant that the tenant list does
+not hold cannot be written, and the row of a tenant that has rows cannot be
+deleted from the list (retire a tenant; do not delete it). The schema
+manifest names the key, `<table>_<tenant column>_fkey`.
+
+The migration job adds each key after the tenant list (step `tenant_keys`),
+NOT VALID, under a lock timeout of 1 s and its retry, so it scans no row
+under its short lock. Then it validates each key (step
+`tenant_keys_validate`), which blocks no read and no write. Under FORCE ROW
+LEVEL SECURITY, PostgreSQL validates a foreign key as the owner role with a
+query that sees only the rows of one tenant. Thus, in the same transaction,
+the job revokes SELECT on the table from the owner role, so PostgreSQL reads
+each row past row-level security, and grants it again. No other session
+sees this.
+
+When a row of a tenant that the tenant list does not hold is in the table,
+the validation fails, and the job exits non-zero and logs which table and
+key. It names no tenant. Provision the tenant, or remove its rows, then run
+the job again. A database of a release before the key can hold such rows,
+because the list was not written then. To find them, as a role that may
+read past row-level security:
+
+```sql
+SELECT DISTINCT o.tenant_id FROM public.<table> o
+WHERE NOT EXISTS (SELECT 1 FROM public.stego_tenants t WHERE t.tenant_id = o.tenant_id);
+```
+
+A release before the tenant key does not accept it in its schema check, so
+after the job of a release with the key, roll back only to a release that
+has it too.
 
 ## The job lock of the migration job
 

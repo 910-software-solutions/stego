@@ -111,6 +111,18 @@ type Table struct {
 	// manifest does not name, each only in the exact form that a later step gives (ST-SUP-RP15-LC02, ST-SUP-RP15-LC03,
 	// ST-SUP-RP15-LC01, ST-GEN-Q15). A runtime table is never an entity table.
 	Entity bool
+	// TenantKey, on an owned table of a pooled service, is the foreign key from the tenant column of the table to
+	// the tenant list stego_tenants, which the migration job adds NOT VALID and then validates, so a row of a tenant
+	// that the list does not hold cannot be written (decision on ST-SUP-Q124 (a), orchestrator under the owner's
+	// delegation, 2026-11-14). The table has row-level security; Constraints name the key, a foreign key, by the
+	// same name; and Indexes name an index that leads with the tenant column, so the check of a delete from the
+	// tenant list is an index probe.
+	TenantKey *TenantKey
+}
+
+// TenantKey is the foreign key of a table to the tenant list: its name and the tenant column of the table.
+type TenantKey struct {
+	Name, Column string
 }
 
 // runtimeTable is the grammar of the names of the tables of the runtime library, which are never the table of a
@@ -406,6 +418,17 @@ func (m Manifest) Validate() error {
 			}
 			if len(i.Columns) == 0 {
 				return fmt.Errorf("manifest: table %s: the index %s has no column", id, i.Name)
+			}
+		}
+		if k := t.TenantKey; k != nil {
+			if !t.RowSecurity || !name.MatchString(k.Name) || !name.MatchString(k.Column) {
+				return fmt.Errorf("manifest: table %s: a tenant key needs row-level security, a name and a tenant column", id)
+			}
+			if !slices.ContainsFunc(t.Constraints, func(c Constraint) bool { return c.Name == k.Name && c.Kind == KindForeignKey }) {
+				return fmt.Errorf("manifest: table %s: the tenant key %s is no foreign key of the constraints", id, k.Name)
+			}
+			if !slices.ContainsFunc(t.Indexes, func(i Index) bool { return i.Columns[0] == k.Column && i.Predicate == "" }) {
+				return fmt.Errorf("manifest: table %s: no index leads with the tenant column %s of the tenant key %s", id, k.Column, k.Name)
 			}
 		}
 		for _, p := range t.Policies {
