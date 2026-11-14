@@ -57,7 +57,7 @@ func TestMigrate(t *testing.T) {
 		endpoint, key := startSpiceDB(t)
 		f := newFixture(t)
 		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
-		want := []string{StepOwnerRole, StepJobLock, StepLedgerCheck, StepAuthorizationSchema, StepTables, StepOutboxQueue, StepOutboxSequence, StepAuditTables, StepAuditSink,
+		want := []string{StepOwnerRole, StepJobLock, StepLedgerCheck, StepAuthorizationSchema, StepTables, StepTenantKeys, StepTenantKeysValidate, StepOutboxQueue, StepOutboxSequence, StepAuditTables, StepAuditSink,
 			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepManifestBefore, StepBackfill, StepManifest}
 		run := func(m Migration) (*steps, error) {
 			s := &steps{backends: map[int]bool{}}
@@ -1567,10 +1567,16 @@ DROP POLICY IF EXISTS orders_tenant ON public.orders;
 CREATE POLICY orders_tenant ON public.orders USING (tenant_id = current_setting('app.tenant', true))
   WITH CHECK (tenant_id = current_setting('app.tenant', true));`
 
+// ordersTenantKey is the foreign key of orders to the tenant list, which the manifest of orders names.
+const ordersTenantKey = "orders_tenant_id_fkey"
+
 // ordersManifest is the schema manifest of the orders table of ordersDDL.
 func ordersManifest() manifest.Manifest {
 	return manifest.Manifest{Tables: []manifest.Table{{Schema: "public", Name: "orders", RowSecurity: true,
 		Indexes: []manifest.Index{{Name: "orders_pkey", Columns: []string{"tenant_id", "id"}}},
+		// The tenant key, which the job adds after the tenant list (decision on ST-SUP-Q124 (a)).
+		Constraints: []manifest.Constraint{{Name: ordersTenantKey, Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"}},
+		TenantKey:   &manifest.TenantKey{Name: ordersTenantKey, Column: "tenant_id"},
 		Columns: []manifest.Column{{Name: "tenant_id", Type: "text", NotNull: true}, {Name: "status", Type: "text", NotNull: true},
 			{Name: "version", Type: "bigint", Default: "1"}, {Name: "authz_token", Type: "text", Default: "''::text"}},
 		Policies: []manifest.Policy{{Name: "orders_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))",
@@ -1990,6 +1996,212 @@ func TestMigrateManifestBefore(t *testing.T) {
 		}
 		if !boardsCompleted(t, f) {
 			t.Fatal("the change is not complete")
+		}
+	})
+}
+
+// tenantKeyOf reads the tenant key of orders: whether it is there, validated, NO ACTION on delete and on update, and
+// refers to public.stego_tenants.
+func tenantKeyOf(t *testing.T, f *fixture) (present, validated, noAction bool) {
+	t.Helper()
+	err := f.admin.QueryRow(`SELECT k.convalidated, k.confdeltype = 'a' AND k.confupdtype = 'a' AND k.confrelid = to_regclass('public.stego_tenants')
+  FROM pg_constraint k WHERE k.conrelid = to_regclass('public.orders') AND k.conname = $1 AND k.contype = 'f'`, ordersTenantKey).Scan(&validated, &noAction)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, false
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return true, validated, noAction
+}
+
+// asRuntime runs statement as the runtime role in one transaction with the tenant setting tenant, and gives the
+// SQLSTATE of its error, or empty.
+func asRuntime(t *testing.T, db *sql.DB, tenant, statement string, args ...any) string {
+	t.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("SELECT pg_catalog.set_config('app.tenant', $1, true)", tenant); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(statement, args...); err != nil {
+		return sqlState(err)
+	}
+	if err := tx.Commit(); err != nil {
+		return sqlState(err)
+	}
+	return ""
+}
+
+func TestMigrateTenantKeys(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T21 The job adds the tenant key of each owned table after the tenant list and validates it, and row-level security still refuses a write of another tenant, listed or not", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		// The key is not there when the tables step ends, and is there NOT VALID when the add step ends.
+		var atAdd, atValidate [2]bool
+		stepped = func(step string, conn *sql.Conn) {
+			present, validated, _ := tenantKeyOf(t, f)
+			switch step {
+			case StepTenantKeys:
+				atAdd = [2]bool{present, validated}
+			case StepTenantKeysValidate:
+				atValidate = [2]bool{present, validated}
+			}
+		}
+		defer func() { stepped = nil }()
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatal(err)
+		}
+		stepped = nil
+		if atAdd != [2]bool{false, false} || atValidate != [2]bool{true, false} {
+			t.Fatalf("the key at the add step is %v and at the validate step %v (there, validated), want none and then NOT VALID", atAdd, atValidate)
+		}
+		if present, validated, noAction := tenantKeyOf(t, f); !present || !validated || !noAction {
+			t.Fatalf("after the job the tenant key of orders is there %v, validated %v, NO ACTION to public.stego_tenants %v", present, validated, noAction)
+		}
+		// An index leads with the tenant column, so the check of a delete from the tenant list is an index probe.
+		var led bool
+		if err := f.admin.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+  WHERE i.indrelid = 'public.orders'::regclass AND a.attname = 'tenant_id' AND i.indisvalid AND i.indpred IS NULL)`).Scan(&led); err != nil || !led {
+			t.Fatalf("no valid index of orders leads with tenant_id (error %v)", err)
+		}
+		for _, id := range []string{"tenant-a", "tenant-b"} {
+			if _, err := f.admin.Exec("INSERT INTO public.stego_tenants (tenant_id) VALUES ($1)", id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		runtime, err := sql.Open("pgx", f.runtimeURL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer runtime.Close()
+		insert := "INSERT INTO public.orders (tenant_id, id, status) VALUES ($1, $2, 'new')"
+		if code := asRuntime(t, runtime, "tenant-a", insert, "tenant-a", "o1"); code != "" {
+			t.Fatalf("a write of the listed tenant of the transaction gave %s", code)
+		}
+		// The WITH CHECK of the tenant policy refuses a row of another tenant before the foreign key is checked:
+		// of a listed tenant and of an unlisted one alike.
+		for _, other := range []string{"tenant-b", "tenant-z"} {
+			if code := asRuntime(t, runtime, "tenant-a", insert, other, "o2"); code != "42501" {
+				t.Errorf("a write of tenant-a for the tenant %s gave %q, want the row-level security refusal 42501", other, code)
+			}
+		}
+		// A write of a tenant that the list does not hold is refused by the key, and so is the delete of a list row
+		// that has rows.
+		if code := asRuntime(t, runtime, "tenant-z", insert, "tenant-z", "o3"); code != "23503" {
+			t.Errorf("a write of the unlisted tenant of the transaction gave %q, want the foreign key violation 23503", code)
+		}
+		if _, err := f.admin.Exec("DELETE FROM public.stego_tenants WHERE tenant_id = 'tenant-a'"); sqlState(err) != "23503" {
+			t.Errorf("the delete of a list row with rows gave %v, want the foreign key violation 23503", err)
+		}
+		if _, err := f.admin.Exec("DELETE FROM public.stego_tenants WHERE tenant_id = 'tenant-b'"); err != nil {
+			t.Errorf("the delete of a list row with no rows gave %v", err)
+		}
+	})
+
+	t.Run("ST-SUP-RP14-LC03-T22 A row of a tenant that the tenant list does not hold refuses the validation of the tenant key with the remedy, and the next run validates the key once the row is gone", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatal(err)
+		}
+		// A release before the key wrote a row of the tenant secret-orphan, which the list does not hold.
+		for _, statement := range []string{"ALTER TABLE public.orders DROP CONSTRAINT " + ordersTenantKey,
+			"INSERT INTO public.orders (tenant_id, id, status) VALUES ('secret-orphan', 'o1', 'new')"} {
+			if _, err := f.admin.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var steps []string
+		recordSteps(t, &steps)
+		err := Migrate(context.Background(), settings, f.migration(nil))
+		var refused interface{ Refusal() string }
+		if Stage(err) != "migrate."+StepTenantKeysValidate || !errors.As(err, &refused) {
+			t.Fatalf("the job with an orphan row gave %v, want a refusal of the step %s", err, StepTenantKeysValidate)
+		}
+		for _, text := range []string{err.Error(), refused.Refusal()} {
+			if !strings.Contains(text, "public.orders") || !strings.Contains(text, ordersTenantKey) || !strings.Contains(text, "provision the tenant or remove its rows") || strings.Contains(text, "secret-orphan") {
+				t.Fatalf("the refusal %q does not name the table, the key and the remedy, or names a row value", text)
+			}
+		}
+		if slices.Contains(steps, StepOutboxQueue) {
+			t.Fatalf("the refused job ran on after the validation: %v", steps)
+		}
+		if present, validated, _ := tenantKeyOf(t, f); !present || validated {
+			t.Fatalf("after the refusal the key is there %v and validated %v, want it NOT VALID", present, validated)
+		}
+		if _, err := f.admin.Exec("DELETE FROM public.orders WHERE tenant_id = 'secret-orphan'"); err != nil {
+			t.Fatal(err)
+		}
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatalf("the job after the orphan row was removed gave %v", err)
+		}
+		if present, validated, _ := tenantKeyOf(t, f); !present || !validated {
+			t.Fatalf("after the run again the key is there %v and validated %v", present, validated)
+		}
+	})
+
+	t.Run("ST-SUP-RP14-LC03-T23 The add of the tenant key waits at most the lock timeout behind a long write of the running release, and runs again", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.admin.Exec("ALTER TABLE public.orders DROP CONSTRAINT " + ordersTenantKey); err != nil {
+			t.Fatal(err)
+		}
+		// When the add step starts, a long write transaction of the running release holds ROW EXCLUSIVE on orders,
+		// which the SHARE ROW EXCLUSIVE lock of the add waits for. (The ledger of the test service makes its policy
+		// again with no lock timeout, so the transaction starts after the tables step.)
+		long, err := f.admin.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = long.Rollback() }()
+		stepped = func(step string, _ *sql.Conn) {
+			if step == StepTenantKeys {
+				if _, err := long.Exec("UPDATE public.orders SET status = status"); err != nil {
+					t.Error(err)
+				}
+			}
+		}
+		defer func() { stepped = nil }()
+		waits := make(chan string, 64)
+		retried = func(step string) { waits <- step }
+		defer func() { retried = nil }()
+		m := f.migration(nil)
+		m.Timeout = 2 * time.Minute
+		ran := make(chan error, 1)
+		go func() { ran <- Migrate(context.Background(), settings, m) }()
+		select {
+		case step := <-waits:
+			if step != StepTenantKeys {
+				t.Fatalf("the step %s waited for a lock, want %s", step, StepTenantKeys)
+			}
+		case err := <-ran:
+			t.Fatalf("the job ended with %v while the long transaction held orders, want it to wait", err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("the lock wait of the add did not end at the lock timeout within 30 s")
+		}
+		if err := long.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case err := <-ran:
+			if err != nil {
+				t.Fatalf("the job after the long transaction ended gave %v", err)
+			}
+		case <-time.After(60 * time.Second):
+			t.Fatal("the job did not end within 60 s after the long transaction ended")
+		}
+		if present, validated, _ := tenantKeyOf(t, f); !present || !validated {
+			t.Fatalf("after the job the key is there %v and validated %v", present, validated)
 		}
 	})
 }

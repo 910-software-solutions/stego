@@ -481,6 +481,37 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC39-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T01") })
 	t.Run("ST-SUP-RC01-OC24-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T03") })
 	t.Run("ST-SUP-RC01-OC24-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T04") })
+	t.Run("ST-SUP-RC01-OC24-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T05") })
+	t.Run("ST-SUP-RC01-OC40-T04 The schema manifest names the tenant key of each owned table, which holds on PostgreSQL with row-level security", func(t *testing.T) {
+		files, _, err := new(postgresadapter.Generator).Generate(widgetService(widgetEntities()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := generated(t, files, "widgets/schema_manifest.go")
+		for _, want := range []string{
+			`{Name: "widgets_tenant_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"}`,
+			`TenantKey: &manifest.TenantKey{Name: "widgets_tenant_id_fkey", Column: "tenant_id"}`,
+			`TenantKey: &manifest.TenantKey{Name: "orders_tenant_id_fkey", Column: "tenant_id"}`,
+		} {
+			// gofmt aligns the values of the fields of a table.
+			if !strings.Contains(strings.ReplaceAll(source, "TenantKey:   &", "TenantKey: &"), want) {
+				t.Errorf("the schema manifest does not hold %s:\n%s", want, source)
+			}
+		}
+		if n := strings.Count(strings.ReplaceAll(source, "TenantKey:   &", "TenantKey: &"), "TenantKey: &manifest.TenantKey{"); n != 2 {
+			t.Errorf("the schema manifest names %d tenant keys, want one for each owned table and none for the shared catalogs", n)
+		}
+		// pg_get_constraintdef quotes a tenant column that is a keyword, so the manifest does too.
+		keyword := orderService("storage")
+		keyword.Tenancy = &gen.Tenancy{Key: "user"}
+		if files, _, err = new(postgresadapter.Generator).Generate(keyword); err != nil {
+			t.Fatal(err)
+		}
+		if source := generated(t, files, "storage/schema_manifest.go"); !strings.Contains(source, `Definition: "FOREIGN KEY (\"user\") REFERENCES public.stego_tenants(tenant_id)"`) {
+			t.Errorf("the tenant key of the tenant column user is not quoted:\n%s", source)
+		}
+		onPostgres(t, "ST-SUP-RC01-OC40-T04")
+	})
 	t.Run("ST-SUP-RC01-OC39-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T03") })
 	t.Run("ST-SUP-RP15-LC01-T15 The release before accepts each emitted step form, NOT VALID and validated, and the release of the step refuses NOT VALID", func(t *testing.T) {
 		onSteps(t, "ST-SUP-RP15-LC01-T15")
