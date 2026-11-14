@@ -38,6 +38,9 @@ type schemaStep struct {
 	Index      string
 	Definition string
 	Validate   bool
+	// Validations are the constraints that the migration of a step that validates, Validate, validates in the order
+	// of its body: a foreign key through the helper of the tenant runtime, past row-level security (ST-SUP-RP04-LC10).
+	Validations []validation
 	// Contract is the contract step of a rename, which runs each statement in its own short transaction after its
 	// check (ST-SUP-RC01-OC24, ST-SUP-RC01-OC39); Expand is the migration of the expand step of its change.
 	Contract *contractStep
@@ -64,13 +67,30 @@ type contractStatement struct {
 }
 
 // stepAddition is what an add step gives: the SQL of its own migration, each index that it builds on a table with
-// rows, the SQL of the migration after those indexes that adds the sync trigger of a rename, and the statements that
-// validate its constraints.
+// rows, the SQL of the migration after those indexes that adds the sync trigger of a rename, and the constraints that
+// it validates.
 type stepAddition struct {
 	body      strings.Builder
 	indexes   []stepIndex
 	sync      strings.Builder
-	validates []string
+	validates []validation
+}
+
+// validation is one constraint that the validate migration of a step validates: the qualified table as SQL text, the
+// name of the constraint with no quotes, and foreign for a foreign key.
+type validation struct {
+	table, name string
+	foreign     bool
+}
+
+// validateBody gives the body of the validate migration of the constraints validates, one ALTER TABLE ... VALIDATE
+// CONSTRAINT for each, which the ledger digest covers.
+func validateBody(validates []validation) string {
+	var b strings.Builder
+	for _, v := range validates {
+		fmt.Fprintf(&b, "ALTER TABLE %s VALIDATE CONSTRAINT %s;\n", v.table, sqlIdentifier(v.name))
+	}
+	return b.String()
 }
 
 // stepIndex is one index of a step on a table with rows: its qualified name, its CREATE INDEX CONCURRENTLY and its
@@ -208,7 +228,7 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			steps = append(steps, schemaStep{Name: SyncMigrationName(name), Change: change, Phase: step.Phase, Body: added.sync.String()})
 		}
 		if len(added.validates) > 0 {
-			steps = append(steps, schemaStep{Name: ValidateMigrationName(name), Change: change, Phase: step.Phase, Body: strings.Join(added.validates, ""), Validate: true})
+			steps = append(steps, schemaStep{Name: ValidateMigrationName(name), Change: change, Phase: step.Phase, Body: validateBody(added.validates), Validate: true, Validations: added.validates})
 		}
 		if change.Kind == "rename" {
 			// The old column stays in the table until the contract step, so the model of the next step keeps it.
@@ -289,19 +309,19 @@ func addedToTable(old, next tableModel, out *stepAddition) error {
 	if !subset(old.checks, next.checks) || !subset(old.foreign, next.foreign) || !subset(old.search, next.search) || !subset(old.unique, next.unique) {
 		return fmt.Errorf("the step changes or removes a constraint or an index of the table %s, and an add step only adds", old.name)
 	}
-	validate := func(name string) {
-		out.validates = append(out.validates, fmt.Sprintf("ALTER TABLE %s VALIDATE CONSTRAINT %s;\n", table, sqlIdentifier(name)))
+	validate := func(name string, foreign bool) {
+		out.validates = append(out.validates, validation{table: table, name: name, foreign: foreign})
 	}
 	for _, check := range next.checks {
 		if !slices.Contains(old.checks, check) {
 			fmt.Fprintf(&out.body, "ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s) NOT VALID;\n", table, sqlIdentifier(check.name), check.expression)
-			validate(check.name)
+			validate(check.name, false)
 		}
 	}
 	for _, fk := range next.foreign {
 		if !slices.ContainsFunc(old.foreign, func(f foreignModel) bool { return reflect.DeepEqual(f, fk) }) {
 			fmt.Fprintf(&out.body, "ALTER TABLE %s ADD CONSTRAINT %s %s NOT VALID;\n", table, sqlIdentifier(fk.name), foreignSQL(fk))
-			validate(fk.name)
+			validate(fk.name, true)
 		}
 	}
 	for _, column := range next.search {
@@ -540,7 +560,7 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	for _, check := range next.checks {
 		if check.name == sqlName(name, change.Field, "check") {
 			fmt.Fprintf(&out.body, "ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s) NOT VALID;\n", table, sqlIdentifier(check.name), check.expression)
-			out.validates = append(out.validates, fmt.Sprintf("ALTER TABLE %s VALIDATE CONSTRAINT %s;\n", table, sqlIdentifier(check.name)))
+			out.validates = append(out.validates, validation{table: table, name: check.name})
 		}
 	}
 	// The sync function, its trigger and the backfill row come in a migration of their own after the indexes, so

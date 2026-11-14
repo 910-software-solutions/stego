@@ -15,6 +15,7 @@ import (
 	"net"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
 )
 
 // countingServer accepts TCP connections and closes them at once, and counts them.
@@ -536,6 +539,289 @@ func TestOpener(t *testing.T) {
 		wrong.TLSConfig = &tls.Config{RootCAs: roots, ServerName: "elsewhere.example"}
 		if _, err := Open(ctx, Config{Conn: wrong}); err == nil {
 			t.Fatal("a server certificate for another name was accepted")
+		}
+	})
+}
+
+// keyTable is the database of one test of ValidateForeignKey: as the role owner, the tenant list stego_tenants with
+// tenant-a and tenant-b, and the table orders under FORCE ROW LEVEL SECURITY with the policy of a tenant table and
+// rows of both tenants, and one row of the tenant secret-orphan, which the list does not hold, unless clean; and the
+// foreign key orders_tenant_id_fkey from orders to the list, NOT VALID.
+type keyTable struct {
+	db    *sql.DB
+	owner string
+}
+
+const ordersKey = "orders_tenant_id_fkey"
+
+func newKeyTable(t *testing.T, rows int, clean bool, extra ...string) *keyTable {
+	t.Helper()
+	db, err := sql.Open("pgx", pgtest.Database(t, "tenant_key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := &keyTable{db: db, owner: "key_owner_" + randomSuffix(t)}
+	t.Cleanup(func() {
+		_, _ = db.Exec("DROP OWNED BY " + k.owner)
+		_, _ = db.Exec("DROP ROLE " + k.owner)
+		_ = db.Close()
+	})
+	statements := []string{
+		"CREATE ROLE " + k.owner + " NOLOGIN NOSUPERUSER NOBYPASSRLS",
+		"GRANT CREATE ON SCHEMA public TO " + k.owner,
+		"SET ROLE " + k.owner,
+		"CREATE TABLE public.stego_tenants (tenant_id text PRIMARY KEY, retired_at timestamptz)",
+		"CREATE TABLE public.orders (tenant_id text NOT NULL, id bigint NOT NULL, PRIMARY KEY (tenant_id, id))",
+		"ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY",
+		"ALTER TABLE public.orders FORCE ROW LEVEL SECURITY",
+		"CREATE POLICY stego_tenant ON public.orders USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
+		"RESET ROLE",
+		"INSERT INTO public.stego_tenants VALUES ('tenant-a'), ('tenant-b')",
+		"INSERT INTO public.orders SELECT CASE WHEN g % 2 = 0 THEN 'tenant-a' ELSE 'tenant-b' END, g FROM generate_series(1, " + strconv.Itoa(rows) + ") g",
+	}
+	if !clean {
+		statements = append(statements, "INSERT INTO public.orders VALUES ('secret-orphan', -1)")
+	}
+	statements = append(statements, "SET ROLE "+k.owner,
+		"ALTER TABLE ONLY public.orders ADD CONSTRAINT "+ordersKey+" FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants (tenant_id) NOT VALID",
+		"RESET ROLE")
+	for _, statement := range append(statements, extra...) {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	return k
+}
+
+// acl gives the grants of orders as relacl gives them.
+func (k *keyTable) acl(t *testing.T) string {
+	t.Helper()
+	var text sql.NullString
+	if err := k.db.QueryRow("SELECT relacl::text FROM pg_catalog.pg_class WHERE oid = 'public.orders'::regclass").Scan(&text); err != nil {
+		t.Fatal(err)
+	}
+	return text.String
+}
+
+// validated reports whether the key of orders is validated.
+func (k *keyTable) validated(t *testing.T) bool {
+	t.Helper()
+	var validated bool
+	if err := k.db.QueryRow("SELECT convalidated FROM pg_catalog.pg_constraint WHERE conname = $1", ordersKey).Scan(&validated); err != nil {
+		t.Fatal(err)
+	}
+	return validated
+}
+
+// ownerReads reports whether the owner role has SELECT on orders.
+func (k *keyTable) ownerReads(t *testing.T) bool {
+	t.Helper()
+	var reads bool
+	if err := k.db.QueryRow("SELECT pg_catalog.has_table_privilege($1, 'public.orders', 'SELECT')", k.owner).Scan(&reads); err != nil {
+		t.Fatal(err)
+	}
+	return reads
+}
+
+// validate runs validate in one transaction as the owner role, with no tenant setting, as the migration job runs a
+// step, and commits it when validate passes.
+func (k *keyTable) validate(ctx context.Context, validate func(context.Context, *sql.Tx) error) error {
+	tx, err := k.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL ROLE "+k.owner); err != nil {
+		return err
+	}
+	if err := validate(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func validateOrders(ctx context.Context, tx *sql.Tx) error {
+	return ValidateForeignKey(ctx, tx, `public."orders"`, ordersKey)
+}
+
+func TestValidateForeignKey(t *testing.T) {
+	t.Run("ST-SUP-RP04-LC10-T01 A row that the key refuses fails the validation under FORCE ROW LEVEL SECURITY, with the grants of the table unchanged", func(t *testing.T) {
+		k := newKeyTable(t, 1000, false)
+		before := k.acl(t)
+		err := k.validate(context.Background(), validateOrders)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+			t.Fatalf("the validation over a row of an unlisted tenant gave %v, want the foreign key violation 23503", err)
+		}
+		if k.validated(t) {
+			t.Error("the key is validated after the refusal")
+		}
+		if after := k.acl(t); after != before || !k.ownerReads(t) {
+			t.Errorf("after the refusal the grants of orders are %q, before %q, and the owner role reads orders %v", after, before, k.ownerReads(t))
+		}
+	})
+
+	t.Run("ST-SUP-RP04-LC10-T02 A grant of SELECT to PUBLIC fails the validation before it runs, with the grants of the table unchanged", func(t *testing.T) {
+		k := newKeyTable(t, 100, false, "GRANT SELECT ON public.orders TO PUBLIC")
+		before := k.acl(t)
+		err := k.validate(context.Background(), validateOrders)
+		if err == nil || !strings.Contains(err.Error(), "reads the columns of the foreign key orders_tenant_id_fkey of public.\"orders\" after its SELECT is revoked") {
+			t.Fatalf("the validation with SELECT granted to PUBLIC gave %v, want the failure that the role still reads the table", err)
+		}
+		if k.validated(t) {
+			t.Error("the key is validated past the check of the read")
+		}
+		if after := k.acl(t); after != before {
+			t.Errorf("after the failure the grants of orders are %q, before %q", after, before)
+		}
+	})
+
+	t.Run("ST-SUP-RP04-LC10-T03 A cancel during the validation leaves the grants of the table as before", func(t *testing.T) {
+		k := newKeyTable(t, 100, true)
+		before := k.acl(t)
+		// A session holds an EXCLUSIVE lock of the tenant list, so the validation waits for its ROW SHARE lock of
+		// the list after the revoke.
+		hold, err := k.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = hold.Rollback() }()
+		if _, err := hold.Exec("LOCK TABLE public.stego_tenants IN EXCLUSIVE MODE"); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- k.validate(ctx, validateOrders) }()
+		for until := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+			var waits bool
+			if err := k.db.QueryRow("SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks WHERE relation = 'public.stego_tenants'::regclass AND NOT granted)").Scan(&waits); err != nil {
+				t.Fatal(err)
+			}
+			if waits {
+				break
+			}
+			if time.Now().After(until) {
+				t.Fatal("the validation does not wait for the lock of the tenant list")
+			}
+		}
+		cancel()
+		if err := <-done; err == nil {
+			t.Fatal("the cancelled validation passed")
+		}
+		if err := hold.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if after := k.acl(t); after != before || !k.ownerReads(t) || k.validated(t) {
+			t.Errorf("after the cancel the grants of orders are %q, before %q; the owner role reads orders %v; the key is validated %v", after, before, k.ownerReads(t), k.validated(t))
+		}
+	})
+
+	t.Run("ST-SUP-RP04-LC10-T04 With row_security off, a validation by the one query of PostgreSQL fails with 42501 and does not validate over rows that it does not see", func(t *testing.T) {
+		k := newKeyTable(t, 100, false)
+		// The validation with no revoke is the one that a PostgreSQL that takes its one query in spite of the revoke
+		// would run: row-level security hides the row of secret-orphan from the owner role.
+		err := k.validate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+			return validateForeignKey(ctx, tx, `public."orders"`, ordersKey, false)
+		})
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
+			t.Fatalf("the validation by the one query gave %v, want the row-level security failure 42501", err)
+		}
+		if k.validated(t) {
+			t.Error("the key is validated over a row that the query did not see")
+		}
+	})
+
+	t.Run("ST-SUP-RP04-LC10-T05 A validation that passes grants SELECT again and sets row_security back, and a key on a table with no row-level security is validated with no revoke", func(t *testing.T) {
+		k := newKeyTable(t, 1000, true)
+		before := k.acl(t)
+		var setting string
+		if err := k.validate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+			if err := validateOrders(ctx, tx); err != nil {
+				return err
+			}
+			return tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('row_security')").Scan(&setting)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !k.validated(t) || !k.ownerReads(t) || setting != "on" {
+			t.Errorf("after the validation the key is validated %v, the owner role reads orders %v, and row_security is %q", k.validated(t), k.ownerReads(t), setting)
+		}
+		// The table had no grant, so its grants are now written out as the default of its owner: the same privileges.
+		var same bool
+		if err := k.db.QueryRow("SELECT coalesce(relacl = pg_catalog.acldefault('r', relowner), true) FROM pg_catalog.pg_class WHERE oid = 'public.orders'::regclass").Scan(&same); err != nil || !same {
+			t.Errorf("after the validation the grants of orders are %q, before %q, which is not the default of its owner (error %v)", k.acl(t), before, err)
+		}
+		// A table with no row-level security: the key is validated with its grants left as they are, here none.
+		for _, statement := range []string{"SET ROLE " + k.owner,
+			"CREATE TABLE public.items (tenant_id text NOT NULL REFERENCES public.stego_tenants (tenant_id))",
+			"RESET ROLE", "INSERT INTO public.items VALUES ('tenant-a')", "SET ROLE " + k.owner,
+			"ALTER TABLE public.items ADD CONSTRAINT items_list_fkey FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants (tenant_id) NOT VALID",
+			"RESET ROLE"} {
+			if _, err := k.db.Exec(statement); err != nil {
+				t.Fatalf("%s: %v", statement, err)
+			}
+		}
+		if err := k.validate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+			return ValidateForeignKey(ctx, tx, "public.items", "items_list_fkey")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var acl sql.NullString
+		var validated bool
+		if err := k.db.QueryRow("SELECT c.relacl::text, k.convalidated FROM pg_catalog.pg_class c JOIN pg_catalog.pg_constraint k ON k.conrelid = c.oid WHERE c.oid = 'public.items'::regclass AND k.conname = 'items_list_fkey'").Scan(&acl, &validated); err != nil {
+			t.Fatal(err)
+		}
+		if acl.Valid || !validated {
+			t.Errorf("the key of items is validated %v with the grants %q, want it validated and no grant written", validated, acl.String)
+		}
+	})
+
+	t.Run("ST-SUP-RP04-LC10-T06 A key that refers to its own table is checked past row-level security, and leaves no column grant", func(t *testing.T) {
+		k := newKeyTable(t, 100, true)
+		// Each order of tenant-a and tenant-b refers to the order two before it of its tenant, and order 7 to an
+		// order that is not there.
+		for _, statement := range []string{"ALTER TABLE public.orders ADD COLUMN parent_id bigint",
+			"UPDATE public.orders SET parent_id = id - 2 WHERE id > 2", "UPDATE public.orders SET parent_id = 999999 WHERE id = 7",
+			"SET ROLE " + k.owner,
+			"ALTER TABLE public.orders ADD CONSTRAINT orders_parent_fkey FOREIGN KEY (tenant_id, parent_id) REFERENCES public.orders (tenant_id, id) NOT VALID",
+			"RESET ROLE"} {
+			if _, err := k.db.Exec(statement); err != nil {
+				t.Fatalf("%s: %v", statement, err)
+			}
+		}
+		validateParent := func(ctx context.Context, tx *sql.Tx) error {
+			return ValidateForeignKey(ctx, tx, "public.orders", "orders_parent_fkey")
+		}
+		columns := func() string {
+			var text string
+			if err := k.db.QueryRow("SELECT coalesce(pg_catalog.string_agg(attname || '=' || attacl::text, ',' ORDER BY attname), '') FROM pg_catalog.pg_attribute WHERE attrelid = 'public.orders'::regclass AND attacl IS NOT NULL").Scan(&text); err != nil {
+				t.Fatal(err)
+			}
+			return text
+		}
+		before := k.acl(t)
+		err := k.validate(context.Background(), validateParent)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+			t.Fatalf("the validation over an order that refers to no order gave %v, want the foreign key violation 23503", err)
+		}
+		if after := k.acl(t); after != before || columns() != "" {
+			t.Errorf("after the refusal the grants of orders are %q, before %q, with the column grants %q", after, before, columns())
+		}
+		if _, err := k.db.Exec("UPDATE public.orders SET parent_id = NULL WHERE id = 7"); err != nil {
+			t.Fatal(err)
+		}
+		if err := k.validate(context.Background(), validateParent); err != nil {
+			t.Fatalf("the validation with every parent there: %v", err)
+		}
+		var validated bool
+		if err := k.db.QueryRow("SELECT convalidated FROM pg_catalog.pg_constraint WHERE conname = 'orders_parent_fkey'").Scan(&validated); err != nil || !validated {
+			t.Errorf("the key of the parent is validated %v (error %v)", validated, err)
+		}
+		if !k.ownerReads(t) || columns() != "" {
+			t.Errorf("after the validation the owner role reads orders %v, with the column grants %q, want none", k.ownerReads(t), columns())
 		}
 	})
 }
