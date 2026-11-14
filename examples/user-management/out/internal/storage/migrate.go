@@ -55,23 +55,28 @@ type Migration struct {
 
 // ContractStep is what the contract step of a rename checks before it
 // changes the schema, and its statements in order: the change, the qualified
-// table, the completeness CHECK and the sync trigger of its expand step, the
-// expand migration, the old and the new column as quoted identifiers, and,
+// table, the completeness CHECK, its definition as pg_get_constraintdef gives
+// it and the sync trigger of its expand step, the expand migration, the name
+// of the old column, the old and the new column as quoted identifiers, and,
 // for an owned table, the tenant column and the qualified tenant list, by
 // which the check counts the rows left of each tenant.
 type ContractStep struct {
-	Change, Table, Check, Trigger, Expand string
-	Old, New, TenantColumn, Tenants       string
-	Statements                            []ContractStatement
+	Change, Table, Check, Definition, Trigger, Expand string
+	From, Old, New, TenantColumn, Tenants             string
+	Statements                                        []ContractStatement
 }
 
 // ContractStatement is one statement of a contract step: SQL; When, a query
 // that gives whether the statement still has to run, or empty; Long for the
-// long statement timeout of a VALIDATE; and Guard for the check of the step
-// again in the same transaction before the statement.
+// long statement timeout of a VALIDATE; Guard for the check of the step again
+// in the same transaction before the statement; and Also, the statements that
+// run after SQL in the same transaction, so that the drop of the sync trigger
+// and the drop of the old column commit together (security review of PR #316,
+// H1).
 type ContractStatement struct {
 	SQL, When   string
 	Long, Guard bool
+	Also        []string
 }
 
 // releaseWindow is how many report intervals a release report stays
@@ -180,8 +185,10 @@ func RegisterContractStep(name, body string, step ContractStep) {
 					continue
 				}
 			}
-			if _, err := tx.ExecContext(ctx, s.SQL); err != nil {
-				return err
+			for _, statement := range append([]string{s.SQL}, s.Also...) {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
 			}
 		}
 		return nil
@@ -634,8 +641,10 @@ func applyIndex(ctx context.Context, db Database, ordered []Migration, m Migrati
 // runs each statement in its own short transaction under the lock timeout and
 // the statement timeout of a step, again after a pause when the lock wait ends
 // at the timeout, at most stepAttempts times; the statement that drops the
-// sync trigger checks the step again in its transaction. It writes the ledger
-// row last.
+// sync trigger checks the step again in its transaction, and drops the
+// completeness CHECK and the old column in that same transaction, so no write
+// of the release before can change the old column alone after the trigger is
+// gone (security review of PR #316, H1). It writes the ledger row last.
 func applyContract(ctx context.Context, db Database, ordered []Migration, m Migration) error {
 	conn, release, err := sessionOf(ctx, db)
 	if err != nil {
@@ -696,8 +705,9 @@ func applyContract(ctx context.Context, db Database, ordered []Migration, m Migr
 }
 
 // contractStatementRun runs one statement s of the contract step c of the
-// migration m in its own transaction, when its query When gives that it still
-// has to run, after the check of the step when it is a Guard, under the lock
+// migration m, with its statements Also, in its own transaction, when its
+// query When gives that it still has to run, after the check of the step when
+// it is a Guard, under the lock
 // timeout of a step and the statement timeout of m, or the long one; it runs
 // it again after a pause when the lock wait ends at the timeout, at most
 // stepAttempts times. The last failure is wrapped as text, so the caller does
@@ -726,8 +736,12 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 					return err
 				}
 			}
-			_, err := tx.ExecContext(ctx, s.SQL)
-			return err
+			for _, statement := range append([]string{s.SQL}, s.Also...) {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 		if err == nil {
 			return nil
@@ -753,20 +767,23 @@ func (r *contractRefusal) Error() string   { return r.text }
 func (r *contractRefusal) Refusal() string { return r.text }
 
 // checkContract checks the contract step c in the transaction tx
-// (ST-SUP-RC01-OC24): while the sync trigger of the change is there, the
-// backfill row of the change must be complete with no failed row, the
-// completeness CHECK of the expand step must be validated, which proves that
-// no row of any tenant has the old column set and the new one empty
-// (decision on ST-SUP-Q120 (c)), and no release that does not know the
-// change may run (runningReleases). A refusal gives the rows left of each
-// listed tenant. When the trigger is gone, a run before passed this check
-// and dropped it, so the check passes and the rerun goes on.
+// (ST-SUP-RC01-OC24): while the sync trigger of the change or the old column
+// is there, the backfill row of the change must be complete with no failed
+// row, the completeness CHECK of the expand step must be there with its exact
+// definition, as inherited, and validated, which proves that no row of any
+// tenant has the old column set and the new one empty (decision on
+// ST-SUP-Q120 (c); security review of PR #316, L1), and no release that does
+// not know the change may run (runningReleases). A refusal gives the rows left
+// of each listed tenant. When the trigger and the old column are both gone, a
+// run before passed this check and dropped them in one transaction, so the
+// check passes and the rerun goes on; when only the trigger is gone, the check
+// runs in full again (security review of PR #316, H1).
 func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
-	var trigger bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal)", c.Table, c.Trigger).Scan(&trigger); err != nil {
+	var trigger, column bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &column); err != nil {
 		return err
 	}
-	if !trigger {
+	if !trigger && !column {
 		return nil
 	}
 	var complete bool
@@ -776,20 +793,30 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	var validated bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid = pg_catalog.to_regclass($1) AND k.conname = $2 AND k.convalidated)", c.Table, c.Check).Scan(&validated); err != nil {
+	var definition string
+	var noInherit, validated bool
+	err = tx.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_constraintdef(k.oid), k.contype <> 'c' OR k.connoinherit, k.convalidated FROM pg_catalog.pg_constraint k WHERE k.conrelid = pg_catalog.to_regclass($1) AND k.conname = $2", c.Table, c.Check).Scan(&definition, &noInherit, &validated)
+	present := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if !found || !complete || failed > 0 || !validated {
-		state := "the backfill is not complete"
-		switch {
-		case !found:
-			state = "the backfill has no checkpoint row"
-		case failed > 0:
-			state = fmt.Sprintf("the backfill has %d failed rows", failed)
-		case complete:
-			state = "the completeness CHECK " + c.Check + " is not validated"
-		}
+	exact := present && !noInherit && strings.TrimSuffix(definition, " NOT VALID") == c.Definition
+	state := ""
+	switch {
+	case !found:
+		state = "the backfill has no checkpoint row"
+	case failed > 0:
+		state = fmt.Sprintf("the backfill has %d failed rows", failed)
+	case !complete:
+		state = "the backfill is not complete"
+	case !present:
+		state = "the completeness CHECK " + c.Check + " is not there"
+	case !exact:
+		state = "the constraint " + c.Check + " is not the completeness CHECK of the change"
+	case !validated:
+		state = "the completeness CHECK " + c.Check + " is not validated"
+	}
+	if state != "" {
 		left, err := rowsLeft(ctx, tx, c)
 		count := "unknown"
 		if err == nil {
