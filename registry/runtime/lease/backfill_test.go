@@ -1252,3 +1252,50 @@ func TestBackfillSessionTimeouts(t *testing.T) {
 		}
 	})
 }
+
+func TestBackfillTriggerOperator(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC09-T06 The trigger check of a batch reads the catalog with the operators of pg_catalog, so an operator of another schema does not run in it", func(t *testing.T) {
+		d := openDatabase(t)
+		it := newItems(t, d, 10)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		// Review of PR #311 (L1): an operator public.||(name, text) is a better match for name || text than
+		// pg_catalog.||(text, text), and it ran in the trigger check with the role of the backfill.
+		for _, statement := range []string{
+			"CREATE TABLE public.operator_log (n int)",
+			`CREATE FUNCTION public.logged_cat(name, text) RETURNS text LANGUAGE plpgsql AS $$BEGIN INSERT INTO public.operator_log VALUES (1); RETURN $1::text || $2; END$$`,
+			"CREATE OPERATOR public.|| (LEFTARG = name, RIGHTARG = text, FUNCTION = public.logged_cat)",
+			// A named trigger, so the catalog read of each check has a row whose names it joins.
+			`CREATE FUNCTION public.items_named() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RETURN NEW; END$$`,
+			"CREATE TRIGGER items_named BEFORE UPDATE ON public.items FOR EACH ROW EXECUTE FUNCTION public.items_named()",
+		} {
+			d.exec(t, statement)
+		}
+		calls := func() int {
+			t.Helper()
+			var n int
+			if err := d.other.QueryRowContext(ctx, "SELECT count(*) FROM public.operator_log").Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		// The operator is live for a plain query of the session of the backfill.
+		var joined string
+		if err := d.db.QueryRowContext(ctx, "SELECT n.nspname || '.x' FROM pg_catalog.pg_namespace n WHERE n.nspname = 'public'").Scan(&joined); err != nil || calls() != 1 {
+			t.Fatalf("a plain name || text gave %q (error %v) with %d operator calls, want the operator of public to run once", joined, err, calls())
+		}
+		d.exec(t, "TRUNCATE public.operator_log")
+		settings := BackfillSettings{BatchSize: 4, Schema: "public", Table: "items", Triggers: map[string]string{"items_named": "public.items_named"}}
+		if err := newBackfill(t, it, settings).Run(ctx, d.db, heldLease(t, d, "h1", Settings{})); err != nil {
+			t.Fatalf("Run gave %v, want the change complete", err)
+		}
+		if got := checkpointRow(t, d); !got.completed.Valid || got.moved != 10 || calls() != 0 {
+			t.Fatalf("the change is complete %v with %d rows moved, and the operator of public ran %d times in the trigger checks, want none", got.completed.Valid, got.moved, calls())
+		}
+		// The step after the check runs with the search path of the session again.
+		var path string
+		if err := d.db.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil || path == "pg_catalog, pg_temp" {
+			t.Fatalf("the session search path is %q (error %v) after the backfill", path, err)
+		}
+	})
+}

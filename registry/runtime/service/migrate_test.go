@@ -650,6 +650,42 @@ func poolSessions(t *testing.T, db *sql.DB, n int) [][3]string {
 	return out
 }
 
+func TestMigrateBackfillInherited(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC09-T07 The copy batch of a rename updates only its table, so a table that inherits from it has no row changed and no trigger fired", func(t *testing.T) {
+		f, m, _ := renameJob(t)
+		ctx := context.Background()
+		// Review of PR #311 (info): a child that inherits from boards, whose row has the key of an unmoved row of
+		// boards, and whose own row trigger the trigger check of boards does not read.
+		for _, statement := range []string{
+			"SET ROLE " + f.owner,
+			"CREATE TABLE public.lc09t07_log (n int)",
+			"CREATE TABLE public.boards_child (tenant_id text NOT NULL, id uuid NOT NULL, title text NOT NULL, heading text)",
+			"SELECT pg_catalog.set_config('app.tenant', 'tenant-a', false)",
+			"INSERT INTO public.boards_child (tenant_id, id, title) SELECT tenant_id, id, title FROM ONLY public.boards WHERE heading IS NULL AND tenant_id = 'tenant-a' LIMIT 1",
+			"RESET app.tenant",
+			// The child needs the CHECK of boards to inherit from it; NOT VALID keeps its unmoved row.
+			"ALTER TABLE public.boards_child ADD CONSTRAINT boards_heading_complete CHECK ((heading IS NOT NULL) OR (title IS NULL)) NOT VALID",
+			"ALTER TABLE public.boards_child INHERIT public.boards",
+			`CREATE FUNCTION public.lc09t07_f() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN INSERT INTO public.lc09t07_log VALUES (1); RETURN NEW; END$$`,
+			"CREATE TRIGGER lc09t07_child BEFORE UPDATE ON public.boards_child FOR EACH ROW EXECUTE FUNCTION public.lc09t07_f()",
+			"RESET ROLE",
+		} {
+			if _, err := f.admin.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+		err := runBackfills(ctx, f.admin, m)
+		var fired, childMoved, parentUnmoved int
+		if err := f.admin.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM public.lc09t07_log), (SELECT count(*) FROM ONLY public.boards_child WHERE heading IS NOT NULL),
+  (SELECT count(*) FROM ONLY public.boards WHERE heading IS NULL)`).Scan(&fired, &childMoved, &parentUnmoved); err != nil {
+			t.Fatal(err)
+		}
+		if fired != 0 || childMoved != 0 || parentUnmoved != 0 {
+			t.Fatalf("the backfill (%v) fired the child's trigger %d times, moved %d child rows and left %d rows of boards unmoved, want 0, 0 and 0", err, fired, childMoved, parentUnmoved)
+		}
+	})
+}
+
 func TestMigrateBackfillSessions(t *testing.T) {
 	t.Run("ST-SUP-RP14-LC03-T06 After an error and after a cancel in the backfill step no pooled session runs as the owner role", func(t *testing.T) {
 		cases := []struct {

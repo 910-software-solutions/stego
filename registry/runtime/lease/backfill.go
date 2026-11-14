@@ -653,8 +653,10 @@ func (b *Backfill) batch(ctx context.Context) error {
 }
 
 // triggersStatement reads the triggers of a table that are not internal, each with the function that it runs as
-// schema.function. The internal triggers are those of the foreign keys, which the manifest names as constraints.
-const triggersStatement = `SELECT t.tgname, pn.nspname || '.' || p.proname FROM pg_catalog.pg_trigger t
+// schema.function. The internal triggers are those of the foreign keys, which the manifest names as constraints. The
+// guard runs it with the search path pg_catalog, pg_temp, and its operator is qualified too, so an operator that a
+// role makes in another schema, such as public.||(name, text), cannot stand in for it (review of PR #311, L1).
+const triggersStatement = `SELECT t.tgname, pn.nspname OPERATOR(pg_catalog.||) '.' OPERATOR(pg_catalog.||) p.proname FROM pg_catalog.pg_trigger t
   JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
   JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace pn ON pn.oid = p.pronamespace
   WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal ORDER BY 1`
@@ -670,24 +672,50 @@ func (b *Backfill) guard(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, "LOCK TABLE "+quoteName(b.schema)+"."+quoteName(b.table)+" IN ROW EXCLUSIVE MODE"); err != nil {
 		return fmt.Errorf("backfill %s: lock the table: %w", b.change, err)
 	}
-	rows, err := tx.QueryContext(ctx, triggersStatement, b.schema, b.table)
+	found, err := b.readTriggers(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("backfill %s: read the triggers: %w", b.change, err)
 	}
-	defer rows.Close()
+	for _, trigger := range found {
+		if want, ok := b.triggers[trigger[0]]; !ok || want != trigger[1] {
+			return fmt.Errorf("backfill %s: %w: trigger %q on %s.%s", b.change, ErrTrigger, trigger[0], b.schema, b.table)
+		}
+	}
+	return nil
+}
+
+// readTriggers reads the triggers of the table of b in tx, each as its name and its function, with the search path
+// pg_catalog, pg_temp for the read, as manifest.Check reads the catalog, and then sets the search path of tx back
+// for the step (review of PR #311, L1).
+func (b *Backfill) readTriggers(ctx context.Context, tx *sql.Tx) ([][2]string, error) {
+	var path string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)"); err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, triggersStatement, b.schema, b.table)
+	if err != nil {
+		return nil, err
+	}
+	var found [][2]string
 	for rows.Next() {
 		var name, function string
 		if err := rows.Scan(&name, &function); err != nil {
-			return fmt.Errorf("backfill %s: read the triggers: %w", b.change, err)
+			rows.Close()
+			return nil, err
 		}
-		if want, ok := b.triggers[name]; !ok || want != function {
-			return fmt.Errorf("backfill %s: %w: trigger %q on %s.%s", b.change, ErrTrigger, name, b.schema, b.table)
-		}
+		found = append(found, [2]string{name, function})
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("backfill %s: read the triggers: %w", b.change, err)
+		return nil, err
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', $1, true)", path); err != nil {
+		return nil, err
+	}
+	return found, nil
 }
 
 // finish marks the change complete only after its completeness CHECK validates: it runs the validate statement in
@@ -921,7 +949,9 @@ func (b *Backfill) watch(ctx context.Context, held *Held) {
 // order of the key. It sets BackfillSetting first, so the sync trigger of the change passes the batch's rows
 // (ST-SUP-RC01-OC32). Check is the completeness CHECK of the step on the table, which Validate validates before the
 // change is marked complete, since the walk over the tenant list does not read a row of a tenant that the list does
-// not hold (decision on ST-SUP-Q120 (c), orchestrator under the owner's delegation, 2026-11-14).
+// not hold (decision on ST-SUP-Q120 (c), orchestrator under the owner's delegation, 2026-11-14). The batch updates
+// ONLY the table, so a table that inherits from it, which the trigger check of the batch does not read, has no row
+// that the batch changes and no trigger that it fires (review of PR #311, info).
 type Copy struct {
 	Change, Table, TenantColumn, From, To, Tenants, Check string
 }
@@ -959,7 +989,7 @@ func (c Copy) Step() (Step, error) {
 		where = quoteName(c.TenantColumn) + " = $3 AND "
 	}
 	batch := `WITH batch AS (SELECT id FROM ` + table + ` WHERE ` + where + `($1::text IS NULL OR id > $1::uuid) ORDER BY id LIMIT $2),
-moved AS (UPDATE ` + table + ` t SET ` + to + ` = t.` + from + ` FROM batch b WHERE ` + strings.ReplaceAll(where, quoteName(c.TenantColumn), "t."+quoteName(c.TenantColumn)) +
+moved AS (UPDATE ONLY ` + table + ` t SET ` + to + ` = t.` + from + ` FROM batch b WHERE ` + strings.ReplaceAll(where, quoteName(c.TenantColumn), "t."+quoteName(c.TenantColumn)) +
 		`t.id = b.id AND t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL RETURNING 1)
 SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM moved), (SELECT id::text FROM batch ORDER BY id DESC LIMIT 1)`
 	next := `SELECT pg_catalog.min(tenant_id) FROM ` + c.Tenants + ` WHERE $1::text IS NULL OR tenant_id > $1::text`
