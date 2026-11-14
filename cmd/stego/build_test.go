@@ -173,7 +173,7 @@ func TestBuildDownloadWritesAStatedRecordedCache(t *testing.T) {
 	t.Run("ST-BLD-UC02-R02-T01 The cache record lists each module by path, version and hash, and the revision it serves", func(t *testing.T) {
 		source, revision := tinySource(t, nil)
 		output := filepath.Join(t.TempDir(), "cache")
-		_, err := capture(t, runBuild, downloadArgs(source, revision, pinnedGo(t), output)...)
+		printed, err := capture(t, runBuild, downloadArgs(source, revision, pinnedGo(t), output)...)
 		skipUnlessPinned(t, err)
 		if err != nil {
 			t.Fatal(err)
@@ -182,6 +182,9 @@ func TestBuildDownloadWritesAStatedRecordedCache(t *testing.T) {
 		want := appbuild.CachedModule{Path: tinyModule, Version: tinyVersion, Sum: tinySum, Source: appbuild.ProxySource}
 		if record.SourceRevision != revision || len(record.Modules) != 1 || record.Modules[0] != want {
 			t.Fatalf("the record names revision %s and modules %v; expected %s and %v", record.SourceRevision, record.Modules, revision, want)
+		}
+		if wantLine := "Downloaded the module cache of revision " + revision + " into " + output + ": 1 module(s), recorded in " + filepath.Join(output, "module-cache.json") + ".\n"; printed != wantLine {
+			t.Errorf("stego build download printed %q, want %q", printed, wantLine)
 		}
 	})
 }
