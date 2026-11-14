@@ -1911,8 +1911,8 @@ CREATE EVENT TRIGGER fail_drop ON ddl_command_start WHEN TAG IN ('DROP INDEX') E
 					if present || drops != 3 || strings.Contains(err.Error(), "drops of it failed") {
 						t.Errorf("after two failed drops the index is present %v after %d drops, and the job gives %v; want it dropped by the third drop and only the build failure", present, drops, err)
 					}
-				} else if !present || valid || !strings.Contains(err.Error(), `the failed build left the invalid index public."boards_slug_key", and 5 drops of it failed`) {
-					t.Errorf("when each drop fails the index is present %v and valid %v, and the job gives %v; want the invalid index named in the error after 5 drops", present, valid, err)
+				} else if !present || valid || drops != 5 || !strings.Contains(err.Error(), `the failed build left the invalid index public."boards_slug_key", and 5 drops of it failed`) {
+					t.Errorf("when each drop fails the index is present %v and valid %v after %d drops, and the job gives %v; want the invalid index named in the error after 5 drops", present, valid, drops, err)
 				}
 				if ledgerHolds(t, db, slugUnique) {
 					t.Error("the ledger holds the failed build")
