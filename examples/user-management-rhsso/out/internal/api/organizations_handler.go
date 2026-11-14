@@ -67,7 +67,7 @@ func NewOrganizationsHandler(rt *Runtime, beforeCreateChain slots.BeforeCreateSl
 
 // organizationsFromView gives the API value of a read-only Organization. A secret field is never read (ST-DECL-EN03).
 func organizationsFromView(v data.OrganizationView) Organization {
-	return Organization{ID: v.ID, Name: v.Name, Description: ptrOf(v.Description)}
+	return Organization{ID: v.ID, Name: v.Name, Description: v.Description}
 }
 
 // organizationsPresented gives the response value of one Organization: its secret fields are cleared, so no response and no stored
