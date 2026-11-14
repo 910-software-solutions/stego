@@ -168,8 +168,24 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 			NewRelay: svcauthz.NewRelay, WatchInterval: svcauthz.WatchInterval,
 			AuditJobs: svcaudit.Jobs, AnchorPeriod: svcaudit.AnchorPeriod, RetentionMonths: svcaudit.RetentionMonths, TenantSchema: tenantSchema,
 		},
-		Collections: api.Entities(),
+		Collections:  api.Entities(),
+		Provisioning: provisioning(),
 	}
+}
+
+// provisioning gives the declared tenant provisioning from the entries of Provision and Retire in the
+// operation-to-permission table (ST-SUP-RC27-OC09, ST-SUP-RC29-OC15).
+func provisioning() *service.Provisioning {
+	p := &service.Provisioning{}
+	for _, o := range svcauthz.Operations {
+		switch o.Tenant {
+		case "provision":
+			p.ResourceType, p.Provision, p.ProvisionRoute = o.ResourceType, o.Permission, o.Route
+		case "retire":
+			p.Retire, p.RetireRoute = o.Permission, o.Route
+		}
+	}
+	return p
 }
 
 // NewService builds the runtime of the service through the service runtime, from the settings of the deployment and
@@ -204,6 +220,17 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	for _, o := range svcauthz.Operations {
 		if o.Writer {
 			rt.routes.Handle(o.Route, command.ServeRevocationStatus(svc.Collections(), subjectType))
+		}
+	}
+	// Provision and Retire, which the service serves itself, come from their entries of the operation-to-permission
+	// table only (ST-SUP-RC27-OC09, ST-SUP-RC29-OC15).
+	provision, retire := svc.TenantRoutes()
+	for _, o := range svcauthz.Operations {
+		switch o.Tenant {
+		case "provision":
+			rt.routes.Handle(o.Route, provision)
+		case "retire":
+			rt.routes.Handle(o.Route, retire)
 		}
 	}
 	return rt, nil
