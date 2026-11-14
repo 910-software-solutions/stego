@@ -191,6 +191,9 @@ func runInit(args []string) error {
 	for _, path := range result.Created {
 		fmt.Printf("  %s\n", path)
 	}
+	// Plan and apply check each release against the record of the default branch, and a repository with no
+	// commit holds none (decision on finding G1 of the walkthrough re-run, 2026-11-14).
+	fmt.Println("Commit the service folder to Git before its first release: plan and apply check each release against the default branch.")
 	return nil
 }
 

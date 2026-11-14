@@ -127,6 +127,58 @@ func TestSchemaStepPlan(t *testing.T) {
 			t.Errorf("a .git link to a removed worktree: %v, want a refusal, not a plan with no check:\n%s%s", err, stdout, stderr)
 		}
 	})
+	t.Run("ST-GEN-UC14-R02-T02 In a repository with no commit, plan and apply take a service with no record as its first release", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// stego init tells the author to commit before the first release.
+		fresh := filepath.Join(s.parent, "fresh")
+		if err := os.MkdirAll(filepath.Join(fresh, ".stego"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, fresh, ".stego/config.yaml", s.read(t, ".stego/config.yaml"), 0o644)
+		initialize := exec.Command(stegoBinary(t), "init", "--archetype", "rest-crud")
+		initialize.Dir, initialize.Env = fresh, s.env
+		if output, err := initialize.CombinedOutput(); err != nil || !strings.Contains(string(output), "Commit the service folder to Git before its first release") {
+			t.Errorf("stego init: %v, want the hint to commit before the first release:\n%s", err, output)
+		}
+		// A new repository with no commit, as git init and stego init leave it.
+		unborn := s.copyService(t, "notes-unborn")
+		if output, err := exec.Command("rm", "-rf", filepath.Join(unborn.service, ".git")).CombinedOutput(); err != nil {
+			t.Fatalf("remove the repository: %v\n%s", err, output)
+		}
+		git(t, unborn.service, "init", "-q", "-b", "main")
+		// The service has a record, so a release may have run: the check is not skipped.
+		before := tree(t, unborn.service)
+		for _, args := range [][]string{{"plan"}, {"apply"}} {
+			if stdout, stderr, err := unborn.stego(t, args...); err == nil || !strings.Contains(stdout+stderr, "has no commit, and the service has a record") {
+				t.Errorf("stego %s with a record and no commit: %v, want a refusal that asks for a commit:\n%s%s", args[0], err, stdout, stderr)
+			}
+		}
+		if after := tree(t, unborn.service); !maps.Equal(before, after) {
+			t.Error("a refused plan or apply changed a file of the service folder")
+		}
+		// With no record, it is the first release: plan and apply run with no base check.
+		if err := os.Remove(filepath.Join(unborn.service, ".stego", "state.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if planned := unborn.must(t, "plan"); !strings.Contains(planned, "No base check: the repository has no commit and the service has no record, so this is the first release") {
+			t.Errorf("plan in a repository with no commit does not take the first release:\n%s", planned)
+		}
+		if applied := unborn.must(t, "apply"); !strings.Contains(applied, "this is the first release") {
+			t.Errorf("apply in a repository with no commit does not take the first release:\n%s", applied)
+		}
+		// A base that the author names is still read: in a repository with no commit it names none.
+		if stdout, stderr, err := unborn.stego(t, "plan", "--base", "main"); err == nil || !strings.Contains(stdout+stderr, "which has no commit: for the first release, run with no --base") {
+			t.Errorf("plan --base main with no commit: %v, want a refusal that says to run with no --base:\n%s%s", err, stdout, stderr)
+		}
+		// A repository with a commit on a branch that is not the default one still has no default branch.
+		git(t, unborn.service, "add", "-A")
+		git(t, unborn.service, "commit", "-q", "-m", "notes")
+		git(t, unborn.service, "branch", "-m", "trunk")
+		if stdout, stderr, err := unborn.stego(t, "plan"); err == nil || !strings.Contains(stdout+stderr, "has no default branch") {
+			t.Errorf("a repository with a commit and no default branch: %v, want a refusal that asks for --base:\n%s%s", err, stdout, stderr)
+		}
+	})
 	t.Run("ST-GEN-UC12-R06-T01 Apply writes the same add steps for a new entity and a new optional field each time", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)

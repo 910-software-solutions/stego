@@ -40,8 +40,13 @@ ref that `--base` names, or the default branch of the repository. The default
 branch is the branch of `origin` that `refs/remotes/origin/HEAD` names, else a
 local `main`, else `master`. When the check refuses the declaration, plan and
 apply write nothing. When the service folder is in no Git repository, there is
-no check, and plan and apply say so. A repository with no such branch, or one
-that git cannot read, stops plan and apply: name the base with `--base`.
+no check, and plan and apply say so. A new repository with no commit holds no
+base: when the service has no record either, plan and apply take it as the
+first release, with no check, and say so. When the service has a record, a
+release may have run, so plan and apply stop: commit the service folder with
+its record. `stego init` tells you to commit before the first release. A
+repository with commits but no such branch, or one that git cannot read,
+stops plan and apply: name the base with `--base`.
 
 ## The migrations of the steps
 
