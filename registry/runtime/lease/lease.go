@@ -28,13 +28,16 @@ const LeasesTable = `CREATE TABLE IF NOT EXISTS public.leases (
 )`
 
 // acquireStatement is the statement of Acquire in ST-SUP-RP09-LC02: it gives the lease to
-// the holder when the holder already has it or the lease has expired, and it increments the token each time.
-const acquireStatement = `UPDATE public.leases SET holder=$1, expires_at=now()+make_interval(secs => $3), token=token+1 WHERE name=$2 AND (holder=$1 OR expires_at<now()) RETURNING token`
+// the holder when the holder already has it or the lease has expired, and it increments the token each time. Its
+// functions and operators are those of pg_catalog by name, so no function or operator of another schema earlier on
+// the search path runs in it.
+const acquireStatement = `UPDATE public.leases SET holder=$1, expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) pg_catalog.make_interval(secs => $3), token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND (holder OPERATOR(pg_catalog.=) $1 OR expires_at OPERATOR(pg_catalog.<) pg_catalog.now()) RETURNING token`
 
 // renewStatement is the statement of Renew in ST-SUP-RP09-LC02: it extends the lease and increments the token only
 // while the row still names the holder with the token it holds and the lease has not expired, so a renew after the
-// lease expired, was taken over or was released takes nothing and leaves the row as it is.
-const renewStatement = `UPDATE public.leases SET expires_at=now()+make_interval(secs => $4), token=token+1 WHERE name=$2 AND holder=$1 AND token=$3 AND expires_at>=now() RETURNING token`
+// lease expired, was taken over or was released takes nothing and leaves the row as it is. Its functions and
+// operators are those of pg_catalog by name, as in acquireStatement.
+const renewStatement = `UPDATE public.leases SET expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) pg_catalog.make_interval(secs => $4), token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND holder OPERATOR(pg_catalog.=) $1 AND token OPERATOR(pg_catalog.=) $3 AND expires_at OPERATOR(pg_catalog.>=) pg_catalog.now() RETURNING token`
 
 // releaseStatement makes the lease expire now, but only while the row still names the holder with its token. It
 // keeps the holder and the token, so the next acquire increments the token past every write of this holder.

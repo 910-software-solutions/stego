@@ -462,6 +462,66 @@ WHERE i.indrelid = 'public.orders'::regclass`)
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC40-T04 The schema manifest names the tenant key of each owned table, which holds on PostgreSQL with row-level security", func(t *testing.T) {
+		cfg, db := database(t, cfg, admin)
+		migrate(t, cfg, db, func(ctx context.Context, conn *sql.Conn) error { return widgets.Migrate(ctx, conn) }, "widgets_access.json")
+		insert := `INSERT INTO public."widgets" ("tenant_id", "id", "name", "kind", "weight", "count", "total", "code", "serial") VALUES ($1, $2, $3, 'small', 1.5, 1, 2, $4, $4)`
+		if code := write(t, db, "tenant-a", insert, "tenant-a", uuid.NewString(), "before", "c-before"); code != "" {
+			t.Fatalf("a widget of tenant-a before the key: %s", code)
+		}
+		if keys := addTenantKeys(t, db, widgets.SchemaManifest, "tenant-a", "tenant-b"); keys != 2 {
+			t.Fatalf("the manifest of widgets names %d tenant keys, want one for each of the owned tables widgets and orders", keys)
+		}
+		if _, err := db.Exec("ALTER ROLE " + pgx.Identifier{tenancy.RuntimeRole}.Sanitize() + " LOGIN PASSWORD 'tables-check'"); err != nil {
+			t.Fatal(err)
+		}
+		runtime := cfg.Copy()
+		runtime.User, runtime.Password = tenancy.RuntimeRole, "tables-check"
+		reader := stdlib.OpenDB(*runtime)
+		defer reader.Close()
+		if err := manifest.Check(context.Background(), reader, keyed(widgets.SchemaManifest)); err != nil {
+			t.Fatalf("the database with the tenant keys does not hold the schema manifest: %v", err)
+		}
+		// The key of each owned table refers to the tenant list with NO ACTION, and an index of the table leads with
+		// the tenant column; the shared table catalogs has no key.
+		rows, err := db.Query(`SELECT c.relname, k.confdeltype::text || k.confupdtype::text, EXISTS (SELECT 1 FROM pg_catalog.pg_index i
+  JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0] WHERE i.indrelid = c.oid AND a.attname = 'tenant_id' AND i.indisvalid AND i.indpred IS NULL)
+FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+WHERE k.contype = 'f' AND k.confrelid = 'public.stego_tenants'::regclass ORDER BY 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var keyedTables []string
+		for rows.Next() {
+			var table, actions string
+			var led bool
+			if err := rows.Scan(&table, &actions, &led); err != nil {
+				t.Fatal(err)
+			}
+			keyedTables = append(keyedTables, table)
+			if actions != "aa" || !led {
+				t.Errorf("the tenant key of %s has the actions %s and an index led by the tenant column %v, want aa and true", table, actions, led)
+			}
+		}
+		rows.Close()
+		if !slices.Equal(keyedTables, []string{"orders", "widgets"}) {
+			t.Errorf("the tables with a tenant key are %v, want orders and widgets", keyedTables)
+		}
+		// The WITH CHECK of the tenant policy refuses a row of another tenant, listed or not, and the key refuses a
+		// row of an unlisted tenant of the transaction.
+		for _, other := range []string{"tenant-b", "tenant-z"} {
+			if code := write(t, db, "tenant-a", insert, other, uuid.NewString(), "other-"+other, "c-"+other); code != "42501" {
+				t.Errorf("a widget of tenant-a for %s: SQLSTATE %q, want the row-level security refusal 42501", other, code)
+			}
+		}
+		if code := write(t, db, "tenant-z", insert, "tenant-z", uuid.NewString(), "unlisted", "c-unlisted"); code != "23503" {
+			t.Errorf("a widget of the unlisted tenant-z: SQLSTATE %q, want the foreign key violation 23503", code)
+		}
+		if code := write(t, db, "tenant-a", insert, "tenant-a", uuid.NewString(), "after", "c-after"); code != "" {
+			t.Errorf("a widget of the listed tenant-a: SQLSTATE %q", code)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC12-T10 The schema manifest names each search index as a lookup index, and a database without one does not satisfy it", func(t *testing.T) {
 		noteCfg, noted := database(t, cfg, admin)
 		migrate(t, noteCfg, noted, func(ctx context.Context, conn *sql.Conn) error { return boardsnote.Migrate(ctx, conn) }, "boardsnote_access.json")
@@ -1408,6 +1468,84 @@ WHERE pronamespace = 'stego_schema'::regnamespace AND proname IN ('backfill_read
 		contracted(t, up)
 	})
 
+	t.Run("ST-SUP-RC01-OC24-T05 The check refuses a sync trigger that is disabled, fires only on a replica or runs another function", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		original := `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`
+		if _, err := up.Exec(`CREATE FUNCTION public."boards_heading_sync"() RETURNS trigger LANGUAGE plpgsql AS $f$BEGIN RETURN NEW; END;$f$`); err != nil {
+			t.Fatal(err)
+		}
+		for name, statements := range map[string][]string{
+			"disabled":         {`ALTER TABLE public."boards" DISABLE TRIGGER "boards_heading_sync"`},
+			"replica only":     {`ALTER TABLE public."boards" ENABLE REPLICA TRIGGER "boards_heading_sync"`},
+			"another function": {`DROP TRIGGER "boards_heading_sync" ON public."boards"`, `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH ROW EXECUTE FUNCTION public."boards_heading_sync"()`},
+		} {
+			for _, statement := range statements {
+				if _, err := up.Exec(statement); err != nil {
+					t.Fatalf("%s: %.60s: %v", name, statement, err)
+				}
+			}
+			before := catalog(t, up)
+			if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "the sync trigger boards_heading_sync is disabled or does not run its sync function") {
+				t.Errorf("the check with a sync trigger that is %s says: %s", name, text)
+			}
+			if after := catalog(t, up); !slices.Equal(before, after) || contractRows(t, up) != 0 {
+				t.Errorf("the refused step with a sync trigger that is %s changed the catalog or the ledger", name)
+			}
+			for _, statement := range []string{`DROP TRIGGER "boards_heading_sync" ON public."boards"`, original} {
+				if _, err := up.Exec(statement); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		// A trigger that fires always runs its function on every write, so the step goes on.
+		if _, err := up.Exec(`ALTER TABLE public."boards" ENABLE ALWAYS TRIGGER "boards_heading_sync"`); err != nil {
+			t.Fatal(err)
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the step with the sync trigger enabled always: %v", err)
+		}
+		contracted(t, up)
+	})
+
+	t.Run("ST-SUP-RC01-OC24-T06 The check refuses a sync trigger of the name and function that is not the trigger that the step made", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		original := `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`
+		// Each trigger has the name and the sync function of the step, is enabled, and does not copy each write of
+		// the release before into the new column (security review of PR #320, L1).
+		for _, variant := range []struct{ name, statement string }{
+			{"INSERT only", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"WHEN (false)", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH ROW WHEN (false) EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"UPDATE OF another column", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE OF "id" ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"FOR EACH STATEMENT", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH STATEMENT EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"AFTER ROW", `CREATE TRIGGER "boards_heading_sync" AFTER INSERT OR UPDATE ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+		} {
+			for _, statement := range []string{`DROP TRIGGER "boards_heading_sync" ON public."boards"`, variant.statement} {
+				if _, err := up.Exec(statement); err != nil {
+					t.Fatalf("%s: %.60s: %v", variant.name, statement, err)
+				}
+			}
+			before := catalog(t, up)
+			if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "the sync trigger boards_heading_sync is disabled or does not run its sync function before each write of a row") {
+				t.Errorf("the check with a sync trigger %s says: %s", variant.name, text)
+			}
+			if after := catalog(t, up); !slices.Equal(before, after) || contractRows(t, up) != 0 {
+				t.Errorf("the refused step with a sync trigger %s changed the catalog or the ledger", variant.name)
+			}
+		}
+		// The trigger as the step made it passes the check, and the step goes on.
+		for _, statement := range []string{`DROP TRIGGER "boards_heading_sync" ON public."boards"`, original} {
+			if _, err := up.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the step with the sync trigger that the step made: %v", err)
+		}
+		contracted(t, up)
+	})
+
 	t.Run("ST-SUP-RC01-OC39-T03 A write of the release before after the drop of the sync trigger fails and loses no edit", func(t *testing.T) {
 		upCfg, up := contractBase(t)
 		finish(t, up)
@@ -1819,6 +1957,122 @@ FROM pg_catalog.pg_class c WHERE c.oid = $1::pg_catalog.regclass`, "public."+tab
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC22-T09 The validate migration of an add step checks each row of an owned table for a new foreign key, past row-level security", func(t *testing.T) {
+		ctx := context.Background()
+		fkCfg, db := database(t, cfg, admin)
+		migrate(t, fkCfg, db, func(ctx context.Context, conn *sql.Conn) error { return boardsbase.Migrate(ctx, conn) }, "boardsbase_access.json")
+		first, second := uuid.Must(uuid.NewV7()).String(), uuid.Must(uuid.NewV7()).String()
+		if _, err := db.Exec(`INSERT INTO public."boards" ("tenant_id", "id", "title") VALUES ('tenant-a', $1, 'first'), ('tenant-a', $2, 'second')`, first, second); err != nil {
+			t.Fatal(err)
+		}
+		job := stdlib.OpenDB(*fkCfg)
+		defer job.Close()
+		conn, err := job.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		// The job applies the migrations of boardsnote before the validation of the reference parent_id, each with
+		// its ledger row, as the owner role.
+		const validate = "step_0003_add-board-parent-id_expand_validate"
+		entries, err := os.ReadDir("../boardsnote/migrations")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		for _, entry := range entries {
+			name := strings.TrimSuffix(entry.Name(), ".sql")
+			if !strings.HasPrefix(name, "step_") || name > validate {
+				continue
+			}
+			data, err := os.ReadFile("../boardsnote/migrations/" + entry.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == validate {
+				body = string(data)
+				continue
+			}
+			if _, err := conn.ExecContext(ctx, string(data)); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if _, err := conn.ExecContext(ctx, "INSERT INTO stego_schema.migrations (version, digest, compatible_with) VALUES ($1, $2, '{}')", name, boardsnote.Digest(string(data))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !strings.Contains(body, `VALIDATE CONSTRAINT "boards_parent_id_fkey"`) {
+			t.Fatalf("the migration %s does not validate the foreign key of parent_id: %q", validate, body)
+		}
+		// A row that the key refuses, which only a write past the key can make: a session in the replica role
+		// fires no trigger of the key. The row of tenant-a refers to a board that is not there.
+		orphan, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{"SET LOCAL session_replication_role = replica", `UPDATE public."boards" SET "parent_id" = '` + uuid.Must(uuid.NewV7()).String() + `' WHERE "id" = '` + first + `'`} {
+			if _, err := orphan.Exec(statement); err != nil {
+				_ = orphan.Rollback()
+				t.Fatal(err)
+			}
+		}
+		if err := orphan.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		// PostgreSQL 17.7 validates the key with one query as the owner role, which row-level security limits to the
+		// rows of the tenant setting, here none: the body run as it is gives no error.
+		plain, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, control := plain.ExecContext(ctx, body)
+		_ = plain.Rollback()
+		t.Logf("the body of %s run as it is as the owner role gives %v", validate, control)
+		acl := func() string {
+			var text string
+			if err := db.QueryRow(`SELECT coalesce(relacl::text, '') FROM pg_catalog.pg_class WHERE oid = 'public.boards'::pg_catalog.regclass`).Scan(&text); err != nil {
+				t.Fatal(err)
+			}
+			return text
+		}
+		state := func() (validated bool, rows int) {
+			if err := db.QueryRow(`SELECT (SELECT convalidated FROM pg_catalog.pg_constraint WHERE conrelid = 'public.boards'::pg_catalog.regclass AND conname = 'boards_parent_id_fkey'),
+  (SELECT count(*) FROM stego_schema.migrations WHERE version = $1)`, validate).Scan(&validated, &rows); err != nil {
+				t.Fatal(err)
+			}
+			return validated, rows
+		}
+		before := acl()
+		err = boardsnote.Migrate(ctx, conn)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23503" || !strings.Contains(err.Error(), validate) {
+			t.Fatalf("the job over a row that the key refuses gives %v, want the foreign key violation 23503 at %s", err, validate)
+		}
+		if validated, rows := state(); validated || rows != 0 {
+			t.Errorf("after the refusal the key is validated %v with %d ledger rows of %s, want it NOT VALID and no row", validated, rows, validate)
+		}
+		if after := acl(); after != before {
+			t.Errorf("the refused validation changed the grants of boards from %q to %q", before, after)
+		}
+		// Once the row is fixed, the job validates the key and every later migration, and the owner role reads
+		// boards again.
+		if _, err := db.Exec(`UPDATE public."boards" SET "parent_id" = $1 WHERE "id" = $2`, second, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := boardsnote.Migrate(ctx, conn); err != nil {
+			t.Fatalf("the job after the row is fixed: %v", err)
+		}
+		if validated, rows := state(); !validated || rows != 1 {
+			t.Errorf("after the job the key is validated %v with %d ledger rows of %s", validated, rows, validate)
+		}
+		var reads bool
+		if err := db.QueryRow(`SELECT pg_catalog.has_table_privilege($1, 'public.boards', 'SELECT')`, tenancy.OwnerRole).Scan(&reads); err != nil || !reads {
+			t.Errorf("the owner role reads boards after the job: %v (error %v)", reads, err)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC38-T02 An index of an add step is built concurrently, and a failed build drops its invalid index at once", func(t *testing.T) {
 		ctx := context.Background()
 		slugCfg, slugged := database(t, cfg, admin)
@@ -2215,8 +2469,69 @@ func constraintsOf(body string) []string {
 }
 
 // owned gives the generated manifest m with the owner role of the tenancy component as its owner, as the service
-// runtime gives it (service.checkSchema), so the held schema of the sync functions has an owner to check.
+// runtime gives it (service.checkSchema), so the held schema of the sync functions has an owner to check. The tests
+// of the migrations run the ledger alone, with no tenant list, so owned leaves out the tenant key of each table,
+// which the migration job adds after the tenant list (ST-SUP-RP14-LC03); keyed checks the key.
 func owned(m manifest.Manifest) manifest.Manifest {
+	m = keyed(m)
+	tables := make([]manifest.Table, len(m.Tables))
+	for i, table := range m.Tables {
+		if key := table.TenantKey; key != nil {
+			table.TenantKey = nil
+			table.Constraints = slices.DeleteFunc(slices.Clone(table.Constraints), func(c manifest.Constraint) bool { return c.Name == key.Name })
+		}
+		tables[i] = table
+	}
+	m.Tables = tables
+	return m
+}
+
+// keyed gives the generated manifest m with the owner role of the tenancy component as its owner, with the tenant
+// key of each owned table.
+func keyed(m manifest.Manifest) manifest.Manifest {
 	m.Owner = tenancy.OwnerRole
 	return m
+}
+
+// addTenantKeys makes the tenant list as the owner role, as the migration job does, lists the tenants, and adds and
+// validates the tenant key of each table of m that names one, in the form of the migration job (ST-SUP-RP14-LC03),
+// and gives the number of keys.
+func addTenantKeys(t *testing.T, db *sql.DB, m manifest.Manifest, tenants ...string) int {
+	t.Helper()
+	list, err := runtimetenant.Migration("public", tenancy.RuntimeRole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{"SET LOCAL ROLE " + pgx.Identifier{tenancy.OwnerRole}.Sanitize(), list}
+	keys := 0
+	for _, table := range m.Tables {
+		if key := table.TenantKey; key != nil {
+			keys++
+			name := pgx.Identifier{table.Schema, table.Name}.Sanitize()
+			statements = append(statements, "ALTER TABLE ONLY "+name+" ADD CONSTRAINT "+pgx.Identifier{key.Name}.Sanitize()+" FOREIGN KEY ("+
+				pgx.Identifier{key.Column}.Sanitize()+") REFERENCES \"public\".stego_tenants (tenant_id) ON DELETE NO ACTION ON UPDATE NO ACTION NOT VALID",
+				"ALTER TABLE ONLY "+name+" VALIDATE CONSTRAINT "+pgx.Identifier{key.Name}.Sanitize())
+		}
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for i, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			t.Fatalf("%.80s: %v", statement, err)
+		}
+		if i == 1 {
+			for _, id := range tenants {
+				if _, err := tx.Exec("INSERT INTO public.stego_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return keys
 }

@@ -1285,17 +1285,41 @@ func TestBackfillTriggerOperator(t *testing.T) {
 			t.Fatalf("a plain name || text gave %q (error %v) with %d operator calls, want the operator of public to run once", joined, err, calls())
 		}
 		d.exec(t, "TRUNCATE public.operator_log")
-		settings := BackfillSettings{BatchSize: 4, Schema: "public", Table: "items", Triggers: map[string]string{"items_named": "public.items_named"}}
-		if err := newBackfill(t, it, settings).Run(ctx, d.db, heldLease(t, d, "h1", Settings{})); err != nil {
+		var session string
+		if err := d.db.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&session); err != nil {
+			t.Fatal(err)
+		}
+		// The step reads the search path in its own transaction, after the trigger check of its batch, so a check
+		// that does not set the path of the session back is seen inside the step and not only after Run (review of
+		// PR #311, low).
+		var paths []string
+		step := func(ctx context.Context, tx *sql.Tx, key *Key, limit int) (Batch, error) {
+			var path string
+			if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil {
+				return Batch{}, err
+			}
+			paths = append(paths, path)
+			return it.step(ctx, tx, key, limit)
+		}
+		settings := BackfillSettings{Key: KeyInteger, BatchSize: 4, Schema: "public", Table: "items", Triggers: map[string]string{"items_named": "public.items_named"}}
+		b, err := NewBackfill(backfillChange, step, settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Run(ctx, d.db, heldLease(t, d, "h1", Settings{})); err != nil {
 			t.Fatalf("Run gave %v, want the change complete", err)
 		}
 		if got := checkpointRow(t, d); !got.completed.Valid || got.moved != 10 || calls() != 0 {
 			t.Fatalf("the change is complete %v with %d rows moved, and the operator of public ran %d times in the trigger checks, want none", got.completed.Valid, got.moved, calls())
 		}
-		// The step after the check runs with the search path of the session again.
-		var path string
-		if err := d.db.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil || path == "pg_catalog, pg_temp" {
-			t.Fatalf("the session search path is %q (error %v) after the backfill", path, err)
+		// Each step after the check runs with the search path of the session again.
+		if len(paths) == 0 {
+			t.Fatal("the step never ran")
+		}
+		for i, path := range paths {
+			if path != session {
+				t.Fatalf("the step of batch %d ran with the search path %q, want the session's %q", i+1, path, session)
+			}
 		}
 	})
 }

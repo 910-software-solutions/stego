@@ -275,3 +275,85 @@ ORDER BY r.rolname`)
 	}
 	return nil
 }
+
+// ValidateForeignKey validates the foreign key key of table, which the table holds NOT VALID, in the transaction tx
+// of the migration job, as the role that owns table (ST-SUP-RP04-LC10). table is the name of the table as SQL text,
+// qualified with its schema, and key the name of the key with no quotes.
+//
+// PostgreSQL 17 validates a foreign key with one query as the current role when that role can read the columns of
+// the key in both tables and owns each table that has row-level security. Under FORCE ROW LEVEL SECURITY that query
+// sees only the rows of the tenant setting, so the owner role would validate a key over a table with rows that the
+// key refuses. When table or the table that the key refers to has row-level security, ValidateForeignKey therefore
+// first revokes SELECT on table from the current role in tx, which makes PostgreSQL check each row of table past
+// row-level security; when the key refers to table itself, it grants SELECT on the referenced columns again, which
+// that check reads. After the validation it grants SELECT on table again. No other session sees the revoke, and a
+// rollback of tx takes it back. When the current role can still read each column of the key in table, as through a
+// grant to PUBLIC or a role that it inherits from, it fails and validates nothing. It runs the validation with
+// row_security off, so that a PostgreSQL that takes the one query in spite of the revoke fails with SQLSTATE 42501
+// and does not validate the key over rows that it does not see (security review of PR #320, L2 and info,
+// orchestrator under the owner's delegation, 2026-11-14), and sets row_security back to its value before, so the
+// later statements of tx run as before. A row that the key refuses fails the validation with SQLSTATE 23503.
+func ValidateForeignKey(ctx context.Context, tx *sql.Tx, table, key string) error {
+	return validateForeignKey(ctx, tx, table, key, true)
+}
+
+// validateForeignKey is ValidateForeignKey; with revoke false it keeps the SELECT of the current role, as a
+// PostgreSQL would run the validation that takes its one query in spite of the revoke, which the test of the second
+// guard needs.
+func validateForeignKey(ctx context.Context, tx *sql.Tx, table, key string, revoke bool) error {
+	var setting string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('row_security')").Scan(&setting); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('row_security', 'off', true)"); err != nil {
+		return err
+	}
+	var secured, self bool
+	var referenced string
+	err := tx.QueryRowContext(ctx, `SELECT f.relrowsecurity OR r.relrowsecurity, k.conrelid = k.confrelid,
+  (SELECT pg_catalog.string_agg(pg_catalog.quote_ident(a.attname), ', ' ORDER BY c.n) FROM pg_catalog.unnest(k.confkey) WITH ORDINALITY AS c (attnum, n)
+    JOIN pg_catalog.pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = c.attnum)
+FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class f ON f.oid = k.conrelid JOIN pg_catalog.pg_class r ON r.oid = k.confrelid
+WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $2 AND k.contype = 'f'`, table, key).Scan(&secured, &self, &referenced)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("tenant: %s has no foreign key %s", table, key)
+	}
+	if err != nil {
+		return err
+	}
+	revoked := secured && revoke
+	if revoked {
+		statements := []string{"REVOKE SELECT ON TABLE " + table + " FROM CURRENT_USER"}
+		if self {
+			statements = append(statements, "GRANT SELECT ("+referenced+") ON TABLE "+table+" TO CURRENT_USER")
+		}
+		for _, statement := range statements {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+		// PostgreSQL takes its one query only when the role reads each column of the key in table.
+		var reads bool
+		if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.bool_and(pg_catalog.has_column_privilege(k.conrelid, c.attnum, 'SELECT'))
+FROM pg_catalog.pg_constraint k, pg_catalog.unnest(k.conkey) AS c (attnum)
+WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $2 AND k.contype = 'f'`, table, key).Scan(&reads); err != nil {
+			return err
+		}
+		if reads {
+			return fmt.Errorf("tenant: the current role reads the columns of the foreign key %s of %s after its SELECT is revoked, so the validation would not read every row", key, table)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE "+table+" VALIDATE CONSTRAINT "+pgx.Identifier{key}.Sanitize()); err != nil {
+		return err
+	}
+	if revoked {
+		// The revoke of SELECT on the table also takes back a SELECT on its columns.
+		for _, statement := range []string{"REVOKE SELECT ON TABLE " + table + " FROM CURRENT_USER", "GRANT SELECT ON TABLE " + table + " TO CURRENT_USER"} {
+			if _, err := tx.ExecContext(ctx, statement); err != nil {
+				return err
+			}
+		}
+	}
+	_, err = tx.ExecContext(ctx, "SELECT pg_catalog.set_config('row_security', $1, true)", setting)
+	return err
+}
