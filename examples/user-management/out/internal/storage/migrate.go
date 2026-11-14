@@ -777,10 +777,13 @@ func (r *contractRefusal) Refusal() string { return r.text }
 // of each listed tenant. When the trigger and the old column are both gone, a
 // run before passed this check and dropped them in one transaction, so the
 // check passes and the rerun goes on; when only the trigger is gone, the check
-// runs in full again (security review of PR #316, H1).
+// runs in full again (security review of PR #316, H1). A trigger of the name
+// that is disabled, fires only on a replica, or does not run the sync function
+// stego_steps.<trigger>() does not copy the writes of the release before, so
+// the check refuses it (security review of PR #316, L2).
 func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
-	var trigger, column bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &column); err != nil {
+	var trigger, syncing, column bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
 		return err
 	}
 	if !trigger && !column {
@@ -803,6 +806,8 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	exact := present && !noInherit && strings.TrimSuffix(definition, " NOT VALID") == c.Definition
 	state := ""
 	switch {
+	case trigger && !syncing:
+		state = "the sync trigger " + c.Trigger + " is disabled or does not run its sync function"
 	case !found:
 		state = "the backfill has no checkpoint row"
 	case failed > 0:
