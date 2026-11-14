@@ -12,32 +12,32 @@ last_applied:
             .stego/config.yaml:
                 exists: true
                 sha256: 1f22e1d31edec033c594c2564b8069aa79b45707f2319448a8c234843177b8e9
-                mode: 420
+                mode: 436
             authz/schema.zed:
                 exists: true
                 sha256: 4185ebd235edc2b5326b9e701f7ceb06e7183089c48b339fbecdc25a96e601c8
-                mode: 420
+                mode: 436
             go.mod:
                 exists: true
                 sha256: 282e50df213c1e5154adf7fb8dcc2c94ee6c1837ce0a5dd4721e85d8ed82236b
-                mode: 420
+                mode: 436
             go.sum:
                 exists: true
                 sha256: ea41f8f788de05aefb27cb78cb86a6e891de6da450b30e3e1066993b523d71be
-                mode: 420
+                mode: 436
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
-                mode: 420
-        sha256: 331f2584cecdb875d9b1aae5a8cc7a115ddeef1606a06cb7791952580b7a880f
+                mode: 436
+        sha256: 0df745aa810c98658826855087023b2107fee5ed474a8438c1c9fac7d0200e42
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261114163726-8f4e6aa68183
-        vcs: git
-        revision: 8f4e6aa681837897cb6c0c286bb8d64641703662
-        source_state: clean
+        module_version: (devel)
+        vcs: unknown
+        revision: unknown
+        source_state: unknown
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
@@ -158,13 +158,13 @@ last_applied:
         internal/authz/authz.go: 7b8b7211ae79c31a5c7555ada4114f56f17ed160a20c21a775068520b41e037a
         internal/authz/schema.zed: b92eda055de3d7b9a0cfe4fa015c3ab5ab12a1849f6178ee8aeaac5a56f729b2
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
-        internal/stegoruntime/runtime.go: cad33347e12455c54c4ddfd14b94c6df6dbcc75868ba0d251c8278610e03687b
+        internal/stegoruntime/runtime.go: b71932f556db93e86b3a287be9205b99924c27e9f46a8fb04e45e23dd25c3a87
         internal/storage/database.go: 2969e645f09850b504ad2725978a15d1ccad3147efb4a450d7360be23ffef627
-        internal/storage/migrate.go: ad7b8e21d9b28d152b4a8eeb905020cf6b76d9326489b28bd784a3a2761a991d
+        internal/storage/migrate.go: 48b4cda87f4f4e462c033e3c3ae8a21e8dd704489358aa649f0c95429e6e0949
         internal/storage/migrations/001_initial.sql: 8561b6d30aa26aeb145ee71633ecb53242fc7ef58dd6629aa917ac290e33085a
         internal/storage/runtime_access.go: dc187dc3c0bef1126faa0330e2d805990066f61e56a19fd0b4df9fd1a0ff6886
         internal/storage/schema_generation.go: ff7f059441677f4253c98670350c304d3111b391d877ba049b943a4ae1d9671e
-        internal/storage/schema_manifest.go: dde3a671bec3033b9b2719b126650d201ae8f00ec968363a3befa2ceb75d4fcb
+        internal/storage/schema_manifest.go: b804fe040ade8516288b1c60c5e80bf2caacbb579a123dbef8104574be215cf8
         internal/storage/tables.go: f3eaaff347c443b907317549ab299251599a0976e0796e2362e18b227f154ec3
         internal/tenancy/migrations/roles.sql: 131dcb112a94f82ead145bcb5797c5915ad94a230564e2181883d19944450fc9
         internal/tenancy/migrations/row_security.sql: 6813d74ed06f5df636433d5335339bcb4338f05de418002cd7ef94b60f44b6d9
