@@ -841,7 +841,7 @@ func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants stri
 			case err != nil:
 				return err
 			case !present:
-				return fmt.Errorf("the table %s.%s has no tenant key %s", k.schema, k.table, k.key.Name)
+				return fmt.Errorf("%s.%s has no tenant key %s", k.schema, k.table, k.key.Name)
 			case validated:
 				return nil
 			}
@@ -853,7 +853,7 @@ func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants stri
 				return err
 			}
 			if reads {
-				return fmt.Errorf("the owner role reads the table %s.%s after its SELECT is revoked, so the validation of the tenant key %s would not read every row", k.schema, k.table, k.key.Name)
+				return fmt.Errorf("the owner role reads %s.%s after its SELECT is revoked, so the validation of the tenant key %s would not read every row", k.schema, k.table, k.key.Name)
 			}
 			if _, err := tx.ExecContext(ctx, "ALTER TABLE ONLY "+table+" VALIDATE CONSTRAINT "+quote(k.key.Name)); err != nil {
 				return err
@@ -863,7 +863,7 @@ func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants stri
 		})
 		var state interface{ SQLState() string }
 		if errors.As(err, &state) && state.SQLState() == "23503" {
-			return &tenantKeyRefusal{text: fmt.Sprintf("the table %s.%s has a row of a tenant that the tenant list %s.stego_tenants does not hold, so its tenant key %s is not validated; provision the tenant or remove its rows, then run the migration job again",
+			return &tenantKeyRefusal{text: fmt.Sprintf("a row of %s.%s has a tenant that the tenant list of the schema %s does not hold, so the tenant key %s is not validated; provision the tenant or remove its rows, then run the migration job again",
 				k.schema, k.table, tenants, k.key.Name)}
 		}
 		if err != nil {
