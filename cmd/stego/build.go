@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/jsell-rh/stego/internal/appbuild"
@@ -44,8 +45,14 @@ func runBuild(args []string) error {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		_, err := appbuild.Download(ctx, options)
-		return err
+		record, err := appbuild.Download(ctx, options)
+		if err != nil {
+			return err
+		}
+		// A download that ends with no output looks the same as one that did nothing (walkthrough re-run, 2026-11-14).
+		fmt.Printf("Downloaded the module cache of revision %s into %s: %d module(s), recorded in %s.\n", record.SourceRevision,
+			options.Output, len(record.Modules), filepath.Join(options.Output, "module-cache.json"))
+		return nil
 	}
 	if len(args) > 0 && args[0] == "verify" {
 		flags := flag.NewFlagSet("build verify", flag.ContinueOnError)
