@@ -458,13 +458,18 @@ type tenantDecision struct {
 	seal.DecisionMark
 }
 
-// DecideTenant decides permission, the declared permission of action, provision or retire, on resource at the
+// DecideTenant decides the permission named as action, provision or retire, as DecideTenantPermission decides it.
+func (h *Handle) DecideTenant(ctx context.Context, action tenant.RequestAction, tenantID string, resource Resource, c Context) (tenant.Decision, bool, error) {
+	return h.DecideTenantPermission(ctx, action, string(action), tenantID, resource, c)
+}
+
+// DecideTenantPermission decides permission, the declared permission of action, provision or retire, on resource at the
 // floor, for a request that names the tenant tenantID (ST-SUP-RP06-LC17, ST-DECL-EN27). Like every evaluation of the
 // handle, resource has the ID of ResourceID in the handle's own tenant, the tenant of the principal who asks
 // (ST-SUP-RP06-LC22). On an allow it returns the decision that tenant.Requested takes, whose mark the internal seal
 // constructor makes with exactly that tenant ID and that action, so the allow serves only the one action on the one
 // tenant, and true; on a deny it returns no decision and false.
-func (h *Handle) DecideTenant(ctx context.Context, action tenant.RequestAction, permission, tenantID string, resource Resource, c Context) (tenant.Decision, bool, error) {
+func (h *Handle) DecideTenantPermission(ctx context.Context, action tenant.RequestAction, permission, tenantID string, resource Resource, c Context) (tenant.Decision, bool, error) {
 	if action != tenant.ProvisionAction && action != tenant.RetireAction {
 		return nil, false, errors.New("authz: the tenant action is not provision or retire")
 	}

@@ -305,7 +305,7 @@ func decideTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request
 	if err != nil {
 		return nil, internalf("the service-level resource was not built")
 	}
-	decision, allowed, err := handle.DecideTenant(ctx, spec.Action, spec.Permission, req.Resource, resource, nil)
+	decision, allowed, err := handle.DecideTenantPermission(ctx, spec.Action, spec.Permission, req.Resource, resource, nil)
 	switch {
 	case err != nil:
 		return nil, internalf("the permission of the tenant provisioning was not decided")
