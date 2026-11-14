@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -220,6 +221,64 @@ func TestSchemaStepPlan(t *testing.T) {
 			}
 			if after := tree(t, checkout.service); !maps.Equal(before, after) {
 				t.Errorf("%s: a refused plan or apply changed a file of the checkout", fetch.name)
+			}
+		}
+		// HEAD is not born, no ref exists and the repository is not shallow, but the object store holds the commits
+		// of the change or a FETCH_HEAD exists: the files came from a commit, so this is no new repository.
+		for _, unborn := range []struct {
+			name  string
+			steps [][]string
+			// objectsOnly removes FETCH_HEAD, so that only the commits in the object store tell; fetchHeadOnly
+			// removes the objects, so that only FETCH_HEAD tells.
+			objectsOnly, fetchHeadOnly bool
+		}{
+			{name: "pathspec-checkout", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"checkout", "-q", "FETCH_HEAD", "--", "."}}},
+			{name: "restore", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"restore", "--source=FETCH_HEAD", "--worktree", "--", "."}}},
+			{name: "read-tree", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"read-tree", "-u", "--reset", "FETCH_HEAD"}}},
+			{name: "orphan-main-deleted", steps: [][]string{{"fetch", "-q", "--no-write-fetch-head", "--update-head-ok", s.service, "change:refs/heads/main"}, {"checkout", "-q", "main"}, {"checkout", "-q", "--orphan", "fresh"}, {"update-ref", "-d", "refs/heads/main"}}},
+			{name: "objects-only", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"read-tree", "-u", "--reset", "FETCH_HEAD"}}, objectsOnly: true},
+			{name: "fetch-head-only", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"read-tree", "-u", "--reset", "FETCH_HEAD"}}, fetchHeadOnly: true},
+		} {
+			checkout := *s
+			checkout.service = filepath.Join(s.parent, "unborn-"+unborn.name)
+			if err := os.MkdirAll(checkout.service, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git(t, checkout.service, "init", "-q", "-b", "main")
+			for _, step := range unborn.steps {
+				git(t, checkout.service, step...)
+			}
+			if unborn.objectsOnly {
+				if err := os.Remove(filepath.Join(checkout.service, ".git", "FETCH_HEAD")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if unborn.fetchHeadOnly {
+				objects := filepath.Join(checkout.service, ".git", "objects")
+				if err := os.RemoveAll(objects); err != nil {
+					t.Fatal(err)
+				}
+				for _, folder := range []string{"info", "pack"} {
+					if err := os.MkdirAll(filepath.Join(objects, folder), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if refs := git(t, checkout.service, "for-each-ref"); refs != "" {
+				t.Fatalf("%s: the checkout has refs %q, want none", unborn.name, refs)
+			}
+			if _, err := os.Stat(filepath.Join(checkout.service, ".stego", "state.yaml")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s: the checkout has a record (%v), want the change that removes it", unborn.name, err)
+			}
+			before := tree(t, checkout.service)
+			for _, args := range [][]string{{"plan"}, {"apply"}} {
+				stdout, stderr, err := checkout.stego(t, args...)
+				if err == nil || strings.Contains(stdout+stderr, "No base check") || !strings.Contains(stdout+stderr, "has no default branch") {
+					t.Errorf("%s: stego %s with HEAD not born, no ref and the files of a fetched commit: %v, want a refusal that names the missing default branch:\n%s%s", unborn.name, args[0], err, stdout, stderr)
+				}
+			}
+			if after := tree(t, checkout.service); !maps.Equal(before, after) {
+				t.Errorf("%s: a refused plan or apply changed a file of the checkout", unborn.name)
 			}
 		}
 		// An orphan branch: HEAD is not born, but the repository has refs, so it has commits.

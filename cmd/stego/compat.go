@@ -310,7 +310,11 @@ var errNoCommit = errors.New("the repository of the service folder has no commit
 // names no commit (its branch is not born), no ref exists, and the repository is not shallow. A checkout by commit,
 // such as git fetch <url> <ref> and git checkout FETCH_HEAD, has a commit at HEAD and no ref, so "no ref" alone is
 // not "no commit": such a checkout has a base that the check cannot find, and it is refused rather than taken as a
-// first release (finding H1 of the security review of PR 318).
+// first release (finding H1 of the security review of PR 318). Also, HEAD can be unborn with no ref while the object
+// store holds the commits of a fetch, as after git fetch <url> <ref> and git checkout FETCH_HEAD -- ., git restore
+// --source=FETCH_HEAD, git read-tree -u FETCH_HEAD, or an orphan branch with the other branches deleted: a
+// repository whose object store holds a commit, or that has a FETCH_HEAD, is not a new repository (the medium
+// finding of round 2 of that review).
 func noCommit() (bool, error) {
 	if _, err := compatGit("rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err == nil {
 		return false, nil
@@ -326,7 +330,26 @@ func noCommit() (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("git cannot tell whether the repository of the service folder is shallow, so the base check cannot run: %w", err)
 	}
-	return strings.TrimSpace(string(shallow)) == "false", nil
+	if strings.TrimSpace(string(shallow)) != "false" {
+		return false, nil
+	}
+	fetchHead, err := compatGit("rev-parse", "--git-path", "FETCH_HEAD")
+	if err != nil {
+		return false, fmt.Errorf("git cannot name the FETCH_HEAD of the repository of the service folder, so the base check cannot run: %w", err)
+	}
+	if _, err := os.Lstat(strings.TrimSpace(string(fetchHead))); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	types, err := compatGit("cat-file", "--batch-all-objects", "--unordered", "--batch-check=%(objecttype)")
+	if err != nil {
+		return false, fmt.Errorf("git cannot list the objects of the repository of the service folder, so the base check cannot run: %w", err)
+	}
+	for _, objectType := range strings.Split(string(types), "\n") {
+		if objectType == "commit" {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // gitEntryAbove tells whether a .git entry exists in the working folder or in a folder above it, up to the root. A

@@ -45,8 +45,9 @@ base: when the service has no record either, plan and apply take it as the
 first release, with no check, and say so. When the service has a record, a
 release may have run, so plan and apply stop: commit the service folder with
 its record. `stego init` tells you to commit before the first release. A
-repository is new only when HEAD names no commit, it has no ref, and it is not
-shallow. A checkout by commit, such as `git fetch <url> <ref>` and
+repository is new only when HEAD names no commit, it has no ref, it is not
+shallow, it has no `FETCH_HEAD`, and its object store holds no commit. A
+checkout by commit, such as `git fetch <url> <ref>` and
 `git checkout FETCH_HEAD`, has commits but no branch. Such a repository, any
 other repository with commits but no such branch, or one that git cannot read,
 stops plan and apply: name the base with `--base`.
