@@ -517,19 +517,19 @@ func TestTopLevelCreate(t *testing.T) {
 		decided := func() gen.Context {
 			c := crudContext()
 			c.Tenancy = &gen.Tenancy{Key: "tenant_id", Provisioning: &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire"}}
-			c.Entities[3].Permissions[types.OpCreate] = "provision"
+			c.Entities[3].Permissions[types.OpCreate] = "create"
 			return c
 		}
 		files := crudFiles(t, decided())
 		folders := string(files["api/folders_handler.go"])
-		want := regexp.MustCompile(`\tPermission: +"provision",\n\tResource: +&command\.Resource\{Type: "service", Service: "crud"\},\n\}\)\)$`)
+		want := regexp.MustCompile(`\tPermission: +"create",\n\tResource: +&command\.Resource\{Type: "service", Service: "crud"\},\n\}\)\)$`)
 		start := strings.Index(folders, "var foldersCreateCommand = ")
 		if start < 0 {
 			t.Fatal("the handler of folders declares no create command")
 		}
 		end := strings.Index(folders[start:], "}))")
 		if spec := folders[start : start+end+3]; !want.MatchString(spec) {
-			t.Errorf("the create command of folders is\n%s\nwant it to decide provision on service:crud", spec)
+			t.Errorf("the create command of folders is\n%s\nwant it to decide create on service:crud", spec)
 		}
 		// A create under a parent stays decided on the parent through its reference, and a public create decides
 		// nothing of its own.
