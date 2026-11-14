@@ -272,16 +272,20 @@ func TestSchemaSteps(t *testing.T) {
 			`ALTER TABLE public."boards" DROP CONSTRAINT IF EXISTS "boards_heading_not_null"`,
 			`ALTER TABLE public."boards" ALTER COLUMN "title" DROP NOT NULL`,
 			`DROP TRIGGER IF EXISTS "boards_heading_sync" ON public."boards"`,
-			`DROP FUNCTION IF EXISTS stego_steps."boards_heading_sync"()`,
 			`ALTER TABLE public."boards" DROP CONSTRAINT IF EXISTS "boards_heading_complete"`,
 			`ALTER TABLE public."boards" DROP COLUMN IF EXISTS "title"`,
+			`DROP FUNCTION IF EXISTS stego_steps."boards_heading_sync"()`,
 		}, ";\n") + ";\n"
 		if got := generated(t, files, "boards/migrations/step_0002_board-title-rename_contract.sql"); got != want {
 			t.Errorf("the contract migration is\n%s\nwant\n%s", got, want)
 		}
 		migrate := generated(t, files, "boards/migrate.go")
 		for _, text := range []string{`RegisterContractStep("step_0002_board-title-rename_contract", `, `Expand: "step_0001_board-title-rename_expand"`,
-			`{SQL: "DROP TRIGGER IF EXISTS \"boards_heading_sync\" ON public.\"boards\"", When: "", Long: false, Guard: true}`,
+			`Check: "boards_heading_complete", Definition: "CHECK (((heading IS NOT NULL) OR (title IS NULL)))", Trigger: "boards_heading_sync"`, `From: "title", Old: "\"title\""`,
+			// The drop of the trigger, its check again, the drop of the completeness CHECK and of the old column commit
+			// in one transaction (security review of PR #316, H1).
+			`{SQL: "DROP TRIGGER IF EXISTS \"boards_heading_sync\" ON public.\"boards\"", When: "", Long: false, Guard: true, Also: []string{"ALTER TABLE public.\"boards\" DROP CONSTRAINT IF EXISTS \"boards_heading_complete\"", "ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"title\""}}`,
+			`{SQL: "DROP FUNCTION IF EXISTS stego_steps.\"boards_heading_sync\"()", When: "", Long: false, Guard: false}`,
 			`{SQL: "ALTER TABLE public.\"boards\" VALIDATE CONSTRAINT \"boards_heading_not_null\"", When: "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = 'public.\"boards\"'::pg_catalog.regclass AND c.conname = 'boards_heading_not_null')", Long: true, Guard: false}`} {
 			if !strings.Contains(migrate, text) {
 				t.Errorf("migrate.go does not hold %s", text)

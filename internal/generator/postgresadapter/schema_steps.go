@@ -45,19 +45,22 @@ type schemaStep struct {
 }
 
 // contractStep is what the contract migration of a rename checks and runs: the change, the qualified table, the
-// completeness CHECK and the sync trigger of the expand step, the old and the new column as quoted identifiers, the
-// tenant column of an owned table and the qualified tenant list, and its statements in their order.
+// completeness CHECK, its definition as pg_get_constraintdef gives it and the sync trigger of the expand step, the
+// name of the old column, the old and the new column as quoted identifiers, the tenant column of an owned table and
+// the qualified tenant list, and its statements in their order.
 type contractStep struct {
-	change, table, check, trigger, old, new, tenant, tenants string
-	statements                                               []contractStatement
+	change, table, check, definition, trigger, from, old, new, tenant, tenants string
+	statements                                                                 []contractStatement
 }
 
 // contractStatement is one statement of a contract step: its SQL; when, a query that gives whether the statement
-// still has to run, or empty; long, for the long statement timeout of a VALIDATE; and guard, for the check of the
-// step again in its transaction, before the first statement after which the release before can no longer write.
+// still has to run, or empty; long, for the long statement timeout of a VALIDATE; guard, for the check of the step
+// again in its transaction, before the first statement after which the release before can no longer write; and
+// also, the statements that run after it in the same transaction.
 type contractStatement struct {
 	sql, when   string
 	long, guard bool
+	also        []string
 }
 
 // stepAddition is what an add step gives: the SQL of its own migration, each index that it builds on a table with
@@ -172,7 +175,9 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			}
 			var body strings.Builder
 			for _, statement := range contract.statements {
-				body.WriteString(statement.sql + ";\n")
+				for _, text := range append([]string{statement.sql}, statement.also...) {
+					body.WriteString(text + ";\n")
+				}
 			}
 			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase,
 				Body: body.String(), Contract: contract, Expand: expand})
@@ -454,22 +459,22 @@ const releasesText = `CREATE TABLE IF NOT EXISTS stego_schema.releases (
 	every_ms integer NOT NULL,
 	seen_at timestamptz NOT NULL
 );
+CREATE INDEX IF NOT EXISTS releases_seen_at ON stego_schema.releases (seen_at);
 REVOKE ALL ON TABLE stego_schema.releases FROM PUBLIC;
 CREATE OR REPLACE FUNCTION stego_schema.release_beat(text, text, text, integer)
- RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+ RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
  AS $stego_release$BEGIN
   IF $1 IS NULL OR $2 IS NULL OR $3 IS NULL OR $4 IS NULL OR $1 !~ '^[0-9a-f]{32}$' OR $2 !~ '^[0-9a-z_-]{1,200}$'
    OR $3 !~ '^[ -~]{0,64}$' OR $4 < 1000 OR $4 > 60000 THEN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'stego release report: an argument is out of range';
   END IF;
-  DELETE FROM stego_schema.releases r WHERE r.seen_at < pg_catalog.clock_timestamp() - interval '1 day';
   INSERT INTO stego_schema.releases AS r (holder, release, version, every_ms, seen_at)
    VALUES ($1, $2, $3, $4, pg_catalog.clock_timestamp())
    ON CONFLICT (holder) DO UPDATE SET release = EXCLUDED.release, version = EXCLUDED.version, every_ms = EXCLUDED.every_ms,
    seen_at = EXCLUDED.seen_at;
 END$stego_release$;
 CREATE OR REPLACE FUNCTION stego_schema.release_stop(text)
- RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+ RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
  AS $stego_release$DELETE FROM stego_schema.releases r WHERE r.holder = $1$stego_release$;
 REVOKE ALL ON FUNCTION stego_schema.release_beat(text, text, text, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION stego_schema.release_stop(text) FROM PUBLIC;
@@ -575,10 +580,11 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 // the new column U alone. A required field makes U NOT NULL with a CHECK (U IS NOT NULL) NOT VALID, which a later
 // statement validates, then SET NOT NULL and the drop of the CHECK; then K becomes nullable, so a write of the
 // release of the rename, which leaves K out, meets no NOT NULL once the trigger stops filling K; then the step drops
-// the sync trigger, after its check again in the same transaction, its function, the completeness CHECK and K with
-// its CHECK and its indexes. Each statement is IF EXISTS or has a query that tells whether it still has to run, so a
-// rerun after a failure part way recovers. It refuses a field with a default, which the manifest of the release of
-// the rename does not give U.
+// the sync trigger, after its check again, the completeness CHECK and K with its CHECK and its indexes, all in that
+// one transaction, so that no write of the release before changes K alone after the trigger is gone (security review
+// of PR #316, H1); then the function of the trigger. Each statement is IF EXISTS or has a query that tells whether it
+// still has to run, so a rerun after a failure part way recovers. It refuses a field with a default, which the
+// manifest of the release of the rename does not give U.
 func contractSQL(ctx gen.Context, before, after []tableModel, change types.SchemaChange) (*contractStep, error) {
 	name := tableName(change.Entity)
 	old, okOld := findTable(before, name)
@@ -607,7 +613,8 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 			" AND a.attnum > 0 AND NOT a.attisdropped" + test + ")"
 	}
 	constraint := "SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = " + regclass + " AND c.conname = " + sqlString(notNull)
-	out := &contractStep{change: change.ID, table: table, check: complete, trigger: trigger, old: sqlIdentifier(k.name), new: sqlIdentifier(u.name)}
+	out := &contractStep{change: change.ID, table: table, check: complete, definition: completeDefinition(k.name, u.name), trigger: trigger,
+		from: k.name, old: sqlIdentifier(k.name), new: sqlIdentifier(u.name)}
 	if old.owned {
 		out.tenant, out.tenants = sqlIdentifier(tenantColumn(ctx)), "public.stego_tenants"
 	}
@@ -622,10 +629,10 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 	if k.notNull {
 		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s DROP NOT NULL", table, sqlIdentifier(k.name)), when: attribute(k.name, " AND a.attnotnull")})
 	}
-	add(contractStatement{sql: fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON %s", sqlIdentifier(trigger), table), guard: true})
+	add(contractStatement{sql: fmt.Sprintf("DROP TRIGGER IF EXISTS %s ON %s", sqlIdentifier(trigger), table), guard: true,
+		also: []string{fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(complete)),
+			fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, sqlIdentifier(k.name))}})
 	add(contractStatement{sql: fmt.Sprintf("DROP FUNCTION IF EXISTS %s.%s()", StepSchema, sqlIdentifier(trigger))})
-	add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(complete))})
-	add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, sqlIdentifier(k.name))})
 	return out, nil
 }
 

@@ -37,22 +37,22 @@ const releasesText = `CREATE TABLE IF NOT EXISTS stego_schema.releases (
 	every_ms integer NOT NULL,
 	seen_at timestamptz NOT NULL
 );
+CREATE INDEX IF NOT EXISTS releases_seen_at ON stego_schema.releases (seen_at);
 REVOKE ALL ON TABLE stego_schema.releases FROM PUBLIC;
 CREATE OR REPLACE FUNCTION stego_schema.release_beat(text, text, text, integer)
- RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+ RETURNS void LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
  AS $stego_release$BEGIN
   IF $1 IS NULL OR $2 IS NULL OR $3 IS NULL OR $4 IS NULL OR $1 !~ '^[0-9a-f]{32}$' OR $2 !~ '^[0-9a-z_-]{1,200}$'
    OR $3 !~ '^[ -~]{0,64}$' OR $4 < 1000 OR $4 > 60000 THEN
     RAISE EXCEPTION USING ERRCODE = '22023', MESSAGE = 'stego release report: an argument is out of range';
   END IF;
-  DELETE FROM stego_schema.releases r WHERE r.seen_at < pg_catalog.clock_timestamp() - interval '1 day';
   INSERT INTO stego_schema.releases AS r (holder, release, version, every_ms, seen_at)
    VALUES ($1, $2, $3, $4, pg_catalog.clock_timestamp())
    ON CONFLICT (holder) DO UPDATE SET release = EXCLUDED.release, version = EXCLUDED.version, every_ms = EXCLUDED.every_ms,
    seen_at = EXCLUDED.seen_at;
 END$stego_release$;
 CREATE OR REPLACE FUNCTION stego_schema.release_stop(text)
- RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+ RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
  AS $stego_release$DELETE FROM stego_schema.releases r WHERE r.holder = $1$stego_release$;
 REVOKE ALL ON FUNCTION stego_schema.release_beat(text, text, text, integer) FROM PUBLIC;
 REVOKE ALL ON FUNCTION stego_schema.release_stop(text) FROM PUBLIC;
@@ -64,10 +64,12 @@ GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
 // releaseRole is the grammar of the runtime role that Releases grants EXECUTE to.
 var releaseRole = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
-// Releases gives the text that makes the table of the release reports, stego_schema.releases, and its two
-// functions, as the owner role (ST-SUP-RP09-LC14): release_beat writes the report of one process, with the time of
-// the database, and deletes the reports older than one day; release_stop deletes the report of one process. Both are
-// SECURITY DEFINER functions of the owner role with the search path pg_catalog, pg_temp, and the text grants EXECUTE
+// Releases gives the text that makes the table of the release reports, stego_schema.releases, with an index on its
+// report time, and its two functions, as the owner role (ST-SUP-RP09-LC14): release_beat writes the report of one
+// process, with the time of the database, and touches no row of another process, so a session that holds its own
+// row cannot stop the reports of the others (security review of PR #316, M1); release_stop deletes the report of one
+// process. Both are SECURITY DEFINER functions of the owner role with the search path pg_catalog, pg_temp and a lock
+// timeout of 1 s, and the text grants EXECUTE
 // on them to the runtime role alone, so the runtime role can report its own process and cannot read the table, set a
 // time, or change the report of a process whose random holder it does not know. The migration of a step at expand
 // with a sync trigger runs it, so a release before the step reports itself from the time that step ran. Each
@@ -81,6 +83,20 @@ func Releases(runtimeRole string) (string, error) {
 
 // releaseName is the grammar of a release: the name of a migration of the ledger.
 var releaseName = regexp.MustCompile(`^[0-9a-z_-]{1,200}$`)
+
+// CleanReleases deletes in tx, a transaction of the owner role, the reports older than one day, which processes that
+// ended with no Stop left, and passes over each such row that another session holds, so it waits for no row lock of
+// the runtime role; on a database with no table of the reports it does nothing. The migration job runs it on each run
+// (ST-SUP-RP09-LC14; security review of PR #316, M1).
+func CleanReleases(ctx context.Context, tx *sql.Tx) error {
+	var table bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&table); err != nil || !table {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM stego_schema.releases r WHERE r.holder IN (SELECT o.holder FROM stego_schema.releases o
+ WHERE o.seen_at < pg_catalog.clock_timestamp() - interval '1 day' FOR UPDATE SKIP LOCKED)`)
+	return err
+}
 
 // Beat reports one process of a release in the database until Stop.
 type Beat struct {

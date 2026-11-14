@@ -73,7 +73,7 @@ func TestReleaseReports(t *testing.T) {
 		config.User, config.Password = role, "lease-release"
 		pool := stdlib.OpenDB(*config)
 		t.Cleanup(func() { _ = pool.Close() })
-		// A report older than one day goes at the next report.
+		// A report older than one day stays at a report of another process, and goes at the cleanup of the owner.
 		d.exec(t, "INSERT INTO stego_schema.releases VALUES ('old', 'step_0001_x_expand', 'v0', 10000, now() - interval '25 hours')")
 		beat, err := startBeat(ctx, pool, "step_0002_x_expand", "v2\x01é", time.Second)
 		if err != nil {
@@ -83,8 +83,15 @@ func TestReleaseReports(t *testing.T) {
 		if !ok || first.release != "step_0002_x_expand" || first.version != "v2" || first.every != 1000 {
 			t.Fatalf("after the start the report is %+v (there %v), want the release, the label v2 and 1000 ms", first, ok)
 		}
+		if _, old := readRelease(t, d, "old"); !old {
+			t.Error("a report of another process deleted the report older than one day")
+		}
+		clean(t, d)
 		if _, old := readRelease(t, d, "old"); old {
-			t.Error("the report older than one day is still there after a report")
+			t.Error("the report older than one day is still there after the cleanup")
+		}
+		if _, ok := readRelease(t, d, beat.Holder()); !ok {
+			t.Error("the cleanup deleted a current report")
 		}
 		if len(beat.Holder()) != 32 {
 			t.Errorf("the holder %q is not 16 random bytes in hexadecimal", beat.Holder())
@@ -137,6 +144,119 @@ func TestReleaseReports(t *testing.T) {
 		_ = other.Stop(ctx)
 		if _, err := StartBeat(ctx, pool, "Not A Migration", "v1"); err == nil {
 			t.Error("StartBeat accepts a release that is not a migration name")
+		}
+	})
+}
+
+// clean runs CleanReleases in a transaction of the owner role, as the migration job does, within 2 s.
+func clean(t *testing.T, d *database) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	tx, err := d.other.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "SET LOCAL lock_timeout = '1s'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CleanReleases(ctx, tx); err != nil {
+		t.Fatalf("the cleanup of the reports: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReleaseHeldRow(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC14-T02 A session that holds its own report does not stop the report of another process, and the cleanup passes over it", func(t *testing.T) {
+		ctx := context.Background()
+		d := openDatabase(t)
+		role := "lease_release_held"
+		d.exec(t, "DROP ROLE IF EXISTS "+role)
+		d.exec(t, "CREATE ROLE "+role+" LOGIN PASSWORD 'lease-release'")
+		t.Cleanup(func() {
+			_, _ = d.other.Exec("DROP OWNED BY " + role)
+			_, _ = d.other.Exec("DROP ROLE IF EXISTS " + role)
+		})
+		text, err := Releases(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.exec(t, text)
+		// Before any table, the cleanup does nothing and does not fail.
+		bare := stdlib.OpenDB(*mustConfig(t, pgtest.Database(t, "lease_clean_bare")))
+		t.Cleanup(func() { _ = bare.Close() })
+		bareTx, err := bare.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := CleanReleases(ctx, bareTx); err != nil {
+			t.Errorf("the cleanup on a database with no table of the reports: %v", err)
+		}
+		_ = bareTx.Rollback()
+		config := mustConfig(t, d.dsn)
+		config.User, config.Password = role, "lease-release"
+		pool := stdlib.OpenDB(*config)
+		t.Cleanup(func() { _ = pool.Close() })
+		// The runtime role reports a row of its own that is almost one day old, and holds it in an open transaction
+		// until its committed version is older than one day; another old row is not held.
+		held, v1 := strings.Repeat("f", 32), strings.Repeat("9", 32)
+		if _, err := pool.ExecContext(ctx, "SELECT stego_schema.release_beat($1, 'step_9999_zz', 'x', 10000)", held); err != nil {
+			t.Fatal(err)
+		}
+		d.exec(t, "UPDATE stego_schema.releases SET seen_at = clock_timestamp() - interval '1 day' + interval '2 seconds' WHERE holder = $1", held)
+		d.exec(t, "INSERT INTO stego_schema.releases VALUES ('stale', 'step_0001_x_expand', 'v0', 10000, now() - interval '25 hours')")
+		if _, err := pool.ExecContext(ctx, "SELECT stego_schema.release_beat($1, 'step_0001_x_expand', 'v1', 1000)", v1); err != nil {
+			t.Fatal(err)
+		}
+		hold, err := pool.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer hold.Rollback()
+		if _, err := hold.ExecContext(ctx, "SELECT stego_schema.release_beat($1, 'step_9999_zz', 'x', 10000)", held); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(3 * time.Second)
+		// Each report of the other process, under a time limit of one of its intervals, succeeds.
+		for i := range 5 {
+			beatCtx, cancel := context.WithTimeout(ctx, time.Second)
+			_, err := pool.ExecContext(beatCtx, "SELECT stego_schema.release_beat($1, 'step_0001_x_expand', 'v1', 1000)", v1)
+			cancel()
+			if err != nil {
+				t.Errorf("report %d of another process while a session holds its own row: %v", i+1, err)
+			}
+		}
+		if r, ok := readRelease(t, d, v1); !ok || time.Since(r.seen) > 2*time.Second {
+			t.Errorf("the report of the other process is %+v (there %v), want a current one", r, ok)
+		}
+		// The cleanup of the owner passes over the held row with no wait and deletes the other old row.
+		clean(t, d)
+		if _, ok := readRelease(t, d, "stale"); ok {
+			t.Error("the cleanup left the old row that no session holds")
+		}
+		if _, ok := readRelease(t, d, held); !ok {
+			t.Error("the cleanup deleted the held row")
+		}
+		_ = hold.Rollback()
+		clean(t, d)
+		if _, ok := readRelease(t, d, held); ok {
+			t.Error("the cleanup left the old row after its session ended")
+		}
+		// Both functions have a lock timeout of 1 s, and the table an index on the report time.
+		var timeouts, indexed int
+		if err := d.other.QueryRowContext(ctx, `SELECT count(*) FROM pg_catalog.pg_proc p WHERE p.pronamespace = 'stego_schema'::regnamespace
+ AND p.proname IN ('release_beat', 'release_stop') AND 'lock_timeout=1s' = ANY (p.proconfig)`).Scan(&timeouts); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.other.QueryRowContext(ctx, `SELECT count(*) FROM pg_catalog.pg_indexes WHERE schemaname = 'stego_schema' AND tablename = 'releases'
+ AND indexdef LIKE '%(seen_at)'`).Scan(&indexed); err != nil {
+			t.Fatal(err)
+		}
+		if timeouts != 2 || indexed != 1 {
+			t.Errorf("%d report functions have the lock timeout of 1 s and %d indexes are on seen_at; want 2 and 1", timeouts, indexed)
 		}
 	})
 }

@@ -1305,6 +1305,160 @@ WHERE pronamespace = 'stego_schema'::regnamespace AND proname IN ('backfill_read
 		contracted(t, up)
 	})
 
+	// titleThere tells whether the old column title is still there.
+	titleThere := func(t *testing.T, db *sql.DB) bool {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.boards'::regclass AND attname = 'title' AND NOT attisdropped`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	// contractRows counts the ledger rows of the contract step.
+	contractRows := func(t *testing.T, db *sql.DB) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT count(*) FROM stego_schema.migrations WHERE version LIKE '%_contract'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	t.Run("ST-SUP-RC01-OC24-T03 A rerun that finds the sync trigger gone and the old column there checks the step in full again", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		runtime := reader(t, upCfg, up)
+		// A run stopped after the drop of the trigger and its function, with the completeness CHECK and the old
+		// column left, as a hand change or a run of an earlier build of the step leaves them; then the release before
+		// starts again, reports and edits a board.
+		for _, statement := range []string{`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_not_null" CHECK ("heading" IS NOT NULL) NOT VALID`,
+			`ALTER TABLE public."boards" VALIDATE CONSTRAINT "boards_heading_not_null"`, `ALTER TABLE public."boards" ALTER COLUMN "heading" SET NOT NULL`,
+			`ALTER TABLE public."boards" DROP CONSTRAINT "boards_heading_not_null"`, `ALTER TABLE public."boards" ALTER COLUMN "title" DROP NOT NULL`,
+			`DROP TRIGGER "boards_heading_sync" ON public."boards"`, `DROP FUNCTION stego_steps."boards_heading_sync"()`} {
+			if _, err := up.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+		v1 := strings.Repeat("d", 32)
+		if _, err := runtime.Exec("SELECT stego_schema.release_beat($1, '100_tenancy_row_security', 'v1', 10000)", v1); err != nil {
+			t.Fatal(err)
+		}
+		if code := write(t, up, "tenant-a", `UPDATE public."boards" SET "title" = 'edited by v1' WHERE "id" = (SELECT "id" FROM public."boards" ORDER BY "id" LIMIT 1)`); code != "" {
+			t.Fatalf("the release before cannot edit a board: %s", code)
+		}
+		before := catalog(t, up)
+		text := refusal(t, contract(t, upCfg))
+		if !strings.Contains(text, "v1 (1 processes)") {
+			t.Errorf("the rerun while v1 reports says: %s", text)
+		}
+		if after := catalog(t, up); !slices.Equal(before, after) || !titleThere(t, up) || contractRows(t, up) != 0 {
+			t.Errorf("the refused rerun changed the catalog or the ledger, or dropped the old column:\n%s", strings.Join(after, "\n"))
+		}
+		// When the completeness CHECK is gone too, the rerun refuses on the CHECK, also with no release running.
+		if _, err := runtime.Exec("SELECT stego_schema.release_stop($1)", v1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := up.Exec(`ALTER TABLE public."boards" DROP CONSTRAINT "boards_heading_complete"`); err != nil {
+			t.Fatal(err)
+		}
+		if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "boards_heading_complete is not there") {
+			t.Errorf("the rerun with no completeness CHECK says: %s", text)
+		}
+		if !titleThere(t, up) || contractRows(t, up) != 0 {
+			t.Error("the rerun with no completeness CHECK dropped the old column or wrote the ledger row")
+		}
+		// With the CHECK there again and validated and no release running, the rerun finishes.
+		if _, err := up.Exec(`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_complete" CHECK (("heading" IS NOT NULL) OR ("title" IS NULL))`); err != nil {
+			t.Fatal(err)
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the rerun with the full check passed: %v", err)
+		}
+		contracted(t, up)
+	})
+
+	t.Run("ST-SUP-RC01-OC24-T04 The check refuses a constraint of the name of the completeness CHECK that is not its exact definition", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		for _, definition := range []string{`CHECK (("heading" IS NOT NULL) OR ("title" IS NULL) OR true)`, `CHECK (("heading" IS NOT NULL) OR ("title" IS NULL)) NO INHERIT`,
+			`CHECK (("heading" IS NOT NULL) OR ("title" IS NOT NULL))`} {
+			for _, statement := range []string{`ALTER TABLE public."boards" DROP CONSTRAINT "boards_heading_complete"`,
+				`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_complete" ` + definition} {
+				if _, err := up.Exec(statement); err != nil {
+					t.Fatalf("%.60s: %v", statement, err)
+				}
+			}
+			before := catalog(t, up)
+			if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "the constraint boards_heading_complete is not the completeness CHECK of the change") {
+				t.Errorf("the check with %s says: %s", definition, text)
+			}
+			if after := catalog(t, up); !slices.Equal(before, after) || contractRows(t, up) != 0 {
+				t.Errorf("the refused step with %s changed the catalog or the ledger", definition)
+			}
+		}
+		for _, statement := range []string{`ALTER TABLE public."boards" DROP CONSTRAINT "boards_heading_complete"`,
+			`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_complete" CHECK (("heading" IS NOT NULL) OR ("title" IS NULL))`} {
+			if _, err := up.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the step with the exact CHECK: %v", err)
+		}
+		contracted(t, up)
+	})
+
+	t.Run("ST-SUP-RC01-OC39-T03 A write of the release before after the drop of the sync trigger fails and loses no edit", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		runtime := reader(t, upCfg, up)
+		// A session holds the sync function, so the step waits at the drop of the function after the drop of the
+		// trigger commits; then the release before reports and edits a board.
+		hold, err := up.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer hold.Rollback()
+		if _, err := hold.Exec(`ALTER FUNCTION stego_steps."boards_heading_sync"() COST 101`); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- contract(t, upCfg) }()
+		until := time.Now().Add(20 * time.Second)
+		for gone := false; !gone; time.Sleep(20 * time.Millisecond) {
+			if time.Now().After(until) {
+				_ = hold.Rollback()
+				t.Fatalf("the step does not drop the trigger: %v", <-done)
+			}
+			var n int
+			if err := up.QueryRow(`SELECT count(*) FROM pg_catalog.pg_trigger WHERE tgrelid = 'public.boards'::regclass AND tgname = 'boards_heading_sync'`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			gone = n == 0
+		}
+		if _, err := runtime.Exec("SELECT stego_schema.release_beat($1, '100_tenancy_row_security', 'v1', 10000)", strings.Repeat("e", 32)); err != nil {
+			t.Fatal(err)
+		}
+		var id string
+		if err := up.QueryRow(`SELECT "id"::text FROM public."boards" ORDER BY "id" LIMIT 1`).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		code := write(t, up, "tenant-a", `UPDATE public."boards" SET "title" = 'edited by v1' WHERE "id" = $1::uuid`, id)
+		_ = hold.Rollback()
+		if err := <-done; err != nil {
+			t.Fatalf("the step after the hold of the function: %v", err)
+		}
+		var heading string
+		if err := up.QueryRow(`SELECT "heading" FROM public."boards" WHERE "id" = $1::uuid`, id).Scan(&heading); err != nil {
+			t.Fatal(err)
+		}
+		// The old column went with the trigger, so the edit fails with undefined_column and changes nothing.
+		if code != "42703" {
+			t.Errorf("the edit of the release before after the drop of the trigger gives %q and the new column holds %q; want 42703 and no edit lost", code, heading)
+		}
+		contracted(t, up)
+	})
+
 	t.Run("ST-SUP-RC01-OC22-T03 An add step takes a database with rows to the schema of a new database, and the release before still runs on it", func(t *testing.T) {
 		ctx := context.Background()
 		upCfg, up := database(t, cfg, admin)
