@@ -15,6 +15,14 @@ definition project {
 	permission edit = owner
 }
 
+definition service {
+	relation operator: user
+	relation creator: user
+	permission provision = operator
+	permission retire = operator
+	permission create = creator
+}
+
 definition stego_floor {
 	relation marker: stego_floor
 }

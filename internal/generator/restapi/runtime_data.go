@@ -188,11 +188,19 @@ func validateRuntimeData(ctx gen.Context, entities map[string]types.Entity) erro
 					return fmt.Errorf("rest-api: collection %s declares %s with the permission %q; on the runtime data path a write of a row decides a permission of %s on it", c.Name, op, p, e.ResourceType)
 				}
 			case types.OpCreate:
-				// A top-level create is decided on the service-level resource of the tenant provisioning
-				// (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09), whose resource type the declaration does not name until the
-				// tenant provisioning is built (ST-DECL-UC10); until then it must be public.
+				// A create of an entity with no parent, in a collection with no scope, is decided on the service-level
+				// resource of the tenant provisioning (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09). A create under a parent is
+				// decided on the parent through its reference, so it declares no permission of its own.
 				if e.Permissions[op] != types.PermissionPublic {
-					return fmt.Errorf("rest-api: collection %s declares create with the permission %q; on the runtime data path a create of a top-level entity is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration cannot name yet (ST-DECL-UC10), so it must be public with a reason", c.Name, e.Permissions[op])
+					if len(c.Scope) > 0 {
+						return fmt.Errorf("rest-api: collection %s declares create with the permission %q; on the runtime data path a create under the parent %s is decided on the parent through its reference, so it must be public with a reason", c.Name, e.Permissions[op], c.ParentEntity())
+					}
+					if ctx.Tenancy == nil || ctx.Tenancy.Provisioning == nil || ctx.Tenancy.Provisioning.ResourceType == "" {
+						return fmt.Errorf("rest-api: collection %s declares create with the permission %q; a create of an entity with no parent is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration does not declare", c.Name, e.Permissions[op])
+					}
+					// A create that decides its permission may write a field-sourced relationship, as a declared
+					// command with a permission may (ST-SUP-Q118).
+					continue
 				}
 				// A command that declares no permission may not write a field-sourced relationship: the client would
 				// choose the subject (ST-SUP-Q118).
@@ -1156,8 +1164,13 @@ func (w *runtimeHandlerWriter) declarations() {
 			if len(destinations) > 0 {
 				w.f("\tDestinations: []command.Destination{%s},\n", strings.Join(destinations, ", "))
 			}
-			// A create and an upsert have no row to decide on before the fill: an upsert decides its permission on
-			// the stored row in the fill.
+			// A create of an entity with no parent names no row: Run decides its permission on the service-level
+			// resource <resource type>:<service name> of the tenant provisioning (ST-SUP-RC29-OC01, ST-SUP-RP10-LC31).
+			if p := c.permission(op); p != "" && op == types.OpCreate && c.scope == "" {
+				w.f("\tPermission: %q,\n\tResource: &command.Resource{Type: %q, Service: %q},\n", p, w.ctx.Tenancy.Provisioning.ResourceType, w.ctx.ServiceName)
+			}
+			// An upsert has no row to decide on before the fill: it decides its permission on the stored row in the
+			// fill.
 			if p := c.permission(op); p != "" && op != types.OpCreate && op != types.OpUpsert {
 				// The table is named with its schema, so no relation of the same name earlier on the search path
 				// stands in for it.
