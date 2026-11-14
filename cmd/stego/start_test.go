@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -166,7 +167,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 		for path := range treeOf(t, project) {
 			paths = append(paths, path)
 		}
-		want := []string{"./", ".stego/", ".stego/apply.lock", ".stego/config.yaml", "fills/", "service.yaml"}
+		want := []string{"./", ".stego/", ".stego/.gitignore", ".stego/apply.lock", ".stego/config.yaml", "fills/", "service.yaml"}
 		if strings.Join(sortStrings(paths), " ") != strings.Join(want, " ") {
 			t.Errorf("the project holds %v, want %v", sortStrings(paths), want)
 		}
@@ -211,7 +212,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 	})
 
 	t.Run("ST-DECL-UC01-R06-T04 A symbolic link at each path init would write is refused, naming the path", func(t *testing.T) {
-		for _, path := range []string{"service.yaml", ".stego/config.yaml", ".stego", ".stego/apply.lock", "fills"} {
+		for _, path := range []string{"service.yaml", ".stego/config.yaml", ".stego", ".stego/apply.lock", ".stego/.gitignore", "fills"} {
 			project, outside := t.TempDir(), t.TempDir()
 			if path != ".stego" {
 				putFile(t, project, ".stego/config.yaml", declaringConfig(t))
@@ -230,6 +231,47 @@ func TestStartAServiceDeclaration(t *testing.T) {
 			if !reflect.DeepEqual(before, treeOf(t, project)) || !reflect.DeepEqual(beforeOutside, treeOf(t, outside)) {
 				t.Errorf("%s: the refused scaffold changed a file", path)
 			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-R07-T01 Init keeps the apply lock and the saved plan out of the commit, and an existing ignore file as written", func(t *testing.T) {
+		project := t.TempDir()
+		putFile(t, project, ".stego/config.yaml", declaringConfig(t))
+		run := stegoIn(t, project, nil, "init", "--archetype", "rest-crud")
+		if run.code != 0 || !strings.Contains(run.stdout, ".stego/.gitignore") {
+			t.Fatalf("stego init: exit %d, want 0 and .stego/.gitignore among the created files:\n%s%s", run.code, run.stdout, run.stderr)
+		}
+		if plan := stegoIn(t, project, nil, "plan"); plan.code != 0 {
+			t.Fatalf("stego plan: exit %d:\n%s%s", plan.code, plan.stdout, plan.stderr)
+		}
+		for _, name := range []string{".stego/apply.lock", ".stego/plan.yaml"} {
+			if _, err := os.Stat(filepath.Join(project, filepath.FromSlash(name))); err != nil {
+				t.Fatalf("%s is not there after init and plan: %v", name, err)
+			}
+		}
+		// The build takes the files of the commit (git ls-tree), so a file that git add leaves out is no input of it.
+		git(t, project, "init", "-q")
+		git(t, project, "add", "-A")
+		committed := strings.Split(git(t, project, "ls-files"), "\n")
+		for _, name := range []string{".stego/apply.lock", ".stego/plan.yaml"} {
+			if slices.Contains(committed, name) {
+				t.Errorf("git add -A takes the local state file %s: %v", name, committed)
+			}
+		}
+		for _, name := range []string{".stego/.gitignore", ".stego/config.yaml", "service.yaml"} {
+			if !slices.Contains(committed, name) {
+				t.Errorf("git add -A leaves out %s: %v", name, committed)
+			}
+		}
+		// An ignore file that the author already has is kept as written.
+		other := t.TempDir()
+		putFile(t, other, ".stego/config.yaml", declaringConfig(t))
+		putFile(t, other, ".stego/.gitignore", "# the team's own\n*.tmp\n")
+		if run := stegoIn(t, other, nil, "init", "--archetype", "rest-crud"); run.code != 0 || strings.Contains(run.stdout, ".stego/.gitignore") {
+			t.Fatalf("stego init with an ignore file: exit %d, want 0 and no new ignore file:\n%s%s", run.code, run.stdout, run.stderr)
+		}
+		if data, err := os.ReadFile(filepath.Join(other, ".stego", ".gitignore")); err != nil || string(data) != "# the team's own\n*.tmp\n" {
+			t.Errorf("the existing ignore file changed: %q, %v", data, err)
 		}
 	})
 
