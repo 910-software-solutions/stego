@@ -179,6 +179,60 @@ func TestSchemaStepPlan(t *testing.T) {
 			t.Errorf("a repository with a commit and no default branch: %v, want a refusal that asks for --base:\n%s%s", err, stdout, stderr)
 		}
 	})
+	t.Run("ST-GEN-UC14-R02-T03 A checkout by commit with no ref is not a repository with no commit", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// A change on a branch renames title with no schema change and removes the record of the release.
+		git(t, s.service, "checkout", "-q", "-b", "change")
+		s.write(t, "service.yaml", noteFields(renamedTitle))
+		git(t, s.service, "rm", "-q", ".stego/state.yaml")
+		git(t, s.service, "commit", "-q", "-am", "rename title and remove the record")
+		git(t, s.service, "checkout", "-q", "main")
+		for _, fetch := range []struct {
+			name     string
+			args     []string
+			checkout []string
+		}{
+			{"full", []string{"fetch", "-q", s.service, "change"}, []string{"checkout", "-q", "FETCH_HEAD"}},
+			{"depth-1", []string{"fetch", "-q", "--depth", "1", "file://" + s.service, "change"}, []string{"checkout", "-q", "FETCH_HEAD"}},
+			// The files of a shallow fetch with HEAD not moved: HEAD is not born, but the repository is shallow, so
+			// it has a history that the check cannot read.
+			{"depth-1-files", []string{"fetch", "-q", "--depth", "1", "file://" + s.service, "change"}, []string{"checkout", "-q", "FETCH_HEAD", "--", "."}},
+		} {
+			// The shape of a CI clone by commit: git init, git fetch of the change, git checkout FETCH_HEAD.
+			checkout := *s
+			checkout.service = filepath.Join(s.parent, "checkout-"+fetch.name)
+			if err := os.MkdirAll(checkout.service, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git(t, checkout.service, "init", "-q")
+			git(t, checkout.service, fetch.args...)
+			git(t, checkout.service, fetch.checkout...)
+			if refs := git(t, checkout.service, "for-each-ref"); refs != "" {
+				t.Fatalf("%s: the checkout has refs %q, want none", fetch.name, refs)
+			}
+			before := tree(t, checkout.service)
+			for _, args := range [][]string{{"plan"}, {"apply"}} {
+				stdout, stderr, err := checkout.stego(t, args...)
+				if err == nil || strings.Contains(stdout+stderr, "No base check") || !strings.Contains(stdout+stderr, "has no default branch") {
+					t.Errorf("%s: stego %s on a checkout by commit with no ref and no record: %v, want a refusal that names the missing default branch:\n%s%s", fetch.name, args[0], err, stdout, stderr)
+				}
+			}
+			if after := tree(t, checkout.service); !maps.Equal(before, after) {
+				t.Errorf("%s: a refused plan or apply changed a file of the checkout", fetch.name)
+			}
+		}
+		// An orphan branch: HEAD is not born, but the repository has refs, so it has commits.
+		orphan := s.copyService(t, "notes-orphan")
+		git(t, orphan.service, "branch", "-m", "main", "trunk")
+		git(t, orphan.service, "checkout", "-q", "--orphan", "fresh")
+		if err := os.Remove(filepath.Join(orphan.service, ".stego", "state.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if stdout, stderr, err := orphan.stego(t, "plan"); err == nil || strings.Contains(stdout+stderr, "No base check") || !strings.Contains(stdout+stderr, "has no default branch") {
+			t.Errorf("stego plan on an orphan branch of a repository with refs: %v, want a refusal that names the missing default branch:\n%s%s", err, stdout, stderr)
+		}
+	})
 	t.Run("ST-GEN-UC12-R06-T01 Apply writes the same add steps for a new entity and a new optional field each time", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)

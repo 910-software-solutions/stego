@@ -306,14 +306,27 @@ func defaultBaseRef() (ref string, found bool, err error) {
 // holds no base, so no record of a release.
 var errNoCommit = errors.New("the repository of the service folder has no commit")
 
-// noCommit tells whether the repository of the working folder has no ref at all, so no commit: a new repository
-// before its first commit.
+// noCommit tells whether the repository of the working folder is a new repository before its first commit: HEAD
+// names no commit (its branch is not born), no ref exists, and the repository is not shallow. A checkout by commit,
+// such as git fetch <url> <ref> and git checkout FETCH_HEAD, has a commit at HEAD and no ref, so "no ref" alone is
+// not "no commit": such a checkout has a base that the check cannot find, and it is refused rather than taken as a
+// first release (finding H1 of the security review of PR 318).
 func noCommit() (bool, error) {
+	if _, err := compatGit("rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err == nil {
+		return false, nil
+	}
 	refs, err := compatGit("for-each-ref", "--count=1", "--format=%(refname)")
 	if err != nil {
 		return false, fmt.Errorf("git cannot read the refs of the repository of the service folder, so the base check cannot run: %w", err)
 	}
-	return len(bytes.TrimSpace(refs)) == 0, nil
+	if len(bytes.TrimSpace(refs)) != 0 {
+		return false, nil
+	}
+	shallow, err := compatGit("rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return false, fmt.Errorf("git cannot tell whether the repository of the service folder is shallow, so the base check cannot run: %w", err)
+	}
+	return strings.TrimSpace(string(shallow)) == "false", nil
 }
 
 // gitEntryAbove tells whether a .git entry exists in the working folder or in a folder above it, up to the root. A
