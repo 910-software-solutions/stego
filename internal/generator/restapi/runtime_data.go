@@ -829,11 +829,11 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 		return
 	case errors.Is(err, command.ErrNotFound) && decided:
 		_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, command.Outcome{Status: http.StatusNotFound, Code: "denied", Audit: audit.OutcomeDenied})
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 		return
 	case errors.Is(err, command.ErrNotFound):
 		_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, command.Outcome{Status: http.StatusNotFound, Code: "not_found", Audit: audit.OutcomeFailed})
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 		return
 	}
 	o := command.OutcomeOf(err)
@@ -843,12 +843,24 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 		// The runtime refused a field's value (command.ErrInvalid): the answer names the field and the fixed reason.
 		handleError(w, r, Validation([]ValidationError{{Field: o.Field, Message: o.Reason}}))
 	case http.StatusNotFound:
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 	case http.StatusConflict:
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
 	default:
 		handleError(w, r, InternalError("internal error"))
 	}
+}
+
+// missing is the 404 of a write: of the row that the request names, or, for a write that names no row, such as a
+// create, of the write, whose parent or referenced row is not there or may not be used, or which the caller may not
+// make. It never gives an empty ID (walkthrough re-run, 2026-11-14).
+func missing(kind string, req command.Request) *ServiceError {
+	if req.Resource != "" {
+		return NotFound(kind, req.Resource)
+	}
+	problem := NotFound(kind, "")
+	problem.Detail = "the " + kind + " was not written: the caller may not write it, or its parent or a resource that it refers to is not there"
+	return problem
 }
 
 // answerKey answers a result of the idempotency wrapper that did not call the fill: a key in progress is 409 and a
@@ -862,9 +874,14 @@ func answerKey(w http.ResponseWriter, r *http.Request, result command.Result) {
 	handleError(w, r, problem)
 }
 
-// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one.
-func keyMissing(w http.ResponseWriter, r *http.Request) {
-	problem := BadRequest("the Idempotency-Key header is absent or malformed")
+// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one; the
+// detail of a malformed key tells that the key is an RFC 9651 string in double quotes.
+func keyMissing(w http.ResponseWriter, r *http.Request, err error) {
+	detail := "the Idempotency-Key header is absent"
+	if errors.Is(err, idempotency.ErrKeyMalformed) {
+		detail = "the Idempotency-Key header is not one RFC 9651 string of 1 to 255 characters: put the key in double quotes, such as \"k-1\""
+	}
+	problem := BadRequest(detail)
 	problem.Type = keyMissingType
 	handleError(w, r, problem)
 }
@@ -1649,7 +1666,7 @@ func (w *runtimeHandlerWriter) deliverAfter() bool {
 // and the request's own key when the client sends none (ST-SUP-RC30-OC01).
 func (w *runtimeHandlerWriter) key(op types.Operation) {
 	required := w.keys != nil && w.keys.required[op]
-	w.f("\tkey, err := idempotency.KeyFrom(r.Header, %t)\n\tif err != nil {\n\t\tkeyMissing(w, r)\n\t\treturn\n\t}\n", required)
+	w.f("\tkey, err := idempotency.KeyFrom(r.Header, %t)\n\tif err != nil {\n\t\tkeyMissing(w, r, err)\n\t\treturn\n\t}\n", required)
 	w.f("\trequestID := command.NewID()\n\tif key == \"\" {\n\t\tkey = requestKey(requestID)\n\t}\n")
 }
 
