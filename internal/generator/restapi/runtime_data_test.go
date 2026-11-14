@@ -81,6 +81,12 @@ func crudContext() gen.Context {
 			{Name: "generation", Type: types.FieldTypeInt64, Default: 1}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "quota", Permissions: map[types.Operation]string{types.OpRead: "view", types.OpList: "view", types.OpUpsert: "edit"},
 				References: map[string]types.Reference{"folder_id": {Relation: "folder", Permission: "edit"}}}},
+		// Meeting gives timestamps that the client sets (ST-DECL-Q16): starts_at is required, ends_at optional, and
+		// noted_at stays server-managed (ST-SUP-RC20-OC17).
+		types.Entity{Name: "Meeting", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString},
+			{Name: "starts_at", Type: types.FieldTypeTimestamp, ClientSet: true}, {Name: "ends_at", Type: types.FieldTypeTimestamp, Optional: true, ClientSet: true},
+			{Name: "noted_at", Type: types.FieldTypeTimestamp}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "meeting", Permissions: permissions(types.OpUpdate, types.OpPatch), PublicReasons: reasons}},
 	)
 	return withSchema(gen.Context{
 		ModuleName:      crudModule,
@@ -102,6 +108,7 @@ func crudContext() gen.Context {
 			{Name: "books", Entity: "Book", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate}},
 			{Name: "folder-flags", Entity: "Setting", Scope: map[string]string{"folder_id": "Folder"}, Implicit: map[string]string{"source": "flag"}, PathPrefix: "/folders/{folder_id}/flags", Operations: []types.Operation{types.OpUpsert}, UpsertKey: []string{"name"}},
 			{Name: "folder-quotas", Entity: "Quota", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpList, types.OpUpsert}, UpsertKey: []string{"name"}, Concurrency: types.ConcurrencyOptimistic},
+			{Name: "meetings", Entity: "Meeting", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate, types.OpPatch}, Patchable: []string{"starts_at", "ends_at"}},
 		},
 		SlotBindings: []types.SlotDeclaration{
 			{Slot: "before_create", Collection: "orders", Chain: []string{"order-gate"}, ShortCircuit: true},
@@ -613,6 +620,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC24-T06 A list cursor of one parent is refused for another",
 	"ST-SUP-RC20-OC24-T07 An upper-case UUID in a path or a ref names the same row as its lower-case form",
 	"ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders",
+	"ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time",
 	"ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages",
 }
 

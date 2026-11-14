@@ -73,6 +73,13 @@ definition customer {
 	permission edit = owner
 }
 
+definition meeting {
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer
+	permission edit = owner
+}
+
 definition todo {
 	relation owner: user
 	relation viewer: user
@@ -116,7 +123,7 @@ definition event {
 `
 )
 
-var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas"}
+var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "meetings"}
 
 // env is the running service: its database with the runtime role, its runtimes and its HTTP server.
 type env struct {
@@ -353,6 +360,7 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	orders := api.NewOrdersHandler(rt, slots.NewBeforeCreateChain(true, orderGate{e}), slots.NewAfterCreateGate(orderAfter{e}))
 	customers := api.NewCustomersHandler(rt, slots.NewValidateGate(customerGate{e}))
 	todos := api.NewTodosHandler(rt)
+	meetings := api.NewMeetingsHandler(rt)
 	folders, books, allBooks := api.NewFoldersHandler(rt), api.NewFolderBooksHandler(rt), api.NewBooksHandler(rt)
 	redEvents, blueEvents := api.NewRedEventsHandler(rt), api.NewBlueEventsHandler(rt)
 	folderSettings := api.NewFolderSettingsHandler(rt, slots.NewValidateGate(settingGate{e}), slots.NewOnEntityChangedGate(settingChanged{e}))
@@ -401,6 +409,10 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	mux.HandleFunc("PATCH /api/v1/todos/{id}", todos.Patch)
 	mux.HandleFunc("PUT /api/v1/todos/{id}", todos.Update)
 	mux.HandleFunc("DELETE /api/v1/todos/{id}", todos.Delete)
+	mux.HandleFunc("POST /api/v1/meetings", meetings.Create)
+	mux.HandleFunc("GET /api/v1/meetings/{id}", meetings.Read)
+	mux.HandleFunc("PUT /api/v1/meetings/{id}", meetings.Update)
+	mux.HandleFunc("PATCH /api/v1/meetings/{id}", meetings.Patch)
 	e.server = httptest.NewServer(e.verifier.Middleware(mux))
 }
 
@@ -1317,6 +1329,81 @@ func TestCrud(t *testing.T) {
 		if list.status != http.StatusOK || strings.Contains(string(list.body), "0001-01-01") || strings.Contains(string(list.body), `"due_at"`) {
 			t.Errorf("the list answered %d %s, want 200 with no due_at member", list.status, list.body)
 		}
+	})
+
+	t.Run("ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		answered := func(what string, r reply, want map[string]string) {
+			t.Helper()
+			object := r.object(t)
+			for field, value := range want {
+				if got, _ := object[field].(string); got != value {
+					t.Errorf("%s answered %s %q in %s, want %q", what, field, got, r.body, value)
+				}
+			}
+		}
+		// The create keeps the client's times in UTC, and noted_at, which is not client_set, is the server's time.
+		key := "k-" + uuid.NewString()
+		body := `{"title":"plan","starts_at":"2026-12-01T10:00:00+02:00","ends_at":"2026-12-01T11:30:00.5+02:00","noted_at":"2000-01-01T00:00:00Z"}`
+		created := e.send(a, http.MethodPost, "/api/v1/meetings", key, body)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "meeting", id)
+		answered("the create", created, map[string]string{"starts_at": "2026-12-01T08:00:00Z", "ends_at": "2026-12-01T09:30:00.5Z"})
+		noted, _ := created.object(t)["noted_at"].(string)
+		if at, err := time.Parse(time.RFC3339Nano, noted); err != nil || time.Since(at) > time.Hour {
+			t.Errorf("the create answered noted_at %q, want the server's time of the create, not the client's", noted)
+		}
+		if n := e.count(`SELECT count(*) FROM meetings WHERE id = $1::uuid AND starts_at = '2026-12-01T08:00:00Z' AND ends_at = '2026-12-01T09:30:00.5Z' AND noted_at > now() - interval '1 hour'`, id); n != 1 {
+			t.Errorf("%d meeting rows with the client's times and the server's noted_at, want 1", n)
+		}
+		// The same key with another time is another request (the fingerprint holds the client-set field).
+		if r := e.send(a, http.MethodPost, "/api/v1/meetings", key, strings.Replace(body, "10:00:00", "10:05:00", 1)); r.status == http.StatusCreated {
+			t.Errorf("the same key with another starts_at answered %d %s, want a refusal of the reused key", r.status, r.body)
+		}
+		answered("the read", e.send(a, http.MethodGet, "/api/v1/meetings/"+id, "", ""), map[string]string{"starts_at": "2026-12-01T08:00:00Z"})
+		// A value that is not an RFC 3339 time, the zero time, and a required time left out or null are refused with
+		// a 400 problem that names the field, and write no row.
+		for _, c := range []struct{ body, field string }{
+			{`{"title":"bad","starts_at":"tomorrow"}`, "starts_at"},
+			{`{"title":"bad","starts_at":"2026-12-01 10:00:00"}`, "starts_at"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00"}`, "starts_at"},
+			{`{"title":"bad","starts_at":1764583200}`, "starts_at"},
+			{`{"title":"bad","Starts_At":"tomorrow"}`, "starts_at"},
+			{`{"title":"bad","starts_at":"0001-01-01T00:00:00Z"}`, "starts_at"},
+			{`{"title":"bad"}`, "starts_at is required"},
+			{`{"title":"bad","starts_at":null}`, "starts_at is required"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00Z","ends_at":"soon"}`, "ends_at"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00Z","ends_at":"0001-01-01T00:00:00Z"}`, "ends_at"},
+		} {
+			r := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), c.body)
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), c.field) || !strings.Contains(string(r.body), "RFC 3339") {
+				t.Errorf("the create %s answered %d %s, want 400 naming %s and RFC 3339", c.body, r.status, r.body, c.field)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 1 {
+			t.Errorf("%d meeting rows after the refused creates, want 1", n)
+		}
+		// An update sets the client's time and keeps the server's noted_at; a patch changes one time.
+		updated := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", `{"title":"plan","starts_at":"2026-12-02T09:00:00-05:00"}`)
+		answered("the update", updated, map[string]string{"starts_at": "2026-12-02T14:00:00Z", "noted_at": noted})
+		if _, ok := updated.object(t)["ends_at"]; ok {
+			t.Errorf("the update with no ends_at answered %s, want no ends_at member", updated.body)
+		}
+		if r := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", `{"title":"plan"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), "starts_at is required") {
+			t.Errorf("the update with no starts_at answered %d %s, want 400", r.status, r.body)
+		}
+		patched := e.send(a, http.MethodPatch, "/api/v1/meetings/"+id, "k-"+uuid.NewString(), `{"ends_at":"2026-12-02T16:00:00+01:00"}`)
+		answered("the patch", patched, map[string]string{"starts_at": "2026-12-02T14:00:00Z", "ends_at": "2026-12-02T15:00:00Z"})
+		for _, bad := range []string{`{"starts_at":"later"}`, `{"ends_at":"0001-01-01T00:00:00Z"}`} {
+			if r := e.send(a, http.MethodPatch, "/api/v1/meetings/"+id, "k-"+uuid.NewString(), bad); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), "RFC 3339") {
+				t.Errorf("the patch %s answered %d %s, want 400", bad, r.status, r.body)
+			}
+		}
+		answered("the read after the refused patches", e.send(a, http.MethodGet, "/api/v1/meetings/"+id, "", ""), map[string]string{"starts_at": "2026-12-02T14:00:00Z", "ends_at": "2026-12-02T15:00:00Z"})
 	})
 
 	t.Run("ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response", func(t *testing.T) {
