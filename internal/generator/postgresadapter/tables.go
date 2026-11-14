@@ -564,14 +564,20 @@ func searchColumns(entity types.Entity, collections []types.Collection) []string
 	}
 	var columns []string
 	for _, f := range entity.Fields {
-		searchable := f.Sensitivity == "" && (f.Type == types.FieldTypeString || f.Type == types.FieldTypeEnum ||
-			f.Type == types.FieldTypeInt32 || f.Type == types.FieldTypeInt64 || f.Type == types.FieldTypeFloat ||
-			f.Type == types.FieldTypeDouble || f.Type == types.FieldTypeBool)
-		if filtered[f.Name] || searchable {
+		if filtered[f.Name] || Searchable(f) {
 			columns = append(columns, f.ColumnName())
 		}
 	}
 	return columns
+}
+
+// Searchable tells whether the search of a list takes the field, so that each table of a listed entity has a search
+// index on it: a field that is not pii or secret, of a text, enum, number or bool type. The check against the base
+// reads it too (ST-GEN-INV33).
+func Searchable(f types.Field) bool {
+	return f.Sensitivity == "" && (f.Type == types.FieldTypeString || f.Type == types.FieldTypeEnum ||
+		f.Type == types.FieldTypeInt32 || f.Type == types.FieldTypeInt64 || f.Type == types.FieldTypeFloat ||
+		f.Type == types.FieldTypeDouble || f.Type == types.FieldTypeBool)
 }
 
 // generateTables gives the files of the tables on the runtime data path: the SQL text of 001_initial as the
