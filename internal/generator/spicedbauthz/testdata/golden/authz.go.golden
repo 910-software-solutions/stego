@@ -41,6 +41,14 @@ definition project {
 	permission edit = owner
 }
 
+definition service {
+	relation operator: user
+	relation creator: user
+	permission provision = operator
+	permission retire = operator
+	permission create = creator
+}
+
 definition stego_floor {
 	relation marker: stego_floor
 }
@@ -90,16 +98,18 @@ type Operation struct {
 // Operations are the decisions of the operations of the collections, in declaration order, then of Provision and
 // Retire, and then of the revocation status route, from which alone the router registers those routes.
 var Operations = []Operation{
-	{Collection: "documents", Operation: "create", ResourceType: "document", Permission: "edit"},
+	{Collection: "documents", Operation: "create", ResourceType: "service", Permission: "create"},
 	{Collection: "documents", Operation: "read", ResourceType: "document", Permission: "view"},
 	{Collection: "documents", Operation: "update", ResourceType: "document", Permission: "edit"},
 	{Collection: "documents", Operation: "delete", ResourceType: "document", Permission: "edit"},
 	{Collection: "documents", Operation: "list", ResourceType: "document", Permission: "view"},
-	{Collection: "projects", Operation: "create", ResourceType: "project", Permission: "edit"},
+	{Collection: "projects", Operation: "create", ResourceType: "service", Permission: "create"},
 	{Collection: "projects", Operation: "read", ResourceType: "project", Permission: "view"},
 	{Collection: "projects", Operation: "update", ResourceType: "project", Permission: "edit"},
 	{Collection: "projects", Operation: "delete", ResourceType: "project", Permission: "edit"},
 	{Collection: "projects", Operation: "list", ResourceType: "project", Permission: "view"},
+	{Operation: "provision-tenant", ResourceType: "service", Permission: "provision", Route: "POST /stego/tenants", Tenant: "provision"},
+	{Operation: "retire-tenant", ResourceType: "service", Permission: "retire", Route: "POST /stego/tenants/{tenantId}/retire", Tenant: "retire"},
 	{Operation: "revocation-status", Route: "GET /authz/revocations/{id}", Writer: true},
 }
 

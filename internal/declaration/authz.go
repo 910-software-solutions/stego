@@ -463,6 +463,26 @@ func relationshipName(entity types.Entity, relationship types.Relationship) stri
 	return entity.ResourceType + "#" + relation
 }
 
+// topLevelCreate checks the permission of the create of an entity with no parent, which a collection with no scope
+// serves: no row names the new row, so the create is decided on the service-level resource of the tenant
+// provisioning, and its permission is one that the schema declares on the provisioning's resource type
+// (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09). A declaration with no provisioning has no such resource, so only a public
+// create is accepted. An undefined resource type of the provisioning is the fault of checkProvisioningSchema.
+func topLevelCreate(service *types.ServiceDeclaration, schema *AuthzSchema, ei int, entity types.Entity, permission string) []ValidationError {
+	place := fmt.Sprintf("entities[%d].permissions.%s", ei, types.OpCreate)
+	if service.Tenancy == nil || service.Tenancy.Provisioning == nil || service.Tenancy.Provisioning.ResourceType == "" {
+		return []ValidationError{{Category: "authorization", Rule: "schema-names", Path: place, Found: permission,
+			Message: fmt.Sprintf("entity %q has no parent, so its create is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration does not declare; declare tenancy.provisioning, or make the create public with a reason", entity.Name)}}
+	}
+	resourceType := service.Tenancy.Provisioning.ResourceType
+	definition, defined := schema.definitions[resourceType]
+	if !defined || definition.permissions[permission] {
+		return nil
+	}
+	return []ValidationError{{Category: "authorization", Rule: "schema-names", Path: place, Found: permission, Allowed: sortedKeys(definition.permissions),
+		Message: fmt.Sprintf("entity %q for the operation create names the permission %q, which the resource type %s of the schema %s lacks; an entity with no parent is created on the service-level resource %s:%s of the tenant provisioning (ST-SUP-RC29-OC01)", entity.Name, permission, resourceType, schema.Path, resourceType, service.Name)}}
+}
+
 // validateSchemaNames checks that every name the declaration takes from the schema is in it (ST-DECL-INV22): the
 // subject type of a request's identity, each entity's resource type, the permission of each operation, the
 // relation and subject type of each relationship, and the caveat parameter of each context field.
@@ -489,6 +509,10 @@ func validateSchemaNames(service *types.ServiceDeclaration, schema *AuthzSchema)
 		if defined {
 			for _, operation := range sortedOperations(a.Permissions) {
 				permission := a.Permissions[operation]
+				if operation == types.OpCreate && permission != types.PermissionPublic && types.CreatesTopLevel(service.Collections, entity.Name) {
+					faults = append(faults, topLevelCreate(service, schema, ei, entity, permission)...)
+					continue
+				}
 				if permission != types.PermissionPublic && !definition.permissions[permission] {
 					lacks(fmt.Sprintf("entities[%d].permissions.%s", ei, operation), "permission", permission,
 						fmt.Sprintf("%s for the operation %s", where, operation), sortedKeys(definition.permissions))
