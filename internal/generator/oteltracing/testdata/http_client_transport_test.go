@@ -65,8 +65,12 @@ func TestHTTPClientWireCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Size and outcome checks must not compete with the deliberate timeout case.
-	// The timeout request below keeps its own one-second deadline.
-	client, err := web.New(web.Options{BaseURL: server.URL, CAFile: ca, Timeout: 5 * time.Second})
+	// The timeout request below keeps its own one-second deadline. The other
+	// requests get the longest budget that the client takes, 30 s: the size
+	// check reads a body of MaxResponseBytes+1 bytes over TLS, and under -race on
+	// a loaded runner that read once took more than 5 s, so the client classed
+	// it as a deadline, not as a response failure (flake on PR #308).
+	client, err := web.New(web.Options{BaseURL: server.URL, CAFile: ca, Timeout: 30 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
