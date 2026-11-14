@@ -175,7 +175,8 @@ INSERT INTO stego_schema.backfills (change_id) VALUES ('board-title-rename');
 }
 
 // renameJob gives a fixture with the table boards of a rename board-title-rename at expand, 25 rows in three tenants
-// of which 24 have no new value, and the migration of a job that backfills it in batches of 4.
+// of which 24 have no new value, and the migration of a job that backfills it in batches of 4, whose declared parts
+// also have the manifest of boards.
 func renameJob(t *testing.T) (*fixture, Migration, []Backfill) {
 	t.Helper()
 	f := newFixture(t)
@@ -236,6 +237,10 @@ func renameJob(t *testing.T) (*fixture, Migration, []Backfill) {
 	backfills[0].Settings.BatchSize = 4
 	m := f.migration(nil)
 	m.Service, m.Backfills, m.BackfillLease = "svc", backfills, lease.Settings{TTL: 2 * time.Second, Renew: 500 * time.Millisecond, Retry: 100 * time.Millisecond}
+	// The manifest names the table boards with its sync trigger, which each batch of the backfill accepts.
+	declared := *m.Parts
+	declared.Schema = manifest.Join(declared.Schema, boardsManifest(t, f.owner))
+	m.Parts = &declared
 	return f, m, backfills
 }
 
@@ -1629,16 +1634,13 @@ func boardsManifest(t *testing.T, owner string) manifest.Manifest {
 			OptionalConstraints: []manifest.Constraint{{Name: "boards_heading_complete", Kind: manifest.KindCheck, Definition: "CHECK (((heading IS NOT NULL) OR (title IS NULL)))"}}}}}
 }
 
-// boardsJob is the job of renameJob whose declared parts also have the manifest of boards, with the settings of a
-// job against the SpiceDB of the tests.
+// boardsJob is the job of renameJob, whose declared parts also have the manifest of boards, with the grants of the
+// runtime role and the settings of a job against the SpiceDB of the tests.
 func boardsJob(t *testing.T) (*fixture, Migration, MigrationSettings) {
 	t.Helper()
 	endpoint, key := startSpiceDB(t)
 	f, m, _ := renameJob(t)
 	runtimeGrants(t, f)
-	declared := *m.Parts
-	declared.Schema = manifest.Join(declared.Schema, boardsManifest(t, f.owner))
-	m.Parts = &declared
 	return f, m, MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
 }
 
@@ -1700,6 +1702,64 @@ func TestMigrateManifestBefore(t *testing.T) {
 		}
 		if !boardsCompleted(t, f) || unmoved(t, f) != 0 || steps[len(steps)-1] != StepManifest {
 			t.Fatalf("the job ran the steps %v, complete %v with %d rows unmoved, want the change complete and the step %s last", steps, boardsCompleted(t, f), unmoved(t, f), StepManifest)
+		}
+	})
+
+	t.Run("ST-SUP-RP14-LC03-T19 A trigger made on an entity table after the check before the backfills is refused by the first batch, which writes nothing, and the job refuses the database at its schema manifest check", func(t *testing.T) {
+		f, m, settings := boardsJob(t)
+		// Decision on the #305 info: the job lock ends before the backfill, so a trigger made in that gap passes
+		// the check before the backfills. Each batch checks the triggers of its table again.
+		for _, statement := range []string{
+			"CREATE SCHEMA lc03t19", "CREATE TABLE lc03t19.log (role text)", "GRANT USAGE ON SCHEMA lc03t19 TO PUBLIC",
+			"GRANT INSERT ON lc03t19.log TO PUBLIC",
+			`CREATE FUNCTION lc03t19.f() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN INSERT INTO lc03t19.log VALUES (current_user); RETURN NULL; END$$`,
+		} {
+			if _, err := f.admin.ExecContext(ctx, statement); err != nil {
+				t.Fatalf("%.50s: %v", statement, err)
+			}
+		}
+		var steps []string
+		stepped = func(step string, _ *sql.Conn) {
+			steps = append(steps, step)
+			if step == StepBackfill {
+				if _, err := f.admin.ExecContext(ctx, "CREATE TRIGGER lc03t19_evil AFTER UPDATE ON public.boards FOR EACH STATEMENT EXECUTE FUNCTION lc03t19.f()"); err != nil {
+					t.Errorf("the trigger in the gap: %v", err)
+				}
+			}
+		}
+		t.Cleanup(func() { stepped = nil })
+		err := Migrate(ctx, settings, m)
+		if Stage(err) != "migrate."+StepManifest || !strings.Contains(err.Error(), "table public.boards: trigger lc03t19_evil is a trigger that the manifest does not name") {
+			t.Fatalf("the job with a trigger made in the gap gave %v at the stage %q, want the refusal of the step %s that names it", err, Stage(err), StepManifest)
+		}
+		var ran int
+		if err := f.admin.QueryRow("SELECT count(*) FROM lc03t19.log").Scan(&ran); err != nil {
+			t.Fatal(err)
+		}
+		if ran != 0 || boardsCompleted(t, f) || unmoved(t, f) != 24 {
+			t.Fatalf("the refused job ran the trigger %d times, complete %v with %d rows unmoved, want no run and 24 rows unmoved", ran, boardsCompleted(t, f), unmoved(t, f))
+		}
+		// With the trigger gone, the next job completes the change.
+		stepped = nil
+		if _, err := f.admin.ExecContext(ctx, "DROP TRIGGER lc03t19_evil ON public.boards"); err != nil {
+			t.Fatal(err)
+		}
+		if err := Migrate(ctx, settings, m); err != nil || !boardsCompleted(t, f) || unmoved(t, f) != 0 {
+			t.Fatalf("the next job gave %v, complete %v with %d rows unmoved, want the change complete", err, boardsCompleted(t, f), unmoved(t, f))
+		}
+	})
+
+	t.Run("ST-SUP-RP14-LC03-T20 The wait after a broken backfill session is the retry period of the lease, the default retry period when it has none, and never less than MinSessionPause", func(t *testing.T) {
+		for _, c := range []struct {
+			retry, want time.Duration
+		}{{0, lease.DefaultRetry}, {-time.Second, lease.DefaultRetry}, {time.Nanosecond, MinSessionPause}, {50 * time.Millisecond, MinSessionPause},
+			{MinSessionPause, MinSessionPause}, {3 * time.Second, 3 * time.Second}} {
+			if got := sessionPause(lease.Settings{Retry: c.retry}); got != c.want {
+				t.Errorf("the pause for the retry period %v is %v, want %v", c.retry, got, c.want)
+			}
+		}
+		if MinSessionPause < 100*time.Millisecond {
+			t.Fatalf("MinSessionPause is %v, want at least 100 ms", MinSessionPause)
 		}
 	})
 

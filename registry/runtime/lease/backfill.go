@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,8 +44,9 @@ var ErrValidate = errors.New("the completeness CHECK cannot be validated")
 var transientStates = map[string]bool{"55P03": true, "57014": true, "40001": true, "40P01": true, "57P01": true, "57P03": true}
 
 // ErrSession is the error of Run when the session of its batches breaks: an administrator shutdown (SQLSTATE 57P01),
-// a server that cannot take connections yet (57P03), a connection exception (class 08) or a connection that the
-// driver or database/sql marks as bad or done. A run again on the same session cannot pass, so Run returns it at once,
+// a server that cannot take connections yet (57P03), a connection exception (class 08), a session that the idle in
+// transaction timeout (25P03) or the transaction timeout (25P04) ended, or a connection that the driver or
+// database/sql marks as bad or done. A run again on the same session cannot pass, so Run returns it at once,
 // and the caller holds the lease again with new sessions, as after a lost lease (review of PR #305, L3, orchestrator
 // under the owner's delegation, 2026-11-14).
 var ErrSession = errors.New("the session of the backfill is broken")
@@ -57,10 +59,17 @@ func brokenSession(err error) bool {
 	var state interface{ SQLState() string }
 	if errors.As(err, &state) {
 		code := state.SQLState()
-		return code == "57P01" || code == "57P03" || strings.HasPrefix(code, "08")
+		return code == "57P01" || code == "57P03" || code == "25P03" || code == "25P04" || strings.HasPrefix(code, "08")
 	}
 	return false
 }
+
+// ErrTrigger is the error of Run when the table of the backfill holds a trigger that Triggers does not name, or a
+// trigger of a name that Triggers names that runs another function. The steps run as the owner role, so such a
+// trigger would run as the owner role on each row of the batch. Run returns it at once and writes nothing, and the
+// migration job refuses the database at its schema manifest check (decision on the #305 info, orchestrator under the
+// owner's delegation, 2026-11-14).
+var ErrTrigger = errors.New("the table of the backfill holds a trigger that its manifest does not name")
 
 // The reasons of schema.backfill.throttled: the backfill waited for a replica whose replay lag is above the
 // maximum, or it made its batches smaller because a batch took longer than the target batch time.
@@ -312,6 +321,14 @@ type BackfillSettings struct {
 	// it passes. Empty marks the change complete when a batch finds no row left.
 	Validate, Check string
 	ValidateTimeout time.Duration
+	// Schema and Table name the table of the backfill, and Triggers are the triggers that it may hold, each by its
+	// name with the function that it runs as schema.function, such as stego_steps.boards_heading_sync. When Table is
+	// set, each batch first locks the table in ROW EXCLUSIVE mode, the lock of the step's UPDATE, so no trigger can
+	// be made on the table until the batch ends, and then reads its triggers that are not internal: a trigger that
+	// Triggers does not name fails the batch with ErrTrigger before the step runs (decision on the #305 info,
+	// orchestrator under the owner's delegation, 2026-11-14).
+	Schema, Table string
+	Triggers      map[string]string
 }
 
 // Backfill moves the rows of one schema change in short fenced batches under the lease of the change.
@@ -331,6 +348,9 @@ type Backfill struct {
 	validate    string
 	check       string
 	validateFor time.Duration
+	schema      string
+	table       string
+	triggers    map[string]string
 
 	mu         sync.Mutex
 	limit      int
@@ -367,9 +387,13 @@ func NewBackfill(change string, step Step, settings BackfillSettings) (*Backfill
 	}
 	b := &Backfill{change: change, step: step, fillDigest: settings.FillDigest, key: settings.Key, keyParts: append([]KeyType(nil), settings.KeyParts...), batchSize: settings.BatchSize, lockTimeout: settings.LockTimeout, observer: settings.Observer,
 		statement: settings.StatementTimeout, pause: settings.Pause, target: settings.TargetBatchTime, maxLag: settings.MaxReplicaLag,
-		validate: settings.Validate, check: settings.Check, validateFor: settings.ValidateTimeout}
+		validate: settings.Validate, check: settings.Check, validateFor: settings.ValidateTimeout, schema: settings.Schema, table: settings.Table,
+		triggers: maps.Clone(settings.Triggers)}
 	if (b.validate == "") != (b.check == "") {
 		return nil, fmt.Errorf("backfill %s: the validate statement and the name of its CHECK go together", change)
+	}
+	if (b.schema == "") != (b.table == "") || (b.table == "" && len(b.triggers) > 0) {
+		return nil, fmt.Errorf("backfill %s: the schema, the table and the triggers of the trigger check go together", change)
 	}
 	switch b.key {
 	case KeyInteger, KeyUUID, KeyText:
@@ -422,7 +446,8 @@ func (b *Backfill) Stalled() bool {
 // reads no row, and then it marks the change complete. When the declared fill digest differs from the row's, it
 // first clears the completed time and the key and records the new digest, so the step passes again over the rows
 // whose new value is unset (ST-SUP-RP09-LC11). A batch that fails, such as at the lock timeout, is rolled back
-// and run again after the retry period; a fenced batch, a stopped holder or a broken session (ErrSession) ends Run. A watcher marks the backfill
+// and run again after the retry period; a fenced batch, a stopped holder, a broken session (ErrSession) or a trigger
+// that the trigger check does not accept (ErrTrigger) ends Run. A watcher marks the backfill
 // stalled when no batch commits for three lease durations, and emits the stall once.
 func (b *Backfill) Run(ctx context.Context, db DB, held *Held) (runErr error) {
 	b.mu.Lock()
@@ -498,7 +523,7 @@ func (b *Backfill) Run(ctx context.Context, db DB, held *Held) (runErr error) {
 				}
 			}
 			continue
-		case errors.Is(err, ErrFenced), errors.Is(err, ErrStopped), errors.Is(err, ErrIncomplete), errors.Is(err, ErrValidate), ctx.Err() != nil:
+		case errors.Is(err, ErrFenced), errors.Is(err, ErrStopped), errors.Is(err, ErrIncomplete), errors.Is(err, ErrValidate), errors.Is(err, ErrTrigger), ctx.Err() != nil:
 			return err
 		case brokenSession(err):
 			return fmt.Errorf("backfill %s: %w: %w", b.change, ErrSession, err)
@@ -557,6 +582,9 @@ func (b *Backfill) batch(ctx context.Context) error {
 	err := b.inTx(ctx, func(ctx context.Context, tx *sql.Tx, row checkpoint) (checkpoint, bool, error) {
 		if row.completed {
 			return row, false, nil
+		}
+		if err := b.guard(ctx, tx); err != nil {
+			return row, false, err
 		}
 		var err error
 		result, err = b.step(ctx, tx, row.lastKey, limit)
@@ -620,6 +648,44 @@ func (b *Backfill) batch(ctx context.Context) error {
 		if completed && result.Read == 0 {
 			b.observer.BackfillCompleted(b.change)
 		}
+	}
+	return nil
+}
+
+// triggersStatement reads the triggers of a table that are not internal, each with the function that it runs as
+// schema.function. The internal triggers are those of the foreign keys, which the manifest names as constraints.
+const triggersStatement = `SELECT t.tgname, pn.nspname || '.' || p.proname FROM pg_catalog.pg_trigger t
+  JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace pn ON pn.oid = p.pronamespace
+  WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal ORDER BY 1`
+
+// guard is the trigger check of a batch, in its transaction tx and before its step: it locks the table of the
+// backfill in ROW EXCLUSIVE mode, which conflicts with the lock of CREATE TRIGGER, so the triggers that it then reads
+// are those that the step's UPDATE fires, and it fails with ErrTrigger, which names the trigger and no row value, at
+// the first trigger that b.triggers does not name with its function. With no table it checks nothing.
+func (b *Backfill) guard(ctx context.Context, tx *sql.Tx) error {
+	if b.table == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, "LOCK TABLE "+quoteName(b.schema)+"."+quoteName(b.table)+" IN ROW EXCLUSIVE MODE"); err != nil {
+		return fmt.Errorf("backfill %s: lock the table: %w", b.change, err)
+	}
+	rows, err := tx.QueryContext(ctx, triggersStatement, b.schema, b.table)
+	if err != nil {
+		return fmt.Errorf("backfill %s: read the triggers: %w", b.change, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, function string
+		if err := rows.Scan(&name, &function); err != nil {
+			return fmt.Errorf("backfill %s: read the triggers: %w", b.change, err)
+		}
+		if want, ok := b.triggers[name]; !ok || want != function {
+			return fmt.Errorf("backfill %s: %w: trigger %q on %s.%s", b.change, ErrTrigger, name, b.schema, b.table)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("backfill %s: read the triggers: %w", b.change, err)
 	}
 	return nil
 }
