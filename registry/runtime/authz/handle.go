@@ -458,19 +458,23 @@ type tenantDecision struct {
 	seal.DecisionMark
 }
 
-// DecideTenant decides the permission of action, provision or retire, on resource at the floor, for a request that
-// names the tenant tenantID (ST-SUP-RP06-LC17). Like every evaluation of the handle, resource has the ID of
-// ResourceID in the handle's own tenant, the tenant of the principal who asks (ST-SUP-RP06-LC22). On an allow it returns the decision that tenant.Requested takes,
-// whose mark the internal seal constructor makes with exactly that tenant ID and that action, so the allow serves
-// only the one action on the one tenant, and true; on a deny it returns no decision and false.
-func (h *Handle) DecideTenant(ctx context.Context, action tenant.RequestAction, tenantID string, resource Resource, c Context) (tenant.Decision, bool, error) {
+// DecideTenant decides permission, the declared permission of action, provision or retire, on resource at the
+// floor, for a request that names the tenant tenantID (ST-SUP-RP06-LC17, ST-DECL-EN27). Like every evaluation of the
+// handle, resource has the ID of ResourceID in the handle's own tenant, the tenant of the principal who asks
+// (ST-SUP-RP06-LC22). On an allow it returns the decision that tenant.Requested takes, whose mark the internal seal
+// constructor makes with exactly that tenant ID and that action, so the allow serves only the one action on the one
+// tenant, and true; on a deny it returns no decision and false.
+func (h *Handle) DecideTenant(ctx context.Context, action tenant.RequestAction, permission, tenantID string, resource Resource, c Context) (tenant.Decision, bool, error) {
 	if action != tenant.ProvisionAction && action != tenant.RetireAction {
 		return nil, false, errors.New("authz: the tenant action is not provision or retire")
+	}
+	if err := validType("permission", permission); err != nil {
+		return nil, false, err
 	}
 	if tenantID == "" {
 		return nil, false, errors.New("authz: the request names no tenant")
 	}
-	result, err := h.Evaluate(ctx, string(action), resource, Token{}, c)
+	result, err := h.Evaluate(ctx, permission, resource, Token{}, c)
 	if err != nil {
 		return nil, false, err
 	}

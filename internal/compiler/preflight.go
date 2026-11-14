@@ -300,16 +300,20 @@ func pooledTenancy(service *types.ServiceDeclaration, componentNames []string) *
 	if !present {
 		return nil
 	}
-	key := "tenant_id"
+	pooled := &gen.Tenancy{Key: "tenant_id"}
 	if tenancy := service.Tenancy; tenancy != nil {
 		if tenancy.Kind != "" && tenancy.Kind != "pooled" {
 			return nil
 		}
 		if tenancy.Key != "" {
-			key = tenancy.Key
+			pooled.Key = tenancy.Key
+		}
+		if p := tenancy.Provisioning; p != nil {
+			provisioning := *p
+			pooled.Provisioning = &provisioning
 		}
 	}
-	return &gen.Tenancy{Key: key}
+	return pooled
 }
 
 // declaredDestinations gives the outbox destinations that the components of the service declare in their setting

@@ -73,7 +73,8 @@ const (
 // Operation is the decision of one operation: of an operation of a collection, the permission of the resource type
 // that it checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01); of the
 // revocation status route, its route and the decision Writer, which allows only the principal and tenant that made
-// the write and calls no provider (ST-SUP-RC29-OC18).
+// the write and calls no provider (ST-SUP-RC29-OC18); of Provision and Retire, the permission of the service-level
+// resource type, the route and Tenant, the action of the tenant runtime, provision or retire (ST-SUP-RC27-OC09).
 type Operation struct {
 	Collection   string
 	Operation    string
@@ -83,10 +84,11 @@ type Operation struct {
 	Reason       string
 	Route        string
 	Writer       bool
+	Tenant       string
 }
 
-// Operations are the decisions of the operations of the collections, in declaration order, and then of the
-// revocation status route, from which alone the router registers that route.
+// Operations are the decisions of the operations of the collections, in declaration order, then of Provision and
+// Retire, and then of the revocation status route, from which alone the router registers those routes.
 var Operations = []Operation{
 	{Collection: "documents", Operation: "create", ResourceType: "document", Permission: "edit"},
 	{Collection: "documents", Operation: "read", ResourceType: "document", Permission: "view"},

@@ -424,6 +424,8 @@ type Emitter struct {
 type Tenancy struct {
 	// Key is the name of the tenant column of each owned table: tenancy.key, or tenant_id when it is omitted.
 	Key string
+	// Provisioning is the declared tenant provisioning (ST-DECL-EN27), or nil when the declaration states none.
+	Provisioning *types.TenantProvisioning
 }
 
 // TenancyComponent is the name of the tenancy component (ST-SUP-RC27).

@@ -477,12 +477,47 @@ func wantCode(t *testing.T, err error, code codes.Code, what string) {
 	}
 }
 
+// provisioned provisions the tenant of c through the provisioning route, as an operator who holds provision on the
+// service-level resource of its own tenant, which is never provisioned (ST-SUP-RC27-OC09).
+func (s *service) provisioned(c caller) {
+	t := s.t
+	t.Helper()
+	operator := s.as("op-"+uuid.NewString()[:8], "ops-"+uuid.NewString()[:8])
+	resourceID, err := authz.ResourceID(operator.tenant, "grpc-shop")
+	must(t, err)
+	_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "service", ObjectId: resourceID}, Relation: "operator",
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: operator.subject}}}}}})
+	must(t, err)
+	body, err := json.Marshal(map[string]string{"tenant_id": c.tenant.ID()})
+	must(t, err)
+	if got := s.send(&operator, http.MethodPost, "/stego/tenants", "k-"+uuid.NewString(), "", string(body)); got.status != http.StatusCreated {
+		t.Fatalf("the provision of the tenant %s answered %d %s, want 201", c.tenant.ID(), got.status, got.body)
+	}
+}
+
 func TestGRPC(t *testing.T) {
 	s := start(t)
 	owner := s.as("u-"+uuid.NewString()[:8], "t-"+uuid.NewString()[:8])
 	other := s.as("u-"+uuid.NewString()[:8], owner.tenant.ID())
+	s.provisioned(owner)
 	mine := s.order(owner, "a1", true)
 	theirs := s.order(owner, "b2", false)
+
+	t.Run("ST-SUP-RC27-OC11-T01 A gRPC call of a tenant that is not provisioned is refused before any handler", func(t *testing.T) {
+		s.t = t
+		unknown := s.as("u-"+uuid.NewString()[:8], "org-z-"+uuid.NewString()[:8])
+		ctx, cancel := s.rpc(&unknown, "k-"+uuid.NewString(), "")
+		_, err := s.shop.AddNote(ctx, &commands.AddNoteRequest{OrderId: mine, Text: "unprovisioned"})
+		cancel()
+		if status.Code(err) != codes.PermissionDenied || status.Convert(err).Message() != "tenant.not_provisioned" {
+			t.Errorf("the call of a tenant that is not provisioned gave %v, want PERMISSION_DENIED with the code tenant.not_provisioned", err)
+		}
+		if n := count(t, s.admin, `SELECT (SELECT count(*) FROM notes WHERE tenant_id = $1) + (SELECT count(*) FROM audit_event WHERE tenant_id = $1)`, unknown.tenant.ID()); n != 0 {
+			t.Errorf("the refused call left %d notes and audit rows", n)
+		}
+	})
 
 	t.Run("ST-SUP-RC07-OC19-T01 A gRPC call runs its command or query fill with the same handling as HTTP", func(t *testing.T) {
 		s.t = t

@@ -411,6 +411,10 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC01-OC41-T04 The runtime pool is opened through tenant.Open with the adapter's verified TLS configuration",
 	"ST-SUP-RC01-OC41-T07 The generated migration job runs again on its own database and refuses a database with tables it did not make",
 	"ST-SUP-RC29-OC23-T02 The generated migration job writes the schema to SpiceDB before the service starts",
+	"ST-SUP-RC27-OC11-T02 The provisioning routes pass the tenant check on an empty service",
+	"ST-SUP-RC27-OC09-T01 A caller without the provision permission cannot provision a tenant",
+	"ST-SUP-RC27-OC10-T01 A provision and a retire each leave one audit row in their transaction",
+	"ST-SUP-RC27-OC11-T01 A request for an unknown or retired tenant is refused before any handler",
 	"ST-SUP-RC20-OC37-T07 A collection create and read reach the generated handlers through the generated main.go",
 	"ST-SUP-RC32-OC02-T03 A declared command reaches its fill through the generated main.go",
 	"ST-SUP-RC33-OC02-T04 A declared query reaches its fill through the generated main.go",
@@ -421,6 +425,15 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC20-OC40-T03 A replay of a write with its idempotency key stages no second event",
 	"ST-SUP-RC20-OC40-T04 A write that rolls back after it staged its event leaves no outbox message and no record",
 }
+
+// The checks of the generated service that prove the UC requirements of the tenant provisioning (ST-DECL-UC10),
+// which TestRuntimeWiring runs after those of wiringCheckIDs.
+const (
+	provisionFirstCheck = "ST-DECL-UC10-R04-T02 An operator provisions the first tenant of an empty service"
+	provisionDecided    = "ST-DECL-UC10-R01-T01 A caller without the provision permission cannot provision a tenant"
+	provisionAudited    = "ST-DECL-UC10-R02-T01 A provision and a retire each leave one audit row in their transaction"
+	provisionGated      = "ST-DECL-UC10-R04-T01 A request for an unknown or retired tenant is refused before any handler"
+)
 
 // TestRuntimeWiring generates the test service with stego apply, builds it with the pinned Go, and runs the check of
 // testdata/runtime_wiring/check in its module once: the check runs the migration job and the service binary against
@@ -481,12 +494,18 @@ func TestRuntimeWiring(t *testing.T) {
 	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_WIRING_BINARY="+binary,
 		"STEGO_WIRING_NEXT_BINARY="+nextBinary)
 	output, runErr := cmd.CombinedOutput()
-	for _, id := range wiringCheckIDs {
-		t.Run(id, func(t *testing.T) {
-			name := strings.ReplaceAll(id, " ", "_")
-			if !strings.Contains(string(output), "--- PASS: TestWiring/"+name+" ") {
-				t.Fatalf("the check %s of the generated service did not run and pass (go test: %v):\n%s", strings.SplitN(id, " ", 2)[0], runErr, output)
-			}
-		})
+	passed := func(t *testing.T, id string) {
+		t.Helper()
+		name := strings.ReplaceAll(id, " ", "_")
+		if !strings.Contains(string(output), "--- PASS: TestWiring/"+name+" ") {
+			t.Fatalf("the check %s of the generated service did not run and pass (go test: %v):\n%s", strings.SplitN(id, " ", 2)[0], runErr, output)
+		}
 	}
+	for _, id := range wiringCheckIDs {
+		t.Run(id, func(t *testing.T) { passed(t, id) })
+	}
+	t.Run(provisionFirstCheck, func(t *testing.T) { passed(t, provisionFirstCheck) })
+	t.Run(provisionDecided, func(t *testing.T) { passed(t, provisionDecided) })
+	t.Run(provisionAudited, func(t *testing.T) { passed(t, provisionAudited) })
+	t.Run(provisionGated, func(t *testing.T) { passed(t, provisionGated) })
 }

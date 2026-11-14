@@ -500,6 +500,14 @@ func TestTenantIdentity(t *testing.T) {
 			"Provision": func() error { return Provision(ctx, db, "public", zero, nil) },
 			"Commit":    func() error { return Commit(ctx, nil, zero) },
 			"Retire":    func() error { return Retire(ctx, db, "public", zero, nil) },
+			"Gate.Active": func() error {
+				gate, err := NewGate(db, "public", MaxGateAge)
+				if err != nil {
+					return err
+				}
+				_, err = gate.Active(ctx, zero)
+				return err
+			},
 		}
 		sort.Strings(found)
 		var listed []string

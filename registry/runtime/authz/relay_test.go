@@ -1267,7 +1267,7 @@ func TestTenantResources(t *testing.T) {
 			},
 			"List": func(r Resource) error { _, err := handle.List("view", nil).Page(ctx, []Row{{Resource: r}}); return err },
 			"DecideTenant": func(r Resource) error {
-				_, _, err := handle.DecideTenant(ctx, tenant.ProvisionAction, "t9", r, nil)
+				_, _, err := handle.DecideTenant(ctx, tenant.ProvisionAction, "provision", "t9", r, nil)
 				return err
 			},
 			"Relate": func(r Resource) error {
