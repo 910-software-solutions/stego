@@ -287,6 +287,22 @@ func (w *Worker) dispatch(ctx context.Context, d Delivery, reg Destination) {
 		w.finish(ctx, d, reg, Pending, change{attempts: -1, failureCode: "lease-short"})
 		return
 	}
+	// A destination that serves only active tenants gets no message of a tenant that the list does not hold as
+	// active, such as a retired tenant: it is parked before the handler runs (ST-SUP-RC27-OC12).
+	if reg.ActiveTenants && w.config.Tenants != nil {
+		checkCtx, checkCancel := context.WithTimeout(ctx, operationTimeout)
+		active, err := w.config.Tenants.Active(checkCtx, d.Tenant)
+		checkCancel()
+		switch {
+		case err != nil:
+			w.databaseFailures.Add(1)
+			w.finish(ctx, d, reg, Pending, change{attempts: -1, delay: w.retryDelay(d.Attempts), failureCode: "tenant-list-failed"})
+			return
+		case !active:
+			w.park(ctx, d, reg, change{attempts: -1, failureCode: "tenant-not-active"})
+			return
+		}
+	}
 	// The transaction, its begin included, ends with the lease, so nothing of the attempt commits after the lease
 	// is gone.
 	txCtx, txCancel := context.WithTimeout(context.WithoutCancel(ctx), left)

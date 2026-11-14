@@ -80,6 +80,11 @@ type Parts struct {
 	// (ST-SUP-RC01-OC12). New adds the manifest of the audit record to it, for the anchor period of Workers
 	// (ST-SUP-RP14-LC06).
 	Schema manifest.Manifest
+	// Provisioning is the declared tenant provisioning of a pooled service, or nil for a service that declares none
+	// (ST-DECL-EN27). With it, New serves Provision and Retire (TenantRoutes), and Middleware and Authenticate refuse
+	// a request of a tenant that the tenant list in Workers.TenantSchema does not hold as active (ST-SUP-RC27-OC09,
+	// ST-SUP-RC27-OC11).
+	Provisioning *Provisioning
 }
 
 func (p Parts) check() error {
@@ -114,6 +119,7 @@ type Service struct {
 	commands      *command.Runtime
 	collections   *command.Runtime
 	queries       *query.Runtime
+	tenants       *tenantProvisioning
 }
 
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
@@ -198,6 +204,17 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
 		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion}
+	var gate *tenant.Gate
+	if p.Provisioning != nil {
+		if p.Workers.TenantSchema == "" {
+			return nil, errors.New("service: the tenant provisioning needs the schema of the tenant list")
+		}
+		if gate, err = tenant.NewGate(svc.pool, p.Workers.TenantSchema, tenant.MaxGateAge); err != nil {
+			return nil, err
+		}
+		// A consumer of the service runs no fill for a message of a tenant that is not active (ST-SUP-RC27-OC12).
+		config.Tenants = gate
+	}
 	if len(p.Commands) > 0 {
 		config.Entities = p.Commands
 		if svc.commands, err = command.New(ctx, config); err != nil {
@@ -207,6 +224,19 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if len(p.Collections) > 0 {
 		config.Entities = p.Collections
 		if svc.collections, err = command.New(ctx, config); err != nil {
+			return nil, err
+		}
+	}
+	if p.Provisioning != nil {
+		// Provision and Retire are commands of their own, on a command runtime with no entity (ST-SUP-RC27-OC09),
+		// which logs the outcomes that write no audit row (ST-SUP-RC27-OC10).
+		config.Entities = nil
+		config.Logger = svc.telemetry.LoggerProvider()
+		provisioning, err := command.New(ctx, config)
+		if err != nil {
+			return nil, err
+		}
+		if svc.tenants, err = newProvisioning(svc, provisioning, p.Provisioning, p.Workers.TenantSchema, gate); err != nil {
 			return nil, err
 		}
 	}
@@ -358,8 +388,24 @@ func StartStage(err error) string {
 func (svc *Service) Verifier() *authn.Verifier { return svc.verifier }
 
 // Middleware verifies the bearer token of each request before next; a request whose token the verifier refuses is
-// answered 401 and reaches no handler.
-func (svc *Service) Middleware(next http.Handler) http.Handler { return svc.verifier.Middleware(next) }
+// answered 401 and reaches no handler. For a service that declares its provisioning, a request whose verified tenant
+// is not an active tenant of the tenant list is answered 403 with the code tenant.not_provisioned and reaches no
+// handler (ST-SUP-RC27-OC11). Middleware knows no router, so it exempts no route: a service that serves the two
+// provisioning routes wraps its main router with RoutedMiddleware.
+func (svc *Service) Middleware(next http.Handler) http.Handler {
+	return svc.RoutedMiddleware(nil, next)
+}
+
+// RoutedMiddleware is Middleware for the main router of the service, router, which next ends in. The tenant check
+// lets a request of a tenant that is not active through only when router matches it to the pattern of Provision or
+// of Retire, so a route of another handler under <base path>/stego/ is never exempt (ST-SUP-RC27-OC11). With no
+// router, no request is exempt.
+func (svc *Service) RoutedMiddleware(router *http.ServeMux, next http.Handler) http.Handler {
+	if svc.tenants != nil {
+		next = svc.tenants.gated(router, next)
+	}
+	return svc.verifier.Middleware(next)
+}
 
 // Commands is the command runtime of the declared commands, and nil when the service declares none.
 func (svc *Service) Commands() *command.Runtime { return svc.commands }

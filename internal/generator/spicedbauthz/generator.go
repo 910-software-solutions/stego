@@ -25,6 +25,7 @@ import (
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -73,14 +74,22 @@ type plan struct {
 	Waiters       int
 	TenantWaiters int
 	Operations    []operationPlan
-	Entities      []entityPlan
-	Bindings      []bindingPlan
+	// Tenants are the operations of the declared tenant provisioning, Provision and then Retire, or none.
+	Tenants  []tenantPlan
+	Entities []entityPlan
+	Bindings []bindingPlan
 }
 
 // operationPlan is the decision of one operation of one collection.
 type operationPlan struct {
 	Collection, Operation, ResourceType, Permission, Reason string
 	Public                                                  bool
+}
+
+// tenantPlan is the decision of Provision or Retire: the permission of the service-level resource type, the route
+// and the action of the tenant runtime, provision or retire.
+type tenantPlan struct {
+	Operation, ResourceType, Permission, Route, Tenant string
 }
 
 // entityPlan is one protected entity: its resource type and its table.
@@ -217,6 +226,21 @@ func read(ctx gen.Context) (plan, error) {
 			p.Operations = append(p.Operations, o)
 		}
 	}
+	if provisioning := ctx.Tenancy.Provisioning; provisioning != nil {
+		// The routes and the operations of Provision and Retire are the tenancy component's (ST-SUP-RC27-OC09).
+		provisionRoute, retireRoute := tenancy.ProvisioningRoutes(ctx.BasePath)
+		for _, t := range []struct{ operation, permission, route, action string }{
+			{tenancy.ProvisionOperation, provisioning.Provision, provisionRoute, "provision"},
+			{tenancy.RetireOperation, provisioning.Retire, retireRoute, "retire"},
+		} {
+			// Provision and Retire are never public (ST-SUP-RC27-OC09, ST-DECL-INV78).
+			if provisioning.ResourceType == "" || t.permission == "" || t.permission == types.PermissionPublic {
+				return plan{}, fmt.Errorf("spicedb-authz: the tenant provisioning needs a resource type and a permission of %s that is not public", t.operation)
+			}
+			p.Tenants = append(p.Tenants, tenantPlan{Operation: t.operation, ResourceType: provisioning.ResourceType,
+				Permission: t.permission, Route: t.route, Tenant: t.action})
+		}
+	}
 	names := map[string]string{}
 	for _, e := range p.Entities {
 		for _, name := range []string{e.Name + "Resource"} {
@@ -247,7 +271,8 @@ func read(ctx gen.Context) (plan, error) {
 // ST-SUP-RC29-OC13). The generator refuses what checking refuses, naming each fault, before any file is written.
 func checkDeclaration(ctx gen.Context, source []byte) error {
 	service := &types.ServiceDeclaration{Name: ctx.ServiceName, Authorization: ctx.Authorization, Entities: ctx.Entities,
-		Collections: ctx.Collections, Slots: ctx.SlotBindings, Tenancy: &types.Tenancy{Kind: "pooled", Key: ctx.Tenancy.Key}}
+		Collections: ctx.Collections, Slots: ctx.SlotBindings, Tenancy: &types.Tenancy{Kind: "pooled", Key: ctx.Tenancy.Key,
+			Provisioning: ctx.Tenancy.Provisioning}}
 	faults := declaration.CheckAuthorization(service, fstest.MapFS{ctx.Authorization.SchemaPath: &fstest.MapFile{Data: source}})
 	if len(faults) == 0 {
 		return nil
@@ -402,9 +427,9 @@ func render(p plan) []byte {
 	fmt.Fprintf(&b, "// Waiters is the most waits for a revocation at one time, the component setting waiter_limit: %d; TenantWaiters\n// is the most of one tenant, inside it, the component setting tenant_waiter_limit: %d (ST-SUP-RC29-OC19).\n", p.Waiters, p.TenantWaiters)
 	fmt.Fprintf(&b, "const (\n\tWaiters       = %d\n\tTenantWaiters = %d\n)\n\n", p.Waiters, p.TenantWaiters)
 
-	b.WriteString("// Operation is the decision of one operation: of an operation of a collection, the permission of the resource type\n// that it checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01); of the\n// revocation status route, its route and the decision Writer, which allows only the principal and tenant that made\n// the write and calls no provider (ST-SUP-RC29-OC18).\n")
-	b.WriteString("type Operation struct {\n\tCollection   string\n\tOperation    string\n\tResourceType string\n\tPermission   string\n\tPublic       bool\n\tReason       string\n\tRoute        string\n\tWriter       bool\n}\n\n")
-	b.WriteString("// Operations are the decisions of the operations of the collections, in declaration order, and then of the\n// revocation status route, from which alone the router registers that route.\n")
+	b.WriteString("// Operation is the decision of one operation: of an operation of a collection, the permission of the resource type\n// that it checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01); of the\n// revocation status route, its route and the decision Writer, which allows only the principal and tenant that made\n// the write and calls no provider (ST-SUP-RC29-OC18); of Provision and Retire, the permission of the service-level\n// resource type, the route and Tenant, the action of the tenant runtime, provision or retire (ST-SUP-RC27-OC09).\n")
+	b.WriteString("type Operation struct {\n\tCollection   string\n\tOperation    string\n\tResourceType string\n\tPermission   string\n\tPublic       bool\n\tReason       string\n\tRoute        string\n\tWriter       bool\n\tTenant       string\n}\n\n")
+	b.WriteString("// Operations are the decisions of the operations of the collections, in declaration order, then of Provision and\n// Retire, and then of the revocation status route, from which alone the router registers those routes.\n")
 	b.WriteString("var Operations = []Operation{\n")
 	for _, o := range p.Operations {
 		if o.Public {
@@ -412,6 +437,9 @@ func render(p plan) []byte {
 			continue
 		}
 		fmt.Fprintf(&b, "\t{Collection: %q, Operation: %q, ResourceType: %q, Permission: %q},\n", o.Collection, o.Operation, o.ResourceType, o.Permission)
+	}
+	for _, t := range p.Tenants {
+		fmt.Fprintf(&b, "\t{Operation: %q, ResourceType: %q, Permission: %q, Route: %q, Tenant: %q},\n", t.Operation, t.ResourceType, t.Permission, t.Route, t.Tenant)
 	}
 	fmt.Fprintf(&b, "\t{Operation: %q, Route: %q, Writer: true},\n", RevocationOperation, RevocationRoute)
 	b.WriteString("}\n\n")

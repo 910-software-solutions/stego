@@ -91,7 +91,8 @@ const (
 // Operation is the decision of one operation: of an operation of a collection, the permission of the resource type
 // that it checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01); of the
 // revocation status route, its route and the decision Writer, which allows only the principal and tenant that made
-// the write and calls no provider (ST-SUP-RC29-OC18).
+// the write and calls no provider (ST-SUP-RC29-OC18); of Provision and Retire, the permission of the service-level
+// resource type, the route and Tenant, the action of the tenant runtime, provision or retire (ST-SUP-RC27-OC09).
 type Operation struct {
 	Collection   string
 	Operation    string
@@ -101,10 +102,11 @@ type Operation struct {
 	Reason       string
 	Route        string
 	Writer       bool
+	Tenant       string
 }
 
-// Operations are the decisions of the operations of the collections, in declaration order, and then of the
-// revocation status route, from which alone the router registers that route.
+// Operations are the decisions of the operations of the collections, in declaration order, then of Provision and
+// Retire, and then of the revocation status route, from which alone the router registers those routes.
 var Operations = []Operation{
 	{Collection: "organizations", Operation: "create", ResourceType: "organization", Public: true, Reason: "a new organization has no resource to decide on before it exists"},
 	{Collection: "organizations", Operation: "read", ResourceType: "organization", Permission: "view"},
@@ -123,6 +125,8 @@ var Operations = []Operation{
 	{Collection: "user-activity", Operation: "list", ResourceType: "activity_entry", Permission: "view"},
 	{Collection: "org-activity", Operation: "create", ResourceType: "activity_entry", Public: true, Reason: "an activity entry of a caller has no resource to decide on before it exists"},
 	{Collection: "org-activity", Operation: "list", ResourceType: "activity_entry", Permission: "view"},
+	{Operation: "provision-tenant", ResourceType: "service", Permission: "provision", Route: "POST /api/user-mgmt/v1/stego/tenants", Tenant: "provision"},
+	{Operation: "retire-tenant", ResourceType: "service", Permission: "retire", Route: "POST /api/user-mgmt/v1/stego/tenants/{tenantId}/retire", Tenant: "retire"},
 	{Operation: "revocation-status", Route: "GET /authz/revocations/{id}", Writer: true},
 }
 

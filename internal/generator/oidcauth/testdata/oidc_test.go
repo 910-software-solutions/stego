@@ -154,6 +154,10 @@ func start(t *testing.T) *service {
 	if r := run(binary, append(common, "STEGO_MIGRATION_DATABASE_URL="+as(stegoruntime.OwnerRole)), "migrate"); r.err != nil {
 		t.Fatalf("the migration job failed: %v\n%s", r.err, r.output)
 	}
+	// The tenants of the tokens of the check are provisioned, so the tenant check of the generated service lets their
+	// requests through (ST-SUP-RC27-OC11); this check proves the verifier, so the fixture adds them to the tenant list as
+	// the administrator, not through Provision.
+	execAll(t, admin, `INSERT INTO stego_tenants (tenant_id) VALUES ('org-1'), ('org-2') ON CONFLICT DO NOTHING`)
 	cursor := make([]byte, 32)
 	_, _ = rand.Read(cursor)
 	s.env = append(common, "DATABASE_URL="+as(stegoruntime.RuntimeRole), "STEGO_MODE=api",

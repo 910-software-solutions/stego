@@ -13,6 +13,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/ports"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
@@ -204,6 +205,7 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 		} else {
 			source.Resolved = resolved
 			result.Errors = append(result.Errors, validateOperationRoutes(svcDecl, resolved.HTTPRoutes)...)
+			result.Errors = append(result.Errors, validateOwnComponentRoutes(svcDecl, resolved.HTTPRoutes)...)
 		}
 	}
 	return result, nil
@@ -392,6 +394,28 @@ func validateOperationRoutes(svcDecl *types.ServiceDeclaration, components map[s
 		groups[" "+op.kind+" "+op.name] = []gen.HTTPRoute{{Pattern: declaration.OperationPattern(svcDecl.BasePath, op.route)}}
 		if err := gen.ValidateHTTPRouteGroups(groups); err != nil {
 			faults = append(faults, ValidationError{Category: op.kind, Rule: "operation-route", Path: op.path, Found: op.route, Message: fmt.Sprintf("%s %q has the route %q, which conflicts with a route of the service: %v", op.kind, op.name, op.route, err)})
+		}
+	}
+	return faults
+}
+
+// validateOwnComponentRoutes refuses each route of an active component under <base path>/stego/, which the generated
+// service keeps for its own routes, such as the routes of a collection whose path comes from its path_prefix or its
+// scope (ST-SUP-RC27-OC09, ST-SUP-RC27-OC11). Declaring refuses a declared path_prefix there already; this check holds
+// the routes as the components register them.
+func validateOwnComponentRoutes(svcDecl *types.ServiceDeclaration, components map[string][]gen.HTTPRoute) []ValidationError {
+	names := make([]string, 0, len(components))
+	for name := range components {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var faults []ValidationError
+	for _, name := range names {
+		for _, route := range components[name] {
+			if err := tenancy.CheckOwnPattern(svcDecl.BasePath, route.Pattern); err != nil {
+				faults = append(faults, ValidationError{Category: "component", Rule: "own-route", Path: "components." + name, Found: route.Pattern,
+					Message: fmt.Sprintf("component %q: %v", name, err)})
+			}
 		}
 	}
 	return faults

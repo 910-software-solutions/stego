@@ -1,6 +1,8 @@
+# Version 2.1.0 authenticates each call through the service runtime, which refuses a tenant that the tenant list does
+# not hold as active with PERMISSION_DENIED and the code tenant.not_provisioned (ST-SUP-RC27-OC11).
 kind: component
 name: grpc-application
-version: 2.0.0
+version: 2.1.0
 stage: ga
 output_namespace: grpcapi
 config:

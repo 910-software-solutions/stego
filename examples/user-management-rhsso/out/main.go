@@ -117,6 +117,8 @@ func run() (stegoErr error) {
 	mux.HandleFunc("GET /api/user-mgmt/v1/users", allUsersHandler.List)
 	mux.HandleFunc("GET /api/user-mgmt/v1/organizations/{org_id}/orgsettings", orgSettingsHandler.List)
 	mux.HandleFunc("PUT /api/user-mgmt/v1/organizations/{org_id}/orgsettings", orgSettingsHandler.Upsert)
+	mux.Handle("POST /api/user-mgmt/v1/stego/tenants", service.Routes())
+	mux.Handle("POST /api/user-mgmt/v1/stego/tenants/{tenantId}/retire", service.Routes())
 	mux.Handle("GET /authz/revocations/{id}", service.Routes())
 
 	port := os.Getenv("PORT")
@@ -131,7 +133,7 @@ func run() (stegoErr error) {
 	topMux.HandleFunc("GET /livez", monitor.Live)
 	topMux.HandleFunc("GET /readyz", monitor.Ready)
 	topMux.Handle("GET /readyz/modes", service.Readiness())
-	topMux.Handle("/", tracingRuntime.Handler(cORSMiddleware(service.Middleware(tracingRuntime.Route(validationMiddleware(mux))))))
+	topMux.Handle("/", tracingRuntime.Handler(cORSMiddleware(service.Middleware(mux, tracingRuntime.Route(validationMiddleware(mux))))))
 	stegoStage = "http.configure"
 	httpTLS, err := stegoHTTPTransport()
 	if err != nil {

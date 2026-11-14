@@ -17,6 +17,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // tick is the tick of the worker tests: due at 1793966400 seconds since the Unix epoch, a multiple of 1m.
@@ -538,6 +539,14 @@ func updateOrderFrom(ctx context.Context, r *Repository[order], o Loaded[order],
 	return r.Update(ctx, o, v)
 }
 
+// retiredTenants is a fake tenant list in which every tenant is active but the ones it holds as retired.
+type retiredTenants struct{ retired sync.Map }
+
+func (l *retiredTenants) Active(_ context.Context, t tenant.Tenant) (bool, error) {
+	_, gone := l.retired.Load(t.ID())
+	return !gone, nil
+}
+
 func TestConsumers(t *testing.T) {
 	clock := &testClock{}
 	e := newEnv(t, func(c *envConfig) { c.queueClock = clock })
@@ -553,6 +562,9 @@ func TestConsumers(t *testing.T) {
 		s.Interval = 0
 		s.Stagers = map[string]string{"reserve-and-charge": "reserve"}
 	}, e.orders, e.chargeE, e.reservationE)
+	// The tenant list of the consumers: every tenant is active but the ones a subtest retires.
+	retired := &retiredTenants{}
+	e.rt.cfg.Tenants = retired
 	e.consumer(w, func(c *outbox.WorkerConfig) { c.MaxAttempts = 3 }, func(ctx context.Context, m map[string]string, _ string, h *Handle[testProbe]) error {
 		calls.Add(1)
 		if fill, ok := cases.Load(m["case"]); ok {
@@ -873,6 +885,25 @@ func TestConsumers(t *testing.T) {
 		// started, so the attempts are at least the runs.
 		if n := runs.Load(); n < 1 || int64(attempts) < n || conflicts != 0 {
 			t.Fatalf("after the unique violation: %d runs, %d attempts and %d conflicts, want an attempt for each run and no conflict", n, attempts, conflicts)
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC12-T04 A consumer refuses the message of a retired tenant permanently and runs no fill", func(t *testing.T) {
+		calls.Store(0)
+		// The tenant list holds t2 as retired before the message is dispatched; a command of t2 still stages it, as
+		// one that committed before the Retire did.
+		retired.retired.Store("t2", true)
+		defer retired.retired.Delete("t2")
+		m := e.stage("t2", "o-1", map[string]string{"order": "o-1", "n": "retired"})
+		e.waitState(t, m, "parked")
+		if calls.Load() != 0 || e.keyRows(m.String()) != 0 {
+			t.Fatalf("the message of the retired tenant ran the fill %d times or left a key row", calls.Load())
+		}
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND failure_code = 'delivery-refused-permanent'`, m); n != 1 {
+			t.Fatal("the message of the retired tenant is not parked as a permanent refusal")
+		}
+		if n := e.count(`SELECT count(*) FROM orders WHERE tenant_id = 't2' AND status = 'applied-retired'`); n != 0 {
+			t.Fatal("the message of the retired tenant changed its order")
 		}
 	})
 
