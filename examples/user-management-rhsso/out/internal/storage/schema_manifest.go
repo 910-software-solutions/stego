@@ -105,3 +105,8 @@ var SchemaSteps = []string{}
 // BackfillCopies are the batches of the backfill of each of them, which the migration job runs before the rollout
 // (ST-GEN-UC13).
 var BackfillCopies = []lease.Copy{}
+
+// SchemaRelease is the name of the last migration of this release, under which each process of the release reports
+// itself in the database, so that the contract step of a schema change that this release does not know refuses
+// while it runs (ST-SUP-RP09-LC14).
+const SchemaRelease = "100_tenancy_row_security"
