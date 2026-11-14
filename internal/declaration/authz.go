@@ -474,7 +474,17 @@ func topLevelCreate(service *types.ServiceDeclaration, schema *AuthzSchema, ei i
 		return []ValidationError{{Category: "authorization", Rule: "schema-names", Path: place, Found: permission,
 			Message: fmt.Sprintf("entity %q has no parent, so its create is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration does not declare; declare tenancy.provisioning, or make the create public with a reason", entity.Name)}}
 	}
-	resourceType := service.Tenancy.Provisioning.ResourceType
+	provisioning := service.Tenancy.Provisioning
+	resourceType := provisioning.ResourceType
+	// Provision and Retire are decided on the service-level resource with no tenant in its ID, so a grant of them
+	// is platform-wide; a create is decided on the tenant-qualified ID of that resource (ST-SUP-Q127 (a)). One name
+	// with two meanings would let an operator who grants one of them in a tenant think that it grants nothing else.
+	for _, platform := range []struct{ name, permission string }{{"provision", provisioning.Provision}, {"retire", provisioning.Retire}} {
+		if platform.permission != "" && permission == platform.permission {
+			return []ValidationError{{Category: "authorization", Rule: "schema-names", Path: place, Found: permission,
+				Message: fmt.Sprintf("entity %q for the operation create names the permission %q, which tenancy.provisioning.%s also names: a %s is decided on the service-level resource %s:%s with no tenant, but a create is decided on that resource in the tenant of the request (ST-SUP-RC29-OC01), so it needs a permission of its own; declare another permission on %s for the create", entity.Name, permission, platform.name, platform.name, resourceType, service.Name, resourceType)}}
+		}
+	}
 	definition, defined := schema.definitions[resourceType]
 	if !defined || definition.permissions[permission] {
 		return nil
