@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -210,6 +211,12 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 			stepped(name, conn)
 		}
 		if err := run(); err != nil {
+			// A refused contract step says why in a text that names the change, counts and release labels and no
+			// row value, which the job logs, as its failure record names the step only (ST-SUP-RC01-OC24).
+			var refused interface{ Refusal() string }
+			if errors.As(err, &refused) {
+				slog.ErrorContext(ctx, "migrate: the contract step of a schema change is refused", "step", name, "refusal", refused.Refusal())
+			}
 			return failed(name, err)
 		}
 		return nil

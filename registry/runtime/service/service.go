@@ -21,6 +21,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -42,6 +43,10 @@ type Parts struct {
 	// trigger; the command runtime sets the writer marker to them in each transaction that writes
 	// (ST-SUP-RC01-OC23).
 	SchemaSteps []string
+	// Release is the name of the last migration that the adapter of this release registers. New reports each process
+	// of the release under it in the database until Close, so that the contract step of a schema change refuses
+	// while a release that does not know the change runs (lease.StartBeat, ST-SUP-RP09-LC14). Empty reports nothing.
+	Release string
 	// SubjectType is the subject type of the schema that a verified identity maps to, and TenantClaim the dotted path
 	// of the claim that names the caller's tenant.
 	SubjectType, TenantClaim string
@@ -114,10 +119,12 @@ type Service struct {
 	commands      *command.Runtime
 	collections   *command.Runtime
 	queries       *query.Runtime
+	beat          *lease.Beat
 }
 
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
-// main pool of the runtime role through tenant.Open with the adapter's connection configuration, refuses a database
+// main pool of the runtime role through tenant.Open with the adapter's connection configuration, reports the
+// process under its release (Parts.Release) until Close, refuses a database
 // that does not hold the schema manifest (ST-SUP-RP14-LC06), opens the audit pool,
 // connects to SpiceDB with the preshared key and checks that it answers, starts the telemetry and the probes, and
 // gives the verifier, the authorization runtime, the audit writer, the outbox queue and the command and query
@@ -139,6 +146,13 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	if svc.pool, err = tenant.Open(ctx, pools); err != nil {
 		return nil, err
+	}
+	// The process reports its release before the schema check, so a contract step sees it even while the check
+	// alerts (decision on finding F8, owner, 2026-11-13).
+	if p.Release != "" {
+		if svc.beat, err = lease.StartBeat(ctx, svc.pool, p.Release, s.ServiceVersion); err != nil {
+			return nil, err
+		}
 	}
 	classes, err := checkSchema(ctx, svc.pool, p)
 	if err != nil {
@@ -379,7 +393,7 @@ func (svc *Service) Writer() *audit.Writer    { return svc.writer }
 func (svc *Service) Queue() *outbox.Queue     { return svc.queue }
 func (svc *Service) Telemetry() *otel.Runtime { return svc.telemetry }
 
-// Close releases what New opened.
+// Close releases what New opened, and deletes the report of the process.
 func (svc *Service) Close() error {
 	var errs []error
 	if svc.probes != nil {
@@ -395,6 +409,9 @@ func (svc *Service) Close() error {
 	}
 	if svc.spice != nil {
 		errs = append(errs, svc.spice.Close())
+	}
+	if svc.beat != nil {
+		errs = append(errs, svc.beat.Stop(context.Background()))
 	}
 	for _, db := range []*sql.DB{svc.auditDB, svc.pool} {
 		if db != nil {

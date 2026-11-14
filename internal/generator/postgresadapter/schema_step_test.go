@@ -115,6 +115,14 @@ func boardRename(ns, tenancyNS string) gen.Context {
 	return ctx
 }
 
+// boardRenameContract is boardRename with the contract step of board-title-rename after its expand step: the
+// release after the rename, which drops the old column title and the sync trigger (ST-GEN-UC15).
+func boardRenameContract(ns, tenancyNS string) gen.Context {
+	ctx := boardRename(ns, tenancyNS)
+	ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "board-title-rename", Phase: "contract"})
+	return ctx
+}
+
 // tenancyFiles generates the tenancy component of the service ctx into its tenancy namespace.
 func tenancyFiles(t *testing.T, ctx gen.Context) []gen.File {
 	t.Helper()
@@ -250,6 +258,57 @@ func TestSchemaSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC39-T02 The contract migration of a rename is its statements in their order, and the release after it holds no old column", func(t *testing.T) {
+		ctx := boardRenameContract("boards", "boardtenancy")
+		ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "boards_runtime", "owner_role": "boards_owner"}}
+		files, _, err := new(postgresadapter.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := strings.Join([]string{
+			`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_not_null" CHECK ("heading" IS NOT NULL) NOT VALID`,
+			`ALTER TABLE public."boards" VALIDATE CONSTRAINT "boards_heading_not_null"`,
+			`ALTER TABLE public."boards" ALTER COLUMN "heading" SET NOT NULL`,
+			`ALTER TABLE public."boards" DROP CONSTRAINT IF EXISTS "boards_heading_not_null"`,
+			`ALTER TABLE public."boards" ALTER COLUMN "title" DROP NOT NULL`,
+			`DROP TRIGGER IF EXISTS "boards_heading_sync" ON public."boards"`,
+			`DROP FUNCTION IF EXISTS stego_steps."boards_heading_sync"()`,
+			`ALTER TABLE public."boards" DROP CONSTRAINT IF EXISTS "boards_heading_complete"`,
+			`ALTER TABLE public."boards" DROP COLUMN IF EXISTS "title"`,
+		}, ";\n") + ";\n"
+		if got := generated(t, files, "boards/migrations/step_0002_board-title-rename_contract.sql"); got != want {
+			t.Errorf("the contract migration is\n%s\nwant\n%s", got, want)
+		}
+		migrate := generated(t, files, "boards/migrate.go")
+		for _, text := range []string{`RegisterContractStep("step_0002_board-title-rename_contract", `, `Expand: "step_0001_board-title-rename_expand"`,
+			`{SQL: "DROP TRIGGER IF EXISTS \"boards_heading_sync\" ON public.\"boards\"", When: "", Long: false, Guard: true}`,
+			`{SQL: "ALTER TABLE public.\"boards\" VALIDATE CONSTRAINT \"boards_heading_not_null\"", When: "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = 'public.\"boards\"'::pg_catalog.regclass AND c.conname = 'boards_heading_not_null')", Long: true, Guard: false}`} {
+			if !strings.Contains(migrate, text) {
+				t.Errorf("migrate.go does not hold %s", text)
+			}
+		}
+		manifest := generated(t, files, "boards/schema_manifest.go")
+		if strings.Contains(manifest, `{Name: "title", Type:`) || strings.Contains(manifest, "OptionalTriggers") || !strings.Contains(manifest, `{Name: "heading", Type: "character varying(40)", NotNull: true}`) ||
+			!strings.Contains(manifest, `const SchemaRelease = "step_0002_board-title-rename_contract"`) {
+			t.Errorf("the manifest of the release after the rename is\n%s", manifest)
+		}
+		// The release of the rename names the NOT NULL CHECK of the contract step, which may be NOT VALID.
+		ctx = boardRename("boards", "boardtenancy")
+		ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "boards_runtime", "owner_role": "boards_owner"}}
+		files, _, err = new(postgresadapter.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if manifest := generated(t, files, "boards/schema_manifest.go"); !strings.Contains(manifest, `{Name: "boards_heading_not_null", Kind: manifest.KindCheck, Definition: "CHECK ((heading IS NOT NULL))", NotValid: true}`) {
+			t.Errorf("the manifest of the release of the rename does not name the NOT NULL CHECK of the contract step:\n%s", manifest)
+		}
+		// A contract of a rename of a field with a default is refused.
+		ctx = boardRenameContract("boards", "boardtenancy")
+		ctx.Entities[0].Fields[0].Default = "untitled"
+		if _, _, err := new(postgresadapter.Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "with a default") {
+			t.Errorf("the contract of a rename of a field with a default gives %v, want a refusal", err)
+		}
+	})
 	t.Run("ST-SUP-RC01-OC22-T02 Generation refuses a step that is not the expand step of an add or a rename, or an add that the rows cannot take", func(t *testing.T) {
 		refused := map[string]func(*gen.Context){
 			"retype": func(ctx *gen.Context) {

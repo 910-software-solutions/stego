@@ -40,6 +40,11 @@ var evolutionV2 = [][2]string{
 		"schema_history:\n  - {change: user-nickname-add, phase: expand}\n  - {change: user-email-rename, phase: expand}\n\ncollections:\n"},
 }
 
+// The declaration of v3 of ST-GEN-TD04, by the edit of the declaration of v2: the contract step of the rename of
+// User.email at the end of the schema history (ST-GEN-UC15).
+var evolutionV3 = [2]string{"  - {change: user-email-rename, phase: expand}\n",
+	"  - {change: user-email-rename, phase: expand}\n  - {change: user-email-rename, phase: contract}\n"}
+
 // newEvolution makes the repository of ST-GEN-TD04 with the commit v1, the example as it is, and the commit v2,
 // which stego plan --base v1 and stego apply make from the declaration of v2, and builds the service binary of each
 // with the pinned Go against the runtime module of this repository.
@@ -93,6 +98,35 @@ func newEvolution(t *testing.T) *evolution {
 	e.git(t, "commit", "-q", "-m", "v2")
 	e.git(t, "tag", "v2")
 	e.build(t, "v2", root)
+	committed, err := os.ReadFile(filepath.Join(e.repo, "service.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(committed), evolutionV3[0]) {
+		t.Fatalf("the declaration of v2 has no %q to edit for v3", evolutionV3[0])
+	}
+	v3 := strings.Replace(string(committed), evolutionV3[0], evolutionV3[1], 1)
+	if err := os.WriteFile(filepath.Join(e.repo, "service.yaml"), []byte(v3), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.plans["v3 plan"], e.plans["v3 plan error"] = e.stego(t, stego, "plan", "--base", "v2")
+	e.plans["v3 apply"], e.plans["v3 apply error"] = e.stego(t, stego, "apply", "--base", "v2")
+	if e.plans["v3 apply error"] != "" {
+		t.Fatalf("stego apply of v3: %s\n%s", e.plans["v3 apply error"], e.plans["v3 apply"])
+	}
+	e.git(t, "add", "-A")
+	e.git(t, "commit", "-q", "-m", "v3")
+	e.git(t, "tag", "v3")
+	e.build(t, "v3", root)
+	// A head that removes the finished change and its steps: the check against v3 refuses it, as only a new
+	// baseline may fold a finished change (ST-GEN-UC15-R03).
+	removed := strings.Replace(strings.Replace(strings.Replace(v3, "  - {id: user-email-rename, kind: rename, entity: User, field: contact_email, from: email}\n", "", 1),
+		"  - {change: user-email-rename, phase: expand}\n", "", 1), "  - {change: user-email-rename, phase: contract}\n", "", 1)
+	if err := os.WriteFile(filepath.Join(e.repo, "service.yaml"), []byte(removed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.plans["removed compat"], e.plans["removed compat error"] = e.stego(t, stego, "compat", "--base", "v3")
+	e.git(t, "checkout", "-q", "--", "service.yaml")
 	// A head that renames email with no schema change: plan refuses it and writes nothing.
 	head := strings.Replace(string(declaration), evolutionV2[0][0], strings.Replace(evolutionV2[0][0], "email", "contact_email", 1), 1)
 	if err := os.WriteFile(filepath.Join(e.repo, "service.yaml"), []byte(head), 0o644); err != nil {
@@ -196,8 +230,8 @@ func (e *evolution) userSchema(t *testing.T, tag string) map[string]any {
 	return schema
 }
 
-// TestSchemaEvolution runs ST-GEN-TD04: it makes the repository with the releases v1 and v2, builds their service
-// binaries, and runs the check of testdata/schema_evolution/check in the module of v2 once, against the local
+// TestSchemaEvolution runs ST-GEN-TD04: it makes the repository with the releases v1, v2 and v3, builds their
+// service binaries, and runs the check of testdata/schema_evolution/check in the module of v2 once, against the local
 // PostgreSQL server of STEGO_TEST_POSTGRES_DSN and a local SpiceDB container. A missing server fails the test: a
 // missing result is not a pass.
 func TestSchemaEvolution(t *testing.T) {
@@ -233,7 +267,7 @@ func TestSchemaEvolution(t *testing.T) {
 	run := exec.Command(pinnedGo(t), append(args, "./out/evolutioncheck")...)
 	run.Dir = dir
 	run.Env = append(e.env, "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_TD04_SEED="+seed,
-		"STEGO_TD04_V1="+filepath.Join(e.bin, "v1"), "STEGO_TD04_V2="+filepath.Join(e.bin, "v2"))
+		"STEGO_TD04_V1="+filepath.Join(e.bin, "v1"), "STEGO_TD04_V2="+filepath.Join(e.bin, "v2"), "STEGO_TD04_V3="+filepath.Join(e.bin, "v3"))
 	var output bytes.Buffer
 	run.Stdout, run.Stderr = &output, &output
 	runErr := run.Run()
@@ -304,5 +338,22 @@ func TestSchemaEvolution(t *testing.T) {
 	})
 	t.Run("ST-GEN-UC13-FL-T The email rename backfills 10,000 rows under the lease while v1 and v2 write", func(t *testing.T) {
 		result(t, "ST-GEN-UC13-FL-T")
+	})
+	t.Run("ST-GEN-UC15-R01-T01 The contract migration refuses while rows are left and writes no ledger row", func(t *testing.T) {
+		result(t, "ST-GEN-UC15-R01-T01")
+	})
+	t.Run("ST-GEN-UC15-R02-T01 After contract the old column and the trigger are gone and the contract release does not need them", func(t *testing.T) {
+		result(t, "ST-GEN-UC15-R02-T01")
+	})
+	t.Run("ST-GEN-UC15-FL-T The email rename finishes while v2 and v3 both run, and v1 can no longer start", func(t *testing.T) {
+		plan := e.plans["v3 plan"]
+		if e.plans["v3 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at contract; migration internal/storage/migrations/step_0003_user-email-rename_contract.sql; trigger none; backfill none") {
+			t.Fatalf("stego plan --base v2 of v3 (%s) does not list the contract migration of the rename:\n%s", e.plans["v3 plan error"], plan)
+		}
+		if e.plans["removed compat error"] == "" || !strings.Contains(e.plans["removed compat"], "user-email-rename") {
+			t.Fatalf("stego compat --base v3 of a head that removes the finished change exits with %q and says:\n%s\nwant exit 1 and the change named",
+				e.plans["removed compat error"], e.plans["removed compat"])
+		}
+		result(t, "ST-GEN-UC15-FL-T")
 	})
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"example.com/tables-check/boardsnote"
 	"example.com/tables-check/boardsrn"
 	"example.com/tables-check/boardsrnbase"
+	"example.com/tables-check/boardsrnc"
 	"example.com/tables-check/boardsslug"
 	"example.com/tables-check/bounds"
 	"example.com/tables-check/previous"
@@ -29,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	runtimetenant "github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // server opens the PostgreSQL server of STEGO_TEST_POSTGRES_DSN as its administrator and drops the roles of the
@@ -852,6 +855,454 @@ WHERE pronamespace = 'stego_schema'::regnamespace AND proname IN ('backfill_read
 				t.Errorf("the schema manifest of the release %s accepts a sync function that is not the template's", name)
 			}
 		}
+	})
+
+	// contractBase migrates the release before the rename, makes the tenant list with tenant-a as the owner role, as
+	// the migration job does, writes 100 boards of tenant-a as that release, and migrates the rename at expand.
+	contractBase := func(t *testing.T) (*pgx.ConnConfig, *sql.DB) {
+		t.Helper()
+		upCfg, up := database(t, cfg, admin)
+		migrate(t, upCfg, up, func(ctx context.Context, conn *sql.Conn) error { return boardsrnbase.Migrate(ctx, conn) }, "boardsrnbase_access.json")
+		list, err := runtimetenant.Migration("public", tenancy.RuntimeRole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := up.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{"SET LOCAL ROLE " + pgx.Identifier{tenancy.OwnerRole}.Sanitize(), list, "INSERT INTO public.stego_tenants (tenant_id) VALUES ('tenant-a')"} {
+			if _, err := tx.Exec(statement); err != nil {
+				_ = tx.Rollback()
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if code := write(t, up, "tenant-a", `INSERT INTO public."boards" ("id", "title") SELECT gen_random_uuid(), 'b' || g FROM generate_series(1, 100) g`); code != "" {
+			t.Fatalf("the release before writes no boards: %s", code)
+		}
+		migrate(t, upCfg, up, func(ctx context.Context, conn *sql.Conn) error { return boardsrn.Migrate(ctx, conn) }, "boardsrn_access.json")
+		return upCfg, up
+	}
+	// move moves n rows of tenant-a whose new column is unset, as the backfill batch does; n < 0 moves them all.
+	move := func(t *testing.T, db *sql.DB, n int) {
+		t.Helper()
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		limit := ""
+		if n >= 0 {
+			limit = fmt.Sprintf(" LIMIT %d", n)
+		}
+		for _, statement := range []string{"SET LOCAL ROLE " + pgx.Identifier{tenancy.OwnerRole}.Sanitize(),
+			"SELECT pg_catalog.set_config('stego.backfill_change', 'board-title-rename', true), pg_catalog.set_config('app.tenant', 'tenant-a', true)",
+			`UPDATE public."boards" SET "heading" = "title" WHERE "id" IN (SELECT "id" FROM public."boards" WHERE "heading" IS NULL ORDER BY "id"` + limit + `)`} {
+			if _, err := tx.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// finish marks the backfill of the change complete as the backfill does: it validates the completeness CHECK
+	// first, and then sets the completion time of its row.
+	finish := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		move(t, db, -1)
+		for _, statement := range []string{boardsrn.BackfillCopies[0].Validate(),
+			"UPDATE stego_schema.backfills SET completed_at = now() WHERE change_id = 'board-title-rename'"} {
+			if _, err := db.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+	}
+	// contract runs the migration job of the release after the rename as the owner role, as migrate does, and gives
+	// its error.
+	contract := func(t *testing.T, cfg *pgx.ConnConfig) error {
+		t.Helper()
+		ctx := context.Background()
+		job := stdlib.OpenDB(*cfg)
+		defer job.Close()
+		conn, err := job.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		return boardsrnc.Migrate(ctx, conn)
+	}
+	// refusal gives the text of a refused contract step, which the migration job logs, or fails the test.
+	refusal := func(t *testing.T, err error) string {
+		t.Helper()
+		var refused interface{ Refusal() string }
+		if !errors.As(err, &refused) {
+			t.Fatalf("the contract step ends with %v, want a refusal", err)
+		}
+		return refused.Refusal()
+	}
+	// contracted checks that the contract step finished: no old column, no trigger, no function, no completeness
+	// or NOT NULL CHECK, heading NOT NULL, and the ledger row of the step last with the expand migration as its set.
+	contracted := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		for _, c := range columns(t, db, "boards") {
+			if c.Name == "title" {
+				t.Errorf("the old column title is still there")
+			}
+			if c.Name == "heading" && !c.NotNull {
+				t.Errorf("the new column heading is nullable after the contract step")
+			}
+		}
+		var objects int
+		if err := db.QueryRow(`SELECT (SELECT count(*) FROM pg_catalog.pg_trigger WHERE tgrelid = 'public.boards'::regclass AND NOT tgisinternal)
+  + (SELECT count(*) FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'stego_steps')
+  + (SELECT count(*) FROM pg_catalog.pg_constraint WHERE conrelid = 'public.boards'::regclass AND conname IN ('boards_heading_complete', 'boards_heading_not_null', 'boards_title_check'))`).Scan(&objects); err != nil {
+			t.Fatal(err)
+		}
+		if objects != 0 {
+			t.Errorf("%d triggers, sync functions or CHECKs of the change are left after the contract step", objects)
+		}
+		var last, set string
+		if err := db.QueryRow(`SELECT version, compatible_with::text FROM stego_schema.migrations ORDER BY version COLLATE "C" DESC LIMIT 1`).Scan(&last, &set); err != nil {
+			t.Fatal(err)
+		}
+		if last != "step_0002_board-title-rename_contract" || set != "{step_0001_board-title-rename_expand}" {
+			t.Errorf("the last ledger row is %s with the set %s, want the contract step with its expand migration", last, set)
+		}
+	}
+	// reader is a session of the runtime role on the database, for the schema manifest checks.
+	reader := func(t *testing.T, upCfg *pgx.ConnConfig, up *sql.DB) *sql.DB {
+		t.Helper()
+		if _, err := up.Exec("ALTER ROLE " + pgx.Identifier{tenancy.RuntimeRole}.Sanitize() + " LOGIN PASSWORD 'tables-check'"); err != nil {
+			t.Fatal(err)
+		}
+		runtime := upCfg.Copy()
+		runtime.User, runtime.Password = tenancy.RuntimeRole, "tables-check"
+		db := stdlib.OpenDB(*runtime)
+		t.Cleanup(func() { db.Close() })
+		return db
+	}
+
+	t.Run("ST-SUP-RC01-OC24-T01 The contract migration refuses with rows left and writes no ledger row", func(t *testing.T) {
+		ctx := context.Background()
+		upCfg, up := contractBase(t)
+		move(t, up, 40)
+		before := catalog(t, up)
+		text := refusal(t, contract(t, upCfg))
+		if !strings.Contains(text, "board-title-rename") || !strings.Contains(text, "not complete") || !strings.Contains(text, "new one empty: 60;") {
+			t.Errorf("the refusal with 60 rows left says: %s", text)
+		}
+		if after := catalog(t, up); !slices.Equal(before, after) {
+			t.Errorf("the refused contract step changed the catalog or the ledger:\n%s", strings.Join(after, "\n"))
+		}
+		// The backfill completes, then a session that passes the trigger and the CHECK leaves one row with no new
+		// value, and adds the CHECK again NOT VALID: the step refuses on the CHECK and counts the one row.
+		finish(t, up)
+		for _, statement := range []string{`ALTER TABLE public."boards" DROP CONSTRAINT "boards_heading_complete"`,
+			`UPDATE public."boards" SET "heading" = NULL WHERE "id" = (SELECT "id" FROM public."boards" ORDER BY "id" LIMIT 1)`,
+			`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_complete" CHECK (("heading" IS NOT NULL) OR ("title" IS NULL)) NOT VALID`} {
+			tx, err := up.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before = catalog(t, up)
+		text = refusal(t, contract(t, upCfg))
+		if !strings.Contains(text, "board-title-rename") || !strings.Contains(text, "boards_heading_complete is not validated") || !strings.Contains(text, "new one empty: 1;") {
+			t.Errorf("the refusal with one row left after completion says: %s", text)
+		}
+		if after := catalog(t, up); !slices.Equal(before, after) {
+			t.Errorf("the refused contract step changed the catalog or the ledger:\n%s", strings.Join(after, "\n"))
+		}
+		// With every row moved and the CHECK validated, a backfill row that is not complete, or that counts failed
+		// rows, still refuses the step.
+		move(t, up, -1)
+		if _, err := up.Exec(boardsrn.BackfillCopies[0].Validate()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := up.Exec("UPDATE stego_schema.backfills SET completed_at = NULL WHERE change_id = 'board-title-rename'"); err != nil {
+			t.Fatal(err)
+		}
+		before = catalog(t, up)
+		if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "the backfill is not complete") || !strings.Contains(text, "new one empty: 0;") {
+			t.Errorf("the refusal with the CHECK validated and the backfill not complete says: %s", text)
+		}
+		if _, err := up.Exec("UPDATE stego_schema.backfills SET completed_at = now(), failed_rows = 2 WHERE change_id = 'board-title-rename'"); err != nil {
+			t.Fatal(err)
+		}
+		if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "the backfill has 2 failed rows") {
+			t.Errorf("the refusal with failed rows says: %s", text)
+		}
+		if _, err := up.Exec("UPDATE stego_schema.backfills SET failed_rows = 0 WHERE change_id = 'board-title-rename'"); err != nil {
+			t.Fatal(err)
+		}
+		if after := catalog(t, up); !slices.Equal(before, after) {
+			t.Errorf("a refused contract step changed the catalog or the ledger:\n%s", strings.Join(after, "\n"))
+		}
+		// Then the step drops the trigger and the old column, and writes the ledger row; the release of the rename
+		// and the release after it accept the schema, and the release before the rename no longer starts.
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the contract step after the backfill: %v", err)
+		}
+		contracted(t, up)
+		runtime := reader(t, upCfg, up)
+		for name, m := range map[string]manifest.Manifest{"of the rename": boardsrn.SchemaManifest, "after the rename": boardsrnc.SchemaManifest} {
+			if err := manifest.Check(ctx, runtime, owned(m)); err != nil {
+				t.Errorf("the schema manifest of the release %s refuses the database after the contract step: %v", name, err)
+			}
+		}
+		if err := boardsrnbase.CheckLedger(ctx, up); err == nil {
+			t.Error("the ledger check of the release before the rename accepts the database after the contract step")
+		}
+		// A run again changes nothing.
+		before = catalog(t, up)
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the contract step again: %v", err)
+		}
+		if after := catalog(t, up); !slices.Equal(before, after) {
+			t.Errorf("a run of the job again changed the catalog:\n%s", strings.Join(after, "\n"))
+		}
+		// A new database that the migrations of the release after the rename make gets the same catalog, but the
+		// tenant list, which the migration job makes, and the board rows (ST-GEN-INV35).
+		freshCfg, fresh := database(t, cfg, admin)
+		migrate(t, freshCfg, fresh, func(ctx context.Context, conn *sql.Conn) error { return boardsrnc.Migrate(ctx, conn) }, "boardsrnc_access.json")
+		without := func(lines []string) []string {
+			var out []string
+			for _, line := range lines {
+				if !strings.Contains(line, "stego_tenants") {
+					out = append(out, line)
+				}
+			}
+			return out
+		}
+		if got, want := without(catalog(t, fresh)), without(before); !slices.Equal(got, want) {
+			t.Errorf("a new database has another catalog than the upgraded one:\nnew\n%s\nupgraded\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC44-T01 The contract migration refuses while a release that does not know the change reports itself", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		runtime := reader(t, upCfg, up)
+		// The runtime role reports a process of the release before the rename and one of the release of the rename.
+		beat := func(holder, release, version string) {
+			t.Helper()
+			if _, err := runtime.Exec("SELECT stego_schema.release_beat($1, $2, $3, 10000)", holder, release, version); err != nil {
+				t.Fatalf("the report of %s: %v", version, err)
+			}
+		}
+		old, current := strings.Repeat("a", 32), strings.Repeat("b", 32)
+		beat(old, "100_tenancy_row_security", "v1")
+		beat(current, "step_0001_board-title-rename_expand_validate", "v2")
+		before := catalog(t, up)
+		text := refusal(t, contract(t, upCfg))
+		if !strings.Contains(text, "board-title-rename") || !strings.Contains(text, "v1 (1 processes)") || strings.Contains(text, "v2") ||
+			!strings.Contains(text, "step_0001_board-title-rename_expand") {
+			t.Errorf("the refusal while v1 reports says: %s", text)
+		}
+		if after := catalog(t, up); !slices.Equal(before, after) {
+			t.Errorf("the refused contract step changed the catalog or the ledger:\n%s", strings.Join(after, "\n"))
+		}
+		// A report older than three of its intervals is not a running process.
+		if _, err := up.Exec("UPDATE stego_schema.releases SET seen_at = now() - interval '31 seconds' WHERE holder = $1", old); err != nil {
+			t.Fatal(err)
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the contract step after the report of v1 aged: %v", err)
+		}
+		contracted(t, up)
+	})
+
+	t.Run("ST-SUP-RC01-OC44-T02 The statement that drops the sync trigger checks the running releases again", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		runtime := reader(t, upCfg, up)
+		// A session holds a lock on the table, so the first statement of the step waits at its lock timeout; while
+		// it waits, the release before reports a process, and then the lock ends.
+		hold, err := up.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hold.Exec(`LOCK TABLE public."boards" IN ACCESS SHARE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- contract(t, upCfg) }()
+		until := time.Now().Add(10 * time.Second)
+		for waiting := 0; waiting == 0; time.Sleep(50 * time.Millisecond) {
+			if time.Now().After(until) {
+				t.Fatal("the contract step does not wait for the lock")
+			}
+			if err := up.QueryRow(`SELECT count(*) FROM pg_catalog.pg_locks WHERE relation = 'public.boards'::regclass AND NOT granted`).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := runtime.Exec("SELECT stego_schema.release_beat($1, '100_tenancy_row_security', 'v1', 10000)", strings.Repeat("c", 32)); err != nil {
+			t.Fatal(err)
+		}
+		if err := hold.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		text := refusal(t, <-done)
+		if !strings.Contains(text, "v1 (1 processes)") {
+			t.Errorf("the refusal of the guard says: %s", text)
+		}
+		var trigger, title int
+		if err := up.QueryRow(`SELECT (SELECT count(*) FROM pg_catalog.pg_trigger WHERE tgrelid = 'public.boards'::regclass AND tgname = 'boards_heading_sync'),
+  (SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.boards'::regclass AND attname = 'title' AND NOT attisdropped)`).Scan(&trigger, &title); err != nil {
+			t.Fatal(err)
+		}
+		var rows int
+		if err := up.QueryRow(`SELECT count(*) FROM stego_schema.migrations WHERE version LIKE '%_contract'`).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if trigger != 1 || title != 1 || rows != 0 {
+			t.Errorf("after the refusal of the guard the trigger is there %d, the old column %d, and the ledger has %d contract rows; want 1, 1 and 0", trigger, title, rows)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC39-T01 A contract waits for locks only within its timeout and retries, and makes a column required in steps", func(t *testing.T) {
+		ctx := context.Background()
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		runtime := reader(t, upCfg, up)
+		// A reader of the table under a statement timeout of 2.5 s runs during each run; no statement of the step
+		// may hold its strong lock for longer than the lock timeout of 1 s.
+		readers := func() func() []error {
+			stop := make(chan struct{})
+			var mu sync.Mutex
+			var failures []error
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					tx, err := up.Begin()
+					if err == nil {
+						_, err = tx.Exec("SET LOCAL statement_timeout = '2500ms'")
+						if err == nil {
+							_, err = tx.Exec(`SELECT count(*) FROM public."boards"`)
+						}
+						_ = tx.Rollback()
+					}
+					if err != nil {
+						mu.Lock()
+						failures = append(failures, err)
+						mu.Unlock()
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+			}()
+			return func() []error { close(stop); wg.Wait(); return failures }
+		}
+		// A lock for the whole run: the first statement that needs the strong lock waits 10 times and the step fails
+		// with no ledger row, the trigger and the old column still there.
+		hold, err := up.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hold.Exec(`LOCK TABLE public."boards" IN ACCESS SHARE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		stopReaders := readers()
+		start := time.Now()
+		err = contract(t, upCfg)
+		elapsed := time.Since(start)
+		if failures := stopReaders(); len(failures) > 0 {
+			t.Errorf("a reader failed while the step waited for its lock: %v", failures[0])
+		}
+		if err == nil || !strings.Contains(err.Error(), "waited for its lock 10 times") || elapsed < 10*time.Second {
+			t.Errorf("under a lock for the whole run the step ends with %v after %v; want 10 waits of 1 s", err, elapsed)
+		}
+		_ = hold.Rollback()
+		var trigger, title, rows int
+		state := func() {
+			t.Helper()
+			if err := up.QueryRow(`SELECT (SELECT count(*) FROM pg_catalog.pg_trigger WHERE tgrelid = 'public.boards'::regclass AND tgname = 'boards_heading_sync'),
+  (SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.boards'::regclass AND attname = 'title' AND NOT attisdropped),
+  (SELECT count(*) FROM stego_schema.migrations WHERE version LIKE '%_contract')`).Scan(&trigger, &title, &rows); err != nil {
+				t.Fatal(err)
+			}
+		}
+		state()
+		if trigger != 1 || title != 1 || rows != 0 {
+			t.Errorf("after the failed run the trigger is there %d, the old column %d, and the ledger has %d contract rows", trigger, title, rows)
+		}
+		// A lock for about two waits: the step goes on after the lock ends and finishes.
+		hold, err = up.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hold.Exec(`LOCK TABLE public."boards" IN ACCESS SHARE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		time.AfterFunc(1500*time.Millisecond, func() { _ = hold.Rollback() })
+		stopReaders = readers()
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the step after a short lock: %v", err)
+		}
+		if failures := stopReaders(); len(failures) > 0 {
+			t.Errorf("a reader failed during the step: %v", failures[0])
+		}
+		contracted(t, up)
+		// On a second database, a run before stopped after the drop of the trigger: the rerun finishes. The release
+		// of the rename accepts the schema between the statements.
+		upCfg, up = contractBase(t)
+		finish(t, up)
+		runtime = reader(t, upCfg, up)
+		for _, statement := range []string{`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_not_null" CHECK ("heading" IS NOT NULL) NOT VALID`} {
+			if _, err := up.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := manifest.Check(ctx, runtime, owned(boardsrn.SchemaManifest)); err != nil {
+			t.Errorf("the release of the rename refuses the NOT NULL CHECK NOT VALID of the step: %v", err)
+		}
+		for _, statement := range []string{`ALTER TABLE public."boards" VALIDATE CONSTRAINT "boards_heading_not_null"`,
+			`ALTER TABLE public."boards" ALTER COLUMN "heading" SET NOT NULL`, `ALTER TABLE public."boards" DROP CONSTRAINT "boards_heading_not_null"`,
+			`ALTER TABLE public."boards" ALTER COLUMN "title" DROP NOT NULL`, `DROP TRIGGER "boards_heading_sync" ON public."boards"`} {
+			if _, err := up.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := manifest.Check(ctx, runtime, owned(boardsrn.SchemaManifest)); err != nil {
+			t.Errorf("the release of the rename refuses the schema after the drop of the trigger: %v", err)
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the rerun after the drop of the trigger: %v", err)
+		}
+		contracted(t, up)
+		// On a third database, a run before stopped after ADD CONSTRAINT committed: the rerun adds no second CHECK,
+		// validates it and finishes.
+		upCfg, up = contractBase(t)
+		finish(t, up)
+		if _, err := up.Exec(`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_not_null" CHECK ("heading" IS NOT NULL) NOT VALID`); err != nil {
+			t.Fatal(err)
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the rerun after ADD CONSTRAINT: %v", err)
+		}
+		contracted(t, up)
 	})
 
 	t.Run("ST-SUP-RC01-OC22-T03 An add step takes a database with rows to the schema of a new database, and the release before still runs on it", func(t *testing.T) {

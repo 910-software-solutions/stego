@@ -177,9 +177,12 @@ const (
 // with the search path pg_catalog, pg_temp, such as CHECK ((total >= 1)) or FOREIGN KEY (tenant_id, org_id)
 // REFERENCES public.organizations(tenant_id, id). The definition holds the expression of a check, and the columns,
 // the referenced table and columns, the actions, the match type and the deferrability of a foreign key. The
-// constraint must be validated.
+// constraint must be validated. NotValid, only for one of Table.OptionalConstraints, accepts it NOT VALID too, such
+// as the NOT NULL CHECK that the contract step of a schema change adds NOT VALID, validates, and drops in its own
+// short transactions while the release before runs (ST-SUP-RC01-OC39).
 type Constraint struct {
 	Name, Kind, Definition string
+	NotValid               bool
 }
 
 // Index is one unique index of a table: its key columns in order and its predicate as pg_get_expr gives it, or
@@ -385,6 +388,16 @@ func (m Manifest) Validate() error {
 			}
 			if c.Definition == "" {
 				return fmt.Errorf("manifest: table %s: the constraint %s has no definition", id, c.Name)
+			}
+		}
+		for _, c := range t.Constraints {
+			if c.NotValid {
+				return fmt.Errorf("manifest: table %s: the constraint %s accepts NOT VALID and is not optional", id, c.Name)
+			}
+		}
+		for _, c := range t.OptionalConstraints {
+			if c.NotValid && c.Kind != KindCheck {
+				return fmt.Errorf("manifest: table %s: the constraint %s accepts NOT VALID and is no CHECK", id, c.Name)
 			}
 		}
 		for _, i := range t.Indexes {
@@ -1720,7 +1733,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 		case !ok:
 		case got.kind != want.Kind || strings.TrimSuffix(got.definition, " NOT VALID") != want.Definition:
 			fault("constraint %s is not the constraint of the manifest", want.Name)
-		case !got.validated && !steps.openCheck(t, want.Name):
+		case !got.validated && !want.NotValid && !steps.openCheck(t, want.Name):
 			fault("constraint %s is not validated", want.Name)
 		}
 	}

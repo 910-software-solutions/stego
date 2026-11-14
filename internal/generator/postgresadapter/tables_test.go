@@ -185,7 +185,8 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	}{{orderService("storage"), "access.json"}, {orderService("previous"), ""}, {widgetService(widgetEntities()), "widgets_access.json"}, {boundsService(), "bounds_access.json"},
 		{boardBase("boardsbase", "boardsbasetenancy"), "boardsbase_access.json"}, {boardSteps("boards", "boardtenancy"), "boards_access.json"},
 		{boardNoDefault("boardsnote", "boardsnotetenancy"), "boardsnote_access.json"}, {boardSlug("boardsslug", "boardsslugtenancy"), "boardsslug_access.json"},
-		{boardRenameBase("boardsrnbase", "boardsrnbasetenancy"), "boardsrnbase_access.json"}, {boardRename("boardsrn", "boardsrntenancy"), "boardsrn_access.json"}} {
+		{boardRenameBase("boardsrnbase", "boardsrnbasetenancy"), "boardsrnbase_access.json"}, {boardRename("boardsrn", "boardsrntenancy"), "boardsrn_access.json"},
+		{boardRenameContract("boardsrnc", "boardsrnctenancy"), "boardsrnc_access.json"}} {
 		// The adapter names the roles of the tenancy component in the migration of a step.
 		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
 		files, wiring, err := new(postgresadapter.Generator).Generate(service.ctx)
@@ -474,6 +475,10 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC38-T08 Each relation that takes the name of a step index fails the step with no ledger row", func(t *testing.T) {
 		onSteps(t, "ST-SUP-RC01-OC38-T08")
 	})
+	t.Run("ST-SUP-RC01-OC24-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T01") })
+	t.Run("ST-SUP-RC01-OC44-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T01") })
+	t.Run("ST-SUP-RC01-OC44-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T02") })
+	t.Run("ST-SUP-RC01-OC39-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T01") })
 	t.Run("ST-SUP-RP15-LC01-T15 The release before accepts each emitted step form, NOT VALID and validated, and the release of the step refuses NOT VALID", func(t *testing.T) {
 		onSteps(t, "ST-SUP-RP15-LC01-T15")
 	})

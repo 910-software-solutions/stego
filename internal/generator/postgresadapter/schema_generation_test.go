@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -271,10 +272,20 @@ func TestSyncTemplateCopy(t *testing.T) {
 			{"sync template version 2", "manifest/sync.go", "`, 2: `", syncTemplate},
 			{"backfill table", "lease/backfill.go", "const BackfillsTable = `", backfillsTable},
 			{"backfill functions", "lease/backfill.go", "const BackfillFunctions = `", backfillFunctions},
+			{"release reports", "lease/release.go", "const releasesText = `", releasesText},
 		} {
 			if got := runtimeText(t, c.path, c.head); got != c.copy {
 				t.Errorf("the generator's copy of the %s differs from registry/runtime/%s", c.name, c.path)
 			}
+		}
+		// The contract check of the ledger takes a report as current for the runtime's window of intervals.
+		source, err := os.ReadFile(filepath.Join("..", "..", "..", "registry", "runtime", "lease", "release.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		window := regexp.MustCompile(`ReleaseWindow = ([0-9]+)`).FindSubmatch(source)
+		if window == nil || !strings.Contains(migrationLedger, "const releaseWindow = "+string(window[1])+"\n") {
+			t.Errorf("the ledger's release window is not the runtime's ReleaseWindow %s", window)
 		}
 	})
 }

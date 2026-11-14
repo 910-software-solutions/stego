@@ -224,6 +224,11 @@ func manifestSource(models []tableModel, key string, optional map[string][]syncT
 			b.WriteString("},\nOptionalConstraints: []manifest.Constraint{\n")
 			for _, trigger := range triggers {
 				fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindCheck, Definition: %q},\n", trigger.check, trigger.definition)
+				// The contract step of the rename of a required field adds this CHECK NOT VALID, validates it and drops it,
+				// each in its own short transaction, while this release runs (ST-SUP-RC01-OC39).
+				if trigger.notNull != "" {
+					fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindCheck, Definition: %q, NotValid: true},\n", trigger.notNull, trigger.notNullDefinition)
+				}
 			}
 			b.WriteString("},\n")
 		}
@@ -243,7 +248,7 @@ const syncConfig = "search_path=pg_catalog, pg_temp"
 
 // syncTrigger is the sync trigger of an open rename: its name, which is also the name of its function, and the
 // source of its function.
-type syncTrigger struct{ name, source, check, definition string }
+type syncTrigger struct{ name, source, check, definition, notNull, notNullDefinition string }
 
 // openRenames gives, for each table, the sync trigger of each rename whose last step in the declaration is expand,
 // and makes the new column of each such rename nullable with no default in the models (ST-SUP-RC01-OC12): the
@@ -270,14 +275,21 @@ func openRenames(ctx gen.Context, models []tableModel) (map[string][]syncTrigger
 			if models[i].name != name {
 				continue
 			}
+			required := false
 			for j := range models[i].columns {
 				if models[i].columns[j].name == change.Field {
+					required = models[i].columns[j].notNull
 					models[i].columns[j].notNull, models[i].columns[j].manifestDefault = false, ""
 				}
 			}
 			trigger := SyncTriggerName(change.Entity, change.Field)
-			optional[name] = append(optional[name], syncTrigger{name: trigger, source: syncSource(change.ID, owner, change.From, change.Field),
-				check: CompleteCheckName(change.Entity, change.Field), definition: completeDefinition(change.From, change.Field)})
+			sync := syncTrigger{name: trigger, source: syncSource(change.ID, owner, change.From, change.Field),
+				check: CompleteCheckName(change.Entity, change.Field), definition: completeDefinition(change.From, change.Field)}
+			if required {
+				sync.notNull = NotNullCheckName(change.Entity, change.Field)
+				sync.notNullDefinition = "CHECK ((" + deparsedName(change.Field) + " IS NOT NULL))"
+			}
+			optional[name] = append(optional[name], sync)
 			tenant := ""
 			if models[i].owned {
 				tenant = tenantColumn(ctx)
@@ -294,7 +306,7 @@ type openRename struct{ change, table, tenant, from, to, check string }
 
 // stepsSource gives the variables SchemaSteps, the IDs of the open renames, which the writer marker names
 // (ST-SUP-RC01-OC23), and BackfillCopies, the copy of the backfill of each (ST-GEN-UC13).
-func stepsSource(open []openRename) string {
+func stepsSource(open []openRename, release string) string {
 	var ids, copies strings.Builder
 	for _, r := range open {
 		fmt.Fprintf(&ids, "%q,\n", r.change)
@@ -311,7 +323,12 @@ var SchemaSteps = []string{
 // (ST-GEN-UC13).
 var BackfillCopies = []lease.Copy{
 %s}
-`, ids.String(), copies.String())
+
+// SchemaRelease is the name of the last migration of this release, under which each process of the release reports
+// itself in the database, so that the contract step of a schema change that this release does not know refuses
+// while it runs (ST-SUP-RP09-LC14).
+const SchemaRelease = %q
+`, ids.String(), copies.String(), release)
 }
 
 // generateSchemaManifest gives schema_manifest.go of the runtime data path: the variable SchemaManifest, which the
@@ -322,6 +339,10 @@ func generateSchemaManifest(ctx gen.Context) (gen.File, error) {
 		return gen.File{}, err
 	}
 	optional, open, err := openRenames(ctx, models)
+	if err != nil {
+		return gen.File{}, err
+	}
+	release, err := lastMigration(ctx)
 	if err != nil {
 		return gen.File{}, err
 	}
@@ -337,10 +358,30 @@ import (
 // with its tenant policy. The service runtime reads the catalog as the runtime role before the service serves, and
 // refuses to start on a database that does not hold it (ST-SUP-RC01-OC12).
 var %s = %s
-%s`, path.Base(ctx.OutputNamespace), leaseImport, manifestImport, schemaManifestVariable, schemaManifestVariable, manifestSource(models, tenantColumn(ctx), optional), stepsSource(open))
+%s`, path.Base(ctx.OutputNamespace), leaseImport, manifestImport, schemaManifestVariable, schemaManifestVariable, manifestSource(models, tenantColumn(ctx), optional), stepsSource(open, release))
 	formatted, err := format.Source([]byte(source))
 	if err != nil {
 		return gen.File{}, fmt.Errorf("formatting %s: %w", schemaManifestFile, err)
 	}
 	return gen.File{Path: path.Join(ctx.OutputNamespace, schemaManifestFile), Content: formatted}, nil
+}
+
+// lastMigration gives the name of the last migration that the adapter registers: the last migration of the last
+// schema step, else the row-level security of a pooled service, else 001_initial (ST-SUP-RP09-LC14).
+func lastMigration(ctx gen.Context) (string, error) {
+	steps, err := schemaSteps(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(steps) > 0 {
+		return steps[len(steps)-1].Name, nil
+	}
+	security, err := rowSecurityImport(ctx)
+	if err != nil {
+		return "", err
+	}
+	if security != "" {
+		return tenancyMigration, nil
+	}
+	return "001_initial", nil
 }
