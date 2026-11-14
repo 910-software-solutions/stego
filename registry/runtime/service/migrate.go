@@ -825,13 +825,13 @@ func (r *tenantKeyRefusal) Refusal() string { return r.text }
 // (a), orchestrator under the owner's delegation, 2026-11-14). A key that the step before did not leave on its table
 // is a fault.
 //
-// PostgreSQL 17 validates a foreign key with one query as the current role when that role may read both tables and
-// owns each one that has row-level security; under FORCE ROW LEVEL SECURITY that query sees only the rows of the
-// tenant setting, so the owner role would validate a key over a table with rows of unlisted tenants. In the same
-// transaction the step therefore first revokes SELECT on the table from the owner role, which makes PostgreSQL scan
-// every row of the table and check each one, past row-level security, and grants it again after the validation. No
-// other session sees the revoke. When the owner role can still read a column of the table, as through a column
-// grant or a role that it inherits from, the step fails and validates nothing.
+// PostgreSQL 17 validates a foreign key with one query as the current role, which under FORCE ROW LEVEL SECURITY
+// sees only the rows of the tenant setting, so the owner role would validate a key over a table with rows of unlisted
+// tenants. The step therefore validates each key with tenant.ValidateForeignKey, which revokes SELECT on the table
+// from the owner role in the transaction of the step, so PostgreSQL checks every row past row-level security, fails
+// when the owner role can still read a column of the table, runs the validation with row_security off and grants
+// SELECT again after it (ST-SUP-RP04-LC10; security review of PR #320, L2 and info, orchestrator under the owner's
+// delegation, 2026-11-14).
 func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants string, keys []tenantKey) error {
 	for _, k := range keys {
 		table := quote(k.schema) + "." + quote(k.table)
@@ -845,21 +845,7 @@ func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants stri
 			case validated:
 				return nil
 			}
-			if _, err := tx.ExecContext(ctx, "REVOKE SELECT ON TABLE "+table+" FROM "+quote(owner)); err != nil {
-				return err
-			}
-			var reads bool
-			if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.has_any_column_privilege($1::pg_catalog.text, $2::pg_catalog.text, 'SELECT')", owner, table).Scan(&reads); err != nil {
-				return err
-			}
-			if reads {
-				return fmt.Errorf("the owner role reads %s.%s after its SELECT is revoked, so the validation of the tenant key %s would not read every row", k.schema, k.table, k.key.Name)
-			}
-			if _, err := tx.ExecContext(ctx, "ALTER TABLE ONLY "+table+" VALIDATE CONSTRAINT "+quote(k.key.Name)); err != nil {
-				return err
-			}
-			_, err = tx.ExecContext(ctx, "GRANT SELECT ON TABLE "+table+" TO "+quote(owner))
-			return err
+			return tenant.ValidateForeignKey(ctx, tx, table, k.key.Name)
 		})
 		var state interface{ SQLState() string }
 		if errors.As(err, &state) && state.SQLState() == "23503" {

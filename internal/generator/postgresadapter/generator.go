@@ -223,7 +223,7 @@ var reservedTypeNames = map[string]bool{
 	"databaseUUID":       true,
 	"ErrMigrationLedger": true, "AppliedMigrations": true, "ApplyMigration": true, "RegisterSQL": true,
 	"Database": true, "inTransaction": true, "lockLedger": true, "recordMigration": true,
-	"refreshMarker": true, "RegisterStep": true, "RegisterValidateStep": true, "RegisterIndexStep": true, "applyPending": true,
+	"refreshMarker": true, "RegisterStep": true, "RegisterValidateStep": true, "ValidateConstraint": true, "runtimetenant": true, "RegisterIndexStep": true, "applyPending": true,
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true,
@@ -413,14 +413,37 @@ func RegisterStep(name, body string, compatibleWith ...string) {
 	}})
 }
 
+// ValidateConstraint is one constraint that a validate migration validates:
+// the qualified table as SQL text, the name of the constraint with no quotes,
+// and Foreign for a foreign key.
+type ValidateConstraint struct {
+	Table, Name string
+	Foreign     bool
+}
+
 // RegisterValidateStep adds the migration that validates the constraints that
 // the step before it added NOT VALID, in its own transaction, under the long
 // statement timeout: VALIDATE CONSTRAINT takes a lock that blocks no read and
-// no write (ST-SUP-RC01-OC22).
-func RegisterValidateStep(name, body string) {
+// no write (ST-SUP-RC01-OC22). body is the text of the migration, one ALTER
+// TABLE ... VALIDATE CONSTRAINT for each of constraints in their order, which
+// the ledger digest covers. The migration validates a foreign key with the
+// helper of the tenant runtime, which checks each row past row-level security
+// (ST-SUP-RP04-LC10; security review of PR #320, info), and each other
+// constraint with its statement of body.
+func RegisterValidateStep(name, body string, constraints ...ValidateConstraint) {
 	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: []string{}, StatementTimeout: longStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, body)
-		return err
+		for _, c := range constraints {
+			if c.Foreign {
+				if err := runtimetenant.ValidateForeignKey(ctx, tx, c.Table, c.Name); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE "+c.Table+" VALIDATE CONSTRAINT \""+strings.ReplaceAll(c.Name, "\"", "\"\"")+"\""); err != nil {
+				return err
+			}
+		}
+		return nil
 	}})
 }
 
@@ -1054,10 +1077,15 @@ func (r *contractRefusal) Refusal() string { return r.text }
 // runs in full again (security review of PR #316, H1). A trigger of the name
 // that is disabled, fires only on a replica, or does not run the sync function
 // stego_steps.<trigger>() does not copy the writes of the release before, so
-// the check refuses it (security review of PR #316, L2).
+// the check refuses it (security review of PR #316, L2); so does a trigger
+// whose definition, as pg_get_triggerdef gives it, is not the one that the
+// step made, CREATE TRIGGER <trigger> BEFORE INSERT OR UPDATE ON <table> FOR
+// EACH ROW EXECUTE FUNCTION stego_steps.<trigger>(), as one that fires only on
+// an INSERT, on an UPDATE OF another column, with a WHEN condition, for each
+// statement or after the row (security review of PR #320, L1).
 func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	var trigger, syncing, column bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace JOIN pg_catalog.pg_class r ON r.oid = t.tgrelid JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0 AND pg_catalog.pg_get_triggerdef(t.oid) = 'CREATE TRIGGER ' || pg_catalog.quote_ident($2) || ' BEFORE INSERT OR UPDATE ON ' || pg_catalog.quote_ident(rn.nspname) || '.' || pg_catalog.quote_ident(r.relname) || ' FOR EACH ROW EXECUTE FUNCTION stego_steps.' || pg_catalog.quote_ident($2) || '()'), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
 		return err
 	}
 	if !trigger && !column {
@@ -1081,7 +1109,7 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	state := ""
 	switch {
 	case trigger && !syncing:
-		state = "the sync trigger " + c.Trigger + " is disabled or does not run its sync function"
+		state = "the sync trigger " + c.Trigger + " is disabled or does not run its sync function before each write of a row"
 	case !found:
 		state = "the backfill has no checkpoint row"
 	case failed > 0:
@@ -1265,8 +1293,9 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 	fmt.Fprintf(&buf, "\t\"sort\"\n")
 	fmt.Fprintf(&buf, "\t\"strings\"\n")
 	fmt.Fprintf(&buf, "\t\"time\"\n")
+	fmt.Fprintf(&buf, "\n\truntimetenant %q\n", runtimeTenantImport)
 	if rowSecurity != "" {
-		fmt.Fprintf(&buf, "\n\tstegotenancy %q\n", rowSecurity)
+		fmt.Fprintf(&buf, "\tstegotenancy %q\n", rowSecurity)
 	}
 	fmt.Fprintf(&buf, ")\n\n")
 	buf.WriteString(migrationLedger)
@@ -1303,7 +1332,11 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 		case step.Index != "":
 			fmt.Fprintf(&buf, "\tRegisterIndexStep(%q, %q, %q, %q)\n", step.Name, step.Index, step.Body, step.Definition)
 		case step.Validate:
-			fmt.Fprintf(&buf, "\tRegisterValidateStep(%q, %q)\n", step.Name, step.Body)
+			fmt.Fprintf(&buf, "\tRegisterValidateStep(%q, %q", step.Name, step.Body)
+			for _, v := range step.Validations {
+				fmt.Fprintf(&buf, ", ValidateConstraint{Table: %q, Name: %q, Foreign: %t}", v.table, v.name, v.foreign)
+			}
+			fmt.Fprintf(&buf, ")\n")
 		case step.Contract != nil:
 			c := step.Contract
 			fmt.Fprintf(&buf, "\tRegisterContractStep(%q, %q, ContractStep{Change: %q, Table: %q, Check: %q, Definition: %q, Trigger: %q, Expand: %q, From: %q, Old: %q, New: %q, TenantColumn: %q, Tenants: %q, Statements: []ContractStatement{\n",

@@ -24,6 +24,7 @@ const (
 	schemaManifestVariable = "SchemaManifest"
 	manifestImport         = "github.com/jsell-rh/stego/registry/runtime/manifest"
 	leaseImport            = "github.com/jsell-rh/stego/registry/runtime/lease"
+	runtimeTenantImport    = "github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // StepSchema is the held schema of the sync functions of the schema steps (ST-SUP-RP15-LC02): the manifest names it,

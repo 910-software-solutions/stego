@@ -2204,4 +2204,45 @@ func TestMigrateTenantKeys(t *testing.T) {
 			t.Fatalf("after the job the key is there %v and validated %v", present, validated)
 		}
 	})
+
+	t.Run("ST-SUP-RP14-LC03-T24 The owner role cannot delete a tenant with rows from the tenant list while the tenant setting of another tenant hides those rows", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"tenant-a", "tenant-b"} {
+			if _, err := f.admin.Exec("INSERT INTO public.stego_tenants (tenant_id) VALUES ($1)", id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := f.admin.Exec("INSERT INTO public.orders (tenant_id, id, status) VALUES ('tenant-a', 'o1', 'new')"); err != nil {
+			t.Fatal(err)
+		}
+		// As the owner role with the tenant setting tenant-b: row-level security hides the order of tenant-a, and
+		// the check of the key on the delete still finds it (security review of PR #320, D1b).
+		tx, err := f.admin.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		for _, statement := range []string{"SET LOCAL ROLE " + f.owner, "SELECT pg_catalog.set_config('app.tenant', 'tenant-b', true)"} {
+			if _, err := tx.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var seen int
+		if err := tx.QueryRow("SELECT count(*) FROM public.orders").Scan(&seen); err != nil || seen != 0 {
+			t.Fatalf("the owner role with the tenant setting tenant-b sees %d orders (error %v), want none", seen, err)
+		}
+		if _, err := tx.Exec("DELETE FROM public.stego_tenants WHERE tenant_id = 'tenant-a'"); sqlState(err) != "23503" {
+			t.Fatalf("the delete of tenant-a as the owner role with the tenant setting tenant-b gave %v, want the foreign key violation 23503", err)
+		}
+		_ = tx.Rollback()
+		var listed bool
+		if err := f.admin.QueryRow("SELECT EXISTS (SELECT 1 FROM public.stego_tenants WHERE tenant_id = 'tenant-a')").Scan(&listed); err != nil || !listed {
+			t.Fatalf("tenant-a is not in the list after the refused delete (error %v)", err)
+		}
+	})
 }

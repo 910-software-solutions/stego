@@ -1508,6 +1508,44 @@ WHERE pronamespace = 'stego_schema'::regnamespace AND proname IN ('backfill_read
 		contracted(t, up)
 	})
 
+	t.Run("ST-SUP-RC01-OC24-T06 The check refuses a sync trigger of the name and function that is not the trigger that the step made", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		original := `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`
+		// Each trigger has the name and the sync function of the step, is enabled, and does not copy each write of
+		// the release before into the new column (security review of PR #320, L1).
+		for _, variant := range []struct{ name, statement string }{
+			{"INSERT only", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"WHEN (false)", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH ROW WHEN (false) EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"UPDATE OF another column", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE OF "id" ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"FOR EACH STATEMENT", `CREATE TRIGGER "boards_heading_sync" BEFORE INSERT OR UPDATE ON public."boards" FOR EACH STATEMENT EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+			{"AFTER ROW", `CREATE TRIGGER "boards_heading_sync" AFTER INSERT OR UPDATE ON public."boards" FOR EACH ROW EXECUTE FUNCTION stego_steps."boards_heading_sync"()`},
+		} {
+			for _, statement := range []string{`DROP TRIGGER "boards_heading_sync" ON public."boards"`, variant.statement} {
+				if _, err := up.Exec(statement); err != nil {
+					t.Fatalf("%s: %.60s: %v", variant.name, statement, err)
+				}
+			}
+			before := catalog(t, up)
+			if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "the sync trigger boards_heading_sync is disabled or does not run its sync function before each write of a row") {
+				t.Errorf("the check with a sync trigger %s says: %s", variant.name, text)
+			}
+			if after := catalog(t, up); !slices.Equal(before, after) || contractRows(t, up) != 0 {
+				t.Errorf("the refused step with a sync trigger %s changed the catalog or the ledger", variant.name)
+			}
+		}
+		// The trigger as the step made it passes the check, and the step goes on.
+		for _, statement := range []string{`DROP TRIGGER "boards_heading_sync" ON public."boards"`, original} {
+			if _, err := up.Exec(statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the step with the sync trigger that the step made: %v", err)
+		}
+		contracted(t, up)
+	})
+
 	t.Run("ST-SUP-RC01-OC39-T03 A write of the release before after the drop of the sync trigger fails and loses no edit", func(t *testing.T) {
 		upCfg, up := contractBase(t)
 		finish(t, up)
@@ -1916,6 +1954,122 @@ FROM pg_catalog.pg_class c WHERE c.oid = $1::pg_catalog.regclass`, "public."+tab
 		}
 		if err := manifest.Check(ctx, reader, owned(boardsnote.SchemaManifest)); err != nil {
 			t.Errorf("the schema manifest of the release with the steps refuses the database: %v", err)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC22-T09 The validate migration of an add step checks each row of an owned table for a new foreign key, past row-level security", func(t *testing.T) {
+		ctx := context.Background()
+		fkCfg, db := database(t, cfg, admin)
+		migrate(t, fkCfg, db, func(ctx context.Context, conn *sql.Conn) error { return boardsbase.Migrate(ctx, conn) }, "boardsbase_access.json")
+		first, second := uuid.Must(uuid.NewV7()).String(), uuid.Must(uuid.NewV7()).String()
+		if _, err := db.Exec(`INSERT INTO public."boards" ("tenant_id", "id", "title") VALUES ('tenant-a', $1, 'first'), ('tenant-a', $2, 'second')`, first, second); err != nil {
+			t.Fatal(err)
+		}
+		job := stdlib.OpenDB(*fkCfg)
+		defer job.Close()
+		conn, err := job.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		// The job applies the migrations of boardsnote before the validation of the reference parent_id, each with
+		// its ledger row, as the owner role.
+		const validate = "step_0003_add-board-parent-id_expand_validate"
+		entries, err := os.ReadDir("../boardsnote/migrations")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body string
+		for _, entry := range entries {
+			name := strings.TrimSuffix(entry.Name(), ".sql")
+			if !strings.HasPrefix(name, "step_") || name > validate {
+				continue
+			}
+			data, err := os.ReadFile("../boardsnote/migrations/" + entry.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == validate {
+				body = string(data)
+				continue
+			}
+			if _, err := conn.ExecContext(ctx, string(data)); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if _, err := conn.ExecContext(ctx, "INSERT INTO stego_schema.migrations (version, digest, compatible_with) VALUES ($1, $2, '{}')", name, boardsnote.Digest(string(data))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !strings.Contains(body, `VALIDATE CONSTRAINT "boards_parent_id_fkey"`) {
+			t.Fatalf("the migration %s does not validate the foreign key of parent_id: %q", validate, body)
+		}
+		// A row that the key refuses, which only a write past the key can make: a session in the replica role
+		// fires no trigger of the key. The row of tenant-a refers to a board that is not there.
+		orphan, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{"SET LOCAL session_replication_role = replica", `UPDATE public."boards" SET "parent_id" = '` + uuid.Must(uuid.NewV7()).String() + `' WHERE "id" = '` + first + `'`} {
+			if _, err := orphan.Exec(statement); err != nil {
+				_ = orphan.Rollback()
+				t.Fatal(err)
+			}
+		}
+		if err := orphan.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		// PostgreSQL 17.7 validates the key with one query as the owner role, which row-level security limits to the
+		// rows of the tenant setting, here none: the body run as it is gives no error.
+		plain, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, control := plain.ExecContext(ctx, body)
+		_ = plain.Rollback()
+		t.Logf("the body of %s run as it is as the owner role gives %v", validate, control)
+		acl := func() string {
+			var text string
+			if err := db.QueryRow(`SELECT coalesce(relacl::text, '') FROM pg_catalog.pg_class WHERE oid = 'public.boards'::pg_catalog.regclass`).Scan(&text); err != nil {
+				t.Fatal(err)
+			}
+			return text
+		}
+		state := func() (validated bool, rows int) {
+			if err := db.QueryRow(`SELECT (SELECT convalidated FROM pg_catalog.pg_constraint WHERE conrelid = 'public.boards'::pg_catalog.regclass AND conname = 'boards_parent_id_fkey'),
+  (SELECT count(*) FROM stego_schema.migrations WHERE version = $1)`, validate).Scan(&validated, &rows); err != nil {
+				t.Fatal(err)
+			}
+			return validated, rows
+		}
+		before := acl()
+		err = boardsnote.Migrate(ctx, conn)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23503" || !strings.Contains(err.Error(), validate) {
+			t.Fatalf("the job over a row that the key refuses gives %v, want the foreign key violation 23503 at %s", err, validate)
+		}
+		if validated, rows := state(); validated || rows != 0 {
+			t.Errorf("after the refusal the key is validated %v with %d ledger rows of %s, want it NOT VALID and no row", validated, rows, validate)
+		}
+		if after := acl(); after != before {
+			t.Errorf("the refused validation changed the grants of boards from %q to %q", before, after)
+		}
+		// Once the row is fixed, the job validates the key and every later migration, and the owner role reads
+		// boards again.
+		if _, err := db.Exec(`UPDATE public."boards" SET "parent_id" = $1 WHERE "id" = $2`, second, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := boardsnote.Migrate(ctx, conn); err != nil {
+			t.Fatalf("the job after the row is fixed: %v", err)
+		}
+		if validated, rows := state(); !validated || rows != 1 {
+			t.Errorf("after the job the key is validated %v with %d ledger rows of %s", validated, rows, validate)
+		}
+		var reads bool
+		if err := db.QueryRow(`SELECT pg_catalog.has_table_privilege($1, 'public.boards', 'SELECT')`, tenancy.OwnerRole).Scan(&reads); err != nil || !reads {
+			t.Errorf("the owner role reads boards after the job: %v (error %v)", reads, err)
 		}
 	})
 

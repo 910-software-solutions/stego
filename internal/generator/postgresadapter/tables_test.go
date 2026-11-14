@@ -444,6 +444,10 @@ func TestTables(t *testing.T) {
 		onPostgres(t, "ST-SUP-RC01-OC22-T05")
 	})
 
+	t.Run("ST-SUP-RC01-OC22-T09 The validate migration of an add step checks each row of an owned table for a new foreign key, past row-level security", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC22-T09")
+	})
+
 	t.Run("ST-SUP-RC01-OC38-T02 An index of an add step is built concurrently, and a failed build drops its invalid index at once", func(t *testing.T) {
 		onPostgres(t, "ST-SUP-RC01-OC38-T02")
 	})
@@ -482,6 +486,7 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC24-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T03") })
 	t.Run("ST-SUP-RC01-OC24-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T04") })
 	t.Run("ST-SUP-RC01-OC24-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T05") })
+	t.Run("ST-SUP-RC01-OC24-T06 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T06") })
 	t.Run("ST-SUP-RC01-OC40-T04 The schema manifest names the tenant key of each owned table, which holds on PostgreSQL with row-level security", func(t *testing.T) {
 		files, _, err := new(postgresadapter.Generator).Generate(widgetService(widgetEntities()))
 		if err != nil {
