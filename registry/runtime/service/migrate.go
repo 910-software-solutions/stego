@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"time"
 
@@ -300,6 +301,16 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	// change, so one moves rows and the other waits for the lease (ST-GEN-UC13-R01).
 	unlock()
 	if err := step(StepBackfill, func() error { return runBackfills(parent, db, m) }); err != nil {
+		// A batch that found a trigger that the manifest does not name on its table wrote nothing; the job refuses
+		// the database at its schema manifest check, which names each fault, and else at the backfill (decision on
+		// the #305 info, orchestrator under the owner's delegation, 2026-11-14).
+		if errors.Is(err, lease.ErrTrigger) {
+			check, cancel := context.WithTimeout(parent, manifest.Timeout)
+			defer cancel()
+			if merr := checkManifest(check, conn, m, true); merr != nil {
+				return failed(StepManifest, merr)
+			}
+		}
 		return err
 	}
 	// Last, after the texts, which make again the objects that they own, and after the backfills, which validate the
@@ -340,7 +351,10 @@ func BackfillLeaseName(change string) string { return "stego.backfill." + change
 // each under its own lease, so that of two jobs that run at the same time one moves rows and the other waits
 // (ST-GEN-UC13-R01). A job whose batch was fenced, whose lease was lost or whose batch session broke (lease.ErrSession,
 // such as an administrator shutdown of the backend; review of PR #305, L3) waits for the lease again with new
-// sessions, and finds the change complete or resumes it from the checkpoint (ST-GEN-UC13-R04). The step ends when every change is complete,
+// sessions, and finds the change complete or resumes it from the checkpoint (ST-GEN-UC13-R04); after a broken session
+// it first waits sessionPause. Each batch accepts on the table of its change only the triggers that the joined schema
+// manifest names for it, and a batch that finds another one ends the step with lease.ErrTrigger (decision on the #305
+// info, orchestrator under the owner's delegation, 2026-11-14). The step ends when every change is complete,
 // or at BackfillTimeout with an error, and the next run of the job resumes.
 func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 	if len(m.Backfills) == 0 {
@@ -366,6 +380,13 @@ func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 	}
 	if m.Service == "" {
 		return errors.New("the backfills need the service name")
+	}
+	if m.Parts == nil {
+		return errors.New("the backfills need the declared parts")
+	}
+	want, err := joinedManifest(*m.Parts, m.RuntimeRole)
+	if err != nil {
+		return err
 	}
 	telemetry, err := otel.New(m.Service, probe.SpanNames()...)
 	if err != nil {
@@ -398,6 +419,23 @@ func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 		settings := b.Settings
 		if settings.Observer == nil {
 			settings.Observer = probes.Backfill()
+		}
+		// Each batch accepts on the table only the triggers that the manifest names for it, the sync trigger of the
+		// open change among them (decision on the #305 info, orchestrator under the owner's delegation, 2026-11-14).
+		settings.Schema, settings.Table, settings.Triggers = "public", b.Table, nil
+		found := false
+		for _, t := range want.Tables {
+			if t.Schema != "public" || t.Name != b.Table {
+				continue
+			}
+			found = true
+			settings.Triggers = map[string]string{}
+			for _, trigger := range slices.Concat(t.Triggers, t.OptionalTriggers) {
+				settings.Triggers[trigger.Name] = trigger.Function.Name
+			}
+		}
+		if !found {
+			return fmt.Errorf("backfill %s: the schema manifest has no table public.%s", b.Change, b.Table)
 		}
 		backfill, err := lease.NewBackfill(b.Change, b.Step, settings)
 		if err != nil {
@@ -442,19 +480,30 @@ func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 			// After a broken session the job waits the retry period of the lease before it opens new sessions, so a
 			// failover that flaps does not make it open sessions in a tight loop (review of PR #305, info).
 			if errors.Is(err, lease.ErrSession) {
-				retry := m.BackfillLease.Retry
-				if retry <= 0 {
-					retry = lease.DefaultRetry
-				}
 				select {
 				case <-ctx.Done():
 					return fmt.Errorf("backfill %s: %w", b.Change, ctx.Err())
-				case <-time.After(retry):
+				case <-time.After(sessionPause(m.BackfillLease)):
 				}
 			}
 		}
 	}
 	return nil
+}
+
+// MinSessionPause is the shortest wait of the backfill step after a broken session, whatever the retry period of the
+// lease, so a retry period of nearly zero does not make the job open sessions in a tight loop (review of PR #310,
+// info).
+const MinSessionPause = 100 * time.Millisecond
+
+// sessionPause is the wait of the backfill step after a broken session: the retry period of the lease settings, or
+// lease.DefaultRetry when they give none, and never less than MinSessionPause.
+func sessionPause(settings lease.Settings) time.Duration {
+	retry := settings.Retry
+	if retry <= 0 {
+		retry = lease.DefaultRetry
+	}
+	return max(retry, MinSessionPause)
 }
 
 // errSequenceBehind is the refusal of a queue whose identity sequence would give a message a sequence that a stored
