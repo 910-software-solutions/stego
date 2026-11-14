@@ -458,19 +458,43 @@ type tenantDecision struct {
 	seal.DecisionMark
 }
 
-// DecideTenant decides the permission of action, provision or retire, on resource at the floor, for a request that
-// names the tenant tenantID (ST-SUP-RP06-LC17). Like every evaluation of the handle, resource has the ID of
-// ResourceID in the handle's own tenant, the tenant of the principal who asks (ST-SUP-RP06-LC22). On an allow it returns the decision that tenant.Requested takes,
-// whose mark the internal seal constructor makes with exactly that tenant ID and that action, so the allow serves
-// only the one action on the one tenant, and true; on a deny it returns no decision and false.
+// DecideTenant decides the permission named as action, provision or retire, as DecideTenantPermission decides it.
 func (h *Handle) DecideTenant(ctx context.Context, action tenant.RequestAction, tenantID string, resource Resource, c Context) (tenant.Decision, bool, error) {
+	return h.DecideTenantPermission(ctx, action, string(action), tenantID, resource, c)
+}
+
+// DecideTenantPermission decides permission, the declared permission of action, provision or retire, on resource at the
+// floor, for a request that names the tenant tenantID (ST-SUP-RP06-LC17, ST-DECL-EN27). resource is the
+// service-level resource of ServiceResource, such as service:todo-svc, whose ID is not tenant-qualified: the one
+// exception of ST-SUP-RP06-LC22, so a grant on a resource of one tenant, such as service:<tenant>/todo-svc, never
+// decides a provision or a retire. It refuses a resource whose ID is tenant-qualified with ErrQualifiedService. On an
+// allow it returns the decision that tenant.Requested takes, whose mark the internal seal constructor makes with
+// exactly that tenant ID and that action, so the allow serves only the one action on the one tenant, and true; on a
+// deny it returns no decision and false.
+func (h *Handle) DecideTenantPermission(ctx context.Context, action tenant.RequestAction, permission, tenantID string, resource Resource, c Context) (tenant.Decision, bool, error) {
 	if action != tenant.ProvisionAction && action != tenant.RetireAction {
 		return nil, false, errors.New("authz: the tenant action is not provision or retire")
+	}
+	if err := validType("permission", permission); err != nil {
+		return nil, false, err
 	}
 	if tenantID == "" {
 		return nil, false, errors.New("authz: the request names no tenant")
 	}
-	result, err := h.Evaluate(ctx, string(action), resource, Token{}, c)
+	if err := resource.service(); err != nil {
+		return nil, false, err
+	}
+	floor, err := h.floor(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	result, err := h.runtime.port.evaluateService(ctx, EvaluationRequest{
+		Subject:     h.principal.subject,
+		Action:      Action{Name: permission},
+		Resource:    resource,
+		Context:     c,
+		Consistency: atFloor(floor, Token{}),
+	}, Token{})
 	if err != nil {
 		return nil, false, err
 	}

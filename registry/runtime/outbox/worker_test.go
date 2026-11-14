@@ -1042,3 +1042,70 @@ func TestWorkerBeginFailure(t *testing.T) {
 		}
 	})
 }
+
+// tenantList is a fake tenant list: the tenants of active are active, and a read for failing fails.
+type tenantList struct {
+	active  map[string]bool
+	failing string
+	reads   atomic.Int64
+}
+
+func (l *tenantList) Active(_ context.Context, t tenant.Tenant) (bool, error) {
+	l.reads.Add(1)
+	if t.ID() == l.failing {
+		return false, errors.New("the tenant list cannot be read")
+	}
+	return l.active[t.ID()], nil
+}
+
+func TestWorkerTenants(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC12-T03 A destination that serves only active tenants parks the message of a retired tenant before its handler", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, newClock())
+		list := &tenantList{active: map[string]bool{"tenant-a": true}, failing: "tenant-c"}
+		w := newWorker(t, q, func(c *WorkerConfig) { c.Tenants = list })
+		var handled sync.Map
+		handler := func(_ context.Context, _ *sql.Tx, d Delivery) error {
+			handled.Store(d.Destination+" "+d.Tenant.ID(), true)
+			return nil
+		}
+		register(t, w, Destination{Name: "after-slots", Idempotent: true, MustLand: true, ActiveTenants: true, Handler: handler})
+		register(t, w, Destination{Name: "audit", Idempotent: true, MustLand: true, Handler: handler})
+		enqueueAs(t, db, q, "tenant-a", message("after-slots", "a:1"))
+		enqueueAs(t, db, q, "tenant-b", message("after-slots", "b:1"), message("audit", "b:2"))
+		enqueueAs(t, db, q, "tenant-c", message("after-slots", "c:1"))
+		for cycle(t, w) > 0 {
+		}
+		if row := readRowByKey(t, db, "after-slots", "a:1"); row.State != Done {
+			t.Errorf("the message of the active tenant is %s, want done", row.State)
+		}
+		// The retired tenant b: its message for the destination of active tenants is parked before the handler,
+		// also though the destination must land; a destination that does not ask still gets its message.
+		if row := readRowByKey(t, db, "after-slots", "b:1"); row.State != Parked || row.FailureCode != "tenant-not-active" {
+			t.Errorf("the message of the retired tenant is %s %s, want parked with tenant-not-active", row.State, row.FailureCode)
+		}
+		if _, ran := handled.Load("after-slots tenant-b"); ran {
+			t.Error("the handler ran for the message of the retired tenant")
+		}
+		if row := readRowByKey(t, db, "audit", "b:2"); row.State != Done {
+			t.Errorf("the message of the retired tenant for a destination that serves every tenant is %s, want done", row.State)
+		}
+		// A failed read of the list runs no handler and parks nothing: the message goes back to pending.
+		if row := readRowByKey(t, db, "after-slots", "c:1"); row.State != Pending || row.FailureCode != "tenant-list-failed" {
+			t.Errorf("the message whose tenant list read failed is %s %s, want pending with tenant-list-failed", row.State, row.FailureCode)
+		}
+		if _, ran := handled.Load("after-slots tenant-c"); ran {
+			t.Error("the handler ran for a message whose tenant list read failed")
+		}
+		// With no tenant list in the configuration, nothing is checked.
+		open := newWorker(t, q, nil)
+		register(t, open, Destination{Name: "after-slots", Idempotent: true, MustLand: true, ActiveTenants: true, Handler: handler})
+		enqueueAs(t, db, q, "tenant-d", message("after-slots", "d:1"))
+		reads := list.reads.Load()
+		for cycle(t, open) > 0 {
+		}
+		if row := readRowByKey(t, db, "after-slots", "d:1"); row.State != Done || list.reads.Load() != reads {
+			t.Errorf("with no tenant list the message is %s after %d reads, want done after none", row.State, list.reads.Load()-reads)
+		}
+	})
+}

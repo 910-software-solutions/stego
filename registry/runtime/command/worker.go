@@ -210,6 +210,28 @@ func deadlineOr(ctx context.Context, notAfter time.Time, err error) error {
 	return err
 }
 
+// errTenantNotActive is the refusal of a message of a tenant that the tenant list does not hold as active, such as a
+// retired tenant (ST-SUP-RC27-OC12).
+var errTenantNotActive = errors.New("command: the tenant of the message is not an active tenant of the tenant list")
+
+// activeTenant checks the tenant of a claimed message against the tenant list of Config.Tenants, before any fill: a
+// tenant that the list does not hold as active, such as a retired tenant, is a permanent refusal, which parks the
+// message with an alert and runs no fill (ST-SUP-RC27-OC12, ST-SUP-RP01-LC12); a failed read of the list is a
+// transient refusal, so the message is tried again and no fill runs. With no Tenants it checks nothing.
+func (rt *Runtime) activeTenant(ctx context.Context, t tenant.Tenant) error {
+	if rt.cfg.Tenants == nil {
+		return nil
+	}
+	active, err := rt.cfg.Tenants.Active(ctx, t)
+	switch {
+	case err != nil:
+		return outbox.TransientRefusal(internalf("the tenant list was not read"))
+	case !active:
+		return outbox.PermanentRefusal(errTenantNotActive)
+	}
+	return nil
+}
+
 // MessageFill is the fill of a worker with a consumes trigger: it gets the decoded message, its effect name and the
 // handle.
 type MessageFill[M, P any] func(ctx context.Context, message M, effect string, h *Handle[P]) error
@@ -226,6 +248,9 @@ type MessageFill[M, P any] func(ctx context.Context, message M, effect string, h
 // the fill when that key is completed (ST-SUP-RP10-LC19); each staged effect's key derives from that identity
 // (ST-SUP-RP10-LC08).
 //
+// With Config.Tenants, a message of a tenant that the tenant list does not hold as active, such as a retired tenant,
+// is refused with outbox.PermanentRefusal before the fill, so the outbox parks it (ST-SUP-RC27-OC12).
+//
 // It returns nil when the outbox may commit tx with the message done; an error marked with outbox.Conflict for a
 // conflict, which the outbox dispatches again and does not count as an attempt (ST-SUP-RP10-LC26), except a unique
 // violation, which a dispatch again gives again and so is an attempt; an error marked
@@ -240,6 +265,9 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	ctx, finish := rt.span(ctx, ConsumerSpanName)
 	outcome := otel.OutcomeRolledBack
 	defer func() { finish(outcome, false, err != nil && !outbox.IsConflict(err)) }()
+	if err := rt.activeTenant(ctx, d.Tenant); err != nil {
+		return err
+	}
 	if err := rt.markStep(ctx, tx); err != nil {
 		return outbox.Conflict(fmt.Errorf("command: %s: set the writer marker: %w", w.spec.Name, err))
 	}

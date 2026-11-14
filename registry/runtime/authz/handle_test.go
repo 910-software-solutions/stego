@@ -912,7 +912,7 @@ func TestHandleEvaluation(t *testing.T) {
 		allowed := mustPerson(t, "u-1").Subject()
 		fake := &recorder{allow: func(r EvaluationRequest) bool { return r.Subject == allowed }}
 		rt := newUnitRuntime(t, fake)
-		platform := Resource{Type: "platform", ID: qualify("t1", "main")}
+		platform := Resource{Type: "platform", ID: "main"}
 		decision, ok, err := bindUnit(t, rt, nil, mustPerson(t, "u-1")).DecideTenant(ctx, tenant.ProvisionAction, "ta", platform, nil)
 		if err != nil || !ok || decision == nil {
 			t.Fatalf("the allow gave %v, %t, %v", decision, ok, err)
@@ -949,7 +949,7 @@ func TestHandleEvaluation(t *testing.T) {
 	t.Run("ST-SUP-RP06-LC17-T02 DecideTenant decides the permission of the action it is given and binds the mark to it", func(t *testing.T) {
 		fake := &recorder{allow: func(r EvaluationRequest) bool { return r.Action.Name == "provision" }}
 		handle := bindUnit(t, newUnitRuntime(t, fake), nil, mustPerson(t, "u-1"))
-		platform := Resource{Type: "platform", ID: qualify("t1", "main")}
+		platform := Resource{Type: "platform", ID: "main"}
 		provision, ok, err := handle.DecideTenant(ctx, tenant.ProvisionAction, "ta", platform, nil)
 		if err != nil || !ok {
 			t.Fatalf("the provision gave %v, %t, %v", provision, ok, err)
@@ -976,6 +976,19 @@ func TestHandleEvaluation(t *testing.T) {
 		}
 		if _, action, _ := seal.DecisionOf(allowed); action != "retire" {
 			t.Fatalf("the mark of the retire holds the action %q, want retire", action)
+		}
+		// The permission is the declared one, which need not be the name of the action (ST-DECL-EN27); the mark holds
+		// the action.
+		named := &recorder{allow: func(r EvaluationRequest) bool { return r.Action.Name == "add_tenant" }}
+		declared, ok, err := bindUnit(t, newUnitRuntime(t, named), nil, mustPerson(t, "u-1")).DecideTenantPermission(ctx, tenant.ProvisionAction, "add_tenant", "ta", platform, nil)
+		if err != nil || !ok || len(named.evaluations) != 1 || named.evaluations[0].Action.Name != "add_tenant" {
+			t.Fatalf("the declared permission add_tenant gave %t, %v and the evaluations %+v", ok, err, named.evaluations)
+		}
+		if _, action, _ := seal.DecisionOf(declared); action != "provision" {
+			t.Fatalf("the mark of the provision decided on add_tenant holds the action %q, want provision", action)
+		}
+		if _, _, err := permissive.DecideTenantPermission(ctx, tenant.ProvisionAction, "", "ta", platform, nil); err == nil {
+			t.Fatal("a provision with no permission is decided")
 		}
 	})
 }

@@ -507,8 +507,9 @@ func renderServer(ctx gen.Context, p *rpcPlan) ([]byte, error) {
 			}
 		}
 	}
-	f("\tverifier := rt.Verifier()\n")
-	f("\tauthenticate := func(ctx context.Context, token string) (context.Context, error) { return verifier.Authenticate(ctx, \"Bearer \"+token) }\n")
+	// The service runtime verifies the token and, for a service that declares its provisioning, refuses a tenant that
+	// the tenant list does not hold as active with PERMISSION_DENIED (ST-SUP-RC27-OC11).
+	f("\tauthenticate := func(ctx context.Context, token string) (context.Context, error) { return rt.Authenticate(ctx, \"Bearer \"+token) }\n")
 	f("\tserver, err := transport.New(authenticate, func(registrar grpc.ServiceRegistrar) error {\n")
 	for i, s := range p.services {
 		f("\t\t%s.Register%sServer(registrar, srv%d)\n", strings.SplitN(alias(s.ident), ".", 2)[0], s.service.GoName, i)

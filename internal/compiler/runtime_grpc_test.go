@@ -48,6 +48,7 @@ func newGRPCProject(t *testing.T, binary string) *wiringProject {
 // grpcCheckIDs are the checks of the generated service that TestRuntimeGRPC runs, each with the ID of the test record
 // it proves.
 var grpcCheckIDs = []string{
+	"ST-SUP-RC27-OC11-T01 A gRPC call of a tenant that is not provisioned is refused before any handler",
 	"ST-SUP-RC07-OC19-T01 A gRPC call runs its command or query fill with the same handling as HTTP",
 	"ST-SUP-RC33-OC08-T01 A stream query gets a gRPC stream and no HTTP route",
 }

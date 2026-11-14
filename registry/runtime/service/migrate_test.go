@@ -199,6 +199,13 @@ INSERT INTO stego_schema.backfills (change_id) VALUES ('board-title-rename');
 // also have the manifest of boards.
 func renameJob(t *testing.T) (*fixture, Migration, []Backfill) {
 	t.Helper()
+	return renameJobWith(t, nil)
+}
+
+// renameJobWith is renameJob with the tenants added by provision, or by the owner role straight into the tenant list
+// when provision is nil.
+func renameJobWith(t *testing.T, provision func(f *fixture, id string)) (*fixture, Migration, []Backfill) {
+	t.Helper()
 	f := newFixture(t)
 	ctx := context.Background()
 	owner := func(statement string, args ...any) {
@@ -227,7 +234,11 @@ func renameJob(t *testing.T) (*fixture, Migration, []Backfill) {
 	owner(boardsDDL(t, f.owner))
 	counts := map[string]int{"tenant-a": 10, "tenant-b": 0, "tenant-c": 15}
 	for _, id := range []string{"tenant-c", "tenant-a", "tenant-b"} {
-		owner(`INSERT INTO public.stego_tenants (tenant_id) VALUES ($1)`, id)
+		if provision != nil {
+			provision(f, id)
+		} else {
+			owner(`INSERT INTO public.stego_tenants (tenant_id) VALUES ($1)`, id)
+		}
 		for i := range counts[id] {
 			tx, err := f.admin.BeginTx(ctx, nil)
 			if err != nil {
@@ -394,6 +405,50 @@ func unmoved(t *testing.T, f *fixture) int {
 }
 
 func TestMigrateBackfillComplete(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC12-T02 A rename backfill over the tenants that Provision added, one of them retired, completes and keeps every row", func(t *testing.T) {
+		ctx := context.Background()
+		var pool *sql.DB
+		f, m, _ := renameJobWith(t, func(f *fixture, id string) {
+			t.Helper()
+			if pool == nil {
+				u, err := url.Parse(f.database)
+				if err != nil {
+					t.Fatal(err)
+				}
+				u.User = url.UserPassword(f.runtime, rolePassword)
+				if pool, err = tenant.Open(ctx, tenant.Config{InsecureLoopback: true, DSN: u.String()}); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = pool.Close() })
+			}
+			// The tenants come into the list only through Provision, as the runtime role (ST-SUP-RP04-LC07).
+			if err := tenant.Provision(ctx, pool, "public", mustTenant(t, id), nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if err := tenant.Retire(ctx, pool, "public", mustTenant(t, "tenant-c"), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := runBackfills(ctx, f.admin, m); err != nil {
+			t.Fatalf("the backfill over the provisioned tenants failed: %v", err)
+		}
+		var moved int64
+		var completed bool
+		if err := f.admin.QueryRowContext(ctx, `SELECT rows_moved, completed_at IS NOT NULL FROM stego_schema.backfills WHERE change_id = 'board-title-rename'`).Scan(&moved, &completed); err != nil ||
+			moved != 24 || !completed {
+			t.Fatalf("the checkpoint has %d moved and complete %v (error %v); want 24 and complete", moved, completed, err)
+		}
+		if n := unmoved(t, f); n != 0 {
+			t.Fatalf("%d rows are not moved", n)
+		}
+		// The retired tenant keeps its 15 rows, each moved, and its row in the list with a retire time.
+		var kept, retired int
+		if err := f.admin.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM public.boards WHERE tenant_id = 'tenant-c' AND heading = title),
+ (SELECT count(*) FROM public.stego_tenants WHERE tenant_id = 'tenant-c' AND retired_at IS NOT NULL)`).Scan(&kept, &retired); err != nil || kept != 15 || retired != 1 {
+			t.Fatalf("the retired tenant keeps %d moved rows and %d retired list rows (error %v); want 15 and 1", kept, retired, err)
+		}
+	})
+
 	t.Run("ST-SUP-RP14-LC03-T11 A row of a tenant that the tenant list does not hold blocks completion, the job fails and names the change, and the next run completes once the row is fixed", func(t *testing.T) {
 		f, m, _ := renameJob(t)
 		ctx := context.Background()

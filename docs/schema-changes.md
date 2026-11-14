@@ -212,7 +212,7 @@ report of a process with `release_stop`. Use the extended protocol.
 
 Limits: a release on a runtime library before v0.103.0 writes no report,
 and an expand step from a postgres-adapter before 6.4.0 made no table of the
-reports (ST-SUP-Q125). A contract step of a rename of a field with a default
+reports (ST-SUP-Q126). A contract step of a rename of a field with a default
 is not built yet.
 
 ## The job lock of the migration job

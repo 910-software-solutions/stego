@@ -622,6 +622,12 @@ func (s *service) as(t *testing.T, subject, tenantID string) caller {
 	principal, err := authz.Person("user", id)
 	must(t, err)
 	c.subject = principal.Subject().ID
+	// The tenant of the caller is provisioned, so the tenant check of the generated service lets its requests through
+	// (ST-SUP-RC27-OC11); the checks of this file prove other contracts, so the fixture adds it to the tenant list as
+	// the administrator, not through Provision.
+	if _, err := s.admin.Exec(`INSERT INTO stego_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING`, tenantID); err != nil {
+		t.Fatalf("provision the tenant %s of the check: %v", tenantID, err)
+	}
 	return c
 }
 

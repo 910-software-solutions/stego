@@ -84,6 +84,35 @@ func NewResource(t tenant.Tenant, resourceType, key string) (Resource, error) {
 	return resource, nil
 }
 
+// ErrQualifiedService is the error of a service-level resource whose ID is a tenant-qualified resource ID
+// (ST-SUP-RP06-LC22): the resource of the tenant provisioning is of the whole service, never of one tenant.
+var ErrQualifiedService = errors.New("authz: the service-level resource has a tenant-qualified ID")
+
+// ServiceResource returns the service-level resource <resource type>:<service name> of the tenant provisioning,
+// such as service:todo-svc, on which Provision and Retire are decided (ST-SUP-RC27-OC09). It is the one resource
+// that an evaluation names with an ID that is not tenant-qualified (ST-SUP-RP06-LC22): no handle, relay, fill or
+// generated code can write a tuple on it, because the handle and the relay refuse each tuple whose resource ID is
+// not tenant-qualified, so only an operator who writes to the provider directly grants the provision and retire
+// permissions on it. It refuses an ID that holds a /, so it never has the shape of a tenant-qualified ID.
+func ServiceResource(resourceType, service string) (Resource, error) {
+	resource := Resource{Type: resourceType, ID: service}
+	if err := resource.service(); err != nil {
+		return Resource{}, err
+	}
+	return resource, nil
+}
+
+// service checks a service-level resource: a valid resource whose ID holds no /, so it is not tenant-qualified.
+func (r Resource) service() error {
+	if err := r.valid(); err != nil {
+		return err
+	}
+	if strings.Contains(r.ID, "/") {
+		return ErrQualifiedService
+	}
+	return nil
+}
+
 // qualify is the tenant-qualified form of the tenant ID and the key.
 func qualify(tenantID, key string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(tenantID)) + "/" + base64.RawURLEncoding.EncodeToString([]byte(key))
@@ -568,6 +597,20 @@ func (p *Port) evaluate(ctx context.Context, request EvaluationRequest, floor To
 		return EvaluationResult{}, err
 	}
 	if err := request.Resource.qualified(); err != nil {
+		return EvaluationResult{}, err
+	}
+	request.Consistency = request.Consistency.raise(floor)
+	return p.provider.Evaluate(ctx, request)
+}
+
+// evaluateService decides one request on the service-level resource of the tenant provisioning, whose ID is not
+// tenant-qualified (ServiceResource, ST-SUP-RP06-LC22), at least as fresh as its consistency and the floor. Only the
+// tenant decision of a handle calls it.
+func (p *Port) evaluateService(ctx context.Context, request EvaluationRequest, floor Token) (EvaluationResult, error) {
+	if err := checkRequest(request.Subject, request.Action, request.Consistency); err != nil {
+		return EvaluationResult{}, err
+	}
+	if err := request.Resource.service(); err != nil {
 		return EvaluationResult{}, err
 	}
 	request.Consistency = request.Consistency.raise(floor)

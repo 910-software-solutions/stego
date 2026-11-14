@@ -100,6 +100,16 @@ type Config struct {
 	// sync trigger of each copies the new column into the old one (ST-SUP-RC01-OC23, decision on finding F3,
 	// orchestrator under the owner's delegation, 2026-11-13).
 	SchemaSteps []string
+	// Tenants, when it is not nil, tells whether a tenant is an active tenant of the tenant list, such as the tenant
+	// gate of a service that declares its provisioning. RunConsumer refuses a message of a tenant that it does not
+	// hold as active with a permanent refusal before the fill, so the outbox parks it (ST-SUP-RC27-OC12). Nil checks
+	// no tenant: a service with no provisioning may have an empty list.
+	Tenants TenantList
+}
+
+// TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
+type TenantList interface {
+	Active(ctx context.Context, t tenant.Tenant) (bool, error)
 }
 
 // Runtime is the command runtime of one service.
@@ -112,6 +122,8 @@ type Runtime struct {
 	// FromRequest refuses (ST-SUP-RP10-LC32).
 	slots           *slotSeal
 	outcomeFailures atomic.Int64
+	// unlistedOutcomes counts the provisioning outcomes of callers whose tenant is not active, which write no row.
+	unlistedOutcomes atomic.Int64
 	// recorder and beforeCommit are set only by the tests of the package: the statement recorder, and a step just
 	// before COMMIT.
 	recorder     func(query string, args []any)

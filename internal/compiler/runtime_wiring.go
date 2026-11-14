@@ -16,6 +16,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/spicedbauthz"
+	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
 )
@@ -67,6 +68,9 @@ type runtimeWiringData struct {
 	CAFile, SubjectClaim string
 	Algorithms           []string
 	Grants               []string
+	// Provisioning is true for a service that declares its tenant provisioning, whose two routes the service serves
+	// itself (ST-SUP-RC27-OC09).
+	Provisioning bool
 }
 
 // runtimeWiring gives the runtime wiring package of a service on the runtime data path and its wiring of main.go
@@ -122,6 +126,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		return nil, ComponentWiring{}, err
 	}
 	data.Grants = runtimeGrants(in.Wirings)
+	data.Provisioning = svc.Tenancy.Provisioning != nil
 	source, err := renderRuntimeWiring(data)
 	if err != nil {
 		return nil, ComponentWiring{}, err
@@ -139,8 +144,9 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		// The readiness of the modes, outside the request wrappers (ST-SUP-RP09-LC05).
 		DiscoveryRoutes:       []string{`topMux.Handle("GET /readyz/modes", service.Readiness())`},
 		MiddlewareConstructor: new(int),
-		MiddlewareWrapExpr:    "%s.Middleware(%s)",
-		MigrationJob:          &gen.MigrationJobSpec{Namespace: RuntimeWiringNamespace, Function: "Migrate", Stage: "MigrationStage"},
+		// The tenant check reads the pattern that the main router, mux, matches (ST-SUP-RC27-OC11).
+		MiddlewareWrapExpr: "%s.Middleware(mux, %s)",
+		MigrationJob:       &gen.MigrationJobSpec{Namespace: RuntimeWiringNamespace, Function: "Migrate", Stage: "MigrationStage"},
 		GoModRequires: map[string]string{
 			"google.golang.org/grpc": "v1.83.2",
 		},
@@ -160,7 +166,19 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		if !ok {
 			return nil, ComponentWiring{}, fmt.Errorf("the route %q has no method and path", route)
 		}
+		// The paths under /stego/ are the service's own, such as the provisioning routes (ST-SUP-RC27-OC09).
+		if err := tenancy.CheckOwnRoute(route); err != nil {
+			return nil, ComponentWiring{}, err
+		}
 		wiring.Routes = append(wiring.Routes, fmt.Sprintf("mux.Handle(%q, service.Routes())", method+" "+base+target))
+	}
+	if data.Provisioning {
+		// Provision and Retire: main.go forwards their patterns, the routes of their entries of the
+		// operation-to-permission table, to Routes, which registers their handlers from those entries.
+		provisionRoute, retireRoute := tenancy.ProvisioningRoutes(svc.BasePath)
+		for _, route := range []string{provisionRoute, retireRoute} {
+			wiring.Routes = append(wiring.Routes, fmt.Sprintf("mux.Handle(%q, service.Routes())", route))
+		}
 	}
 	if data.API != "" || data.Commands != "" {
 		// The revocation status route of the writes: main.go forwards its pattern, the route of its entry of the

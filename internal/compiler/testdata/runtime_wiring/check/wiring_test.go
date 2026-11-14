@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,8 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
@@ -77,6 +80,11 @@ type service struct {
 	key    *authntest.Key
 	base   string
 	log    *bytes.Buffer
+
+	// checks records each decision that the service asks of SpiceDB, and operator is the operator who may provision
+	// and retire tenants on the service-level resource of its own tenant (ST-SUP-RC27-OC09).
+	checks   *spiceRecorder
+	operator caller
 
 	weakMigration, weakStart, foreignMigration, legacyMigration, secondMigration, nextRelease, noKafka runResult
 	broker                                                                                             *kafkatest.Broker
@@ -268,8 +276,12 @@ func start(t *testing.T) *service {
 	must(t, err)
 	t.Cleanup(func() { conn.Close() })
 	s.spice = conn
-	spice := []string{"STEGO_SPICEDB_ENDPOINT=" + endpoint, "STEGO_SPICEDB_KEY_FILE=" + writeFile(t, "spicedb.key", []byte(spiceKey)),
-		"STEGO_SPICEDB_INSECURE_LOOPBACK=1"}
+	keyFile := writeFile(t, "spicedb.key", []byte(spiceKey))
+	spice := []string{"STEGO_SPICEDB_ENDPOINT=" + endpoint, "STEGO_SPICEDB_KEY_FILE=" + keyFile, "STEGO_SPICEDB_INSECURE_LOOPBACK=1"}
+	// The service reaches SpiceDB through the recording proxy, so a check can count its decisions, as the fake
+	// provider of ST-DECL-TD05 records them.
+	s.checks = startRecorder(t, endpoint)
+	serviceSpice := []string{"STEGO_SPICEDB_ENDPOINT=" + s.checks.addr, "STEGO_SPICEDB_KEY_FILE=" + keyFile, "STEGO_SPICEDB_INSECURE_LOOPBACK=1"}
 	migration := func(mode string, target *url.URL) []string {
 		return append(append([]string{}, spice...), "STEGO_MIGRATION_DATABASE_URL="+withTLS(target, migratorRole, mode, ca))
 	}
@@ -301,6 +313,10 @@ func start(t *testing.T) *service {
 	s.secondMigration = run(binary, migration("verify-full", u), "migrate")
 
 	s.key = authntest.NewKey(t, "k1")
+	// The operator op-1 of the tenant ops holds provision and retire on service:wiring-shop, which is of no tenant; the
+	// tenant ops is never provisioned.
+	s.operator = s.as("op-"+uuid.NewString()[:8], "ops-"+uuid.NewString()[:8])
+	s.grantOperator(s.operator)
 	cursor := make([]byte, 32)
 	_, _ = rand.Read(cursor)
 	keys := writeFile(t, "keys.json", authntest.Document(s.key.JWK()))
@@ -312,7 +328,7 @@ func start(t *testing.T) *service {
 	kafka := []string{kafkaoutbox.BrokersSetting + "=" + s.broker.Plain.Addr(), kafkaoutbox.InsecureLoopbackSetting + "=1",
 		kafkaoutbox.TopicSetting + "=" + changeTopic}
 	serviceEnv := func(mode string) []string {
-		return append(append(append([]string{}, spice...), kafka...),
+		return append(append(append([]string{}, serviceSpice...), kafka...),
 			"PORT="+port, "DATABASE_URL="+withTLS(u, stegoruntime.RuntimeRole, mode, ca), "STEGO_AUTHN_KEYS_FILE="+keys,
 			"STEGO_WORKER_DATABASE_URL="+withTLS(u, stegoruntime.WorkerRole, mode, ca),
 			"STEGO_RELAY_DATABASE_URL="+withTLS(u, stegoruntime.RelayRole, mode, ca),
@@ -422,6 +438,166 @@ func (s *service) own(c caller, id string) {
 		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "order", ObjectId: resourceID}, Relation: "owner",
 			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}}}}})
 	must(s.t, err)
+}
+
+// serviceName is the name of the service, the ID of its service-level resource (ST-SUP-RC27-OC09).
+const serviceName = "wiring-shop"
+
+// grantOperator writes the relation operator of c on the service-level resource service:wiring-shop in SpiceDB, whose
+// ID is not tenant-qualified (ST-SUP-RP06-LC22), as the operator of the platform does.
+func (s *service) grantOperator(c caller) { s.grantOn(c, serviceName) }
+
+// grantTenantOperator writes the relation operator of c on service:<c's tenant>/wiring-shop, the tenant-qualified
+// form in c's own tenant, which no provisioning decides on.
+func (s *service) grantTenantOperator(c caller) {
+	resourceID, err := authz.ResourceID(c.tenant, serviceName)
+	must(s.t, err)
+	s.grantOn(c, resourceID)
+}
+
+// grantOn writes the relation operator of c on the resource of type service and ID resourceID in SpiceDB.
+func (s *service) grantOn(c caller, resourceID string) {
+	_, err := v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "service", ObjectId: resourceID}, Relation: "operator",
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}}}}})
+	must(s.t, err)
+}
+
+// provision calls Provision for the tenant id as c, with the idempotency key given.
+func (s *service) provision(c *caller, id, key string) reply {
+	s.t.Helper()
+	body, err := json.Marshal(map[string]string{"tenant_id": id})
+	must(s.t, err)
+	return s.send(c, http.MethodPost, "/stego/tenants", key, string(body))
+}
+
+// retire calls Retire for the tenant id as c, with the idempotency key given.
+func (s *service) retire(c *caller, id, key string) reply {
+	s.t.Helper()
+	return s.send(c, http.MethodPost, "/stego/tenants/"+url.PathEscape(id)+"/retire", key, "")
+}
+
+// provisioned provisions the tenant id as the operator and fails the check when it is not provisioned.
+func (s *service) provisioned(t *testing.T, id string) {
+	t.Helper()
+	if got := s.provision(&s.operator, id, "k-"+uuid.NewString()); got.status != http.StatusCreated {
+		t.Fatalf("the provision of %s as the operator answered %d %s, want 201", id, got.status, got.body)
+	}
+}
+
+// listed gives the tenant row of id: whether the tenant list holds it and whether it has a retire time.
+func (s *service) listed(t *testing.T, id string) (held, retired bool) {
+	t.Helper()
+	var retiredAt sql.NullTime
+	err := s.admin.QueryRow(`SELECT retired_at FROM stego_tenants WHERE tenant_id = $1`, id).Scan(&retiredAt)
+	if err == sql.ErrNoRows {
+		return false, false
+	}
+	must(t, err)
+	return true, retiredAt.Valid
+}
+
+// spiceRecorder is a gRPC proxy in front of the local SpiceDB server. It forwards each call as it is, and records
+// each decision of CheckPermission, so a check can tell which decisions a request made.
+type spiceRecorder struct {
+	addr   string
+	mu     sync.Mutex
+	checks []*v1.CheckPermissionRequest
+}
+
+// rawCodec passes the bytes of each message through the proxy as they are.
+type rawCodec struct{}
+
+func (rawCodec) Marshal(v any) ([]byte, error) { return *(v.(*[]byte)), nil }
+func (rawCodec) Unmarshal(data []byte, v any) error {
+	*(v.(*[]byte)) = append([]byte(nil), data...)
+	return nil
+}
+func (rawCodec) Name() string { return "proto" }
+
+const checkPermissionMethod = "/authzed.api.v1.PermissionsService/CheckPermission"
+
+// startRecorder starts the proxy to the SpiceDB server at target, and stops it when the test ends.
+func startRecorder(t *testing.T, target string) *spiceRecorder {
+	backend, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	must(t, err)
+	t.Cleanup(func() { backend.Close() })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	must(t, err)
+	r := &spiceRecorder{addr: listener.Addr().String()}
+	server := grpc.NewServer(grpc.ForceServerCodec(rawCodec{}), grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		method, _ := grpc.MethodFromServerStream(stream)
+		incoming, _ := metadata.FromIncomingContext(stream.Context())
+		ctx := metadata.NewOutgoingContext(stream.Context(), metadata.MD{"authorization": incoming.Get("authorization")})
+		client, err := backend.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, method, grpc.ForceCodec(rawCodec{}))
+		if err != nil {
+			return err
+		}
+		go func() {
+			for {
+				var message []byte
+				if err := stream.RecvMsg(&message); err != nil {
+					_ = client.CloseSend()
+					return
+				}
+				if method == checkPermissionMethod {
+					request := &v1.CheckPermissionRequest{}
+					if proto.Unmarshal(message, request) == nil {
+						r.mu.Lock()
+						r.checks = append(r.checks, request)
+						r.mu.Unlock()
+					}
+				}
+				if err := client.SendMsg(&message); err != nil {
+					return
+				}
+			}
+		}()
+		for first := true; ; first = false {
+			var message []byte
+			if err := client.RecvMsg(&message); err != nil {
+				stream.SetTrailer(client.Trailer())
+				if err == io.EOF {
+					return nil
+				}
+				return err
+			}
+			if first {
+				if header, err := client.Header(); err == nil {
+					_ = stream.SendHeader(header)
+				}
+			}
+			if err := stream.SendMsg(&message); err != nil {
+				return err
+			}
+		}
+	}))
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	return r
+}
+
+// decisions counts the decisions of permission on the resource of type resourceType and ID resourceID, or of any ID
+// when resourceID is empty.
+func (r *spiceRecorder) decisions(resourceType, resourceID, permission string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, c := range r.checks {
+		if c.GetResource().GetObjectType() == resourceType && c.GetPermission() == permission &&
+			(resourceID == "" || c.GetResource().GetObjectId() == resourceID) {
+			n++
+		}
+	}
+	return n
+}
+
+// total counts every decision.
+func (r *spiceRecorder) total() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.checks)
 }
 
 // reply is one answer of the service.
@@ -560,8 +736,270 @@ func TestWiring(t *testing.T) {
 		}
 	})
 
+	// The checks of the tenant provisioning (ST-SUP-RC27-OC09 to OC11, ST-DECL-UC10). The first two run while the
+	// tenant list holds no active tenant.
+	short := func() string { return uuid.NewString()[:8] }
+	refusedTenant := func(t *testing.T, got reply, what string) {
+		t.Helper()
+		if got.status != http.StatusForbidden || got.member(t, "code") != "tenant.not_provisioned" {
+			t.Errorf("%s answered %d %s, want 403 with the code tenant.not_provisioned", what, got.status, got.body)
+		}
+	}
+
+	t.Run("ST-SUP-RC27-OC11-T02 The provisioning routes pass the tenant check on an empty service", func(t *testing.T) {
+		s.t = t
+		if n := count(t, s.admin, `SELECT count(*) FROM stego_tenants`); n != 0 {
+			t.Fatalf("the tenant list holds %d tenants before the first provision, want none", n)
+		}
+		id, resource := "org-a-"+short(), serviceName
+		provisions, retires := s.checks.decisions("service", resource, "provision"), s.checks.decisions("service", resource, "retire")
+		if got := s.provision(&s.operator, id, "k-"+uuid.NewString()); got.status != http.StatusCreated || got.member(t, "tenant_id") != id {
+			t.Fatalf("the provision of %s by the operator of a tenant that is not provisioned answered %d %s, want 201", id, got.status, got.body)
+		}
+		if n := s.checks.decisions("service", resource, "provision"); n != provisions+1 {
+			t.Errorf("the provision made %d decisions of provision on service:%s, want one", n-provisions, serviceName)
+		}
+		if got := s.retire(&s.operator, id, "k-"+uuid.NewString()); got.status != http.StatusOK {
+			t.Fatalf("the retire of %s answered %d %s, want 200", id, got.status, got.body)
+		}
+		if n := s.checks.decisions("service", resource, "retire"); n != retires+1 {
+			t.Errorf("the retire made %d decisions of retire on service:%s, want one", n-retires, serviceName)
+		}
+		refusedTenant(t, s.send(&s.operator, http.MethodGet, "/orders", "", ""), "a list of orders by the operator, whose tenant is not provisioned,")
+	})
+
+	t.Run("ST-DECL-UC10-R04-T02 An operator provisions the first tenant of an empty service", func(t *testing.T) {
+		s.t = t
+		if n := count(t, s.admin, `SELECT count(*) FROM stego_tenants WHERE retired_at IS NULL`); n != 0 {
+			t.Fatalf("the tenant list holds %d active tenants before the first provision, want none", n)
+		}
+		u1 := s.as("u1-"+short(), "org-a-"+short())
+		resource := serviceName
+		before := s.checks.decisions("service", resource, "provision")
+		s.provisioned(t, u1.tenant.ID())
+		if n := s.checks.decisions("service", resource, "provision"); n != before+1 {
+			t.Errorf("the provision made %d decisions on service:%s, want one", n-before, serviceName)
+		}
+		if got := s.send(&u1, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"first","qty":1}`); got.status != http.StatusCreated {
+			t.Errorf("the create of u1 in the new tenant answered %d %s, want 201", got.status, got.body)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM orders WHERE tenant_id = $1 AND sku = 'first'`, u1.tenant.ID()); n != 1 {
+			t.Errorf("the new tenant holds %d orders of the create, want one", n)
+		}
+	})
+
+	decided := func(t *testing.T) {
+		u2 := s.as("u2-"+short(), "org-b-"+short())
+		id, resource := "org-c-"+short(), serviceName
+		before := s.checks.decisions("service", resource, "provision")
+		key := "k-" + uuid.NewString()
+		first := s.provision(&s.operator, id, key)
+		if first.status != http.StatusCreated || first.member(t, "tenant_id") != id {
+			t.Fatalf("the provision of %s by the operator answered %d %s, want 201", id, first.status, first.body)
+		}
+		if n := s.checks.decisions("service", resource, "provision"); n != before+1 {
+			t.Errorf("the provision made %d decisions of provision for the operator, want one", n-before)
+		}
+		if held, retired := s.listed(t, id); !held || retired {
+			t.Errorf("the tenant list holds %s: %t, retired %t; want it active", id, held, retired)
+		}
+		// The same request with its key gets the stored answer again; a request with no key is refused.
+		if again := s.provision(&s.operator, id, key); again.status != http.StatusCreated || !bytes.Equal(again.body, first.body) {
+			t.Errorf("the provision sent again with its key answered %d %s, want the first answer %s", again.status, again.body, first.body)
+		}
+		if got := s.provision(&s.operator, "org-k-"+short(), ""); got.status != http.StatusBadRequest {
+			t.Errorf("a provision with no Idempotency-Key answered %d %s, want 400", got.status, got.body)
+		}
+		// A tenant ID that the rule of a tenant ID refuses reaches no decision.
+		total := s.checks.total()
+		if got := s.provision(&s.operator, "org\x01bad", "k-"+uuid.NewString()); got.status != http.StatusBadRequest || got.member(t, "field") != "tenant_id" {
+			t.Errorf("a provision of a tenant ID with a control character answered %d %s, want 400 that names tenant_id", got.status, got.body)
+		}
+		if s.checks.total() != total {
+			t.Error("the provision of a malformed tenant ID was decided")
+		}
+		other := "org-d-" + short()
+		denied := s.checks.decisions("service", serviceName, "provision")
+		if got := s.provision(&u2, other, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the provision by u2, whom the provider denies, answered %d %s, want 404", got.status, got.body)
+		}
+		if n := s.checks.decisions("service", serviceName, "provision"); n != denied+1 {
+			t.Errorf("the provision by u2 made %d decisions, want one", n-denied)
+		}
+		if held, _ := s.listed(t, other); held {
+			t.Errorf("the denied provision added %s to the tenant list", other)
+		}
+		total = s.checks.total()
+		if got := s.send(nil, http.MethodPost, "/stego/tenants", "k-"+uuid.NewString(), `{"tenant_id":"`+other+`"}`); got.status != http.StatusUnauthorized {
+			t.Errorf("a provision with no token answered %d %s, want 401", got.status, got.body)
+		}
+		if s.checks.total() != total {
+			t.Error("the provision with no token was decided")
+		}
+		if got := s.retire(&u2, id, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the retire by u2 answered %d %s, want 404", got.status, got.body)
+		}
+		if held, retired := s.listed(t, id); !held || retired {
+			t.Errorf("the denied retire changed %s: held %t, retired %t", id, held, retired)
+		}
+	}
+	t.Run("ST-SUP-RC27-OC09-T01 A caller without the provision permission cannot provision a tenant", func(t *testing.T) {
+		s.t = t
+		decided(t)
+	})
+	t.Run("ST-DECL-UC10-R01-T01 A caller without the provision permission cannot provision a tenant", func(t *testing.T) {
+		s.t = t
+		decided(t)
+	})
+
+	t.Run("ST-SUP-RC27-OC09-T03 A grant on the service-level resource of one tenant provisions and retires no tenant", func(t *testing.T) {
+		s.t = t
+		// alice of the provisioned tenant org-a holds operator on service:<org-a>/wiring-shop, the resource of her own
+		// tenant, in SpiceDB; org-b is a tenant of another customer.
+		alice := s.as("alice-"+short(), "org-a-"+short())
+		s.provisioned(t, alice.tenant.ID())
+		victim := "org-b-" + short()
+		s.provisioned(t, victim)
+		s.grantTenantOperator(alice)
+		perTenant, err := authz.ResourceID(alice.tenant, serviceName)
+		must(t, err)
+		decided := s.checks.decisions("service", serviceName, "provision") + s.checks.decisions("service", serviceName, "retire")
+		if got := s.retire(&alice, victim, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the retire of %s by alice answered %d %s, want 404", victim, got.status, got.body)
+		}
+		if held, retired := s.listed(t, victim); !held || retired {
+			t.Errorf("the retire by alice changed %s: held %t, retired %t", victim, held, retired)
+		}
+		if got := s.retire(&alice, alice.tenant.ID(), "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the retire of her own tenant by alice answered %d %s, want 404", got.status, got.body)
+		}
+		squat := "org-future-" + short()
+		if got := s.provision(&alice, squat, "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Errorf("the provision of %s by alice answered %d %s, want 404", squat, got.status, got.body)
+		}
+		if held, _ := s.listed(t, squat); held {
+			t.Errorf("the provision by alice added %s to the tenant list", squat)
+		}
+		// Each of the three calls was decided once on service:wiring-shop, and none on the resource of her tenant.
+		if n := s.checks.decisions("service", serviceName, "provision") + s.checks.decisions("service", serviceName, "retire"); n != decided+3 {
+			t.Errorf("the calls of alice made %d decisions on service:%s, want three", n-decided, serviceName)
+		}
+		if n := s.checks.decisions("service", perTenant, "provision") + s.checks.decisions("service", perTenant, "retire"); n != 0 {
+			t.Errorf("%d decisions named the tenant-qualified service:<org-a>/%s", n, serviceName)
+		}
+	})
+
+	audited := func(t *testing.T) {
+		id := "org-c-" + short()
+		xmin := func(query string, args ...any) string {
+			t.Helper()
+			var x string
+			must(t, s.admin.QueryRow(query, args...).Scan(&x))
+			return x
+		}
+		const auditRow = `SELECT xmin::text FROM audit_event WHERE tenant_id = $1 AND action = $2 AND resource_type = 'tenant' AND resource_id = $1 AND outcome = 'ok'`
+		s.provisioned(t, id)
+		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'provision-tenant'`, id); n != 1 {
+			t.Fatalf("the provision of %s left %d audit rows, want one", id, n)
+		}
+		if row, list := xmin(auditRow, id, "provision-tenant"), xmin(`SELECT xmin::text FROM stego_tenants WHERE tenant_id = $1`, id); row != list {
+			t.Errorf("the audit row of the provision is of the transaction %s and the tenant row of %s, want one transaction", row, list)
+		}
+		if got := s.retire(&s.operator, id, "k-"+uuid.NewString()); got.status != http.StatusOK {
+			t.Fatalf("the retire of %s answered %d %s, want 200", id, got.status, got.body)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'retire-tenant'`, id); n != 1 {
+			t.Fatalf("the retire of %s left %d audit rows, want one", id, n)
+		}
+		if row, list := xmin(auditRow, id, "retire-tenant"), xmin(`SELECT xmin::text FROM stego_tenants WHERE tenant_id = $1`, id); row != list {
+			t.Errorf("the audit row of the retire is of the transaction %s and the tenant row of %s, want one transaction", row, list)
+		}
+		// A provision whose hook fails: the audit write of its transaction is refused for org-d. The caller is an
+		// operator of a provisioned tenant, so its outcome row goes into the chain of its tenant; a caller of a tenant
+		// that the list does not hold, such as the operator of ops, writes no row (ST-SUP-RC27-OC10-T02).
+		listedOp := s.as("op-"+short(), "org-ops-"+short())
+		s.provisioned(t, listedOp.tenant.ID())
+		s.grantOperator(listedOp)
+		failing := "org-d-" + short()
+		execAll(t, s.admin, `CREATE FUNCTION public.wiring_fail_hook() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN
+	IF NEW.tenant_id = '`+failing+`' THEN RAISE EXCEPTION 'the hook of the check fails'; END IF; RETURN NEW; END $f$`,
+			`CREATE TRIGGER wiring_fail_hook BEFORE INSERT ON public.audit_event FOR EACH ROW EXECUTE FUNCTION public.wiring_fail_hook()`)
+		got := s.provision(&listedOp, failing, "k-"+uuid.NewString())
+		execAll(t, s.admin, `DROP TRIGGER wiring_fail_hook ON public.audit_event`, `DROP FUNCTION public.wiring_fail_hook()`)
+		if got.status != http.StatusInternalServerError {
+			t.Errorf("the provision whose hook fails answered %d %s, want 500", got.status, got.body)
+		}
+		if held, _ := s.listed(t, failing); held {
+			t.Errorf("the failed provision left %s in the tenant list", failing)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'provision-tenant' AND resource_id = $2 AND outcome = 'failed'`, listedOp.tenant.ID(), failing); n != 1 {
+			t.Errorf("the failed provision left %d outcome rows of failure, want one", n)
+		}
+	}
+	t.Run("ST-SUP-RC27-OC10-T01 A provision and a retire each leave one audit row in their transaction", func(t *testing.T) {
+		s.t = t
+		audited(t)
+	})
+	t.Run("ST-DECL-UC10-R02-T01 A provision and a retire each leave one audit row in their transaction", func(t *testing.T) {
+		s.t = t
+		audited(t)
+	})
+
+	gated := func(t *testing.T) {
+		unknown := s.as("u-"+short(), "org-z-"+short())
+		total := s.checks.total()
+		refusedTenant(t, s.send(&unknown, http.MethodPost, "/orders/"+uuid.NewString()+"/notes", "k-"+uuid.NewString(), `{"text":"z"}`),
+			"the command of a tenant that is not provisioned")
+		if s.checks.total() != total {
+			t.Error("the command of a tenant that is not provisioned was decided")
+		}
+		if n := count(t, s.admin, `SELECT (SELECT count(*) FROM notes WHERE tenant_id = $1) + (SELECT count(*) FROM audit_event WHERE tenant_id = $1)`, unknown.tenant.ID()); n != 0 {
+			t.Errorf("the command of a tenant that is not provisioned left %d notes and audit rows", n)
+		}
+		u1 := s.as("u1-"+short(), "org-a-"+short())
+		s.provisioned(t, u1.tenant.ID())
+		created := s.send(&u1, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"kept","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create of u1 answered %d %s, want 201", created.status, created.body)
+		}
+		order := created.member(t, "id")
+		s.own(u1, order)
+		if got := s.retire(&s.operator, u1.tenant.ID(), "k-"+uuid.NewString()); got.status != http.StatusOK {
+			t.Fatalf("the retire of the tenant of u1 answered %d %s, want 200", got.status, got.body)
+		}
+		total = s.checks.total()
+		refusedTenant(t, s.send(&u1, http.MethodPost, "/orders/"+order+"/notes", "k-"+uuid.NewString(), `{"text":"retired"}`),
+			"the command of a retired tenant")
+		if s.checks.total() != total {
+			t.Error("the command of a retired tenant was decided")
+		}
+		// Retire keeps the rows of the tenant (ST-SUP-RC27-OC12).
+		if n := count(t, s.admin, `SELECT count(*) FROM orders WHERE tenant_id = $1 AND id = $2`, u1.tenant.ID(), order); n != 1 {
+			t.Errorf("the retired tenant holds %d of its orders, want its one order kept", n)
+		}
+		// The command of u2 of a provisioned tenant runs as usual: the create of an order, which stages no tuple, so
+		// the revocation floor that the later checks start from stays as it was.
+		u2 := s.as("u2-"+short(), "org-b-"+short())
+		s.provisioned(t, u2.tenant.ID())
+		if got := s.send(&u2, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"b1","qty":1}`); got.status != http.StatusCreated {
+			t.Errorf("the command of u2 of a provisioned tenant answered %d %s, want 201", got.status, got.body)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM orders WHERE tenant_id = $1 AND sku = 'b1'`, u2.tenant.ID()); n != 1 {
+			t.Errorf("the tenant of u2 holds %d orders of its command, want one", n)
+		}
+	}
+	t.Run("ST-SUP-RC27-OC11-T01 A request for an unknown or retired tenant is refused before any handler", func(t *testing.T) {
+		s.t = t
+		gated(t)
+	})
+	t.Run("ST-DECL-UC10-R04-T01 A request for an unknown or retired tenant is refused before any handler", func(t *testing.T) {
+		s.t = t
+		gated(t)
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T07 A collection create and read reach the generated handlers through the generated main.go", func(t *testing.T) {
 		s.t = t
+		s.provisioned(t, owner.tenant.ID())
 		if got := s.send(nil, http.MethodGet, "/orders", "", ""); got.status != http.StatusUnauthorized {
 			t.Errorf("a list with no token answered %d %s, want 401", got.status, got.body)
 		}
@@ -644,7 +1082,6 @@ func TestWiring(t *testing.T) {
 		})
 		// The anchor job of the controller mode anchors the chain of the tenant under the controller lease, at the
 		// declared anchor period of 2 s: the boundary is stored and the anchor is in the outbox for the audit sink.
-		execAll(t, s.admin, "INSERT INTO stego_tenants (tenant_id) VALUES ('"+owner.tenant.ID()+"') ON CONFLICT DO NOTHING")
 		eventually("the anchor job anchors the chain of the tenant", func() bool {
 			return count(t, s.admin, `SELECT count(*) FROM audit_anchor_boundaries WHERE tenant_id = $1`, owner.tenant.ID()) == 1 &&
 				count(t, s.admin, `SELECT (SELECT count(*) FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'audit-sink')
