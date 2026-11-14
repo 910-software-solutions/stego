@@ -57,7 +57,8 @@ func crudContext() gen.Context {
 			{Name: "contact", Type: types.FieldTypeJsonb, Sensitivity: "pii", Optional: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "customer", Permissions: permissions(types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 		{Name: "Todo", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "done", Type: types.FieldTypeBool, Optional: true},
-			{Name: "meta", Type: types.FieldTypeJsonb, Optional: true}, {Name: "due_at", Type: types.FieldTypeTimestamp, Optional: true}, {Name: "seen_at", Type: types.FieldTypeTimestamp}},
+			{Name: "meta", Type: types.FieldTypeJsonb, Optional: true}, {Name: "due_at", Type: types.FieldTypeTimestamp, Optional: true}, {Name: "seen_at", Type: types.FieldTypeTimestamp},
+			{Name: "note", Type: types.FieldTypeString, Optional: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "todo", Permissions: permissions(types.OpPatch, types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 	}
 	// Folder and Book give a scoped collection: each book is of one folder, and its create is decided on edit of the
@@ -93,7 +94,7 @@ func crudContext() gen.Context {
 		Collections: []types.Collection{
 			{Name: "orders", Entity: "Order", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpPatch, types.OpDelete}, Patchable: []string{"qty"}},
 			{Name: "customers", Entity: "Customer", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpDelete}},
-			{Name: "todos", Entity: "Todo", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpPatch, types.OpUpdate, types.OpDelete}, Patchable: []string{"title", "done", "meta"}},
+			{Name: "todos", Entity: "Todo", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpPatch, types.OpUpdate, types.OpDelete}, Patchable: []string{"title", "done", "meta", "note"}},
 			{Name: "folders", Entity: "Folder", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpDelete}},
 			{Name: "folder-books", Entity: "Book", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpPatch, types.OpDelete}, Patchable: []string{"title"}},
 			{Name: "folder-settings", Entity: "Setting", Scope: map[string]string{"folder_id": "Folder"}, Implicit: map[string]string{"source": "setting"}, Operations: []types.Operation{types.OpList, types.OpUpsert}, UpsertKey: []string{"name"}},
@@ -601,6 +602,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC37-T08 A jsonb field is written, read and patched as JSON on the runtime data path",
 	"ST-SUP-RC20-OC37-T11 A denied create answers 404 with no empty ID, and a bad Idempotency-Key names its fault",
 	"ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC",
+	"ST-SUP-RC20-OC37-T12 An optional field that is NULL is absent from the answer, and an empty or false value is answered",
 	"ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response",
 	"ST-SUP-RC28-OC01-T07 A pii jsonb field is the redaction marker in the before, the after and the patch",
 	"ST-SUP-RC20-OC24-T05 A scoped collection on the runtime data path checks each row against the parent of the path",

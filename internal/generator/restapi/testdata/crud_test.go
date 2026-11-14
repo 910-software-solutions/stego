@@ -1306,6 +1306,59 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC37-T12 An optional field that is NULL is absent from the answer, and an empty or false value is answered", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		absent := func(what string, r reply, fields ...string) {
+			t.Helper()
+			if r.status != http.StatusOK && r.status != http.StatusCreated {
+				t.Fatalf("%s answered %d %s, want 200 or 201", what, r.status, r.body)
+			}
+			for _, field := range fields {
+				if value, ok := r.object(t)[field]; ok {
+					t.Errorf("%s answered %s %v in %s, want no %s member", what, field, value, r.body, field)
+				}
+			}
+		}
+		// A create that sends no note and no done stores NULL, and each answer leaves both out (ST-SUP-Q128 (B)).
+		created := e.send(a, http.MethodPost, "/api/v1/todos", "k-"+uuid.NewString(), `{"title":"unset"}`)
+		absent("the create", created, "note", "done")
+		id := created.member(t, "id")
+		e.own(a, "todo", id)
+		absent("the read", e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", ""), "note", "done")
+		if n := e.count(`SELECT count(*) FROM todos WHERE id = $1::uuid AND note IS NULL AND done IS NULL`, id); n != 1 {
+			t.Errorf("%d rows with a NULL note and done, want 1", n)
+		}
+		// A create that sends "" and false answers them: the client tells an unset field from its zero value.
+		set := e.send(a, http.MethodPost, "/api/v1/todos", "k-"+uuid.NewString(), `{"title":"zero","note":"","done":false}`)
+		if set.status != http.StatusCreated {
+			t.Fatalf("the create with an empty note answered %d %s, want 201", set.status, set.body)
+		}
+		setID := set.member(t, "id")
+		e.own(a, "todo", setID)
+		for what, r := range map[string]reply{"the create": set, "the read": e.send(a, http.MethodGet, "/api/v1/todos/"+setID, "", "")} {
+			note, hasNote := r.object(t)["note"]
+			done, hasDone := r.object(t)["done"]
+			if !hasNote || note != "" || !hasDone || done != false {
+				t.Errorf("%s of a Todo with an empty note and done false answered %s, want note \"\" and done false", what, r.body)
+			}
+		}
+		// A PUT that leaves out the note stores NULL and answers no note; a patch then sets it.
+		absent("the update", e.send(a, http.MethodPut, "/api/v1/todos/"+setID, "", `{"title":"put"}`), "note", "done")
+		if n := e.count(`SELECT count(*) FROM todos WHERE id = $1::uuid AND note IS NULL`, setID); n != 1 {
+			t.Errorf("%d rows with a NULL note after the PUT, want 1", n)
+		}
+		patched := e.send(a, http.MethodPatch, "/api/v1/todos/"+setID, "k-"+uuid.NewString(), `{"note":"n"}`)
+		if note, _ := patched.object(t)["note"].(string); note != "n" {
+			t.Errorf("the patch answered %s, want note n", patched.body)
+		}
+		// The list leaves out the NULL fields of the first row and answers the note of the second.
+		list := e.send(a, http.MethodGet, "/api/v1/todos", "", "")
+		if list.status != http.StatusOK || strings.Count(string(list.body), `"note"`) != 1 || strings.Contains(string(list.body), `"done"`) {
+			t.Errorf("the list answered %d %s, want one note member and no done member", list.status, list.body)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
