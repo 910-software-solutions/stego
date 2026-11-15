@@ -107,7 +107,7 @@ func TestPipelineApply(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-DLV-UC06-R01-T04 A pull request run of the CI file has no write permission, and a push on a feature branch signs nothing", func(t *testing.T) {
+	t.Run("ST-DLV-UC06-R02-T01 A pull request run of the CI file has no write permission, and a push on a feature branch signs nothing", func(t *testing.T) {
 		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n")
 		mustRunInProject(t, dir, env, "apply")
 		workflow := read(t, dir, delivery.GitHubActionsFile)
