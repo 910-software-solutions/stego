@@ -29,6 +29,11 @@ func New() commands.AddNoteFill {
 		if err != nil {
 			return nil, err
 		}
+		// The worker apply-note-replies consumes the message of the order (ST-SUP-RC35-OC06). The effect is for the
+		// order, on which the command decides its permission edit; the note has no permission edit.
+		if err := h.Effects().Stage(ctx, "note-replies", "note-added", order, []byte(`{"text":"added"}`)); err != nil {
+			return nil, err
+		}
 		return &commands.AddNoteResponse{NoteId: note.ID()}, nil
 	}
 }

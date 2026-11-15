@@ -1157,6 +1157,20 @@ func TestWiring(t *testing.T) {
 		if n := count(t, s.admin, `SELECT count(*) FROM leases WHERE name = 'stego.worker.sync-partner-orders'`); n != 1 {
 			t.Errorf("%d rows of the lease of sync-partner-orders, want one", n)
 		}
+		// The consumer apply-note-replies is the one handler of note-replies, and runs as the worker role, which holds
+		// SELECT, INSERT and UPDATE on idempotency_keys (ST-SUP-Q136): each message that add-note staged is done.
+		for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+			if count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'note-replies' AND state = 'done'`) >= 1 &&
+				count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'note-replies' AND state <> 'done'`) == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				var states string
+				must(t, s.admin.QueryRow(`SELECT coalesce(string_agg(state || ' ' || attempts || ' ' || failure_code || ' ' || origin, '; '), '')
+ FROM stego_outbox.messages WHERE destination = 'note-replies'`).Scan(&states))
+				t.Fatalf("after 60 s the consumer did not run each message of note-replies: %s\n%s", states, s.log)
+			}
+		}
 	})
 	t.Run("ST-SUP-RC27-OC12-T05 A retired tenant gets no worker run from the next tick, and its rows stay", func(t *testing.T) {
 		s.t = t

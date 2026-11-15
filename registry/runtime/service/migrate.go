@@ -194,7 +194,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 			return failed(StepSettings, fmt.Errorf("the worker lease %q is not a worker name in lower kebab case", name))
 		}
 	}
-	keys, err := idempotency.Migration(m.PurgeRole, m.RuntimeRole)
+	keys, err := idempotency.Migration(m.PurgeRole, m.RuntimeRole, consumerRoles(m.Parts, m.WorkerRole)...)
 	if err != nil {
 		return failed(StepSettings, err)
 	}

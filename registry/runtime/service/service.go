@@ -350,13 +350,22 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the authorization runtime: %w", err)
 	}
 	// The migration job makes the key table in idempotency.KeySchema, where Wrap and Purge name it.
-	keys, err := idempotency.Manifest(idempotency.KeySchema, p.PurgeRole, runtimeRole)
+	keys, err := idempotency.Manifest(idempotency.KeySchema, p.PurgeRole, runtimeRole, consumerRoles(&p, p.WorkerRole)...)
 	if err != nil {
 		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the key table: %w", err)
 	}
 	want := manifest.Join(p.Schema, record, queue, revocations, keys)
 	want.Owner = p.OwnerRole
 	return want, nil
+}
+
+// consumerRoles are the roles that run a consuming worker's fill: the worker role, whose outbox worker runs it in
+// the transaction of the claimed message, when the service has a consuming worker (ST-SUP-RC35-OC06, ST-SUP-Q136).
+func consumerRoles(p *Parts, workerRole string) []string {
+	if p == nil || p.Workers.Consumers == nil {
+		return nil
+	}
+	return []string{workerRole}
 }
 
 // reach checks that SpiceDB answers its health check within ReachTimeout, so a service whose SpiceDB cannot be

@@ -67,6 +67,8 @@ commands:
     resource_member: orderId
     route: POST /orders/{orderId}/notes
     fill: add-note
+    effects:
+      - {destination: note-replies, name: note-added}
 queries:
   - name: get-order-summary
     reads: [Order]
@@ -76,8 +78,8 @@ queries:
     route: GET /orders/{orderId}/summary
     fill: get-order-summary
 # The worker sync-partner-orders adds one to the qty of the seeded order in each tenant of the list whose ID starts
-# with org-w at each tick (ST-SUP-RC35). A worker that consumes a destination is not in this service: its run is a
-# transaction of the worker role, which holds no grant on the entity tables or on idempotency_keys (ST-SUP-Q134).
+# with org-w at each tick, and apply-note-replies consumes the messages that add-note stages, in the transaction of
+# the outbox worker as the worker role (ST-SUP-RC35, ST-SUP-Q136).
 workers:
   - name: sync-partner-orders
     trigger: every 10s
@@ -85,3 +87,9 @@ workers:
     resource_type: order
     permission: sync
     fill: sync-partner-orders
+  - name: apply-note-replies
+    trigger: consumes note-replies
+    writes: [Order]
+    resource_type: order
+    permission: edit
+    fill: apply-note-replies

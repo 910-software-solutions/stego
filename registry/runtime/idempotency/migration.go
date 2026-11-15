@@ -3,6 +3,7 @@ package idempotency
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/jsell-rh/stego/registry/runtime/internal/catalogfirst"
@@ -43,16 +44,25 @@ const MaxPurgeBatch = 10000
 // back in the same transaction, also when purgeRole held it before; so the role that runs it must be able to grant CREATE on the schema, as its owner
 // is. It makes purgeRole when it is missing, which needs CREATEROLE. Migration refuses a role name that is not a
 // lower-case SQL name of at most 63 characters, and one name for both roles.
-func Migration(purgeRole, runtimeRole string) (string, error) {
-	for _, role := range []string{purgeRole, runtimeRole} {
+//
+// consumerRoles are the roles that run a consuming worker's fill in their own transaction, such as the worker role of
+// a service with a consuming worker (ST-SUP-RC35-OC06): each gets SELECT, INSERT and UPDATE on the table and nothing
+// more, under the same tenant policy as every role (decision on ST-SUP-Q136, orchestrator under the owner's
+// delegation, 2026-11-15).
+func Migration(purgeRole, runtimeRole string, consumerRoles ...string) (string, error) {
+	for _, role := range append([]string{purgeRole, runtimeRole}, consumerRoles...) {
 		if !rolePattern.MatchString(role) {
 			return "", fmt.Errorf("idempotency: %q is not a role name the migration accepts", role)
 		}
 	}
-	if purgeRole == runtimeRole {
-		return "", fmt.Errorf("idempotency: the purge role must be a role apart from the runtime role")
+	if purgeRole == runtimeRole || slices.Contains(consumerRoles, purgeRole) {
+		return "", fmt.Errorf("idempotency: the purge role must be a role apart from the runtime role and the consumer roles")
 	}
-	return strings.NewReplacer("{{purge}}", purgeRole, "{{runtime}}", runtimeRole).Replace(migration), nil
+	text := strings.NewReplacer("{{purge}}", purgeRole, "{{runtime}}", runtimeRole).Replace(migration)
+	for _, role := range consumerRoles {
+		text += "\nGRANT SELECT, INSERT, UPDATE ON idempotency_keys TO " + role + ";\n"
+	}
+	return text, nil
 }
 
 // Manifest gives what the code of the key table needs of the database that Migration makes in schema for the same
@@ -62,12 +72,13 @@ func Migration(purgeRole, runtimeRole string) (string, error) {
 // which the grants of the runtime role give it; and the purge function, SECURITY DEFINER with its fixed search path,
 // owned by purgeRole, with EXECUTE for runtimeRole only; purgeRole owns no other object, and CREATE on schema goes
 // to no role but its owner and the owner of the manifest. schema is a lower-case SQL name that needs no quotes, such as
-// public. Manifest refuses the roles that Migration refuses.
-func Manifest(schema, purgeRole, runtimeRole string) (manifest.Manifest, error) {
+// public. The consumer roles get SELECT, INSERT and UPDATE, as Migration grants them. Manifest refuses the roles
+// that Migration refuses.
+func Manifest(schema, purgeRole, runtimeRole string, consumerRoles ...string) (manifest.Manifest, error) {
 	if !rolePattern.MatchString(schema) {
 		return manifest.Manifest{}, fmt.Errorf("idempotency: %q is not a schema name the manifest accepts", schema)
 	}
-	text, err := Migration(purgeRole, runtimeRole)
+	text, err := Migration(purgeRole, runtimeRole, consumerRoles...)
 	if err != nil {
 		return manifest.Manifest{}, err
 	}
@@ -97,6 +108,9 @@ func Manifest(schema, purgeRole, runtimeRole string) (manifest.Manifest, error) 
 	grants := []manifest.Grant{
 		{Role: purgeRole, Privileges: []string{"SELECT", "DELETE"}},
 		{Role: runtimeRole, Privileges: []string{"SELECT", "INSERT", "UPDATE"}},
+	}
+	for _, role := range consumerRoles {
+		grants = append(grants, manifest.Grant{Role: role, Privileges: []string{"SELECT", "INSERT", "UPDATE"}})
 	}
 	return manifest.Manifest{
 		Tables: []manifest.Table{{Schema: schema, Name: "idempotency_keys", Columns: columns, Constraints: constraints,
