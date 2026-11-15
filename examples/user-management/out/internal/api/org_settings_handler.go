@@ -21,7 +21,7 @@ import (
 )
 
 // orgSettingsListQuery is the query of a list of org-settings, on the list permission of OrgSetting (ST-SUP-RP11-LC07).
-var orgSettingsListQuery = mustQuery(query.NewListQuery("list", data.EntityOrgSettingView(), "view"))
+var orgSettingsListQuery = mustQuery(query.NewListQuery("list", data.EntityOrgSettingView(), "view", data.EntityOrganizationView()))
 
 // orgSettingsUpsertCommand is the generated command of a upsert of org-settings (ST-SUP-RC20-OC37).
 var orgSettingsUpsertCommand = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{
@@ -115,6 +115,7 @@ func (h *OrgSettingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	limit := 100
 	if text := r.URL.Query().Get("pageSize"); text != "" {
 		n, err := strconv.Atoi(text)
@@ -156,6 +157,19 @@ func (h *OrgSettingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, orgSettingsListQuery, h.rt.boundQuery(r.Context(), b, orgSettingsListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (orgSettingsPage, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := query.Repo(qh, data.EntityOrganizationView())
+			if err != nil {
+				return orgSettingsPage{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return orgSettingsPage{}, err
+			}
+			_ = ancestor
+		}
 		repo, err := query.Repo(qh, data.EntityOrgSettingView())
 		if err != nil {
 			return orgSettingsPage{}, err
@@ -172,6 +186,10 @@ func (h *OrgSettingsHandler) List(w http.ResponseWriter, r *http.Request) {
 	})
 	if isBadCursor(err) {
 		handleError(w, r, BadRequest("the cursor is not valid"))
+		return
+	}
+	if errors.Is(err, query.ErrNotFound) {
+		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
 	if errors.Is(err, query.ErrBadRequest) {
@@ -212,6 +230,7 @@ func (h *OrgSettingsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 	if err != nil {
 		handleError(w, r, BadRequest("the body cannot be read"))
@@ -230,6 +249,19 @@ func (h *OrgSettingsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, "")
 	var persisted OrgSetting
 	result, err := command.Run(r.Context(), h.rt.Commands, orgSettingsUpsertCommand, req, decodeOrgSettings, func(ctx context.Context, orgsetting OrgSetting, ch *command.Handle[struct{}]) (idempotency.Response, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := data.OrganizationRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			_ = ancestor
+		}
 		var serverBlank OrgSetting
 		orgsetting.Generation = serverBlank.Generation
 		orgsetting.OrgID = scope
