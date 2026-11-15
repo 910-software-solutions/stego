@@ -183,7 +183,7 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 	body := fmt.Sprintf("ALTER TABLE %s %s;\nCOMMENT ON COLUMN %s.%s IS %s;\n", table, strings.Join(parts, ", "), table, column, sqlString(comment))
 	steps := []schemaStep{{Name: step, Change: change, Phase: "expand", Body: body}}
 	if relaxCheck {
-		validates := []validation{{table: table, name: relax}}
+		validates := []validation{{table: table, schema: "public", tableName: name, name: relax}}
 		steps = append(steps, schemaStep{Name: ValidateMigrationName(step), Change: change, Phase: "expand", Body: validateBody(validates), Validate: true, Validations: validates})
 		finish := ""
 		if !dropFirst {

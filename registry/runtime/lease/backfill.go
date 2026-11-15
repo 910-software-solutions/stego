@@ -941,7 +941,8 @@ func (b *Backfill) watch(ctx context.Context, held *Held) {
 // Copy is the batch of a rename at expand (ST-SUP-RC01-OC36): in the table public.Table it copies the old column
 // From into the new column To for each row after the checkpoint key whose new value is unset and whose old value is
 // set, in the order of the key. The key is (TenantColumn, id) for an owned table, a composite key of a text and a
-// uuid, and id for a shared one, a uuid key. Tenants is the qualified tenant list, such as public.stego_tenants.
+// uuid, and id for a shared one, a uuid key. TenantSchema is the schema of the tenant list stego_tenants, such as
+// public, with no quotes: the batch names the list with its schema (ST-STD-TXN-R19).
 //
 // The batch runs as the owner role, which row-level security binds to the tenant of the transaction, so a batch of
 // an owned table reads the rows of one tenant: it sets app.tenant to the tenant of the checkpoint key and reads the
@@ -960,8 +961,8 @@ func (b *Backfill) watch(ctx context.Context, held *Held) {
 // whose old value fails it keeps its new value unset and counts as failed (ST-SUP-RC01-OC36). FillDigest is the
 // digest of the change's fill value, or empty, which starts a repair pass when it changes (ST-SUP-RP09-LC11).
 type Copy struct {
-	Change, Table, TenantColumn, From, To, Tenants, Check string
-	Convert, Guard, FillDigest                            string
+	Change, Table, TenantColumn, From, To, TenantSchema, Check string
+	Convert, Guard, FillDigest                                 string
 }
 
 // Validate gives the statement that validates the completeness CHECK of c.
@@ -987,7 +988,7 @@ func (c Copy) Step() (Step, error) {
 			return nil, errors.New("backfill: a copy needs its change, table, columns and completeness CHECK")
 		}
 	}
-	if c.TenantColumn != "" && c.Tenants == "" {
+	if c.TenantColumn != "" && c.TenantSchema == "" {
 		return nil, errors.New("backfill: the copy of an owned table needs the tenant list")
 	}
 	table := "public." + quoteName(c.Table)
@@ -1009,7 +1010,7 @@ moved AS (UPDATE ONLY ` + table + ` t SET ` + to + ` = ` + value + ` FROM batch 
 		`t.id = b.id AND t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL` + moves + ` RETURNING 1),
 failed AS (SELECT 1 FROM ONLY ` + table + ` t JOIN batch b ON t.id = b.id WHERE t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL AND ` + fails + `)
 SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM moved), (SELECT pg_catalog.count(*) FROM failed), (SELECT id::text FROM batch ORDER BY id DESC LIMIT 1)`
-	next := `SELECT pg_catalog.min(tenant_id) FROM ` + c.Tenants + ` WHERE $1::text IS NULL OR tenant_id > $1::text`
+	next := `SELECT pg_catalog.min(tenant_id) FROM ` + quoteName(c.TenantSchema) + `.stego_tenants WHERE $1::text IS NULL OR tenant_id > $1::text`
 	return func(ctx context.Context, tx *sql.Tx, after *Key, limit int) (Batch, error) {
 		var tenant, id sql.NullString
 		if after != nil {

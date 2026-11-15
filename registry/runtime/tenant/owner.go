@@ -277,8 +277,9 @@ ORDER BY r.rolname`)
 }
 
 // ValidateForeignKey validates the foreign key key of table, which the table holds NOT VALID, in the transaction tx
-// of the migration job, as the role that owns table (ST-SUP-RP04-LC10). table is the name of the table as SQL text,
-// qualified with its schema, and key the name of the key with no quotes.
+// of the migration job, as the role that owns table (ST-SUP-RP04-LC10). schema is the schema of the table, table
+// its name and key the name of the key, each with no quotes: ValidateForeignKey quotes each, so each statement names
+// the table with its schema (ST-STD-TXN-R19).
 //
 // PostgreSQL 17 validates a foreign key with one query as the current role when that role can read the columns of
 // the key in both tables and owns each table that has row-level security. Under FORCE ROW LEVEL SECURITY that query
@@ -293,14 +294,15 @@ ORDER BY r.rolname`)
 // and does not validate the key over rows that it does not see (security review of PR #320, L2 and info,
 // orchestrator under the owner's delegation, 2026-11-14), and sets row_security back to its value before, so the
 // later statements of tx run as before. A row that the key refuses fails the validation with SQLSTATE 23503.
-func ValidateForeignKey(ctx context.Context, tx *sql.Tx, table, key string) error {
-	return validateForeignKey(ctx, tx, table, key, true)
+func ValidateForeignKey(ctx context.Context, tx *sql.Tx, schema, table, key string) error {
+	return validateForeignKey(ctx, tx, schema, table, key, true)
 }
 
 // validateForeignKey is ValidateForeignKey; with revoke false it keeps the SELECT of the current role, as a
 // PostgreSQL would run the validation that takes its one query in spite of the revoke, which the test of the second
 // guard needs.
-func validateForeignKey(ctx context.Context, tx *sql.Tx, table, key string, revoke bool) error {
+func validateForeignKey(ctx context.Context, tx *sql.Tx, schema, name, key string, revoke bool) error {
+	table := pgx.Identifier{schema}.Sanitize() + "." + pgx.Identifier{name}.Sanitize()
 	var setting string
 	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('row_security')").Scan(&setting); err != nil {
 		return err
