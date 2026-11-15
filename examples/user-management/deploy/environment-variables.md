@@ -138,6 +138,7 @@ shows its name only: give its value through a secret of the platform.
 |---|---|---|---|---|---|---|---|
 | `DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
 | `DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database/url` | The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two. |
+| `HOME` | path | no | none | no | - | - | Read by the pgx driver for its default pass, service and certificate files. The database opener gives each of those settings itself, so no file under HOME changes the connection. |
 | `PGAPPNAME` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
 | `PGCHANNELBINDING` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
 | `PGCONNECT_TIMEOUT` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
