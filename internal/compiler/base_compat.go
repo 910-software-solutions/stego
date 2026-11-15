@@ -129,6 +129,7 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	check.Faults = append(check.Faults, validateBaseSchema(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, ledgerVersionFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, syncRuntimeFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
 	return check, nil
 }
 
@@ -216,6 +217,7 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	faults = append(faults, baseChangeFaults(base, head)...)
 	faults = append(faults, onePhaseFaults(base, head)...)
 	faults = append(faults, uniqueAddFaults(base, head)...)
+	faults = append(faults, relaxFaults(base, head)...)
 	generated, ok := generatedBaselines(applied, base, head)
 	if !ok {
 		// Generation does not carry out each kind of the declarations yet, so the indexes are compared as the
@@ -648,7 +650,9 @@ func (e *storedEntity) field(name string) int {
 // shapeAt gives the stored shape of a declaration with each schema change undone whose expand step is at the
 // position from of the schema history or after it, last step first: from 0 gives the baseline, with every step
 // undone. An add removes its field or entity, a rename gives the field its From name, a retype gives it its From
-// type, a require removes its field, a drop brings back its field or entity, and a unique removes its invariant.
+// type, a require removes its field, a drop brings back its field or entity, a unique removes its invariant, and a
+// relax gives its field what it was before the change (types.SchemaChange.RelaxedFrom). A relax that does not relax
+// its field is not undone, so the shape before it differs from the base, and relaxFaults names the reason.
 func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 	var entities []*storedEntity
 	for _, entity := range service.Entities {
@@ -705,6 +709,12 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 			}
 		case "unique":
 			entity.Uniques = slices.DeleteFunc(entity.Uniques, func(unique storedUnique) bool { return unique.Name == change.Field })
+		case "relax":
+			if field >= 0 && !entity.Fields[field].Loose {
+				if before, reason := change.RelaxedFrom(fieldOf(entity.Fields[field])); reason == "" {
+					entity.Fields[field].Shape = shapeOf(before)
+				}
+			}
 		}
 	}
 	return entities
@@ -848,9 +858,16 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 		} else if reflect.DeepEqual(field.Shape, now.Shape) {
 			continue
 		}
+		if definition, ok := relaxDefinition(field.Shape, now.Shape); ok && !field.Loose && !now.Loose {
+			// A relax changes the field in place (decision on finding F12, owner, 2026-11-13).
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head relaxes %s.%s from %s in place, which no schema step declares; declare a relax with the definition %s", head.Name, field.Name, definitionOf(field.Shape), definition),
+				Declare: []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-relax", Kind: "relax", Entity: head.Name, Field: field.Name, Needs: "the definition " + definition, Phase: "expand"}}})
+			continue
+		}
 		if field.Shape.Type == now.Shape.Type {
-			// A retype changes the type, so no schema change moves the constraints of a field that keeps its type.
-			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head changes the stored shape of %s.%s from %s and keeps its type, which no schema step declares; no schema change changes the constraints of a field of the base, so keep them, or add a new field with the new constraints and drop this one", head.Name, field.Name, definitionOf(field.Shape))})
+			// Only a relax changes the constraints of a field that keeps its type: a longer max_length, more enum
+			// values, a new default or an optional field. A narrowing is no schema change.
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head changes the stored shape of %s.%s from %s and keeps its type, which no schema step declares; a relax only makes a max_length longer, adds enum values, gives a default to a field with none or makes a field optional, so keep the other constraints, or add a new field with the new constraints and drop this one", head.Name, field.Name, definitionOf(field.Shape))})
 			continue
 		}
 		faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head changes the stored shape of %s.%s from %s, which no schema step declares; a new column takes the new shape, and the release that runs now keeps the old one", head.Name, field.Name, definitionOf(field.Shape)),
@@ -919,4 +936,131 @@ func definitionConstraints(shape fieldShape) string {
 		return ""
 	}
 	return ", " + strings.Join(parts, ", ")
+}
+
+// RelaxRuntimeVersion is the first runtime library version whose schema check accepts the relaxed forms of a column
+// that the relax step marks (ST-SUP-RP15-LC04; decision on finding F12, owner, 2026-11-13).
+const RelaxRuntimeVersion = "v0.108.0"
+
+// relaxRuntimeFaults refuses a head with a new relax step when the record at the base pins a runtime library before
+// RelaxRuntimeVersion, or none: the schema check of that release refuses the relaxed column, so its migration job
+// refuses the database after the step. The fault names the runtime version to deploy first (ST-GEN-INV36; decision
+// on finding F11, orchestrator under the owner's delegation, 2026-11-13). A base with no postgres-adapter has no
+// schema check of its tables.
+func relaxRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
+	if _, pinned := applied.Components["postgres-adapter"]; !pinned {
+		return nil
+	}
+	version := ""
+	if applied.Archetype != nil && applied.Archetype.Runtime != nil {
+		version = applied.Archetype.Runtime.Version
+	}
+	if semver.IsValid(version) && semver.Compare(version, RelaxRuntimeVersion) >= 0 {
+		return nil
+	}
+	kinds := map[string]string{}
+	for _, change := range head.SchemaChanges {
+		kinds[change.ID] = change.Kind
+	}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		if kinds[step.Change] != "relax" {
+			continue
+		}
+		pinned := version
+		if pinned == "" {
+			pinned = "no runtime library"
+		}
+		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
+			"the base runs %s, whose schema check refuses the column that the relax %s changes in place, so its migration job refuses the database after the step; deploy a release with the runtime library %s or later, with no new schema step, first", pinned, step.Change, RelaxRuntimeVersion)}}
+	}
+	return nil
+}
+
+// relaxFaults refuses each new relax of a field of the base that does not relax it in place
+// (types.SchemaChange.RelaxedFrom): a shorter max_length, an enum value taken away, a field made required, or a
+// retype that PostgreSQL cannot make with no rewrite. The baselines then differ too, as shapeAt does not undo it.
+func relaxFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	var faults []BaseFault
+	for _, change := range head.SchemaChanges {
+		if change.Kind != "relax" || slices.ContainsFunc(base.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == change.ID }) {
+			continue
+		}
+		entity, declared := findStoredEntity(head, change.Entity)
+		if !declared {
+			continue
+		}
+		for _, field := range entity.Fields {
+			if field.Name != change.Field {
+				continue
+			}
+			after, reason := types.FieldAfterRelax(head.SchemaChanges, head.SchemaHistory, change, field)
+			if reason == "" {
+				_, reason = change.RelaxedFrom(after)
+			}
+			if reason != "" {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the relax %s of %s.%s does not relax the field in place: %s", change.ID, change.Entity, change.Field, reason)})
+			}
+		}
+	}
+	return faults
+}
+
+// fieldOf gives a stored field back as a declared field, for types.SchemaChange.RelaxedFrom.
+func fieldOf(field storedField) types.Field {
+	s := field.Shape
+	return types.Field{Name: field.Name, Type: s.Type, MinLength: s.MinLength, MaxLength: s.MaxLength, Min: s.Min, Max: s.Max,
+		Unique: s.Unique, UniqueComposite: s.UniqueComposite, UniqueWhenLive: s.UniqueWhenLive, Optional: s.Optional,
+		Default: s.Default, Values: s.Values, To: s.To}
+}
+
+// relaxDefinition gives the Definition of the relax that takes a field from the shape before to the shape after,
+// and false when no relax does: the change is not only a longer max_length, more enum values, a default where there
+// was none, an optional field, or an enum made a string with no max_length and no min_length.
+func relaxDefinition(before, after fieldShape) (string, bool) {
+	var items []string
+	rest, restAfter := before, after
+	switch {
+	case before.Type == types.FieldTypeEnum && after.Type == types.FieldTypeString:
+		if after.MaxLength != nil || after.MinLength != nil {
+			return "", false
+		}
+		items = append(items, "type enum", "values "+strings.Join(before.Values, " "))
+		rest.Type, rest.Values = after.Type, nil
+	case before.Type != after.Type:
+		return "", false
+	}
+	if !reflect.DeepEqual(before.MaxLength, after.MaxLength) && rest.Type == before.Type {
+		if before.MaxLength == nil || after.MaxLength == nil || *after.MaxLength <= *before.MaxLength {
+			return "", false
+		}
+		items = append(items, fmt.Sprintf("max_length %d", *before.MaxLength))
+		rest.MaxLength = after.MaxLength
+	}
+	if !slices.Equal(before.Values, after.Values) && rest.Type == before.Type {
+		for _, v := range before.Values {
+			if !slices.Contains(after.Values, v) {
+				return "", false
+			}
+		}
+		items = append(items, "values "+strings.Join(before.Values, " "))
+		rest.Values = after.Values
+	}
+	if before.Optional != after.Optional {
+		if !after.Optional {
+			return "", false
+		}
+		items = append(items, "required")
+		rest.Optional = true
+	}
+	if !reflect.DeepEqual(before.Default, after.Default) {
+		if before.Default != nil {
+			return "", false
+		}
+		items = append(items, "no default")
+		rest.Default = after.Default
+	}
+	if len(items) == 0 || !reflect.DeepEqual(rest, restAfter) {
+		return "", false
+	}
+	return strings.Join(items, ", "), true
 }
