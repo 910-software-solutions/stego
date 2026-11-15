@@ -387,6 +387,7 @@ func Migrate(ctx context.Context) error {
 		Ledger:      func(ctx context.Context, conn *sql.Conn) error { return svcstorage.Migrate(ctx, conn) },
 		Outbox:      queueText, Audit: auditText, Authorization: authzText,
 		WriteSchema: func(ctx context.Context, conn grpc.ClientConnInterface) error { return svcauthz.WriteSchema(ctx, conn) },
+		Definitions: svcauthz.Definitions,
 		Grants:      grants, TenantSchema: tenantSchema,
 		Service: Service, Backfills: backfills, Parts: &declaredParts,
 	})

@@ -196,6 +196,10 @@ func (h *OrgSettingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, BadRequest("the list request is not valid"))
 		return
 	}
+	if errors.Is(err, query.ErrUndecided) {
+		answerUndecided(w, r)
+		return
+	}
 	if err != nil {
 		handleError(w, r, InternalError("internal error"))
 		return

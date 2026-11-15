@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.116.4",
+    "archetype_version": "3.123.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -445,7 +445,7 @@
     {
       "id": "component:rest-api",
       "name": "rest-api",
-      "version": "4.4.1",
+      "version": "4.5.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Decodes the request of a collection operation and calls its command or query.",
@@ -544,7 +544,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "architecture"
         }
       }
@@ -578,7 +578,7 @@
     {
       "id": "component:spicedb-authz",
       "name": "spicedb-authz",
-      "version": "1.2.0",
+      "version": "1.3.0",
       "stage": "ga",
       "layer": "authentication",
       "flow_part": "Asks SpiceDB whether the caller holds the permission of the operation.",
@@ -606,7 +606,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "architecture"
         }
       }
@@ -711,7 +711,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "requires"
         }
       }
@@ -727,7 +727,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "provides"
         }
       }
@@ -743,7 +743,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "provides"
         }
       }
@@ -841,7 +841,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "provides"
         }
       }
@@ -857,7 +857,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "provides"
         }
       }
@@ -891,7 +891,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "requires"
         }
       }
@@ -939,7 +939,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.116.4",
+          "version": "3.123.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -962,7 +962,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.116.4",
+          "version": "3.123.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1553,7 +1553,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -1580,7 +1580,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -1697,7 +1697,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -1724,7 +1724,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -1841,7 +1841,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -1868,7 +1868,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -1971,7 +1971,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2040,7 +2040,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -2056,7 +2056,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2173,7 +2173,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2250,7 +2250,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -2277,7 +2277,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2447,7 +2447,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -2474,7 +2474,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2591,7 +2591,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -2618,7 +2618,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2732,7 +2732,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2801,7 +2801,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -2828,7 +2828,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -2953,7 +2953,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -2980,7 +2980,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -3094,7 +3094,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -3163,7 +3163,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -3179,7 +3179,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -3285,7 +3285,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -3362,7 +3362,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -3389,7 +3389,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -3548,7 +3548,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -3575,7 +3575,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -3692,7 +3692,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "architecture"
             }
           }
@@ -3719,7 +3719,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "architecture"
             }
           }
@@ -3814,7 +3814,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "needs"
         }
       }
@@ -3830,7 +3830,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "needs"
         }
       }
@@ -3870,7 +3870,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "environment"
         }
       }
@@ -3889,7 +3889,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "environment"
         }
       }
@@ -3907,7 +3907,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.4.1",
+          "version": "4.5.0",
           "field": "environment"
         }
       }
@@ -6270,7 +6270,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -6289,7 +6289,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -6307,7 +6307,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -7648,7 +7648,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7663,7 +7663,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7678,7 +7678,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7693,7 +7693,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7708,7 +7708,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7723,7 +7723,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7738,7 +7738,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7753,7 +7753,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7768,7 +7768,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7783,7 +7783,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -7798,7 +7798,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.4.1",
+              "version": "4.5.0",
               "field": "environment"
             }
           }
@@ -13963,7 +13963,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -13978,7 +13978,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -13993,7 +13993,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14008,7 +14008,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14023,7 +14023,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14038,7 +14038,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14053,7 +14053,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14068,7 +14068,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14083,7 +14083,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14098,7 +14098,7 @@
             "registry": {
               "part": "component",
               "name": "spicedb-authz",
-              "version": "1.2.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
