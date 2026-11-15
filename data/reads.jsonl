@@ -48,6 +48,7 @@
 {"source_id":"ST-EXT-SP02","target_id":"ST-EXT-A1"}
 {"source_id":"ST-GEN-RM01","target_id":"ST-GEN-A1"}
 {"source_id":"ST-GEN-RM02","target_id":"ST-GEN-A1"}
+{"source_id":"ST-GEN-RM04","target_id":"ST-GEN-A1"}
 {"source_id":"ST-GEN-SP01","target_id":"ST-GEN-A1"}
 {"source_id":"ST-SUP-RM01","target_id":"ST-SUP-A1"}
 {"source_id":"ST-SUP-RM01","target_id":"ST-SUP-A2"}
