@@ -36,6 +36,42 @@ func TestFieldFingerprint(t *testing.T) {
 	})
 }
 
+func TestFieldFingerprintFolding(t *testing.T) {
+	t.Run("ST-SUP-RP07-LC10-T02 A member that the decoder matches to a declared field under case folding is in the fingerprint", func(t *testing.T) {
+		fields := []string{"title", "due_at", "sku"}
+		print := func(body string) string {
+			t.Helper()
+			f, err := FieldFingerprint("POST", "/tasks", []byte(body), fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return f
+		}
+		a := print(`{"title":"plan","due_at":"2026-12-01T10:00:00Z"}`)
+		for _, body := range []string{
+			`{"title":"plan","DUE_AT":"2026-12-02T10:00:00Z"}`,
+			`{"title":"plan","Due_At":"2026-12-02T10:00:00Z"}`,
+			`{"title":"plan"}`,
+		} {
+			if b := print(body); a == b {
+				t.Errorf("the body %s has the fingerprint of due_at 2026-12-01T10:00:00Z", body)
+			}
+		}
+		// The decoder reads DUE_AT as due_at, so the same value under another case is the same request.
+		if b := print(`{"TITLE":"plan","DUE_AT":"2026-12-01T10:00:00Z"}`); a != b {
+			t.Error("the same values under member names in another case have another fingerprint")
+		}
+		// Simple folding as bytes.EqualFold: U+017F folds to s and U+212A to k.
+		s := print(`{"sku":"A-1"}`)
+		if b := print(`{"ſku":"A-2"}`); s == b {
+			t.Error("a member ſku with another value has the fingerprint of sku A-1")
+		}
+		if b := print(`{"ſKu":"A-1"}`); s != b {
+			t.Error("a member ſKu with the value of sku has another fingerprint")
+		}
+	})
+}
+
 func TestFingerprintRepeatedKeys(t *testing.T) {
 	t.Run("ST-SUP-RP07-LC05-T04 A body whose keys repeat or are equal under case folding is refused", func(t *testing.T) {
 		for name, body := range map[string]string{

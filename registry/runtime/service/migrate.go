@@ -438,19 +438,20 @@ func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 	}
 	defer func() { _ = probes.Close(context.WithoutCancel(ctx)) }()
 	// Two sessions as the owner role: the lease renews on one while a batch holds a transaction on the other.
-	session := func() (*sql.Conn, error) {
+	session := func() (endedTxConn, error) {
 		conn, err := db.Conn(ctx)
 		if err != nil {
-			return nil, err
+			return endedTxConn{}, err
 		}
 		if _, err := conn.ExecContext(ctx, "SET ROLE "+quote(m.OwnerRole)+"; SET search_path = public, pg_temp"); err != nil {
 			_ = conn.Close()
-			return nil, err
+			return endedTxConn{}, err
 		}
-		return conn, nil
+		return endedTxConn{conn}, nil
 	}
-	// A session goes back to the pool as the login role, with its own search path.
-	release := func(conn *sql.Conn) {
+	// A session goes back to the pool as the login role, with its own search path. Each transaction of the session
+	// ended on this goroutine before (endedTxConn), so no Close of database/sql runs at the same time as the reset.
+	release := func(conn endedTxConn) {
 		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "RESET ROLE; RESET search_path")
 		_ = conn.Close()
 	}
@@ -528,6 +529,24 @@ func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 		}
 	}
 	return nil
+}
+
+// endedTxConn is a session of the backfill step whose transactions end only on the goroutine that runs them. A
+// transaction of database/sql whose context ends is rolled back on a goroutine of its own, and with the pgx driver,
+// which has no connection validator, that rollback closes the *sql.Conn. A Close at the same time as the next
+// statement on the Conn, such as the reset of the role when the session goes back to the pool, gives that statement
+// a nil driver connection, and it panics. So a transaction begins with a context that does not end: each statement
+// in it still has the context of the caller, which cancels the statement, and the caller ends the transaction with
+// its own Commit or Rollback before the session is used again. A transaction that holds the lease row stays fenced
+// until it ends, so a commit after the end of the context writes nothing that another holder could take over.
+type endedTxConn struct{ *sql.Conn }
+
+// BeginTx begins a transaction whose end only Commit or Rollback gives. A context that has ended begins none.
+func (c endedTxConn) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.Conn.BeginTx(context.WithoutCancel(ctx), opts)
 }
 
 // MinSessionPause is the shortest wait of the backfill step after a broken session, whatever the retry period of the
