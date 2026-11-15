@@ -129,7 +129,12 @@ field: a text converts to an int64 only under one of the patterns
 Checking refuses a conversion that the component does not declare for the
 two types, a conversion that is not total over the field before the change
 and has no `fill_value`, and an inverse conversion that is not total over
-the field after the change (ST-DECL-INV62, ST-DECL-INV63). Give the field
+the field after the change (ST-DECL-INV62, ST-DECL-INV63). Checking also
+refuses a retype where the CHECK of one column could refuse a converted
+value of the other: between two integer types the fields before and after
+the change have the same `min` and `max`, and between a number or a boolean
+and a text neither field has a `min`, a `max`, a `min_length`, a
+`max_length` or `values`. Give the field
 before the change, with its constraints, in `definition`, such as
 `string, pattern ^[0-9]{1,9}$`; a pattern is the last item, as it can hold
 a comma.
@@ -144,8 +149,11 @@ value. The migration job of the
 new release converts the rows there before the rollout, under the lease of
 the change, and the contract step waits for a backfill with no failed row.
 Only one rename or retype can be at expand on a table at one time. A retype
-of a field in a unique key, of a reference, of a string with a
-`max_length`, and of the counter `generation` is not built.
+of a field in a unique key or that is unique after it, of a reference, of a
+string with a `max_length`, and of the counter `generation` is not built,
+and neither is a require of a unique field, whose rows would all get the
+fill value. The contract step counts the rows with the old column set and
+the new one empty last, and waits while one is left.
 
 A require adds a required field with no default. Declare the value that
 each row there gets in `fill_value`:

@@ -74,6 +74,32 @@ func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions ma
 		case !conversionTotal(inverse, after):
 			fault("schema-change-total", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not total over the field %s.%s after the change, so a write of the release of the change could fail it; give the field a constraint under which it is total", change.InverseConversion, change.Entity, change.Field))
 		}
+		if reason := checksKept(before, after); reason != "" && okForward && okInverse {
+			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused", change.Entity, change.Field, reason))
+		}
 	}
 	return faults
+}
+
+// checksKept tells why a value that one side of a retype holds could break the CHECK of the column of the other
+// side after its conversion, or gives empty: each side's CHECK holds every value of the other (security review of
+// PR #335, M1, orchestrator under the owner's delegation, 2026-11-14). Between two integer types the bounds min and
+// max of the field before and after the change must be the same; between a number or a boolean and a text, neither
+// field may have a min, a max, a min_length, a max_length or values, which the conversion does not keep. A pattern
+// is not a CHECK of the column, so it is not compared.
+func checksKept(before, after types.Field) string {
+	integer := func(t types.FieldType) bool { return t == types.FieldTypeInt32 || t == types.FieldTypeInt64 }
+	same := func(a, b *float64) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
+	if integer(before.Type) && integer(after.Type) {
+		if !same(before.Min, after.Min) || !same(before.Max, after.Max) {
+			return "the bounds min and max of the field before and after the change are not the same"
+		}
+		return ""
+	}
+	for _, f := range []types.Field{before, after} {
+		if f.Min != nil || f.Max != nil || f.MinLength != nil || f.MaxLength != nil || len(f.Values) > 0 {
+			return "a field before or after the change has a min, a max, a min_length, a max_length or values, which the conversion between a number and a text does not keep"
+		}
+	}
+	return ""
 }

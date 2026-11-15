@@ -76,6 +76,49 @@ func TestSchemaConversions(t *testing.T) {
 			}
 		})
 	}
+	f := func(v float64) *float64 { return &v }
+	n := func(v int) *int { return &v }
+	bounded := func(before string, after types.Field) *types.ServiceDeclaration {
+		s := priorityRetype(after.Type, after.Pattern, "", "", before, nil)
+		s.Entities[0].Fields[1] = after
+		s.SchemaChanges[0].From = strings.SplitN(before, ",", 2)[0]
+		return s
+	}
+	for _, c := range []struct {
+		name, refused, conversion, inverse string
+		service                            *types.ServiceDeclaration
+	}{
+		{"an int64 of at most 1000000 to an int32 of at most 100, whose CHECK refuses a converted 500", "bounds min and max", "int64_to_integer", "integer_to_int64",
+			bounded("int64, min 0, max 1000000", types.Field{Name: "priority", Type: types.FieldTypeInt32, Min: f(0), Max: f(100)})},
+		{"an int32 of at most 100 to an int64 of at most 1000000, whose back value breaks the CHECK of the old column", "bounds min and max", "integer_to_int64", "int64_to_integer",
+			&types.ServiceDeclaration{Entities: []types.Entity{{Name: "Todo", Fields: []types.Field{{Name: "priority", Type: types.FieldTypeInt64, Min: f(-2147483648), Max: f(1000000)}}}},
+				SchemaChanges: []types.SchemaChange{{ID: "todo-priority-retype", Kind: "retype", Entity: "Todo", Field: "priority", From: "int32", Definition: "int32, min -2147483648, max 100", Conversion: "integer_to_int64", InverseConversion: "int64_to_integer"}},
+				SchemaHistory: []types.SchemaStep{{Change: "todo-priority-retype", Phase: "expand"}}}},
+		{"a text of at least 3 characters to an int64, whose back value 5 breaks the length of the old column", "min_length", "text_to_int64", "int64_to_text",
+			bounded("string, min_length 3, pattern ^[0-9]{1,9}$", types.Field{Name: "priority", Type: types.FieldTypeInt64})},
+		{"an int64 of at least 0 to a text, whose back value -5 breaks the CHECK of the old column", "a min, a max", "int64_to_text", "text_to_int64",
+			bounded("int64, min 0", types.Field{Name: "priority", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$"})},
+		{"a text to an int64 with a max, whose converted value breaks the CHECK of the new column", "a min, a max", "text_to_int64", "int64_to_text",
+			bounded("string, pattern ^[0-9]{1,9}$", types.Field{Name: "priority", Type: types.FieldTypeInt64, Max: f(10)})},
+		{"a text with a max_length after an int64", "max_length", "int64_to_text", "text_to_int64",
+			bounded("int64", types.Field{Name: "priority", Type: types.FieldTypeString, MaxLength: n(5), Pattern: "^-?[0-9]{1,18}$"})},
+		{"an int64 to an int32 with the same bounds", "", "int64_to_integer", "integer_to_int64",
+			bounded("int64, min -10, max 10", types.Field{Name: "priority", Type: types.FieldTypeInt32, Min: f(-10), Max: f(10)})},
+	} {
+		t.Run("ST-DECL-INV63-T "+c.name, func(t *testing.T) {
+			c.service.SchemaChanges[0].Conversion, c.service.SchemaChanges[0].InverseConversion = c.conversion, c.inverse
+			faults := ValidateSchemaConversions(c.service, conversions, true)
+			if c.refused == "" {
+				if len(faults) != 0 {
+					t.Errorf("checking refuses the retype: %v", faults)
+				}
+				return
+			}
+			if len(faults) != 1 || !strings.Contains(faults[0].Message, c.refused) || faults[0].Rule != "schema-change-total" {
+				t.Errorf("checking gives %v, want one fault of the rule schema-change-total that says %q", faults, c.refused)
+			}
+		})
+	}
 	for _, c := range []struct{ name, conversion, inverse, want string }{
 		{"a conversion that the database component does not declare", "text_to_money", "integer_to_text", "text_to_money is not one that the database component declares from string to int32"},
 		{"a conversion of other types", "text_to_int64", "integer_to_text", "text_to_int64 is not one that the database component declares from string to int32"},

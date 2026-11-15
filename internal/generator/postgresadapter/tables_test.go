@@ -439,6 +439,7 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC36-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC36-T02") })
 	t.Run("ST-SUP-RC01-OC37-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC37-T02") })
 	t.Run("ST-SUP-RC01-OC39-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T04") })
+	t.Run("ST-SUP-RC01-OC24-T09 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T09") })
 	t.Run("ST-GEN-UC12-R03-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R03-T03") })
 
 	t.Run("ST-SUP-RC01-OC22-T03 An add step takes a database with rows to the schema of a new database, and the release before still runs on it", func(t *testing.T) {

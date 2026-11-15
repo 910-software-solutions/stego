@@ -1551,6 +1551,38 @@ WHERE pronamespace = 'stego_schema'::regnamespace AND proname IN ('backfill_read
 		contracted(t, up)
 	})
 
+	t.Run("ST-SUP-RC01-OC24-T09 The contract check counts the rows with the old column set and the new one empty last, and refuses while one is left", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		// A row that the completeness CHECK let through with its new value empty: a superuser marks a CHECK of the
+		// exact definition validated over it, so that every other part of the check passes.
+		for _, statement := range []string{`ALTER TABLE public."boards" DROP CONSTRAINT "boards_heading_complete"`,
+			`UPDATE public."boards" SET "heading" = NULL WHERE "id" = (SELECT "id" FROM public."boards" ORDER BY "id" LIMIT 1)`,
+			`ALTER TABLE public."boards" ADD CONSTRAINT "boards_heading_complete" CHECK (("heading" IS NOT NULL) OR ("title" IS NULL)) NOT VALID`,
+			`UPDATE pg_catalog.pg_constraint SET convalidated = true WHERE conrelid = 'public.boards'::regclass AND conname = 'boards_heading_complete'`} {
+			tx, err := up.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		was := catalog(t, up)
+		if text := refusal(t, contract(t, upCfg)); !strings.Contains(text, "board-title-rename") || !strings.Contains(text, "new one empty: 1;") {
+			t.Errorf("the refusal with one row left past a validated CHECK says: %s", text)
+		}
+		if now := catalog(t, up); !slices.Equal(was, now) {
+			t.Errorf("the refused contract step changed the catalog or the ledger")
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC39-T03 A write of the release before after the drop of the sync trigger fails and loses no edit", func(t *testing.T) {
 		upCfg, up := contractBase(t)
 		finish(t, up)

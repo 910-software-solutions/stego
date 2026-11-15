@@ -384,6 +384,14 @@ func TestSchemaSteps(t *testing.T) {
 				ctx.SchemaChanges = append(ctx.SchemaChanges, types.SchemaChange{ID: "board-rank-drop", Kind: "drop", Entity: "Board", Field: "rank", Definition: "int32"})
 				ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "board-rank-drop", Phase: "expand"})
 			},
+			"unique after it": func(ctx *gen.Context) {
+				*ctx = boardRetype(ctx.OutputNamespace, ctx.PeerNamespaces[gen.TenancyComponent])
+				ctx.Entities[0].Fields[1].Unique = true
+			},
+			"is of a unique field": func(ctx *gen.Context) {
+				*ctx = boardRetype(ctx.OutputNamespace, ctx.PeerNamespaces[gen.TenancyComponent])
+				ctx.Entities[0].Fields[2].Unique = true
+			},
 			"one sync trigger on a table": func(ctx *gen.Context) {
 				*ctx = boardRetype(ctx.OutputNamespace, ctx.PeerNamespaces[gen.TenancyComponent])
 				ctx.Entities[1].Fields[1] = types.Field{Name: "level", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$"}

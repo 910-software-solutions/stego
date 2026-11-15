@@ -262,6 +262,13 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 				}
 			}
 		}
+		if change.Kind == "require" {
+			// Each row gets the fill value, so a unique index of the field could not be built on a table with two rows
+			// (security review of PR #335, L3, orchestrator under the owner's delegation, 2026-11-14).
+			if table, ok := findTable(after, tableName(change.Entity)); ok && slices.ContainsFunc(table.unique, func(columns []string) bool { return slices.Contains(columns, change.Field) }) {
+				return nil, fmt.Errorf("schema change %s: the require of %s.%s is of a unique field, whose rows would all get the fill value; it is not built", change.ID, change.Entity, change.Field)
+			}
+		}
 		var added *stepAddition
 		if change.Kind == "rename" || change.Kind == "retype" {
 			added, err = renameSQL(ctx, before, after, change)
@@ -600,6 +607,14 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	for _, columns := range old.unique {
 		if slices.Contains(columns, pair.k) && (len(columns) != 1 || change.Kind == "retype") {
 			return nil, fmt.Errorf("the %s of %s.%s is of a field in a unique key that its sync trigger cannot carry (ST-SUP-RP15-LC02); it is not built", change.Kind, change.Entity, change.Field)
+		}
+	}
+	// A retype that also makes its field unique has no unique change, and two old values can convert to one new value,
+	// so its unique index could not be built (security review of PR #335, L2, orchestrator under the owner's
+	// delegation, 2026-11-14).
+	for _, columns := range next.unique {
+		if change.Kind == "retype" && slices.Contains(columns, pair.u) {
+			return nil, fmt.Errorf("the retype of %s.%s is of a field that is unique after it, which a retype does not carry; it is not built", change.Entity, change.Field)
 		}
 	}
 	for _, fk := range old.foreign {
