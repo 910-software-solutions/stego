@@ -51,6 +51,168 @@
       }
     }
   ],
+  "actors": [
+    {
+      "id": "actor:authorization.spicedb",
+      "kind": "authorization service",
+      "name": "spicedb",
+      "source": {
+        "declaration": "authorization.provider"
+      }
+    },
+    {
+      "id": "actor:caller",
+      "kind": "caller",
+      "name": "Caller",
+      "source": {
+        "declaration": "collections"
+      }
+    },
+    {
+      "id": "actor:outside.kafka-producer",
+      "kind": "outside system",
+      "name": "System that kafka-producer calls",
+      "stated_by": "component:kafka-producer",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "architecture.layer"
+        }
+      }
+    },
+    {
+      "id": "actor:outside.otel-tracing",
+      "kind": "outside system",
+      "name": "System that otel-tracing calls",
+      "stated_by": "component:otel-tracing",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "architecture.layer"
+        }
+      }
+    },
+    {
+      "id": "actor:store.postgres-adapter",
+      "kind": "store",
+      "name": "Store of postgres-adapter",
+      "stated_by": "component:postgres-adapter",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "architecture.layer"
+        }
+      }
+    },
+    {
+      "id": "actor:token-issuer.jwt-auth",
+      "kind": "token issuer",
+      "name": "Token issuer of jwt-auth",
+      "stated_by": "component:jwt-auth",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "config.issuer"
+        }
+      }
+    }
+  ],
+  "relations": [
+    {
+      "id": "relation:caller/user-management",
+      "from": "actor:caller",
+      "to": "container:user-management",
+      "text": "calls 17 operations",
+      "through": "component:rest-api",
+      "mode": "sync",
+      "source": {
+        "declaration": "collections"
+      }
+    },
+    {
+      "id": "relation:user-management/authorization.spicedb",
+      "from": "container:user-management",
+      "to": "actor:authorization.spicedb",
+      "text": "asks for permission decisions",
+      "through": "component:spicedb-authz",
+      "mode": "sync",
+      "source": {
+        "declaration": "authorization.provider"
+      }
+    },
+    {
+      "id": "relation:user-management/outside.kafka-producer",
+      "from": "container:user-management",
+      "to": "actor:outside.kafka-producer",
+      "text": "sends change messages, later",
+      "through": "component:kafka-producer",
+      "mode": "async",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "architecture.layer"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/outside.otel-tracing",
+      "from": "container:user-management",
+      "to": "actor:outside.otel-tracing",
+      "text": "calls",
+      "through": "component:otel-tracing",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "architecture.layer"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/store.postgres-adapter",
+      "from": "container:user-management",
+      "to": "actor:store.postgres-adapter",
+      "text": "keeps rows",
+      "through": "component:postgres-adapter",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "architecture.layer"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/token-issuer.jwt-auth",
+      "from": "container:user-management",
+      "to": "actor:token-issuer.jwt-auth",
+      "text": "checks tokens",
+      "through": "component:jwt-auth",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "config.issuer"
+        }
+      }
+    }
+  ],
   "components": [
     {
       "id": "component:audit-log",
@@ -1538,6 +1700,7 @@
           "element": "operation:all-users.list",
           "text": "GET /api/user-mgmt/v1/users",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.all-users.operations[0]"
           }
@@ -1549,6 +1712,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1564,6 +1728,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1579,6 +1744,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1594,6 +1760,7 @@
           "element": "check:operation:all-users.list",
           "text": "Keeps only the rows on whose member the caller holds the permission view.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[1].permissions.list"
           }
@@ -1604,6 +1771,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -1620,6 +1788,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -1635,6 +1804,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -1674,6 +1844,7 @@
           "element": "operation:org-activity.create",
           "text": "POST /api/user-mgmt/v1/org-activity",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-activity.operations[0]"
           }
@@ -1685,6 +1856,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1700,6 +1872,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1715,6 +1888,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1730,6 +1904,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -1746,6 +1921,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -1761,6 +1937,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -1777,6 +1954,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -1793,6 +1971,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -1845,6 +2024,7 @@
           "element": "operation:org-activity.list",
           "text": "GET /api/user-mgmt/v1/org-activity",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-activity.operations[1]"
           }
@@ -1856,6 +2036,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1871,6 +2052,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1886,6 +2068,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -1901,6 +2084,7 @@
           "element": "check:operation:org-activity.list",
           "text": "Keeps only the rows on whose activity_entry the caller holds the permission view.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[3].permissions.list"
           }
@@ -1911,6 +2095,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -1927,6 +2112,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -1942,6 +2128,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -1981,6 +2168,7 @@
           "element": "operation:org-settings.list",
           "text": "GET /api/user-mgmt/v1/organizations/{org_id}/orgsettings",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-settings.operations[0]"
           }
@@ -1992,6 +2180,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2007,6 +2196,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2022,6 +2212,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2037,6 +2228,7 @@
           "element": "check:operation:org-settings.list",
           "text": "Keeps only the rows on whose org_setting the caller holds the permission view.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[2].permissions.list"
           }
@@ -2047,6 +2239,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -2063,6 +2256,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2078,6 +2272,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -2117,6 +2312,7 @@
           "element": "operation:org-settings.upsert",
           "text": "PUT /api/user-mgmt/v1/organizations/{org_id}/orgsettings",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-settings.operations[1]"
           }
@@ -2128,6 +2324,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2143,6 +2340,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2158,6 +2356,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2173,6 +2372,7 @@
           "element": "check:operation:org-settings.upsert",
           "text": "Decides the permission edit on the org_setting for the caller.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[2].permissions.upsert"
           }
@@ -2183,6 +2383,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -2199,6 +2400,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2214,6 +2416,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -2230,6 +2433,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2246,6 +2450,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -2306,6 +2511,7 @@
           "element": "operation:org-users.create",
           "text": "POST /api/user-mgmt/v1/organizations/{org_id}/users",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-users.operations[0]"
           }
@@ -2317,6 +2523,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2332,6 +2539,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2347,6 +2555,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2362,6 +2571,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -2377,6 +2587,7 @@
           "element": "slot:org-users.before_create",
           "text": "Gate: rbac-policy, admin-creation-policy. Every fill must allow.",
           "mode": "sync",
+          "layer": "slot",
           "source": {
             "declaration": "slots[0]"
           }
@@ -2388,6 +2599,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2403,6 +2615,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -2419,6 +2632,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2434,6 +2648,7 @@
           "element": "slot:org-users.after_create",
           "text": "Fan-out: send-welcome.",
           "mode": "async",
+          "layer": "slot",
           "source": {
             "declaration": "slots[1]"
           }
@@ -2444,6 +2659,7 @@
           "element": "slot:org-users.on_entity_changed",
           "text": "Fan-out: user-change-notifier, audit-logger.",
           "mode": "async",
+          "layer": "slot",
           "source": {
             "declaration": "slots[2]"
           }
@@ -2455,6 +2671,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -2515,6 +2732,7 @@
           "element": "operation:org-users.delete",
           "text": "DELETE /api/user-mgmt/v1/organizations/{org_id}/users/{id}",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-users.operations[3]"
           }
@@ -2526,6 +2744,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2541,6 +2760,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2556,6 +2776,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2571,6 +2792,7 @@
           "element": "check:operation:org-users.delete",
           "text": "Decides the permission edit on the member for the caller.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[1].permissions.delete"
           }
@@ -2581,6 +2803,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -2597,6 +2820,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2612,6 +2836,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -2628,6 +2853,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2643,6 +2869,7 @@
           "element": "slot:org-users.on_entity_changed",
           "text": "Fan-out: user-change-notifier, audit-logger.",
           "mode": "async",
+          "layer": "slot",
           "source": {
             "declaration": "slots[2]"
           }
@@ -2654,6 +2881,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -2701,6 +2929,7 @@
           "element": "operation:org-users.list",
           "text": "GET /api/user-mgmt/v1/organizations/{org_id}/users",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-users.operations[4]"
           }
@@ -2712,6 +2941,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2727,6 +2957,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2742,6 +2973,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2757,6 +2989,7 @@
           "element": "check:operation:org-users.list",
           "text": "Keeps only the rows on whose member the caller holds the permission view.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[1].permissions.list"
           }
@@ -2767,6 +3000,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -2783,6 +3017,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2798,6 +3033,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -2837,6 +3073,7 @@
           "element": "operation:org-users.patch",
           "text": "PATCH /api/user-mgmt/v1/organizations/{org_id}/users/{id}",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-users.operations[5]"
           }
@@ -2848,6 +3085,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2863,6 +3101,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2878,6 +3117,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -2893,6 +3133,7 @@
           "element": "check:operation:org-users.patch",
           "text": "Decides the permission edit on the member for the caller.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[1].permissions.patch"
           }
@@ -2903,6 +3144,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -2919,6 +3161,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2934,6 +3177,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -2950,6 +3194,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -2965,6 +3210,7 @@
           "element": "slot:org-users.on_entity_changed",
           "text": "Fan-out: user-change-notifier, audit-logger.",
           "mode": "async",
+          "layer": "slot",
           "source": {
             "declaration": "slots[2]"
           }
@@ -2976,6 +3222,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -3036,6 +3283,7 @@
           "element": "operation:org-users.read",
           "text": "GET /api/user-mgmt/v1/organizations/{org_id}/users/{id}",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-users.operations[1]"
           }
@@ -3047,6 +3295,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3062,6 +3311,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3077,6 +3327,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3092,6 +3343,7 @@
           "element": "check:operation:org-users.read",
           "text": "Decides the permission view on the member for the caller.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[1].permissions.read"
           }
@@ -3102,6 +3354,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -3118,6 +3371,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3133,6 +3387,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -3180,6 +3435,7 @@
           "element": "operation:org-users.update",
           "text": "PUT /api/user-mgmt/v1/organizations/{org_id}/users/{id}",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.org-users.operations[2]"
           }
@@ -3191,6 +3447,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3206,6 +3463,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3221,6 +3479,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3236,6 +3495,7 @@
           "element": "check:operation:org-users.update",
           "text": "Decides the permission edit on the member for the caller.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[1].permissions.update"
           }
@@ -3246,6 +3506,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -3262,6 +3523,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3277,6 +3539,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -3293,6 +3556,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3308,6 +3572,7 @@
           "element": "slot:org-users.on_entity_changed",
           "text": "Fan-out: user-change-notifier, audit-logger.",
           "mode": "async",
+          "layer": "slot",
           "source": {
             "declaration": "slots[2]"
           }
@@ -3319,6 +3584,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -3379,6 +3645,7 @@
           "element": "operation:organizations.create",
           "text": "POST /api/user-mgmt/v1/organizations",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.organizations.operations[0]"
           }
@@ -3390,6 +3657,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3405,6 +3673,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3420,6 +3689,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3435,6 +3705,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -3450,6 +3721,7 @@
           "element": "slot:organizations.before_create",
           "text": "Chain: org-name-validator, org-provisioner, in order. A fill can stop the chain.",
           "mode": "sync",
+          "layer": "slot",
           "source": {
             "declaration": "slots[3]"
           }
@@ -3461,6 +3733,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3476,6 +3749,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -3492,6 +3766,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3508,6 +3783,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -3568,6 +3844,7 @@
           "element": "operation:organizations.delete",
           "text": "DELETE /api/user-mgmt/v1/organizations/{id}",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.organizations.operations[2]"
           }
@@ -3579,6 +3856,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3594,6 +3872,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3609,6 +3888,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3624,6 +3904,7 @@
           "element": "check:operation:organizations.delete",
           "text": "Decides the permission edit on the organization for the caller.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[0].permissions.delete"
           }
@@ -3634,6 +3915,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -3649,6 +3931,7 @@
           "element": "slot:organizations.before_delete",
           "text": "Gate: check-dependencies. Every fill must allow.",
           "mode": "sync",
+          "layer": "slot",
           "source": {
             "declaration": "slots[4]"
           }
@@ -3660,6 +3943,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3675,6 +3959,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -3691,6 +3976,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3707,6 +3993,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -3762,6 +4049,7 @@
           "element": "operation:organizations.list",
           "text": "GET /api/user-mgmt/v1/organizations",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.organizations.operations[3]"
           }
@@ -3773,6 +4061,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3788,6 +4077,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3803,6 +4093,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3818,6 +4109,7 @@
           "element": "check:operation:organizations.list",
           "text": "Keeps only the rows on whose organization the caller holds the permission view.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[0].permissions.list"
           }
@@ -3828,6 +4120,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -3844,6 +4137,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3859,6 +4153,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -3898,6 +4193,7 @@
           "element": "operation:organizations.read",
           "text": "GET /api/user-mgmt/v1/organizations/{id}",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.organizations.operations[1]"
           }
@@ -3909,6 +4205,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3924,6 +4221,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3939,6 +4237,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -3954,6 +4253,7 @@
           "element": "check:operation:organizations.read",
           "text": "Decides the permission view on the organization for the caller.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[0].permissions.read"
           }
@@ -3964,6 +4264,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -3980,6 +4281,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -3995,6 +4297,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -4042,6 +4345,7 @@
           "element": "operation:user-activity.create",
           "text": "POST /api/user-mgmt/v1/user-activity",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.user-activity.operations[0]"
           }
@@ -4053,6 +4357,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -4068,6 +4373,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -4083,6 +4389,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -4098,6 +4405,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -4114,6 +4422,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -4129,6 +4438,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
@@ -4145,6 +4455,7 @@
           "via_port": "port:durable-outbox",
           "text": "Writes each change message to the outbox in the transaction of the write.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -4161,6 +4472,7 @@
           "via_port": "port:durable-outbox",
           "text": "Publishes each change message of the outbox to Kafka.",
           "mode": "async",
+          "layer": "outside call",
           "source": {
             "registry": {
               "part": "component",
@@ -4213,6 +4525,7 @@
           "element": "operation:user-activity.list",
           "text": "GET /api/user-mgmt/v1/user-activity",
           "mode": "sync",
+          "layer": "edge",
           "source": {
             "declaration": "collections.user-activity.operations[1]"
           }
@@ -4224,6 +4537,7 @@
           "via_port": "port:auth-provider",
           "text": "Checks the token of the request and puts the caller's identity on it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -4239,6 +4553,7 @@
           "element": "component:tenancy",
           "text": "Checks that the caller's tenant is active and scopes the request to it.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -4254,6 +4569,7 @@
           "element": "component:spicedb-authz",
           "text": "Asks SpiceDB whether the caller holds the permission of the operation.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "registry": {
               "part": "component",
@@ -4269,6 +4585,7 @@
           "element": "check:operation:user-activity.list",
           "text": "Keeps only the rows on whose activity_entry the caller holds the permission view.",
           "mode": "sync",
+          "layer": "authentication",
           "source": {
             "declaration": "entities[3].permissions.list"
           }
@@ -4279,6 +4596,7 @@
           "element": "component:rest-api",
           "text": "Decodes the request of a collection operation and calls its command or query.",
           "mode": "sync",
+          "layer": "handler",
           "source": {
             "registry": {
               "part": "component",
@@ -4295,6 +4613,7 @@
           "via_port": "port:storage-adapter",
           "text": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
           "mode": "sync",
+          "layer": "repository",
           "source": {
             "registry": {
               "part": "component",
@@ -4310,6 +4629,7 @@
           "element": "component:postgres-adapter",
           "text": "The store of postgres-adapter keeps the rows.",
           "mode": "sync",
+          "layer": "store",
           "source": {
             "registry": {
               "part": "component",
