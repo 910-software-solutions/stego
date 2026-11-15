@@ -8,7 +8,8 @@ release.
 ## Declare a schema change
 
 A schema change has an ID, a kind and the entity and the field it changes.
-The kinds are `add`, `rename`, `retype`, `require`, `drop` and `unique`. The
+The kinds are `add`, `rename`, `retype`, `require`, `drop`, `unique` and
+`relax`. The
 schema history puts the steps of the changes in order. A step moves one change
 to `expand` or to `contract`.
 
@@ -51,6 +52,63 @@ checkout by commit, such as `git fetch <url> <ref>` and
 `git checkout FETCH_HEAD`, has commits but no branch. Such a repository, any
 other repository with commits but no such branch, or one that git cannot read,
 stops plan and apply: name the base with `--base`.
+
+## Relax steps
+
+A relax changes one field in place, in one release, with no new column and no
+copy of the rows (decision on finding F12 of the schema-change research,
+owner, 2026-11-13). It has an expand step only, and that step finishes it.
+Declare it with the field and a `definition` that says what the field was
+before the change, one item for each attribute that the change relaxes:
+
+| Change | Item | Example |
+| --- | --- | --- |
+| A longer `max_length` | `max_length N`, the old length | `max_length 40` |
+| More enum values | `values V1 V2 ...`, the old values | `values calm busy` |
+| A default where there was none | `no default` | `no default` |
+| A required field made optional | `required` | `required` |
+| An enum made a string with no `max_length` | `type enum, values V1 V2 ...` | `type enum, values a b` |
+
+```yaml
+schema_changes:
+  - {id: note-title-relax, kind: relax, entity: Note, field: title, definition: max_length 40}
+  - {id: note-size-relax, kind: relax, entity: Note, field: size, definition: "required, no default"}
+schema_history:
+  - {change: note-title-relax, phase: expand}
+  - {change: note-size-relax, phase: expand}
+```
+
+Every value that the release before writes stays valid, and it can read every
+value that the new release writes, so both releases run on the same schema.
+The check against the base refuses a narrowing: a shorter `max_length`, an
+enum value taken away, a field made required, and a type change that
+PostgreSQL cannot make without a rewrite, such as an enum made a string with a
+`max_length`. Those still need a new field, a copy and a drop. `stego compat`
+names the relax to declare when you relax a field with no schema change.
+
+The step's own migration runs one `ALTER TABLE` that reads no row under its
+`ACCESS EXCLUSIVE` lock: the new `CHECK` of the field `NOT VALID` as
+`<table>_<column>_relax`, a longer `character varying`, `DROP NOT NULL` and
+`SET DEFAULT`. `ALTER COLUMN TYPE` scans the table again for each validated
+`CHECK` on the column, so when the type changes, the old `CHECK` goes in the
+same statement; the new `CHECK` holds each new write. In the same transaction,
+after the `ALTER TABLE`, the migration gives the column a comment, the relax
+marker, that states the exact form after the step of each attribute that it
+relaxes: the type, nullable, the default and the `CHECK`. A second migration
+validates the new `CHECK`, which blocks no read and no write, and a third drops
+the old `CHECK`, when it is still there, and gives the new one the name
+`<table>_<column>_check`.
+
+The schema check of each release accepts on a marked column, for each
+attribute, only the form of its own manifest or the exact form that the marker
+states. Any other form stays a fault: a longer type, a dropped `NOT NULL`, a
+default or a `CHECK` that the relax did not declare is refused on a marked
+column as on any other. A release whose manifest states the relaxed form
+accepts only that form, so for it the marker no longer counts. A role that owns
+the table can write such a marker by hand, as it can change the table itself.
+A relax needs the runtime library v0.108.0 or later in the release before:
+`stego compat` refuses a relax on a base that pins an older one, and names the
+version to deploy first.
 
 ## The migrations of the steps
 

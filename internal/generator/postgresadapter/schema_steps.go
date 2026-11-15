@@ -125,7 +125,7 @@ func StepMigrationName(position int, change, phase string) string {
 }
 
 // stepName is the grammar of the ledger name of a step migration.
-var stepName = regexp.MustCompile(`^step_[0-9]{4}_[a-z0-9]+(-[a-z0-9]+)*_(expand|contract)(_index_[0-9]{2}|_sync|_validate)?$`)
+var stepName = regexp.MustCompile(`^step_[0-9]{4}_[a-z0-9]+(-[a-z0-9]+)*_(expand|contract)(_index_[0-9]{2}|_sync|_validate|_validate_finish)?$`)
 
 // CheckLedgerName refuses a ledgered migration whose name is not 001_initial, 100_tenancy_row_security or the name of
 // a schema step (ST-SUP-RC01-OC43): the ledger applies and checks migrations in the byte order of their names, so a
@@ -211,13 +211,22 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema_history[%d] names the schema change %q, which schema_changes does not declare", i, step.Change)
 		}
-		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || (change.Kind == "add" && step.Phase == "expand")
+		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || ((change.Kind == "add" || change.Kind == "relax") && step.Phase == "expand")
 		if !built || (step.Phase != "expand" && step.Phase != "contract") {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add and the expand and contract steps of a rename, a retype and a require", i, step.Phase, change.ID, change.Kind)
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add and of a relax and the expand and contract steps of a rename, a retype and a require", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {
 			return nil, err
+		}
+		if change.Kind == "relax" {
+			relaxed, err := relaxSteps(i+1, before, after, change)
+			if err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+			steps = append(steps, relaxed...)
+			before = after
+			continue
 		}
 		if step.Phase == "contract" {
 			expand := ""
