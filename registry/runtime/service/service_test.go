@@ -522,5 +522,46 @@ func TestNew(t *testing.T) {
 				t.Fatalf("the last line is %v, want the count of the 10 faults that are not logged", last)
 			}
 		})
+
+		t.Run("ST-SUP-RC01-OC21-T04 The start check refuses a runtime role that is the owner role or a member of it", func(t *testing.T) {
+			rt, err := sql.Open("pgx", f.runtimeURL())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rt.Close()
+			ctx := context.Background()
+			declared := parts(nil, nil)
+			if _, err := checkSchema(ctx, rt, declared); err != nil {
+				t.Fatalf("the start check as a runtime role that is not the owner role gave %v", err)
+			}
+			refused := func(what string, p Parts) {
+				t.Helper()
+				if _, err := checkSchema(ctx, rt, p); err == nil || !strings.Contains(err.Error(), "is the owner role "+p.OwnerRole+" or a member of it") {
+					t.Errorf("the start check with %s gave %v, want a refusal of the runtime role", what, err)
+				}
+			}
+			same := declared
+			same.OwnerRole = f.runtime
+			refused("the runtime role as the owner role", same)
+			// A membership of the owner role, direct or through a role between them, with or without its rights.
+			between := f.runtime + "_between"
+			for _, c := range []struct{ what, grant, revoke string }{
+				{"a membership with no inherit and no set", "GRANT " + f.owner + " TO " + f.runtime + " WITH INHERIT FALSE, SET FALSE", "REVOKE " + f.owner + " FROM " + f.runtime},
+				{"a membership with inherit", "GRANT " + f.owner + " TO " + f.runtime + " WITH INHERIT TRUE", "REVOKE " + f.owner + " FROM " + f.runtime},
+				{"a membership through a role between them", "CREATE ROLE " + between + " NOLOGIN; GRANT " + f.owner + " TO " + between + "; GRANT " + between + " TO " + f.runtime,
+					"REVOKE " + between + " FROM " + f.runtime + "; REVOKE " + f.owner + " FROM " + between + "; DROP ROLE " + between},
+			} {
+				if _, err := f.admin.Exec(c.grant); err != nil {
+					t.Fatal(err)
+				}
+				refused(c.what, declared)
+				if _, err := f.admin.Exec(c.revoke); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := checkSchema(ctx, rt, declared); err != nil {
+				t.Fatalf("the start check after the memberships are revoked gave %v", err)
+			}
+		})
 	})
 }
