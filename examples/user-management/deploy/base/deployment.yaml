@@ -1,5 +1,7 @@
 # The Kubernetes base of the service. stego apply writes this file from the declaration and the platform
-# requirements, with no value that differs per environment: the platform's overlay supplies them. Do not edit it.
+# requirements, with no value that differs per environment: the platform's overlay supplies them, and every
+# overlay must set the image by digest, because the image of the base is a name that no registry serves. Do not
+# edit it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,7 +19,7 @@ spec:
     spec:
       automountServiceAccountToken: false
       containers:
-        - image: user-management
+        - image: stego.invalid/user-management:set-by-overlay
           livenessProbe:
             httpGet:
               path: /livez
@@ -36,4 +38,21 @@ spec:
               cpu: 100m
               ephemeral-storage: 32Mi
               memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       serviceAccountName: user-management
+      volumes:
+        - emptyDir:
+            sizeLimit: 64Mi
+          name: tmp

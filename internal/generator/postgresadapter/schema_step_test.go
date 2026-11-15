@@ -303,6 +303,26 @@ func TestSchemaSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC32-T02 Generation refuses a runtime role that is the owner role, whose writes the sync trigger passes", func(t *testing.T) {
+		for name, roles := range map[string]map[string]any{
+			"both set to one role":                      {"runtime_role": "boards_owner", "owner_role": "boards_owner"},
+			"the owner role set to the default runtime": {"owner_role": "boards_runtime"},
+		} {
+			ctx := boardRename("boards", "boardtenancy")
+			// With no runtime_role the runtime role is the service name with _runtime.
+			ctx.ServiceName = "boards"
+			ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
+			if _, _, err := new(postgresadapter.Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "is also the owner role") {
+				t.Errorf("%s: the rename gives %v, want a refusal of a runtime role that is the owner role", name, err)
+			}
+		}
+		ctx := boardRename("boards", "boardtenancy")
+		ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "boards_runtime", "owner_role": "boards_owner"}}
+		if _, _, err := new(postgresadapter.Generator).Generate(ctx); err != nil {
+			t.Errorf("the rename with two roles gives %v, want no refusal", err)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC39-T02 The contract migration of a rename is its statements in their order, and the release after it holds no old column", func(t *testing.T) {
 		ctx := boardRenameContract("boards", "boardtenancy")
 		ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: {"runtime_role": "boards_runtime", "owner_role": "boards_owner"}}
