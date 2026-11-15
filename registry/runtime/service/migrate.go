@@ -764,7 +764,7 @@ func CopyBackfills(copies []lease.Copy, tenantSchema string) ([]Backfill, error)
 			return nil, err
 		}
 		key, parts := c.Settings()
-		out = append(out, Backfill{Change: c.Change, Step: step, Settings: lease.BackfillSettings{Key: key, KeyParts: parts, Pause: BackfillPause,
+		out = append(out, Backfill{Change: c.Change, Step: step, Settings: lease.BackfillSettings{FillDigest: c.FillDigest, Key: key, KeyParts: parts, Pause: BackfillPause,
 			Validate: c.Validate(), Check: c.Check}, Table: c.Table})
 	}
 	return out, nil

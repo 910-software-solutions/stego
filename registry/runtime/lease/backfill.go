@@ -952,8 +952,16 @@ func (b *Backfill) watch(ctx context.Context, held *Held) {
 // not hold (decision on ST-SUP-Q120 (c), orchestrator under the owner's delegation, 2026-11-14). The batch updates
 // ONLY the table, so a table that inherits from it, which the trigger check of the batch does not read, has no row
 // that the batch changes and no trigger that it fires (review of PR #311, info).
+//
+// Convert, for a retype, is the conversion of the old value to the type of the new column, with {K} for the old
+// column, as the sync trigger of the step converts it: a conversion that can fail is guarded and gives the fill value
+// of the change, or NULL (ST-SUP-RC01-OC33); empty copies the value as it is. Guard, for a conversion that can fail
+// and a change with no fill value, is the condition, with {K} for the old column, under which it converts: a row
+// whose old value fails it keeps its new value unset and counts as failed (ST-SUP-RC01-OC36). FillDigest is the
+// digest of the change's fill value, or empty, which starts a repair pass when it changes (ST-SUP-RP09-LC11).
 type Copy struct {
 	Change, Table, TenantColumn, From, To, Tenants, Check string
+	Convert, Guard, FillDigest                            string
 }
 
 // Validate gives the statement that validates the completeness CHECK of c.
@@ -984,14 +992,23 @@ func (c Copy) Step() (Step, error) {
 	}
 	table := "public." + quoteName(c.Table)
 	from, to := quoteName(c.From), quoteName(c.To)
+	value, moves, fails := "t."+from, "", "false"
+	if c.Convert != "" {
+		value = strings.ReplaceAll(c.Convert, "{K}", "t."+from)
+	}
+	if c.Guard != "" {
+		guard := "(" + strings.ReplaceAll(c.Guard, "{K}", "t."+from) + ")"
+		moves, fails = " AND "+guard, "NOT "+guard
+	}
 	where := ""
 	if c.TenantColumn != "" {
 		where = quoteName(c.TenantColumn) + " = $3 AND "
 	}
 	batch := `WITH batch AS (SELECT id FROM ` + table + ` WHERE ` + where + `($1::text IS NULL OR id > $1::uuid) ORDER BY id LIMIT $2),
-moved AS (UPDATE ONLY ` + table + ` t SET ` + to + ` = t.` + from + ` FROM batch b WHERE ` + strings.ReplaceAll(where, quoteName(c.TenantColumn), "t."+quoteName(c.TenantColumn)) +
-		`t.id = b.id AND t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL RETURNING 1)
-SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM moved), (SELECT id::text FROM batch ORDER BY id DESC LIMIT 1)`
+moved AS (UPDATE ONLY ` + table + ` t SET ` + to + ` = ` + value + ` FROM batch b WHERE ` + strings.ReplaceAll(where, quoteName(c.TenantColumn), "t."+quoteName(c.TenantColumn)) +
+		`t.id = b.id AND t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL` + moves + ` RETURNING 1),
+failed AS (SELECT 1 FROM ONLY ` + table + ` t JOIN batch b ON t.id = b.id WHERE t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL AND ` + fails + `)
+SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM moved), (SELECT pg_catalog.count(*) FROM failed), (SELECT id::text FROM batch ORDER BY id DESC LIMIT 1)`
 	next := `SELECT pg_catalog.min(tenant_id) FROM ` + c.Tenants + ` WHERE $1::text IS NULL OR tenant_id > $1::text`
 	return func(ctx context.Context, tx *sql.Tx, after *Key, limit int) (Batch, error) {
 		var tenant, id sql.NullString
@@ -1019,9 +1036,9 @@ SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM
 			if c.TenantColumn != "" {
 				args = append(args, tenant.String)
 			}
-			var read, moved int64
+			var read, moved, failed int64
 			var last sql.NullString
-			if err := tx.QueryRowContext(ctx, batch, args...).Scan(&read, &moved, &last); err != nil {
+			if err := tx.QueryRowContext(ctx, batch, args...).Scan(&read, &moved, &failed, &last); err != nil {
 				return Batch{}, err
 			}
 			if read > 0 {
@@ -1029,7 +1046,7 @@ SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM
 				if c.TenantColumn != "" {
 					key = CompositeKey(TextKey(tenant.String), key)
 				}
-				return Batch{Read: int(read), LastKey: key, Moved: moved}, nil
+				return Batch{Read: int(read), LastKey: key, Moved: moved, Failed: failed}, nil
 			}
 			if c.TenantColumn == "" {
 				return Batch{}, nil
