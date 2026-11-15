@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.121.0",
+    "archetype_version": "3.123.2",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -102,7 +102,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "needs"
         }
       }
@@ -221,7 +221,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "needs"
         }
       }
@@ -1087,7 +1087,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.121.0",
+          "version": "3.123.2",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1110,7 +1110,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.121.0",
+          "version": "3.123.2",
           "field": "bindings.storage-adapter"
         }
       }
@@ -4012,7 +4012,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "needs"
         }
       }
@@ -4147,7 +4147,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "needs"
         }
       }
@@ -4181,7 +4181,7 @@
         "registry": {
           "part": "component",
           "name": "spicedb-authz",
-          "version": "1.2.0",
+          "version": "1.3.0",
           "field": "needs"
         }
       }
