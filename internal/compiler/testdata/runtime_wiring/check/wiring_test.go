@@ -1172,6 +1172,50 @@ func TestWiring(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ST-SUP-RC35-OC06-T04 A consuming worker that writes commits as the worker role, which may write nothing it did not declare", func(t *testing.T) {
+		s.t = t
+		writer := s.as("u-"+uuid.NewString()[:8], kept)
+		created := s.send(&writer, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"consumed","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		s.own(writer, id)
+		s.canEdit(t, writer, id)
+		// The worker may edit the order by the relation syncer, which edit admits.
+		resourceID, err := authz.ResourceID(writer.tenant, id)
+		must(t, err)
+		_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+			Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "order", ObjectId: resourceID}, Relation: "syncer",
+				Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "apply-note-replies"}}}}}})
+		must(t, err)
+		if got := s.send(&writer, http.MethodPost, "/orders/"+id+"/notes", "k-"+uuid.NewString(), `{"text":"consume"}`); got.status/100 != 2 {
+			t.Fatalf("the note answered %d %s, want 2xx", got.status, got.body)
+		}
+		// The consumer adds 1000 to the qty in the transaction of the outbox worker, a session of the worker role.
+		s.eventually(t, "the consumer writes the order of the message", func() bool {
+			return count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE tenant_id = $1 AND id = $2`, kept, id) == 1001
+		})
+		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND resource_id = $2 AND actor_id = 'service_account:apply-note-replies'`, kept, id); n != 1 {
+			t.Errorf("%d audit rows of the consumer's write, want 1", n)
+		}
+		// The worker role holds the least grants of the declared writes: no DELETE on orders, and nothing on notes,
+		// which no consumer writes.
+		for _, c := range []struct {
+			table, privilege string
+			want             bool
+		}{
+			{"public.orders", "UPDATE", true}, {"public.orders", "INSERT", true}, {"public.orders", "DELETE", false},
+			{"public.notes", "SELECT", false}, {"public.notes", "INSERT", false}, {"public.idempotency_keys", "INSERT", true},
+		} {
+			var has bool
+			must(t, s.admin.QueryRow(`SELECT has_table_privilege($1, $2, $3)`, stegoruntime.WorkerRole, c.table, c.privilege).Scan(&has))
+			if has != c.want {
+				t.Errorf("the worker role has %s on %s: %t, want %t", c.privilege, c.table, has, c.want)
+			}
+		}
+	})
 	t.Run("ST-SUP-RC27-OC12-T05 A retired tenant gets no worker run from the next tick, and its rows stay", func(t *testing.T) {
 		s.t = t
 		if got := s.retire(&s.operator, retired, "k-"+uuid.NewString()); got.status != http.StatusOK {

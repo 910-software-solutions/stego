@@ -28,3 +28,6 @@ architecture:
 # The worker reads no environment variable of its own: the worker mode reads the settings of the service runtime,
 # which their components declare.
 environment: []
+
+# The worker states no platform need of its own (ST-SUP-EN09 field Platform needs): it runs in the worker mode of the
+# service process, whose database, TLS and pod security needs the components of that process state.

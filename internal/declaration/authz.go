@@ -727,6 +727,13 @@ func SlotRelationUnknown(service *types.ServiceDeclaration, schema *AuthzSchema)
 // system principal is a subject the schema grants relations to, and never a bypass.
 func validateSystemPrincipal(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	var faults []ValidationError
+	// The subject of a request's identity is never service_account: a person with the subject service_account:<name>
+	// would get the grants of the worker or the controller named name (security review of PR #337, I7; decision on
+	// ST-SUP-Q141).
+	if subject := service.Authorization.SubjectFromIdentity; subject == types.SystemSubjectType {
+		faults = append(faults, ValidationError{Category: "authorization", Rule: "no-bypass", Path: "authorization.subject_from_identity", Found: subject,
+			Message: fmt.Sprintf("the subject type of a request's identity is %s, the subject type of the system principals; a caller would act as the worker or controller of the same name, so name the subject type of the people, such as user", types.SystemSubjectType)})
+	}
 	subjectType := service.Authorization.SystemSubjectType
 	if subjectType != "" {
 		fault := ValidationError{Category: "authorization", Rule: "no-bypass", Path: "authorization.system_subject_type", Found: subjectType}

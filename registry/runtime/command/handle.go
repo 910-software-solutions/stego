@@ -916,6 +916,9 @@ type state struct {
 	closed   bool
 	conflict error
 	broken   error
+	// notGranted is set when a statement failed with SQLSTATE 42501: the role of the transaction lacks a privilege,
+	// which a dispatch again does not change (decision on ST-SUP-Q141).
+	notGranted bool
 
 	rt        *Runtime
 	tx        *sql.Tx
@@ -993,8 +996,14 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 		}
 		return s.conflict
 	}
+	if code == notGrantedState {
+		s.notGranted = true
+	}
 	return s.breakWith(internalf("the statement %s failed with SQLSTATE %q", step, code))
 }
+
+// notGrantedState is the SQLSTATE insufficient_privilege.
+const notGrantedState = "42501"
 
 // breakWith records an internal error that a rerun cannot change.
 func (s *state) breakWith(err error) error {

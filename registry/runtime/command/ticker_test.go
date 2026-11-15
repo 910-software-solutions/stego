@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -66,10 +67,24 @@ func (c *fakeClock) advance(d time.Duration) {
 
 // observed records the built-in worker observations of a ticker.
 type observed struct {
-	mu        sync.Mutex
-	failed    []probe.WorkerOutcome
-	skipped   int
-	unreached int
+	mu         sync.Mutex
+	failed     []probe.WorkerOutcome
+	skipped    int
+	unreached  int
+	tickFailed int
+}
+
+func (o *observed) TickFailed(context.Context) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.tickFailed++
+}
+
+// tickFailures gives the count of worker.tick.failed.
+func (o *observed) tickFailures() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.tickFailed
 }
 
 func (o *observed) RunFailed(_ context.Context, outcome probe.WorkerOutcome) {
@@ -119,14 +134,21 @@ type tickerFixture struct {
 func startTicker(t *testing.T, e *env, clock *fakeClock, interval time.Duration, client *lease.Client, tenants []string,
 	body func(ctx context.Context, tenant string, h *Handle[testProbe]) error) *tickerFixture {
 	t.Helper()
-	w := e.worker("sync-partner-orders", "sync", func(s *WorkerSpec[testProbe]) { s.Interval = interval }, e.orders)
-	f := &tickerFixture{t: t, e: e, clock: clock, observe: &observed{}, runs: make(chan tickerRun, 64), done: make(chan struct{})}
 	list := make([]tenant.Tenant, len(tenants))
 	for i, id := range tenants {
 		list[i] = mustTenant(t, id)
 	}
+	return startTickerOver(t, e, clock, interval, client, func(context.Context) ([]tenant.Tenant, error) { return list, nil }, body)
+}
+
+// startTickerOver is startTicker over the tenant list that list reads.
+func startTickerOver(t *testing.T, e *env, clock *fakeClock, interval time.Duration, client *lease.Client,
+	list func(context.Context) ([]tenant.Tenant, error), body func(ctx context.Context, tenant string, h *Handle[testProbe]) error) *tickerFixture {
+	t.Helper()
+	w := e.worker("sync-partner-orders", "sync", func(s *WorkerSpec[testProbe]) { s.Interval = interval }, e.orders)
+	f := &tickerFixture{t: t, e: e, clock: clock, observe: &observed{}, runs: make(chan tickerRun, 64), done: make(chan struct{})}
 	ticker, err := NewTicker(e.rt, TickerSpec[testProbe]{Worker: w, Lease: client, Observe: f.observe, Clock: clock,
-		Tenants: func(context.Context) ([]tenant.Tenant, error) { return list, nil },
+		Tenants: list,
 		Fill: func(ctx context.Context, due time.Time, h *Handle[testProbe]) error {
 			run := tickerRun{tenant: h.Tenant().ID(), due: due}
 			f.runs <- run
@@ -374,6 +396,70 @@ func TestTicker(t *testing.T) {
 		failed := f.waitFailed(2)
 		if len(failed) != 2 || failed[0] != probe.WorkerRolledBack || failed[1] != probe.WorkerPanicked {
 			t.Fatalf("the failed runs are %v, want rolled_back and panicked", failed)
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC09-T03 A tick that cannot read the tenant list sends worker.tick.failed and runs no tenant", func(t *testing.T) {
+		clock := newFakeClock(aligned(interval))
+		var fail atomic.Bool
+		fail.Store(true)
+		list := func(context.Context) ([]tenant.Tenant, error) {
+			if fail.Load() {
+				return nil, errors.New("secret-7")
+			}
+			return []tenant.Tenant{mustTenant(t, "t1")}, nil
+		}
+		f := startTickerOver(t, e, clock, interval, nil, list, nil)
+		f.waitArms(1)
+		clock.advance(interval)
+		f.waitArms(2)
+		f.waitTickDone()
+		f.none()
+		if n := f.observe.tickFailures(); n != 1 {
+			t.Fatalf("%d worker.tick.failed after a tick whose list read failed, want 1", n)
+		}
+		if failed, _, _ := f.observe.snapshot(); len(failed) != 0 {
+			t.Fatalf("the failed list read gave the failed runs %v, want none", failed)
+		}
+		// The next tick reads the list and runs the tenant, and sends no worker.tick.failed.
+		fail.Store(false)
+		clock.advance(interval)
+		if r := f.next(); r.tenant != "t1" {
+			t.Fatalf("the next tick ran %s, want t1", r.tenant)
+		}
+		f.waitTickDone()
+		if n := f.observe.tickFailures(); n != 1 {
+			t.Fatalf("%d worker.tick.failed after a tick that read the list, want 1", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC12-T06 A tenant that the gate holds as retired after the tick read the list gets no run", func(t *testing.T) {
+		clock := newFakeClock(aligned(interval))
+		retired := &retiredTenants{}
+		retired.retired.Store("t2", true)
+		e.rt.cfg.Tenants = retired
+		// The cleanup runs after the cleanup of the ticker, which waits for its runs.
+		t.Cleanup(func() { e.rt.cfg.Tenants = nil })
+		// The list still holds t2, as a list read before the retire does.
+		f := startTicker(t, e, clock, interval, nil, []string{"t1", "t2", "t3"}, func(ctx context.Context, tenantID string, h *Handle[testProbe]) error {
+			return write(ctx, h, "gated-"+tenantID)
+		})
+		f.waitArms(1)
+		clock.advance(interval)
+		var ran []string
+		for range 2 {
+			ran = append(ran, f.next().tenant)
+		}
+		f.waitTickDone()
+		f.none()
+		if !slices.Equal(ran, []string{"t1", "t3"}) {
+			t.Fatalf("the tick ran %v, want t1 and t3 only", ran)
+		}
+		if got := e.status("t2"); got == "gated-t2" {
+			t.Fatal("the retired tenant t2 got the write of the tick")
+		}
+		if failed, _, _ := f.observe.snapshot(); len(failed) != 0 {
+			t.Fatalf("the skipped tenant gave the failed runs %v, want none", failed)
 		}
 	})
 

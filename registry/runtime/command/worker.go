@@ -124,6 +124,17 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		ctx, cancel = context.WithDeadline(ctx, notAfter)
 		defer cancel()
 	}
+	// The tenant gate before the transaction: a tenant that was retired after the tick read the tenant list gets no
+	// run (security review of PR #337, L1).
+	if rt.cfg.Tenants != nil {
+		active, err := rt.cfg.Tenants.Active(ctx, t)
+		switch {
+		case err != nil:
+			return internalf("the tenant list was not read")
+		case !active:
+			return errTenantNotActive
+		}
+	}
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return workerBegin(ctx, notAfter, err)
@@ -351,6 +362,11 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		})
 	var failure *fillFailure
 	switch {
+	case s.notGranted || sqlState(err) == notGrantedState:
+		// The worker role lacks a privilege that the fill needs: a dispatch again fails the same way, so the message
+		// is parked and does not hold back its key without end (decision on ST-SUP-Q141, orchestrator under the
+		// owner's delegation, 2026-11-15).
+		return outbox.PermanentRefusal(&notGrantedError{worker: w.spec.Name})
 	case errors.As(err, &failure):
 		if failure.conflict && !uniqueConflict(failure.err) {
 			return outbox.Conflict(failure.err)
@@ -384,6 +400,29 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return nil
+}
+
+// ErrNotGranted matches the error of a consumer run whose statement failed with SQLSTATE 42501, as the worker role
+// lacks a privilege that the fill needs: RunConsumer parks the message (decision on ST-SUP-Q141).
+var ErrNotGranted = errors.New("command: the worker role lacks a privilege that the fill needs")
+
+// notGrantedError is the refusal of a consumer run that the database refused for a missing privilege. It names the
+// worker and no database text.
+type notGrantedError struct{ worker string }
+
+func (e *notGrantedError) Error() string {
+	return "command: " + e.worker + ": the worker role lacks a privilege that the fill needs (SQLSTATE 42501)"
+}
+func (e *notGrantedError) Is(target error) bool { return target == ErrNotGranted }
+
+// ObserveConsumer reports the error err of one RunConsumer of a consuming worker to its built-in observations and
+// returns it: a run that the database refused for a missing privilege is sent as worker.run.failed with the outcome
+// not_granted (decision on ST-SUP-Q141). The generated destination handler of a consuming worker calls it.
+func ObserveConsumer(ctx context.Context, observe WorkerObserver, err error) error {
+	if observe != nil && errors.Is(err, ErrNotGranted) {
+		observe.RunFailed(context.WithoutCancel(ctx), probe.WorkerNotGranted)
+	}
+	return err
 }
 
 // errDeclaredRefusal matches an error that Refusal marks.

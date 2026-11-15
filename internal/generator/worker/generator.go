@@ -15,6 +15,7 @@ import (
 	"go/format"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -461,6 +462,20 @@ func renderRunners(m *model) []byte {
 		}
 	}
 	w.f("}\n}\n\n")
+	w.f("// ConsumerTables are the tables of the entities that the workers with a consumes trigger write, which the migration\n// job grants the worker role SELECT, INSERT and UPDATE on (decision on ST-SUP-Q141).\nfunc ConsumerTables() []string {\n\treturn []string{")
+	seen := map[string]bool{}
+	for _, name := range m.entityNames {
+		for _, wk := range m.workers {
+			if wk.consumes != "" && slices.Contains(wk.decl.Writes, name) && !seen[name] {
+				if len(seen) > 0 {
+					w.f(", ")
+				}
+				seen[name] = true
+				w.f("%q", command.TableName(name))
+			}
+		}
+	}
+	w.f("}\n}\n\n")
 	w.f("// Fills holds the one fill of each worker.\ntype Fills struct {\n")
 	for _, wk := range m.workers {
 		w.f("\t// %s is the fill %s of the worker %s.\n\t%s %s.%sFill\n", wk.goName, wk.decl.Fill[0], wk.decl.Name, wk.goName, m.pkg, wk.goName)
@@ -490,8 +505,8 @@ func renderRunners(m *model) []byte {
 		w.f("\t\t\tif err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}\n\t\t\ttickers = append(tickers, t)\n\t\t}\n")
 	}
 	w.f("\t\treturn tickers, nil\n\t}\n}\n\n")
-	w.f("// Consumers registers on the outbox worker the one destination handler of each worker with a consumes trigger,\n// bound to its fill of fills (ST-SUP-RC35-OC06).\nfunc Consumers(fills Fills) func(rt *command.Runtime, worker *outbox.Worker) error {\n")
-	w.f("\treturn func(rt *command.Runtime, worker *outbox.Worker) error {\n")
+	w.f("// Consumers registers on the outbox worker the one destination handler of each worker with a consumes trigger,\n// bound to its fill of fills (ST-SUP-RC35-OC06).\nfunc Consumers(fills Fills) func(rt *command.Runtime, worker *outbox.Worker, observe func(name string) command.WorkerObserver) error {\n")
+	w.f("\treturn func(rt *command.Runtime, worker *outbox.Worker, observe func(name string) command.WorkerObserver) error {\n")
 	for _, wk := range m.workers {
 		if wk.consumes == "" {
 			continue
@@ -503,7 +518,8 @@ func renderRunners(m *model) []byte {
 		w.f("\t\t\tif err := worker.Register(outbox.Destination{Name: %q, Idempotent: true, MustLand: true, ActiveTenants: true,\n", wk.consumes)
 		w.f("\t\t\t\tHandler: func(ctx context.Context, tx *sql.Tx, d outbox.Delivery) error {\n")
 		w.f("\t\t\t\t\t// Each message has its own deadline (ST-SUP-RC35-OC07).\n\t\t\t\t\tctx, cancel := context.WithTimeout(ctx, command.RunBound)\n\t\t\t\t\tdefer cancel()\n")
-		w.f("\t\t\t\t\treturn command.RunConsumer(ctx, rt, %sWorker, tx, d, decodeMessage, fill)\n\t\t\t\t}}); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n", lower)
+		w.f("\t\t\t\t\t// A run that the database refuses for a missing privilege is reported as not_granted (ST-SUP-Q141).\n")
+		w.f("\t\t\t\t\treturn command.ObserveConsumer(ctx, observe(%q), command.RunConsumer(ctx, rt, %sWorker, tx, d, decodeMessage, fill))\n\t\t\t\t}}); err != nil {\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n", wk.decl.Name, lower)
 	}
 	w.f("\t\treturn nil\n\t}\n}\n")
 	if m.has(false) {

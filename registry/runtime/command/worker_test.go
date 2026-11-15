@@ -17,6 +17,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -111,6 +112,9 @@ func (e *env) consumer(w *Worker[testProbe], change func(*outbox.WorkerConfig),
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	if e.consumed == nil {
+		e.consumed = &observed{}
+	}
 	decode := func(payload []byte) (map[string]string, error) {
 		var m map[string]string
 		return m, json.Unmarshal(payload, &m)
@@ -118,7 +122,7 @@ func (e *env) consumer(w *Worker[testProbe], change func(*outbox.WorkerConfig),
 	// As the generated code does, the consumed destination is idempotent and must land (ST-SUP-RC35-OC06).
 	destinations := []outbox.Destination{{Name: "partner-replies", Idempotent: true, MustLand: true,
 		Handler: func(ctx context.Context, tx *sql.Tx, d outbox.Delivery) error {
-			return RunConsumer(ctx, e.rt, w, tx, d, decode, fill)
+			return ObserveConsumer(ctx, e.consumed, RunConsumer(ctx, e.rt, w, tx, d, decode, fill))
 		}}}
 	for _, name := range []string{"audit-sink", "billing", "partner-orders"} {
 		destinations = append(destinations, outbox.Destination{Name: name, Idempotent: true,
@@ -930,6 +934,41 @@ func TestConsumers(t *testing.T) {
 			if calls.Load() != 1 || e.count(`SELECT count(*) FROM orders WHERE status = 'never'`) != 0 || e.keyRows(m.String()) != 0 {
 				t.Fatalf("%s: parked after %d calls, with a write or a key row left", name, calls.Load())
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T02 A consumer run that the database refuses for a missing privilege parks the message and is reported", func(t *testing.T) {
+		// The worker role of the test acts with the grants of the runtime role, which loses UPDATE on charges, so the
+		// locked read and the update of the charge fail with SQLSTATE 42501 on every dispatch.
+		e.exec("REVOKE UPDATE ON charges FROM " + e.roles[0])
+		defer e.exec("GRANT UPDATE ON charges TO " + e.roles[0])
+		cases.Store("not-granted", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			r := repo(t, h, e.chargeE)
+			c, err := r.Get(ctx, "c1")
+			if err != nil {
+				return err
+			}
+			v := c.Value()
+			v.Amount = 99
+			_, err = r.Update(ctx, c, v)
+			return err
+		})
+		calls.Store(0)
+		before, _, _ := e.consumed.snapshot()
+		m := e.stage("t1", "o-2", map[string]string{"case": "not-granted"})
+		e.waitState(t, m, "parked")
+		if calls.Load() != 1 || e.keyRows(m.String()) != 0 {
+			t.Fatalf("parked after %d calls or with a key row left, want one call and no key row", calls.Load())
+		}
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND failure_code = 'delivery-refused-permanent'`, m); n != 1 {
+			t.Fatal("the message is not parked as a permanent refusal")
+		}
+		if n := e.count(`SELECT count(*) FROM charges WHERE amount = 99`); n != 0 {
+			t.Fatal("the refused run changed the charge")
+		}
+		after, _, _ := e.consumed.snapshot()
+		if got := after[len(before):]; len(got) != 1 || got[0] != probe.WorkerNotGranted {
+			t.Fatalf("the consumer sent the outcomes %v, want one not_granted", got)
 		}
 	})
 }

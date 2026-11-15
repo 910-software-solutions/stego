@@ -356,6 +356,16 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 	}
 	want := manifest.Join(p.Schema, record, queue, revocations, keys)
 	want.Owner = p.OwnerRole
+	// The grants of a consuming worker on a table whose grants the manifest checks; the key table names its
+	// consumer roles itself (ST-SUP-Q136).
+	for _, g := range consumerGrants(&p) {
+		for i := range want.Tables {
+			t := &want.Tables[i]
+			if t.CheckGrants && t.Schema == g.schema && t.Name == g.table && t.Name != "idempotency_keys" {
+				t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: g.privileges})
+			}
+		}
+	}
 	return want, nil
 }
 

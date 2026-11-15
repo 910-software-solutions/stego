@@ -120,7 +120,11 @@ type WorkerParts struct {
 	// Consumers registers on the outbox worker the one destination handler of each declared worker with a consumes
 	// trigger, which calls RunConsumer on the command runtime of the workers (ST-SUP-RC35-OC06). Nil: the service
 	// has no such worker.
-	Consumers func(rt *command.Runtime, worker *outbox.Worker) error
+	Consumers func(rt *command.Runtime, worker *outbox.Worker, observe func(name string) command.WorkerObserver) error
+	// ConsumerTables are the tables in public of the entities that the workers with a consumes trigger write, which
+	// the migration job grants the worker role SELECT, INSERT and UPDATE on (decision on ST-SUP-Q141, orchestrator
+	// under the owner's delegation, 2026-11-15).
+	ConsumerTables []string
 }
 
 // WorkerLeasePrefix is the prefix of the name of the lease of a single worker: stego.worker.<worker name>
@@ -362,7 +366,7 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		if svc.workers == nil {
 			return nil, errors.New("service: the consuming workers need the command runtime of the workers")
 		}
-		if err := p.Consumers(svc.workers, w.worker); err != nil {
+		if err := p.Consumers(svc.workers, w.worker, func(name string) command.WorkerObserver { return svc.probes.Worker(name) }); err != nil {
 			return nil, err
 		}
 	}

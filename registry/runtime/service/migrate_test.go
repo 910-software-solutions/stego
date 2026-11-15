@@ -26,6 +26,7 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
@@ -1398,6 +1399,81 @@ func TestMigrateLocks(t *testing.T) {
 		}
 		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
 			t.Fatalf("the job after the column was made again gave %v", err)
+		}
+	})
+
+	t.Run("ST-SUP-RP14-LC03-T27 The job gives the worker role the least grants of a consuming worker's writes, and takes them back when no consumer is left", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		consuming := func(tables ...string) Migration {
+			m := f.migration(nil)
+			m.Parts.Workers.Consumers = func(*command.Runtime, *outbox.Worker, func(string) command.WorkerObserver) error { return nil }
+			m.Parts.Workers.ConsumerTables = tables
+			return m
+		}
+		privileges := func(table string) string {
+			var got []string
+			for _, privilege := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
+				var has bool
+				if err := f.admin.QueryRow(`SELECT has_table_privilege($1, $2, $3)`, f.worker, table, privilege).Scan(&has); err != nil {
+					t.Fatal(err)
+				}
+				if has {
+					got = append(got, privilege)
+				}
+			}
+			return strings.Join(got, ",")
+		}
+		want := map[string]string{"public.orders": "SELECT,INSERT,UPDATE", "public.audit_event": "SELECT,INSERT",
+			"public.audit_chain_heads": "SELECT,INSERT,UPDATE", "public.idempotency_keys": "SELECT,INSERT,UPDATE",
+			"public.authz_floor": "SELECT", "public.audit_anchor_boundaries": "", "public.audit_retention_checkpoints": "",
+			"public.authz_revocations": "", "public.stego_tenants": ""}
+		// The job with a consuming worker that writes orders passes its schema manifest check at its end, which holds
+		// the grant of the worker role on the revocation floor and on the key table.
+		if err := Migrate(context.Background(), settings, consuming("orders")); err != nil {
+			t.Fatal(err)
+		}
+		for table, wantPrivileges := range want {
+			if got := privileges(table); got != wantPrivileges {
+				t.Errorf("the worker role holds %q on %s, want %q", got, table, wantPrivileges)
+			}
+		}
+		// A write that the worker did not declare is refused: a worker declares no delete.
+		if _, err := f.admin.Exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('t1'); INSERT INTO public.orders (tenant_id, id, status) VALUES ('t1', 'o1', 'open')`); err != nil {
+			t.Fatal(err)
+		}
+		asWorker := func(statement string) error {
+			tx, err := f.admin.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			if _, err := tx.Exec(`SET LOCAL ROLE ` + f.worker + `; SELECT pg_catalog.set_config('app.tenant', 't1', true)`); err != nil {
+				t.Fatal(err)
+			}
+			_, err = tx.Exec(statement)
+			return err
+		}
+		if err := asWorker(`UPDATE public.orders SET status = 'synced' WHERE id = 'o1'`); err != nil {
+			t.Fatalf("the update of a declared write as the worker role gave %v, want it to pass", err)
+		}
+		var coded interface{ SQLState() string }
+		if err := asWorker(`DELETE FROM public.orders WHERE id = 'o1'`); !errors.As(err, &coded) || coded.SQLState() != "42501" {
+			t.Fatalf("the delete as the worker role gave %v, want SQLSTATE 42501", err)
+		}
+		// A consumer table that the runtime role gets no grant on is refused before the job opens the database.
+		if err := Migrate(context.Background(), settings, consuming("foreign_orders")); Stage(err) != "migrate."+StepSettings {
+			t.Fatalf("the job with the consumer table foreign_orders gave %v at the stage %q, want %s", err, Stage(err), StepSettings)
+		}
+		// With no consuming worker left, the job takes every grant back, and its manifest check passes.
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatalf("the job with no consumer gave %v", err)
+		}
+		for table := range want {
+			if got := privileges(table); got != "" {
+				t.Errorf("with no consumer the worker role holds %q on %s, want nothing", got, table)
+			}
 		}
 	})
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,7 @@ func (systemTime) After(d time.Duration) <-chan time.Time { return time.After(d)
 // WorkerObserver gets the built-in worker observations of one worker (ST-SUP-RP12-LC21): probe.Worker is one.
 type WorkerObserver interface {
 	RunFailed(ctx context.Context, outcome probe.WorkerOutcome)
+	TickFailed(ctx context.Context)
 	TickSkipped()
 	TenantUnreached()
 }
@@ -194,7 +196,16 @@ func nextDue(now time.Time, interval time.Duration) time.Time {
 func (k *Ticker) tick(ctx context.Context, due time.Time, held *lease.Held) {
 	next := due.Add(k.interval)
 	tenants, err := k.tenants(ctx)
-	if err != nil || len(tenants) == 0 {
+	if err != nil {
+		// A tick that cannot read the tenant list runs no tenant: it is reported, with the cause named and no error
+		// text, so a worker that stops is seen (security review of PR #337, L2).
+		if ctx.Err() == nil {
+			slog.ErrorContext(ctx, "command: the tick of the worker did not read the tenant list", "worker", k.name, "cause", "tenant_list_read")
+			k.observe.TickFailed(context.WithoutCancel(ctx))
+		}
+		return
+	}
+	if len(tenants) == 0 {
 		return
 	}
 	order := k.rotate(tenants)
@@ -291,7 +302,9 @@ func (k *Ticker) runOne(ctx context.Context, due, next time.Time, t tenant.Tenan
 		}()
 		return k.run(runCtx, due, t, held)
 	}()
-	if err == nil {
+	// A tenant that the gate holds as not active, such as one retired after the tick read the list, is skipped and
+	// is no failed run (security review of PR #337, L1).
+	if err == nil || errors.Is(err, errTenantNotActive) {
 		return
 	}
 	k.observe.RunFailed(context.WithoutCancel(ctx), workerOutcome(err))

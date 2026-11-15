@@ -98,6 +98,8 @@ type env struct {
 	writer   *audit.Writer
 	probes   *probe.Recorder
 	rt       *Runtime
+	// consumed gets the built-in worker observations of the consumers that consumer runs.
+	consumed *observed
 
 	statements *statements
 

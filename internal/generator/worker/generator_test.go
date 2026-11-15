@@ -307,6 +307,24 @@ func TestContract(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC06-T03 The runners name the tables of the consumers' writes for the worker role, and report a refused privilege", func(t *testing.T) {
+		ctx := workerContext(workerSlot)
+		partner := ctx.Entities[0]
+		partner.Name = "Partner"
+		ctx.Entities = append(ctx.Entities, partner)
+		// The ticker writes Partner too; only the consumer's write of Order needs a grant of the worker role.
+		ctx.Workers[0].Writes = []string{"Order", "Partner"}
+		runners := string(generated(t, ctx)["workers/runners/runners.go"])
+		for _, want := range []string{
+			"func ConsumerTables() []string {\n\treturn []string{\"orders\"}\n}",
+			`return command.ObserveConsumer(ctx, observe("apply-partner-replies"), command.RunConsumer(ctx, rt, applyPartnerRepliesWorker, tx, d, decodeMessage, fill))`,
+		} {
+			if !strings.Contains(runners, want) {
+				t.Errorf("the runners do not hold %s:\n%s", want, runners)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC13-T02 Generation refuses a schema without the relation of a worker on tenant", func(t *testing.T) {
 		ctx := workerContext(workerSlot)
 		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\trelation worker_apply_partner_replies: service_account\n", "", 1))}

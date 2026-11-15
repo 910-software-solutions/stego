@@ -4,6 +4,7 @@ package addnote
 
 import (
 	"context"
+	"encoding/json"
 
 	commands "example.com/shop/out/commands"
 )
@@ -31,7 +32,11 @@ func New() commands.AddNoteFill {
 		}
 		// The worker apply-note-replies consumes the message of the order (ST-SUP-RC35-OC06). The effect is for the
 		// order, on which the command decides its permission edit; the note has no permission edit.
-		if err := h.Effects().Stage(ctx, "note-replies", "note-added", order, []byte(`{"text":"added"}`)); err != nil {
+		payload, err := json.Marshal(map[string]string{"text": request.Text, "order": request.OrderId})
+		if err != nil {
+			return nil, err
+		}
+		if err := h.Effects().Stage(ctx, "note-replies", "note-added", order, payload); err != nil {
 			return nil, err
 		}
 		return &commands.AddNoteResponse{NoteId: note.ID()}, nil
