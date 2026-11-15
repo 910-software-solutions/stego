@@ -98,6 +98,8 @@ func main() {
 		err = runDrift(os.Args[2:])
 	case "compat":
 		err = runCompat(os.Args[2:], os.Stdout)
+	case "architecture":
+		err = runArchitecture(os.Args[2:], os.Stdout)
 	case "test":
 		err = runTest(os.Args[2:])
 	case "fill":
@@ -145,6 +147,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  build           Build and verify recorded application artifacts")
 	fmt.Fprintln(os.Stderr, "  deps            Resolve and check project dependencies")
 	fmt.Fprintln(os.Stderr, "  drift           Detect hand-edits to generated files")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Architecture:")
+	fmt.Fprintln(os.Stderr, "  architecture export  Print the architecture as Structurizr DSL or Mermaid text")
+	fmt.Fprintln(os.Stderr, "  architecture facts   Print the facts of a topic, such as personal data, with their sources")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Validation:")
 	fmt.Fprintln(os.Stderr, "  validate        Check service.yaml against registry")

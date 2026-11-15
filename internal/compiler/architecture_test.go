@@ -484,7 +484,7 @@ func TestReadArchitecture(t *testing.T) {
 			t.Fatalf("a missing model: %v", err)
 		}
 		write(data, data)
-		if got, err := ReadArchitecture(project); err != nil || !bytes.Equal(got, data) {
+		if got, err := ReadArchitecture(project); err != nil || !bytes.Equal(got.Data, data) {
 			t.Fatalf("the model as apply wrote it: %v", err)
 		}
 		changed := bytes.Replace(data, []byte(`"name": "docs"`), []byte(`"name": "other"`), 1)
@@ -518,6 +518,10 @@ func TestReadArchitecture(t *testing.T) {
 		write(invalid, invalid)
 		if _, err := ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), ArchitectureFile) || !strings.Contains(err.Error(), "schema") {
 			t.Fatalf("a model that is not valid: %v", err)
+		}
+		// A cause can quote a value of the model, and the message goes to a terminal (security review of #338).
+		if message := (&ArchitectureReadError{File: ArchitectureFile, Cause: "the value \x1b[2J\u202e is not valid"}).Error(); strings.ContainsAny(message, "\x1b\u202e") || !strings.Contains(message, `\u001b[2J\u202e`) {
+			t.Fatalf("the refusal prints the characters of the model as they are: %q", message)
 		}
 	})
 }
