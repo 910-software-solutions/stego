@@ -810,11 +810,14 @@ func (r *contractRefusal) Refusal() string { return r.text }
 // EACH ROW EXECUTE FUNCTION stego_steps.<trigger>(), as one that fires only on
 // an INSERT, on an UPDATE OF another column, with a WHEN condition, for each
 // statement or after the row (security review of PR #320, L1). It reads the
-// catalog with the search path pg_catalog, pg_temp, so pg_get_triggerdef
-// names the schema of the sync function whatever the search path of the
-// session, and only the operators of pg_catalog run in the compare; then it
-// sets the search path of tx back (review of PR #320, info).
-func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
+// catalog and the tables of the step with the search path pg_catalog,
+// pg_temp, so pg_get_triggerdef names the schema of the sync function
+// whatever the search path of the session, and only the operators of
+// pg_catalog run in each compare, up to its last read (review of PR #320,
+// info; security review of PR #332, INFO-3). When the check passes, it sets
+// the search path of tx back for the statements of the step; a refusal or an
+// error rolls tx back, and the path with it.
+func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) {
 	var path string
 	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil {
 		return err
@@ -822,11 +825,13 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)"); err != nil {
 		return err
 	}
+	defer func() {
+		if err == nil {
+			_, err = tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', $1, true)", path)
+		}
+	}()
 	var trigger, syncing, column bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace JOIN pg_catalog.pg_class r ON r.oid = t.tgrelid JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0 AND pg_catalog.pg_get_triggerdef(t.oid) = 'CREATE TRIGGER ' || pg_catalog.quote_ident($2) || ' BEFORE INSERT OR UPDATE ON ' || pg_catalog.quote_ident(rn.nspname) || '.' || pg_catalog.quote_ident(r.relname) || ' FOR EACH ROW EXECUTE FUNCTION stego_steps.' || pg_catalog.quote_ident($2) || '()'), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', $1, true)", path); err != nil {
 		return err
 	}
 	if !trigger && !column {
@@ -834,7 +839,7 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 	}
 	var complete bool
 	var failed int64
-	err := tx.QueryRowContext(ctx, "SELECT b.completed_at IS NOT NULL, b.failed_rows FROM stego_schema.backfills b WHERE b.change_id = $1", c.Change).Scan(&complete, &failed)
+	err = tx.QueryRowContext(ctx, "SELECT b.completed_at IS NOT NULL, b.failed_rows FROM stego_schema.backfills b WHERE b.change_id = $1", c.Change).Scan(&complete, &failed)
 	found := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
