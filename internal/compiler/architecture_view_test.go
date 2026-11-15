@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -264,13 +265,20 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R07-T01 The view embeds the architecture model unchanged", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R07-T01 The view embeds the architecture model as the same JSON value", func(t *testing.T) {
 		script := page.byID("model")
 		if script == nil || attrOf(script, "type") != "application/json" {
 			t.Fatal("the view has no model block")
 		}
-		if got := textOf(script); got != string(model) {
-			t.Fatalf("the embedded model differs from architecture.json: %d bytes for %d", len(got), len(model))
+		var embedded, written any
+		if err := json.Unmarshal([]byte(textOf(script)), &embedded); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(model, &written); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(embedded, written) {
+			t.Fatal("the embedded model is another JSON value than architecture.json")
 		}
 	})
 
@@ -289,13 +297,34 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R07-T03 A model that the view cannot embed unchanged is refused", func(t *testing.T) {
-		bad := bytes.Replace(model, []byte(`"name": "user-management"`), []byte(`"name": "</SCRIPT><b>x"`), 1)
-		if bytes.Equal(bad, model) {
-			t.Fatal("the fixture has no system name to change")
+	t.Run("ST-GEN-UC08-R07-T03 Markup in the free text of the model stays inside the model block and the text forms", func(t *testing.T) {
+		hostile, value := hostileModel(t)
+		out, err := RenderArchitectureView(hostile)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if _, err := RenderArchitectureView(bad); err == nil || !strings.Contains(err.Error(), "cannot embed it unchanged") {
-			t.Fatalf("a model with </script was not refused: %v", err)
+		p := parseView(t, out)
+		if n := len(p.all(func(n *html.Node) bool { return n.Data == "img" })); n != 0 {
+			t.Fatalf("the free text of the model became %d img elements", n)
+		}
+		scripts := p.all(func(n *html.Node) bool { return n.Data == "script" })
+		if len(scripts) != 4 {
+			t.Fatalf("the view has %d script blocks, not 4: the model text ended its block", len(scripts))
+		}
+		block := textOf(p.byID("model"))
+		for _, bad := range []string{"<", ">", "&", "\u2028", "\u2029"} {
+			if strings.Contains(block, bad) {
+				t.Errorf("the model block holds %q unescaped", bad)
+			}
+		}
+		var embedded, written any
+		_ = json.Unmarshal([]byte(block), &embedded)
+		_ = json.Unmarshal(hostile, &written)
+		if !reflect.DeepEqual(embedded, written) {
+			t.Fatal("the escaped model block is another JSON value")
+		}
+		if !strings.Contains(textOf(p.byID("form-platform")), value) {
+			t.Fatal("the text forms do not show the hostile reason as text")
 		}
 	})
 
@@ -481,4 +510,41 @@ func contrast(a, b [3]float64) float64 {
 	}
 	x, y := lum(a), lum(b)
 	return (max(x, y) + 0.05) / (min(x, y) + 0.05)
+}
+
+// hostileValue is free text that would end a script block and run code if the view inserted it as markup.
+const hostileValue = "</script><img src=x onerror=alert(1)><!-- \u2028 & end"
+
+// hostileModel gives the model of user-management with the hostile text in the reason of its empty aspect, the
+// reason of each public check and the first step of each flow.
+func hostileModel(t *testing.T) ([]byte, string) {
+	t.Helper()
+	data, err := os.ReadFile("testdata/architecture/user-management.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["aspects"].(map[string]any)["platform_edges"].(map[string]any)["reason"] = hostileValue
+	for _, c := range m["access"].(map[string]any)["checks"].([]any) {
+		if c.(map[string]any)["public"] == true {
+			c.(map[string]any)["reason"] = hostileValue
+		}
+	}
+	for _, f := range m["flows"].([]any) {
+		f.(map[string]any)["steps"].([]any)[0].(map[string]any)["text"] = hostileValue
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(m); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("</script><img")) {
+		t.Fatal("the hostile model does not hold the raw text")
+	}
+	return buf.Bytes(), strings.ReplaceAll(hostileValue, "\u2028", "\u2028")
 }

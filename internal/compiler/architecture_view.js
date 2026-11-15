@@ -11,7 +11,7 @@ var SYS = M.system.name;
 var LAYER_NAME = {"edge":"Edge","authentication":"Authentication","handler":"Handler","slot":"Slot","repository":"Repository","store":"Store","outside call":"Outside call"};
 var LAYER_VAR = {"edge":"edge","authentication":"authentication","handler":"handler","slot":"slot","repository":"repository","store":"store","outside call":"outside"};
 var BOUNDARY_STYLE = {"network":"10 5","verified identity":"","tenant scope":"3 3","fill code":"","process":"1 4"};
-var GLYPH = {"direct":"●","arrow":"↑","userset":"◎","caveat":"?","intersection":"&","exclusion":"−","wildcard":"*","recursion":"↻","depth limit":"⋯"};
+var GLYPH = {"direct":"●","arrow":"↑","userset":"◎","caveat":"?","intersection":"&","exclusion":"−","wildcard":"*","recursion":"↻","depth limit":"⋯","work limit":"⊘"};
 var state = {view:"overview", sel:null, flow:null, step:1, text:false, coll:"", q:""};
 var byId = {};
 

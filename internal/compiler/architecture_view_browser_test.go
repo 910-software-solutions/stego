@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -237,6 +238,42 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		b.eval(`(function(){ var v = document.getElementById("view"); return {Text: v.textContent, Shape: !!v.querySelector("svg, table")}; })()`, &got)
 		if !strings.Contains(got.Text, m.Aspects.PlatformEdges.Reason) || got.Shape {
 			t.Fatalf("the empty platform edges view shows %+v", got)
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R07-T04 The view shows markup in the free text of the model as text only, and runs none of it", func(t *testing.T) {
+		hostile, value := hostileModel(t)
+		out, err := RenderArchitectureView(hostile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "index.html")
+		if err := os.WriteFile(path, out, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		b.do("Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__ran = 0; window.alert = function(){ window.__ran++; };"})
+		b.problems()
+		for _, v := range []string{"platform", "flows", "trust", "data"} {
+			b.open("file://" + path + "#view=" + v)
+			var got struct {
+				Images, Ran int
+				Text        string
+			}
+			b.eval(`(function(){ return {Images: document.querySelectorAll("img").length, Ran: window.__ran, Text: document.getElementById("view").textContent}; })()`, &got)
+			if got.Images != 0 || got.Ran != 0 {
+				t.Fatalf("view %s: the free text of the model became markup: %d images, %d calls", v, got.Images, got.Ran)
+			}
+			if (v == "platform" || v == "flows") && !strings.Contains(got.Text, value) {
+				t.Errorf("view %s does not show the free text as text", v)
+			}
+		}
+		var model bool
+		b.eval(`JSON.parse(document.getElementById("model").textContent).aspects.platform_edges.reason === `+strconv.Quote(value), &model)
+		if !model {
+			t.Error("the page does not read the model's free text back unchanged")
+		}
+		if blocked, errors := b.problems(); len(blocked)+len(errors) > 0 {
+			t.Fatalf("the hostile model made requests %v or errors %v", blocked, errors)
 		}
 	})
 

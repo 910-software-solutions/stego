@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -31,8 +33,10 @@ func TestArchitectureViewApply(t *testing.T) {
 		}
 		start := []byte(`<script type="application/json" id="model">`)
 		i := bytes.Index(view, start)
-		if i < 0 || !bytes.HasPrefix(view[i+len(start):], append(append([]byte{}, data...), []byte("</script>")...)) {
-			t.Fatal("the view does not embed the written model unchanged")
+		end := bytes.Index(view[max(i, 0):], []byte("</script>"))
+		var embedded, written any
+		if i < 0 || end < 0 || json.Unmarshal(view[i+len(start):i+end], &embedded) != nil || json.Unmarshal(data, &written) != nil || !reflect.DeepEqual(embedded, written) {
+			t.Fatal("the view does not embed the written model as the same JSON value")
 		}
 		want, err := compiler.RenderArchitectureView(data)
 		if err != nil || !bytes.Equal(want, view) {

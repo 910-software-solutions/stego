@@ -11,7 +11,7 @@ import (
 )
 
 // The architecture view (ST-GEN-TM20, ST-GEN-UC08): the one HTML file architecture/index.html that apply writes
-// beside the architecture model. It embeds the model unchanged (ST-GEN-UC08-R07), the layout that apply computes
+// beside the architecture model. It embeds the model as the same JSON value (ST-GEN-UC08-R07), the layout that apply computes
 // from it, a text form of each view, and the viewer script and style, and it loads nothing else (R02).
 
 // ArchitectureViewFile is the path, in the project folder, of the architecture view.
@@ -51,6 +51,7 @@ var grantGlyphs = []struct{ kind, glyph, meaning string }{
 	{"wildcard", "*", "wildcard: every subject of the type"},
 	{"recursion", "↻", "recursion: the path grants through itself and stops"},
 	{"depth limit", "⋯", "depth limit: the expansion stops here"},
+	{"work limit", "⊘", "work limit: the expansion stops at its bound of work"},
 }
 
 // RenderArchitectureView renders the architecture view from the bytes of the architecture model alone
@@ -59,10 +60,6 @@ func RenderArchitectureView(model []byte) ([]byte, error) {
 	var m ArchitectureModel
 	if err := json.Unmarshal(model, &m); err != nil {
 		return nil, fmt.Errorf("architecture view: the model does not decode: %w", err)
-	}
-	lower := bytes.ToLower(model)
-	if bytes.Contains(lower, []byte("</script")) || bytes.Contains(lower, []byte("<!--")) {
-		return nil, fmt.Errorf("architecture view: the model holds </script or <!--, so the view cannot embed it unchanged")
 	}
 	layout, err := json.Marshal(layoutArchitecture(&m))
 	if err != nil {
@@ -77,8 +74,10 @@ func RenderArchitectureView(model []byte) ([]byte, error) {
 		"{{archetype}}", html.EscapeString(m.System.Archetype+" "+m.System.ArchetypeVersion)).Replace(before))
 	writeForms(&out, &m)
 	out.WriteString(after)
+	// The model holds free text, so the view embeds it with <, >, & and U+2028 and U+2029 escaped as \u sequences:
+	// the same JSON value, which no text in it can end or turn into markup.
 	out.WriteString("<script type=\"application/json\" id=\"model\">")
-	out.Write(model)
+	json.HTMLEscape(&out, model)
 	out.WriteString("</script>\n<script type=\"application/json\" id=\"layout\">")
 	out.Write(layout)
 	out.WriteString("</script>\n<script>\n")
