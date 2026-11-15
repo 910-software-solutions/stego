@@ -811,6 +811,22 @@ func TestArchitectureContext(t *testing.T) {
 		if !slices.Contains(actors, "actor:token-issuer.auth token issuer https://id.example/realm <service.yaml overrides.auth.issuer>") {
 			t.Fatalf("the declared issuer does not name the actor:\n%s", strings.Join(actors, "\n"))
 		}
+		// The model shows the scheme, host and path of the issuer, and no user info, query or fragment; a value with
+		// no scheme and host is not shown.
+		for issuer, want := range map[string]string{
+			"https://user:secret@id.example/realm?token=t0#f": "https://id.example/realm",
+			"https://id.example/realm?":                       "https://id.example/realm",
+			"https://id.example/realm#":                       "https://id.example/realm",
+			"user:secret@id.example/realm":                    "Token issuer of auth",
+			"id.example/realm":                                "Token issuer of auth",
+		} {
+			in.Service.Overrides["auth"] = map[string]any{"issuer": issuer}
+			model, _ = deriveFixture(t, in)
+			actors, _ = summary(model)
+			if !slices.Contains(actors, "actor:token-issuer.auth token issuer "+want+" <service.yaml overrides.auth.issuer>") {
+				t.Errorf("the declared issuer %q does not name the actor %q:\n%s", issuer, want, strings.Join(actors, "\n"))
+			}
+		}
 
 		// A need of a backing store is a container that the service keeps its rows in, and then the repository's
 		// store is no actor; with no authorization and no collection, there is no authorization service and no caller.
