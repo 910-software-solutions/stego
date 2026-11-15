@@ -1512,6 +1512,9 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 	case types.FieldTypeTimestamp:
 		s.Type = "string"
 		s.Format = "date-time"
+		if f.ClientSetTime() {
+			s.Description = "An RFC 3339 time that the client sets, such as 2026-11-14T09:30:00Z; it is stored and answered in UTC."
+		}
 	case types.FieldTypeEnum:
 		s.Type = "string"
 		s.Enum = f.Values
@@ -1557,7 +1560,8 @@ func isServerManaged(f types.Field) bool {
 	if f.Computed {
 		return true
 	}
-	if f.Type == types.FieldTypeTimestamp {
+	// A timestamp is server-managed unless the declaration marks it client_set (ST-DECL-Q16).
+	if f.Type == types.FieldTypeTimestamp && !f.ClientSetTime() {
 		return true
 	}
 	if f.Name == "created_by" || f.Name == "updated_by" {

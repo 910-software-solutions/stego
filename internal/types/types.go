@@ -93,10 +93,24 @@ type Field struct {
 	Sensitivity string `yaml:"sensitivity,omitempty" json:"Sensitivity,omitempty"`
 	// Currency is the ISO 4217 code of a field of type money (ST-DECL-INV26).
 	Currency string `yaml:"currency,omitempty" json:"Currency,omitempty"`
+	// ClientSet marks a timestamp field whose value the client sets, such as a due date: the server does not
+	// manage it (ST-SUP-RC20-OC17), and the generated code checks that it is an RFC 3339 time and keeps it in UTC.
+	// Omitted means server-managed. The Product owner decided ST-DECL-Q16 on 2026-11-14.
+	ClientSet bool `yaml:"client_set,omitempty" json:"ClientSet,omitempty"`
 	// Column is the stored column of the field when it is not Name: generation names a renamed field in the API by
 	// its name before its first rename, and stores it in the column of its declared name (ST-GEN-UC12-R04). The
 	// declaration never sets it.
 	Column string `yaml:"-" json:"Column,omitempty"`
+}
+
+// ServerTimestampNames are the timestamp field names that always hold a time the server sets: the time a row was
+// created or last changed. A declaration cannot mark them client_set (ST-DECL-Q16).
+var ServerTimestampNames = map[string]bool{"created_at": true, "updated_at": true, "created_time": true, "updated_time": true}
+
+// ClientSetTime tells whether the field is a timestamp that the client sets (ST-DECL-Q16), not one that the server
+// manages (ST-SUP-RC20-OC17).
+func (f Field) ClientSetTime() bool {
+	return f.ClientSet && f.Type == FieldTypeTimestamp && !f.Computed && !ServerTimestampNames[f.Name]
 }
 
 // ColumnName gives the stored column of the field: Column, else Name.
