@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"go/scanner"
 	"go/token"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -20,7 +23,16 @@ import (
 // scan reads the generator packages (their templates and the code that their Go source emits as text), the code
 // that the assembler emits, and the runtime packages, as Go tokens. It follows a name through a constant, a helper
 // that takes the name as a parameter, a getenv function that the caller passes in, a field of a struct literal, and
-// an enumeration of the environment under a prefix. A read whose name it cannot follow fails the scan.
+// an enumeration of the environment under a prefix. It matches os and syscall under any import name, a local getenv
+// such as getenv := os.Getenv, os.Getenv passed to a runtime function, and os.ExpandEnv of a constant text. A read
+// whose name it cannot follow fails the scan, such as os.Expand, a dot import, or os.Getenv passed to another
+// function. It also holds each component that owns a library to the variables that the library reads by itself
+// (libraryReads).
+//
+// What the scan does not see: the code of a fill, which the service author writes; files that are not Go source or
+// a Go template, such as a script or a container file; a name that reaches os.Getenv through reflection or through
+// an assignment to a struct field that is not a literal of the field; and a library that reads a variable through
+// a module other than pgx, grpc-go, the OpenTelemetry SDK and the Go standard library.
 
 // scanUnit is a set of files whose reads one or more components own.
 type scanUnit struct {
@@ -39,7 +51,7 @@ var (
 		"assembler.go":           {"health-check"},
 		"runtime_wiring.go.tmpl": {"command"},
 	}
-	compilerOwn = []string{"apply_hook.go", "init.go"}
+	compilerOwn = map[string][]string{"apply_hook.go": {"STEGO_TEST_APPLY_LOG", "STEGO_TEST_STOP_APPLY"}, "init.go": {"STEGO_REGISTRY"}}
 	// runtimeOwners are the runtime packages whose settings a component declares, by their path in the runtime
 	// module, with the components that wire them.
 	runtimeOwners = map[string][]string{
@@ -63,7 +75,48 @@ type scanRead struct {
 	name, file, unresolved string
 }
 
-var envNameText = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,127}$`)
+var (
+	envNameText = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,127}$`)
+	// expansion is one $NAME or ${NAME} of a text that os.ExpandEnv expands.
+	expansion = regexp.MustCompile(`\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))`)
+)
+
+// passedToRuntime tells whether the value at the position is an argument of a call of a function of a package that
+// the text imports from the runtime module, such as modes.Parse(os.Args[1:], os.Getenv).
+func passedToRuntime(toks []tok, at int) bool {
+	depth := 0
+	for i := at - 1; i >= 1; i-- {
+		switch toks[i].t {
+		case token.RPAREN, token.RBRACK, token.RBRACE:
+			depth++
+		case token.LBRACK, token.LBRACE:
+			depth--
+		case token.LPAREN:
+			if depth == 0 {
+				if i >= 3 && toks[i-1].t == token.IDENT && toks[i-2].t == token.PERIOD && toks[i-3].t == token.IDENT {
+					return runtimeImport(toks, toks[i-3].text)
+				}
+				return false
+			}
+			depth--
+		}
+	}
+	return false
+}
+
+// runtimeImport tells whether the name is the package name of an import of the runtime module in the text.
+func runtimeImport(toks []tok, name string) bool {
+	for _, t := range toks {
+		if t.t != token.STRING {
+			continue
+		}
+		path, err := strconv.Unquote(t.text)
+		if err == nil && strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") && filepath.Base(path) == name {
+			return true
+		}
+	}
+	return false
+}
 
 // tok is one Go token of a text.
 type tok struct {
@@ -231,16 +284,50 @@ func unitReads(t *testing.T, unit scanUnit, emits bool) []scanRead {
 				getters[toks[i].text] = true
 			}
 		}
+		// The names of the package os in the text: os, and each alias of an import of "os" (#344 security review
+		// M1). A dot import of os, or of syscall, is a read the scan cannot follow.
+		osNames := map[string]bool{"os": true, "syscall": true}
+		for i := 0; i+1 < len(toks); i++ {
+			if toks[i+1].t == token.STRING && (toks[i+1].text == `"os"` || toks[i+1].text == `"syscall"`) {
+				switch {
+				case toks[i].t == token.IDENT && toks[i].text != "import":
+					osNames[toks[i].text] = true
+				case toks[i].t == token.PERIOD:
+					reads = append(reads, scanRead{file: x.file, unresolved: "a dot import of os or syscall"})
+				}
+			}
+			// getenv := os.Getenv: a local name of a getenv function.
+			if toks[i].t == token.IDENT && toks[i+1].t == token.DEFINE && i+4 < len(toks) && osNames[toks[i+2].text] && toks[i+3].t == token.PERIOD &&
+				(toks[i+4].text == "Getenv" || toks[i+4].text == "LookupEnv") && (i+5 >= len(toks) || toks[i+5].t != token.LPAREN) {
+				getters[toks[i].text] = true
+			}
+		}
 		for i := 0; i+3 < len(toks); i++ {
-			isOS := toks[i].text == "os" && toks[i+1].t == token.PERIOD
+			isOS := osNames[toks[i].text] && toks[i+1].t == token.PERIOD && (i == 0 || toks[i-1].t != token.PERIOD)
 			call := toks[i+1].t == token.LPAREN && getters[toks[i].text] && (i == 0 || toks[i-1].t != token.PERIOD)
 			switch {
 			case isOS && (toks[i+2].text == "Getenv" || toks[i+2].text == "LookupEnv"):
 				if toks[i+3].t != token.LPAREN {
-					// os.Getenv passed as a value: the callee's own package is a unit of the scan.
+					// os.Getenv as a value: a local getenv (above), or an argument of a runtime function whose getenv
+					// parameter the scan follows in the runtime package. Any other use is a read it cannot follow.
+					local := i >= 2 && toks[i-1].t == token.DEFINE && getters[toks[i-2].text]
+					argument := i >= 1 && (toks[i-1].t == token.COMMA || toks[i-1].t == token.LPAREN) && passedToRuntime(toks, i)
+					if !local && !argument {
+						reads = append(reads, scanRead{file: x.file, unresolved: "declaration: os.Getenv or os.LookupEnv used as a value"})
+					}
 					continue
 				}
 				reads = append(reads, resolve(x.file, toks, i+4, 0)...)
+			case isOS && (toks[i+2].text == "ExpandEnv" || toks[i+2].text == "Expand"):
+				// An expansion reads each $NAME of its text; only a constant text can be followed.
+				if toks[i+3].t == token.LPAREN && i+4 < len(toks) && toks[i+4].t == token.STRING && toks[i+2].text == "ExpandEnv" {
+					text, _ := strconv.Unquote(toks[i+4].text)
+					for _, match := range expansion.FindAllStringSubmatch(text, -1) {
+						reads = append(reads, scanRead{name: match[1] + match[2], file: x.file})
+					}
+					continue
+				}
+				reads = append(reads, scanRead{file: x.file, unresolved: "an expansion of the environment"})
 			case call:
 				reads = append(reads, resolve(x.file, toks, i+2, 0)...)
 			case isOS && toks[i+2].text == "Environ":
@@ -370,6 +457,90 @@ func sourceFiles(t *testing.T, dir string) []string {
 	return files
 }
 
+// libraryRead is a library that the components use which reads environment variables by itself, the names it reads,
+// and the components that own it and declare each name (#344 security review M2). The service refuses most of them
+// at start (gen.EnvironmentGuardSource). The OpenTelemetry SDK reads OTEL_ variables too: otel-tracing refuses at
+// start each OTEL_ name that it does not declare, so they need no declaration.
+type libraryRead struct {
+	label  string
+	owners []string
+	names  []string
+}
+
+// libraryReads gives the variables that the pgx driver, grpc-go and the Go runtime and standard library read: for
+// a module, each name of its pattern in its source at the version that the runtime module requires.
+func libraryReads(t *testing.T, root string) []libraryRead {
+	t.Helper()
+	moduleNames := func(module, sub, pattern string, skip ...string) []string {
+		command := exec.Command("go", "mod", "download", "-json", module)
+		command.Dir = filepath.Join(root, "registry", "runtime")
+		output, err := command.Output()
+		if err != nil {
+			t.Fatalf("go mod download %s: %v", module, err)
+		}
+		var download struct{ Dir string }
+		if err := json.Unmarshal(output, &download); err != nil || download.Dir == "" {
+			t.Fatalf("go mod download %s gives no folder: %v", module, err)
+		}
+		literal := regexp.MustCompile(`"(` + pattern + `)"`)
+		found := map[string]bool{}
+		err = filepath.WalkDir(filepath.Join(download.Dir, sub), func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() {
+				if slices.ContainsFunc(skip, func(s string) bool { return strings.Contains(path, s) }) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, match := range literal.FindAllStringSubmatch(string(data), -1) {
+				found[match[1]] = true
+			}
+			return nil
+		})
+		if err != nil || len(found) == 0 {
+			t.Fatalf("the module %s holds no name of %s: %v", module, pattern, err)
+		}
+		return slices.Sorted(maps.Keys(found))
+	}
+	return []libraryRead{
+		{label: "pgx", owners: []string{"postgres-adapter", "postgres-client"}, names: moduleNames("github.com/jackc/pgx/v5", "pgconn", `PG[A-Z_]+`)},
+		{label: "grpc-go", owners: []string{"otel-tracing"}, names: moduleNames("google.golang.org/grpc", "", `GRPC_[A-Z0-9_]+`,
+			"grpctest", "testutils", "interop", "examples", "benchmark", "/test/")},
+		{label: "the Go runtime and standard library", owners: []string{"command"},
+			names: []string{"GODEBUG", "GOGC", "GOMAXPROCS", "GOMEMLIMIT", "GOTRACEBACK", "SSL_CERT_DIR", "SSL_CERT_FILE", "TZ"}},
+	}
+}
+
+// packageFiles gives the source files of a generator package and of its sub-packages, such as grpcgen, out of
+// testdata.
+func packageFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil || !entry.IsDir() {
+			return err
+		}
+		if entry.Name() == "testdata" {
+			return filepath.SkipDir
+		}
+		files = append(files, sourceFiles(t, path)...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
 // scanUnits gives the units of the scan: each generator package with the components it serves, each compiler file
 // that emits a read, and each runtime package with the components that wire it.
 func scanUnits(t *testing.T, root string) ([]scanUnit, []scanUnit, []scanUnit) {
@@ -386,9 +557,9 @@ func scanUnits(t *testing.T, root string) ([]scanUnit, []scanUnit, []scanUnit) {
 	var generators []scanUnit
 	for dir, owners := range byPackage {
 		slices.Sort(owners)
-		files := sourceFiles(t, filepath.Join(root, dir))
+		files := packageFiles(t, filepath.Join(root, dir))
 		for _, other := range emitsAlso[dir] {
-			files = append(files, sourceFiles(t, filepath.Join(root, other))...)
+			files = append(files, packageFiles(t, filepath.Join(root, other))...)
 		}
 		generators = append(generators, scanUnit{label: dir, files: files, owners: owners})
 	}
@@ -437,9 +608,9 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 			for _, r := range unitReads(t, unit, group.emits) {
 				relative, _ := filepath.Rel(root, r.file)
 				switch {
-				case slices.Contains(compilerOwn, filepath.Base(r.file)) && strings.Contains(r.file, "internal/compiler"):
+				case slices.Contains(compilerOwn[filepath.Base(r.file)], r.name) && strings.Contains(r.file, "internal/compiler"):
 					continue
-				case r.unresolved == "declaration" && slices.ContainsFunc(unit.owners, func(o string) bool { return slices.Contains(declarationNamed, o) }):
+				case strings.HasPrefix(r.unresolved, "declaration") && slices.ContainsFunc(unit.owners, func(o string) bool { return slices.Contains(declarationNamed, o) }):
 					continue
 				case r.unresolved != "":
 					faults = append(faults, relative+": a read of the environment whose name the scan cannot follow: "+r.unresolved)
@@ -458,6 +629,19 @@ func checkScan(t *testing.T, root string, reg *registry.Registry) []string {
 				}
 				if !found {
 					faults = append(faults, "component "+strings.Join(unit.owners, " or ")+": "+relative+" reads the environment variable "+r.name+", which the component does not declare")
+				}
+			}
+		}
+	}
+	for _, library := range libraryReads(t, root) {
+		for _, owner := range library.owners {
+			if read[owner] == nil {
+				read[owner] = map[string]bool{}
+			}
+			for _, name := range library.names {
+				read[owner][name] = true
+				if !declared[owner][name] {
+					faults = append(faults, "component "+owner+": the library "+library.label+" reads the environment variable "+name+", which the component does not declare")
 				}
 			}
 		}
@@ -506,6 +690,54 @@ func TestEnvironmentScan(t *testing.T) {
 		for _, part := range []string{"grpc-application", "STEGO_GRPC_ADDR", "internal/generator/grpcapplication/runtime.go.tmpl"} {
 			if !strings.Contains(faults, part) {
 				t.Errorf("the scan does not name %s:\n%s", part, faults)
+			}
+		}
+	})
+}
+
+func TestEnvironmentScanForms(t *testing.T) {
+	t.Run("ST-SUP-UC01-R10-T03 The release scan follows each form of an environment read, and fails on a form it cannot follow", func(t *testing.T) {
+		dir := t.TempDir()
+		source := `package x
+
+import (
+	xos "os"
+	"syscall"
+)
+
+func f(s string) {
+	_ = xos.Getenv("ALIASED")
+	getenv := xos.Getenv
+	_ = getenv("LOCAL")
+	_, _ = syscall.Getenv("SYSCALL")
+	_ = xos.ExpandEnv("${EXPANDED}/$ALSO")
+	_ = xos.Expand(s, xos.Getenv)
+	other(xos.Getenv)
+}
+`
+		dotted := "package y\n\nimport . \"os\"\n\nfunc g() { _ = Getenv(\"DOTTED\") }\n"
+		for name, text := range map[string]string{"x.go": source, "y.go": dotted} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		reads := unitReads(t, scanUnit{label: "forms", files: []string{filepath.Join(dir, "x.go"), filepath.Join(dir, "y.go")}, owners: []string{"forms"}}, false)
+		var names, unresolved []string
+		for _, r := range reads {
+			if r.name != "" {
+				names = append(names, r.name)
+			} else {
+				unresolved = append(unresolved, r.unresolved)
+			}
+		}
+		slices.Sort(names)
+		if strings.Join(names, " ") != "ALIASED ALSO EXPANDED LOCAL SYSCALL" {
+			t.Errorf("the scan follows the names %v", names)
+		}
+		text := strings.Join(unresolved, "; ")
+		for _, want := range []string{"an expansion of the environment", "used as a value", "a dot import"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the scan does not fail on %s: %s", want, text)
 			}
 		}
 	})
