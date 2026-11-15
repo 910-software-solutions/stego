@@ -26,3 +26,15 @@ platform supplies those values.
 3. Give each service a locked AppProject: restrict `sourceRepos` and `destinations`, and refuse the namespaces
    `kube-system` and `argocd`. STEGO refuses the project `default`.
 4. Choose the revision of the environment files. A full commit pins them. A protected branch follows them.
+
+## The CI file
+
+When the declaration has `delivery.ci`, `stego apply` writes the CI file from the pins of the registry's
+`ci-pipeline` component. The shipped component states no provider yet, so `stego apply` writes no CI file and says
+so in the plan.
+
+- `github-actions` (`.github/workflows/stego.yml`): the `check` job runs on a pull request, with read permission to
+  the contents only, and never pushes or signs. The `release` job runs only on a push to the repository's default
+  branch or on a tag, and it pushes and signs the image.
+- `konflux` (`.tekton/<service>-push.yaml`): one PipelineRun on a push to the branch `main`. The branch is fixed
+  for now. A repository whose default branch is not `main` gets no Konflux run on push.

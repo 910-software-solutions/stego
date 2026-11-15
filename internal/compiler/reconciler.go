@@ -514,7 +514,11 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	var notes []string
 	if input.WriteDeployment != nil && requirements != nil {
-		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements)
+		var pipelines map[string]registry.PipelinePins
+		if component := reg.Component(registry.PipelineComponent); component != nil {
+			pipelines = component.Pipelines
+		}
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines)
 		if err != nil {
 			return nil, err
 		}
@@ -678,7 +682,14 @@ const RequirementsFile = "deploy/platform-requirements.yaml"
 // a hand edit of it and drift names one (ST-DLV-UC01-R05).
 func isProjectGeneratedFile(filePath string) bool {
 	return filePath == RequirementsFile || filePath == ReferenceFile || filePath == ArchitectureFile || filePath == ArchitectureViewFile ||
-		slices.Contains(BaseFiles, filePath) || filePath == DeliveryObjectFile
+		slices.Contains(BaseFiles, filePath) || filePath == DeliveryObjectFile || isPipelineFile(filePath)
+}
+
+// isPipelineFile tells if a path is the CI file of a provider: .github/workflows/stego.yml, or
+// .tekton/<service>-push.yaml (ST-DLV-EN03-TB, the paths of delivery.PipelineFile).
+func isPipelineFile(filePath string) bool {
+	name, tekton := strings.CutPrefix(filePath, ".tekton/")
+	return filePath == ".github/workflows/stego.yml" || (tekton && strings.HasSuffix(name, "-push.yaml") && !strings.Contains(name, "/"))
 }
 
 // DeliveryObjectFile is the path, in the project folder, of the Argo CD ApplicationSet: the path of
@@ -705,6 +716,9 @@ type DeploymentInput struct {
 	Probes       *gen.Probes
 	// Delivery is the delivery stanza of the declaration, or nil (ST-DLV-Q12 (A)).
 	Delivery *types.Delivery
+	// Pipelines are the pins of each CI provider that the registry's ci-pipeline component states, or nil
+	// (ST-DLV-INV04).
+	Pipelines map[string]registry.PipelinePins
 }
 
 // DeploymentFiles are the files of the Kubernetes base and of the delivery object, and the lines of the plan.
@@ -717,7 +731,7 @@ type DeploymentFiles struct {
 // component of the active set serves, in the order of the active set (ST-DLV-INV08). It refuses a file out of the
 // paths of the base.
 func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, names []string, generators map[string]gen.Generator,
-	contexts map[string]gen.Context, requirements []byte) ([]gen.File, []string, error) {
+	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins) ([]gen.File, []string, error) {
 	var probes *gen.Probes
 	for _, name := range names {
 		declarer, ok := generators[name].(gen.ProbeDeclarer)
@@ -733,12 +747,12 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 		}
 		probes = &served
 	}
-	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery})
+	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery, Pipelines: pipelines})
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
 	}
 	for _, file := range written.Files {
-		if !slices.Contains(BaseFiles, file.Path) && file.Path != DeliveryObjectFile {
+		if !slices.Contains(BaseFiles, file.Path) && file.Path != DeliveryObjectFile && !isPipelineFile(file.Path) {
 			return nil, nil, fmt.Errorf("the Kubernetes base writes %s, which is not a file of the base or the delivery object", file.Path)
 		}
 	}
