@@ -1,0 +1,51 @@
+# The platform requirements of the service: what its environment must supply. stego apply writes this file
+# from the declaration and the needs of its components. Do not edit it: change the declaration or the registry.
+version: 1
+service: orders
+requirements:
+  - kind: secret
+    name: orders-database
+    keys:
+      - password
+      - url
+    components:
+      - postgres-adapter
+  - kind: configuration
+    name: LOG_LEVEL
+    components:
+      - health-check
+  - kind: backing store
+    name: orders-db
+    engine: postgres
+    components:
+      - postgres-adapter
+  - kind: topic
+    name: order-events
+    components:
+      - kafka-producer
+  - kind: identity issuer
+    name: sso
+    components:
+      - rh-sso-auth
+  - kind: ingress
+    name: http
+    port: 8080
+    components:
+      - health-check
+  - kind: egress
+    name: payments
+    port: 443
+    components:
+      - rh-sso-auth
+  - kind: cluster permission
+    name: read-config-maps
+    resource: configmaps
+    verbs:
+      - get
+    components:
+      - health-check
+  - kind: pod security
+    name: pod-security
+    level: restricted
+    components:
+      - health-check

@@ -1,0 +1,512 @@
+package delivery
+
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// EnvironmentVersion is the version of the environment schema that STEGO owns (ST-DLV-TM02, ST-DLV-Q05 (A)).
+const EnvironmentVersion = 1
+
+// MaxEnvironmentBytes bounds the environment file that CheckEnvironment reads.
+const MaxEnvironmentBytes = 1 << 20
+
+// FitStatus is how the environment file meets one platform requirement: met, missing or wrong type.
+type FitStatus string
+
+// The statuses of a row of the environment fit.
+const (
+	Met       FitStatus = "met"
+	Missing   FitStatus = "missing"
+	WrongType FitStatus = "wrong type"
+)
+
+// FitRow is one row of the environment fit (ST-DLV-RM01): a requirement or a value of the environment file by its
+// kind and name, its status and what is missing or wrong. It never holds a secret value.
+type FitRow struct {
+	Requirement string
+	Status      FitStatus
+	Detail      string
+}
+
+// EnvironmentFit is the environment fit of one service and one environment file (ST-DLV-RM01-TB): each platform
+// requirement with its status, each value of a wrong type, and the values that no requirement names. A run builds
+// it in memory and keeps nothing.
+type EnvironmentFit struct {
+	Service     string
+	Environment string
+	Rows        []FitRow
+	// Unused are the values of the environment file that no platform requirement names, by kind and name.
+	Unused []string
+}
+
+// Met tells whether the environment file meets every platform requirement and every value has its type.
+func (f EnvironmentFit) Met() bool {
+	for _, row := range f.Rows {
+		if row.Status != Met {
+			return false
+		}
+	}
+	return true
+}
+
+// EnvironmentError is an environment file that cannot be read or does not have the shape of the environment
+// schema: the line, the path of the field at fault, if one, and why.
+type EnvironmentError struct {
+	Line   int
+	Field  string
+	Reason string
+}
+
+func (e *EnvironmentError) Error() string {
+	field := ""
+	if e.Field != "" {
+		field = " field " + e.Field + ":"
+	}
+	return fmt.Sprintf("line %d:%s %s", e.Line, field, e.Reason)
+}
+
+// environmentSections are the sections of the environment file, one for each requirement kind, in the order of the
+// requirement kinds.
+var environmentSections = []struct {
+	name string
+	kind RequirementKind
+	// fields are the fields of an entry of the section; nil for a section whose entries are not maps.
+	fields []string
+}{
+	{"secrets", Secret, nil},
+	{"configuration", Configuration, nil},
+	{"backing_stores", BackingStore, []string{"engine"}},
+	{"topics", Topic, []string{"topic"}},
+	{"identity_issuers", IdentityIssuer, []string{"issuer"}},
+	{"ingresses", Ingress, []string{"port", "host"}},
+	{"egresses", Egress, []string{"address", "port"}},
+	{"cluster_permissions", ClusterPermission, []string{"api_group", "resource", "verbs"}},
+	{"pod_security", PodSecurity, []string{"level"}},
+}
+
+// environmentEntry is one value of the environment file, under its kind and name. A secret entry holds its key
+// names only: the decoder never keeps or looks at a secret value.
+type environmentEntry struct {
+	kind RequirementKind
+	name string
+	line int
+	// keys are the key names of a secret.
+	keys []string
+	// fields are the fields of an entry of a map section, by name.
+	fields map[string]*yaml.Node
+	// fault is why the entry does not have the type of its kind, or "".
+	fault string
+}
+
+// environment is the environment file as the check reads it.
+type environment struct {
+	service     string
+	environment string
+	image       string
+	imageLine   int
+	entries     []*environmentEntry
+}
+
+// lookup gives the entry of the kind with the name, or nil.
+func (e environment) lookup(kind RequirementKind, name string) *environmentEntry {
+	for _, entry := range e.entries {
+		if entry.kind == kind && entry.name == name {
+			return entry
+		}
+	}
+	return nil
+}
+
+// imageDigest is an image named by its repository and a sha256 digest.
+var imageDigest = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$`)
+
+// readEnvironment reads an environment file through the strict decoder: one document of at most
+// MaxEnvironmentBytes, with no anchor, alias or merge key, of schema version 1, with no field the schema does not
+// have. It never keeps a secret value. A value of a wrong type inside an entry is kept as the entry's fault, for the
+// check to name; a wrong shape above the entries is an EnvironmentError.
+func readEnvironment(data []byte) (environment, error) {
+	var document yaml.Node
+	if err := decodeStrict(data, MaxEnvironmentBytes, &document); err != nil {
+		return environment{}, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return environment{}, &EnvironmentError{Line: document.Line, Reason: "the file is not a map of the fields of the environment schema"}
+	}
+	top, err := fieldsOf(document.Content[0], "")
+	if err != nil {
+		return environment{}, err
+	}
+	known := []string{"version", "service", "environment", "image", "destination"}
+	for _, section := range environmentSections {
+		known = append(known, section.name)
+	}
+	if err := onlyFields(top, known, ""); err != nil {
+		return environment{}, err
+	}
+	for _, required := range []string{"version", "service", "environment", "image", "destination"} {
+		if top.nodes[required] == nil {
+			return environment{}, &EnvironmentError{Line: document.Content[0].Line, Field: required, Reason: "the field is missing"}
+		}
+	}
+	version := top.nodes["version"]
+	if version.Kind != yaml.ScalarNode || version.Tag != "!!int" {
+		return environment{}, &EnvironmentError{Line: version.Line, Field: "version", Reason: "the schema version is a number"}
+	}
+	if number, _ := strconv.Atoi(version.Value); number != EnvironmentVersion {
+		return environment{}, &EnvironmentError{Line: version.Line, Field: "version", Reason: fmt.Sprintf("the schema version is %s; this stego reads version %d", version.Value, EnvironmentVersion)}
+	}
+	result := environment{}
+	for _, field := range []struct {
+		name   string
+		target *string
+	}{{"service", &result.service}, {"environment", &result.environment}, {"image", &result.image}} {
+		node := top.nodes[field.name]
+		if !isText(node) || node.Value == "" {
+			return environment{}, &EnvironmentError{Line: node.Line, Field: field.name, Reason: "the field is one text"}
+		}
+		*field.target = node.Value
+	}
+	result.imageLine = top.nodes["image"].Line
+	destination := top.nodes["destination"]
+	if destination.Kind != yaml.MappingNode {
+		return environment{}, &EnvironmentError{Line: destination.Line, Field: "destination", Reason: "the destination is a map of cluster, namespace and overlay_path"}
+	}
+	parts, err := fieldsOf(destination, "destination")
+	if err != nil {
+		return environment{}, err
+	}
+	if err := onlyFields(parts, []string{"cluster", "namespace", "overlay_path"}, "destination"); err != nil {
+		return environment{}, err
+	}
+	for _, part := range []string{"cluster", "namespace", "overlay_path"} {
+		if node := parts.nodes[part]; node == nil || !isText(node) || node.Value == "" {
+			return environment{}, &EnvironmentError{Line: destination.Line, Field: "destination." + part, Reason: "the field is one text"}
+		}
+	}
+	for _, section := range environmentSections {
+		node := top.nodes[section.name]
+		if node == nil {
+			continue
+		}
+		if node.Kind != yaml.MappingNode {
+			return environment{}, &EnvironmentError{Line: node.Line, Field: section.name,
+				Reason: fmt.Sprintf("the %s are a map of names to entries, not a %s", section.name, nodeKind(node))}
+		}
+		entries, err := fieldsOf(node, section.name)
+		if err != nil {
+			return environment{}, err
+		}
+		for _, name := range entries.order {
+			entry, err := readEntry(section.name, section.kind, section.fields, name, entries.nodes[name])
+			if err != nil {
+				return environment{}, err
+			}
+			result.entries = append(result.entries, entry)
+		}
+	}
+	return result, nil
+}
+
+// fields are the fields of a YAML map in their order, by name.
+type fields struct {
+	order []string
+	nodes map[string]*yaml.Node
+}
+
+// fieldsOf reads the fields of a YAML map and refuses a key that is not one text and a key stated twice.
+func fieldsOf(node *yaml.Node, path string) (fields, error) {
+	result := fields{nodes: map[string]*yaml.Node{}}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i]
+		if !isText(key) || key.Value == "" {
+			return fields{}, &EnvironmentError{Line: key.Line, Field: path, Reason: "a key is not one text"}
+		}
+		if result.nodes[key.Value] != nil {
+			return fields{}, &EnvironmentError{Line: key.Line, Field: join(path, key.Value), Reason: "the field is stated twice"}
+		}
+		result.order = append(result.order, key.Value)
+		result.nodes[key.Value] = node.Content[i+1]
+	}
+	return result, nil
+}
+
+// onlyFields refuses a field that the environment schema does not have: an unknown shape.
+func onlyFields(given fields, known []string, path string) error {
+	for _, name := range given.order {
+		if !slices.Contains(known, name) {
+			return &EnvironmentError{Line: given.nodes[name].Line, Field: join(path, name),
+				Reason: fmt.Sprintf("the environment schema has no such field; the fields are %s", strings.Join(known, ", "))}
+		}
+	}
+	return nil
+}
+
+func join(path, name string) string {
+	if path == "" {
+		return name
+	}
+	return path + "." + name
+}
+
+func isText(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && node.Tag == "!!str"
+}
+
+// readEntry reads one entry of a section. A secret is a map of its key names, whose values it skips. A configuration
+// value is one value. Each other entry is a map of the fields of its kind.
+func readEntry(section string, kind RequirementKind, known []string, name string, node *yaml.Node) (*environmentEntry, error) {
+	entry := &environmentEntry{kind: kind, name: name, line: node.Line}
+	path := section + "." + name
+	switch kind {
+	case Secret:
+		if node.Kind != yaml.MappingNode {
+			entry.fault = "a secret is a map of its key names"
+			return entry, nil
+		}
+		keys, err := fieldsOf(node, path)
+		if err != nil {
+			return nil, err
+		}
+		// The values of the keys are not read.
+		entry.keys = keys.order
+		return entry, nil
+	case Configuration:
+		if node.Kind != yaml.ScalarNode {
+			entry.fault = "a configuration value is one value, not a " + nodeKind(node)
+		}
+		return entry, nil
+	}
+	if node.Kind != yaml.MappingNode {
+		entry.fault = fmt.Sprintf("a %s is a map of the fields %s, not a %s", kind, strings.Join(known, ", "), nodeKind(node))
+		return entry, nil
+	}
+	given, err := fieldsOf(node, path)
+	if err != nil {
+		return nil, err
+	}
+	if err := onlyFields(given, known, path); err != nil {
+		return nil, err
+	}
+	entry.fields = given.nodes
+	entry.fault = typeFault(given.nodes)
+	return entry, nil
+}
+
+// typeFault gives why a field of an entry does not have the type that the environment schema states for it, or "".
+func typeFault(given map[string]*yaml.Node) string {
+	for _, name := range []string{"engine", "topic", "issuer", "host", "address", "api_group", "resource", "level"} {
+		if node := given[name]; node != nil && !isText(node) {
+			return fmt.Sprintf("the %s is one text", strings.ReplaceAll(name, "_", " "))
+		}
+	}
+	if node := given["issuer"]; node != nil && !strings.HasPrefix(node.Value, "https://") {
+		return fmt.Sprintf("the issuer %s is not an https URL", node.Value)
+	}
+	if node := given["port"]; node != nil {
+		number, err := strconv.Atoi(node.Value)
+		if node.Kind != yaml.ScalarNode || node.Tag != "!!int" || err != nil || number < 1 || number > 65535 {
+			return fmt.Sprintf("the port is %s; the environment schema states a port number from 1 to 65535", describe(node))
+		}
+	}
+	if node := given["verbs"]; node != nil {
+		if node.Kind != yaml.SequenceNode {
+			return "the verbs are a list of verbs"
+		}
+		for _, verb := range node.Content {
+			if !isText(verb) {
+				return "the verbs are a list of verbs"
+			}
+		}
+	}
+	return ""
+}
+
+// describe shows a value that is not secret in a message.
+func describe(node *yaml.Node) string {
+	if node.Kind == yaml.ScalarNode {
+		if node.Tag == "!!str" {
+			return "the text " + strconv.Quote(node.Value)
+		}
+		return node.Value
+	}
+	return "a " + nodeKind(node)
+}
+
+// CheckEnvironment checks an environment file against the platform requirements of a service and builds the
+// environment fit (ST-DLV-DS02, ST-DLV-RM01-PJ): each requirement with its status by requirementMet, the image by its
+// digest, each value of a wrong type, and the values no requirement names as unused. It reads secret names and keys
+// only, never a secret value. An environment file that cannot be read, has an unknown shape or is of another service
+// is an error, never a fit.
+func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, error) {
+	env, err := readEnvironment(data)
+	if err != nil {
+		return EnvironmentFit{}, err
+	}
+	if env.service != requirements.Service {
+		return EnvironmentFit{}, &EnvironmentError{Line: 1, Field: "service",
+			Reason: fmt.Sprintf("the environment file is of the service %s; the platform requirements are of the service %s", env.service, requirements.Service)}
+	}
+	fit := EnvironmentFit{Service: requirements.Service, Environment: env.environment, Unused: []string{}}
+	if !imageDigest.MatchString(env.image) {
+		fit.Rows = append(fit.Rows, FitRow{Requirement: "image", Status: WrongType,
+			Detail: fmt.Sprintf("the image %s is not named by a sha256 digest; the environment schema states repository@sha256:<digest>", env.image)})
+	}
+	named := map[string]bool{}
+	for _, requirement := range requirements.Requirements {
+		named[requirement.Name] = true
+		status, detail := requirementMet(requirement, env)
+		fit.Rows = append(fit.Rows, FitRow{Requirement: string(requirement.Kind) + " " + requirement.Name, Status: status, Detail: detail})
+	}
+	for _, entry := range env.entries {
+		if named[entry.name] {
+			if requirement := requirementNamed(requirements, entry.name); requirement.Kind == Secret && entry.kind == Secret {
+				for _, key := range entry.keys {
+					if !slices.Contains(requirement.Keys, key) {
+						fit.Unused = append(fit.Unused, fmt.Sprintf("%s %s key %s", entry.kind, entry.name, key))
+					}
+				}
+			}
+			continue
+		}
+		fit.Unused = append(fit.Unused, fmt.Sprintf("%s %s", entry.kind, entry.name))
+		if entry.fault != "" {
+			fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType, Detail: entry.fault})
+		}
+	}
+	return fit, nil
+}
+
+// requirementNamed gives the requirement with the name.
+func requirementNamed(requirements Requirements, name string) Requirement {
+	for _, requirement := range requirements.Requirements {
+		if requirement.Name == name {
+			return requirement
+		}
+	}
+	return Requirement{}
+}
+
+// podLevelOrder ranks the pod security levels from the most open to the strictest.
+var podLevelOrder = []string{"privileged", "baseline", "restricted"}
+
+// requirementMet tells whether the environment file meets one platform requirement (ST-DLV-SP01): it supplies, under
+// the requirement's name, a value of its kind with every part its shape names. When it does not, it gives the
+// status and the part that is missing or wrong.
+func requirementMet(requirement Requirement, env environment) (FitStatus, string) {
+	entry := env.lookup(requirement.Kind, requirement.Name)
+	if entry == nil {
+		for _, other := range env.entries {
+			if other.name == requirement.Name {
+				return WrongType, fmt.Sprintf("the environment file supplies %s as a %s; the requirement is a %s", requirement.Name, other.kind, requirement.Kind)
+			}
+		}
+		return Missing, fmt.Sprintf("the environment file supplies no %s %s", requirement.Kind, requirement.Name)
+	}
+	if entry.fault != "" {
+		return WrongType, entry.fault
+	}
+	text := func(field string) (string, bool) {
+		node := entry.fields[field]
+		if node == nil {
+			return "", false
+		}
+		return node.Value, true
+	}
+	switch requirement.Kind {
+	case Secret:
+		var missing []string
+		for _, key := range requirement.Keys {
+			if !slices.Contains(entry.keys, key) {
+				missing = append(missing, key)
+			}
+		}
+		if len(missing) == 1 {
+			return Missing, "the key " + missing[0] + " is missing"
+		}
+		if len(missing) > 1 {
+			return Missing, "the keys " + strings.Join(missing, ", ") + " are missing"
+		}
+	case BackingStore:
+		engine, given := text("engine")
+		if !given {
+			return Missing, "the engine is missing"
+		}
+		if engine != requirement.Engine {
+			return WrongType, fmt.Sprintf("the engine is %s; the requirement names the engine %s", engine, requirement.Engine)
+		}
+	case Topic, IdentityIssuer:
+		field := map[RequirementKind]string{Topic: "topic", IdentityIssuer: "issuer"}[requirement.Kind]
+		if _, given := text(field); !given {
+			return Missing, "the " + field + " is missing"
+		}
+	case Ingress, Egress:
+		if requirement.Kind == Egress {
+			if _, given := text("address"); !given {
+				return Missing, "the address is missing"
+			}
+		}
+		port, given := text("port")
+		if !given {
+			return Missing, "the port is missing"
+		}
+		if port != strconv.Itoa(requirement.Port) {
+			return WrongType, fmt.Sprintf("the port is %s; the requirement names the port %d", port, requirement.Port)
+		}
+	case ClusterPermission:
+		group, _ := text("api_group")
+		resource, given := text("resource")
+		if !given {
+			return Missing, "the resource is missing"
+		}
+		if group != requirement.APIGroup || resource != requirement.Resource {
+			return WrongType, fmt.Sprintf("the permission is for the resource %q of the API group %q; the requirement names the resource %q of the API group %q",
+				resource, group, requirement.Resource, requirement.APIGroup)
+		}
+		var granted []string
+		if node := entry.fields["verbs"]; node != nil {
+			for _, verb := range node.Content {
+				granted = append(granted, verb.Value)
+			}
+		}
+		var missing []string
+		for _, verb := range requirement.Verbs {
+			if !slices.Contains(granted, verb) {
+				missing = append(missing, verb)
+			}
+		}
+		if len(missing) > 0 {
+			return Missing, "the verbs " + strings.Join(missing, ", ") + " are not granted"
+		}
+	case PodSecurity:
+		level, given := text("level")
+		if !given {
+			return Missing, "the level is missing"
+		}
+		admitted := slices.Index(podLevelOrder, level)
+		if admitted < 0 {
+			return WrongType, fmt.Sprintf("the level %s is not one of %s", level, strings.Join(podLevelOrder, ", "))
+		}
+		if admitted > slices.Index(podLevelOrder, requirement.Level) {
+			return Missing, fmt.Sprintf("the environment admits pods of the level %s; the service needs the level %s", level, requirement.Level)
+		}
+	}
+	return Met, ""
+}
+
+// UnmetRequirements finds the unmet platform requirements (ST-DLV-QRY01-H): each row of the environment fit that
+// the reader holds whose status is not met, in the order of the fit.
+func UnmetRequirements(reader *EnvironmentReader) []FitRow {
+	var unmet []FitRow
+	for _, row := range reader.Fit().Rows {
+		if row.Status != Met {
+			unmet = append(unmet, row)
+		}
+	}
+	return unmet
+}

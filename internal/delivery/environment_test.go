@@ -1,0 +1,201 @@
+package delivery
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"gopkg.in/yaml.v3"
+)
+
+// These tests prove the environment check of Delivering (ST-DLV-DS02, ST-DLV-SP01) on the files of ST-DLV-TD02:
+// the platform requirements that stego apply writes for the service of ST-DLV-TD01 and an environment file that
+// meets them.
+
+// environmentFixture reads the platform requirements and the environment file of ST-DLV-TD02.
+func environmentFixture(t *testing.T) (Requirements, []byte) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "environment", "platform-requirements.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements, err := LoadRequirements(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := os.ReadFile(filepath.Join("testdata", "environment", "dev.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return requirements, environment
+}
+
+// withoutEntry gives the environment file without the entry of the section with the name.
+func withoutEntry(t *testing.T, data []byte, section, name string) []byte {
+	t.Helper()
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	top := document.Content[0]
+	for i := 0; i < len(top.Content); i += 2 {
+		if top.Content[i].Value != section {
+			continue
+		}
+		entries := top.Content[i+1]
+		for j := 0; j < len(entries.Content); j += 2 {
+			if entries.Content[j].Value == name {
+				entries.Content = append(entries.Content[:j], entries.Content[j+2:]...)
+				out, err := yaml.Marshal(&document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return out
+			}
+		}
+	}
+	t.Fatalf("the environment file has no entry %s in %s", name, section)
+	return nil
+}
+
+// sectionOf gives the section of the environment file for a requirement kind.
+func sectionOf(t *testing.T, kind RequirementKind) string {
+	t.Helper()
+	for _, section := range environmentSections {
+		if section.kind == kind {
+			return section.name
+		}
+	}
+	t.Fatalf("no section for the kind %s", kind)
+	return ""
+}
+
+// unmetRows gives the rows of the fit that are not met.
+func unmetRows(fit EnvironmentFit) []FitRow {
+	return UnmetRequirements(NewEnvironmentReader(fit))
+}
+
+// replaceOnce gives the text with old replaced by new, and fails the test unless old is in it once.
+func replaceOnce(t *testing.T, data []byte, old, new string) []byte {
+	t.Helper()
+	if strings.Count(string(data), old) != 1 {
+		t.Fatalf("the environment file does not hold %q once", old)
+	}
+	return []byte(strings.Replace(string(data), old, new, 1))
+}
+
+func TestCheckEnvironment(t *testing.T) {
+	t.Run("ST-DLV-DS02-T01 An environment file is accepted only when it meets each requirement, and each unmet one is named", func(t *testing.T) {
+		requirements, data := environmentFixture(t)
+		fit, err := CheckEnvironment(requirements, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !fit.Met() || len(unmetRows(fit)) != 0 {
+			t.Fatalf("the check refused the environment file of the test data set: %+v", fit.Rows)
+		}
+		if len(fit.Rows) != len(requirements.Requirements) {
+			t.Fatalf("the fit holds %d rows, want one for each of the %d requirements", len(fit.Rows), len(requirements.Requirements))
+		}
+		for _, requirement := range requirements.Requirements {
+			changed := withoutEntry(t, data, sectionOf(t, requirement.Kind), requirement.Name)
+			fit, err := CheckEnvironment(requirements, changed)
+			if err != nil {
+				t.Fatalf("without %s: %v", requirement.Name, err)
+			}
+			unmet := unmetRows(fit)
+			want := string(requirement.Kind) + " " + requirement.Name
+			if fit.Met() || len(unmet) != 1 || unmet[0].Requirement != want || unmet[0].Status != Missing {
+				t.Errorf("without the entry %s the check gives %+v, want only %s as missing", requirement.Name, unmet, want)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-DS02-T02 An environment file with a value of the wrong type is refused", func(t *testing.T) {
+		requirements, data := environmentFixture(t)
+		cases := []struct {
+			name, row, value, typ string
+			change                func([]byte) []byte
+		}{
+			{"the image named by the tag latest", "image", "quay.io/example/orders:latest", "sha256 digest", func(data []byte) []byte {
+				return replaceOnce(t, data, "image: quay.io/example/orders@sha256:3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a", "image: quay.io/example/orders:latest")
+			}},
+			{"the egress port as the text https", "egress payments", `"https"`, "port number", func(data []byte) []byte {
+				return replaceOnce(t, data, "    port: 443\n", "    port: https\n")
+			}},
+			{"the secret orders-database as a configuration value", "secret orders-database", "configuration", "secret", func(data []byte) []byte {
+				data = withoutEntry(t, data, "secrets", "orders-database")
+				return replaceOnce(t, data, "    LOG_LEVEL: info\n", "    LOG_LEVEL: info\n    orders-database: CANARY-SECRET-VALUE\n")
+			}},
+		}
+		for _, c := range cases {
+			fit, err := CheckEnvironment(requirements, c.change(data))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			unmet := unmetRows(fit)
+			if fit.Met() || len(unmet) != 1 || unmet[0].Requirement != c.row || unmet[0].Status != WrongType {
+				t.Errorf("with %s the check gives %+v, want only %s as wrong type", c.name, unmet, c.row)
+				continue
+			}
+			for _, part := range []string{c.value, c.typ} {
+				if !strings.Contains(unmet[0].Detail, part) {
+					t.Errorf("with %s the refusal %q does not name %s", c.name, unmet[0].Detail, part)
+				}
+			}
+			if strings.Contains(unmet[0].Detail, "CANARY") {
+				t.Errorf("with %s the refusal shows a secret value: %q", c.name, unmet[0].Detail)
+			}
+		}
+	})
+}
+
+// environmentWith gives an environment file of the service orders with the sections given.
+func environmentWith(t *testing.T, sections string) environment {
+	t.Helper()
+	env, err := readEnvironment([]byte(`version: 1
+service: orders
+environment: dev
+image: quay.io/example/orders@sha256:3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a
+destination: {cluster: https://api.dev.example.com:6443, namespace: orders-dev, overlay_path: overlays/dev}
+` + sections))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, sections)
+	}
+	return env
+}
+
+func TestRequirementMet(t *testing.T) {
+	t.Run("ST-DLV-SP01-T A requirement is met only when the environment file supplies its name, its kind and every part of its shape", func(t *testing.T) {
+		secret := Requirement{Kind: Secret, Name: "orders-database", Keys: []string{"password", "url"}, Components: []string{"postgres-adapter"}}
+		egress := Requirement{Kind: Egress, Name: "payments", Port: 443, Components: []string{"rh-sso-auth"}}
+		cases := []struct {
+			name        string
+			requirement Requirement
+			sections    string
+			status      FitStatus
+			part        string
+		}{
+			{"(a) the secret with both keys", secret, "secrets: {orders-database: {url: a, password: b}}\n", Met, ""},
+			{"(b) the secret with the key url only", secret, "secrets: {orders-database: {url: a}}\n", Missing, "password"},
+			{"(c) both keys under the name orders-db", secret, "secrets: {orders-db: {url: a, password: b}}\n", Missing, "orders-database"},
+			{"(d) a configuration value named orders-database", secret, "configuration: {orders-database: a}\n", WrongType, "secret"},
+			{"(e) the egress payments with an address and a port", egress, "egresses: {payments: {address: payments.example.com, port: 443}}\n", Met, ""},
+			{"(f) the egress payments with an address and no port", egress, "egresses: {payments: {address: payments.example.com}}\n", Missing, "port"},
+		}
+		for _, c := range cases {
+			status, detail := requirementMet(c.requirement, environmentWith(t, c.sections))
+			if status != c.status {
+				t.Errorf("%s: the requirement is %s (%s), want %s", c.name, status, detail, c.status)
+				continue
+			}
+			if c.status == Met && detail != "" {
+				t.Errorf("%s: a met requirement has the detail %q", c.name, detail)
+			}
+			if !strings.Contains(detail, c.part) {
+				t.Errorf("%s: the detail %q does not name %s", c.name, detail, c.part)
+			}
+		}
+	})
+}
