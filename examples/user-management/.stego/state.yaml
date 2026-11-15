@@ -34,54 +34,54 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115082552-a82d94a27368
+        module_version: v0.0.0-20261115083105-8123a94c3d02
         vcs: git
-        revision: a82d94a27368e91ead51547308ff2f0dff7de660
+        revision: 8123a94c3d02da2cf7c2f38e804093e52e64dfb6
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: e847f724a6adbdfb75985a4c98cc9dcdd1e2ee3cf1cdef6a5a7dc0e498716477
+    registry_content_sha256: 0a09523476f19d4b693089c65f6476fa0d03995d95020fc6c1e4181d9b5c4d45
     components:
         audit-log:
             version: 1.1.1
-            sha: 045999f8a1c6c96fac4939d1573e8d60045774188173bf5c7b332d6927dc505d
+            sha: 666192671fc660e36cdc49a35f10b5cfbd800673d3140cc3fb9caeeefd1a3dac
         command:
             version: 1.1.0
-            sha: 226bc3bd1086bb06ab6de2e2ca0cd6684fba0fcdc6af7a5484beb483b1f7db8a
+            sha: ae9cfe6339cb39dea6b8189a98a91cef48ad1ccc77c4e5f900651e9b0ced4790
         domain-probe:
             version: 1.0.1
-            sha: 28ec67a2986ffd0891eb49e130f3972451c30b98854e3caf17eb0d13f3de4317
+            sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
         health-check:
             version: 1.1.0
-            sha: 08765a46ca2926cdf8de518592372405d97e2e28d198d78237e3e1903eb32edb
+            sha: 3cb26b4e571aacebb710d1a1f98e356232c3a3bd95869356077a04c88b6f74d9
         jwt-auth:
             version: 2.5.0
-            sha: 8fb4715a10f10d13097a366390e4ac925ecf9003e45137a56013e83d612e87dc
+            sha: 366d1fddae734294aeea73db3ce2830b7ece60df8723f87f96d89e9d11da72e7
         kafka-producer:
             version: 3.0.0
-            sha: 2988a401c97aa0692a0dccded6a904cde9324cf41ad402783d5ed56e4ca7930f
+            sha: 811d5031afce79c1b637456792441d15cd9f9c98084e19adfcad7d2012980bb6
         otel-tracing:
             version: 1.19.0
-            sha: b8a350eb6a0482e26eb00611c08e174a8261e7641693c152f40ac99dd0485cfd
+            sha: 493f1a9b4c15574a0ad10f70ca302558d5d81541676353883275d0ca4ffd80ee
         outbox:
             version: 2.1.0
-            sha: 92c312da28d0b051d7d22d648aec12e90b35035850f8ff189dc25113b1c29dbe
+            sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
             version: 6.6.0
-            sha: 53c8f00e51910bade42b063a97a7ab03b79670f20caa6a64ba78633e30c2958c
+            sha: 70ea36bf22c4755486d45b7aba533308cb5b66a48d2d87c9da86f7be4db27629
         query:
             version: 1.1.0
-            sha: 325d40aabe4570ea5b1e8587f79ad2404b2accd352afc96cb2ee0a59ae30eb9e
+            sha: 37a689632775341e4990640816ebfc8202cfec6b0abd4480e647a8817e6d75fd
         rest-api:
             version: 4.4.1
-            sha: 3440d31fd96ea9e787e0309473ed51fa4e6bd9ec0d8ecea37705e8d9285de4db
+            sha: ce9cc759f49f69c89e048a69cb680f0e5f202a67638d30d278e95d6a1dd4f223
         spicedb-authz:
             version: 1.2.0
-            sha: c70c96aaae18a95b9f509a4b5f455df4d9c930b4966666507f916d7d88661877
+            sha: e303736d15a9af2ca9a4dba223ce83383edb4450ab6590e79dfb3efbfb438cb9
         tenancy:
             version: 1.2.0
-            sha: f6c944aa062571666fbbb08a8f67b2b1994062b7245b543bd0f55fdcc13f1993
+            sha: 459c5b970f3bc2e14d0ff577e0c0d905bdbfd5335273e42c78229790f538443d
     entities:
         ActivityEntry:
             - name: source_type
@@ -169,7 +169,7 @@ last_applied:
         internal/tenancy/migrations/roles.sql: 131dcb112a94f82ead145bcb5797c5915ad94a230564e2181883d19944450fc9
         internal/tenancy/migrations/row_security.sql: 6813d74ed06f5df636433d5335339bcb4338f05de418002cd7ef94b60f44b6d9
         internal/tenancy/row_security.go: b49ceb1b85177e84037254ebc7872f9c1d048f24a27b02babc9937603a2360e1
-        main.go: 4492e7100e5e8ee2c23508b5737c88e90fbcf5be6eb7036134bd85e201fc1d53
+        main.go: f8b27bab8b02e4d2987b9f495aaf39e540530b876694b8da78a5b3e5bdae2432
         probes/observations.json: 3219f8292bdb4a47a2882aa87528a231132ea9219db88c094ea0051559fad046
         probes/probes.go: 7b1f0c4ba4b67cf9ba9890be0743d793cc9603cfbf4e43b1193cc2e8b1fe8bf9
         slots/after_create.go: 03242bcad46578176c9ac819f42390080ebebb94f72c480316f09740289ad80f
@@ -208,9 +208,10 @@ last_applied:
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
-        architecture/architecture.json: e17956ca30a11cb9914d2046673f3d69e203a1617baece55db06281b70b3db23
-        architecture/index.html: a3108434e622afb52e5c337a9a75e5699923773f740f28b57a4a30fa21c57e9c
-        deploy/platform-requirements.yaml: 0bc0e13201cf6a61c1c1c884d3e62b72a57179a4b3f8971733aa2f2de98df519
+        architecture/architecture.json: e479f95f54145dee77786cda91c79ad44ba48ef1c1eb745e3de3a6abcab6c9ef
+        architecture/index.html: fcb8d09c32498d4d431cd836bfd85b9576fd58d8d8fc1e6695c428b998789a5f
+        deploy/environment-variables.md: 6e5f67a4f33f49fbb69e450d26c5b05351054b4628d10982b7577fd6d47779f4
+        deploy/platform-requirements.yaml: bd1bf9eaf2d7c9f8435288abfef5872e23f1362febef969ee619ab4810373c07
     archetype:
         name: rest-crud
         version: 3.117.1
