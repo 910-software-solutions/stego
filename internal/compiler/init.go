@@ -118,11 +118,25 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 		}
 		created = append(created, ".stego/config.yaml")
 	}
+	// The apply lock and a saved plan are local state: they are not committed, so no build takes them as input
+	// (ST-DECL-UC01-R07). An ignore file that the author already has is kept as written.
+	if err := createRootFile(root, localStateIgnorePath, []byte(localStateIgnore)); err == nil {
+		created = append(created, localStateIgnorePath)
+	} else if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
 	if err := createRootFile(root, "service.yaml", document); err != nil {
 		return nil, err
 	}
 	return &InitResult{Name: name, Created: append(created, "service.yaml")}, nil
 }
+
+// localStateIgnorePath is the Git ignore file that init writes for the local state of the service folder.
+const localStateIgnorePath = ".stego/.gitignore"
+
+// localStateIgnore names the local state files of .stego: the apply lock and the plan that stego plan saves. The
+// record (state.yaml) and the registry pin (config.yaml) are committed.
+const localStateIgnore = "# Local state of stego: the apply lock and the saved plan. Do not commit them.\n/apply.lock\n/plan.yaml\n"
 
 // DefaultRegistryFolder is the default local registry folder: stego/registry in the user's configuration folder.
 // A project with no configuration names it as a local source when STEGO_REGISTRY is not set.
@@ -158,6 +172,11 @@ func inspectInitProject(root *os.Root) ([]byte, bool, error) {
 		if err := checkInitDirectory(root, name); err != nil {
 			return nil, false, err
 		}
+	}
+	// The ignore file of the local state is checked here too, so that a symbolic link there is refused before any
+	// write (ST-DECL-UC01-R06).
+	if err := checkFileTarget(root, localStateIgnorePath); err != nil {
+		return nil, false, err
 	}
 	const name = ".stego/config.yaml"
 	if err := checkFileTarget(root, name); err != nil {

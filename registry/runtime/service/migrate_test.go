@@ -812,6 +812,74 @@ func TestMigrateBackfillSessions(t *testing.T) {
 	})
 }
 
+func TestMigrateBackfillSessionEnd(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T25 A transaction of a backfill session ends only on its own goroutine, so a cancel never closes the session under its reset", func(t *testing.T) {
+		db, err := sql.Open("pgx", pgtest.Database(t, "lc03t25"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		db.SetMaxOpenConns(2)
+		background := context.Background()
+		session := func() *sql.Conn {
+			t.Helper()
+			conn, err := db.Conn(background)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return conn
+		}
+		// The end of the context of an idle transaction does not roll it back on another goroutine: the
+		// transaction stays open until the caller ends it, and the session then runs the reset.
+		conn := session()
+		ctx, cancel := context.WithCancel(background)
+		tx, err := endedTxConn{conn}.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		time.Sleep(200 * time.Millisecond)
+		if _, err := tx.ExecContext(background, `SELECT 1`); err != nil {
+			t.Fatalf("a statement in the transaction after the end of its context: %v, want the transaction still open", err)
+		}
+		if err := tx.Rollback(); err != nil {
+			t.Fatalf("the rollback of the caller: %v", err)
+		}
+		if _, err := conn.ExecContext(background, "RESET ROLE; RESET search_path"); err != nil {
+			t.Fatalf("the reset after the rollback: %v", err)
+		}
+		_ = conn.Close()
+		// A context that has ended begins no transaction.
+		conn = session()
+		if _, err := (endedTxConn{conn}).BeginTx(ctx, nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("a begin with a context that has ended: %v, want context.Canceled", err)
+		}
+		_ = conn.Close()
+		// The context of the caller still cancels a statement in the transaction, and the reset then runs on the
+		// goroutine of the caller with no panic, whatever the delay after the rollback (the race of the
+		// TestMigrateBackfillSessions panic, about 2 in 3000 with no fix).
+		for i := range 300 {
+			conn := session()
+			ctx, cancel := context.WithTimeout(background, 2*time.Millisecond)
+			started := time.Now()
+			if tx, err := (endedTxConn{conn}).BeginTx(ctx, nil); err == nil {
+				if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_sleep(5)`); err == nil {
+					t.Fatal("a statement whose context ends after 2 ms slept 5 s")
+				}
+				_ = tx.Rollback()
+			}
+			cancel()
+			if took := time.Since(started); took > 3*time.Second {
+				t.Fatalf("a statement whose context ends after 2 ms took %v", took)
+			}
+			for spin := time.Now(); time.Since(spin) < time.Duration(i*37%400)*time.Microsecond; {
+			}
+			_, _ = conn.ExecContext(background, "RESET ROLE; RESET search_path")
+			_ = conn.Close()
+		}
+	})
+}
+
 func TestMigrateBackfillStall(t *testing.T) {
 	t.Run("ST-SUP-RP09-LC12-T02 The migration job emits a stall, runs on until its backfill time limit, and its next run resumes", func(t *testing.T) {
 		f, m, backfills := renameJob(t)
