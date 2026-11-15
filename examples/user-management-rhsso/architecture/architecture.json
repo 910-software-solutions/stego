@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.113.0",
+    "archetype_version": "3.114.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -788,7 +788,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -811,7 +811,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.storage-adapter"
         }
       }
