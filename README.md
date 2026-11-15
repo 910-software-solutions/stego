@@ -143,7 +143,17 @@ stego init --archetype rest-crud
 
 Make the project in its own Git repository. `stego init` writes
 `.stego/.gitignore`, so the apply lock and the saved plan, which are local
-state, stay out of the commit and out of the build. Commit `.stego/config.yaml`
+state, stay out of the commit and out of the build. This file keeps the two
+files out of a new service only. If a service committed them before, remove
+them from the index once and commit the change:
+
+```bash
+git rm --cached .stego/apply.lock .stego/plan.yaml
+git commit -m "Stop tracking the local STEGO state"
+```
+
+If only one of the two files is in the commit, give only that file.
+Commit `.stego/config.yaml`
 (the registry pin) and `.stego/state.yaml` (the record). Each shipped archetype generates
 the service on the runtime data path: generated commands and queries carry all
 data access, in the transaction of one tenant, and each operation is decided
