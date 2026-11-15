@@ -16,3 +16,11 @@ requires: []
 provides:
   - tenant-isolation
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: authentication
+  flow: "Checks that the caller's tenant is active and scopes the request to it."
+  ports:
+    tenant-isolation: inbound

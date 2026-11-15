@@ -353,6 +353,8 @@ type ArchGrant struct {
 	Requires []string `json:"requires,omitempty"`
 	Except   []string `json:"except,omitempty"`
 	Stops    string   `json:"stops,omitempty"`
+	// Source is the declared schema the path is expanded from.
+	Source ArchSource `json:"source"`
 }
 
 // ArchRole is one role of the access matrix: a subject type, with the relation of the resource type that holds it.
@@ -362,6 +364,8 @@ type ArchRole struct {
 	Relation    string `json:"relation"`
 	On          string `json:"on"`
 	Wildcard    bool   `json:"wildcard"`
+	// Source is the declared schema that states the relation.
+	Source ArchSource `json:"source"`
 }
 
 // ArchTopic is one compliance topic with its facts.

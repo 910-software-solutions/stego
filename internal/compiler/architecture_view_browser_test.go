@@ -216,7 +216,7 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R06-T02 The platform edges view of a service with no need shows the reason and no diagram", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R06-T04 The platform edges view of a service with no need shows the reason and no diagram", func(t *testing.T) {
 		b.open(plain + "#view=platform")
 		var got struct {
 			Text  string

@@ -20,8 +20,18 @@ import (
 // commonRegistryFiles are the files of the common registry of ST-SUP-TD01.
 func commonRegistryFiles() map[string]string {
 	component := func(name, namespace, provides, requires, slots string) string {
+		sides := ""
+		for _, list := range []struct{ names, side string }{{requires, "outbound"}, {provides, "inbound"}} {
+			for _, port := range strings.Split(strings.Trim(list.names, "[]"), ",") {
+				if port = strings.TrimSpace(port); port != "" {
+					sides += "\n    " + port + ": " + list.side
+				}
+			}
+		}
+		slots = strings.ReplaceAll(slots, "\n    proto:", "\n    phase: before_store\n    operations: [create]\n    proto:")
 		return "kind: component\nname: " + name + "\nversion: 1.0.0\nstage: ga\noutput_namespace: " + namespace +
-			"\n\nconfig:\n  enabled:\n    type: bool\n\nrequires: " + requires + "\n\nprovides: " + provides + "\n\nslots: " + slots + "\n"
+			"\n\nconfig:\n  enabled:\n    type: bool\n\nrequires: " + requires + "\n\nprovides: " + provides + "\n\nslots: " + slots +
+			"\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:" + map[bool]string{true: " {}", false: ""}[sides == ""] + sides + "\n"
 	}
 	return map[string]string{
 		"common/types.proto": "syntax = \"proto3\";\n\npackage stego.common;\n",
@@ -43,7 +53,7 @@ func commonRegistryFiles() map[string]string {
 			"conventions:\n  layout: flat\n  logging: structured-json\n  cors: disabled\n" +
 			"compatible_mixins:\n  - extra-mixin\nbindings:\n  store-port: store-a\n  auth-port: auth-a\n",
 		"mixins/extra-mixin/mixin.yaml": "kind: mixin\nname: extra-mixin\nversion: 1.0.0\n\nadds_components:\n  - extra-a\n\n" +
-			"adds_slots:\n  - name: after_extra\n    proto: stego.mixins.extra_mixin.slots.AfterExtra\n\noverrides: none\n",
+			"adds_slots:\n  - name: after_extra\n    phase: after_store\n    operations: [create]\n    proto: stego.mixins.extra_mixin.slots.AfterExtra\n\noverrides: none\n",
 		"mixins/extra-mixin/slots/after_extra.proto": "syntax = \"proto3\";\n\npackage stego.mixins.extra_mixin.slots;\n\n" +
 			"message AfterExtraRequest {}\n\nmessage AfterExtraResponse {}\n\n" +
 			"service AfterExtra {\n  rpc Run(AfterExtraRequest) returns (AfterExtraResponse);\n}\n",
@@ -55,7 +65,7 @@ func localRegistryFiles() map[string]string {
 	return map[string]string{
 		".gitignore": "*.log\n",
 		"components/local-a/component.yaml": "kind: component\nname: local-a\nversion: 0.1.0\nstage: beta\nsunset: " + daysFromToday(60) + "\noutput_namespace: internal/local\n\n" +
-			"config:\n  enabled:\n    type: bool\n\nrequires: []\n\nprovides: [local-port]\n\nslots: []\n",
+			"config:\n  enabled:\n    type: bool\n\nrequires: []\n\nprovides: [local-port]\n\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    local-port: inbound\n",
 	}
 }
 
@@ -278,7 +288,7 @@ func TestRegistryComposeLimits(t *testing.T) {
 		for i := 3; i <= 9; i++ {
 			name := fmt.Sprintf("local-%d", i)
 			repository, commit := registryRepository(t, name+"-registry", map[string]string{
-				"components/" + name + "/component.yaml": "kind: component\nname: " + name + "\nversion: 0.1.0\nstage: ga\noutput_namespace: internal/" + name + "\nrequires: []\nprovides: []\nslots: []\n",
+				"components/" + name + "/component.yaml": "kind: component\nname: " + name + "\nversion: 0.1.0\nstage: ga\noutput_namespace: internal/" + name + "\nrequires: []\nprovides: []\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\n",
 			})
 			sources = append(sources, pinned(repository, commit))
 		}
@@ -465,7 +475,7 @@ func TestRegistryComposePins(t *testing.T) {
 
 	t.Run("ST-SUP-UC02-R04-T02 A cached copy is used only at the pinned commit", func(t *testing.T) {
 		f := newSupplyingFixture(t)
-		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
+		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
 		first := f.compose(t)
 		digest := strings.SplitN(first.accepted(t), "\n", 2)[0]
 		var cached string
@@ -510,7 +520,7 @@ func TestRegistryComposePins(t *testing.T) {
 	t.Run("ST-SUP-UC02-R04-T03 A vendored copy at another commit is refused without a fetch", func(t *testing.T) {
 		f := newSupplyingFixture(t)
 		f.compose(t).accepted(t)
-		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
+		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
 		vendored(t, f, other)
 		run := f.compose(t)
 		run.refused(t, "file://"+f.local, f.localSHA, other)
@@ -530,7 +540,7 @@ func TestRegistryComposePins(t *testing.T) {
 
 	t.Run("ST-SUP-UC02-R04-T05 A vendored copy with a modified, an ignored or an untracked file is refused", func(t *testing.T) {
 		for _, change := range []struct{ file, data string }{
-			{"components/local-a/component.yaml", "kind: component\nname: local-a\nversion: 9.9.9\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"},
+			{"components/local-a/component.yaml", "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: local-a\nversion: 9.9.9\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"},
 			{"build.log", "ignored\n"},
 			{"components/local-a/notes.yaml", "untracked: true\n"},
 		} {
@@ -589,7 +599,7 @@ func TestRegistryComposeStages(t *testing.T) {
 		for _, stage := range []string{"beta", "alpha"} {
 			f := newSupplyingFixture(t)
 			commonSHA := commitRegistry(t, f.common, map[string]string{
-				"components/exp-a/component.yaml": "kind: component\nname: exp-a\nversion: 0.1.0\nstage: " + stage + "\noutput_namespace: internal/exp\nrequires: []\nprovides: [exp-port]\nslots: []\n",
+				"components/exp-a/component.yaml": "kind: component\nname: exp-a\nversion: 0.1.0\nstage: " + stage + "\noutput_namespace: internal/exp\nrequires: []\nprovides: [exp-port]\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    exp-port: inbound\n",
 			})
 			registryProject(t, f.project, "", pinned(f.common, commonSHA), pinned(f.local, f.localSHA))
 			f.compose(t).refused(t, "exp-a", "sunset date is missing")

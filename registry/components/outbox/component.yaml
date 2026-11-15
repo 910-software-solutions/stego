@@ -9,3 +9,11 @@ requires: []
 provides:
   - durable-outbox
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: repository
+  flow: "Writes each change message to the outbox in the transaction of the write."
+  ports:
+    durable-outbox: inbound

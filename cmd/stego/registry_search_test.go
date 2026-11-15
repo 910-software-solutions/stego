@@ -40,7 +40,7 @@ func TestRegistrySearchNamesStage(t *testing.T) {
 	t.Run("ST-SUP-UC09-R01-T02 The search names every component that requires a port with its stage", func(t *testing.T) {
 		f := newSupplyingFixture(t)
 		apiB := "kind: component\nname: api-b\nversion: 0.1.0\nstage: beta\nsunset: " + daysFromToday(60) +
-			"\noutput_namespace: internal/apib\nrequires: [store-port]\nprovides: []\nslots: []\n"
+			"\noutput_namespace: internal/apib\nrequires: [store-port]\nprovides: []\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    store-port: outbound\n"
 		localSHA := commitRegistry(t, f.local, map[string]string{"components/api-b/component.yaml": apiB})
 		registryProject(t, f.project, "", pinned(f.common, f.commonSHA), pinned(f.local, localSHA))
 		rows := searchRows(t, f.runStegoIn(t, f.project, nil, "registry", "search", "--requires", "store-port").accepted(t))

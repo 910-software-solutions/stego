@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/slot"
@@ -486,20 +487,29 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	allFiles = append(allFiles, sharedFiles...)
 
-	// The platform requirements are the one file of the run out of the generated output; no generator may take
-	// their path (ST-DLV-UC01-R05).
+	// The platform requirements and the architecture model are the files of the run out of the generated output; no
+	// generator may take their paths (ST-DLV-UC01-R05, ST-GEN-UC08).
 	for _, file := range allFiles {
 		if isProjectGeneratedFile(file.Path) {
-			return nil, fmt.Errorf("the generated file %s takes a path that apply keeps for the platform requirements", file.Path)
+			return nil, fmt.Errorf("the generated file %s takes a path that apply keeps for its own project files", file.Path)
 		}
 	}
+	var requirements []byte
 	if input.WriteRequirements != nil {
 		file, err := requirementsFile(input.WriteRequirements, svcDecl, componentNames, components)
 		if err != nil {
 			return nil, err
 		}
+		requirements = file.Content
 		allFiles = append(allFiles, file)
 	}
+	// The architecture model comes from the declaration, the registry parts and the wiring of this run alone, and
+	// a component or slot that does not state its place stops the run before any file is written (ST-GEN-UC08-R05).
+	architecture, err := architectureFile(input, svcDecl, reg, archetype, componentNames, components, wirings, requirements)
+	if err != nil {
+		return nil, err
+	}
+	allFiles = append(allFiles, architecture)
 
 	// Validate no duplicate file paths across all sources (generators, slots,
 	// assembler). A duplicate means one generator's output would silently
@@ -648,7 +658,28 @@ const RequirementsFile = "deploy/platform-requirements.yaml"
 // generated output, and owned by STEGO whole: the record keeps its digest under project_files, so that apply refuses
 // a hand edit of it and drift names one (ST-DLV-UC01-R05).
 func isProjectGeneratedFile(filePath string) bool {
-	return filePath == RequirementsFile
+	return filePath == RequirementsFile || filePath == ArchitectureFile
+}
+
+// architectureFile derives the architecture model of the run (ST-GEN-CMD05): from the declaration, the registry
+// parts of the active set and the bound mixins, the wiring, the platform requirements of the run and the declared
+// authorization schema.
+func architectureFile(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, archetype *registry.Archetype,
+	names []string, components map[string]*registry.Component, wirings []ComponentWiring, requirements []byte) (gen.File, error) {
+	mixinNames, err := boundMixins(reg, svcDecl.Mixins)
+	if err != nil {
+		return gen.File{}, err
+	}
+	mixins := make([]*registry.Mixin, 0, len(mixinNames))
+	for _, name := range mixinNames {
+		mixins = append(mixins, reg.Mixin(name))
+	}
+	schema, err := declaration.ReadAuthzSchema(svcDecl, os.DirFS(input.ProjectDir))
+	if err != nil {
+		return gen.File{}, fmt.Errorf("reading the authorization schema for the architecture model: %w", err)
+	}
+	return WriteArchitecture(ArchitectureInput{Service: svcDecl, Archetype: archetype, Components: components, Names: names, Mixins: mixins,
+		Wirings: wirings, Requirements: requirements, Schema: schema})
 }
 
 // RequirementsWriter writes the platform requirements of the service from the needs that its components state

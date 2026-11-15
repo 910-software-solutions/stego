@@ -13,3 +13,8 @@ provides:
   - storage-adapter
 
 slots: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound

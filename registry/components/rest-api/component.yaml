@@ -56,31 +56,60 @@ provides:
 
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeCreate
     default: passthrough
   # before_upsert and after_upsert are declared, and a binding of them is refused: only the removed store path
   # called them (ST-SUP-RC20-OC39). An upsert calls validate and on_entity_changed.
   - name: before_upsert
+    phase: before_store
+    operations: [upsert]
     proto: stego.components.rest_api.slots.BeforeUpsert
     default: passthrough
   - name: before_patch
+    phase: before_store
+    operations: [patch]
     proto: stego.components.rest_api.slots.BeforePatch
     default: passthrough
   - name: before_delete
+    phase: before_store
+    operations: [delete]
     proto: stego.components.rest_api.slots.BeforeDelete
     default: passthrough
   - name: after_create
+    phase: after_store
+    operations: [create]
     proto: stego.components.rest_api.slots.AfterCreate
     default: passthrough
   - name: after_upsert
+    phase: after_store
+    operations: [upsert]
     proto: stego.components.rest_api.slots.AfterUpsert
     default: passthrough
   - name: after_patch
+    phase: after_store
+    operations: [patch]
     proto: stego.components.rest_api.slots.AfterPatch
     default: passthrough
   - name: after_delete
+    phase: after_store
+    operations: [delete]
     proto: stego.components.rest_api.slots.AfterDelete
     default: passthrough
   - name: validate
+    phase: before_store
+    operations: [create, update, upsert]
     proto: stego.components.rest_api.slots.Validate
     default: passthrough
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: handler
+  flow: "Decodes the request of a collection operation and calls its command or query."
+  ports:
+    auth-provider: outbound
+    storage-adapter: outbound
+    http-server: inbound
+    openapi-spec: inbound

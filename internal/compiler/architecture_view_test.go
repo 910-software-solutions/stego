@@ -106,7 +106,7 @@ func TestArchitectureView(t *testing.T) {
 	_, accessView, am := viewFixture(t, "access.json")
 	page := parseView(t, view)
 
-	t.Run("ST-GEN-UC08-R01-T01 The view of user-management holds the five aspects with every component, entity, field, flow and need", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R01-T02 The view of user-management holds the five aspects with every component, entity, field, flow and need", func(t *testing.T) {
 		for _, v := range []string{"overview", "components", "data", "flows", "trust", "platform"} {
 			if page.byID("form-"+v) == nil {
 				t.Fatalf("the view has no text form of the view %s", v)
@@ -171,7 +171,7 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R03-T01 Each element in the view names the declaration entry or registry part it comes from", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R03-T03 Each element in the view names the declaration entry or registry part it comes from", func(t *testing.T) {
 		forms := page.byID("forms")
 		rows := map[string]string{}
 		for _, n := range within(forms, func(n *html.Node) bool { return n.Data == "tr" && attrOf(n, "data-id") != "" }) {
@@ -222,14 +222,14 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R03-T02 The view names the record it was written with", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R03-T04 The view names the record it was written with", func(t *testing.T) {
 		rec := page.byID("rec")
 		if rec == nil || !strings.Contains(textOf(rec), m.Record.Path) || m.Record.Path != ".stego/state.yaml" {
 			t.Fatalf("the header does not name the record .stego/state.yaml: %q", textOf(rec))
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R06-T01 An aspect with no element says so, and shows no empty diagram", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R06-T03 An aspect with no element says so, and shows no empty diagram", func(t *testing.T) {
 		if m.Aspects.PlatformEdges.State != "empty" {
 			t.Fatal("the fixture must have no platform edge")
 		}
