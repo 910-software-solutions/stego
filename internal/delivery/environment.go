@@ -2,15 +2,16 @@ package delivery
 
 import (
 	"fmt"
+	"net"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/jsell-rh/stego/internal/types"
 )
 
 // EnvironmentVersion is the version of the environment schema that STEGO owns (ST-DLV-TM02, ST-DLV-Q05 (A)).
@@ -384,9 +385,9 @@ var rangeText = regexp.MustCompile(`^(?:(\S+) to (\S+)|at least (\S+)|at most (\
 
 // allowedOf reads the allowed values of a listed variable back from their text: a range for an integer, a number or
 // a duration, else a list of words.
-func allowedOf(kind types.VariableType, text string) types.AllowedValues {
+func allowedOf(kind variableType, text string) allowedValues {
 	if text == "" {
-		return types.AllowedValues{}
+		return allowedValues{}
 	}
 	if kind == "integer" || kind == "number" || kind == "duration" {
 		if parts := rangeText.FindStringSubmatch(text); parts != nil {
@@ -398,23 +399,23 @@ func allowedOf(kind types.VariableType, text string) types.AllowedValues {
 			}
 			switch {
 			case parts[1] != "":
-				return types.AllowedValues{Min: bound(1), Max: bound(2)}
+				return allowedValues{Min: bound(1), Max: bound(2)}
 			case parts[3] != "":
-				return types.AllowedValues{Min: bound(3)}
+				return allowedValues{Min: bound(3)}
 			default:
-				return types.AllowedValues{Max: bound(4)}
+				return allowedValues{Max: bound(4)}
 			}
 		}
 	}
-	return types.AllowedValues{Values: strings.Split(text, ", ")}
+	return allowedValues{Values: strings.Split(text, ", ")}
 }
 
 // valueFault tells why a configuration value is not a value of the listed variable: its type (ST-VO63), its
 // allowed values or its range, and for a url an HTTPS URL with a host (ST-DLV-UC02-R02, ST-DLV-Q08); "" when it is
 // one. The message names the variable and its type, never the value.
 func valueFault(variable AcceptedVariable, value string) string {
-	kind := types.VariableType(variable.Type)
-	if err := types.CheckVariableValue(kind, allowedOf(kind, variable.Allowed), value); err != nil {
+	kind := variableType(variable.Type)
+	if err := checkValue(kind, allowedOf(kind, variable.Allowed), value); err != nil {
 		return fmt.Sprintf("the environment variable %s is of the type %s: %s", variable.Name, variable.Type, err)
 	}
 	if kind == "url" {
@@ -701,4 +702,117 @@ func UnmetRequirements(reader *EnvironmentReader) []FitRow {
 		}
 	}
 	return unmet
+}
+
+// variableType is a type of ST-VO63, as the platform requirements state it. The check of an environment file holds a
+// value to its type with the same rules as the registry holds a default (registry.VariableType), which Delivering
+// may not import (ST-STD-CODE-R03).
+type variableType string
+
+// allowedValues are the allowed values of a listed variable: a list of words, or an inclusive range of an integer, a
+// number or a duration. The zero value allows each value of the type.
+type allowedValues struct {
+	Values   []string
+	Min, Max *string
+}
+
+// maxConfigurationValue bounds a configuration value, as the registry bounds a default.
+const maxConfigurationValue = 512
+
+// checkValue tells whether a value is of the variable's type and inside its allowed values, and why not.
+// It never puts the value in its message, because the caller may hold a value that it must not show.
+func checkValue(kind variableType, allowed allowedValues, value string) error {
+	if len(value) > maxConfigurationValue || strings.ContainsAny(value, "\n\r") {
+		return fmt.Errorf("the value is not one line of at most %d characters", maxConfigurationValue)
+	}
+	if err := checkVariableType(kind, value); err != nil {
+		return err
+	}
+	if len(allowed.Values) > 0 {
+		items := []string{value}
+		if kind == "list" {
+			items = strings.Split(value, ",")
+		}
+		for _, item := range items {
+			if !slices.Contains(allowed.Values, strings.TrimSpace(item)) {
+				return fmt.Errorf("the value is not one of the allowed values %s", strings.Join(allowed.Values, ", "))
+			}
+		}
+		return nil
+	}
+	number, _ := numericValue(kind, value)
+	if allowed.Min != nil {
+		if minimum, _ := numericValue(kind, *allowed.Min); number < minimum {
+			return fmt.Errorf("the value is less than %s", *allowed.Min)
+		}
+	}
+	if allowed.Max != nil {
+		if maximum, _ := numericValue(kind, *allowed.Max); number > maximum {
+			return fmt.Errorf("the value is more than %s", *allowed.Max)
+		}
+	}
+	return nil
+}
+
+// numericValue gives an integer, a number or a duration as a number, to compare it with a range.
+func numericValue(kind variableType, value string) (float64, error) {
+	switch kind {
+	case "integer":
+		n, err := strconv.ParseInt(value, 10, 64)
+		return float64(n), err
+	case "number":
+		return strconv.ParseFloat(value, 64)
+	case "duration":
+		d, err := time.ParseDuration(value)
+		return float64(d), err
+	}
+	return 0, fmt.Errorf("a %s has no range", kind)
+}
+
+// checkVariableType tells whether a value is of a variable type.
+func checkVariableType(kind variableType, value string) error {
+	switch kind {
+	case "string":
+		return nil
+	case "integer":
+		if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+			return fmt.Errorf("the value is not an integer")
+		}
+	case "number":
+		if n, err := strconv.ParseFloat(value, 64); err != nil || n != n {
+			return fmt.Errorf("the value is not a number")
+		}
+	case "duration":
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("the value is not a duration such as 30s or 5m")
+		}
+	case "boolean":
+		if !slices.Contains([]string{"true", "false", "0", "1"}, value) {
+			return fmt.Errorf("the value is not true, false, 0 or 1")
+		}
+	case "url":
+		u, err := url.Parse(value)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("the value is not an absolute URL")
+		}
+	case "path":
+		if !path.IsAbs(value) {
+			return fmt.Errorf("the value is not an absolute file path")
+		}
+	case "address":
+		host, port, err := net.SplitHostPort(value)
+		number, portErr := strconv.Atoi(port)
+		if err != nil || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " /") {
+			return fmt.Errorf("the value is not an address of a host and a port")
+		}
+	case "list":
+		for _, item := range strings.Split(value, ",") {
+			if strings.TrimSpace(item) == "" {
+				return fmt.Errorf("the value is not a list of comma-separated items")
+			}
+		}
+	default:
+		return fmt.Errorf("the type %q is not known", kind)
+	}
+	return nil
 }
