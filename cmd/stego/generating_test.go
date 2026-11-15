@@ -202,12 +202,12 @@ func TestNoOutputWithoutRecord(t *testing.T) {
 }
 
 func TestRecordFormatIsVersioned(t *testing.T) {
-	t.Run("ST-GEN-UC01-R04-T01 The record carries format version 5 and exactly the fields documented for it", func(t *testing.T) {
+	t.Run("ST-GEN-UC01-R04-T01 The record carries format version 6 and exactly the fields documented for it", func(t *testing.T) {
 		generatingProject(t, generatingDeclaration)
 		mustRun(t, runApply)
 		record := plainRecord(t)
-		if record["format_version"] != 5 {
-			t.Fatalf("format version is %v, not 5", record["format_version"])
+		if record["format_version"] != 6 {
+			t.Fatalf("format version is %v, not 6", record["format_version"])
 		}
 		// A change to these fields is a change to the documented format, and
 		// must come with a new format version. True marks a field that apply
@@ -216,13 +216,14 @@ func TestRecordFormatIsVersioned(t *testing.T) {
 		// its component digest, where version 1 held the registry reference.
 		// Version 3 adds archetype, with the archetype's runtime library pin.
 		// Version 4 added data_path, the data path of the run, and version 5
-		// removes it: the runtime data path is the only data path.
+		// removes it: the runtime data path is the only data path. Version 6
+		// adds project_files, the generated files of the project folder.
 		documented := map[string]bool{
 			"format_version": true, "last_applied": true,
 			"last_applied.compiler_build": true, "last_applied.components": true, "last_applied.entities": true,
 			"last_applied.files": true, "last_applied.inputs": true, "last_applied.registry_content_sha256": true,
 			"last_applied.service_hash": true, "last_applied.service_name": true, "last_applied.registry_sha": false,
-			"last_applied.archetype": true,
+			"last_applied.archetype": true, "last_applied.project_files": true,
 		}
 		found := map[string]bool{}
 		for name, value := range record {
@@ -235,26 +236,26 @@ func TestRecordFormatIsVersioned(t *testing.T) {
 		}
 		for name := range found {
 			if _, ok := documented[name]; !ok {
-				t.Errorf("the record has %s, which format version 5 does not document", name)
+				t.Errorf("the record has %s, which format version 6 does not document", name)
 			}
 		}
 		for name, always := range documented {
 			if always && !found[name] {
-				t.Errorf("the record lacks %s, which format version 5 documents", name)
+				t.Errorf("the record lacks %s, which format version 6 documents", name)
 			}
 		}
 
-		// A record of format version 4 held the data path; the next apply reads it and writes version 5 without it.
+		// A record of format version 4 held the data path; the next apply reads it and writes version 6 without it.
 		data, err := os.ReadFile(".stego/state.yaml")
 		if err != nil {
 			t.Fatal(err)
 		}
-		legacy := strings.Replace(string(data), "format_version: 5\n", "format_version: 4\n", 1)
+		legacy := strings.Replace(string(data), "format_version: 6\n", "format_version: 4\n", 1)
 		legacy = strings.Replace(legacy, "last_applied:\n", "last_applied:\n    data_path: runtime\n", 1)
 		writeProjectFile(t, ".stego/state.yaml", legacy)
 		mustRun(t, runApply)
-		if upgraded := plainRecord(t); upgraded["format_version"] != 5 || upgraded["last_applied"].(map[string]any)["data_path"] != nil {
-			t.Fatalf("apply on a record of format version 4 did not write version 5 without the data path: %v", upgraded["format_version"])
+		if upgraded := plainRecord(t); upgraded["format_version"] != 6 || upgraded["last_applied"].(map[string]any)["data_path"] != nil {
+			t.Fatalf("apply on a record of format version 4 did not write version 6 without the data path: %v", upgraded["format_version"])
 		}
 	})
 }
