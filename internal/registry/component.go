@@ -64,6 +64,30 @@ type Component struct {
 	Provides        []Port                       `yaml:"provides"`
 	Slots           []SlotDefinition             `yaml:"slots"`
 	OutputNamespace string                       `yaml:"output_namespace,omitempty"`
+	// Needs are what the component needs the environment to supply, from which apply writes the platform
+	// requirements of a service (ST-SUP-EN09 field Platform needs, ST-DLV-Q04 (A)).
+	Needs []Need `yaml:"needs,omitempty"`
+}
+
+// Need is one thing a component needs the environment to supply: its kind of ST-VO53, its name, and only the
+// shape fields of its kind. The name is fixed text with at most the placeholders {service} and {settings.<key>},
+// which apply fills from the declaration. No field holds a value of an environment, so a host name, an address, a
+// namespace or a secret value has no place to go (ST-DLV-INV02).
+type Need struct {
+	Kind string `yaml:"kind"`
+	Name string `yaml:"name"`
+	// Keys are the keys of a secret.
+	Keys []string `yaml:"keys,omitempty"`
+	// Engine is the engine of a backing store, such as postgres.
+	Engine string `yaml:"engine,omitempty"`
+	// Port is the port of an ingress or an egress destination.
+	Port int `yaml:"port,omitempty"`
+	// APIGroup, Resource and Verbs are a cluster permission; the core API group is "".
+	APIGroup string   `yaml:"api_group,omitempty"`
+	Resource string   `yaml:"resource,omitempty"`
+	Verbs    []string `yaml:"verbs,omitempty"`
+	// Level is the pod security level: privileged, baseline or restricted.
+	Level string `yaml:"level,omitempty"`
 }
 
 // Mixin adds components and slots to an archetype. A mixin with AliasOf is a deprecated alias: binding it binds
