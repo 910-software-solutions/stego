@@ -22,6 +22,7 @@ func testInvalidComponentOverridesGateCompilation(t *testing.T) {
 		t.Run(override, func(t *testing.T) {
 			project, registry, input := setupValidateProject(t)
 			writeFile(t, filepath.Join(registry, "components/stub-api/component.yaml"), `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.

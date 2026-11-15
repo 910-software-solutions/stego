@@ -56,3 +56,65 @@ architecture:
     tracing: outbound
     health-endpoint: outbound
     browser-session-http: inbound
+
+environment:
+  - name: STEGO_HTTP_TLS_CERT
+    type: path
+    required: false
+    description: "The file of the PEM TLS certificate of the HTTP server. The browser backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/tls/tls.crt"
+  - name: STEGO_HTTP_TLS_KEY
+    type: path
+    required: false
+    description: "The file of the PEM TLS private key of the HTTP server. The browser backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/tls/tls.key"
+  - name: STEGO_BROWSER_ORIGIN
+    type: url
+    required: true
+    description: "The HTTPS origin of the browser backend. The backend does not start when it has no value."
+    secret: false
+    example: "https://app.example.com"
+  - name: STEGO_BROWSER_API_URL
+    type: url
+    required: false
+    description: "The HTTPS origin of the service API, which a local application must not have. In other cases, the backend does not start when it has no value."
+    secret: false
+    example: "https://api.example.com"
+  - name: STEGO_BROWSER_API_CA_FILE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities for the service API. When it has no value, the backend uses the system roots."
+    secret: false
+    example: "/etc/stego/browser/api-ca.crt"
+  - name: STEGO_BROWSER_ISSUER
+    type: url
+    required: true
+    description: "The HTTPS URL of the OpenID Connect issuer. The backend does not start when it has no value."
+    secret: false
+    example: "https://sso.example.com/realms/main"
+  - name: STEGO_BROWSER_ISSUER_CA_FILE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities for the issuer. When it has no value, the backend uses the system roots."
+    secret: false
+    example: "/etc/stego/browser/issuer-ca.crt"
+  - name: STEGO_BROWSER_CLIENT_ID
+    type: string
+    required: true
+    description: "The OAuth client ID of the browser backend. The backend does not start when it has no value."
+    secret: false
+    example: "orders-browser"
+  - name: STEGO_BROWSER_CLIENT_SECRET_FILE
+    type: path
+    required: true
+    description: "The file of the OAuth client secret. The backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/browser/client-secret"
+  - name: STEGO_BROWSER_SESSION_KEY_FILE
+    type: path
+    required: true
+    description: "The file of the keys that encrypt the browser sessions. The backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/browser/session-keys"

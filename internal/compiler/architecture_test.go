@@ -340,7 +340,7 @@ func TestArchitectureValidation(t *testing.T) {
 			{"no layer", `"layer": "handler",`, ``, "layer"},
 			{"a bad side", `"side": "inbound"`, `"side": "left"`, "side"},
 			{"no phase", `"phase": "before_store",`, ``, "phase"},
-			{"an empty aspect with no reason", `"reason": "No component of the active set states a platform need."`, `"x": 1`, "platform_edges"},
+			{"an empty aspect with no reason", `"reason": "No component of the active set states a platform need or an environment variable."`, `"x": 1`, "platform_edges"},
 			{"an extra field", `"schema_version": 1,`, `"schema_version": 1, "notes": "hand-written",`, "notes"},
 			{"a dangling ID", `"offered_by": "component:api"`, `"offered_by": "component:gone"`, "component:gone"},
 			{"a step out of order", `"n": 2,`, `"n": 3,`, "numbered"},
@@ -676,6 +676,89 @@ func TestArchitectureComplianceFacts(t *testing.T) {
 		}
 		if key.Value != "org_id" || key.State != "stated" || key.Source.Declaration != "tenancy.key" {
 			t.Fatalf("with a stated tenancy key, the tenant key column of Doc is %+v", key)
+		}
+	})
+}
+
+// archVariables are platform requirements with three environment variables: an optional one with a default that
+// two components read, a secret one, and a field of a declaration group.
+const archVariables = `version: 2
+service: docs
+requirements: []
+environment:
+  - name: DATABASE_URL
+    read_by: [store]
+    type: string
+    required: false
+    description: The connection string.
+    secret: true
+  - name: STORE_TIMEOUT
+    read_by: [api, store]
+    type: duration
+    required: false
+    default: 5m
+    description: The time of a call.
+    secret: false
+    allowed: 1s to 30m
+  - name: WIDGET_LIMIT
+    read_by: [store (Worker)]
+    type: integer
+    required: true
+    description: The limit.
+    secret: false
+`
+
+func TestArchitectureVariables(t *testing.T) {
+	t.Run("ST-GEN-UC08-R16-T01 The model holds each environment variable of the list with its readers, type, required flag, default and secret flag, and no default of a secret one", func(t *testing.T) {
+		in := archFixture(t)
+		in.Requirements = []byte(archVariables)
+		model, data := deriveFixture(t, in)
+		if len(model.Variables) != 3 || model.Aspects.PlatformEdges.State != "present" {
+			t.Fatalf("the model holds the variables %+v with the platform edges %+v", model.Variables, model.Aspects.PlatformEdges)
+		}
+		secret, timeout, limit := model.Variables[0], model.Variables[1], model.Variables[2]
+		if secret.ID != "variable:DATABASE_URL" || !secret.Secret || secret.Default != nil || secret.Type != "string" {
+			t.Fatalf("DATABASE_URL is %+v", secret)
+		}
+		if !slices.Equal(timeout.ReadBy, []string{"component:api", "component:store"}) || timeout.Type != "duration" || timeout.Required ||
+			timeout.Default == nil || *timeout.Default != "5m" || timeout.Source.Registry == nil || timeout.Source.Registry.Name != "api" {
+			t.Fatalf("STORE_TIMEOUT is %+v", timeout)
+		}
+		if !slices.Equal(limit.ReadBy, []string{"component:store/Worker"}) || !limit.Required || limit.Source.Declaration != "overrides.store" {
+			t.Fatalf("WIDGET_LIMIT is %+v", limit)
+		}
+		if bytes.Contains(data, []byte("The connection string")) || bytes.Contains(data, []byte("1s to 30m")) {
+			t.Fatalf("the model holds more of a variable than its facts:\n%s", data)
+		}
+		in.Requirements = []byte(strings.Replace(archVariables, "    secret: true\n", "    secret: true\n    default: CANARY-SECRET-VALUE\n", 1))
+		_, data = deriveFixture(t, in)
+		if bytes.Contains(data, []byte("CANARY")) {
+			t.Fatal("the model holds the default of a secret variable")
+		}
+		in.Requirements = []byte(strings.Replace(archVariables, "read_by: [store]", "read_by: [other]", 1))
+		if _, err := WriteArchitecture(in); err == nil || !strings.Contains(err.Error(), "DATABASE_URL") {
+			t.Fatalf("a variable of a reader that is no component of the active set is accepted: %v", err)
+		}
+	})
+}
+
+func TestArchitectureConfigurationFacts(t *testing.T) {
+	t.Run("ST-GEN-UC16-R07-T01 The configuration topic gives each variable's readers, required flag, default and secret flag with their source", func(t *testing.T) {
+		in := archFixture(t)
+		in.Requirements = []byte(archVariables)
+		model, _ := deriveFixture(t, in)
+		readBy, _ := complianceFact(model, "fact:configuration/variable:STORE_TIMEOUT/read-by")
+		required, _ := complianceFact(model, "fact:configuration/variable:WIDGET_LIMIT/required")
+		defaults, _ := complianceFact(model, "fact:configuration/variable:STORE_TIMEOUT/default")
+		secret, _ := complianceFact(model, "fact:configuration/variable:DATABASE_URL/secret")
+		if readBy.Value != "component:api, component:store" || readBy.State != "stated" || readBy.Source.Registry == nil {
+			t.Fatalf("the readers of STORE_TIMEOUT are %+v", readBy)
+		}
+		if required.Value != true || defaults.Value != "5m" || secret.Value != true {
+			t.Fatalf("the facts are %+v, %+v, %+v", required, defaults, secret)
+		}
+		if _, ok := complianceFact(model, "fact:configuration/variable:DATABASE_URL/default"); ok {
+			t.Fatal("the configuration topic gives a default of a secret variable")
 		}
 	})
 }

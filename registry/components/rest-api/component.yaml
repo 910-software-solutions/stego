@@ -113,3 +113,25 @@ architecture:
     storage-adapter: outbound
     http-server: inbound
     openapi-spec: inbound
+
+environment:
+  - name: CORS_ALLOWED_ORIGINS
+    type: list
+    required: false
+    description: "The origins that may send cross-origin requests. When it has no value, the API sets no CORS header."
+    secret: false
+    example: "https://app.example.com,https://admin.example.com"
+  - name: CORS_ALLOWED_METHODS
+    type: list
+    required: false
+    default: "GET,POST,PATCH,PUT,DELETE,OPTIONS"
+    description: "The HTTP methods that cross-origin requests may use. When it has no value, the API allows GET, POST, PATCH, PUT, DELETE and OPTIONS."
+    secret: false
+    example: "GET,POST"
+  - name: CORS_ALLOWED_HEADERS
+    type: list
+    required: false
+    default: "Content-Type,Authorization"
+    description: "The request headers that cross-origin requests may send. When it has no value, the API allows Content-Type and Authorization."
+    secret: false
+    example: "Content-Type,Authorization,X-Request-Id"

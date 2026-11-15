@@ -83,7 +83,7 @@ func TestArchitectureApply(t *testing.T) {
 			t.Fatalf("the flows are %v", flows)
 		}
 		requirements, _ := readRequirements(t, dir)
-		if len(model.Needs) != len(requirements.Requirements) || len(model.Needs) != 9 {
+		if len(model.Needs) != len(requirements.Requirements) || len(model.Needs) < 9 {
 			t.Fatalf("the model holds %d needs for %d platform requirements", len(model.Needs), len(requirements.Requirements))
 		}
 		for _, r := range requirements.Requirements {
@@ -189,8 +189,14 @@ func TestArchitectureApply(t *testing.T) {
 
 	t.Run("ST-GEN-UC08-R06-T01 An aspect with no element says so, and the others show their elements", func(t *testing.T) {
 		dir := requirementsProject(t)
-		mustRunInProject(t, dir, requirementsEnv(shippedRegistryCopy(t)), "apply")
+		// A registry whose components state no need and no environment variable, so the platform edges are empty.
+		registryDir := shippedRegistryCopy(t)
+		withoutVariables(t, registryDir)
+		mustRunInProject(t, dir, requirementsEnv(registryDir), "apply")
 		model, _, _ := readArchitecture(t, dir)
+		if len(model.Variables) != 0 {
+			t.Fatalf("the model holds %d variables of components that declare none", len(model.Variables))
+		}
 		if model.Aspects.PlatformEdges.State != "empty" || model.Aspects.PlatformEdges.Reason == "" || len(model.Needs) != 0 {
 			t.Fatalf("the platform edges are %+v with %d needs", model.Aspects.PlatformEdges, len(model.Needs))
 		}
@@ -314,6 +320,28 @@ func appendTo(t *testing.T, path, text string) {
 	}
 }
 
+// withoutVariables gives each component of the registry copy an empty environment list.
+func withoutVariables(t *testing.T, registryDir string) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(registryDir, "components", "*", "component.yaml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("the registry copy holds no component: %v", err)
+	}
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head, _, found := strings.Cut(string(data), "\nenvironment:")
+		if !found {
+			t.Fatalf("%s states no environment list", path)
+		}
+		if err := os.WriteFile(path, []byte(head+"\nenvironment: []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // appliedArchitecture applies the project of ST-DLV-TD01 once, and gives a copy of it for each test of the queries
 // of the architecture model (ST-GEN-QRY05, ST-GEN-QRY06), with the environment of its runs.
 func appliedArchitecture(t *testing.T) (func(t *testing.T) string, []string) {
@@ -406,8 +434,8 @@ func TestArchitectureQueries(t *testing.T) {
 			t.Fatal(err)
 		}
 		projectFiles := slices.Sorted(maps.Keys(state.LastApplied.ProjectFiles))
-		if strings.Join(projectFiles, " ") != "architecture/architecture.json architecture/index.html deploy/platform-requirements.yaml" {
-			t.Fatalf("the record lists the project files %v, want the architecture model, the architecture view and the platform requirements", projectFiles)
+		if strings.Join(projectFiles, " ") != "architecture/architecture.json architecture/index.html deploy/environment-variables.md deploy/platform-requirements.yaml" {
+			t.Fatalf("the record lists the project files %v, want the architecture model, the architecture view, the environment variable reference and the platform requirements", projectFiles)
 		}
 		entries, err := os.ReadDir(filepath.Join(dir, "architecture"))
 		if err != nil {

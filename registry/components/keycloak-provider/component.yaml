@@ -36,3 +36,5 @@ architecture:
     application-http: outbound
     auth-provider: outbound
     keycloak-clients: inbound
+
+environment: []

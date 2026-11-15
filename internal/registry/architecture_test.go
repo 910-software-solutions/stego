@@ -68,7 +68,7 @@ func TestStatesPlace(t *testing.T) {
 
 func TestParseRefusesUnplacedParts(t *testing.T) {
 	t.Run("ST-SUP-UC01-R05-T03 The registry decoder refuses a component or a mixin slot that does not state its place, naming it and the statement", func(t *testing.T) {
-		full := "kind: component\nname: api-a\nversion: 1.0.0\nstage: ga\nrequires: [store-port]\nprovides: []\n" +
+		full := "kind: component\nenvironment: []\nname: api-a\nversion: 1.0.0\nstage: ga\nrequires: [store-port]\nprovides: []\n" +
 			"slots:\n  - name: before_create\n    proto: x.BeforeCreate\n    phase: before_store\n    operations: [create]\n" +
 			"architecture:\n  layer: handler\n  flow: Decodes the request.\n  ports:\n    store-port: outbound\n"
 		component, err := ParseComponentFromBytes([]byte(full), "components/api-a/component.yaml")

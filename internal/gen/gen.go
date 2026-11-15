@@ -68,6 +68,35 @@ type RuntimeAuthProvider interface {
 	RuntimeAuth(ctx Context) (RuntimeAuth, error)
 }
 
+// DeclaredVariable is one environment variable that a declaration gives a
+// component, such as one configuration field of runtime-configuration
+// (ST-SUP-RC22-OC09). Its name and its default are fixed text.
+type DeclaredVariable struct {
+	Name        string
+	Type        string
+	Required    bool
+	Default     *string
+	Description string
+	Secret      bool
+	// Allowed are the allowed values as one text, such as "1 to 10".
+	Allowed string
+}
+
+// DeclaredVariables are the environment variables of one group of a
+// declaration.
+type DeclaredVariables struct {
+	Group     string
+	Variables []DeclaredVariable
+}
+
+// VariableDeclarer gives the environment variables that the declaration gives
+// a component whose variable names come from its declaration entries, so that
+// the platform requirements list them (ST-DLV-INV11). It must check the
+// context as Generate does.
+type VariableDeclarer interface {
+	DeclaredVariables(ctx Context) ([]DeclaredVariables, error)
+}
+
 // InputProvider declares source files before generation. The compiler reads
 // each file once and checks its snapshot again before it applies output.
 type InputProvider interface {

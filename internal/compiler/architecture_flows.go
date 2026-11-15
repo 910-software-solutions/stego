@@ -410,7 +410,7 @@ func settingFact(topic, about, name string, setting ArchSetting, ok bool) ArchFa
 // ComplianceTopics is the one list of the compliance topics, in the order of the model (ST-GEN-UC16-R01): the model
 // holds a topic for each, and stego architecture facts (ST-GEN-CLI09) takes each as its --topic. A new topic is added
 // here and given its facts in compliance.
-var ComplianceTopics = []string{"personal-data", "tenant-isolation", "access", "audit", "data-protection", "owner-code", "retention"}
+var ComplianceTopics = []string{"personal-data", "tenant-isolation", "access", "audit", "data-protection", "owner-code", "retention", "configuration"}
 
 // compliance builds the facts of each compliance topic (ST-GEN-UC16-R01) from the model alone.
 func (d *deriver) compliance() {
@@ -524,6 +524,17 @@ func (d *deriver) compliance() {
 	}
 	put("retention", setting("retention", "audit retention", "audit.retention"))
 	put("retention", fact("retention", system, "data retention", nil, "unstated", unstated))
+	// The configuration topic: each environment variable that the service accepts, its readers, whether it is
+	// required, its default and whether it is secret, with the source of each fact (ST-GEN-UC16-R07). A secret
+	// variable has no default fact.
+	for _, v := range m.Variables {
+		put("configuration", fact("configuration", v.ID, "read by", strings.Join(v.ReadBy, ", "), "stated", v.Source))
+		put("configuration", fact("configuration", v.ID, "required", v.Required, "stated", v.Source))
+		put("configuration", fact("configuration", v.ID, "secret", v.Secret, "stated", v.Source))
+		if v.Default != nil && !v.Secret {
+			put("configuration", fact("configuration", v.ID, "default", *v.Default, "stated", v.Source))
+		}
+	}
 	for _, topic := range ComplianceTopics {
 		facts := topics[topic]
 		if facts == nil {
@@ -550,7 +561,7 @@ func (d *deriver) aspects() {
 		Structure:       state(len(m.Components) > 0, reasonNoComponents),
 		DataModel:       state(len(m.Entities) > 0, reasonNoEntity),
 		RequestFlows:    state(len(m.Flows) > 0, flowReason),
-		PlatformEdges:   state(len(m.Needs) > 0, reasonNoNeed),
+		PlatformEdges:   state(len(m.Needs)+len(m.Variables) > 0, reasonNoNeed),
 		TrustAndTenancy: state(true, ""),
 	}
 }
@@ -615,6 +626,10 @@ func emptyLists(m *ArchitectureModel) {
 			if *l == nil {
 				*l = []ArchNeed{}
 			}
+		case *[]ArchVariable:
+			if *l == nil {
+				*l = []ArchVariable{}
+			}
 		case *[]ArchBoundary:
 			if *l == nil {
 				*l = []ArchBoundary{}
@@ -630,7 +645,7 @@ func emptyLists(m *ArchitectureModel) {
 		}
 	}
 	for _, list := range []any{&m.Containers, &m.Components, &m.Mixins, &m.Ports, &m.Bindings, &m.Slots, &m.Fills, &m.Entities, &m.References,
-		&m.Collections, &m.Operations, &m.Actions, &m.Flows, &m.Needs, &m.Boundaries, &m.Settings, &m.AuthnPoints, &m.AuthzPoints} {
+		&m.Collections, &m.Operations, &m.Actions, &m.Flows, &m.Needs, &m.Variables, &m.Boundaries, &m.Settings, &m.AuthnPoints, &m.AuthzPoints} {
 		empty(list)
 	}
 }

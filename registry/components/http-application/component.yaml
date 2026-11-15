@@ -100,3 +100,5 @@ architecture:
     storage-adapter: outbound
     auth-provider: outbound
     application-http: inbound
+
+environment: []

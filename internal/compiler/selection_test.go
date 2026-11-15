@@ -22,7 +22,7 @@ func selectionRegistry(t *testing.T) *registry.Registry {
 	files := map[string]string{
 		"archetypes/plain/archetype.yaml": "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\n" +
 			"name: plain\nlanguage: go\nversion: 1.0.0\ncomponents: [api]\nconventions:\n  layout: flat\n",
-		"components/api/component.yaml": "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    http-api: inbound\nname: api\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/api\nrequires: []\nprovides: [http-api]\nslots: []\n",
+		"components/api/component.yaml": "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    http-api: inbound\nname: api\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/api\nrequires: []\nprovides: [http-api]\nslots: []\n",
 	}
 	versions := map[string]string{"tenancy": "0.2.0", "audit-log": "0.1.1", "spicedb-authz": "0.2.2", "idempotency": "0.1.3", "ledger": "0.1.4"}
 	for name, version := range versions {
@@ -30,7 +30,7 @@ func selectionRegistry(t *testing.T) *registry.Registry {
 		if name == "audit-log" {
 			requires = "[audit-sink]"
 		}
-		files["components/"+name+"/component.yaml"] = "kind: component\nname: " + name + "\nversion: " + version +
+		files["components/"+name+"/component.yaml"] = "kind: component\nenvironment: []\nname: " + name + "\nversion: " + version +
 			"\nstage: alpha\nsunset: 2099-12-31\noutput_namespace: internal/" + strings.ReplaceAll(name, "-", "") +
 			"\nrequires: " + requires + "\nprovides: []\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {" + strings.Trim(requires, "[]") + map[bool]string{true: ": outbound", false: ""}[requires != "[]"] + "}\n"
 	}

@@ -79,6 +79,11 @@ type ComponentNeeds struct {
 	Component string
 	Needs     []Need
 	Settings  map[string]string
+	// Variables are the environment variables that the component declares (ST-SUP-EN14).
+	Variables []Variable
+	// Declared are the environment variables that the declaration gives the component, by group, such as the
+	// configuration fields of runtime-configuration (ST-SUP-RC22-OC09).
+	Declared []DeclaredVariables
 }
 
 // Requirement is one thing the environment must supply: its kind, its name, the shape of its kind and the
@@ -100,17 +105,21 @@ type Requirement struct {
 // Requirements are the platform requirements of one service (ST-DLV-EN01): the file
 // deploy/platform-requirements.yaml.
 type Requirements struct {
-	// Version is the version of the format, 1.
+	// Version is the version of the format, 2. Version 1 had no environment list.
 	Version      int           `yaml:"version"`
 	Service      string        `yaml:"service"`
 	Requirements []Requirement `yaml:"requirements"`
+	// Environment is every environment variable that the service accepts, in name order (ST-DLV-EN08,
+	// ST-DLV-UC01-R06).
+	Environment []AcceptedVariable `yaml:"environment"`
 }
 
 // RequirementsFile is the path, in the project folder, of the platform requirements (ST-DLV-EN01-TB).
 const RequirementsFile = "deploy/platform-requirements.yaml"
 
-// RequirementsVersion is the version of the format of the platform requirements.
-const RequirementsVersion = 1
+// RequirementsVersion is the version of the format of the platform requirements that apply writes. Version 2 adds
+// the environment list.
+const RequirementsVersion = 2
 
 // MaxRequirementsBytes bounds the platform requirements that LoadRequirements reads.
 const MaxRequirementsBytes = 1 << 20
@@ -194,7 +203,18 @@ func DeriveRequirements(service string, components []ComponentNeeds) (Requiremen
 			previous.Components = append(previous.Components, component.Component)
 		}
 	}
-	result := Requirements{Version: RequirementsVersion, Service: service, Requirements: []Requirement{}}
+	variables, err := deriveVariables(service, components)
+	if err != nil {
+		return Requirements{}, err
+	}
+	for _, requirement := range configurationNeeds(variables) {
+		if previous, stated := byName[requirement.Name]; stated {
+			return Requirements{}, &RequirementError{Components: append(slices.Clone(previous.Components[:1]), requirement.Components[0]), Need: requirement.Name,
+				Reason: fmt.Sprintf("the %s need and the required environment variable share one name; one name is one requirement", previous.Kind)}
+		}
+		byName[requirement.Name] = &requirement
+	}
+	result := Requirements{Version: RequirementsVersion, Service: service, Requirements: []Requirement{}, Environment: variables}
 	for _, requirement := range byName {
 		slices.Sort(requirement.Components)
 		result.Requirements = append(result.Requirements, *requirement)
@@ -336,27 +356,37 @@ func checkShape(r Requirement) (string, string) {
 }
 
 // requirementsHeader opens the platform requirements file.
-const requirementsHeader = "# The platform requirements of the service: what its environment must supply. stego apply writes this file\n" +
-	"# from the declaration and the needs of its components. Do not edit it: change the declaration or the registry.\n"
+const requirementsHeader = "# The platform requirements of the service: what its environment must supply, and every environment variable\n" +
+	"# that it accepts. stego apply writes this file from the declaration and the needs and environment variables of its\n" +
+	"# components. Do not edit it: change the declaration or the registry.\n"
 
-// WriteRequirements writes the platform requirements of the service during a run, from the declaration and its
-// components' needs (ST-DLV-CMD01): the bytes of deploy/platform-requirements.yaml, which the run adds to its plan.
-func WriteRequirements(service string, components []ComponentNeeds) ([]byte, error) {
+// RequirementsFiles are the files that Write the platform requirements gives: the platform requirements and the
+// environment variable reference rendered from the same derived list.
+type RequirementsFiles struct {
+	Requirements []byte
+	Reference    []byte
+}
+
+// WriteRequirements writes the service's platform requirements, with the list of every environment variable it
+// accepts, and the environment variable reference rendered from that list, during a run, from the declaration and
+// its components' needs and environment variables (ST-DLV-CMD01). It is refused when two sources state one variable
+// with different facts (ST-DLV-UC01-R09), and then gives no file.
+func WriteRequirements(service string, components []ComponentNeeds) (RequirementsFiles, error) {
 	requirements, err := DeriveRequirements(service, components)
 	if err != nil {
-		return nil, err
+		return RequirementsFiles{}, err
 	}
 	var out bytes.Buffer
 	out.WriteString(requirementsHeader)
 	encoder := yaml.NewEncoder(&out)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(requirements); err != nil {
-		return nil, err
+		return RequirementsFiles{}, err
 	}
 	if err := encoder.Close(); err != nil {
-		return nil, err
+		return RequirementsFiles{}, err
 	}
-	return out.Bytes(), nil
+	return RequirementsFiles{Requirements: out.Bytes(), Reference: renderReference(requirements.Service, requirements.Environment)}, nil
 }
 
 // LoadRequirements reads the platform requirements back through the strict decoder (ST-DLV-REPO01): one document
@@ -374,8 +404,11 @@ func LoadRequirements(data []byte) (Requirements, error) {
 	if err := decodeStrict(data, MaxRequirementsBytes, &requirements); err != nil {
 		return Requirements{}, fmt.Errorf("platform requirements: %w", err)
 	}
-	if requirements.Version != RequirementsVersion {
-		return Requirements{}, fmt.Errorf("platform requirements: field version: the format version is %d; this stego reads version %d", requirements.Version, RequirementsVersion)
+	if requirements.Version != RequirementsVersion && requirements.Version != 1 {
+		return Requirements{}, fmt.Errorf("platform requirements: field version: the format version is %d; this stego reads versions 1 and %d", requirements.Version, RequirementsVersion)
+	}
+	if requirements.Version == 1 && requirements.Environment != nil {
+		return Requirements{}, fmt.Errorf("platform requirements: field environment: format version 1 has no environment list")
 	}
 	if requirements.Service == "" {
 		return Requirements{}, fmt.Errorf("platform requirements: the file names no service")
@@ -399,6 +432,19 @@ func LoadRequirements(data []byte) (Requirements, error) {
 			return Requirements{}, fmt.Errorf("platform requirements: requirement %s: field %s: %s", requirement.Name, field, reason)
 		}
 	}
+	listed := map[string]bool{}
+	for i, variable := range requirements.Environment {
+		if err := checkAccepted(variable); err != nil {
+			return Requirements{}, fmt.Errorf("platform requirements: environment[%d]: %w", i, err)
+		}
+		if listed[variable.Name] {
+			return Requirements{}, fmt.Errorf("platform requirements: the environment variable %s is listed twice", variable.Name)
+		}
+		listed[variable.Name] = true
+		if len(variable.ReadBy) == 0 {
+			return Requirements{}, fmt.Errorf("platform requirements: the environment variable %s names no reader", variable.Name)
+		}
+	}
 	return requirements, nil
 }
 
@@ -416,9 +462,9 @@ func checkRequirementsFields(document *yaml.Node) error {
 			if value.Kind != yaml.ScalarNode {
 				return fmt.Errorf("line %d: field %s: the %s is one value", value.Line, key.Value, key.Value)
 			}
-		case "requirements":
+		case "requirements", "environment":
 			if value.Kind != yaml.SequenceNode {
-				return fmt.Errorf("line %d: field requirements: the requirements are a list, not a %s", value.Line, nodeKind(value))
+				return fmt.Errorf("line %d: field %s: the %s is a list, not a %s", value.Line, key.Value, key.Value, nodeKind(value))
 			}
 		}
 	}

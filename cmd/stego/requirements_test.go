@@ -61,21 +61,65 @@ var requirementsNeeds = map[string]string{
 	"rh-sso-auth": `  - {kind: identity issuer, name: sso}
   - {kind: egress, name: payments, port: 443}
 `,
-	"health-check": `  - {kind: configuration, name: LOG_LEVEL}
-  - {kind: ingress, name: http, port: 8080}
+	"health-check": `  - {kind: ingress, name: http, port: 8080}
   - {kind: cluster permission, name: read-config-maps, resource: configmaps, verbs: [get]}
   - {kind: pod security, name: pod-security, level: restricted}
 `,
 }
 
-// requirementsRegistry gives a copy of the shipped registry whose components state the needs of ST-DLV-TD01.
+// requirementsVariable is the required environment variable LOG_LEVEL of ST-DLV-TD01, which health-check declares:
+// the platform requirements derive the configuration need LOG_LEVEL from it (ST-DLV-INV11).
+const requirementsVariable = `  - {name: LOG_LEVEL, type: string, required: true, secret: false, description: "The level of the log of the service.", allowed: {values: [debug, info, warn, error]}}
+`
+
+// requirementsRegistry gives a copy of the shipped registry whose components state the needs and the variable of
+// ST-DLV-TD01.
 func requirementsRegistry(t *testing.T) string {
 	t.Helper()
 	registry := shippedRegistryCopy(t)
 	for component, needs := range requirementsNeeds {
 		setNeeds(t, registry, component, needs)
 	}
+	addVariables(t, registry, "health-check", requirementsVariable)
 	return registry
+}
+
+// removeVariables takes the entries out of the environment list of the component of the registry copy.
+func removeVariables(t *testing.T, registry, component, entries string) {
+	t.Helper()
+	path := filepath.Join(registry, "components", component, "component.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), entries) {
+		t.Fatalf("the component %s does not declare %s", component, entries)
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(string(data), entries, "", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// addVariables adds the entries to the environment list of the component of the registry copy.
+func addVariables(t *testing.T, registry, component, entries string) {
+	t.Helper()
+	path := filepath.Join(registry, "components", component, "component.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	switch {
+	case strings.Contains(text, "\nenvironment: []\n"):
+		text = strings.Replace(text, "\nenvironment: []\n", "\nenvironment:\n"+entries, 1)
+	case strings.Contains(text, "\nenvironment:\n"):
+		text = strings.Replace(text, "\nenvironment:\n", "\nenvironment:\n"+entries, 1)
+	default:
+		t.Fatalf("the component %s states no environment list", component)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // setNeeds gives the component of the registry copy the needs list, in place of the one it states.
@@ -341,8 +385,8 @@ func TestPlatformRequirementsApply(t *testing.T) {
 		}
 	}
 	t.Run("ST-DLV-UC01-R04-T01 Two components that state one need with different kinds stop the apply, which names both and the need and writes nothing", func(t *testing.T) {
-		conflict(t, `  - {kind: configuration, name: "{service}-database"}
-`, "different kinds", "configuration", "secret")
+		conflict(t, `  - {kind: topic, name: "{service}-database"}
+`, "different kinds", "topic", "secret")
 	})
 	t.Run("ST-DLV-UC01-R04-T02 Two components that state one need with different shapes stop the apply, which names both and the need and writes nothing", func(t *testing.T) {
 		conflict(t, `  - {kind: secret, name: "{service}-database", keys: [dsn]}
@@ -403,8 +447,20 @@ func TestPlatformRequirementsApply(t *testing.T) {
 		}
 		requirements, data := readRequirements(t, dir)
 		expectStated(t, requirements.Requirements, wantRequirements)
-		if len(requirements.Requirements) != len(wantRequirements) {
-			t.Fatalf("the platform requirements state %d needs, want the nine of the components", len(requirements.Requirements))
+		// Beside the nine needs, each requirement is a configuration need of a required variable of the list that is
+		// not secret (ST-DLV-INV11).
+		wanted := byName(wantRequirements)
+		listed := map[string]delivery.AcceptedVariable{}
+		for _, variable := range requirements.Environment {
+			listed[variable.Name] = variable
+		}
+		for _, requirement := range requirements.Requirements {
+			if _, ok := wanted[requirement.Name]; ok {
+				continue
+			}
+			if variable, ok := listed[requirement.Name]; !ok || requirement.Kind != delivery.Configuration || !variable.Required || variable.Secret {
+				t.Errorf("the platform requirements state %s %s, which is no need of the components and no required variable", requirement.Kind, requirement.Name)
+			}
 		}
 		if compiler.RequirementsFile != delivery.RequirementsFile {
 			t.Fatalf("the compiler writes the platform requirements at %s, and Delivering names %s", compiler.RequirementsFile, delivery.RequirementsFile)
@@ -441,8 +497,22 @@ func expectOnlyRequirementFields(t *testing.T, data []byte) {
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		t.Fatal(err)
 	}
-	if keys := slices.Sorted(maps.Keys(file)); !slices.Equal(keys, []string{"requirements", "service", "version"}) {
-		t.Errorf("the platform requirements hold the fields %v, want requirements, service and version", keys)
+	if keys := slices.Sorted(maps.Keys(file)); !slices.Equal(keys, []string{"environment", "requirements", "service", "version"}) {
+		t.Errorf("the platform requirements hold the fields %v, want environment, requirements, service and version", keys)
+	}
+	// An entry of the environment list holds its facts only, never an example; a secret one holds no default and no
+	// allowed values (ST-DLV-INV02, ST-DLV-INV12).
+	variables, _ := file["environment"].([]any)
+	for _, item := range variables {
+		entry, _ := item.(map[string]any)
+		for field := range entry {
+			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed"}, field) {
+				t.Errorf("the environment variable %v holds the field %s", entry["name"], field)
+			}
+		}
+		if entry["secret"] == true && (entry["default"] != nil || entry["allowed"] != nil) {
+			t.Errorf("the secret environment variable %v holds a default or allowed values", entry["name"])
+		}
 	}
 	entries, _ := file["requirements"].([]any)
 	if len(entries) == 0 {
@@ -536,7 +606,7 @@ func TestPlatformRequirementsDerivation(t *testing.T) {
 		expectStated(t, second.Requirements, append(slices.Clone(wantRequirements), apiKey))
 
 		setNeeds(t, registry, "rh-sso-auth", requirementsNeeds["rh-sso-auth"])
-		setNeeds(t, registry, "health-check", strings.Replace(requirementsNeeds["health-check"], "  - {kind: configuration, name: LOG_LEVEL}\n", "", 1))
+		removeVariables(t, registry, "health-check", requirementsVariable)
 		third := mustReconcileRequirements(t, dir, registry, nil)
 		if _, stated := byName(third.Requirements)["LOG_LEVEL"]; stated {
 			t.Fatal("the platform requirements still state LOG_LEVEL after health-check stops stating it")
@@ -548,8 +618,8 @@ func TestPlatformRequirementsDerivation(t *testing.T) {
 			}
 		}
 		expectStated(t, third.Requirements, others)
-		if len(third.Requirements) != len(others) {
-			t.Fatalf("the platform requirements state %d needs after one was taken out, want %d", len(third.Requirements), len(others))
+		if len(third.Requirements) != len(first.Requirements)-1 {
+			t.Fatalf("the platform requirements state %d needs after one was taken out, want %d", len(third.Requirements), len(first.Requirements)-1)
 		}
 	})
 
@@ -593,7 +663,7 @@ func TestPlatformRequirementsDerivation(t *testing.T) {
 			runs = append(runs, data)
 		}
 		reversed, err := reconcileRequirements(t, dir, registry, func(write compiler.RequirementsWriter) compiler.RequirementsWriter {
-			return func(service string, components []compiler.ComponentNeeds) ([]byte, error) {
+			return func(service string, components []compiler.ComponentNeeds) (compiler.RequirementsFiles, error) {
 				components = slices.Clone(components)
 				slices.Reverse(components)
 				return write(service, components)
@@ -731,4 +801,271 @@ func expectChange(t *testing.T, before, after []delivery.Requirement, name strin
 			t.Errorf("the requirement %s changed from %+v to %+v", other, requirement, got)
 		}
 	}
+}
+
+// TestEnvironmentVariablesApply proves that apply writes the list of every environment variable that the service
+// accepts in the platform requirements and the reference rendered from it (ST-DLV-UC01-R03, R05 to R09).
+func TestEnvironmentVariablesApply(t *testing.T) {
+	t.Run("ST-DLV-UC01-R06-T01 Applying the plan writes every environment variable of the active set in the platform requirements, in name order, with its facts", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		dir := requirementsProject(t)
+		mustRunInProject(t, dir, requirementsEnv(registry), "apply")
+		requirements, _ := readRequirements(t, dir)
+		var names []string
+		byVariable := map[string]delivery.AcceptedVariable{}
+		for _, variable := range requirements.Environment {
+			names = append(names, variable.Name)
+			byVariable[variable.Name] = variable
+		}
+		if !slices.IsSorted(names) || len(names) < 40 {
+			t.Fatalf("the list is not in name order or misses variables: %v", names)
+		}
+		level, ok := byVariable["LOG_LEVEL"]
+		if !ok || !level.Required || level.Type != "string" || level.Allowed != "debug, info, warn, error" || !slices.Equal(level.ReadBy, []string{"health-check"}) {
+			t.Fatalf("LOG_LEVEL is listed as %+v", level)
+		}
+		timeout, ok := byVariable["STEGO_DATABASE_CONNECTION_MAX_LIFETIME"]
+		if !ok || timeout.Default == nil || *timeout.Default != "30m" || timeout.Allowed != "1s to 24h" || timeout.Description == "" {
+			t.Fatalf("STEGO_DATABASE_CONNECTION_MAX_LIFETIME is listed as %+v", timeout)
+		}
+		if issuer := byVariable["STEGO_AUTH_ISSUER"]; issuer.Default == nil || *issuer.Default != "https://sso.example.com/auth/realms/example" {
+			t.Fatalf("the default of STEGO_AUTH_ISSUER is not the declared issuer: %+v", issuer)
+		}
+		if url := byVariable["DATABASE_URL"]; !url.Secret || url.Default != nil {
+			t.Fatalf("DATABASE_URL is not listed as secret: %+v", url)
+		}
+		for _, name := range []string{"STEGO_GRPC_ADDR", "STEGO_BROWSER_ORIGIN"} {
+			if _, listed := byVariable[name]; listed {
+				t.Errorf("the list holds %s of a component that the service does not use", name)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC01-R07-T03 Applying the plan writes deploy/environment-variables.md from the list, with one section for each component", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		dir := requirementsProject(t)
+		stdout := mustRunInProject(t, dir, requirementsEnv(registry), "apply")
+		if !strings.Contains(stdout, "generate: "+compiler.ReferenceFile) {
+			t.Fatalf("the plan does not list %s:\n%s", compiler.ReferenceFile, stdout)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, compiler.ReferenceFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		requirements, _ := readRequirements(t, dir)
+		reference := string(data)
+		for _, variable := range requirements.Environment {
+			if !strings.Contains(reference, "| `"+variable.Name+"` |") {
+				t.Errorf("the reference has no row of %s", variable.Name)
+			}
+		}
+		for _, section := range []string{"## health-check", "## postgres-adapter", "## rh-sso-auth"} {
+			if !strings.Contains(reference, "\n"+section+"\n") {
+				t.Errorf("the reference has no section %s", section)
+			}
+		}
+		if compiler.ReferenceFile != delivery.ReferenceFile {
+			t.Fatalf("the compiler writes the reference at %s, and Delivering names %s", compiler.ReferenceFile, delivery.ReferenceFile)
+		}
+	})
+
+	t.Run("ST-DLV-UC01-R08-T01 No secret value, secret default or secret setting reaches a file that apply writes, or a refusal", func(t *testing.T) {
+		const canary = "CANARY-SECRET-VALUE"
+		registry := requirementsRegistry(t)
+		dir := filepath.Join(t.TempDir(), "orders")
+		// The secret setting connection_string of postgres-adapter holds the canary text.
+		declaration := strings.Replace(requirementsDeclaration, "postgres-adapter: {schema_generation: tables-v1}",
+			"postgres-adapter: {schema_generation: tables-v1, connection_string: \"postgres://orders:"+canary+"@db/orders\"}", 1)
+		writeRequirementsDeclaration(t, dir, declaration)
+		git(t, dir, "init", "-q")
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", "the service orders")
+		before := folderDigests(t, dir)
+		// The process environment of apply holds the canary too, in a secret variable and a library variable.
+		processEnv := append(requirementsEnv(registry), "DATABASE_URL=postgres://orders:"+canary+"@db/orders", "PGPASSWORD="+canary, "STEGO_AUDIT_SINK_TOKEN_FILE=/"+canary)
+		stdout, stderr, err := runInProject(t, dir, processEnv, "apply")
+		if err != nil {
+			t.Fatalf("apply: %v\n%s\n%s", err, stdout, stderr)
+		}
+		for path, digest := range folderDigests(t, dir) {
+			if before[path] == digest {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(data, []byte(canary)) {
+				t.Errorf("the written file %s holds the value of the secret setting", path)
+			}
+		}
+		if strings.Contains(stdout+stderr, canary) {
+			t.Errorf("apply shows the value of the secret setting:\n%s\n%s", stdout, stderr)
+		}
+		requirements, _ := readRequirements(t, dir)
+		for _, variable := range requirements.Environment {
+			if variable.Secret && (variable.Default != nil || variable.Allowed != "") {
+				t.Errorf("the secret variable %s is listed with a default or allowed values", variable.Name)
+			}
+		}
+		// A secret variable with a default, and a need name of a secret setting, are refused, and the refusal
+		// does not show the canary.
+		for component, change := range map[string]func(){
+			"health-check": func() {
+				addVariables(t, registry, "health-check", "  - {name: HEALTH_TOKEN, type: string, required: false, secret: true, default: "+canary+", description: \"The token.\"}\n")
+			},
+			"postgres-adapter": func() {
+				setNeeds(t, registry, "postgres-adapter", requirementsNeeds["postgres-adapter"]+"  - {kind: topic, name: \"{settings.connection_string}\"}\n")
+			},
+			"health-check ": func() {
+				addVariables(t, registry, "health-check", "  - {name: HEALTH_TOKEN, type: string, required: false, secret: true, example: "+canary+", description: \"The token.\"}\n")
+			},
+			"postgres-adapter ": func() {
+				addVariables(t, registry, "postgres-adapter", "  - {name: STORE_URL, type: string, required: false, secret: false, default: \"{settings.connection_string}\", description: \"The store.\"}\n")
+			},
+		} {
+			fresh := requirementsRegistry(t)
+			registry = fresh
+			change()
+			project := requirementsProject(t)
+			before := folderDigests(t, project)
+			stdout, stderr, err := runInProject(t, project, requirementsEnv(registry), "apply")
+			if err == nil {
+				t.Errorf("%s: apply accepted a secret in a default or a name", component)
+			}
+			if strings.Contains(stdout+stderr, canary) || !strings.Contains(stderr, strings.TrimSpace(component)) {
+				t.Errorf("%s: the refusal shows the canary or does not name the component:\n%s", component, stderr)
+			}
+			if after := folderDigests(t, project); !maps.Equal(before, after) {
+				t.Errorf("%s: the refused apply changed the project folder", component)
+			}
+		}
+		// A secret field of runtime-configuration with a default of the canary is refused, with no canary shown.
+		fresh := requirementsRegistry(t)
+		archetype := filepath.Join(fresh, "archetypes", "rest-crud", "archetype.yaml")
+		raw, err := os.ReadFile(archetype)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(archetype, []byte(strings.Replace(string(raw), "components:\n", "components:\n  - runtime-configuration\n", 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		withField := filepath.Join(t.TempDir(), "orders")
+		writeRequirementsDeclaration(t, withField, strings.Replace(requirementsDeclaration, "overrides:\n", `overrides:
+  runtime-configuration:
+    groups:
+      - name: Worker
+        fields:
+          - {name: Token, env: WIDGET_TOKEN, type: string, min_length: 1, max_length: 64, required: false, secret: true, default: `+canary+`, description: "The token."}
+`, 1))
+		git(t, withField, "init", "-q")
+		git(t, withField, "add", "-A")
+		git(t, withField, "commit", "-q", "-m", "the service orders")
+		stdout, stderr, err = runInProject(t, withField, requirementsEnv(fresh), "apply")
+		if err == nil || strings.Contains(stdout+stderr, canary) {
+			t.Errorf("a secret field with a default is accepted, or the refusal shows it: %v\n%s", err, stderr)
+		}
+		// stego env check on the written requirements and an environment file whose secrets hold the canary shows
+		// no canary, whether it passes or fails.
+		envDir := t.TempDir()
+		written, err := os.ReadFile(filepath.Join(dir, compiler.RequirementsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(envDir, "platform-requirements.yaml"), written, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		environment, err := os.ReadFile(filepath.Join(environmentFixtureDir, "dev.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range []string{string(environment), strings.Replace(string(environment), "secrets:\n", "secrets:\n  DATABASE_URL:\n    value: "+canary+"\n  PGPASSWORD:\n    value: "+canary+"\n", 1) + "  extra: " + canary + "\n"} {
+			if err := os.WriteFile(filepath.Join(envDir, "dev.yaml"), []byte(file), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, _ := runInProject(t, envDir, nil, "env", "check", "--requirements", "platform-requirements.yaml", "dev.yaml")
+			if strings.Contains(stdout+stderr, canary) {
+				t.Errorf("stego env check shows the canary:\n%s\n%s", stdout, stderr)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC01-R09-T02 Two components that state one variable with different facts stop the apply, which names both and the variable and writes nothing", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		addVariables(t, registry, "postgres-adapter", "  - {name: LOG_LEVEL, type: string, required: false, default: info, secret: false, description: \"The level of the log.\"}\n")
+		dir := requirementsProject(t)
+		before := folderDigests(t, dir)
+		_, stderr, err := runInProject(t, dir, requirementsEnv(registry), "apply")
+		if err == nil {
+			t.Fatal("apply accepted one variable that two components state differently")
+		}
+		for _, part := range []string{"health-check", "postgres-adapter", "LOG_LEVEL", "required flag"} {
+			if !strings.Contains(stderr, part) {
+				t.Errorf("the refusal does not name %s:\n%s", part, stderr)
+			}
+		}
+		if after := folderDigests(t, dir); !maps.Equal(before, after) {
+			t.Fatalf("the refused apply changed the project folder")
+		}
+	})
+
+	t.Run("ST-DLV-UC01-R03-T03 Two applies of the same declaration and registry write the same reference bytes", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		first := requirementsProject(t)
+		second := copyFolder(t, first)
+		mustRunInProject(t, first, requirementsEnv(registry), "apply")
+		mustRunInProject(t, second, append(requirementsEnv(registry), "TZ=Pacific/Kiritimati", "LANG=de_DE.UTF-8", "STEGO_UNRELATED=1"), "apply")
+		a, err := os.ReadFile(filepath.Join(first, compiler.ReferenceFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(second, compiler.ReferenceFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(a, b) {
+			t.Fatalf("the two applies wrote other references:\n%s\n---\n%s", a, b)
+		}
+	})
+
+	t.Run("ST-DLV-UC01-R05-T04 Applying the plan refuses a hand edit of the reference and names the file", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		dir := requirementsProject(t)
+		env := requirementsEnv(registry)
+		mustRunInProject(t, dir, env, "apply")
+		path := filepath.Join(dir, compiler.ReferenceFile)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(data, []byte("| `EXTRA` | string | no | none | no | - | - | Added by hand. |\n")...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, stderr, err := runInProject(t, dir, env, "apply")
+		if err == nil || !strings.Contains(stderr, "hand-edited") || !strings.Contains(stderr, compiler.ReferenceFile) {
+			t.Fatalf("apply accepted a hand edit of the reference, or the refusal does not name it: %v\n%s", err, stderr)
+		}
+	})
+}
+
+func TestEnvironmentSettingDefaults(t *testing.T) {
+	t.Run("ST-DLV-UC01-R06-T02 A default from a setting that breaks the variable's type or allowed values stops the apply", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		// The declaration gives schema_generation the text tables-v1, which is no integer.
+		addVariables(t, registry, "postgres-adapter", "  - {name: STORE_GENERATION, type: integer, required: false, secret: false, default: \"{settings.schema_generation}\", description: \"The generation.\"}\n")
+		dir := requirementsProject(t)
+		before := folderDigests(t, dir)
+		_, stderr, err := runInProject(t, dir, requirementsEnv(registry), "apply")
+		if err == nil {
+			t.Fatal("apply accepted a default that is not of the variable's type")
+		}
+		for _, part := range []string{"postgres-adapter", "STORE_GENERATION", "schema_generation", "not an integer"} {
+			if !strings.Contains(stderr, part) {
+				t.Errorf("the refusal does not name %s:\n%s", part, stderr)
+			}
+		}
+		if after := folderDigests(t, dir); !maps.Equal(before, after) {
+			t.Fatal("the refused apply changed the project folder")
+		}
+	})
 }

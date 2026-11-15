@@ -225,6 +225,12 @@
         "$ref": "#/$defs/need"
       }
     },
+    "variables": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/variable"
+      }
+    },
     "boundaries": {
       "type": "array",
       "items": {
@@ -289,7 +295,7 @@
     "compliance": {
       "type": "array",
       "minItems": 7,
-      "maxItems": 7,
+      "maxItems": 8,
       "items": {
         "$ref": "#/$defs/topic"
       }
@@ -1215,6 +1221,75 @@
         }
       }
     },
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "read_by",
+        "type",
+        "required",
+        "secret",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+        },
+        "read_by": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "type": {
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "duration",
+            "boolean",
+            "url",
+            "path",
+            "address",
+            "list"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "default": {
+          "type": "string"
+        },
+        "secret": {
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
+      },
+      "if": {
+        "properties": {
+          "secret": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "default"
+          ]
+        }
+      }
+    },
     "boundary": {
       "type": "object",
       "additionalProperties": false,
@@ -1565,7 +1640,8 @@
             "topic:audit",
             "topic:data-protection",
             "topic:owner-code",
-            "topic:retention"
+            "topic:retention",
+            "topic:configuration"
           ]
         },
         "facts": {

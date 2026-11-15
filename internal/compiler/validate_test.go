@@ -73,6 +73,7 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -99,6 +100,7 @@ slots:
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -422,6 +424,7 @@ func TestValidate_UnresolvedPort(t *testing.T) {
 	// Modify stub-api to require a port that nothing provides.
 	compPath := filepath.Join(registryDir, "components", "stub-api", "component.yaml")
 	writeFile(t, compPath, `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -4407,6 +4410,7 @@ slots:
 		slotDir := filepath.Join(registryDir, "components", "slot-owner")
 		mkdirAll(t, filepath.Join(slotDir, "slots"))
 		writeFile(t, filepath.Join(slotDir, "component.yaml"), `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.

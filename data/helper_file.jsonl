@@ -6,6 +6,7 @@
 {"record_id":"ST-DECL-INV37-RL","file":"internal/declaration/operation.go"}
 {"record_id":"ST-DECL-RM01-PJ","file":"internal/declaration/settings_report.go"}
 {"record_id":"ST-DIS-EN06-TB","file":"registry/lifecycle/README.md"}
+{"record_id":"ST-DLV-CMD01-H","file":"internal/delivery/environment_reference.go"}
 {"record_id":"ST-EXT-CMD01-H","file":"cmd/stego/scaffold.go"}
 {"record_id":"ST-EXT-CMD02-H","file":"internal/fill/evidence.go"}
 {"record_id":"ST-EXT-INV05-RL","file":"internal/fill/closure.go"}

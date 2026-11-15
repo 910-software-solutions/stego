@@ -15,3 +15,5 @@ architecture:
   flow: "Builds the Kubernetes workloads that the service creates."
   ports:
     kubernetes-workload-construction: inbound
+
+environment: []

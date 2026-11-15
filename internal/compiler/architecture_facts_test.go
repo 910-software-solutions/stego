@@ -92,7 +92,9 @@ func TestComplianceFactList(t *testing.T) {
 			for _, f := range list.Facts {
 				got = append(got, f.ID)
 			}
-			if len(want) == 0 || strings.Join(got, " ") != strings.Join(want, " ") || list.Topic != topic || list.Service != "docs" {
+			// The configuration topic of a model with no environment variable holds no fact (ST-GEN-UC16-R07).
+			empty := len(want) == 0 && !(topic == "configuration" && len(model.Variables) == 0)
+			if empty || strings.Join(got, " ") != strings.Join(want, " ") || list.Topic != topic || list.Service != "docs" {
 				t.Fatalf("the topic %s lists %v, want %v", topic, got, want)
 			}
 		}
@@ -112,7 +114,7 @@ func TestComplianceFactList(t *testing.T) {
 				t.Fatalf("the text does not name the role %s of operation:docs.update:\n%s", p.Role, text)
 			}
 		}
-		if _, err := ListComplianceFacts(project, "configuration", false); err == nil || !strings.Contains(err.Error(), "personal-data") {
+		if _, err := ListComplianceFacts(project, "secrets-at-rest", false); err == nil || !strings.Contains(err.Error(), "personal-data") {
 			t.Fatalf("a topic that is not known: %v", err)
 		}
 	})

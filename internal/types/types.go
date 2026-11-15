@@ -213,6 +213,9 @@ type ConfigField struct {
 	Items    *ConfigFieldItems `yaml:"items,omitempty"`
 	Optional bool              `yaml:"optional,omitempty"`
 	Enum     []string          `yaml:"enum,omitempty"`
+	// Secret marks a setting whose value is a secret: it has no default, and no name of a need or of an
+	// environment variable may hold it (ST-SUP-EN09 field Config schema, ST-SUP-INV23).
+	Secret bool `yaml:"secret,omitempty"`
 }
 
 // ConcurrencyMode for upsert operations.
