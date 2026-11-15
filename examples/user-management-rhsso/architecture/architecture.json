@@ -25,8 +25,7 @@
       "state": "present"
     },
     "platform_edges": {
-      "state": "empty",
-      "reason": "No component of the active set states a platform need."
+      "state": "present"
     },
     "trust_and_tenancy": {
       "state": "present"
@@ -3513,7 +3512,1341 @@
       }
     }
   ],
-  "needs": [],
+  "needs": [
+    {
+      "id": "need:configuration.STEGO_QUERY_CURSOR_KEY_FILE",
+      "kind": "configuration",
+      "name": "STEGO_QUERY_CURSOR_KEY_FILE",
+      "stated_by": [
+        "component:query"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "query",
+          "version": "1.1.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:configuration.STEGO_SPICEDB_ENDPOINT",
+      "kind": "configuration",
+      "name": "STEGO_SPICEDB_ENDPOINT",
+      "stated_by": [
+        "component:spicedb-authz"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:configuration.STEGO_SPICEDB_KEY_FILE",
+      "kind": "configuration",
+      "name": "STEGO_SPICEDB_KEY_FILE",
+      "stated_by": [
+        "component:spicedb-authz"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "needs"
+        }
+      }
+    }
+  ],
+  "variables": [
+    {
+      "id": "variable:AUTH_ENABLED",
+      "name": "AUTH_ENABLED",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "boolean",
+      "required": false,
+      "default": "true",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:CORS_ALLOWED_HEADERS",
+      "name": "CORS_ALLOWED_HEADERS",
+      "read_by": [
+        "component:rest-api"
+      ],
+      "type": "list",
+      "required": false,
+      "default": "Content-Type,Authorization",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rest-api",
+          "version": "4.4.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:CORS_ALLOWED_METHODS",
+      "name": "CORS_ALLOWED_METHODS",
+      "read_by": [
+        "component:rest-api"
+      ],
+      "type": "list",
+      "required": false,
+      "default": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rest-api",
+          "version": "4.4.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:CORS_ALLOWED_ORIGINS",
+      "name": "CORS_ALLOWED_ORIGINS",
+      "read_by": [
+        "component:rest-api"
+      ],
+      "type": "list",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rest-api",
+          "version": "4.4.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:DATABASE_URL",
+      "name": "DATABASE_URL",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:DATABASE_URL_FILE",
+      "name": "DATABASE_URL_FILE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:JWK_CA_FILE",
+      "name": "JWK_CA_FILE",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:JWK_CERT_FILE",
+      "name": "JWK_CERT_FILE",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:JWK_CERT_URL",
+      "name": "JWK_CERT_URL",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "url",
+      "required": false,
+      "default": "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/certs",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_EXPORTER_OTLP_CERTIFICATE",
+      "name": "OTEL_EXPORTER_OTLP_CERTIFICATE",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_EXPORTER_OTLP_ENDPOINT",
+      "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "url",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_EXPORTER_OTLP_PROTOCOL",
+      "name": "OTEL_EXPORTER_OTLP_PROTOCOL",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "grpc",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_LOGS_EXPORTER",
+      "name": "OTEL_LOGS_EXPORTER",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "otlp",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_METRICS_EXPORTER",
+      "name": "OTEL_METRICS_EXPORTER",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "otlp",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_METRIC_EXPORT_INTERVAL",
+      "name": "OTEL_METRIC_EXPORT_INTERVAL",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "integer",
+      "required": false,
+      "default": "10000",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_SERVICE_NAME",
+      "name": "OTEL_SERVICE_NAME",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:OTEL_TRACES_SAMPLER_ARG",
+      "name": "OTEL_TRACES_SAMPLER_ARG",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "number",
+      "required": false,
+      "default": "0.1",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PORT",
+      "name": "PORT",
+      "read_by": [
+        "component:health-check"
+      ],
+      "type": "integer",
+      "required": false,
+      "default": "8080",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "health-check",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUDIT_SINK_AUTH_HEADER",
+      "name": "STEGO_AUDIT_SINK_AUTH_HEADER",
+      "read_by": [
+        "component:audit-log"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "audit-log",
+          "version": "1.1.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUDIT_SINK_CA_FILE",
+      "name": "STEGO_AUDIT_SINK_CA_FILE",
+      "read_by": [
+        "component:audit-log"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "audit-log",
+          "version": "1.1.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUDIT_SINK_CLIENT_CERT_FILE",
+      "name": "STEGO_AUDIT_SINK_CLIENT_CERT_FILE",
+      "read_by": [
+        "component:audit-log"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "audit-log",
+          "version": "1.1.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUDIT_SINK_CLIENT_KEY_FILE",
+      "name": "STEGO_AUDIT_SINK_CLIENT_KEY_FILE",
+      "read_by": [
+        "component:audit-log"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "audit-log",
+          "version": "1.1.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUDIT_SINK_TOKEN_FILE",
+      "name": "STEGO_AUDIT_SINK_TOKEN_FILE",
+      "read_by": [
+        "component:audit-log"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "audit-log",
+          "version": "1.1.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUDIT_SINK_URL",
+      "name": "STEGO_AUDIT_SINK_URL",
+      "read_by": [
+        "component:audit-log"
+      ],
+      "type": "url",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "audit-log",
+          "version": "1.1.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTHN_AUDIENCE",
+      "name": "STEGO_AUTHN_AUDIENCE",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "user-management",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTHN_CA_FILE",
+      "name": "STEGO_AUTHN_CA_FILE",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTHN_ISSUER",
+      "name": "STEGO_AUTHN_ISSUER",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "url",
+      "required": false,
+      "default": "https://sso.example.com/auth/realms/example",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTHN_KEYS_FILE",
+      "name": "STEGO_AUTHN_KEYS_FILE",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTHN_KEYS_URL",
+      "name": "STEGO_AUTHN_KEYS_URL",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "url",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTH_AUDIENCE",
+      "name": "STEGO_AUTH_AUDIENCE",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "user-management",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTH_ISSUER",
+      "name": "STEGO_AUTH_ISSUER",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "url",
+      "required": false,
+      "default": "https://sso.example.com/auth/realms/example",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTH_PUBLIC_KEY_FILE",
+      "name": "STEGO_AUTH_PUBLIC_KEY_FILE",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_AUTH_ROLES_CLAIM",
+      "name": "STEGO_AUTH_ROLES_CLAIM",
+      "read_by": [
+        "component:rh-sso-auth"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "rh-sso-auth",
+          "version": "2.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK",
+      "name": "STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "boolean",
+      "required": false,
+      "default": "0",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME",
+      "name": "STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "duration",
+      "required": false,
+      "default": "5m",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME",
+      "name": "STEGO_DATABASE_CONNECTION_MAX_LIFETIME",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "duration",
+      "required": false,
+      "default": "30m",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_DATABASE_MAX_IDLE_CONNECTIONS",
+      "name": "STEGO_DATABASE_MAX_IDLE_CONNECTIONS",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "integer",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS",
+      "name": "STEGO_DATABASE_MAX_OPEN_CONNECTIONS",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "integer",
+      "required": false,
+      "default": "16",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_HTTP_REQUIRE_TLS",
+      "name": "STEGO_HTTP_REQUIRE_TLS",
+      "read_by": [
+        "component:health-check"
+      ],
+      "type": "boolean",
+      "required": false,
+      "default": "0",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "health-check",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_HTTP_TLS_CERT",
+      "name": "STEGO_HTTP_TLS_CERT",
+      "read_by": [
+        "component:health-check"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "health-check",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_HTTP_TLS_KEY",
+      "name": "STEGO_HTTP_TLS_KEY",
+      "read_by": [
+        "component:health-check"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "health-check",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_BROKERS",
+      "name": "STEGO_KAFKA_BROKERS",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "list",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_BROKERS_FILE",
+      "name": "STEGO_KAFKA_BROKERS_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_BROKER_HOSTS",
+      "name": "STEGO_KAFKA_BROKER_HOSTS",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "list",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_BROKER_HOSTS_FILE",
+      "name": "STEGO_KAFKA_BROKER_HOSTS_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_CA_FILE",
+      "name": "STEGO_KAFKA_CA_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_CLIENT_CERT_FILE",
+      "name": "STEGO_KAFKA_CLIENT_CERT_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_CLIENT_KEY_FILE",
+      "name": "STEGO_KAFKA_CLIENT_KEY_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_INSECURE_LOOPBACK",
+      "name": "STEGO_KAFKA_INSECURE_LOOPBACK",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "boolean",
+      "required": false,
+      "default": "0",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_PASSWORD_FILE",
+      "name": "STEGO_KAFKA_PASSWORD_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_SASL_MECHANISM",
+      "name": "STEGO_KAFKA_SASL_MECHANISM",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_TOKEN_FILE",
+      "name": "STEGO_KAFKA_TOKEN_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_TOPIC",
+      "name": "STEGO_KAFKA_TOPIC",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_TOPIC_FILE",
+      "name": "STEGO_KAFKA_TOPIC_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_USERNAME",
+      "name": "STEGO_KAFKA_USERNAME",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_KAFKA_USERNAME_FILE",
+      "name": "STEGO_KAFKA_USERNAME_FILE",
+      "read_by": [
+        "component:kafka-producer"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_MIGRATION_DATABASE_URL",
+      "name": "STEGO_MIGRATION_DATABASE_URL",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_MIGRATION_DATABASE_URL_FILE",
+      "name": "STEGO_MIGRATION_DATABASE_URL_FILE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_MODE",
+      "name": "STEGO_MODE",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "list",
+      "required": false,
+      "default": "all",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_OTEL_TOKEN_FILE",
+      "name": "STEGO_OTEL_TOKEN_FILE",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_PROBE_CONSOLE",
+      "name": "STEGO_PROBE_CONSOLE",
+      "read_by": [
+        "component:domain-probe"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "off",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "domain-probe",
+          "version": "1.0.1",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_QUERY_CURSOR_KEY_FILE",
+      "name": "STEGO_QUERY_CURSOR_KEY_FILE",
+      "read_by": [
+        "component:query"
+      ],
+      "type": "path",
+      "required": true,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "query",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_RELAY_DATABASE_URL",
+      "name": "STEGO_RELAY_DATABASE_URL",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_RELAY_DATABASE_URL_FILE",
+      "name": "STEGO_RELAY_DATABASE_URL_FILE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_SERVICE_VERSION",
+      "name": "STEGO_SERVICE_VERSION",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_SPICEDB_ENDPOINT",
+      "name": "STEGO_SPICEDB_ENDPOINT",
+      "read_by": [
+        "component:spicedb-authz"
+      ],
+      "type": "address",
+      "required": true,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_SPICEDB_INSECURE_LOOPBACK",
+      "name": "STEGO_SPICEDB_INSECURE_LOOPBACK",
+      "read_by": [
+        "component:spicedb-authz"
+      ],
+      "type": "boolean",
+      "required": false,
+      "default": "0",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_SPICEDB_KEY_FILE",
+      "name": "STEGO_SPICEDB_KEY_FILE",
+      "read_by": [
+        "component:spicedb-authz"
+      ],
+      "type": "path",
+      "required": true,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_WORKER_DATABASE_URL",
+      "name": "STEGO_WORKER_DATABASE_URL",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:STEGO_WORKER_DATABASE_URL_FILE",
+      "name": "STEGO_WORKER_DATABASE_URL_FILE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    }
+  ],
   "boundaries": [
     {
       "id": "boundary:fill-code",
@@ -4718,6 +6051,3506 @@
           "state": "default",
           "source": {
             "default": "ST-DECL-UC05-R01"
+          }
+        }
+      ]
+    },
+    {
+      "id": "topic:configuration",
+      "facts": [
+        {
+          "id": "fact:configuration/variable:AUTH_ENABLED/default",
+          "about": "variable:AUTH_ENABLED",
+          "name": "default",
+          "value": "true",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:AUTH_ENABLED/read-by",
+          "about": "variable:AUTH_ENABLED",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:AUTH_ENABLED/required",
+          "about": "variable:AUTH_ENABLED",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:AUTH_ENABLED/secret",
+          "about": "variable:AUTH_ENABLED",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_HEADERS/default",
+          "about": "variable:CORS_ALLOWED_HEADERS",
+          "name": "default",
+          "value": "Content-Type,Authorization",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_HEADERS/read-by",
+          "about": "variable:CORS_ALLOWED_HEADERS",
+          "name": "read by",
+          "value": "component:rest-api",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_HEADERS/required",
+          "about": "variable:CORS_ALLOWED_HEADERS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_HEADERS/secret",
+          "about": "variable:CORS_ALLOWED_HEADERS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_METHODS/default",
+          "about": "variable:CORS_ALLOWED_METHODS",
+          "name": "default",
+          "value": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_METHODS/read-by",
+          "about": "variable:CORS_ALLOWED_METHODS",
+          "name": "read by",
+          "value": "component:rest-api",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_METHODS/required",
+          "about": "variable:CORS_ALLOWED_METHODS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_METHODS/secret",
+          "about": "variable:CORS_ALLOWED_METHODS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_ORIGINS/read-by",
+          "about": "variable:CORS_ALLOWED_ORIGINS",
+          "name": "read by",
+          "value": "component:rest-api",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_ORIGINS/required",
+          "about": "variable:CORS_ALLOWED_ORIGINS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:CORS_ALLOWED_ORIGINS/secret",
+          "about": "variable:CORS_ALLOWED_ORIGINS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rest-api",
+              "version": "4.4.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:DATABASE_URL/read-by",
+          "about": "variable:DATABASE_URL",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:DATABASE_URL/required",
+          "about": "variable:DATABASE_URL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:DATABASE_URL/secret",
+          "about": "variable:DATABASE_URL",
+          "name": "secret",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:DATABASE_URL_FILE/read-by",
+          "about": "variable:DATABASE_URL_FILE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:DATABASE_URL_FILE/required",
+          "about": "variable:DATABASE_URL_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:DATABASE_URL_FILE/secret",
+          "about": "variable:DATABASE_URL_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CA_FILE/read-by",
+          "about": "variable:JWK_CA_FILE",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CA_FILE/required",
+          "about": "variable:JWK_CA_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CA_FILE/secret",
+          "about": "variable:JWK_CA_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CERT_FILE/read-by",
+          "about": "variable:JWK_CERT_FILE",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CERT_FILE/required",
+          "about": "variable:JWK_CERT_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CERT_FILE/secret",
+          "about": "variable:JWK_CERT_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CERT_URL/default",
+          "about": "variable:JWK_CERT_URL",
+          "name": "default",
+          "value": "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/certs",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CERT_URL/read-by",
+          "about": "variable:JWK_CERT_URL",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CERT_URL/required",
+          "about": "variable:JWK_CERT_URL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:JWK_CERT_URL/secret",
+          "about": "variable:JWK_CERT_URL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_CERTIFICATE/read-by",
+          "about": "variable:OTEL_EXPORTER_OTLP_CERTIFICATE",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_CERTIFICATE/required",
+          "about": "variable:OTEL_EXPORTER_OTLP_CERTIFICATE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_CERTIFICATE/secret",
+          "about": "variable:OTEL_EXPORTER_OTLP_CERTIFICATE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_ENDPOINT/read-by",
+          "about": "variable:OTEL_EXPORTER_OTLP_ENDPOINT",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_ENDPOINT/required",
+          "about": "variable:OTEL_EXPORTER_OTLP_ENDPOINT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_ENDPOINT/secret",
+          "about": "variable:OTEL_EXPORTER_OTLP_ENDPOINT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_PROTOCOL/default",
+          "about": "variable:OTEL_EXPORTER_OTLP_PROTOCOL",
+          "name": "default",
+          "value": "grpc",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_PROTOCOL/read-by",
+          "about": "variable:OTEL_EXPORTER_OTLP_PROTOCOL",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_PROTOCOL/required",
+          "about": "variable:OTEL_EXPORTER_OTLP_PROTOCOL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_PROTOCOL/secret",
+          "about": "variable:OTEL_EXPORTER_OTLP_PROTOCOL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_LOGS_EXPORTER/default",
+          "about": "variable:OTEL_LOGS_EXPORTER",
+          "name": "default",
+          "value": "otlp",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_LOGS_EXPORTER/read-by",
+          "about": "variable:OTEL_LOGS_EXPORTER",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_LOGS_EXPORTER/required",
+          "about": "variable:OTEL_LOGS_EXPORTER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_LOGS_EXPORTER/secret",
+          "about": "variable:OTEL_LOGS_EXPORTER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRICS_EXPORTER/default",
+          "about": "variable:OTEL_METRICS_EXPORTER",
+          "name": "default",
+          "value": "otlp",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRICS_EXPORTER/read-by",
+          "about": "variable:OTEL_METRICS_EXPORTER",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRICS_EXPORTER/required",
+          "about": "variable:OTEL_METRICS_EXPORTER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRICS_EXPORTER/secret",
+          "about": "variable:OTEL_METRICS_EXPORTER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRIC_EXPORT_INTERVAL/default",
+          "about": "variable:OTEL_METRIC_EXPORT_INTERVAL",
+          "name": "default",
+          "value": "10000",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRIC_EXPORT_INTERVAL/read-by",
+          "about": "variable:OTEL_METRIC_EXPORT_INTERVAL",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRIC_EXPORT_INTERVAL/required",
+          "about": "variable:OTEL_METRIC_EXPORT_INTERVAL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_METRIC_EXPORT_INTERVAL/secret",
+          "about": "variable:OTEL_METRIC_EXPORT_INTERVAL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_SERVICE_NAME/read-by",
+          "about": "variable:OTEL_SERVICE_NAME",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_SERVICE_NAME/required",
+          "about": "variable:OTEL_SERVICE_NAME",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_SERVICE_NAME/secret",
+          "about": "variable:OTEL_SERVICE_NAME",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_TRACES_SAMPLER_ARG/default",
+          "about": "variable:OTEL_TRACES_SAMPLER_ARG",
+          "name": "default",
+          "value": "0.1",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_TRACES_SAMPLER_ARG/read-by",
+          "about": "variable:OTEL_TRACES_SAMPLER_ARG",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_TRACES_SAMPLER_ARG/required",
+          "about": "variable:OTEL_TRACES_SAMPLER_ARG",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:OTEL_TRACES_SAMPLER_ARG/secret",
+          "about": "variable:OTEL_TRACES_SAMPLER_ARG",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PORT/default",
+          "about": "variable:PORT",
+          "name": "default",
+          "value": "8080",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PORT/read-by",
+          "about": "variable:PORT",
+          "name": "read by",
+          "value": "component:health-check",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PORT/required",
+          "about": "variable:PORT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PORT/secret",
+          "about": "variable:PORT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_AUTH_HEADER/read-by",
+          "about": "variable:STEGO_AUDIT_SINK_AUTH_HEADER",
+          "name": "read by",
+          "value": "component:audit-log",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_AUTH_HEADER/required",
+          "about": "variable:STEGO_AUDIT_SINK_AUTH_HEADER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_AUTH_HEADER/secret",
+          "about": "variable:STEGO_AUDIT_SINK_AUTH_HEADER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CA_FILE/read-by",
+          "about": "variable:STEGO_AUDIT_SINK_CA_FILE",
+          "name": "read by",
+          "value": "component:audit-log",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CA_FILE/required",
+          "about": "variable:STEGO_AUDIT_SINK_CA_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CA_FILE/secret",
+          "about": "variable:STEGO_AUDIT_SINK_CA_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CLIENT_CERT_FILE/read-by",
+          "about": "variable:STEGO_AUDIT_SINK_CLIENT_CERT_FILE",
+          "name": "read by",
+          "value": "component:audit-log",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CLIENT_CERT_FILE/required",
+          "about": "variable:STEGO_AUDIT_SINK_CLIENT_CERT_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CLIENT_CERT_FILE/secret",
+          "about": "variable:STEGO_AUDIT_SINK_CLIENT_CERT_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CLIENT_KEY_FILE/read-by",
+          "about": "variable:STEGO_AUDIT_SINK_CLIENT_KEY_FILE",
+          "name": "read by",
+          "value": "component:audit-log",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CLIENT_KEY_FILE/required",
+          "about": "variable:STEGO_AUDIT_SINK_CLIENT_KEY_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_CLIENT_KEY_FILE/secret",
+          "about": "variable:STEGO_AUDIT_SINK_CLIENT_KEY_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_TOKEN_FILE/read-by",
+          "about": "variable:STEGO_AUDIT_SINK_TOKEN_FILE",
+          "name": "read by",
+          "value": "component:audit-log",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_TOKEN_FILE/required",
+          "about": "variable:STEGO_AUDIT_SINK_TOKEN_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_TOKEN_FILE/secret",
+          "about": "variable:STEGO_AUDIT_SINK_TOKEN_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_URL/read-by",
+          "about": "variable:STEGO_AUDIT_SINK_URL",
+          "name": "read by",
+          "value": "component:audit-log",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_URL/required",
+          "about": "variable:STEGO_AUDIT_SINK_URL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUDIT_SINK_URL/secret",
+          "about": "variable:STEGO_AUDIT_SINK_URL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "audit-log",
+              "version": "1.1.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_AUDIENCE/default",
+          "about": "variable:STEGO_AUTHN_AUDIENCE",
+          "name": "default",
+          "value": "user-management",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_AUDIENCE/read-by",
+          "about": "variable:STEGO_AUTHN_AUDIENCE",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_AUDIENCE/required",
+          "about": "variable:STEGO_AUTHN_AUDIENCE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_AUDIENCE/secret",
+          "about": "variable:STEGO_AUTHN_AUDIENCE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_CA_FILE/read-by",
+          "about": "variable:STEGO_AUTHN_CA_FILE",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_CA_FILE/required",
+          "about": "variable:STEGO_AUTHN_CA_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_CA_FILE/secret",
+          "about": "variable:STEGO_AUTHN_CA_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_ISSUER/default",
+          "about": "variable:STEGO_AUTHN_ISSUER",
+          "name": "default",
+          "value": "https://sso.example.com/auth/realms/example",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_ISSUER/read-by",
+          "about": "variable:STEGO_AUTHN_ISSUER",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_ISSUER/required",
+          "about": "variable:STEGO_AUTHN_ISSUER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_ISSUER/secret",
+          "about": "variable:STEGO_AUTHN_ISSUER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_KEYS_FILE/read-by",
+          "about": "variable:STEGO_AUTHN_KEYS_FILE",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_KEYS_FILE/required",
+          "about": "variable:STEGO_AUTHN_KEYS_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_KEYS_FILE/secret",
+          "about": "variable:STEGO_AUTHN_KEYS_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_KEYS_URL/read-by",
+          "about": "variable:STEGO_AUTHN_KEYS_URL",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_KEYS_URL/required",
+          "about": "variable:STEGO_AUTHN_KEYS_URL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTHN_KEYS_URL/secret",
+          "about": "variable:STEGO_AUTHN_KEYS_URL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_AUDIENCE/default",
+          "about": "variable:STEGO_AUTH_AUDIENCE",
+          "name": "default",
+          "value": "user-management",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_AUDIENCE/read-by",
+          "about": "variable:STEGO_AUTH_AUDIENCE",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_AUDIENCE/required",
+          "about": "variable:STEGO_AUTH_AUDIENCE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_AUDIENCE/secret",
+          "about": "variable:STEGO_AUTH_AUDIENCE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_ISSUER/default",
+          "about": "variable:STEGO_AUTH_ISSUER",
+          "name": "default",
+          "value": "https://sso.example.com/auth/realms/example",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_ISSUER/read-by",
+          "about": "variable:STEGO_AUTH_ISSUER",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_ISSUER/required",
+          "about": "variable:STEGO_AUTH_ISSUER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_ISSUER/secret",
+          "about": "variable:STEGO_AUTH_ISSUER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_PUBLIC_KEY_FILE/read-by",
+          "about": "variable:STEGO_AUTH_PUBLIC_KEY_FILE",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_PUBLIC_KEY_FILE/required",
+          "about": "variable:STEGO_AUTH_PUBLIC_KEY_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_PUBLIC_KEY_FILE/secret",
+          "about": "variable:STEGO_AUTH_PUBLIC_KEY_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_ROLES_CLAIM/read-by",
+          "about": "variable:STEGO_AUTH_ROLES_CLAIM",
+          "name": "read by",
+          "value": "component:rh-sso-auth",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_ROLES_CLAIM/required",
+          "about": "variable:STEGO_AUTH_ROLES_CLAIM",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_AUTH_ROLES_CLAIM/secret",
+          "about": "variable:STEGO_AUTH_ROLES_CLAIM",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "rh-sso-auth",
+              "version": "2.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK/default",
+          "about": "variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK",
+          "name": "default",
+          "value": "0",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK/read-by",
+          "about": "variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK/required",
+          "about": "variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK/secret",
+          "about": "variable:STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME/default",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME",
+          "name": "default",
+          "value": "5m",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME/read-by",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME/required",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME/secret",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME/default",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME",
+          "name": "default",
+          "value": "30m",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME/read-by",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME/required",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME/secret",
+          "about": "variable:STEGO_DATABASE_CONNECTION_MAX_LIFETIME",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_MAX_IDLE_CONNECTIONS/read-by",
+          "about": "variable:STEGO_DATABASE_MAX_IDLE_CONNECTIONS",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_MAX_IDLE_CONNECTIONS/required",
+          "about": "variable:STEGO_DATABASE_MAX_IDLE_CONNECTIONS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_MAX_IDLE_CONNECTIONS/secret",
+          "about": "variable:STEGO_DATABASE_MAX_IDLE_CONNECTIONS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS/default",
+          "about": "variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS",
+          "name": "default",
+          "value": "16",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS/read-by",
+          "about": "variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS/required",
+          "about": "variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS/secret",
+          "about": "variable:STEGO_DATABASE_MAX_OPEN_CONNECTIONS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_REQUIRE_TLS/default",
+          "about": "variable:STEGO_HTTP_REQUIRE_TLS",
+          "name": "default",
+          "value": "0",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_REQUIRE_TLS/read-by",
+          "about": "variable:STEGO_HTTP_REQUIRE_TLS",
+          "name": "read by",
+          "value": "component:health-check",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_REQUIRE_TLS/required",
+          "about": "variable:STEGO_HTTP_REQUIRE_TLS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_REQUIRE_TLS/secret",
+          "about": "variable:STEGO_HTTP_REQUIRE_TLS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_TLS_CERT/read-by",
+          "about": "variable:STEGO_HTTP_TLS_CERT",
+          "name": "read by",
+          "value": "component:health-check",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_TLS_CERT/required",
+          "about": "variable:STEGO_HTTP_TLS_CERT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_TLS_CERT/secret",
+          "about": "variable:STEGO_HTTP_TLS_CERT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_TLS_KEY/read-by",
+          "about": "variable:STEGO_HTTP_TLS_KEY",
+          "name": "read by",
+          "value": "component:health-check",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_TLS_KEY/required",
+          "about": "variable:STEGO_HTTP_TLS_KEY",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_HTTP_TLS_KEY/secret",
+          "about": "variable:STEGO_HTTP_TLS_KEY",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKERS/read-by",
+          "about": "variable:STEGO_KAFKA_BROKERS",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKERS/required",
+          "about": "variable:STEGO_KAFKA_BROKERS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKERS/secret",
+          "about": "variable:STEGO_KAFKA_BROKERS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKERS_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_BROKERS_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKERS_FILE/required",
+          "about": "variable:STEGO_KAFKA_BROKERS_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKERS_FILE/secret",
+          "about": "variable:STEGO_KAFKA_BROKERS_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKER_HOSTS/read-by",
+          "about": "variable:STEGO_KAFKA_BROKER_HOSTS",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKER_HOSTS/required",
+          "about": "variable:STEGO_KAFKA_BROKER_HOSTS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKER_HOSTS/secret",
+          "about": "variable:STEGO_KAFKA_BROKER_HOSTS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKER_HOSTS_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_BROKER_HOSTS_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKER_HOSTS_FILE/required",
+          "about": "variable:STEGO_KAFKA_BROKER_HOSTS_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_BROKER_HOSTS_FILE/secret",
+          "about": "variable:STEGO_KAFKA_BROKER_HOSTS_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CA_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_CA_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CA_FILE/required",
+          "about": "variable:STEGO_KAFKA_CA_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CA_FILE/secret",
+          "about": "variable:STEGO_KAFKA_CA_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CLIENT_CERT_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_CLIENT_CERT_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CLIENT_CERT_FILE/required",
+          "about": "variable:STEGO_KAFKA_CLIENT_CERT_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CLIENT_CERT_FILE/secret",
+          "about": "variable:STEGO_KAFKA_CLIENT_CERT_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CLIENT_KEY_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_CLIENT_KEY_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CLIENT_KEY_FILE/required",
+          "about": "variable:STEGO_KAFKA_CLIENT_KEY_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_CLIENT_KEY_FILE/secret",
+          "about": "variable:STEGO_KAFKA_CLIENT_KEY_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_INSECURE_LOOPBACK/default",
+          "about": "variable:STEGO_KAFKA_INSECURE_LOOPBACK",
+          "name": "default",
+          "value": "0",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_INSECURE_LOOPBACK/read-by",
+          "about": "variable:STEGO_KAFKA_INSECURE_LOOPBACK",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_INSECURE_LOOPBACK/required",
+          "about": "variable:STEGO_KAFKA_INSECURE_LOOPBACK",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_INSECURE_LOOPBACK/secret",
+          "about": "variable:STEGO_KAFKA_INSECURE_LOOPBACK",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_PASSWORD_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_PASSWORD_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_PASSWORD_FILE/required",
+          "about": "variable:STEGO_KAFKA_PASSWORD_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_PASSWORD_FILE/secret",
+          "about": "variable:STEGO_KAFKA_PASSWORD_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_SASL_MECHANISM/read-by",
+          "about": "variable:STEGO_KAFKA_SASL_MECHANISM",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_SASL_MECHANISM/required",
+          "about": "variable:STEGO_KAFKA_SASL_MECHANISM",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_SASL_MECHANISM/secret",
+          "about": "variable:STEGO_KAFKA_SASL_MECHANISM",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOKEN_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_TOKEN_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOKEN_FILE/required",
+          "about": "variable:STEGO_KAFKA_TOKEN_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOKEN_FILE/secret",
+          "about": "variable:STEGO_KAFKA_TOKEN_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOPIC/read-by",
+          "about": "variable:STEGO_KAFKA_TOPIC",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOPIC/required",
+          "about": "variable:STEGO_KAFKA_TOPIC",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOPIC/secret",
+          "about": "variable:STEGO_KAFKA_TOPIC",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOPIC_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_TOPIC_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOPIC_FILE/required",
+          "about": "variable:STEGO_KAFKA_TOPIC_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_TOPIC_FILE/secret",
+          "about": "variable:STEGO_KAFKA_TOPIC_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_USERNAME/read-by",
+          "about": "variable:STEGO_KAFKA_USERNAME",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_USERNAME/required",
+          "about": "variable:STEGO_KAFKA_USERNAME",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_USERNAME/secret",
+          "about": "variable:STEGO_KAFKA_USERNAME",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_USERNAME_FILE/read-by",
+          "about": "variable:STEGO_KAFKA_USERNAME_FILE",
+          "name": "read by",
+          "value": "component:kafka-producer",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_USERNAME_FILE/required",
+          "about": "variable:STEGO_KAFKA_USERNAME_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_KAFKA_USERNAME_FILE/secret",
+          "about": "variable:STEGO_KAFKA_USERNAME_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "kafka-producer",
+              "version": "3.0.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MIGRATION_DATABASE_URL/read-by",
+          "about": "variable:STEGO_MIGRATION_DATABASE_URL",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MIGRATION_DATABASE_URL/required",
+          "about": "variable:STEGO_MIGRATION_DATABASE_URL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MIGRATION_DATABASE_URL/secret",
+          "about": "variable:STEGO_MIGRATION_DATABASE_URL",
+          "name": "secret",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MIGRATION_DATABASE_URL_FILE/read-by",
+          "about": "variable:STEGO_MIGRATION_DATABASE_URL_FILE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MIGRATION_DATABASE_URL_FILE/required",
+          "about": "variable:STEGO_MIGRATION_DATABASE_URL_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MIGRATION_DATABASE_URL_FILE/secret",
+          "about": "variable:STEGO_MIGRATION_DATABASE_URL_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MODE/default",
+          "about": "variable:STEGO_MODE",
+          "name": "default",
+          "value": "all",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MODE/read-by",
+          "about": "variable:STEGO_MODE",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MODE/required",
+          "about": "variable:STEGO_MODE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_MODE/secret",
+          "about": "variable:STEGO_MODE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_OTEL_TOKEN_FILE/read-by",
+          "about": "variable:STEGO_OTEL_TOKEN_FILE",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_OTEL_TOKEN_FILE/required",
+          "about": "variable:STEGO_OTEL_TOKEN_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_OTEL_TOKEN_FILE/secret",
+          "about": "variable:STEGO_OTEL_TOKEN_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_PROBE_CONSOLE/default",
+          "about": "variable:STEGO_PROBE_CONSOLE",
+          "name": "default",
+          "value": "off",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "domain-probe",
+              "version": "1.0.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_PROBE_CONSOLE/read-by",
+          "about": "variable:STEGO_PROBE_CONSOLE",
+          "name": "read by",
+          "value": "component:domain-probe",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "domain-probe",
+              "version": "1.0.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_PROBE_CONSOLE/required",
+          "about": "variable:STEGO_PROBE_CONSOLE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "domain-probe",
+              "version": "1.0.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_PROBE_CONSOLE/secret",
+          "about": "variable:STEGO_PROBE_CONSOLE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "domain-probe",
+              "version": "1.0.1",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_KEY_FILE/read-by",
+          "about": "variable:STEGO_QUERY_CURSOR_KEY_FILE",
+          "name": "read by",
+          "value": "component:query",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "query",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_KEY_FILE/required",
+          "about": "variable:STEGO_QUERY_CURSOR_KEY_FILE",
+          "name": "required",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "query",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_KEY_FILE/secret",
+          "about": "variable:STEGO_QUERY_CURSOR_KEY_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "query",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_RELAY_DATABASE_URL/read-by",
+          "about": "variable:STEGO_RELAY_DATABASE_URL",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_RELAY_DATABASE_URL/required",
+          "about": "variable:STEGO_RELAY_DATABASE_URL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_RELAY_DATABASE_URL/secret",
+          "about": "variable:STEGO_RELAY_DATABASE_URL",
+          "name": "secret",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_RELAY_DATABASE_URL_FILE/read-by",
+          "about": "variable:STEGO_RELAY_DATABASE_URL_FILE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_RELAY_DATABASE_URL_FILE/required",
+          "about": "variable:STEGO_RELAY_DATABASE_URL_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_RELAY_DATABASE_URL_FILE/secret",
+          "about": "variable:STEGO_RELAY_DATABASE_URL_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SERVICE_VERSION/read-by",
+          "about": "variable:STEGO_SERVICE_VERSION",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SERVICE_VERSION/required",
+          "about": "variable:STEGO_SERVICE_VERSION",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SERVICE_VERSION/secret",
+          "about": "variable:STEGO_SERVICE_VERSION",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_ENDPOINT/read-by",
+          "about": "variable:STEGO_SPICEDB_ENDPOINT",
+          "name": "read by",
+          "value": "component:spicedb-authz",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_ENDPOINT/required",
+          "about": "variable:STEGO_SPICEDB_ENDPOINT",
+          "name": "required",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_ENDPOINT/secret",
+          "about": "variable:STEGO_SPICEDB_ENDPOINT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_INSECURE_LOOPBACK/default",
+          "about": "variable:STEGO_SPICEDB_INSECURE_LOOPBACK",
+          "name": "default",
+          "value": "0",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_INSECURE_LOOPBACK/read-by",
+          "about": "variable:STEGO_SPICEDB_INSECURE_LOOPBACK",
+          "name": "read by",
+          "value": "component:spicedb-authz",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_INSECURE_LOOPBACK/required",
+          "about": "variable:STEGO_SPICEDB_INSECURE_LOOPBACK",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_INSECURE_LOOPBACK/secret",
+          "about": "variable:STEGO_SPICEDB_INSECURE_LOOPBACK",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_KEY_FILE/read-by",
+          "about": "variable:STEGO_SPICEDB_KEY_FILE",
+          "name": "read by",
+          "value": "component:spicedb-authz",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_KEY_FILE/required",
+          "about": "variable:STEGO_SPICEDB_KEY_FILE",
+          "name": "required",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_SPICEDB_KEY_FILE/secret",
+          "about": "variable:STEGO_SPICEDB_KEY_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "spicedb-authz",
+              "version": "1.2.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_WORKER_DATABASE_URL/read-by",
+          "about": "variable:STEGO_WORKER_DATABASE_URL",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_WORKER_DATABASE_URL/required",
+          "about": "variable:STEGO_WORKER_DATABASE_URL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_WORKER_DATABASE_URL/secret",
+          "about": "variable:STEGO_WORKER_DATABASE_URL",
+          "name": "secret",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_WORKER_DATABASE_URL_FILE/read-by",
+          "about": "variable:STEGO_WORKER_DATABASE_URL_FILE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_WORKER_DATABASE_URL_FILE/required",
+          "about": "variable:STEGO_WORKER_DATABASE_URL_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_WORKER_DATABASE_URL_FILE/secret",
+          "about": "variable:STEGO_WORKER_DATABASE_URL_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
           }
         }
       ]

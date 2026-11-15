@@ -1,5 +1,514 @@
-# The platform requirements of the service: what its environment must supply. stego apply writes this file
-# from the declaration and the needs of its components. Do not edit it: change the declaration or the registry.
-version: 1
+# The platform requirements of the service: what its environment must supply, and every environment variable
+# that it accepts. stego apply writes this file from the declaration and the needs and environment variables of its
+# components. Do not edit it: change the declaration or the registry.
+version: 2
 service: user-management
-requirements: []
+requirements:
+  - kind: configuration
+    name: STEGO_QUERY_CURSOR_KEY_FILE
+    components:
+      - query
+  - kind: configuration
+    name: STEGO_SPICEDB_ENDPOINT
+    components:
+      - spicedb-authz
+  - kind: configuration
+    name: STEGO_SPICEDB_KEY_FILE
+    components:
+      - spicedb-authz
+environment:
+  - name: CORS_ALLOWED_HEADERS
+    read_by:
+      - rest-api
+    type: list
+    required: false
+    default: Content-Type,Authorization
+    description: The request headers that cross-origin requests may send. When it has no value, the API allows Content-Type and Authorization.
+    secret: false
+  - name: CORS_ALLOWED_METHODS
+    read_by:
+      - rest-api
+    type: list
+    required: false
+    default: GET,POST,PATCH,PUT,DELETE,OPTIONS
+    description: The HTTP methods that cross-origin requests may use. When it has no value, the API allows GET, POST, PATCH, PUT, DELETE and OPTIONS.
+    secret: false
+  - name: CORS_ALLOWED_ORIGINS
+    read_by:
+      - rest-api
+    type: list
+    required: false
+    description: The origins that may send cross-origin requests. When it has no value, the API sets no CORS header.
+    secret: false
+  - name: DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two.
+    secret: false
+  - name: OTEL_EXPORTER_OTLP_CERTIFICATE
+    read_by:
+      - otel-tracing
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that verify the collector. When it has no value, the export uses the system roots.
+    secret: false
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    read_by:
+      - otel-tracing
+    type: url
+    required: false
+    description: The HTTPS origin of the OpenTelemetry collector. When it has no value, the service exports no telemetry.
+    secret: false
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: grpc
+    description: The OTLP protocol of the export, which can only be grpc. When it has no value, the export uses grpc.
+    secret: false
+    allowed: grpc
+  - name: OTEL_LOGS_EXPORTER
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: otlp
+    description: Set to none to stop the export of logs. When it has no value, the service exports logs with OTLP.
+    secret: false
+    allowed: otlp, none
+  - name: OTEL_METRICS_EXPORTER
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: otlp
+    description: Set to none to stop the export of metrics. When it has no value, the service exports metrics with OTLP.
+    secret: false
+    allowed: otlp, none
+  - name: OTEL_METRIC_EXPORT_INTERVAL
+    read_by:
+      - otel-tracing
+    type: integer
+    required: false
+    default: "10000"
+    description: The time between two exports of metrics, in milliseconds. When it has no value, the time is 10000 milliseconds.
+    secret: false
+    allowed: 1000 to 60000 milliseconds
+  - name: OTEL_SERVICE_NAME
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: The service name in the telemetry. When it has no value, the telemetry uses the declared service name.
+    secret: false
+  - name: OTEL_TRACES_SAMPLER_ARG
+    read_by:
+      - otel-tracing
+    type: number
+    required: false
+    default: "0.1"
+    description: The ratio of traces that the service samples. When it has no value, the ratio is 0.1.
+    secret: false
+    allowed: 0 to 1
+  - name: PORT
+    read_by:
+      - health-check
+    type: integer
+    required: false
+    default: "8080"
+    description: The TCP port where the HTTP server listens. When it has no value, the server listens on port 8080.
+    secret: false
+  - name: STEGO_AUDIT_SINK_AUTH_HEADER
+    read_by:
+      - audit-log
+    type: string
+    required: false
+    description: The header that carries the token of STEGO_AUDIT_SINK_TOKEN_FILE as the file holds it. When it has no value, the token goes in the Authorization header as a bearer token.
+    secret: false
+  - name: STEGO_AUDIT_SINK_CA_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that the audit sink adds to the system roots. When it has no value, the sink uses the system roots.
+    secret: false
+  - name: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: The file of the PEM client certificate of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_KEY_FILE.
+    secret: false
+  - name: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: The file of the PEM client key of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_CERT_FILE.
+    secret: false
+  - name: STEGO_AUDIT_SINK_TOKEN_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: The file of the token for the audit sink at STEGO_AUDIT_SINK_URL. When it has no value, the sink must use a client certificate.
+    secret: false
+  - name: STEGO_AUDIT_SINK_URL
+    read_by:
+      - audit-log
+    type: url
+    required: false
+    description: The HTTPS URL of the OTLP/HTTP logs endpoint that gets the audit records. When it has no value, the audit records go to a table in the service database.
+    secret: false
+  - name: STEGO_AUTHN_AUDIENCE
+    read_by:
+      - jwt-auth
+    type: string
+    required: false
+    description: The audience that each bearer token must name, which must be equal to the audience setting. When it has no value, the verifier uses the audience setting.
+    secret: false
+  - name: STEGO_AUTHN_CA_FILE
+    read_by:
+      - jwt-auth
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that the verifier adds to the system roots, unless the component states a CA file. When it has no value, the verifier uses the system roots.
+    secret: false
+  - name: STEGO_AUTHN_ISSUER
+    read_by:
+      - jwt-auth
+    type: url
+    required: false
+    description: The issuer that each bearer token must name, which must be equal to the issuer setting. When it has no value, the verifier uses the issuer setting.
+    secret: false
+  - name: STEGO_AUTHN_KEYS_FILE
+    read_by:
+      - jwt-auth
+    type: path
+    required: false
+    description: The file of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_URL when the component states no key file and no discovery.
+    secret: false
+  - name: STEGO_AUTHN_KEYS_URL
+    read_by:
+      - jwt-auth
+    type: url
+    required: false
+    description: The HTTPS URL of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_FILE when the component states no key file and no discovery.
+    secret: false
+  - name: STEGO_AUTH_AUDIENCE
+    read_by:
+      - jwt-auth
+    type: string
+    required: false
+    description: The audience that each token must name. When it has no value, the verifier uses the audience setting.
+    secret: false
+  - name: STEGO_AUTH_ISSUER
+    read_by:
+      - jwt-auth
+    type: url
+    required: false
+    description: The issuer that each token must name. When it has no value, the verifier uses the issuer setting.
+    secret: false
+  - name: STEGO_AUTH_PUBLIC_KEY_FILE
+    read_by:
+      - jwt-auth
+    type: path
+    required: false
+    description: The file of the RSA public key that verifies tokens. When it has no value, the verifier uses the public_key_file setting.
+    secret: false
+  - name: STEGO_AUTH_ROLES_CLAIM
+    read_by:
+      - jwt-auth
+    type: string
+    required: false
+    description: The claim of the token that holds the roles of the caller. When it has no value, the verifier uses the roles_claim setting.
+    secret: false
+  - name: STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK
+    read_by:
+      - postgres-adapter
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to let a loopback database connection go without TLS, for a local test only. When it has no value, each connection needs TLS.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME
+    read_by:
+      - postgres-adapter
+    type: duration
+    required: false
+    default: 5m
+    description: The longest time that the pool keeps an idle database connection. When it has no value, the limit is 5 minutes.
+    secret: false
+    allowed: 1s to 24h
+  - name: STEGO_DATABASE_CONNECTION_MAX_LIFETIME
+    read_by:
+      - postgres-adapter
+    type: duration
+    required: false
+    default: 30m
+    description: The longest time that the pool keeps one database connection. When it has no value, the limit is 30 minutes.
+    secret: false
+    allowed: 1s to 24h
+  - name: STEGO_DATABASE_MAX_IDLE_CONNECTIONS
+    read_by:
+      - postgres-adapter
+    type: integer
+    required: false
+    description: The largest number of idle connections in the database pool, at most the open limit. When it has no value, the limit is 4, or the open limit when it is less.
+    secret: false
+    allowed: 0 to 1024
+  - name: STEGO_DATABASE_MAX_OPEN_CONNECTIONS
+    read_by:
+      - postgres-adapter
+    type: integer
+    required: false
+    default: "16"
+    description: The largest number of open connections in the database pool. When it has no value, the pool opens at most 16 connections.
+    secret: false
+    allowed: 1 to 1024
+  - name: STEGO_HTTP_REQUIRE_TLS
+    read_by:
+      - health-check
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to make the HTTP server use TLS. When it has no value, the server uses TLS only when it has a certificate and a key.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_HTTP_TLS_CERT
+    read_by:
+      - health-check
+    type: path
+    required: false
+    description: The file of the PEM TLS certificate of the HTTP server. When it and STEGO_HTTP_TLS_KEY have no value, the server uses plain HTTP.
+    secret: false
+  - name: STEGO_HTTP_TLS_KEY
+    read_by:
+      - health-check
+    type: path
+    required: false
+    description: The file of the PEM TLS private key of the HTTP server. When it and STEGO_HTTP_TLS_CERT have no value, the server uses plain HTTP.
+    secret: false
+  - name: STEGO_KAFKA_BROKERS
+    read_by:
+      - kafka-producer
+    type: list
+    required: false
+    description: The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value.
+    secret: false
+  - name: STEGO_KAFKA_BROKERS_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two.
+    secret: false
+  - name: STEGO_KAFKA_BROKER_HOSTS
+    read_by:
+      - kafka-producer
+    type: list
+    required: false
+    description: The hosts that the worker may dial, at most 64, or STEGO_KAFKA_BROKER_HOSTS_FILE in its place. When the two have no value, the worker dials each broker that a broker names.
+    secret: false
+  - name: STEGO_KAFKA_BROKER_HOSTS_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the list of the hosts that the worker may dial. Give it or STEGO_KAFKA_BROKER_HOSTS, not the two.
+    secret: false
+  - name: STEGO_KAFKA_CA_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots.
+    secret: false
+  - name: STEGO_KAFKA_CLIENT_CERT_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the PEM client certificate of mutual TLS. Give it with STEGO_KAFKA_CLIENT_KEY_FILE.
+    secret: false
+  - name: STEGO_KAFKA_CLIENT_KEY_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the PEM client key of mutual TLS. Give it with STEGO_KAFKA_CLIENT_CERT_FILE.
+    secret: false
+  - name: STEGO_KAFKA_INSECURE_LOOPBACK
+    read_by:
+      - kafka-producer
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to let loopback brokers go without TLS, for a local test only. When it has no value, each broker needs TLS.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_KAFKA_PASSWORD_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it.
+    secret: false
+  - name: STEGO_KAFKA_SASL_MECHANISM
+    read_by:
+      - kafka-producer
+    type: string
+    required: false
+    description: The SASL mechanism. When it has no value, the worker uses no SASL and needs a client certificate.
+    secret: false
+    allowed: SCRAM-SHA-512, OAUTHBEARER
+  - name: STEGO_KAFKA_TOKEN_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the OAUTHBEARER token. The mechanism OAUTHBEARER needs it.
+    secret: false
+  - name: STEGO_KAFKA_TOPIC
+    read_by:
+      - kafka-producer
+    type: string
+    required: false
+    description: The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place. When the two have no value, each message goes to the topic of its event type.
+    secret: false
+  - name: STEGO_KAFKA_TOPIC_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the topic of every message. Give it or STEGO_KAFKA_TOPIC, not the two.
+    secret: false
+  - name: STEGO_KAFKA_USERNAME
+    read_by:
+      - kafka-producer
+    type: string
+    required: false
+    description: The SCRAM user name. Give it or STEGO_KAFKA_USERNAME_FILE when the mechanism is SCRAM-SHA-512.
+    secret: false
+  - name: STEGO_KAFKA_USERNAME_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the SCRAM user name. Give it or STEGO_KAFKA_USERNAME, not the two.
+    secret: false
+  - name: STEGO_MIGRATION_DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: STEGO_MIGRATION_DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two.
+    secret: false
+  - name: STEGO_MODE
+    read_by:
+      - command
+    type: list
+    required: false
+    default: all
+    description: The modes that the process runs when no --mode option is given. When it has no value, the process runs all modes.
+    secret: false
+    allowed: api, worker, controller, all
+  - name: STEGO_OTEL_TOKEN_FILE
+    read_by:
+      - otel-tracing
+    type: path
+    required: false
+    description: The file of the bearer token for the collector at OTEL_EXPORTER_OTLP_ENDPOINT. When it has no value, the export sends no token.
+    secret: false
+  - name: STEGO_PROBE_CONSOLE
+    read_by:
+      - domain-probe
+    type: string
+    required: false
+    default: "off"
+    description: The format of the domain probe values on standard output. When it has no value, the probes write nothing to standard output.
+    secret: false
+    allowed: json, logfmt, off
+  - name: STEGO_QUERY_CURSOR_KEY_FILE
+    read_by:
+      - query
+    type: path
+    required: true
+    description: The file of the key of the list cursors, at least 32 bytes, the same in each replica. The service does not start when it has no value.
+    secret: false
+  - name: STEGO_RELAY_DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: STEGO_RELAY_DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two.
+    secret: false
+  - name: STEGO_SERVICE_VERSION
+    read_by:
+      - command
+    type: string
+    required: false
+    description: The version of the release, which each audit row and the controller lease carry. When it has no value, they carry an empty version.
+    secret: false
+  - name: STEGO_SPICEDB_ENDPOINT
+    read_by:
+      - spicedb-authz
+    type: address
+    required: true
+    description: The host and port of SpiceDB. The service does not start when it has no value.
+    secret: false
+  - name: STEGO_SPICEDB_INSECURE_LOOPBACK
+    read_by:
+      - spicedb-authz
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_SPICEDB_KEY_FILE
+    read_by:
+      - spicedb-authz
+    type: path
+    required: true
+    description: The file of the preshared key of SpiceDB. The service does not start when it has no value.
+    secret: false
+  - name: STEGO_WORKER_DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: STEGO_WORKER_DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two.
+    secret: false
