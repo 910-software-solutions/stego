@@ -149,7 +149,7 @@ func (h *AllUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, BadRequest("the list request is not valid"))
 		return
 	}
-	if errors.Is(err, query.ErrUndecided) {
+	if query.Transient(err) {
 		answerUndecided(w, r)
 		return
 	}
