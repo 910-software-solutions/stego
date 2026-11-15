@@ -623,6 +623,19 @@ type cdpMessage struct {
 func startBrowser(t *testing.T) *cdpBrowser {
 	t.Helper()
 	path := os.Getenv("STEGO_BROWSER")
+	ci := os.Getenv("GITHUB_ACTIONS") == "true"
+	if path == "" && ci {
+		// A CI runner has a browser: the proof run uses it, so the browser tests never skip there.
+		for _, name := range []string{"google-chrome", "chromium", "chromium-browser"} {
+			if found, err := exec.LookPath(name); err == nil {
+				path = found
+				break
+			}
+		}
+		if path == "" {
+			t.Fatal("the CI runner has no Chrome or Chromium for the browser tests of the architecture view")
+		}
+	}
 	if path == "" {
 		if os.Getenv("STEGO_REQUIRE_BROWSER_VIEW") == "1" {
 			t.Fatal("STEGO_REQUIRE_BROWSER_VIEW is set, and STEGO_BROWSER names no browser")
@@ -633,7 +646,7 @@ func startBrowser(t *testing.T) *cdpBrowser {
 	args := []string{"--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run",
 		"--no-default-browser-check", "--disable-background-networking", "--disable-gpu", "--disable-dev-shm-usage",
 		"--disable-extensions", "--disable-sync", "--mute-audio", "--window-size=1280,900", "about:blank"}
-	if os.Getenv("STEGO_BROWSER_NO_SANDBOX") == "1" {
+	if os.Getenv("STEGO_BROWSER_NO_SANDBOX") == "1" || ci {
 		args = append([]string{"--no-sandbox"}, args...)
 	}
 	cmd := exec.Command(path, args...)
