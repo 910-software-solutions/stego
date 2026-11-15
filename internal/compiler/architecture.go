@@ -172,8 +172,10 @@ func deriveModel(in ArchitectureInput) (*ArchitectureModel, error) {
 	}
 	d.access()
 	d.flows()
+	d.stepLayers()
 	d.trust()
 	d.compliance()
+	d.context()
 	d.aspects()
 	sortModel(d.model)
 	return d.model, nil

@@ -675,3 +675,107 @@ func TestArchitectureComplianceFacts(t *testing.T) {
 		}
 	})
 }
+
+func TestArchitectureContext(t *testing.T) {
+	summary := func(m *ArchitectureModel) (actors, relations []string) {
+		for _, a := range m.Actors {
+			actors = append(actors, a.ID+" "+a.Kind+" "+a.Name+" <"+sourceText(a.Source)+">")
+		}
+		for _, r := range m.Relations {
+			relations = append(relations, r.From+" "+r.Text+" "+r.To+" through "+r.Through+" "+r.Mode+" <"+sourceText(r.Source)+">")
+		}
+		return actors, relations
+	}
+	t.Run("ST-GEN-UC08-R01-T04 The model holds each outside actor that an input states and each relation of the service with it, each with its source, and no other actor", func(t *testing.T) {
+		model, _ := deriveFixture(t, archFixture(t))
+		actors, relations := summary(model)
+		want := []string{
+			"actor:authorization.spicedb authorization service spicedb <service.yaml authorization.provider>",
+			"actor:caller caller Caller <service.yaml collections>",
+			"actor:outside.events outside system System that events calls <registry component events 1.0.0, field architecture.layer>",
+			"actor:store.store store Store of store <registry component store 1.0.0, field architecture.layer>",
+		}
+		if !slices.Equal(actors, want) {
+			t.Fatalf("the actors are\n%s\nwant\n%s", strings.Join(actors, "\n"), strings.Join(want, "\n"))
+		}
+		wantRelations := []string{
+			"actor:caller calls 3 operations container:docs through component:api sync <service.yaml collections>",
+			"container:docs asks for permission decisions actor:authorization.spicedb through  sync <service.yaml authorization.provider>",
+			"container:docs sends change messages, later actor:outside.events through component:events async <registry component events 1.0.0, field architecture.layer>",
+			"container:docs keeps rows actor:store.store through component:store sync <registry component store 1.0.0, field architecture.layer>",
+		}
+		if !slices.Equal(relations, wantRelations) {
+			t.Fatalf("the relations are\n%s\nwant\n%s", strings.Join(relations, "\n"), strings.Join(wantRelations, "\n"))
+		}
+
+		// The issuer of the tokens is an actor only when the part of an authentication component takes one, and the
+		// declaration names it when it sets it.
+		in := archFixture(t)
+		in.Components["auth"].Config = map[string]types.ConfigField{"issuer": {Type: "string"}}
+		model, _ = deriveFixture(t, in)
+		actors, relations = summary(model)
+		if !slices.Contains(actors, "actor:token-issuer.auth token issuer Token issuer of auth <registry component auth 1.0.0, field config.issuer>") ||
+			!slices.Contains(relations, "container:docs checks tokens actor:token-issuer.auth through component:auth sync <registry component auth 1.0.0, field config.issuer>") {
+			t.Fatalf("a part that takes an issuer gives no token issuer:\n%s\n%s", strings.Join(actors, "\n"), strings.Join(relations, "\n"))
+		}
+		in.Service.Overrides["auth"] = map[string]any{"issuer": "https://id.example/realm"}
+		model, _ = deriveFixture(t, in)
+		actors, _ = summary(model)
+		if !slices.Contains(actors, "actor:token-issuer.auth token issuer https://id.example/realm <service.yaml overrides.auth.issuer>") {
+			t.Fatalf("the declared issuer does not name the actor:\n%s", strings.Join(actors, "\n"))
+		}
+
+		// A need of a backing store is a container that the service keeps its rows in, and then the repository's
+		// store is no actor; with no authorization and no collection, there is no authorization service and no caller.
+		in = archFixture(t)
+		in.Requirements = []byte("requirements:\n  - {kind: backing store, name: docs-db, engine: postgres, components: [store]}\n")
+		in.Service.Authorization = nil
+		in.Service.Collections, in.Service.Slots = nil, nil
+		model, _ = deriveFixture(t, in)
+		actors, relations = summary(model)
+		if len(actors) != 1 || !strings.HasPrefix(actors[0], "actor:outside.events ") {
+			t.Fatalf("the actors with no collection, no authorization and a backing store are\n%s", strings.Join(actors, "\n"))
+		}
+		if !slices.Contains(relations, "container:docs keeps rows container:docs-db through component:store sync <registry component store 1.0.0, field needs>") {
+			t.Fatalf("the service does not keep its rows in the backing store:\n%s", strings.Join(relations, "\n"))
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R04-T04 The deriver sets the layer of each step of a request flow, and a model with a step in another layer is not valid", func(t *testing.T) {
+		model, data := deriveFixture(t, archFixture(t))
+		var got []string
+		for _, f := range model.Flows {
+			if f.ID != "flow:docs.create" {
+				continue
+			}
+			for _, s := range f.Steps {
+				got = append(got, s.Kind+" "+s.Layer)
+			}
+		}
+		want := []string{"operation edge", "authenticate authentication", "handle handler", "slot slot", "repository repository", "store store",
+			"outbox repository", "slot slot", "event outside call"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("the layers of the create flow are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		for _, f := range model.Flows {
+			for _, s := range f.Steps {
+				if s.Layer == "" {
+					t.Errorf("%s step %d has no layer", f.ID, s.N)
+				}
+			}
+		}
+		moved := bytes.Replace(data, []byte(`"mode": "sync",
+          "layer": "handler"`), []byte(`"mode": "sync",
+          "layer": "slot"`), 1)
+		if bytes.Equal(moved, data) {
+			t.Fatal("the model has no step of the handler layer to move")
+		}
+		if err := ValidateArchitecture(moved); err == nil || !strings.Contains(err.Error(), "is in the layer slot, not handler") {
+			t.Fatalf("a step in another layer is valid: %v", err)
+		}
+		loose := bytes.Replace(data, []byte(`"to": "container:docs"`), []byte(`"to": "component:api"`), 1)
+		if err := ValidateArchitecture(loose); err == nil || !strings.Contains(err.Error(), "joins only containers and actors") {
+			t.Fatalf("a relation to a component is valid: %v", err)
+		}
+	})
+}
