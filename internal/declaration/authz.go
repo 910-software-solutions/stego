@@ -58,6 +58,10 @@ type schemaSubject struct {
 	namespace string
 	relation  string
 	wildcard  bool
+	// caveat is the caveat the relation requires of the subject, such as with ip_allowed, or "".
+	caveat string
+	// expiration tells whether the relation requires an expiration of the subject (with expiration).
+	expiration bool
 }
 
 // SchemaError is a .zed schema that does not compile: its path, the line where compiling stopped and why.
@@ -121,7 +125,7 @@ func compileSchema(schemaPath string, source []byte) (*AuthzSchema, error) {
 			var subjects []string
 			for _, allowed := range relation.GetTypeInformation().GetAllowedDirectRelations() {
 				subjects = append(subjects, allowed.GetNamespace())
-				entry.subjects[relation.GetName()] = append(entry.subjects[relation.GetName()], schemaSubject{namespace: allowed.GetNamespace(), relation: allowed.GetRelation(), wildcard: allowed.GetPublicWildcard() != nil})
+				entry.subjects[relation.GetName()] = append(entry.subjects[relation.GetName()], schemaSubject{namespace: allowed.GetNamespace(), relation: allowed.GetRelation(), wildcard: allowed.GetPublicWildcard() != nil, caveat: allowed.GetRequiredCaveat().GetCaveatName(), expiration: allowed.GetRequiredExpiration() != nil})
 			}
 			entry.relations[relation.GetName()] = subjects
 		}
@@ -213,6 +217,58 @@ func computedRelations(rewrite *core.UsersetRewrite) []computedName {
 func (d schemaDefinition) has(name string) bool {
 	_, relation := d.relations[name]
 	return relation || d.permissions[name]
+}
+
+// SchemaSubject is one subject that a relation of the schema admits: its type, the relation of a userset such as
+// group#member or "", the caveat that the relation requires of it or "", whether the relation requires an expiration
+// of it, and whether it is the wildcard of the type.
+type SchemaSubject struct {
+	Type       string
+	Relation   string
+	Caveat     string
+	Expiration bool
+	Wildcard   bool
+}
+
+// RelationSubjects gives the subjects that a relation of the type admits, in the order of the schema, and false when
+// the type has no relation of the name. The architecture model expands the grant paths from it (ST-GEN-UC08-R13).
+func (s *AuthzSchema) RelationSubjects(typeName, relation string) ([]SchemaSubject, bool) {
+	definition, ok := s.definitions[typeName]
+	if !ok {
+		return nil, false
+	}
+	if _, isRelation := definition.relations[relation]; !isRelation {
+		return nil, false
+	}
+	subjects := make([]SchemaSubject, 0, len(definition.subjects[relation]))
+	for _, subject := range definition.subjects[relation] {
+		subjects = append(subjects, SchemaSubject{Type: subject.namespace, Relation: subject.relation, Caveat: subject.caveat, Expiration: subject.expiration, Wildcard: subject.wildcard})
+	}
+	return subjects, true
+}
+
+// PermissionRewrite gives the expression of a permission of the type, and false when the type has no permission of
+// the name.
+func (s *AuthzSchema) PermissionRewrite(typeName, permission string) (*core.UsersetRewrite, bool) {
+	definition, ok := s.definitions[typeName]
+	if !ok || !definition.permissions[permission] {
+		return nil, false
+	}
+	return definition.rewrites[permission], true
+}
+
+// ReadAuthzSchema reads and compiles the .zed schema that the declaration binds, from the project folder, with the
+// same checks of the path and the size as checking makes; it gives nil and no error when the declaration binds no
+// schema.
+func ReadAuthzSchema(service *types.ServiceDeclaration, project fs.FS) (*AuthzSchema, error) {
+	if service.Authorization == nil || service.Authorization.SchemaPath == "" {
+		return nil, nil
+	}
+	schema, fault := readAuthzSchema(service.Authorization.SchemaPath, project)
+	if fault != nil {
+		return nil, fmt.Errorf("%s: %s", fault.Path, fault.Message)
+	}
+	return schema, nil
 }
 
 // Defines tells whether the schema has a definition of the type.

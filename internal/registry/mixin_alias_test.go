@@ -51,7 +51,7 @@ func TestMixinAliasRegistry(t *testing.T) {
 
 	t.Run("ST-SUP-UC10-R04-T05 A registry holds a deprecated alias to its sunset and to the slot contracts of its mixins", func(t *testing.T) {
 		const contract = "syntax = \"proto3\";\npackage p.slots;\nmessage Changed { string id = 1; }\n"
-		target := "kind: mixin\nname: store-m\nversion: 1.0.0\nadds_components: []\nadds_slots:\n  - name: changed\n    proto: p.slots.Changed\n    default: noop\noverrides: none\n"
+		target := "kind: mixin\nname: store-m\nversion: 1.0.0\nadds_components: []\nadds_slots:\n  - name: changed\n    phase: before_store\n    operations: [create]\n    proto: p.slots.Changed\n    default: noop\noverrides: none\n"
 		alias := func(dates string) string {
 			return "kind: mixin\nname: pub\nversion: 1.0.0\n" + dates + "alias_of: [store-m]\nadds_components: []\nadds_slots: []\noverrides: none\n"
 		}

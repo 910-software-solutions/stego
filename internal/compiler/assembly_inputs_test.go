@@ -35,7 +35,7 @@ func TestNormalizedSlotNamesFailBeforeRendering(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, component, string(data)+"  - name: before__create\n    proto: stego.components.rest_api.slots.BeforeRetry\n    default: passthrough\n")
+	writeFile(t, component, string(data)+"  - name: before__create\n    phase: before_store\n    operations: [create]\n    proto: stego.components.rest_api.slots.BeforeRetry\n    default: passthrough\n")
 	original := filepath.Join(registry, "components/stub-api/slots/before_create.proto")
 	data, err = os.ReadFile(original)
 	if err != nil {

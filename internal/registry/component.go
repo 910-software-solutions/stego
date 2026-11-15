@@ -34,6 +34,11 @@ type SlotDefinition struct {
 	Name    string `yaml:"name"`
 	Proto   string `yaml:"proto"`
 	Default string `yaml:"default,omitempty"`
+	// Phase is when the slot runs in a request flow, relative to the write to the store: before_store or
+	// after_store (ST-SUP-EN08 field Phase).
+	Phase string `yaml:"phase"`
+	// Operations are the collection operations that call the slot (ST-SUP-EN08 field Operations, ST-SUP-Q134 (A)).
+	Operations []string `yaml:"operations"`
 }
 
 // Archetype represents a curated component set with conventions.
@@ -70,6 +75,20 @@ type Component struct {
 	// Needs are what the component needs the environment to supply, from which apply writes the platform
 	// requirements of a service (ST-SUP-EN09 field Platform needs, ST-DLV-Q04 (A)).
 	Needs []Need `yaml:"needs,omitempty"`
+	// Architecture is the component's architecture role, from which the architecture model places it alone
+	// (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05).
+	Architecture *ArchitectureRole `yaml:"architecture"`
+}
+
+// ArchitectureRole is where a component sits in a service: its layer, its flow part, and the side of each port it
+// provides or requires (ST-SUP-EN09 field Architecture role, ST-SUP-Q130 (A)).
+type ArchitectureRole struct {
+	// Layer is one of Layers.
+	Layer string `yaml:"layer"`
+	// Flow is the component's part in a request flow: one plain sentence of at most MaxFlowPart characters.
+	Flow string `yaml:"flow"`
+	// Ports maps each port the component provides or requires to its side, inbound or outbound.
+	Ports map[string]string `yaml:"ports"`
 }
 
 // Need is one thing a component needs the environment to supply: its kind of ST-VO53, its name, and only the

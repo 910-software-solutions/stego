@@ -26,7 +26,11 @@ func ParseComponent(path string) (*Component, error) {
 
 // ParseMixin reads and parses a mixin YAML file.
 func ParseMixin(path string) (*Mixin, error) {
-	return parser.ReadKind(path, "mixin", mixinKind)
+	data, err := parser.ReadDocument(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseMixinFromBytes(data, path)
 }
 
 // ParseArchetypeFromBytes parses one captured registry document.
@@ -64,6 +68,11 @@ func ParseComponentFromBytes(data []byte, path string) (*Component, error) {
 	}
 	if err := checkNeeds(&component); err != nil {
 		return nil, err
+	}
+	// The registry refuses a component that does not state its place, naming it and the statement
+	// (ST-SUP-UC01-R05).
+	if fault := statesPlace(&component); fault != nil {
+		return nil, fault
 	}
 	return &component, nil
 }
@@ -209,9 +218,17 @@ func checkNeedName(component *Component, name string) error {
 	return nil
 }
 
-// ParseMixinFromBytes parses one captured registry document.
+// ParseMixinFromBytes parses one captured registry document. It refuses a slot the mixin adds that states no phase
+// or no operation that calls it, naming the mixin, the slot and the statement (ST-SUP-UC01-R05).
 func ParseMixinFromBytes(data []byte, path string) (*Mixin, error) {
-	return parser.ParseKind(data, path, "mixin", mixinKind)
+	mixin, err := parser.ParseKind(data, path, "mixin", mixinKind)
+	if err != nil {
+		return nil, err
+	}
+	if fault := slotsStatePlace("mixin "+mixin.Name, mixin.AddsSlots); fault != nil {
+		return nil, fault
+	}
+	return mixin, nil
 }
 
 func archetypeKind(a *Archetype) string { return a.Kind }

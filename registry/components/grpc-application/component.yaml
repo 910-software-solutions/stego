@@ -22,3 +22,13 @@ requires:
 provides:
   - application-grpc
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: edge
+  flow: "Receives each gRPC call and passes it to its command or query."
+  ports:
+    storage-adapter: outbound
+    auth-provider: outbound
+    application-grpc: inbound

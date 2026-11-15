@@ -10,3 +10,11 @@ requires: []
 provides:
   - application-cli
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: edge
+  flow: "Gives an operator a command-line client that calls the service."
+  ports:
+    application-cli: inbound

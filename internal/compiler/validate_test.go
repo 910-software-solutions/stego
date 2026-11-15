@@ -73,6 +73,12 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -83,6 +89,8 @@ provides:
   - http-server
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeCreate
     default: passthrough
 `,
@@ -91,6 +99,11 @@ slots:
 		{
 			name: "stub-store",
 			yaml: `kind: component
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound
 name: stub-store
 version: 1.0.0
 stage: ga
@@ -409,6 +422,13 @@ func TestValidate_UnresolvedPort(t *testing.T) {
 	// Modify stub-api to require a port that nothing provides.
 	compPath := filepath.Join(registryDir, "components", "stub-api", "component.yaml")
 	writeFile(t, compPath, `kind: component
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    magical-port: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -1130,6 +1150,8 @@ version: 1.0.0
 adds_components: []
 adds_slots:
   - name: on_entity_changed
+    phase: before_store
+    operations: [create]
     proto: stego.mixins.event_publisher.slots.OnEntityChanged
     default: noop
 overrides: none
@@ -1212,6 +1234,8 @@ version: 1.0.0
 adds_components: []
 adds_slots:
   - name: on_entity_changed
+    phase: before_store
+    operations: [create]
     proto: stego.mixins.event_publisher.slots.OnEntityChanged
     default: noop
 overrides: none
@@ -2895,6 +2919,8 @@ version: 1.0.0
 adds_components: []
 adds_slots:
   - name: on_entity_changed
+    phase: before_store
+    operations: [create]
     proto: stego.mixins.event_publisher.slots.OnEntityChanged
     default: noop
 overrides: none
@@ -4381,11 +4407,17 @@ slots:
 		slotDir := filepath.Join(registryDir, "components", "slot-owner")
 		mkdirAll(t, filepath.Join(slotDir, "slots"))
 		writeFile(t, filepath.Join(slotDir, "component.yaml"), `kind: component
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports: {}
 name: slot-owner
 version: 1.0.0
 stage: ga
 slots:
   - name: resolve_field
+    phase: before_store
+    operations: [create]
     proto: stego.components.slot_owner.slots.ResolveField
     default: noop
 `)

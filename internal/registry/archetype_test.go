@@ -185,8 +185,8 @@ func TestShippedGoldenPathsHoldOnlyGAComponents(t *testing.T) {
 
 		fixture := t.TempDir()
 		for name, data := range map[string]string{
-			"components/store-a/component.yaml":  "kind: component\nname: store-a\nversion: 1.0.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n",
-			"components/beta-x/component.yaml":   "kind: component\nname: beta-x\nversion: 0.2.0\nstage: beta\nsunset: 2099-01-01\nrequires: []\nprovides: []\nslots: []\n",
+			"components/store-a/component.yaml":  "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: store-a\nversion: 1.0.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n",
+			"components/beta-x/component.yaml":   "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: beta-x\nversion: 0.2.0\nstage: beta\nsunset: 2099-01-01\nrequires: []\nprovides: []\nslots: []\n",
 			"archetypes/svc-arch/archetype.yaml": "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: svc-arch\nlanguage: go\nversion: 1.0.0\ncomponents: [store-a, beta-x]\n",
 		} {
 			target := filepath.Join(fixture, filepath.FromSlash(name))
