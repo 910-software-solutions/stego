@@ -431,6 +431,9 @@ hand; see [Specification checks](#specification-checks).
 | `stego version` | `stego version [--json]` |
 <!-- stego:end -->
 
+The environment file of `stego env check` has a schema that STEGO owns: see
+[docs/environment-file.md](docs/environment-file.md), with one example file.
+
 ## Concepts
 
 Six nouns: **Archetype**, **Component**, **Mixin**, **Service Declaration**, **Collection**, **Fill**.

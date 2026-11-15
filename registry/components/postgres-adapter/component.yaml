@@ -247,3 +247,9 @@ environment:
     required: false
     description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
     secret: false
+# The platform needs (ST-SUP-EN09): the PostgreSQL database and the connection strings of its roles. No name holds a
+# setting, so no secret setting can reach a name (#331 security review F1).
+needs:
+  - {kind: backing store, name: "{service}-db", engine: postgres}
+  - {kind: secret, name: "{service}-database", keys: [url, migration-url, worker-url]}
+  - {kind: egress, name: "{service}-db-network", port: 5432}

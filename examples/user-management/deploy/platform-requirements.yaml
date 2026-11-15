@@ -4,6 +4,32 @@
 version: 2
 service: user-management
 requirements:
+  - kind: secret
+    name: user-management-database
+    keys:
+      - migration-url
+      - url
+      - worker-url
+    components:
+      - postgres-adapter
+  - kind: secret
+    name: user-management-database-relay
+    keys:
+      - url
+    components:
+      - spicedb-authz
+  - kind: secret
+    name: user-management-query-cursor
+    keys:
+      - key
+    components:
+      - query
+  - kind: secret
+    name: user-management-spicedb
+    keys:
+      - preshared-key
+    components:
+      - spicedb-authz
   - kind: configuration
     name: STEGO_QUERY_CURSOR_KEY_FILE
     components:
@@ -16,6 +42,49 @@ requirements:
     name: STEGO_SPICEDB_KEY_FILE
     components:
       - spicedb-authz
+  - kind: backing store
+    name: user-management-db
+    engine: postgres
+    components:
+      - postgres-adapter
+  - kind: topic
+    name: user-management-events
+    components:
+      - kafka-producer
+  - kind: identity issuer
+    name: user-management-issuer
+    components:
+      - jwt-auth
+  - kind: ingress
+    name: http
+    port: 8080
+    components:
+      - health-check
+  - kind: egress
+    name: spicedb
+    port: 50051
+    components:
+      - spicedb-authz
+  - kind: egress
+    name: user-management-db-network
+    port: 5432
+    components:
+      - postgres-adapter
+  - kind: egress
+    name: user-management-issuer-keys
+    port: 443
+    components:
+      - jwt-auth
+  - kind: egress
+    name: user-management-kafka
+    port: 9093
+    components:
+      - kafka-producer
+  - kind: pod security
+    name: pod-security
+    level: restricted
+    components:
+      - health-check
 environment:
   - name: CORS_ALLOWED_HEADERS
     read_by:
