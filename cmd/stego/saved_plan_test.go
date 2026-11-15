@@ -55,7 +55,7 @@ func plannedOutput(files []savedPlanFile) map[string]string {
 	planned := map[string]string{}
 	for _, file := range files {
 		// The module files and the project files of STEGO, such as the architecture model, are not under out.
-		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile {
+		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile || file.Path == compiler.ArchitectureViewFile {
 			continue
 		}
 		planned[file.Path] = file.SHA256
