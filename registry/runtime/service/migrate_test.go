@@ -60,7 +60,7 @@ func TestMigrate(t *testing.T) {
 		f := newFixture(t)
 		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
 		want := []string{StepOwnerRole, StepJobLock, StepLedgerCheck, StepAuthorizationSchema, StepTables, StepTenantKeys, StepTenantKeysValidate, StepOutboxQueue, StepOutboxSequence, StepAuditTables, StepAuditSink,
-			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepManifestBefore, StepBackfill, StepManifest}
+			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepWorkerGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepManifestBefore, StepBackfill, StepManifest}
 		run := func(m Migration) (*steps, error) {
 			s := &steps{backends: map[int]bool{}}
 			stepped = s.record(t)

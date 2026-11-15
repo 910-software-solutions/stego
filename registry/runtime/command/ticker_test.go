@@ -243,6 +243,22 @@ func (f *tickerFixture) waitFailed(n int) []probe.WorkerOutcome {
 	}
 }
 
+// waitSkipped waits until the observer holds n skipped ticks.
+func (f *tickerFixture) waitSkipped(n int) {
+	f.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, skipped, _ := f.observe.snapshot(); skipped >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			f.t.Errorf("the scheduler skipped fewer than %d ticks", n)
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // aligned is a time just after a multiple of interval since the Unix epoch.
 func aligned(interval time.Duration) time.Time {
 	return time.Unix(0, (tick.UnixNano()/interval.Nanoseconds())*interval.Nanoseconds()).Add(time.Second)
@@ -527,13 +543,18 @@ func TestTicker(t *testing.T) {
 		clock := newFakeClock(aligned(time.Minute))
 		var slow atomic.Bool
 		slow.Store(true)
-		f := startTicker(t, e, clock, time.Minute, nil, []string{"t1", "t2", "t3"}, func(ctx context.Context, tenantID string, h *Handle[testProbe]) error {
+		var f *tickerFixture
+		f = startTicker(t, e, clock, time.Minute, nil, []string{"t1", "t2", "t3"}, func(ctx context.Context, tenantID string, h *Handle[testProbe]) error {
 			if slow.Load() {
 				switch tenantID {
 				case "t1":
+					// The scheduler waits for the second due time before the clock passes it.
+					f.waitArms(2)
 					clock.advance(40 * time.Second)
 				case "t2":
 					clock.advance(25 * time.Second)
+					// The second due time comes while this tick runs: the scheduler skips it before the tick ends.
+					f.waitSkipped(1)
 				}
 			}
 			return nil
