@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -15,6 +16,7 @@ type viewLayout struct {
 	Components diagramPair `json:"components"`
 	Data       diagramPair `json:"data"`
 	Flows      flowLayout  `json:"flows"`
+	Trust      trustPair   `json:"trust"`
 }
 
 // diagramPair is the wide and the narrow form of one diagram.
@@ -59,6 +61,9 @@ type layoutEdge struct {
 	From  string `json:"from"`
 	To    string `json:"to"`
 	Label string `json:"label"`
+	// Relation is the relation of the model that the line draws, when it draws one.
+	Relation string `json:"relation,omitempty"`
+	Async    bool   `json:"async,omitempty"`
 }
 
 // region is where one trust boundary shows over the component lanes: a rectangle over each run of lanes that the
@@ -69,11 +74,10 @@ type region struct {
 	Outlines []string `json:"outlines"`
 }
 
-// flowLayout gives the lane of each step of each flow, as an index into the layers.
+// flowLayout gives the size of the lane diagram of a flow.
 type flowLayout struct {
-	W     int              `json:"w"`
-	LaneW int              `json:"lane_w"`
-	Steps map[string][]int `json:"steps"`
+	W     int `json:"w"`
+	LaneW int `json:"lane_w"`
 }
 
 // layoutArchitecture computes the layout of every diagram of the view from the model.
@@ -83,6 +87,7 @@ func layoutArchitecture(m *ArchitectureModel) viewLayout {
 		Components: diagramPair{Wide: componentLayout(m, false), Narrow: componentLayout(m, true)},
 		Data:       diagramPair{Wide: dataLayout(m, false), Narrow: dataLayout(m, true)},
 		Flows:      flowLanes(m),
+		Trust:      trustPair{Wide: trustLayout(m, 980), Narrow: trustLayout(m, 360)},
 	}
 }
 
@@ -118,41 +123,78 @@ func networkEntries(m *ArchitectureModel) []entryGroup {
 	return groups
 }
 
-// overviewLayout places the context view: the collections that callers enter by on the left, the service
-// containers inside the network edge in the middle, and the containers that needs state on the right.
+// overviewLayout places the context view: the caller on the left, the collections that it enters by, the service
+// container inside the network edge in the middle, and on the right each actor and container that the service has a
+// relation with, in the order of the kinds of actor. The narrow form stacks the same columns top to bottom.
 func overviewLayout(m *ArchitectureModel, narrow bool) diagram {
 	entries := networkEntries(m)
-	var services, others []ArchContainer
+	var services []ArchContainer
 	for _, c := range m.Containers {
 		if c.Kind == "service" {
 			services = append(services, c)
-		} else {
-			others = append(others, c)
 		}
 	}
+	var callers []string
+	var right []layoutNode
+	calls := map[string]string{}
+	for _, r := range m.Relations {
+		calls[r.From] = r.ID
+	}
+	for _, a := range m.Actors {
+		if a.Kind == actorCaller {
+			callers = append(callers, a.ID)
+			continue
+		}
+		shape := "system"
+		if a.Kind == actorStore {
+			shape = "store"
+		}
+		right = append(right, layoutNode{ID: a.ID, Shape: shape, Layer: "outside call"})
+	}
+	for _, c := range m.Containers {
+		if c.Kind != "service" {
+			right = append(right, layoutNode{ID: c.ID, Shape: "store", Layer: "store"})
+		}
+	}
+	kind := map[string]int{}
+	for _, a := range m.Actors {
+		kind[a.ID] = actorOrder(a.Kind)
+	}
+	for _, c := range m.Containers {
+		kind[c.ID] = actorOrder(actorStore)
+	}
+	slices.SortStableFunc(right, func(a, b layoutNode) int { return kind[a.ID] - kind[b.ID] })
 	d := diagram{}
 	var network [][4]int
 	if !narrow {
 		const rowH, boxH = 58, 46
-		rows := max(len(entries), len(others), len(services)*2, 3)
-		d.W, d.H = 900, 40+rows*rowH+10
+		rows := max(len(entries), len(right), len(services)*2, len(callers), 3)
+		d.W, d.H = 1000, 40+rows*rowH+10
+		for i, id := range callers {
+			d.Nodes = append(d.Nodes, layoutNode{ID: id, X: 16, Y: (d.H-len(callers)*80)/2 + i*80, W: 120, H: 62, Shape: "actor", Layer: "edge"})
+		}
 		for i, e := range entries {
-			d.Nodes = append(d.Nodes, layoutNode{ID: e.id, X: 20, Y: 40 + i*rowH, W: 180, H: boxH, Shape: "entry"})
+			d.Nodes = append(d.Nodes, layoutNode{ID: e.id, X: 190, Y: 40 + i*rowH, W: 170, H: boxH, Shape: "entry"})
 		}
 		top := (d.H - len(services)*100) / 2
 		for i, c := range services {
-			d.Nodes = append(d.Nodes, layoutNode{ID: c.ID, X: 330, Y: top + i*100, W: 240, H: 80, Shape: "box", Layer: "handler"})
+			d.Nodes = append(d.Nodes, layoutNode{ID: c.ID, X: 450, Y: top + i*100, W: 220, H: 80, Shape: "box", Layer: "handler"})
 		}
 		if len(services) > 0 {
-			network = append(network, [4]int{300, top - 30, 300, len(services)*100 + 40})
+			network = append(network, [4]int{420, top - 30, 280, len(services)*100 + 40})
 		}
-		for i, c := range others {
-			d.Nodes = append(d.Nodes, layoutNode{ID: c.ID, X: 700, Y: 40 + i*rowH, W: 180, H: boxH + 6, Shape: "store", Layer: "store"})
+		for i, n := range right {
+			n.X, n.Y, n.W, n.H = 770, 40+i*rowH, 220, boxH+6
+			d.Nodes = append(d.Nodes, n)
 		}
 	} else {
 		const boxH = 42
 		d.W = 360
-		y := 30
+		y := 10
+		for i, id := range callers {
+			d.Nodes = append(d.Nodes, layoutNode{ID: id, X: 120, Y: y + i*70, W: 120, H: 56, Shape: "actor", Layer: "edge"})
+		}
+		y += len(callers)*70 + 14
 		for i, e := range entries {
 			d.Nodes = append(d.Nodes, layoutNode{ID: e.id, X: 10 + (i%2)*175, Y: y + (i/2)*54, W: 165, H: boxH, Shape: "entry"})
 		}
@@ -163,11 +205,12 @@ func overviewLayout(m *ArchitectureModel, narrow bool) diagram {
 		if len(services) > 0 {
 			network = append(network, [4]int{30, y - 24, 300, len(services)*96 + 30})
 		}
-		y += len(services)*96 + 30
-		for i, c := range others {
-			d.Nodes = append(d.Nodes, layoutNode{ID: c.ID, X: 10 + (i%2)*175, Y: y + (i/2)*60, W: 165, H: 48, Shape: "store", Layer: "store"})
+		y += len(services)*96 + 40
+		for i, n := range right {
+			n.X, n.Y, n.W, n.H = 10+(i%2)*175, y+(i/2)*62, 165, 50
+			d.Nodes = append(d.Nodes, n)
 		}
-		y += (len(others)+1)/2*60 + 10
+		y += (len(right)+1)/2*62 + 10
 		d.H = y
 	}
 	for _, b := range m.Boundaries {
@@ -175,12 +218,19 @@ func overviewLayout(m *ArchitectureModel, narrow bool) diagram {
 			d.Regions = append(d.Regions, region{ID: b.ID, Rects: network, Outlines: []string{}})
 		}
 	}
+	for _, id := range callers {
+		for _, e := range entries {
+			d.Edges = append(d.Edges, layoutEdge{From: id, To: e.id, Relation: calls[id]})
+		}
+	}
 	for _, s := range services {
 		for _, e := range entries {
 			d.Edges = append(d.Edges, layoutEdge{From: e.id, To: s.ID, Label: plural(e.ops, "operation")})
 		}
-		for _, o := range others {
-			d.Edges = append(d.Edges, layoutEdge{From: s.ID, To: o.ID, Label: o.Kind})
+		for _, r := range m.Relations {
+			if r.From == s.ID {
+				d.Edges = append(d.Edges, layoutEdge{From: s.ID, To: r.To, Label: r.Text, Relation: r.ID, Async: r.Mode == "async"})
+			}
 		}
 	}
 	return d
@@ -418,39 +468,9 @@ func dataLayout(m *ArchitectureModel, narrow bool) diagram {
 	return d
 }
 
-// stepLane gives the layer of a step: the layer that its kind names, or for a step of an authentication, an
-// authorization, an event or an outside call, the layer of the component it names.
-func stepLane(m *ArchitectureModel, s ArchStep) string {
-	fixed := map[string]string{"operation": "edge", "handle": "handler", "slot": "slot", "repository": "repository",
-		"outbox": "repository", "store": "store"}
-	if l, ok := fixed[s.Kind]; ok {
-		return l
-	}
-	for _, c := range m.Components {
-		if c.ID == s.Element {
-			return c.Layer
-		}
-	}
-	if s.Kind == "authenticate" || s.Kind == "authorize" {
-		return "authentication"
-	}
-	return "outside call"
-}
-
-// flowLanes gives the lane of each step of each flow.
+// flowLanes gives the width of the lane diagram of a flow. The lane of each step is the layer that the model gives
+// it (ArchStep.Layer).
 func flowLanes(m *ArchitectureModel) flowLayout {
 	const laneW = 96
-	index := map[string]int{}
-	for i, l := range m.Layers {
-		index[l] = i
-	}
-	f := flowLayout{W: laneW * len(m.Layers), LaneW: laneW, Steps: map[string][]int{}}
-	for _, flow := range m.Flows {
-		lanes := make([]int, len(flow.Steps))
-		for i, s := range flow.Steps {
-			lanes[i] = index[stepLane(m, s)]
-		}
-		f.Steps[flow.ID] = lanes
-	}
-	return f
+	return flowLayout{W: laneW * len(m.Layers), LaneW: laneW}
 }

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="{{csp}}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{name}} architecture</title>
 <style>
@@ -32,7 +33,12 @@ header .rec{font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color
 header .tools{display:flex;flex-wrap:wrap;gap:6px}
 .btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 10px;cursor:pointer;text-decoration:none;color:var(--ink);display:inline-block}
 .btn[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
-.app{display:grid;grid-template-columns:220px minmax(0,1fr) 300px;min-height:calc(100vh - 54px)}
+.app{display:grid;grid-template-columns:220px minmax(0,1fr) 320px;min-height:calc(100vh - 54px)}
+/* The side column shows only while it holds the details of a selection or the tour, so the diagrams get the width. */
+@media (min-width:901px){
+  .app:has(#details.closed):not(:has(#tourSlot > *)){grid-template-columns:220px minmax(0,1fr)}
+  .app:has(#details.closed):not(:has(#tourSlot > *)) aside{display:none}
+}
 nav{border-right:1px solid var(--rule);padding:12px 8px;background:var(--panel)}
 nav ul{list-style:none;margin:0;padding:0}
 nav button{display:block;width:100%;text-align:left;border:0;background:none;border-radius:8px;padding:8px 10px;cursor:pointer}
@@ -60,11 +66,37 @@ svg .ctx .box{opacity:.45}
 svg .edge-line{stroke:var(--line);stroke-width:1.5;fill:none}
 svg .edge-line.async{stroke-dasharray:6 4}
 svg .edge-line.hot{stroke:var(--ink);stroke-width:2.5}
+svg .edge-label{font-size:11.5px;paint-order:stroke;stroke:var(--panel);stroke-width:3px;stroke-linejoin:round}
+svg .step-name{font-size:12px;cursor:pointer}
+svg .step-name.cur{font-weight:700}
+.canvas{overflow-x:auto}
+.canvas svg{min-width:var(--min-w,0)}
+.hover-info{font-size:12.5px;color:var(--ink);min-height:1.4em;margin:4px 2px 0}
+svg.swatch{flex:none;display:inline-block;width:30px;height:16px;vertical-align:middle}
+svg.lanes{display:block;width:100%;height:auto;margin:3px 0}
+.matrix-wrap{max-height:72vh;overflow:auto;border:1px solid var(--rule);border-radius:8px}
+.access{border-collapse:separate;border-spacing:0}
+.access thead th{position:sticky;top:0;background:var(--panel);z-index:2;vertical-align:bottom}
+.access thead tr.group th{top:0}
+.access thead tr.group + tr th{top:var(--head-h,2.1em)}
+.access thead th:first-child{left:0;z-index:3}
+.access tbody th{position:sticky;left:0;background:var(--panel);z-index:1;text-align:left;white-space:normal}
+.access tr.group th{background:var(--bg);color:var(--ink);font-weight:700;text-align:left}
+.access th.role{white-space:normal;overflow-wrap:normal;min-width:6.5em;max-width:10em;font-size:12px}
+.access .head{color:var(--ink);text-decoration:none;font-weight:600}
+.access .head .sub{color:var(--muted)}
+details.more{border:1px solid var(--rule);border-radius:8px;margin:6px 0;background:var(--panel)}
+details.more summary{cursor:pointer;padding:8px 10px;display:flex;gap:10px;align-items:baseline}
+details.more summary .t{font-weight:600}
+details.more[open] summary{border-bottom:1px solid var(--rule)}
+details.more > :not(summary){margin:6px 10px}
 svg .port{stroke:var(--ink);stroke-width:1;cursor:pointer}
 .key{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin:8px 0;padding:0;list-style:none}
-.key li{display:inline-flex;gap:5px;align-items:center}
+.key li{display:flex;gap:5px;align-items:center;min-width:0;max-width:100%}
+.key li > span{min-width:0;overflow-wrap:anywhere}
 .sw{width:12px;height:12px;border-radius:3px;display:inline-block;border:2px solid}
-aside{border-left:1px solid var(--rule);padding:14px 16px;background:var(--panel);overflow:auto}
+aside{border-left:1px solid var(--rule);padding:14px 16px;background:var(--panel);overflow:auto;position:sticky;top:0;align-self:start;max-height:100vh}
+#details.closed{display:none}
 aside h3{margin:0 0 4px;font-size:16px}
 aside .type{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
 aside dl{margin:8px 0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:3px 10px;font-size:13px}
@@ -95,13 +127,16 @@ p.incomplete{border:2px solid var(--ink);border-radius:8px;padding:6px 10px}
 .steps .n{font-weight:700;margin-right:4px}
 .k{font-size:11px;color:var(--muted);letter-spacing:.03em;display:block}
 .exit{font-size:12px;color:var(--muted);display:block;margin-top:2px}
-.mini{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;margin-bottom:12px}
+.mini{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-bottom:12px}
+.mini svg.lanes{max-width:150px}
 .mini button{border:1px solid var(--rule);background:var(--panel);border-radius:8px;padding:6px 8px;text-align:left;cursor:pointer}
 .mini button[aria-pressed="true"]{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
 .mini .t{font-size:12.5px;display:block}
 .stepper{display:flex;gap:6px;align-items:center;margin:8px 0;flex-wrap:wrap}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
-.tour{position:fixed;right:16px;bottom:16px;max-width:380px;width:calc(100% - 32px);background:var(--panel);border:2px solid var(--ink);border-radius:12px;padding:14px 16px;box-shadow:0 6px 24px rgba(0,0,0,.18);z-index:20}
+/* The tour card sits beside the diagram it explains, in the side column, or in the flow of the view on a narrow
+   screen: it never covers the diagram. */
+.tour{background:var(--panel);border:2px solid var(--ink);border-radius:12px;padding:14px 16px;margin:0 0 14px}
 .tour h4{margin:0 0 6px;font-size:15px}
 .tour p{margin:0 0 8px;font-size:14px}
 .tour dl{margin:0 0 8px;font-size:13px}
@@ -121,8 +156,8 @@ p.incomplete{border:2px solid var(--ink);border-radius:8px;padding:6px 10px}
   nav ul{display:flex;gap:4px}
   nav button{white-space:nowrap;padding:6px 10px}
   nav button .q{display:none}
-  aside{border-left:0;border-top:2px solid var(--ink);position:sticky;bottom:0;max-height:45vh}
-  aside.closed{display:none}
+  aside{border-left:0;border-top:2px solid var(--ink);position:sticky;bottom:0;top:auto;max-height:45vh}
+  .app:has(#details.closed) aside{display:none}
 }
 @media (max-width:480px){
   body{font-size:14px}
@@ -156,12 +191,14 @@ p.incomplete{border:2px solid var(--ink);border-radius:8px;padding:6px 10px}
     <h2 id="vtitle" tabindex="-1"></h2>
     <p class="question" id="vq"></p>
     <div class="toolbar" id="toolbar"></div>
+    <div id="tourInline"></div>
     <div id="view"></div>
     <ul class="key" id="key" aria-label="Key"></ul>
   </main>
-  <aside id="details" aria-label="Details"></aside>
+  <aside id="side" aria-label="Details and tour"><div id="tourSlot"></div><div id="details"></div></aside>
 </div>
 <div id="forms">
 <!--forms-->
 </div>
 <div class="sr" aria-live="polite" id="live"></div>
+<svg class="sr" aria-hidden="true" focusable="false"><defs><pattern id="hatch-key" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" style="stroke:var(--slot);stroke-width:2"/></pattern></defs></svg>
