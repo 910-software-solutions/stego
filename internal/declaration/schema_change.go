@@ -15,7 +15,7 @@ func schemaChangePath(i int) string { return fmt.Sprintf("schema_changes[%d]", i
 func schemaStepPath(i int) string   { return fmt.Sprintf("schema_history[%d]", i) }
 
 // schemaChangeKinds are the kinds of schema change, in the order the specification gives them.
-var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique"}
+var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique", "relax"}
 
 // backfillKinds are the kinds of schema change whose expand step starts a backfill, which runs only in controller
 // mode.
@@ -35,14 +35,15 @@ const (
 )
 
 // schemaValues gives, for each value of a schema change, what each kind takes (ST-DECL-INV57). Field is optional
-// for add and drop, which may change a whole entity.
+// for add and drop, which may change a whole entity. A relax names its field and gives the field before the change
+// as its Definition (decision on finding F12, owner, 2026-11-13).
 var schemaValues = map[string]map[string]schemaValue{
-	"field":              {"add": valueOptional, "rename": valueRequired, "retype": valueRequired, "require": valueRequired, "drop": valueOptional, "unique": valueRequired},
+	"field":              {"add": valueOptional, "rename": valueRequired, "retype": valueRequired, "require": valueRequired, "drop": valueOptional, "unique": valueRequired, "relax": valueRequired},
 	"from":               {"rename": valueRequired, "retype": valueRequired},
 	"conversion":         {"retype": valueRequired},
 	"inverse_conversion": {"retype": valueRequired},
 	"fill_value":         {"require": valueRequired, "retype": valueOptional, "drop": valueOptional},
-	"definition":         {"drop": valueRequired, "retype": valueOptional},
+	"definition":         {"drop": valueRequired, "retype": valueOptional, "relax": valueRequired},
 }
 
 func schemaValueOf(change types.SchemaChange, value string) bool {
@@ -78,7 +79,7 @@ func validateSchemaChangeKind(changes []types.SchemaChange) []ValidationError {
 		}
 		seen[change.ID] = true
 		if !contains(schemaChangeKinds, change.Kind) {
-			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind, Allowed: schemaChangeKinds, Message: fmt.Sprintf("schema change %q has the kind %q; its kind must be add, rename, retype, require, drop or unique", change.ID, change.Kind)})
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind, Allowed: schemaChangeKinds, Message: fmt.Sprintf("schema change %q has the kind %q; its kind must be add, rename, retype, require, drop, unique or relax", change.ID, change.Kind)})
 			continue
 		}
 		for _, value := range []string{"field", "from", "conversion", "inverse_conversion", "fill_value", "definition"} {
@@ -158,7 +159,7 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 			if change.Field != "" && !hasField {
 				fault(".field", "the entity does not declare the field that the change adds")
 			}
-		case "rename", "retype", "require":
+		case "rename", "retype", "require", "relax":
 			if !hasField {
 				fault(".field", fmt.Sprintf("the entity does not declare the field, which a %s names by its name after the change", change.Kind))
 			}
@@ -196,11 +197,15 @@ func schemaPhases(steps []types.SchemaStep) map[string][]string {
 	return phases
 }
 
-// openSchemaChanges gives the schema changes whose last step is expand, in the order of the declaration.
+// openSchemaChanges gives the schema changes whose last step is expand, in the order of the declaration. A relax
+// finishes at its expand step, in place, so it is never open (decision on finding F12, owner, 2026-11-13).
 func openSchemaChanges(service *types.ServiceDeclaration) []types.SchemaChange {
 	phases := schemaPhases(service.SchemaHistory)
 	var open []types.SchemaChange
 	for _, change := range service.SchemaChanges {
+		if change.Kind == "relax" {
+			continue
+		}
 		if steps := phases[change.ID]; len(steps) > 0 && steps[len(steps)-1] == "expand" {
 			open = append(open, change)
 		}
@@ -241,15 +246,19 @@ func validateSchemaSteps(service *types.ServiceDeclaration) []ValidationError {
 			fault("it has exactly one expand step and at most one contract step after it")
 		case len(steps) == 2 && change.Kind == "add":
 			fault("a change of kind add has an expand step only")
+		case len(steps) == 2 && change.Kind == "relax":
+			fault("a change of kind relax has an expand step only, which finishes it in place")
 		}
 	}
 	return faults
 }
 
 // validateSchemaChangeOpen checks that at most one open schema change names a given field of an entity, as Field or
-// as From (ST-DECL-INV60).
+// as From, and that no relax has its step after the expand step of an open change that names its field: the two
+// columns of that change hold the field until its contract step (ST-DECL-INV60).
 func validateSchemaChangeOpen(service *types.ServiceDeclaration) []ValidationError {
 	var faults []ValidationError
+	faults = append(faults, relaxOpenFaults(service)...)
 	owner := map[[2]string]string{}
 	for _, change := range openSchemaChanges(service) {
 		for _, field := range []string{change.Field, change.From} {
@@ -345,6 +354,21 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 		}
 		var field types.Field
 		switch change.Kind {
+		case "relax":
+			entity, declared := findEntity(service.Entities, change.Entity)
+			if !declared || change.Definition == "" {
+				continue
+			}
+			if now, found := findField(entity, change.Field); found {
+				field, reason := types.FieldAfterRelax(service.SchemaChanges, service.SchemaHistory, change, now)
+				if reason == "" {
+					_, reason = change.RelaxedFrom(field)
+				}
+				if reason != "" {
+					fault(".definition", change.Definition, fmt.Sprintf("the relax of %s.%s cannot be carried out in place: %s", change.Entity, change.Field, reason))
+				}
+			}
+			continue
 		case "require", "retype":
 			entity, declared := findEntity(service.Entities, change.Entity)
 			found := false
@@ -385,6 +409,31 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 		}
 		if ok, reason := valueSuits(field, change.FillValue); !ok {
 			fault(".fill_value", fmt.Sprint(change.FillValue), fmt.Sprintf("the fill value %v does not suit the field %s: %s", change.FillValue, change.Field, reason))
+		}
+	}
+	return faults
+}
+
+// relaxOpenFaults refuses a relax whose step comes after the expand step of an open schema change that names the
+// same field, as Field or as From (ST-DECL-INV60).
+func relaxOpenFaults(service *types.ServiceDeclaration) []ValidationError {
+	first := map[string]int{}
+	for i, step := range service.SchemaHistory {
+		if _, seen := first[step.Change]; !seen {
+			first[step.Change] = i
+		}
+	}
+	var faults []ValidationError
+	for _, relax := range service.SchemaChanges {
+		at, stepped := first[relax.ID]
+		if relax.Kind != "relax" || !stepped {
+			continue
+		}
+		for _, open := range openSchemaChanges(service) {
+			if open.Entity != relax.Entity || (open.Field != relax.Field && open.From != relax.Field) || first[open.ID] > at {
+				continue
+			}
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-open", Path: "schema_changes", Found: relax.Field, Message: fmt.Sprintf("the relax %q of %s.%s comes after the expand step of %q, which is open on the same field; finish %q with its contract step first", relax.ID, relax.Entity, relax.Field, open.ID, open.ID)})
 		}
 	}
 	return faults

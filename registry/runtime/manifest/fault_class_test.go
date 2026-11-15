@@ -257,6 +257,7 @@ var faultSamples = map[string]string{
 	"table public.orders: column status has a default that the manifest does not state":                                                                   "column",
 	"table public.orders: column status has a default that the manifest does not state, and that is not a constant of a built-in type":                    "column",
 	"table public.orders: column status has another default than the manifest states":                                                                     "column",
+	"table public.orders: column status has another default than the relax step of the column states":                                                     "column",
 	"table public.orders: column status has no default, and the manifest states one":                                                                      "column",
 	"table public.orders: column g is a generated column, which the manifest does not state":                                                              "column",
 	"table public.orders: column n is an identity that the manifest does not state":                                                                       "column",
