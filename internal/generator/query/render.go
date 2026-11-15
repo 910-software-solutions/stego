@@ -197,6 +197,13 @@ func renderSpec(w *writer, e *entity, load string) {
 // readExpr is the expression that reads the field's column from the row r.
 func readExpr(f capability.Field) string {
 	c := strconv.Quote(f.Column)
+	if f.Pointer {
+		plain := f
+		plain.Pointer = false
+		// The read of the plain value is r.<Read>(column); optional reads it only for a column that is not NULL.
+		method := strings.TrimSuffix(strings.TrimPrefix(readExpr(plain), "r."), "("+c+")")
+		return "optional(r, " + c + ", r." + method + ")"
+	}
 	switch f.Read {
 	case capability.ReadText:
 		return "r.Text(" + c + ")"
@@ -633,6 +640,23 @@ func must[T any](v T, err error) T {
 	return w.Bytes()
 }
 
+// pointerFields makes each optional field of v that is not a slice a pointer, nil for a NULL column: a view of the
+// rest-api handlers then tells an unset optional field from "", 0 or false (ST-SUP-Q128 (B)). A jsonb or bytes field
+// is a slice, which is already nil for NULL.
+func pointerFields(v *capability.Value) {
+	optional := map[string]bool{}
+	for _, f := range v.Entity.Fields {
+		optional[f.ColumnName()] = f.Optional
+	}
+	for i, f := range v.Fields {
+		if !optional[f.Column] || f.Read == capability.ReadJSON || f.Read == capability.ReadBytes {
+			continue
+		}
+		v.Fields[i].Pointer = true
+		v.Fields[i].GoType = "*" + f.GoType
+	}
+}
+
 // ViewFile gives a Go file of the package pkg that holds, for each named entity, its read-only value type <Name>View
 // with no secret field, its loaded type, its load function and its query.Entity with the read and list permissions
 // that the entity declares, as the query contract holds them (ST-SUP-RC33-OC01); the row reads are the runtime's.
@@ -653,6 +677,7 @@ func ViewFile(pkg string, names []string, entities []types.Entity) ([]byte, erro
 		}
 		e.value.GoType = e.value.Entity.Name + "View"
 		e.variable = capability.LowerFirst(e.value.GoType) + "Entity"
+		pointerFields(&e.value)
 	}
 	used := m.reads()
 	var w writer
@@ -668,8 +693,27 @@ func ViewFile(pkg string, names []string, entities []types.Entity) ([]byte, erro
 		w.p("%q", auditImport)
 	}
 	w.p("%q\n)\n", queryImport)
+	pointers := false
 	for _, e := range m.entities {
 		renderEntity(&w, e)
+		for _, f := range e.value.Fields {
+			pointers = pointers || f.Pointer
+		}
+	}
+	if pointers {
+		w.raw(`// optional gives nil for a NULL column, else a pointer to the value that read gives, so a view tells an unset
+// optional field from its zero value (ST-SUP-Q128 (B)).
+func optional[T any](r query.Row, column string, read func(string) (T, error)) (*T, error) {
+	if v, ok := r.Value(column); ok && v == nil {
+		return nil, nil
+	}
+	x, err := read(column)
+	if err != nil {
+		return nil, err
+	}
+	return &x, nil
+}
+`)
 	}
 	w.raw(`// must gives v, and panics on a declaration that the runtime refuses, which the generator's checks rule out.
 func must[T any](v T, err error) T {
