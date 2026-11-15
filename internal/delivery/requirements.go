@@ -106,6 +106,9 @@ type Requirements struct {
 	Requirements []Requirement `yaml:"requirements"`
 }
 
+// RequirementsFile is the path, in the project folder, of the platform requirements (ST-DLV-EN01-TB).
+const RequirementsFile = "deploy/platform-requirements.yaml"
+
 // RequirementsVersion is the version of the format of the platform requirements.
 const RequirementsVersion = 1
 

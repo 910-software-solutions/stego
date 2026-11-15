@@ -398,6 +398,9 @@ func TestPlatformRequirementsApply(t *testing.T) {
 		if len(requirements.Requirements) != len(wantRequirements) {
 			t.Fatalf("the platform requirements state %d needs, want the nine of the components", len(requirements.Requirements))
 		}
+		if compiler.RequirementsFile != delivery.RequirementsFile {
+			t.Fatalf("the compiler writes the platform requirements at %s, and Delivering names %s", compiler.RequirementsFile, delivery.RequirementsFile)
+		}
 		state, err := compiler.LoadState(filepath.Join(dir, ".stego", "state.yaml"))
 		if err != nil {
 			t.Fatal(err)

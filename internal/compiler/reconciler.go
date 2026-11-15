@@ -640,8 +640,8 @@ func isProjectRootFile(filePath string) bool {
 	return filePath == "go.mod" || filePath == "go.sum"
 }
 
-// RequirementsFile is the path, in the project folder, of the platform requirements that apply writes
-// (ST-DLV-EN01-TB).
+// RequirementsFile is the path, in the project folder, of the platform requirements that apply writes: the path of
+// delivery.RequirementsFile (ST-DLV-EN01-TB), which Generating may not import.
 const RequirementsFile = "deploy/platform-requirements.yaml"
 
 // isProjectGeneratedFile tells if a generated file is placed at its path in the project folder, out of the
