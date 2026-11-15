@@ -1546,6 +1546,29 @@ WHERE pronamespace = 'stego_schema'::regnamespace AND proname IN ('backfill_read
 		contracted(t, up)
 	})
 
+	t.Run("ST-SUP-RC01-OC24-T07 The check accepts the sync trigger that the step made when the schema of the sync functions is on the search path of the job", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		// With stego_steps on the search path, pg_get_triggerdef leaves the schema out of the name of a visible
+		// function, so a compare on the path of the session refuses the trigger that the step made (review of
+		// PR #320, info).
+		onPath := upCfg.Copy()
+		onPath.RuntimeParams["search_path"] = "stego_steps, public"
+		var definition string
+		check := stdlib.OpenDB(*onPath)
+		defer check.Close()
+		if err := check.QueryRow(`SELECT pg_catalog.pg_get_triggerdef(t.oid) FROM pg_catalog.pg_trigger t WHERE t.tgrelid = 'public.boards'::regclass AND t.tgname = 'boards_heading_sync'`).Scan(&definition); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(definition, "stego_steps.") {
+			t.Fatalf("the trigger definition on the search path of the job names the schema of the function: %s", definition)
+		}
+		if err := contract(t, onPath); err != nil {
+			t.Fatalf("the step with stego_steps on the search path of the job: %v", err)
+		}
+		contracted(t, up)
+	})
+
 	t.Run("ST-SUP-RC01-OC39-T03 A write of the release before after the drop of the sync trigger fails and loses no edit", func(t *testing.T) {
 		upCfg, up := contractBase(t)
 		finish(t, up)
