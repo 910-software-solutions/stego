@@ -638,3 +638,89 @@ func TestPlatformRequirementsDerivation(t *testing.T) {
 		}
 	})
 }
+
+// requirementsFillDeclaration is the declaration of ST-DLV-TD01 with the collection of the fill project of
+// ST-EXT-TD01 and its fill qualified-fill bound, so a test can change a fill of the service.
+func requirementsFillDeclaration(withKafka bool) string {
+	head, _, _ := strings.Cut(requirementsDeclaration, "entities:\n")
+	if !withKafka {
+		head = strings.Replace(head, "mixins: [durable-events, kafka-events]", "mixins: [durable-events]", 1)
+	}
+	return head + `entities:
+  - name: User
+    resource_type: member
+    permissions: {create: public, read: view, list: view, delete: edit}
+    public_reasons: {create: a new member has no resource to decide on before it exists}
+    fields: [{name: email, type: string}]
+collections:
+  org-users: {entity: User, operations: [create, read, delete]}
+slots:
+  - {slot: before_create, collection: org-users, gate: [qualified-fill]}
+`
+}
+
+func TestPlatformRequirementsChangeOnlyThroughTheDeclaration(t *testing.T) {
+	t.Run("ST-DLV-UC01-R05-T03 A need changes in the platform requirements when the declaration or the registry changes, and not when a fill changes", func(t *testing.T) {
+		p := newFillProject(t)
+		p.registry = requirementsRegistry(t)
+		// Each step applies as an author does: the fill is tested and signed against the current generated code
+		// before the declaration binds it again.
+		apply := func(withKafka bool) {
+			unbound, _, _ := strings.Cut(requirementsFillDeclaration(withKafka), "slots:\n")
+			p.write(t, "service.yaml", unbound)
+			p.must(t, "no-key", "apply")
+			t.Log(p.must(t, "no-key", "test"))
+			t.Log(p.must(t, "no-key", "fill", "status"))
+			p.must(t, "listed-ssh", "fill", "sign", "qualified-fill")
+			p.write(t, "service.yaml", requirementsFillDeclaration(withKafka))
+			p.must(t, "no-key", "apply")
+		}
+		apply(true)
+		first, firstData := readRequirements(t, p.dir)
+
+		// The fill gets a new call that names the environment variable EXTRA_TOKEN and does not read the environment
+		// (ST-DLV-Q06 (A)): a qualified fill may not import os.
+		p.replace(t, "fills/qualified-fill/policy.go", "\treturn &slots.SlotResult{Ok: true}, nil", "\t_ = variableName(\"EXTRA_TOKEN\")\n\treturn &slots.SlotResult{Ok: true}, nil")
+		p.write(t, "fills/qualified-fill/policy.go", string(p.read(t, "fills/qualified-fill/policy.go"))+"\n// variableName gives the name of an environment variable.\nfunc variableName(name string) string { return name }\n")
+		apply(true)
+		if _, data := readRequirements(t, p.dir); !bytes.Equal(firstData, data) {
+			t.Fatalf("a change of a fill changed the platform requirements:\n%s\n---\n%s", firstData, data)
+		}
+
+		// The declaration takes out the Kafka producer.
+		apply(false)
+		third, _ := readRequirements(t, p.dir)
+		expectChange(t, first.Requirements, third.Requirements, "order-events", nil)
+
+		// The registry copy adds the key sslmode to the secret of postgres-adapter.
+		setNeeds(t, p.registry, "postgres-adapter", strings.Replace(requirementsNeeds["postgres-adapter"], "keys: [url, password]", "keys: [url, password, sslmode]", 1))
+		apply(false)
+		fourth, _ := readRequirements(t, p.dir)
+		secret := delivery.Requirement{Kind: delivery.Secret, Name: "orders-database", Keys: []string{"password", "sslmode", "url"}, Components: []string{"postgres-adapter"}}
+		expectChange(t, third.Requirements, fourth.Requirements, "orders-database", &secret)
+	})
+}
+
+// expectChange fails the test unless after differs from before only in the requirement named: gone when want is
+// nil, else as want.
+func expectChange(t *testing.T, before, after []delivery.Requirement, name string, want *delivery.Requirement) {
+	t.Helper()
+	old, changed := byName(before), byName(after)
+	if want == nil {
+		if _, stated := changed[name]; stated {
+			t.Errorf("the platform requirements still state %s", name)
+		}
+	} else if got, stated := changed[name]; !stated || !requirementsEqual(got, *want) {
+		t.Errorf("the platform requirements state %s as %+v, want %+v", name, got, *want)
+	}
+	delete(old, name)
+	delete(changed, name)
+	if len(old) != len(changed) {
+		t.Errorf("the platform requirements hold %d other requirements, want %d", len(changed), len(old))
+	}
+	for other, requirement := range old {
+		if got, stated := changed[other]; !stated || !requirementsEqual(got, requirement) {
+			t.Errorf("the requirement %s changed from %+v to %+v", other, requirement, got)
+		}
+	}
+}
