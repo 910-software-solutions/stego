@@ -422,6 +422,7 @@ func TestArchitectureView(t *testing.T) {
 			{"role:organization#viewer@user", "check:operation:org-users.read", "↑?"},
 			{"role:member#owner@user", "check:operation:organizations.read", "· no grant"},
 			{"role:service#operator@user", "check:operation:organizations.create", "◇ public"},
+			{"role:organization#guest@user(expiration)", "check:operation:organizations.read", "⌛"},
 		} {
 			if got := cell(c.role, c.check); got != c.want {
 				t.Errorf("the cell of %s and %s is %q, not %q", c.role, c.check, got, c.want)
@@ -429,6 +430,25 @@ func TestArchitectureView(t *testing.T) {
 		}
 		if !strings.Contains(textOf(tables[0]), "Paths that stop, with no role") || !strings.Contains(textOf(tables[0]), "↻") {
 			t.Error("the matrix does not show the path that a recursion stops")
+		}
+		if !strings.Contains(textOf(tables[0]), "⊘") {
+			t.Error("the matrix does not show the path that the work limit stops")
+		}
+		if am.Access.RolesComplete || p.byID("roles-incomplete") == nil || !strings.Contains(textOf(p.byID("roles-incomplete")), "Incomplete: a limit was reached") {
+			t.Error("the matrix does not say that a limit cut its roles short")
+		}
+		for _, c := range am.Access.Checks {
+			incomplete := false
+			for _, perm := range am.Access.Permissions {
+				incomplete = incomplete || (perm.ID == c.Grants && !perm.Complete)
+			}
+			head := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == c.ID })
+			if len(head) != 1 || strings.Contains(textOf(head[0]), "incomplete: a limit was reached") != incomplete {
+				t.Errorf("the column of %s does not show whether its permission is complete (%v)", c.ID, !incomplete)
+			}
+		}
+		if !strings.Contains(textOf(tables[0]), "user as organization#guest, until it expires") {
+			t.Error("the matrix does not name the condition of a role with an expiration")
 		}
 		if strings.Contains(string(accessView), "relationship:") {
 			t.Error("the view shows a relationship")

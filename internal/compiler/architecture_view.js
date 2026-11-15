@@ -11,7 +11,7 @@ var SYS = M.system.name;
 var LAYER_NAME = {"edge":"Edge","authentication":"Authentication","handler":"Handler","slot":"Slot","repository":"Repository","store":"Store","outside call":"Outside call"};
 var LAYER_VAR = {"edge":"edge","authentication":"authentication","handler":"handler","slot":"slot","repository":"repository","store":"store","outside call":"outside"};
 var BOUNDARY_STYLE = {"network":"10 5","verified identity":"","tenant scope":"3 3","fill code":"","process":"1 4"};
-var GLYPH = {"direct":"●","arrow":"↑","userset":"◎","caveat":"?","intersection":"&","exclusion":"−","wildcard":"*","recursion":"↻","depth limit":"⋯","work limit":"⊘"};
+var GLYPH = {"direct":"●","arrow":"↑","userset":"◎","caveat":"?","intersection":"&","exclusion":"−","wildcard":"*","recursion":"↻","depth limit":"⋯","expiration":"⌛","work limit":"⊘"};
 var state = {view:"overview", sel:null, flow:null, step:1, text:false, coll:"", q:""};
 var byId = {};
 
@@ -441,6 +441,7 @@ function cellDetails(d, id){
   var dl = h("dl");
   [["Operation", nameOf(c.subject)], ["Checks", c.resource_type+"#"+c.permission], ["Source", srcText(c.source)]].forEach(function(r){ dl.appendChild(h("dt", {text:r[0]})); dl.appendChild(h("dd", {text:r[1]})); });
   d.appendChild(dl);
+  if (p && p.complete === false) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: a limit was reached, so "+c.resource_type+"#"+c.permission+" may grant more roles than its paths name."}));
   d.appendChild(h("strong", {text:"Grant paths"}));
   var ul = h("ul");
   (p ? p.paths : []).filter(function(g){ return (g.role || "") === role; }).forEach(function(g){

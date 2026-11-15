@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.114.0",
+    "archetype_version": "3.115.1",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -280,7 +280,7 @@
     {
       "id": "component:postgres-adapter",
       "name": "postgres-adapter",
-      "version": "6.4.0",
+      "version": "6.5.0",
       "stage": "ga",
       "layer": "repository",
       "flow_part": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
@@ -298,7 +298,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.4.0",
+          "version": "6.5.0",
           "field": "architecture"
         }
       }
@@ -800,7 +800,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.114.0",
+          "version": "3.115.1",
           "field": "bindings.durable-outbox"
         }
       }
@@ -814,7 +814,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.114.0",
+          "version": "3.115.1",
           "field": "bindings.auth-provider"
         }
       }
@@ -828,7 +828,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.114.0",
+          "version": "3.115.1",
           "field": "bindings.storage-adapter"
         }
       }
@@ -842,7 +842,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.114.0",
+          "version": "3.115.1",
           "field": "bindings.auth-provider"
         }
       }
@@ -1636,7 +1636,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -1651,7 +1651,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -1762,7 +1762,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -1777,7 +1777,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -1943,7 +1943,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -1958,7 +1958,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2079,7 +2079,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2094,7 +2094,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2215,7 +2215,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2230,7 +2230,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2404,7 +2404,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2419,7 +2419,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2613,7 +2613,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2628,7 +2628,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2799,7 +2799,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2814,7 +2814,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2935,7 +2935,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -2950,7 +2950,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3134,7 +3134,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3149,7 +3149,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3278,7 +3278,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3293,7 +3293,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3477,7 +3477,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3492,7 +3492,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3676,7 +3676,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3691,7 +3691,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3860,7 +3860,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3875,7 +3875,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -3996,7 +3996,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -4011,7 +4011,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -4130,7 +4130,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -4145,7 +4145,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -4311,7 +4311,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -4326,7 +4326,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.4.0",
+              "version": "6.5.0",
               "field": "architecture"
             }
           }
@@ -5180,6 +5180,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5220,6 +5221,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5278,6 +5280,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5304,6 +5307,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5344,6 +5348,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5368,6 +5373,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5425,6 +5431,34 @@
           },
           {
             "id": "grant:organization#view.004",
+            "role": "role:organization#guest@user(expiration)",
+            "kinds": [
+              "expiration"
+            ],
+            "hops": [
+              "organization#view",
+              "organization#guest"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:organization#view.005",
+            "kinds": [
+              "work limit"
+            ],
+            "hops": [
+              "organization#view",
+              "organization#owner"
+            ],
+            "stops": "the expansion stops at its bound of work",
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:organization#view.006",
             "role": "role:organization#public@user:*",
             "kinds": [
               "exclusion",
@@ -5442,6 +5476,7 @@
             }
           }
         ],
+        "complete": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5466,6 +5501,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5490,6 +5526,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5502,6 +5539,7 @@
         "relation": "owner",
         "on": "activity_entry",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5512,6 +5550,7 @@
         "relation": "owner",
         "on": "member",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5522,6 +5561,18 @@
         "relation": "auditor",
         "on": "organization",
         "wildcard": false,
+        "expiration": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
+      },
+      {
+        "id": "role:organization#guest@user(expiration)",
+        "subject_type": "user",
+        "relation": "guest",
+        "on": "organization",
+        "wildcard": false,
+        "expiration": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5532,6 +5583,7 @@
         "relation": "owner",
         "on": "organization",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5542,6 +5594,7 @@
         "relation": "public",
         "on": "organization",
         "wildcard": true,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5552,6 +5605,7 @@
         "relation": "viewer",
         "on": "organization",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5562,11 +5616,13 @@
         "relation": "operator",
         "on": "service",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
       }
-    ]
+    ],
+    "roles_complete": false
   },
   "compliance": [
     {
@@ -6002,9 +6058,13 @@
           "about": "entity:ActivityEntry",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -6012,9 +6072,9 @@
           "about": "entity:ActivityEntry",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {
@@ -6032,9 +6092,13 @@
           "about": "entity:OrgSetting",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -6042,9 +6106,9 @@
           "about": "entity:OrgSetting",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {
@@ -6062,9 +6126,13 @@
           "about": "entity:Organization",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -6072,9 +6140,9 @@
           "about": "entity:Organization",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {
@@ -6092,9 +6160,13 @@
           "about": "entity:User",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -6102,9 +6174,9 @@
           "about": "entity:User",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {

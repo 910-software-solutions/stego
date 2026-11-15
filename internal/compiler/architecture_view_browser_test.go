@@ -526,6 +526,12 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		if len(want) == 0 || !slices.Equal(got.Paths, want) {
 			t.Fatalf("the cell shows the grant paths %v, not %v", got.Paths, want)
 		}
+		var notice string
+		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:organizations.read"][data-role="role:organization#viewer@user"]').click();
+			return (document.getElementById("cellIncomplete")||{}).textContent || ""; })()`, &notice)
+		if !strings.Contains(notice, "Incomplete: a limit was reached") {
+			t.Fatalf("the cell of an incomplete permission does not say so: %q", notice)
+		}
 	})
 }
 

@@ -51,6 +51,7 @@ var grantGlyphs = []struct{ kind, glyph, meaning string }{
 	{"wildcard", "*", "wildcard: every subject of the type"},
 	{"recursion", "↻", "recursion: the path grants through itself and stops"},
 	{"depth limit", "⋯", "depth limit: the expansion stops here"},
+	{"expiration", "⌛", "expiration: only until the relationship expires"},
 	{"work limit", "⊘", "work limit: the expansion stops at its bound of work"},
 }
 
@@ -497,6 +498,9 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		perms[m.Access.Permissions[i].ID] = &m.Access.Permissions[i]
 	}
 	checks := m.Access.Checks
+	if !m.Access.RolesComplete {
+		w.tag("p", " class=\"incomplete\" role=\"note\" id=\"roles-incomplete\"", "⚠ Incomplete: a limit was reached. A limit cut the grant paths of a permission short, so more roles may get a permission than this matrix shows.")
+	}
 	w.raw("<div class=\"scroll\"><table class=\"matrix access\" aria-label=\"Access matrix\"><thead><tr>")
 	w.tag("th", " scope=\"col\"", "Role")
 	for _, c := range checks {
@@ -507,6 +511,9 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		w.raw("<th scope=\"col\"" + attr("data-id", c.ID) + ">")
 		w.text(shortID(c.Subject))
 		w.tag("span", " class=\"sub\"", what)
+		if p := perms[c.Grants]; p != nil && !p.Complete {
+			w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: a limit was reached")
+		}
 		w.raw("</th>")
 	}
 	w.raw("</tr></thead><tbody>")
@@ -519,6 +526,12 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		name := r.SubjectType + " as " + r.On + "#" + r.Relation
 		if r.Wildcard {
 			name = r.SubjectType + ":* as " + r.On + "#" + r.Relation
+		}
+		if r.Caveat != "" {
+			name += ", when " + r.Caveat + " holds"
+		}
+		if r.Expiration {
+			name += ", until it expires"
 		}
 		w.tag("th", " scope=\"row\"", name)
 		for _, c := range checks {
@@ -554,6 +567,11 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	w.h3("Grant paths")
 	w.raw("<ul class=\"grants\">")
 	for _, p := range m.Access.Permissions {
+		if !p.Complete {
+			w.raw("<li class=\"incomplete\"" + attr("data-id", p.ID) + ">")
+			w.text(p.ResourceType + "#" + p.Name + ": ⚠ incomplete: a limit was reached, so it may grant more roles than its paths name")
+			w.raw("</li>")
+		}
 		for _, g := range p.Paths {
 			w.raw("<li" + attr("data-id", g.ID) + ">")
 			w.text(grantText(p, g))
