@@ -319,6 +319,9 @@ type ArchAccess struct {
 	Checks      []ArchCheck      `json:"checks"`
 	Permissions []ArchPermission `json:"permissions"`
 	Roles       []ArchRole       `json:"roles"`
+	// RolesComplete is false when a limit cut the paths of a permission short, so the roles may be more than the
+	// list holds.
+	RolesComplete bool `json:"roles_complete"`
 }
 
 // ArchCheck is what one operation or action checks: a resource type and a permission, or public with its reason.
@@ -339,7 +342,9 @@ type ArchPermission struct {
 	ResourceType string      `json:"resource_type"`
 	Name         string      `json:"name"`
 	Paths        []ArchGrant `json:"paths"`
-	Source       ArchSource  `json:"source"`
+	// Complete is false when a limit cut a path short, so the permission may grant more roles than its paths name.
+	Complete bool       `json:"complete"`
+	Source   ArchSource `json:"source"`
 }
 
 // ArchGrant is one grant path: the role it grants (a subject type and its relation), the kinds of the path, the hops
@@ -364,6 +369,10 @@ type ArchRole struct {
 	Relation    string `json:"relation"`
 	On          string `json:"on"`
 	Wildcard    bool   `json:"wildcard"`
+	// Caveat is the caveat the relation requires of the subject, and Expiration whether it requires an expiration;
+	// either makes each grant to the role conditional.
+	Caveat     string `json:"caveat,omitempty"`
+	Expiration bool   `json:"expiration"`
 	// Source is the declared schema that states the relation.
 	Source ArchSource `json:"source"`
 }

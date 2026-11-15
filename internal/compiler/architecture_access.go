@@ -13,59 +13,81 @@ import (
 // The grant paths of the access matrix (ST-GEN-UC08-R13): each permission that an operation checks is expanded
 // statically from the declared authorization schema, never from a relationship, which is data. A path goes from the
 // permission through each relation, arrow and userset to a subject type and its relation, and states each kind that
-// limits it: an arrow to a parent, a caveat, an intersection with another relation, an exclusion, a wildcard. A
-// recursion or the depth limit stops a path, and the path says so; the expansion never guesses past it.
+// limits it: an arrow to a parent, a caveat, an expiration, an intersection with another relation, an exclusion, a
+// wildcard. A recursion, the depth limit or the work limit stops a path, and the path says so; the expansion never
+// guesses past it.
 
 // schemaSource is the source of each grant path and role: the declared schema.
 var schemaSource = ArchSource{Declaration: "authorization.schema_path"}
 
-// maxGrantDepth is the most hops a grant path follows before it stops at the depth limit.
+// maxGrantDepth is the most relations and permissions a grant path passes before it stops at the depth limit.
 const maxGrantDepth = 12
 
 // maxGrantPaths is the most grant paths one permission gets; the expansion stops with a stated limit after it.
 const maxGrantPaths = 512
 
+// maxGrantSteps bounds the work of the expansion of one permission: each node and expression part it visits is one
+// step. A wide schema whose arrows fan out on every level would otherwise cost the fan-out to the power of the depth;
+// at the bound the expansion stops with a stated work limit (security review of #341, M1).
+const maxGrantSteps = 20000
+
+// pathState is what a path carries from the permission to the node it has reached.
+type pathState struct {
+	hops, kinds, requires, except, caveats []string
+}
+
+// with gives a copy of the list with the items added, so that sibling branches never share a backing array.
+func with(list []string, items ...string) []string {
+	return append(slices.Clip(list), items...)
+}
+
 // grantPath is one path as the expansion finds it.
 type grantPath struct {
-	role     *ArchRole
-	kinds    []string
-	hops     []string
-	caveat   string
-	requires []string
-	except   []string
-	stops    string
+	role  *ArchRole
+	state pathState
+	stops string
 }
 
 // grantExpander expands the permissions of one schema.
 type grantExpander struct {
 	schema *declaration.AuthzSchema
 	paths  []grantPath
-	full   bool
+	// steps counts the work done; full is set when the path cap or the work limit stops the expansion, which then
+	// returns at once from every node.
+	steps int
+	full  bool
+	// complete is false when a limit cut a path short, so the permission may grant more roles than the paths name.
+	complete bool
 }
 
 // grantPaths gives the grant paths of the permission of the resource type, sorted by role and hops, each with its
-// ID under the permission's ID, and the roles they grant.
-func grantPaths(schema *declaration.AuthzSchema, resourceType, permission string) ([]ArchGrant, []ArchRole) {
-	e := &grantExpander{schema: schema}
-	e.expand(resourceType, permission, nil, nil, nil, nil, nil)
-	slices.SortFunc(e.paths, func(a, b grantPath) int {
+// ID under the permission's ID, the roles they grant, and whether no limit cut a path short.
+func grantPaths(schema *declaration.AuthzSchema, resourceType, permission string) ([]ArchGrant, []ArchRole, bool) {
+	e := &grantExpander{schema: schema, complete: true}
+	e.expand(resourceType, permission, nil, pathState{})
+	slices.SortStableFunc(e.paths, func(a, b grantPath) int {
 		if c := strings.Compare(roleKey(a.role), roleKey(b.role)); c != 0 {
 			return c
 		}
-		return strings.Compare(strings.Join(a.hops, " "), strings.Join(b.hops, " "))
+		return strings.Compare(strings.Join(a.state.hops, " "), strings.Join(b.state.hops, " "))
 	})
 	grants := make([]ArchGrant, 0, len(e.paths))
 	var roles []ArchRole
 	for i, path := range e.paths {
-		grant := ArchGrant{ID: fmt.Sprintf("grant:%s#%s.%03d", resourceType, permission, i+1), Kinds: path.kinds, Hops: path.hops,
-			Caveat: path.caveat, Requires: path.requires, Except: path.except, Stops: path.stops, Source: schemaSource}
+		kinds := slices.Clone(path.state.kinds)
+		if len(kinds) == 0 {
+			kinds = []string{"direct"}
+		}
+		slices.Sort(kinds)
+		grant := ArchGrant{ID: fmt.Sprintf("grant:%s#%s.%03d", resourceType, permission, i+1), Kinds: slices.Compact(kinds), Hops: path.state.hops,
+			Caveat: strings.Join(path.state.caveats, ", "), Requires: path.state.requires, Except: path.state.except, Stops: path.stops, Source: schemaSource}
 		if path.role != nil {
 			grant.Role = path.role.ID
 			roles = append(roles, *path.role)
 		}
 		grants = append(grants, grant)
 	}
-	return grants, roles
+	return grants, roles, e.complete
 }
 
 // roleKey orders paths by their role; a path with no role, which a recursion or a limit stops, sorts last.
@@ -76,83 +98,121 @@ func roleKey(role *ArchRole) string {
 	return role.ID
 }
 
-// newRole gives the role of a subject type that holds the relation on the resource type.
+// newRole gives the role of a subject type that holds the relation on the resource type, under the caveat and the
+// expiration the relation requires of it; a subject with and without a caveat are two roles.
 func newRole(on, relation string, subject declaration.SchemaSubject) *ArchRole {
 	name := subject.Type
 	if subject.Wildcard {
 		name += ":*"
 	}
+	if subject.Caveat != "" {
+		name += "(" + subject.Caveat + ")"
+	}
+	if subject.Expiration {
+		name += "(expiration)"
+	}
 	return &ArchRole{ID: "role:" + on + "#" + relation + "@" + name, SubjectType: subject.Type, Relation: relation, On: on, Wildcard: subject.Wildcard,
-		Source: schemaSource}
+		Caveat: subject.Caveat, Expiration: subject.Expiration, Source: schemaSource}
 }
 
-// with gives a copy of the list with the items added, so that sibling branches never share a backing array.
-func with(list []string, items ...string) []string {
-	return append(slices.Clip(list), items...)
+// step counts one unit of work, and stops the expansion with a stated work limit at the bound. It tells whether the
+// expansion goes on.
+func (e *grantExpander) step(state pathState) bool {
+	if e.full {
+		return false
+	}
+	e.steps++
+	if e.steps > maxGrantSteps {
+		e.stop(state, fmt.Sprintf("the work limit of %d steps; the rest of the permission is not expanded", maxGrantSteps))
+		return false
+	}
+	return true
 }
 
-// add records one path, with its kinds sorted and given once, and direct when nothing else limits it.
-func (e *grantExpander) add(path grantPath, kinds []string) {
-	if len(e.paths) >= maxGrantPaths {
-		if !e.full {
-			e.full = true
-			e.paths = append(e.paths, grantPath{kinds: []string{"depth limit"}, hops: path.hops,
-				stops: fmt.Sprintf("the expansion stops at %d paths of the permission and does not expand the rest", maxGrantPaths)})
-		}
+// stop ends the expansion with one path that states the limit.
+func (e *grantExpander) stop(state pathState, why string) {
+	e.full, e.complete = true, false
+	state.kinds = with(state.kinds, "work limit")
+	e.paths = append(e.paths, grantPath{state: state, stops: why})
+}
+
+// add records one path, or stops the expansion at the path cap.
+func (e *grantExpander) add(path grantPath) {
+	if e.full {
 		return
 	}
-	kinds = slices.Clone(kinds)
-	if len(kinds) == 0 {
-		kinds = []string{"direct"}
+	if len(e.paths) >= maxGrantPaths {
+		e.stop(path.state, fmt.Sprintf("the path limit of %d paths; the rest of the permission is not expanded", maxGrantPaths))
+		return
 	}
-	slices.Sort(kinds)
-	path.kinds = slices.Compact(kinds)
 	e.paths = append(e.paths, path)
+}
+
+// subjectState gives the state of a path past a subject: its wildcard, caveat and expiration. An expiration makes the
+// grant conditional, as a caveat does.
+func subjectState(state pathState, subject declaration.SchemaSubject) pathState {
+	if subject.Wildcard {
+		state.kinds = with(state.kinds, "wildcard")
+	}
+	if subject.Caveat != "" {
+		state.kinds = with(state.kinds, "caveat")
+		state.caveats = with(state.caveats, subject.Caveat)
+	}
+	if subject.Expiration {
+		state.kinds = with(state.kinds, "expiration")
+	}
+	return state
 }
 
 // expand follows the relation or permission name of the type. stack holds the type#name of each node on the way
 // from the permission, so that a node met again is a recursion.
-func (e *grantExpander) expand(typeName, name string, stack, hops, kinds, requires, except []string) {
+func (e *grantExpander) expand(typeName, name string, stack []string, state pathState) {
 	node := typeName + "#" + name
-	hops = with(hops, node)
-	if slices.Contains(stack, node) {
-		e.add(grantPath{hops: hops, requires: requires, except: except, stops: "recursion: " + node + " grants through itself, and the path is not expanded again"}, with(kinds, "recursion"))
+	state.hops = with(state.hops, node)
+	if !e.step(state) {
 		return
 	}
-	if len(hops) > maxGrantDepth {
-		e.add(grantPath{hops: hops, requires: requires, except: except, stops: fmt.Sprintf("the depth limit of %d hops at %s", maxGrantDepth, node)}, with(kinds, "depth limit"))
+	if slices.Contains(stack, node) {
+		state.kinds = with(state.kinds, "recursion")
+		e.add(grantPath{state: state, stops: "recursion: " + node + " grants through itself, and the path is not expanded again"})
+		return
+	}
+	// The depth counts the nodes of the path; an arrow is a hop of the path but no node.
+	if len(stack) >= maxGrantDepth {
+		// A recursion meets a node whose roles the path already expands; the depth limit can hide roles.
+		e.complete = false
+		state.kinds = with(state.kinds, "depth limit")
+		e.add(grantPath{state: state, stops: fmt.Sprintf("the depth limit of %d nodes at %s", maxGrantDepth, node)})
 		return
 	}
 	stack = with(stack, node)
 	if rewrite, isPermission := e.schema.PermissionRewrite(typeName, name); isPermission {
-		e.rewrite(typeName, rewrite, stack, hops, kinds, requires, except)
+		e.rewrite(typeName, rewrite, stack, state)
 		return
 	}
 	subjects, _ := e.schema.RelationSubjects(typeName, name)
 	for _, subject := range subjects {
-		subjectKinds := kinds
-		if subject.Wildcard {
-			subjectKinds = with(subjectKinds, "wildcard")
+		if e.full {
+			return
 		}
-		if subject.Caveat != "" {
-			subjectKinds = with(subjectKinds, "caveat")
-		}
+		next := subjectState(state, subject)
 		// The schema compiler gives a plain subject type the relation "...".
 		if subject.Relation != "" && subject.Relation != "..." && !subject.Wildcard {
 			// A userset subject such as group#member: the holders of that relation get the relation.
-			e.expand(subject.Type, subject.Relation, stack, hops, with(subjectKinds, "userset"), requires, except)
+			next.kinds = with(next.kinds, "userset")
+			e.expand(subject.Type, subject.Relation, stack, next)
 			continue
 		}
-		e.add(grantPath{role: newRole(typeName, name, subject), hops: hops, caveat: subject.Caveat, requires: requires, except: except}, subjectKinds)
+		e.add(grantPath{role: newRole(typeName, name, subject), state: next})
 	}
 }
 
 // rewrite follows the expression of a permission of the type.
-func (e *grantExpander) rewrite(typeName string, rewrite *core.UsersetRewrite, stack, hops, kinds, requires, except []string) {
+func (e *grantExpander) rewrite(typeName string, rewrite *core.UsersetRewrite, stack []string, state pathState) {
 	switch {
 	case rewrite.GetUnion() != nil:
 		for _, child := range rewrite.GetUnion().GetChild() {
-			e.child(typeName, child, stack, hops, kinds, requires, except)
+			e.child(typeName, child, stack, state)
 		}
 	case rewrite.GetIntersection() != nil:
 		children := rewrite.GetIntersection().GetChild()
@@ -163,7 +223,9 @@ func (e *grantExpander) rewrite(typeName string, rewrite *core.UsersetRewrite, s
 					others = append(others, typeName+"#"+childText(other))
 				}
 			}
-			e.child(typeName, child, stack, hops, with(kinds, "intersection"), with(requires, others...), except)
+			next := state
+			next.kinds, next.requires = with(state.kinds, "intersection"), with(state.requires, others...)
+			e.child(typeName, child, stack, next)
 		}
 	case rewrite.GetExclusion() != nil:
 		children := rewrite.GetExclusion().GetChild()
@@ -174,37 +236,43 @@ func (e *grantExpander) rewrite(typeName string, rewrite *core.UsersetRewrite, s
 		for _, other := range children[1:] {
 			removed = append(removed, typeName+"#"+childText(other))
 		}
-		e.child(typeName, children[0], stack, hops, with(kinds, "exclusion"), requires, with(except, removed...))
+		next := state
+		next.kinds, next.except = with(state.kinds, "exclusion"), with(state.except, removed...)
+		e.child(typeName, children[0], stack, next)
 	}
 }
 
 // child follows one part of an expression.
-func (e *grantExpander) child(typeName string, child *core.SetOperation_Child, stack, hops, kinds, requires, except []string) {
+func (e *grantExpander) child(typeName string, child *core.SetOperation_Child, stack []string, state pathState) {
+	if !e.step(state) {
+		return
+	}
 	switch {
 	case child.GetComputedUserset() != nil:
-		e.expand(typeName, child.GetComputedUserset().GetRelation(), stack, hops, kinds, requires, except)
+		e.expand(typeName, child.GetComputedUserset().GetRelation(), stack, state)
 	case child.GetTupleToUserset() != nil || child.GetFunctionedTupleToUserset() != nil:
 		tupleset, computed := child.GetTupleToUserset().GetTupleset().GetRelation(), child.GetTupleToUserset().GetComputedUserset().GetRelation()
-		arrowKinds := with(kinds, "arrow")
+		next := state
+		next.kinds = with(state.kinds, "arrow")
 		if f := child.GetFunctionedTupleToUserset(); f != nil {
 			tupleset, computed = f.GetTupleset().GetRelation(), f.GetComputedUserset().GetRelation()
 			if f.GetFunction() == core.FunctionedTupleToUserset_FUNCTION_ALL {
 				// all() needs the permission on every parent, as an intersection does.
-				arrowKinds = with(arrowKinds, "intersection")
-				requires = with(requires, typeName+"#"+tupleset+".all("+computed+") on every "+tupleset)
+				next.kinds = with(next.kinds, "intersection")
+				next.requires = with(next.requires, typeName+"#"+tupleset+".all("+computed+") on every "+tupleset)
 			}
 		}
-		arrow := typeName + "#" + tupleset + "->" + computed
+		next.hops = with(next.hops, typeName+"#"+tupleset+"->"+computed)
 		subjects, _ := e.schema.RelationSubjects(typeName, tupleset)
 		for _, subject := range subjects {
-			subjectKinds := arrowKinds
-			if subject.Caveat != "" {
-				subjectKinds = with(subjectKinds, "caveat")
+			if e.full {
+				return
 			}
-			e.expand(subject.Type, computed, stack, with(hops, arrow), subjectKinds, requires, except)
+			// The caveat or expiration of the tupleset subject limits each path through the arrow.
+			e.expand(subject.Type, computed, stack, subjectState(next, subject))
 		}
 	case child.GetUsersetRewrite() != nil:
-		e.rewrite(typeName, child.GetUsersetRewrite(), stack, hops, kinds, requires, except)
+		e.rewrite(typeName, child.GetUsersetRewrite(), stack, state)
 	}
 }
 
