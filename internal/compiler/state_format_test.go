@@ -13,14 +13,14 @@ import (
 )
 
 func TestStateFormatRejectsUnsupportedVersionsBeforeWrites(t *testing.T) {
-	for _, value := range []string{"-1", "6", "999999999999999999999999", "null", "1.0", "true", "\"1\"", "[1]"} {
+	for _, value := range []string{"-1", "7", "999999999999999999999999", "null", "1.0", "true", "\"1\"", "[1]"} {
 		t.Run(value, func(t *testing.T) {
 			if _, err := decodeState([]byte("format_version: "+value+"\n"), "state.yaml"); err == nil {
 				t.Fatal("invalid state version was accepted")
 			}
 		})
 	}
-	for _, version := range []int{-1, 6} {
+	for _, version := range []int{-1, 7} {
 		path := filepath.Join(t.TempDir(), "absent", "state.yaml")
 		if err := SaveState(path, &State{FormatVersion: version}); err == nil {
 			t.Fatal("unsupported state was saved")
@@ -32,7 +32,7 @@ func TestStateFormatRejectsUnsupportedVersionsBeforeWrites(t *testing.T) {
 }
 
 func TestStateFormatLegacyReadAndSave(t *testing.T) {
-	for _, prefix := range []string{"", "format_version: 0\n", "format_version: 1\n", "format_version: 2\n", "format_version: 3\n", "format_version: 4\n", "format_version: 5\n"} {
+	for _, prefix := range []string{"", "format_version: 0\n", "format_version: 1\n", "format_version: 2\n", "format_version: 3\n", "format_version: 4\n", "format_version: 5\n", "format_version: 6\n"} {
 		t.Run(fmt.Sprintf("prefix-%q", prefix), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "state.yaml")
 			original := []byte(prefix + "last_applied:\n  service_hash: original\n  files: {main.go: original}\n")
@@ -66,7 +66,7 @@ func TestStateFormatLegacyReadAndSave(t *testing.T) {
 }
 
 // A record of format version 4 held the data path of its run; the compiler drops the key when it reads the record,
-// whatever its value, and the next save writes format version 5 without it (ST-SUP-RC20-OC39). Any other version
+// whatever its value, and the next save writes format version 6 without it (ST-SUP-RC20-OC39). Any other version
 // with the key is refused as an unknown field.
 func TestStateFormatDropsTheDataPathOfVersion4(t *testing.T) {
 	for _, value := range []string{"runtime", "store"} {
@@ -85,7 +85,7 @@ func TestStateFormatDropsTheDataPathOfVersion4(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if bytes.Contains(saved, []byte("data_path")) || !bytes.Contains(saved, []byte("format_version: 5\n")) || !bytes.Contains(saved, []byte("service_hash: original")) {
+		if bytes.Contains(saved, []byte("data_path")) || !bytes.Contains(saved, []byte("format_version: 6\n")) || !bytes.Contains(saved, []byte("service_hash: original")) {
 			t.Fatalf("the saved record keeps the data path or loses a field:\n%s", saved)
 		}
 	}
@@ -116,7 +116,7 @@ func TestStateFormatUpgradeUsesRecoveryJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := bytes.TrimPrefix(current, []byte("format_version: 5\n"))
+	legacy := bytes.TrimPrefix(current, []byte("format_version: 6\n"))
 	if bytes.Equal(legacy, current) {
 		t.Fatal("new state has no format version")
 	}
@@ -154,7 +154,7 @@ func TestStateFormatUpgradeUsesRecoveryJournal(t *testing.T) {
 }
 
 func TestStateFormatRecoveryPreservesLegacyAndRejectsFutureRecords(t *testing.T) {
-	for _, version := range []int{0, 6} {
+	for _, version := range []int{0, 7} {
 		t.Run(fmt.Sprint(version), func(t *testing.T) {
 			input := transactionInput(t)
 			prepareInterruptedApply(t, input, "prepared")
@@ -172,7 +172,7 @@ func TestStateFormatRecoveryPreservesLegacyAndRejectsFutureRecords(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			data = bytes.Replace(data, []byte("format_version: 5\n"), nil, 1)
+			data = bytes.Replace(data, []byte("format_version: 6\n"), nil, 1)
 			if version != 0 {
 				data = append([]byte(fmt.Sprintf("format_version: %d\n", version)), data...)
 			}

@@ -65,6 +65,10 @@ type Field struct {
 	Read        string
 	Type        types.FieldType
 	Sensitivity string
+	// Pointer tells that the Go type is a pointer to the type that Read gives, nil for a NULL column. Only the
+	// views of the rest-api handlers set it, for an optional field, and no fill reads them (ST-SUP-Q128 (B)); the
+	// values that fills read keep the zero value for NULL.
+	Pointer bool
 }
 
 // Value is the read-only value type of one entity on the runtime data path: its Go type, its table and the columns
@@ -116,7 +120,8 @@ func ValueOf(entity types.Entity) (Value, error) {
 }
 
 // goTypeOf gives the Go type of a declared field and its read kind. A NULL column reads as the zero value, so no
-// field is a pointer.
+// field of the values that fills read is a pointer; the views of the rest-api handlers make an optional field one
+// (Field.Pointer).
 func goTypeOf(f types.Field) (string, string, error) {
 	switch f.Type {
 	case types.FieldTypeString, types.FieldTypeEnum, types.FieldTypeRef:

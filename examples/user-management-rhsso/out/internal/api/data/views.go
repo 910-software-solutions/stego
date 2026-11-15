@@ -13,7 +13,7 @@ import (
 type OrganizationView struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
-	Description string    `json:"description"`
+	Description *string   `json:"description"`
 	CreatedTime time.Time `json:"created_time"`
 	UpdatedTime time.Time `json:"updated_time"`
 }
@@ -31,7 +31,7 @@ func loadOrganizationView(r query.Row) (OrganizationView, error) {
 	if v.Name, err = r.Text("name"); err != nil {
 		return OrganizationView{}, err
 	}
-	if v.Description, err = r.Text("description"); err != nil {
+	if v.Description, err = optional(r, "description", r.Text); err != nil {
 		return OrganizationView{}, err
 	}
 	if v.CreatedTime, err = r.Time("created_time"); err != nil {
@@ -169,6 +169,19 @@ func LoadOrgSettingView(r query.Row) (OrgSettingView, error) { return loadOrgSet
 
 // EntityOrgSettingView is the declaration of OrgSetting that the fills' repositories read through, with its read permission.
 func EntityOrgSettingView() *query.Entity[OrgSettingView] { return orgSettingViewEntity }
+
+// optional gives nil for a NULL column, else a pointer to the value that read gives, so a view tells an unset
+// optional field from its zero value (ST-SUP-Q128 (B)).
+func optional[T any](r query.Row, column string, read func(string) (T, error)) (*T, error) {
+	if v, ok := r.Value(column); ok && v == nil {
+		return nil, nil
+	}
+	x, err := read(column)
+	if err != nil {
+		return nil, err
+	}
+	return &x, nil
+}
 
 // must gives v, and panics on a declaration that the runtime refuses, which the generator's checks rule out.
 func must[T any](v T, err error) T {

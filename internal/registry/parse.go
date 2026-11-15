@@ -1,6 +1,14 @@
 package registry
 
-import "github.com/jsell-rh/stego/internal/parser"
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/jsell-rh/stego/internal/parser"
+)
 
 // ParseArchetype reads and parses an archetype YAML file.
 func ParseArchetype(path string) (*Archetype, error) {
@@ -9,7 +17,11 @@ func ParseArchetype(path string) (*Archetype, error) {
 
 // ParseComponent reads and parses a component YAML file.
 func ParseComponent(path string) (*Component, error) {
-	return parser.ReadKind(path, "component", componentKind)
+	data, err := parser.ReadDocument(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseComponentFromBytes(data, path)
 }
 
 // ParseMixin reads and parses a mixin YAML file.
@@ -22,9 +34,179 @@ func ParseArchetypeFromBytes(data []byte, path string) (*Archetype, error) {
 	return parser.ParseKind(data, path, "archetype", archetypeKind)
 }
 
-// ParseComponentFromBytes parses one captured registry document.
+// ParseComponentFromBytes parses one captured registry document. It decodes the document strictly, and it refuses
+// a need with a field that its kind does not have, naming the component, the need and the field, so that an
+// environment value has no place to go (ST-DLV-INV02, ST-DLV-Q04 (A)).
 func ParseComponentFromBytes(data []byte, path string) (*Component, error) {
-	return parser.ParseKind(data, path, "component", componentKind)
+	var component Component
+	undeclared, err := parser.DecodeCollecting(data, path, &component)
+	if err != nil {
+		return nil, err
+	}
+	if len(undeclared) > 0 {
+		first := undeclared[0]
+		var index int
+		var rest string
+		if n, _ := fmt.Sscanf(first.Path, "needs[%d]", &index); n == 1 && index >= 0 && index < len(component.Needs) {
+			if _, rest, _ = strings.Cut(first.Path, "]."); rest != "" && !strings.Contains(rest, ".") {
+				need := component.Needs[index]
+				return nil, &NeedError{Component: component.Name, Need: need.Name, Field: rest,
+					Reason: fmt.Sprintf("a %s need has no field %s; a need holds only its kind, its name and the shape of its kind, and never a value of an environment such as a secret value, a host name, an address or a namespace", kindWord(need.Kind), rest)}
+			}
+		}
+		return nil, parser.UndeclaredError(data, path, first)
+	}
+	if component.Kind == "" {
+		return nil, &parser.ParseError{Path: path, Err: fmt.Errorf("missing required field: kind")}
+	}
+	if component.Kind != "component" {
+		return nil, &parser.ParseError{Path: path, Err: fmt.Errorf("expected kind %q, got %q", "component", component.Kind)}
+	}
+	if err := checkNeeds(&component); err != nil {
+		return nil, err
+	}
+	return &component, nil
+}
+
+// NeedError is a need of a component that the registry refuses: the component, the need as the component states
+// it, the field at fault and why.
+type NeedError struct {
+	Component string
+	Need      string
+	Field     string
+	Reason    string
+}
+
+func (e *NeedError) Error() string {
+	return fmt.Sprintf("component %s: need %s: field %s: %s", e.Component, e.Need, e.Field, e.Reason)
+}
+
+// NeedKinds are the nine kinds of ST-VO53 that a need may have, in the order of the platform requirements.
+var NeedKinds = []string{"secret", "configuration", "backing store", "topic", "identity issuer", "ingress", "egress", "cluster permission", "pod security"}
+
+// needShapes gives the shape fields of each kind of need: the fields beside kind and name that a need of the kind
+// must give. A cluster permission may also give api_group, which is "" for the core API group.
+var needShapes = map[string][]string{
+	"secret": {"keys"}, "configuration": nil, "backing store": {"engine"}, "topic": nil, "identity issuer": nil,
+	"ingress": {"port"}, "egress": {"port"}, "cluster permission": {"resource", "verbs"}, "pod security": {"level"},
+}
+
+// clusterVerbs are the verbs a cluster permission may name.
+var clusterVerbs = []string{"get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"}
+
+var (
+	// needWord is fixed text of a need name, a secret key or a backing store engine: letters, digits, '-' and
+	// '_', so that it cannot hold a host name, an address or a path.
+	needWord = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	// needPlaceholder is one placeholder of a need name.
+	needPlaceholder = regexp.MustCompile(`\{[^{}]*\}`)
+	// apiGroup is a Kubernetes API group, such as apps or rbac.authorization.k8s.io.
+	apiGroup = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)?$`)
+	// apiResource is a Kubernetes resource, such as configmaps.
+	apiResource = regexp.MustCompile(`^[a-z][a-z0-9]*(/[a-z]+)?$`)
+)
+
+// maxNeedWord bounds a need name, a key, an engine and a resource.
+const maxNeedWord = 63
+
+// kindWord gives the kind of a need for a message.
+func kindWord(kind string) string {
+	if slices.Contains(NeedKinds, kind) {
+		return kind
+	}
+	return strconv.Quote(kind)
+}
+
+// checkNeeds holds each need of a component to its kind's shape (ST-SUP-EN09 field Platform needs): a known kind,
+// a name of fixed text and placeholders, each shape field of the kind and no field of another kind.
+func checkNeeds(component *Component) error {
+	seen := map[string]bool{}
+	for _, need := range component.Needs {
+		fault := func(field, format string, args ...any) error {
+			return &NeedError{Component: component.Name, Need: need.Name, Field: field, Reason: fmt.Sprintf(format, args...)}
+		}
+		shape, known := needShapes[need.Kind]
+		if !known {
+			return fault("kind", "the kind %s is not one of %s", kindWord(need.Kind), strings.Join(NeedKinds, ", "))
+		}
+		if err := checkNeedName(component, need.Name); err != nil {
+			return fault("name", "%s", err)
+		}
+		if seen[need.Name] {
+			return fault("name", "the component states the need twice")
+		}
+		seen[need.Name] = true
+		given := map[string]bool{"keys": len(need.Keys) > 0, "engine": need.Engine != "", "port": need.Port != 0,
+			"api_group": need.APIGroup != "", "resource": need.Resource != "", "verbs": len(need.Verbs) > 0, "level": need.Level != ""}
+		for _, field := range []string{"keys", "engine", "port", "api_group", "resource", "verbs", "level"} {
+			ofKind := slices.Contains(shape, field) || (field == "api_group" && need.Kind == "cluster permission")
+			if given[field] && !ofKind {
+				return fault(field, "a %s need has no field %s", need.Kind, field)
+			}
+			if !given[field] && slices.Contains(shape, field) {
+				return fault(field, "a %s need must give %s", need.Kind, field)
+			}
+		}
+		for i, key := range need.Keys {
+			if len(key) > maxNeedWord || !needWord.MatchString(key) {
+				return fault("keys", "the key %q is not a key name of at most %d letters, digits, '-' or '_'", key, maxNeedWord)
+			}
+			if slices.Contains(need.Keys[:i], key) {
+				return fault("keys", "the key %s is stated twice", key)
+			}
+		}
+		if need.Engine != "" && (len(need.Engine) > maxNeedWord || !needWord.MatchString(need.Engine)) {
+			return fault("engine", "the engine %q is not an engine name of at most %d letters, digits, '-' or '_'", need.Engine, maxNeedWord)
+		}
+		if need.Port != 0 && (need.Port < 1 || need.Port > 65535) {
+			return fault("port", "the port %d is not a port number from 1 to 65535", need.Port)
+		}
+		if len(need.APIGroup) > 253 || !apiGroup.MatchString(need.APIGroup) {
+			return fault("api_group", "the API group %q is not a Kubernetes API group", need.APIGroup)
+		}
+		if need.Resource != "" && (len(need.Resource) > maxNeedWord || !apiResource.MatchString(need.Resource)) {
+			return fault("resource", "the resource %q is not a Kubernetes resource name", need.Resource)
+		}
+		for i, verb := range need.Verbs {
+			if !slices.Contains(clusterVerbs, verb) {
+				return fault("verbs", "the verb %q is not one of %s", verb, strings.Join(clusterVerbs, ", "))
+			}
+			if slices.Contains(need.Verbs[:i], verb) {
+				return fault("verbs", "the verb %s is stated twice", verb)
+			}
+		}
+		if need.Level != "" && !slices.Contains([]string{"privileged", "baseline", "restricted"}, need.Level) {
+			return fault("level", "the level %q is not one of privileged, baseline, restricted", need.Level)
+		}
+	}
+	return nil
+}
+
+// checkNeedName holds a need name to fixed text and the placeholders {service} and {settings.<key>}, where key is a
+// setting of the component (ST-DLV-Q04 (A)).
+func checkNeedName(component *Component, name string) error {
+	if name == "" {
+		return fmt.Errorf("a need must give its name")
+	}
+	if len(name) > 4*maxNeedWord {
+		return fmt.Errorf("the name is longer than %d characters", 4*maxNeedWord)
+	}
+	for _, placeholder := range needPlaceholder.FindAllString(name, -1) {
+		inner := strings.Trim(placeholder, "{}")
+		if inner == "service" {
+			continue
+		}
+		key, isSetting := strings.CutPrefix(inner, "settings.")
+		if _, declared := component.Config[key]; !isSetting || !declared {
+			return fmt.Errorf("the placeholder %s is not {service} or {settings.<key>} of a setting of the component", placeholder)
+		}
+	}
+	for _, text := range needPlaceholder.Split(name, -1) {
+		if text != "" && !needWord.MatchString(text) {
+			return fmt.Errorf("the fixed text %q of the name holds a character other than a letter, a digit, '-' or '_'", text)
+		}
+	}
+	return nil
 }
 
 // ParseMixinFromBytes parses one captured registry document.
@@ -33,7 +215,5 @@ func ParseMixinFromBytes(data []byte, path string) (*Mixin, error) {
 }
 
 func archetypeKind(a *Archetype) string { return a.Kind }
-
-func componentKind(c *Component) string { return c.Kind }
 
 func mixinKind(m *Mixin) string { return m.Kind }

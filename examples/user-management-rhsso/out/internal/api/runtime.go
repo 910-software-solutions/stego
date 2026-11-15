@@ -389,6 +389,15 @@ func callerName(ctx context.Context) string {
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
 
+// float32Of gives the API value of an optional float field of a view: nil for NULL.
+func float32Of(v *float64) *float32 {
+	if v == nil {
+		return nil
+	}
+	f := float32(*v)
+	return &f
+}
+
 // remoteIP is the host part of a remote address.
 func remoteIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)

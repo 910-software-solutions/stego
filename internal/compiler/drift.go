@@ -100,6 +100,23 @@ func DetectDrift(projectDir, outDir string) (*DriftResult, error) {
 		}
 	}
 
+	// The generated files of the project folder, such as the platform requirements, drift as the generated output
+	// does (ST-DLV-UC01-R05).
+	for _, path := range sortedKeys(state.LastApplied.ProjectFiles) {
+		if !isProjectGeneratedFile(path) {
+			return nil, fmt.Errorf("the record names %s as a generated file of the project folder, which it is not", path)
+		}
+		_, snapshot, err := readSnapshot(root, path, maxTrackedFileBytes, false)
+		if err != nil {
+			return nil, err
+		}
+		if !snapshot.Exists {
+			result.Deleted = append(result.Deleted, DriftedFile{Path: path})
+		} else if snapshot.Hash != state.LastApplied.ProjectFiles[path] {
+			result.Modified = append(result.Modified, DriftedFile{Path: path})
+		}
+	}
+
 	// Compare recorded source inputs (service declaration, generator inputs,
 	// module file) against disk. A changed input means the outputs no longer
 	// reflect the sources; only a new apply restores agreement.

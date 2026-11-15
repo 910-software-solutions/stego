@@ -68,11 +68,40 @@ type runtimeCollection struct {
 	// scope is the field of the parent of a scoped collection, whose value is the path parameter of the same name,
 	// and empty for a collection with no parent (ST-SUP-RC20-OC24).
 	scope string
+	// chain are the ancestors of a scoped collection, the parent first: each one is a row that the path names, which
+	// must exist in the tenant, be readable by the caller and be of the next ancestor of the path (ST-SUP-RC20-OC24).
+	chain []ancestorLevel
 	// implicit are the implicit fields of the collection and their values, by field name (ST-SUP-RC20-OC23).
 	implicit [][2]string
 	// refs are the ref fields of the entity whose target has a resource type: a write that sets one loads the row it
 	// names, on which the command runtime decides the reference (ST-SUP-RP10-LC05).
 	refs []types.Field
+}
+
+// ancestorLevel is one ancestor of the parent chain of a scoped collection: the entity of the row that the path
+// parameter param names, and link, the field of that row that names the next ancestor, or empty for the top
+// ancestor.
+type ancestorLevel struct {
+	entity, param, link string
+}
+
+// parentChain gives the ancestors of the collection c, the parent first. Each ancestor follows the first collection
+// of its entity, as the path does (collectionBasePath): its scope field links it to the ancestor above it.
+func parentChain(c types.Collection, collectionMap map[string]types.Collection) []ancestorLevel {
+	var chain []ancestorLevel
+	seen := map[string]bool{c.Entity: true}
+	param, entity := c.ScopeField(), c.ParentEntity()
+	for entity != "" && !seen[entity] {
+		seen[entity] = true
+		level := ancestorLevel{entity: entity, param: param}
+		next := ""
+		if parent, ok := collectionMap[entity]; ok && len(parent.Scope) > 0 {
+			level.link, next = parent.ScopeField(), parent.ParentEntity()
+		}
+		chain = append(chain, level)
+		param, entity = level.link, next
+	}
+	return chain
 }
 
 // permission gives the permission that the operation decides, and empty for a public operation.
@@ -90,6 +119,10 @@ func (c *runtimeCollection) hrefExpr(v string) string {
 	base := c.hrefBase
 	if c.scope != "" {
 		base = strings.Replace(base, "{"+c.scope+"}", "\"+"+v+"."+toPascalCase(c.scope)+"+\"", 1)
+	}
+	// An ancestor above the parent is not a field of v: the path named it, and the parent chain check holds it.
+	for i := 1; i < len(c.chain); i++ {
+		base = strings.Replace(base, "{"+c.chain[i].param+"}", fmt.Sprintf("\"+chain[%d]+\"", i), 1)
 	}
 	return fmt.Sprintf("\"%s\" + \"/\" + %s.ID", base, v)
 }
@@ -224,9 +257,10 @@ func validateRuntimeData(ctx gen.Context, entities map[string]types.Entity) erro
 }
 
 // validateRuntimeScope refuses the forms of a scoped collection, of implicit fields and of a path prefix that the
-// handlers on the runtime data path do not serve: a scope of more than one field or more than one level, a scope
-// field that is not a required ref to the parent or that a patch may change, an implicit field that is not a text
-// or enum field, and a path parameter that is not the scope field (ST-SUP-RC20-OC23, ST-SUP-RC20-OC24).
+// handlers on the runtime data path do not serve: a scope of more than one field, a scope field that is not a
+// required ref to the parent or that a patch may change, an implicit field that is not a text or enum field, and a
+// path parameter that is not a scope field of the parent chain, or the scope fields of the chain out of order
+// (ST-SUP-RC20-OC23, ST-SUP-RC20-OC24).
 func validateRuntimeScope(ctx gen.Context, c types.Collection, e types.Entity, entities map[string]types.Entity) error {
 	field := func(name string) (types.Field, bool) {
 		for _, f := range e.Fields {
@@ -266,17 +300,26 @@ func validateRuntimeScope(ctx gen.Context, c types.Collection, e types.Entity, e
 			collectionMap[other.Entity] = other
 		}
 	}
-	if parent, ok := collectionMap[c.ParentEntity()]; ok && scope != "" && len(parent.Scope) > 0 {
-		return fmt.Errorf("rest-api: collection %s is scoped under the scoped collection %s, and the runtime data path serves one level of scope", c.Name, parent.Name)
-	}
+	// A collection under a scoped collection is served at each level: the path names every ancestor, and the
+	// handler checks the chain of them (ST-SUP-RC20-OC24).
 	base, err := collectionBasePath(c, collectionMap)
 	if err != nil {
 		return err
 	}
-	for _, param := range extractPathParams(base) {
-		if param != scope {
-			return fmt.Errorf("rest-api: collection %s has the path parameter %s, which is not its scope field; the runtime data path checks only the scope field", c.Name, param)
+	chain := parentChain(c, collectionMap)
+	var want []string
+	for i := len(chain) - 1; i >= 0; i-- {
+		want = append(want, chain[i].param)
+	}
+	// A parameter named twice or named id is refused with the route patterns (validateHTTPRoutePatterns).
+	params := extractPathParams(base)
+	if !slices.Equal(params, want) {
+		for _, param := range params {
+			if !slices.Contains(want, param) {
+				return fmt.Errorf("rest-api: collection %s has the path parameter %s, which is not a scope field of its parent chain; the runtime data path checks only the scope fields of the chain", c.Name, param)
+			}
 		}
+		return fmt.Errorf("rest-api: collection %s has the path parameters %s, and its parent chain needs %s in that order", c.Name, strings.Join(params, ", "), strings.Join(want, ", "))
 	}
 	return nil
 }
@@ -380,6 +423,7 @@ func runtimeCollections(ctx gen.Context, entities map[string]types.Entity, colle
 			rc.ops[op] = true
 		}
 		rc.scope = c.ScopeField()
+		rc.chain = parentChain(c, collectionMap)
 		for _, name := range slices.Sorted(maps.Keys(c.Implicit)) {
 			rc.implicit = append(rc.implicit, [2]string{name, c.Implicit[name]})
 		}
@@ -941,6 +985,15 @@ func callerName(ctx context.Context) string {
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
 
+// float32Of gives the API value of an optional float field of a view: nil for NULL.
+func float32Of(v *float64) *float32 {
+	if v == nil {
+		return nil
+	}
+	f := float32(*v)
+	return &f
+}
+
 // remoteIP is the host part of a remote address.
 func remoteIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
@@ -1026,8 +1079,7 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	hasBody := c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpPatch] || c.ops[types.OpUpsert]
 	needTime, needFmt := false, false
 	for _, f := range e.Fields {
-		// An optional timestamp that a read can answer needs the conversion of its view value (viewTime).
-		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret" || f.Optional) {
+		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret") {
 			needTime = true
 		}
 	}
@@ -1144,14 +1196,20 @@ func (w *runtimeHandlerWriter) declarations() {
 	for _, op := range c.decl.Operations {
 		switch op {
 		case types.OpRead:
-			w.f("// %s is the query of a read of %s (ST-SUP-RP11).\nvar %s = mustQuery(query.NewQuery(%q, data.Entity%sView()))\n\n", w.commandVar(op), c.decl.Name, w.commandVar(op), string(op), e.Name)
+			w.f("// %s is the query of a read of %s (ST-SUP-RP11).\nvar %s = mustQuery(query.NewQuery(%q, data.Entity%sView()%s))\n\n", w.commandVar(op), c.decl.Name, w.commandVar(op), string(op), e.Name, w.ancestorViews())
 		case types.OpList:
-			w.f("// %s is the query of a list of %s, on the list permission of %s (ST-SUP-RP11-LC07).\nvar %s = mustQuery(query.NewListQuery(%q, data.Entity%sView(), %q))\n\n", w.commandVar(op), c.decl.Name, e.Name, w.commandVar(op), string(op), e.Name, e.Permissions[types.OpList])
+			w.f("// %s is the query of a list of %s, on the list permission of %s (ST-SUP-RP11-LC07).\nvar %s = mustQuery(query.NewListQuery(%q, data.Entity%sView(), %q%s))\n\n", w.commandVar(op), c.decl.Name, e.Name, w.commandVar(op), string(op), e.Name, e.Permissions[types.OpList], w.ancestorViews())
 		default:
 			w.f("// %s is the generated command of a %s of %s (ST-SUP-RC20-OC37).\n", w.commandVar(op), op, c.decl.Name)
 			writes := []string{"data." + e.Name + "Entity"}
 			for _, f := range c.refs {
 				if name := "data." + f.To + "Entity"; op != types.OpDelete && !slices.Contains(writes, name) {
+					writes = append(writes, name)
+				}
+			}
+			// The fill reads each ancestor of the path through the handle (ST-SUP-RC20-OC24).
+			for _, level := range c.chain {
+				if name := "data." + level.entity + "Entity"; !slices.Contains(writes, name) {
 					writes = append(writes, name)
 				}
 			}
@@ -1209,6 +1267,16 @@ func (w *runtimeHandlerWriter) declarations() {
 	}
 }
 
+// ancestorViews gives the views of the ancestors of the path, which a query of the collection reads too
+// (ST-SUP-RC20-OC24), each after a comma.
+func (w *runtimeHandlerWriter) ancestorViews() string {
+	var views string
+	for _, level := range w.c.chain {
+		views += ", data.Entity" + level.entity + "View()"
+	}
+	return views
+}
+
 // fingerprintFields are the body fields that the client gives for an operation: for patch the patchable fields, and
 // for create the entity's fields that are not server-managed.
 func (w *runtimeHandlerWriter) fingerprintFields(op types.Operation) []string {
@@ -1254,21 +1322,26 @@ func (w *runtimeHandlerWriter) helpers() {
 		if f.Type == types.FieldTypeFloat {
 			expr = "float32(" + expr + ")"
 		}
+		// The view holds an optional field as a pointer, nil for NULL, except a jsonb or bytes field, which is
+		// nil for NULL as it is (ST-SUP-Q128 (B)).
 		switch {
 		case f.Optional && f.Type == types.FieldTypeJsonb:
 			expr = c.camel + "JSON(" + expr + ")"
-		case f.Optional && f.Type == types.FieldTypeTimestamp:
-			expr = c.camel + "Time(" + expr + ")"
-		case f.Optional:
+		case f.Optional && f.Type == types.FieldTypeFloat:
+			expr = "float32Of(v." + name + ")"
+		case f.Optional && f.Type == types.FieldTypeBytes:
 			expr = "ptrOf(" + expr + ")"
 		}
 		w.f(", %s: %s", name, expr)
 	}
 	w.f("}\n}\n\n")
-	w.viewTime()
 	w.converters()
 	w.f("// %sPresented gives the response value of one %s: its secret fields are cleared, so no response and no stored\n// response holds them.\n", c.camel, e.Name)
-	w.f("func %sPresented(v %s) any {\n", c.camel, e.Name)
+	if len(c.chain) > 1 {
+		w.f("func %sPresented(v %s, chain [%d]string) any {\n", c.camel, e.Name, len(c.chain))
+	} else {
+		w.f("func %sPresented(v %s) any {\n", c.camel, e.Name)
+	}
 	// A timestamp is answered in UTC, whatever offset the database driver gave it.
 	for _, f := range e.Fields {
 		if f.Type != types.FieldTypeTimestamp || f.Sensitivity == "secret" {
@@ -1432,19 +1505,6 @@ func (w *runtimeHandlerWriter) fromData(expr string) string {
 // converters writes, for an entity with a jsonb field, the field by field conversions between the API value and the
 // command runtime's row value. An optional jsonb field that is not set is nil in both, so it is NULL in its column
 // and absent from a response.
-// viewTime writes the conversion of the view value of an optional timestamp to its API value, when the entity has one
-// that a read answers: the view reads NULL as the zero time, which is answered as no value, so the field is absent
-// from the answer as the API schema allows, and not "0001-01-01T00:00:00Z" (finding G2 of the walkthrough re-run).
-func (w *runtimeHandlerWriter) viewTime() {
-	for _, f := range w.c.entity.Fields {
-		if f.Type == types.FieldTypeTimestamp && f.Optional && f.Sensitivity != "secret" {
-			w.f("// %sTime gives the API value of an optional timestamp of a read-only %s: nil when the column is NULL, which the\n// view reads as the zero time.\n", w.c.camel, w.c.entity.Name)
-			w.f("func %sTime(v time.Time) *time.Time {\n\tif v.IsZero() {\n\t\treturn nil\n\t}\n\treturn &v\n}\n\n", w.c.camel)
-			return
-		}
-	}
-}
-
 func (w *runtimeHandlerWriter) converters() {
 	if !w.hasJSON() {
 		return
@@ -1782,15 +1842,65 @@ func (w *runtimeHandlerWriter) start(body bool) {
 	if w.c.scope != "" {
 		// The parent of a scoped collection is the path parameter of its scope field (ST-SUP-RC20-OC24).
 		w.f("\tscope := canonicalID(r.PathValue(%q))\n\tif !command.ValidUUID(scope) {\n\t\thandleError(w, r, NotFound(%q, scope))\n\t\treturn\n\t}\n", w.c.scope, w.c.decl.ParentEntity())
+		// Each ancestor above the parent is a path parameter too, the parent first in chain (ST-SUP-RC20-OC24).
+		w.f("\tchain := [%d]string{scope", len(w.c.chain))
+		for _, level := range w.c.chain[1:] {
+			w.f(", canonicalID(r.PathValue(%q))", level.param)
+		}
+		w.f("}\n")
+		for i, level := range w.c.chain[1:] {
+			w.f("\tif !command.ValidUUID(chain[%d]) {\n\t\thandleError(w, r, NotFound(%q, chain[%d]))\n\t\treturn\n\t}\n", i+1, level.entity, i+1)
+		}
 	}
 	if body {
 		w.f("\tbody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body cannot be read\"))\n\t\treturn\n\t}\n")
 	}
 }
 
+// ancestors writes the parent chain check at the start of a fill: each ancestor that the path names is read in the
+// tenant, which decides the read permission that its entity declares, and must name the next ancestor of the path.
+// A missing, denied or wrong ancestor is not found, so a caller learns nothing of a row of another parent or tenant
+// (ST-SUP-RC20-OC24). In a query (inQuery) the rows are read through the query handle qh, and in a command through
+// the command handle ch; zero is the zero value that the fill returns with an error.
+func (w *runtimeHandlerWriter) ancestors(inQuery bool, zero string) {
+	if len(w.c.chain) == 0 {
+		return
+	}
+	notFound := "command.ErrNotFound"
+	if inQuery {
+		notFound = "query.ErrNotFound"
+	}
+	w.f("\t\t// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of\n\t\t// the ancestor above it (ST-SUP-RC20-OC24).\n")
+	for i, level := range w.c.chain {
+		w.f("\t\t{\n")
+		if inQuery {
+			w.f("\t\t\tancestors, err := query.Repo(qh, data.Entity%sView())\n", level.entity)
+		} else {
+			w.f("\t\t\tancestors, err := data.%sRepository(ch)\n", level.entity)
+		}
+		w.f("\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", zero)
+		w.f("\t\t\tancestor, err := ancestors.Get(ctx, chain[%d])\n\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", i, zero)
+		if level.link != "" {
+			w.f("\t\t\tif ancestor.Value().%s != chain[%d] {\n\t\t\t\treturn %s, %s\n\t\t\t}\n", toPascalCase(level.link), i+1, zero, notFound)
+		} else {
+			w.f("\t\t\t_ = ancestor\n")
+		}
+		w.f("\t\t}\n")
+	}
+}
+
+// presentedArgs gives the arguments of the call of Presented on the value v: v, and the chain of a collection whose
+// href names an ancestor above the parent.
+func (w *runtimeHandlerWriter) presentedArgs(v string) string {
+	if len(w.c.chain) > 1 {
+		return v + ", chain"
+	}
+	return v
+}
+
 // respond writes the response of a fill.
 func (w *runtimeHandlerWriter) respond(status, value string) {
-	w.f("\t\tresponse, err := json.Marshal(%sPresented(%s))\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.c.camel, value)
+	w.f("\t\tresponse, err := json.Marshal(%sPresented(%s))\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.c.camel, w.presentedArgs(value))
 	w.f("\t\treturn jsonResponse(%s, response), nil\n", status)
 }
 
@@ -1812,6 +1922,7 @@ func (w *runtimeHandlerWriter) create() {
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, \"\")\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpCreate), c.pascal, c.lower, e.Name)
+	w.ancestors(false, "idempotency.Response{}")
 	if w.envelope {
 		w.f("\t\tid, err := uuid.NewV7()\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n\t\t%s.ID = id.String()\n", c.lower)
 	} else {
@@ -1842,6 +1953,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpdate), c.pascal, c.lower, e.Name)
+	w.ancestors(false, "idempotency.Response{}")
 	w.lockRow()
 	w.f("\t\t%s.ID = id\n", c.lower)
 	w.populateUpdate()
@@ -1867,6 +1979,19 @@ func (w *runtimeHandlerWriter) storedValue(name string) string {
 		}
 	}
 	return "stored." + toPascalCase(name)
+}
+
+// viewDiffers gives the condition that the implicit field name of the loaded view does not hold value. The view
+// holds an optional field as a pointer, nil for a NULL column (ST-SUP-Q128 (B)), and a NULL is another value: the
+// row is not found in the collection.
+func (w *runtimeHandlerWriter) viewDiffers(name, value string) string {
+	field := "view." + toPascalCase(name)
+	for _, f := range w.c.entity.Fields {
+		if f.Name == name && f.Optional {
+			return fmt.Sprintf("(%s == nil || *%s != %q)", field, field, value)
+		}
+	}
+	return fmt.Sprintf("%s != %q", field, value)
 }
 
 // forceScope writes the server values of the scope field and the implicit fields of a written value: the scope
@@ -1935,6 +2060,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	}
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpsert), c.pascal, c.lower, e.Name)
+	w.ancestors(false, "idempotency.Response{}")
 	// The before slots decide the requested value before the lookup, on both branches (ST-SUP-RC20-OC13). They see
 	// no server-managed field: the branch is not known yet, so a create-time value would be wrong on the update
 	// branch, and a client value is never taken (ST-SUP-RC20-OC17).
@@ -2040,6 +2166,7 @@ func (w *runtimeHandlerWriter) patch() {
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%sPatch, func(ctx context.Context, patch %sPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpPatch), c.pascal, c.pascal)
+	w.ancestors(false, "idempotency.Response{}")
 	w.lockRow()
 	w.f("\t\t%s := stored\n", c.lower)
 	w.before(types.OpPatch, fields)
@@ -2079,6 +2206,7 @@ func (w *runtimeHandlerWriter) remove() {
 	w.f("\trequestID := command.NewID()\n\tfingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, nil)\n\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)\n")
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpDelete))
+	w.ancestors(false, "idempotency.Response{}")
 	w.lockRow()
 	w.before(types.OpDelete, nil)
 	w.f("\t\tif err := repo.Delete(ctx, from); err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n")
@@ -2100,23 +2228,24 @@ func (w *runtimeHandlerWriter) read() {
 	// opens its transaction, as a list does, so a read right after a share sees it (ST-SUP-RC20-OC42, ST-SUP-Q119).
 	w.awaitWrite()
 	w.f("\tvalue, err := query.Run(r.Context(), h.rt.Queries, %s, h.rt.boundQuery(r.Context(), b, %s), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (%s, error) {\n", q, q, e.Name)
+	w.ancestors(true, e.Name+"{}")
 	w.f("\t\trepo, err := query.Repo(qh, data.Entity%sView())\n\t\tif err != nil {\n\t\t\treturn %s{}, err\n\t\t}\n", e.Name, e.Name)
 	w.f("\t\tloaded, err := repo.Get(ctx, id)\n\t\tif err != nil {\n\t\t\treturn %s{}, err\n\t\t}\n", e.Name)
 	// A row of another parent, or with other implicit values, is not found in this collection (ST-SUP-RC20-OC23,
 	// ST-SUP-RC20-OC24).
 	var checks []string
 	if c.scope != "" {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != scope", toPascalCase(c.scope)))
+		checks = append(checks, fmt.Sprintf("view.%s != scope", toPascalCase(c.scope)))
 	}
 	for _, kv := range c.implicit {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != %q", toPascalCase(kv[0]), kv[1]))
+		checks = append(checks, w.viewDiffers(kv[0], kv[1]))
 	}
 	if len(checks) > 0 {
-		w.f("\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
+		w.f("\t\tview := loaded.Value()\n\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
 	}
 	w.f("\t\treturn %sFromView(loaded.Value()), nil\n\t})\n", c.camel)
 	w.f("\tif err != nil {\n\t\tanswerRead(w, r, %q, id, err)\n\t\treturn\n\t}\n", e.Name)
-	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t_ = json.NewEncoder(w).Encode(%sPresented(value))\n}\n\n", c.camel)
+	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t_ = json.NewEncoder(w).Encode(%sPresented(%s))\n}\n\n", c.camel, w.presentedArgs("value"))
 }
 
 // awaitWrite emits the call of AwaitWrite of a read or a list (ST-SUP-RP11-LC21): a value that is not the identity
@@ -2176,13 +2305,19 @@ func (w *runtimeHandlerWriter) list() {
 	// opens its transaction, so it shows the write (ST-SUP-RC20-OC41, ST-SUP-RP11-LC21, ST-SUP-Q119).
 	w.awaitWrite()
 	w.f("\tpage, err := query.Run(r.Context(), h.rt.Queries, %s, h.rt.boundQuery(r.Context(), b, %s), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (%sPage, error) {\n", q, q, c.camel)
+	w.ancestors(true, c.camel+"Page{}")
 	w.f("\t\trepo, err := query.Repo(qh, data.Entity%sView())\n\t\tif err != nil {\n\t\t\treturn %sPage{}, err\n\t\t}\n", e.Name, c.camel)
 	w.f("\t\tresult, err := repo.List(ctx, request)\n\t\tif err != nil {\n\t\t\treturn %sPage{}, err\n\t\t}\n", c.camel)
 	w.f("\t\tpage := %sPage{next: result.Next, more: result.More}\n\t\tfor _, item := range result.Items {\n\t\t\tpage.items = append(page.items, %sFromView(item.Value()))\n\t\t}\n\t\treturn page, nil\n\t})\n", c.camel, c.camel)
 	w.f("\tif isBadCursor(err) {\n\t\thandleError(w, r, BadRequest(\"the cursor is not valid\"))\n\t\treturn\n\t}\n")
+	if len(c.chain) > 0 {
+		// A parent chain that the check refuses is 404 with the parent of the path, the same for an ancestor that is
+		// not there, that the caller may not read and that is of another ancestor (ST-SUP-RC20-OC24).
+		w.f("\tif errors.Is(err, query.ErrNotFound) {\n\t\thandleError(w, r, NotFound(%q, scope))\n\t\treturn\n\t}\n", c.decl.ParentEntity())
+	}
 	w.f("\tif errors.Is(err, query.ErrBadRequest) {\n\t\thandleError(w, r, BadRequest(\"the list request is not valid\"))\n\t\treturn\n\t}\n")
 	w.f("\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
-	w.f("\titems := make([]any, 0, len(page.items))\n\tfor _, item := range page.items {\n\t\titems = append(items, selectFields(%sPresented(item), fields))\n\t}\n", c.camel)
+	w.f("\titems := make([]any, 0, len(page.items))\n\tfor _, item := range page.items {\n\t\titems = append(items, selectFields(%sPresented(%s), fields))\n\t}\n", c.camel, w.presentedArgs("item"))
 	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")
 	if w.envelope {
 		w.f("\tresult := map[string]any{\"kind\": %q, \"size\": len(items), \"items\": items}\n", e.Name+"List")

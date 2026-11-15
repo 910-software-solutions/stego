@@ -53,6 +53,8 @@
 {"id":"ST-GEN-UC13-FL","title":"Backfill a changed column under the controller lease","use_case_id":"ST-GEN-UC13"}
 {"id":"ST-GEN-UC14-FL","title":"Refuse a change that breaks the running version","use_case_id":"ST-GEN-UC14"}
 {"id":"ST-GEN-UC15-FL","title":"Finish a change to a table with rows","use_case_id":"ST-GEN-UC15"}
+{"id":"ST-GEN-UC16-FL","title":"Answer a compliance question from the architecture model","use_case_id":"ST-GEN-UC16"}
+{"id":"ST-GEN-UC17-FL","title":"Put a service's architecture in documents","use_case_id":"ST-GEN-UC17"}
 {"id":"ST-SUP-UC01-FL","title":"Write a component","use_case_id":"ST-SUP-UC01"}
 {"id":"ST-SUP-UC02-FL","title":"Compose a registry for a team","use_case_id":"ST-SUP-UC02"}
 {"id":"ST-SUP-UC03-FL","title":"Curate an archetype","use_case_id":"ST-SUP-UC03"}
