@@ -674,6 +674,29 @@ func validateFieldTypes(entities []types.Entity) []ValidationError {
 				}
 			}
 
+			// --- client_set suits only a timestamp that the server does not own (ST-DECL-Q16) ---
+
+			if f.ClientSet {
+				reason := ""
+				switch {
+				case f.Type != types.FieldTypeTimestamp:
+					reason = fmt.Sprintf("client_set is only valid for timestamp fields, not %q", f.Type)
+				case f.Computed:
+					reason = "a computed field is filled by its fill, so the client cannot set it"
+				case types.ServerTimestampNames[f.Name]:
+					reason = fmt.Sprintf("%s is the time that the server sets when a row is created or changed, so the client cannot set it", f.Name)
+				}
+				if reason != "" {
+					errs = append(errs, ValidationError{
+						Category: "field-type",
+						Rule:     "client-set",
+						Path:     fieldPath(ei, fi) + ".client_set",
+						Found:    "true",
+						Message:  fmt.Sprintf("entity %q field %q has 'client_set: true', but %s", e.Name, f.Name, reason),
+					})
+				}
+			}
+
 			// --- Computed/filled_by co-occurrence ---
 
 			if f.Computed && f.FilledBy == "" {

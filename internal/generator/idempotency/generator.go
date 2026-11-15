@@ -185,7 +185,7 @@ func ProblemURIs(base string) []string {
 
 // bodyFields gives the request body fields that an operation declares: for patch the patchable fields, and for
 // create the entity's fields that the client gives, which leaves out the id, the server-managed fields (computed,
-// timestamp, created_by, updated_by and generation, as the rest-api component's create request does), the
+// timestamp unless it is client_set, created_by, updated_by and generation, as the rest-api component's create request does), the
 // collection's scope fields, which are in the path, and its implicit fields.
 func bodyFields(collection types.Collection, entity types.Entity, op types.Operation) []string {
 	if op == types.OpPatch {
@@ -199,7 +199,7 @@ func bodyFields(collection types.Collection, entity types.Entity, op types.Opera
 		if _, implicit := collection.Implicit[f.Name]; implicit {
 			continue
 		}
-		if f.Name == "id" || f.Computed || f.Type == types.FieldTypeTimestamp || f.Name == "created_by" ||
+		if f.Name == "id" || f.Computed || (f.Type == types.FieldTypeTimestamp && !f.ClientSetTime()) || f.Name == "created_by" ||
 			f.Name == "updated_by" || f.Name == "generation" {
 			continue
 		}

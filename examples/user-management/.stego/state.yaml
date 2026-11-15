@@ -34,54 +34,54 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115044245-942bfa572bf8
+        module_version: v0.0.0-20261115044445-c340a561d2c6
         vcs: git
-        revision: 942bfa572bf84f381aa3e01a4005e6703cab28c5
+        revision: c340a561d2c6ef3ffe06ffb5da20d24e82fded53
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 68769dabd77223cbfa4edaf2b880ec48bf4918f8101157b1040b77f0cb35f678
+    registry_content_sha256: eba10ad7c18425ad363e1fd57a5d0daf8593d6d41d5ac88b0efa177ec051bfbf
     components:
         audit-log:
             version: 1.1.1
-            sha: 045999f8a1c6c96fac4939d1573e8d60045774188173bf5c7b332d6927dc505d
+            sha: 74f40ccbc8e5a268528c3c762e698723d25d33076ab0b8209787224c092ef4e7
         command:
             version: 1.1.0
-            sha: 226bc3bd1086bb06ab6de2e2ca0cd6684fba0fcdc6af7a5484beb483b1f7db8a
+            sha: 7ce0af8ecdd872c586157b44348731c32275d472ed20510117e192199c0fcd03
         domain-probe:
             version: 1.0.1
-            sha: 28ec67a2986ffd0891eb49e130f3972451c30b98854e3caf17eb0d13f3de4317
+            sha: a6708be881be8d244f0b0479d31a58c70c076013f044690738798e7323a72275
         health-check:
             version: 1.1.0
-            sha: 08765a46ca2926cdf8de518592372405d97e2e28d198d78237e3e1903eb32edb
+            sha: a5c76146b4e739d41cf7ab6aa1bf967493504a5fc5c4c9607fe2d6536df74dac
         jwt-auth:
             version: 2.5.0
-            sha: 8fb4715a10f10d13097a366390e4ac925ecf9003e45137a56013e83d612e87dc
+            sha: a7af616045adaebd9faba9686ae0c449ea7cd50bc8050084c494fd85260e751b
         kafka-producer:
             version: 3.0.0
-            sha: 2988a401c97aa0692a0dccded6a904cde9324cf41ad402783d5ed56e4ca7930f
+            sha: c4ed8d5e5934c0715a1492c6889f8c2e63570f3fe99b6f204da8df791f39606f
         otel-tracing:
             version: 1.19.0
-            sha: b8a350eb6a0482e26eb00611c08e174a8261e7641693c152f40ac99dd0485cfd
+            sha: e773ff6e0eb8fa18f295d68e9c60cf9326d4f6c4cb4d8013825391ae5fc87324
         outbox:
             version: 2.1.0
-            sha: 92c312da28d0b051d7d22d648aec12e90b35035850f8ff189dc25113b1c29dbe
+            sha: f9e7ee9c85ef6e0b7304429e7a6ba59f6e99c5bd249720221fe76d529574e465
         postgres-adapter:
             version: 6.4.0
-            sha: e9d1b2749b8da364a32213b40ae306ad7ded10bfec4310a2a12cd87689a687d1
+            sha: ae9cc4a6b1bf67e8d295704d74447ebae6fa275752771e9f65d7c5d14e870575
         query:
             version: 1.1.0
-            sha: 325d40aabe4570ea5b1e8587f79ad2404b2accd352afc96cb2ee0a59ae30eb9e
+            sha: 9b4a5a4b5afcbc9d23c6d02d78b3a227ff445b857bef9e73c547af184d7226e0
         rest-api:
             version: 4.4.1
-            sha: 3440d31fd96ea9e787e0309473ed51fa4e6bd9ec0d8ecea37705e8d9285de4db
+            sha: 1a6cc02845448eb1472881740c03698df4e70ac0e758cf27046cd47164a2adf4
         spicedb-authz:
             version: 1.2.0
-            sha: c70c96aaae18a95b9f509a4b5f455df4d9c930b4966666507f916d7d88661877
+            sha: 5e4a5fc5ddf8fa083cf9c68e5c18d1b243502776221cad70025e9f7bc423d76f
         tenancy:
             version: 1.2.0
-            sha: f6c944aa062571666fbbb08a8f67b2b1994062b7245b543bd0f55fdcc13f1993
+            sha: d0d45e703e90086e11d981b428a6127490fb9313b384603b396e70b1817d5eb1
     entities:
         ActivityEntry:
             - name: source_type
@@ -208,8 +208,6 @@ last_applied:
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
-        architecture/architecture.json: 69e390637197a47c8294ff1bc7edabbc397d72488ba40594415f2252e1ae4d79
-        architecture/index.html: 7d53812cf3b9cd6fcb546bbcb887fedc5a39c0ed5cf2b9b608b5def7bd3c686e
         deploy/platform-requirements.yaml: 0bc0e13201cf6a61c1c1c884d3e62b72a57179a4b3f8971733aa2f2de98df519
     archetype:
         name: rest-crud
