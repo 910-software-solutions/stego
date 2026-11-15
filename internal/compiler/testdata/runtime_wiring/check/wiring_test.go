@@ -1192,9 +1192,11 @@ func TestWiring(t *testing.T) {
 			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "order", ObjectId: resourceID}, Relation: "syncer",
 				Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "apply-note-replies"}}}}}})
 		must(t, err)
-		if got := s.send(&writer, http.MethodPost, "/orders/"+id+"/notes", "k-"+uuid.NewString(), `{"text":"consume"}`); got.status/100 != 2 {
-			t.Fatalf("the note answered %d %s, want 2xx", got.status, got.body)
-		}
+		// The decision of the command may see the owner tuple some time after canEdit does: a denied note writes
+		// nothing and stages nothing, so the check sends it again until it passes.
+		s.eventually(t, "the note of the owner passes", func() bool {
+			return s.send(&writer, http.MethodPost, "/orders/"+id+"/notes", "k-"+uuid.NewString(), `{"text":"consume"}`).status/100 == 2
+		})
 		// The consumer adds 1000 to the qty in the transaction of the outbox worker, a session of the worker role.
 		for deadline := time.Now().Add(60 * time.Second); count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE tenant_id = $1 AND id = $2`, kept, id) != 1001; time.Sleep(200 * time.Millisecond) {
 			if time.Now().After(deadline) {
