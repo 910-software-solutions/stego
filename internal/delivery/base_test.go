@@ -90,6 +90,25 @@ func TestKubernetesBase(t *testing.T) {
 				t.Errorf("the overlay build does not hold %q:\n%s", want, built)
 			}
 		}
+		// LoadBase, which apply runs on each base it writes, refuses a kustomization that is not plain.
+		for name, text := range map[string]string{
+			"a Helm chart":  "helmCharts: [{name: x}]\n",
+			"a generator":   "configMapGenerator: [{name: x}]\n",
+			"a remote base": "",
+		} {
+			files := map[string][]byte{}
+			for file, data := range base.Files {
+				files[file] = data
+			}
+			kustomization := string(base.Files[KustomizationFile]) + text
+			if name == "a remote base" {
+				kustomization = strings.Replace(kustomization, "  - deployment.yaml\n", "  - deployment.yaml\n  - https://github.com/example/base?ref=main\n", 1)
+			}
+			files[KustomizationFile] = []byte(kustomization)
+			if _, err := LoadBase(files); err == nil {
+				t.Errorf("LoadBase accepts a kustomization with %s", name)
+			}
+		}
 		// The RoleBinding of the base names its ServiceAccount with no namespace, and the overlay sets it.
 		if !strings.Contains(built, "kind: ServiceAccount\n  name: orders\n  namespace: orders-test") {
 			t.Errorf("the overlay does not set the namespace of the RoleBinding subject:\n%s", built)

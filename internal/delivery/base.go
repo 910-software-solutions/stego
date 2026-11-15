@@ -10,9 +10,6 @@ import (
 	"strconv"
 
 	"gopkg.in/yaml.v3"
-	"sigs.k8s.io/kustomize/api/krusty"
-	"sigs.k8s.io/kustomize/api/types"
-	"sigs.k8s.io/kustomize/kyaml/filesys"
 )
 
 // BaseFolder is the folder, in the project folder, of the Kubernetes base (ST-DLV-EN04-TB).
@@ -113,7 +110,7 @@ func deliveryObjectFor(written BaseWritten) string {
 // WriteBase writes the plain kustomize base of the service (ST-DLV-CMD03) from its platform requirements alone: a
 // ServiceAccount, a Deployment with the probes and the default resources, a Service for each ingress, and a Role and
 // a RoleBinding for the cluster permissions. It sets no replicas, namespace, image digest, host name, address or
-// secret value (ST-DLV-INV08), and it builds the base with plain kustomize before it gives it (ST-DLV-INV09).
+// secret value (ST-DLV-INV08), and it reads the base back with LoadBase before it gives it (ST-DLV-INV09).
 func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, BaseWritten, error) {
 	stated, err := LoadRequirements(requirements)
 	if err != nil {
@@ -228,7 +225,7 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 	files[KustomizationFile] = data
 	base := Base{Service: service, Image: service, Files: files}
 	if _, err := LoadBase(base.Files); err != nil {
-		return Base{}, BaseWritten{}, fmt.Errorf("the Kubernetes base does not build with plain kustomize: %w", err)
+		return Base{}, BaseWritten{}, fmt.Errorf("the Kubernetes base is not a plain kustomize base: %w", err)
 	}
 	return base, BaseWritten{Service: service, Base: BaseFolder}, nil
 }
@@ -285,29 +282,57 @@ func encodeResource(object map[string]any) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// LoadBase builds the files of a Kubernetes base with the kustomize library compiled into the compiler, with
-// plugins off and in a file system that holds the base alone, so that no remote base, path out of the base or
-// generator program can build (ST-DLV-REPO03, ST-DLV-INV09). It gives the built resources as one YAML stream.
-func LoadBase(files map[string][]byte) ([]byte, error) {
-	fs := filesys.MakeFsInMemory()
-	root := "/" + BaseFolder
-	for file, data := range files {
+// LoadBase reads the files of a Kubernetes base back and holds them to plain kustomize (ST-DLV-REPO03,
+// ST-DLV-INV09): each file is one of the base folder; the kustomization file has only its apiVersion, its kind and
+// its resources, so it names no generator, transformer, Helm chart or remote base; each resource is a file of the
+// base folder that the base holds; and each resource file is one YAML document with an apiVersion, a kind and a
+// name. The tests build the base with the kustomize library itself; the compiler does not carry it.
+func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
+	for file := range files {
 		if path.Dir(file) != BaseFolder || !slices.Contains(BaseFiles, file) {
 			return nil, fmt.Errorf("%s is not a file of the Kubernetes base", file)
 		}
-		if err := fs.WriteFile("/"+file, data); err != nil {
-			return nil, err
-		}
 	}
-	if _, ok := files[KustomizationFile]; !ok {
+	data, ok := files[KustomizationFile]
+	if !ok {
 		return nil, fmt.Errorf("the Kubernetes base has no %s", KustomizationFile)
 	}
-	options := krusty.MakeDefaultOptions()
-	options.PluginConfig = types.DisabledPluginConfig()
-	options.LoadRestrictions = types.LoadRestrictionsRootOnly
-	built, err := krusty.MakeKustomizer(options).Run(fs, root)
-	if err != nil {
-		return nil, err
+	var kustomization struct {
+		APIVersion string   `yaml:"apiVersion"`
+		Kind       string   `yaml:"kind"`
+		Resources  []string `yaml:"resources"`
 	}
-	return built.AsYaml()
+	if err := decodeStrict(data, MaxRequirementsBytes, &kustomization); err != nil {
+		return nil, fmt.Errorf("%s: %w", KustomizationFile, err)
+	}
+	if kustomization.APIVersion != "kustomize.config.k8s.io/v1beta1" || kustomization.Kind != "Kustomization" || len(kustomization.Resources) == 0 {
+		return nil, fmt.Errorf("%s is not a kustomization that lists its resources", KustomizationFile)
+	}
+	resources := map[string]map[string]any{}
+	for _, name := range kustomization.Resources {
+		file := BaseFolder + "/" + name
+		if path.Base(name) != name || name == KustomizationFile || !slices.Contains(BaseFiles, file) {
+			return nil, fmt.Errorf("%s lists %s, which is not a file of the base folder", KustomizationFile, name)
+		}
+		content, held := files[file]
+		if !held {
+			return nil, fmt.Errorf("%s lists %s, which the base does not hold", KustomizationFile, name)
+		}
+		if _, twice := resources[file]; twice {
+			return nil, fmt.Errorf("%s lists %s twice", KustomizationFile, name)
+		}
+		var resource map[string]any
+		if err := yaml.Unmarshal(content, &resource); err != nil {
+			return nil, fmt.Errorf("%s: %w", file, err)
+		}
+		metadata, _ := resource["metadata"].(map[string]any)
+		if resource["apiVersion"] == nil || resource["kind"] == nil || metadata == nil || metadata["name"] == nil {
+			return nil, fmt.Errorf("%s is not a Kubernetes resource with an apiVersion, a kind and a name", file)
+		}
+		resources[file] = resource
+	}
+	if len(resources) != len(files)-1 {
+		return nil, fmt.Errorf("%s does not list each file of the base", KustomizationFile)
+	}
+	return resources, nil
 }
