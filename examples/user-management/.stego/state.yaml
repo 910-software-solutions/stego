@@ -19,69 +19,69 @@ last_applied:
                 mode: 420
             go.mod:
                 exists: true
-                sha256: 33f122e6124d583bd9f5bd1bbdc1ecc3422289578f3166a266bd01a866cd1d1e
+                sha256: b0f3eb46f721b22be93338bba45e18b03ef751ca8ffabd38c8c72efca49ebe07
                 mode: 420
             go.sum:
                 exists: true
-                sha256: b7d21f423170e35bab55b2d41e7cb89c515d606414adfcb96d4842a494841e84
+                sha256: bc9fe42acbf96ca53e55e8b68cfd04553aaa0d064ba30f7c2b8bad791300adcf
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: b8e5cafe2f4abda0eab498ebfbbece542b92246d4c1f6885503c6cd6762622c6
+        sha256: e8c98e0034dab65020bfe6b0e2d0208040c3f0b89c5320a1880ce8684a319c19
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115041941-ef9be4044ae2
+        module_version: v0.0.0-20261115032427-b430d9ff3625
         vcs: git
-        revision: ef9be4044ae21540344eecfe354fc45ebe00f6a3
+        revision: b430d9ff36256628e5ac0600712f4910ed73b08f
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 8f2614ba8952a113f37aec56abbc9edb52b89bb64d2797267b991d93d17cb921
+    registry_content_sha256: eba10ad7c18425ad363e1fd57a5d0daf8593d6d41d5ac88b0efa177ec051bfbf
     components:
         audit-log:
             version: 1.1.1
-            sha: 045999f8a1c6c96fac4939d1573e8d60045774188173bf5c7b332d6927dc505d
+            sha: 74f40ccbc8e5a268528c3c762e698723d25d33076ab0b8209787224c092ef4e7
         command:
             version: 1.1.0
-            sha: 226bc3bd1086bb06ab6de2e2ca0cd6684fba0fcdc6af7a5484beb483b1f7db8a
+            sha: 7ce0af8ecdd872c586157b44348731c32275d472ed20510117e192199c0fcd03
         domain-probe:
             version: 1.0.1
-            sha: 28ec67a2986ffd0891eb49e130f3972451c30b98854e3caf17eb0d13f3de4317
+            sha: a6708be881be8d244f0b0479d31a58c70c076013f044690738798e7323a72275
         health-check:
             version: 1.1.0
-            sha: 08765a46ca2926cdf8de518592372405d97e2e28d198d78237e3e1903eb32edb
+            sha: a5c76146b4e739d41cf7ab6aa1bf967493504a5fc5c4c9607fe2d6536df74dac
         jwt-auth:
             version: 2.5.0
-            sha: 8fb4715a10f10d13097a366390e4ac925ecf9003e45137a56013e83d612e87dc
+            sha: a7af616045adaebd9faba9686ae0c449ea7cd50bc8050084c494fd85260e751b
         kafka-producer:
             version: 3.0.0
-            sha: 2988a401c97aa0692a0dccded6a904cde9324cf41ad402783d5ed56e4ca7930f
+            sha: c4ed8d5e5934c0715a1492c6889f8c2e63570f3fe99b6f204da8df791f39606f
         otel-tracing:
             version: 1.19.0
-            sha: b8a350eb6a0482e26eb00611c08e174a8261e7641693c152f40ac99dd0485cfd
+            sha: e773ff6e0eb8fa18f295d68e9c60cf9326d4f6c4cb4d8013825391ae5fc87324
         outbox:
             version: 2.1.0
-            sha: 92c312da28d0b051d7d22d648aec12e90b35035850f8ff189dc25113b1c29dbe
+            sha: f9e7ee9c85ef6e0b7304429e7a6ba59f6e99c5bd249720221fe76d529574e465
         postgres-adapter:
             version: 6.4.0
-            sha: e9d1b2749b8da364a32213b40ae306ad7ded10bfec4310a2a12cd87689a687d1
+            sha: ae9cc4a6b1bf67e8d295704d74447ebae6fa275752771e9f65d7c5d14e870575
         query:
             version: 1.1.0
-            sha: 325d40aabe4570ea5b1e8587f79ad2404b2accd352afc96cb2ee0a59ae30eb9e
+            sha: 9b4a5a4b5afcbc9d23c6d02d78b3a227ff445b857bef9e73c547af184d7226e0
         rest-api:
             version: 4.4.1
-            sha: 3440d31fd96ea9e787e0309473ed51fa4e6bd9ec0d8ecea37705e8d9285de4db
+            sha: 1a6cc02845448eb1472881740c03698df4e70ac0e758cf27046cd47164a2adf4
         spicedb-authz:
             version: 1.2.0
-            sha: c70c96aaae18a95b9f509a4b5f455df4d9c930b4966666507f916d7d88661877
+            sha: 5e4a5fc5ddf8fa083cf9c68e5c18d1b243502776221cad70025e9f7bc423d76f
         tenancy:
             version: 1.2.0
-            sha: f6c944aa062571666fbbb08a8f67b2b1994062b7245b543bd0f55fdcc13f1993
+            sha: d0d45e703e90086e11d981b428a6127490fb9313b384603b396e70b1817d5eb1
     entities:
         ActivityEntry:
             - name: source_type
@@ -160,7 +160,7 @@ last_applied:
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
         internal/stegoruntime/runtime.go: e71b326bb2ec18bd69cabf0d391fddfa1b0b6cde7b52e8aceec95eda5beb5b30
         internal/storage/database.go: 2969e645f09850b504ad2725978a15d1ccad3147efb4a450d7360be23ffef627
-        internal/storage/migrate.go: 9d433698826ee23b387e2f93fd5d58202216bb8776b9d6af8bf7e98db74019b8
+        internal/storage/migrate.go: bdc25cb0e4f88898dc74ef673195d161bf880bf611125bc832d51c6b6f06391f
         internal/storage/migrations/001_initial.sql: 8561b6d30aa26aeb145ee71633ecb53242fc7ef58dd6629aa917ac290e33085a
         internal/storage/runtime_access.go: dc187dc3c0bef1126faa0330e2d805990066f61e56a19fd0b4df9fd1a0ff6886
         internal/storage/schema_generation.go: ff7f059441677f4253c98670350c304d3111b391d877ba049b943a4ae1d9671e
@@ -208,13 +208,12 @@ last_applied:
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
-        architecture/architecture.json: 57fafcf5c8a467aae04277ebc4dcb13cbea13f84c38443568c70596436974730
         deploy/platform-requirements.yaml: 0bc0e13201cf6a61c1c1c884d3e62b72a57179a4b3f8971733aa2f2de98df519
     archetype:
         name: rest-crud
-        version: 3.113.0
+        version: 3.114.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
-            version: v0.105.0
-            sum: h1:PoclC3coxwkcpc++yzJSZgzDboypcl6G3lxJVTvW6jQ=
+            version: v0.106.0
+            sum: h1:WrhiLDjqQXKqm199fj3vE4qZrWriblvITV2L/Oe4o7U=
         imports_runtime: true

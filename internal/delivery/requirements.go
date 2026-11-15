@@ -363,12 +363,19 @@ func WriteRequirements(service string, components []ComponentNeeds) ([]byte, err
 // of at most MaxRequirementsBytes, with no alias and no field the format does not have, of format version 1, whose
 // every requirement is of a known kind and holds the shape of its kind.
 func LoadRequirements(data []byte) (Requirements, error) {
+	var document yaml.Node
+	if err := decodeStrict(data, MaxRequirementsBytes, &document); err != nil {
+		return Requirements{}, fmt.Errorf("platform requirements: %w", err)
+	}
+	if err := checkRequirementsFields(&document); err != nil {
+		return Requirements{}, fmt.Errorf("platform requirements: %w", err)
+	}
 	var requirements Requirements
 	if err := decodeStrict(data, MaxRequirementsBytes, &requirements); err != nil {
 		return Requirements{}, fmt.Errorf("platform requirements: %w", err)
 	}
 	if requirements.Version != RequirementsVersion {
-		return Requirements{}, fmt.Errorf("platform requirements: the format version is %d; this stego reads version %d", requirements.Version, RequirementsVersion)
+		return Requirements{}, fmt.Errorf("platform requirements: field version: the format version is %d; this stego reads version %d", requirements.Version, RequirementsVersion)
 	}
 	if requirements.Service == "" {
 		return Requirements{}, fmt.Errorf("platform requirements: the file names no service")
@@ -393,6 +400,41 @@ func LoadRequirements(data []byte) (Requirements, error) {
 		}
 	}
 	return requirements, nil
+}
+
+// checkRequirementsFields holds the top fields of the platform requirements to the node kinds of the format, so
+// that a refusal names the field that is wrong: version and service are each one value, and requirements a list.
+func checkRequirementsFields(document *yaml.Node) error {
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: the file is not a map of the fields version, service and requirements", document.Line)
+	}
+	top := document.Content[0]
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		key, value := top.Content[i], top.Content[i+1]
+		switch key.Value {
+		case "version", "service":
+			if value.Kind != yaml.ScalarNode {
+				return fmt.Errorf("line %d: field %s: the %s is one value", value.Line, key.Value, key.Value)
+			}
+		case "requirements":
+			if value.Kind != yaml.SequenceNode {
+				return fmt.Errorf("line %d: field requirements: the requirements are a list, not a %s", value.Line, nodeKind(value))
+			}
+		}
+	}
+	return nil
+}
+
+// nodeKind names the kind of a YAML node in a message.
+func nodeKind(node *yaml.Node) string {
+	switch node.Kind {
+	case yaml.MappingNode:
+		return "map"
+	case yaml.SequenceNode:
+		return "list"
+	default:
+		return "single value"
+	}
 }
 
 // maxDepth bounds the nesting of a document that decodeStrict reads.
