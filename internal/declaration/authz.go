@@ -888,6 +888,13 @@ func (s *AuthzSchema) reachesWildcard(typeName, name string) bool {
 // Each edge is followed once, so the work grows with the size of the schema, also on a wide intersection whose parts
 // repeat, and no schema makes checking slow.
 func (s *AuthzSchema) wildcardReach() map[string]bool {
+	reach, _ := s.wildcardReachWork()
+	return reach
+}
+
+// wildcardReachWork is wildcardReach with its work: each input that the graph is given, and each edge that run
+// follows. A test holds the work to the size of the schema, so that it counts the work and does not time it.
+func (s *AuthzSchema) wildcardReachWork() (map[string]bool, int) {
 	g := &reachGraph{named: map[string]int{}, arrows: map[string]int{}, edges: map[[2]int]bool{}}
 	for typeName, definition := range s.definitions {
 		for name, subjects := range definition.subjects {
@@ -905,7 +912,7 @@ func (s *AuthzSchema) wildcardReach() map[string]bool {
 			g.input(g.name(typeName+"#"+name), s.rewriteGate(g, typeName, rewrite))
 		}
 	}
-	return g.run()
+	return g.run(), g.work
 }
 
 // rewriteGate gives the gate of a permission expression of the type: an OR gate for a union, an AND gate for an
@@ -973,6 +980,7 @@ type reachGraph struct {
 	named   map[string]int // the gate of each relation and permission, by type#name
 	arrows  map[string]int // the gate of each arrow, by type#tupleset->computed
 	edges   map[[2]int]bool
+	work    int // the inputs given and the edges followed (wildcardReachWork)
 }
 
 func (g *reachGraph) gate(and bool) int {
@@ -993,6 +1001,7 @@ func (g *reachGraph) name(node string) int {
 
 // input adds from as an input of the gate, once: a part that an expression repeats is one input.
 func (g *reachGraph) input(gate, from int) {
+	g.work++
 	if g.edges[[2]int{from, gate}] {
 		return
 	}
@@ -1023,6 +1032,7 @@ func (g *reachGraph) run() map[string]bool {
 		gate := work[len(work)-1]
 		work = work[:len(work)-1]
 		for _, out := range g.outputs[gate] {
+			g.work++
 			g.unset[out]--
 			if !g.and[out] || g.unset[out] == 0 {
 				mark(out)
