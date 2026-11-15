@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -878,6 +879,81 @@ func TestMigrateBackfillSessionEnd(t *testing.T) {
 			_ = conn.Close()
 		}
 	})
+}
+
+func TestMigrateBackfillSessionRelease(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T26 A backfill session whose reset fails is closed and does not go back to the pool", func(t *testing.T) {
+		// The pgx driver already drops a session that is in a transaction, and a reset of a session that is idle
+		// and open does not fail on PostgreSQL, so a driver whose reset fails on request stands in for a failure
+		// that the release cannot foresee.
+		d := &resetDriver{}
+		sql.Register("lc03t26", d)
+		db, err := sql.Open("lc03t26", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		ctx := context.Background()
+		release := func() {
+			t.Helper()
+			conn, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			releaseBackfillSession(ctx, endedTxConn{conn})
+		}
+		// A session whose reset passes goes back to the pool, and the next session is the same one.
+		release()
+		release()
+		if d.opened != 1 || d.closed != 0 || d.resets != 2 {
+			t.Fatalf("two releases with resets that pass opened %d sessions and closed %d (%d resets), want one session open and two resets", d.opened, d.closed, d.resets)
+		}
+		// A session whose reset fails is closed, and the next session is a new one.
+		d.fail = true
+		release()
+		if d.closed != 1 {
+			t.Fatalf("a release whose reset fails closed %d sessions, want the session closed", d.closed)
+		}
+		d.fail = false
+		release()
+		if d.opened != 2 || d.closed != 1 {
+			t.Fatalf("the release after a failed reset opened %d sessions in all and closed %d, want a new session", d.opened, d.closed)
+		}
+	})
+}
+
+// resetDriver is a database/sql driver whose sessions run only the reset of a backfill session, which fails while
+// fail is set. It counts the sessions it opens and closes and the resets that pass.
+type resetDriver struct {
+	fail                   bool
+	opened, closed, resets int
+}
+
+func (d *resetDriver) Open(string) (driver.Conn, error) {
+	d.opened++
+	return resetConn{d}, nil
+}
+
+type resetConn struct{ d *resetDriver }
+
+func (c resetConn) Prepare(string) (driver.Stmt, error) { return nil, errors.New("no statements") }
+func (c resetConn) Begin() (driver.Tx, error)           { return nil, errors.New("no transactions") }
+func (c resetConn) Close() error {
+	c.d.closed++
+	return nil
+}
+
+func (c resetConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+	if query != "RESET ROLE; RESET search_path" {
+		return nil, fmt.Errorf("unexpected statement %q", query)
+	}
+	if c.d.fail {
+		return nil, errors.New("the reset failed")
+	}
+	c.d.resets++
+	return driver.RowsAffected(0), nil
 }
 
 func TestMigrateBackfillStall(t *testing.T) {
