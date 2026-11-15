@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"maps"
 	"os"
 	"os/exec"
@@ -125,6 +126,170 @@ func TestSchemaStepPlan(t *testing.T) {
 		writeFile(t, other.service, ".git", "gitdir: "+filepath.Join(s.parent, "removed-worktree")+"\n", 0o644)
 		if stdout, stderr, err := other.stego(t, "plan"); err == nil || !strings.Contains(stdout+stderr, "git cannot read the repository") {
 			t.Errorf("a .git link to a removed worktree: %v, want a refusal, not a plan with no check:\n%s%s", err, stdout, stderr)
+		}
+	})
+	t.Run("ST-GEN-UC14-R02-T02 In a repository with no commit, plan and apply take a service with no record as its first release", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// stego init tells the author to commit before the first release.
+		fresh := filepath.Join(s.parent, "fresh")
+		if err := os.MkdirAll(filepath.Join(fresh, ".stego"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, fresh, ".stego/config.yaml", s.read(t, ".stego/config.yaml"), 0o644)
+		initialize := exec.Command(stegoBinary(t), "init", "--archetype", "rest-crud")
+		initialize.Dir, initialize.Env = fresh, s.env
+		if output, err := initialize.CombinedOutput(); err != nil || !strings.Contains(string(output), "Commit the service folder to Git before its first release") {
+			t.Errorf("stego init: %v, want the hint to commit before the first release:\n%s", err, output)
+		}
+		// A new repository with no commit, as git init and stego init leave it.
+		unborn := s.copyService(t, "notes-unborn")
+		if output, err := exec.Command("rm", "-rf", filepath.Join(unborn.service, ".git")).CombinedOutput(); err != nil {
+			t.Fatalf("remove the repository: %v\n%s", err, output)
+		}
+		git(t, unborn.service, "init", "-q", "-b", "main")
+		// The service has a record, so a release may have run: the check is not skipped.
+		before := tree(t, unborn.service)
+		for _, args := range [][]string{{"plan"}, {"apply"}} {
+			if stdout, stderr, err := unborn.stego(t, args...); err == nil || !strings.Contains(stdout+stderr, "has no commit, and the service has a record") {
+				t.Errorf("stego %s with a record and no commit: %v, want a refusal that asks for a commit:\n%s%s", args[0], err, stdout, stderr)
+			}
+		}
+		if after := tree(t, unborn.service); !maps.Equal(before, after) {
+			t.Error("a refused plan or apply changed a file of the service folder")
+		}
+		// With no record, it is the first release: plan and apply run with no base check.
+		if err := os.Remove(filepath.Join(unborn.service, ".stego", "state.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if planned := unborn.must(t, "plan"); !strings.Contains(planned, "No base check: the repository has no commit and the service has no record, so this is the first release") {
+			t.Errorf("plan in a repository with no commit does not take the first release:\n%s", planned)
+		}
+		if applied := unborn.must(t, "apply"); !strings.Contains(applied, "this is the first release") {
+			t.Errorf("apply in a repository with no commit does not take the first release:\n%s", applied)
+		}
+		// A base that the author names is still read: in a repository with no commit it names none.
+		if stdout, stderr, err := unborn.stego(t, "plan", "--base", "main"); err == nil || !strings.Contains(stdout+stderr, "which has no commit: for the first release, run with no --base") {
+			t.Errorf("plan --base main with no commit: %v, want a refusal that says to run with no --base:\n%s%s", err, stdout, stderr)
+		}
+		// A repository with a commit on a branch that is not the default one still has no default branch.
+		git(t, unborn.service, "add", "-A")
+		git(t, unborn.service, "commit", "-q", "-m", "notes")
+		git(t, unborn.service, "branch", "-m", "trunk")
+		if stdout, stderr, err := unborn.stego(t, "plan"); err == nil || !strings.Contains(stdout+stderr, "has no default branch") {
+			t.Errorf("a repository with a commit and no default branch: %v, want a refusal that asks for --base:\n%s%s", err, stdout, stderr)
+		}
+	})
+	t.Run("ST-GEN-UC14-R02-T03 A checkout by commit with no ref is not a repository with no commit", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// A change on a branch renames title with no schema change and removes the record of the release.
+		git(t, s.service, "checkout", "-q", "-b", "change")
+		s.write(t, "service.yaml", noteFields(renamedTitle))
+		git(t, s.service, "rm", "-q", ".stego/state.yaml")
+		git(t, s.service, "commit", "-q", "-am", "rename title and remove the record")
+		git(t, s.service, "checkout", "-q", "main")
+		for _, fetch := range []struct {
+			name     string
+			args     []string
+			checkout []string
+		}{
+			{"full", []string{"fetch", "-q", s.service, "change"}, []string{"checkout", "-q", "FETCH_HEAD"}},
+			{"depth-1", []string{"fetch", "-q", "--depth", "1", "file://" + s.service, "change"}, []string{"checkout", "-q", "FETCH_HEAD"}},
+			// The files of a shallow fetch with HEAD not moved: HEAD is not born, but the repository is shallow, so
+			// it has a history that the check cannot read.
+			{"depth-1-files", []string{"fetch", "-q", "--depth", "1", "file://" + s.service, "change"}, []string{"checkout", "-q", "FETCH_HEAD", "--", "."}},
+		} {
+			// The shape of a CI clone by commit: git init, git fetch of the change, git checkout FETCH_HEAD.
+			checkout := *s
+			checkout.service = filepath.Join(s.parent, "checkout-"+fetch.name)
+			if err := os.MkdirAll(checkout.service, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git(t, checkout.service, "init", "-q")
+			git(t, checkout.service, fetch.args...)
+			git(t, checkout.service, fetch.checkout...)
+			if refs := git(t, checkout.service, "for-each-ref"); refs != "" {
+				t.Fatalf("%s: the checkout has refs %q, want none", fetch.name, refs)
+			}
+			before := tree(t, checkout.service)
+			for _, args := range [][]string{{"plan"}, {"apply"}} {
+				stdout, stderr, err := checkout.stego(t, args...)
+				if err == nil || strings.Contains(stdout+stderr, "No base check") || !strings.Contains(stdout+stderr, "has no default branch") {
+					t.Errorf("%s: stego %s on a checkout by commit with no ref and no record: %v, want a refusal that names the missing default branch:\n%s%s", fetch.name, args[0], err, stdout, stderr)
+				}
+			}
+			if after := tree(t, checkout.service); !maps.Equal(before, after) {
+				t.Errorf("%s: a refused plan or apply changed a file of the checkout", fetch.name)
+			}
+		}
+		// HEAD is not born, no ref exists and the repository is not shallow, but the object store holds the commits
+		// of the change or a FETCH_HEAD exists: the files came from a commit, so this is no new repository.
+		for _, unborn := range []struct {
+			name  string
+			steps [][]string
+			// objectsOnly removes FETCH_HEAD, so that only the commits in the object store tell; fetchHeadOnly
+			// removes the objects, so that only FETCH_HEAD tells.
+			objectsOnly, fetchHeadOnly bool
+		}{
+			{name: "pathspec-checkout", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"checkout", "-q", "FETCH_HEAD", "--", "."}}},
+			{name: "restore", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"restore", "--source=FETCH_HEAD", "--worktree", "--", "."}}},
+			{name: "read-tree", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"read-tree", "-u", "--reset", "FETCH_HEAD"}}},
+			{name: "orphan-main-deleted", steps: [][]string{{"fetch", "-q", "--no-write-fetch-head", "--update-head-ok", s.service, "change:refs/heads/main"}, {"checkout", "-q", "main"}, {"checkout", "-q", "--orphan", "fresh"}, {"update-ref", "-d", "refs/heads/main"}}},
+			{name: "objects-only", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"read-tree", "-u", "--reset", "FETCH_HEAD"}}, objectsOnly: true},
+			{name: "fetch-head-only", steps: [][]string{{"fetch", "-q", s.service, "change"}, {"read-tree", "-u", "--reset", "FETCH_HEAD"}}, fetchHeadOnly: true},
+		} {
+			checkout := *s
+			checkout.service = filepath.Join(s.parent, "unborn-"+unborn.name)
+			if err := os.MkdirAll(checkout.service, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			git(t, checkout.service, "init", "-q", "-b", "main")
+			for _, step := range unborn.steps {
+				git(t, checkout.service, step...)
+			}
+			if unborn.objectsOnly {
+				if err := os.Remove(filepath.Join(checkout.service, ".git", "FETCH_HEAD")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if unborn.fetchHeadOnly {
+				objects := filepath.Join(checkout.service, ".git", "objects")
+				if err := os.RemoveAll(objects); err != nil {
+					t.Fatal(err)
+				}
+				for _, folder := range []string{"info", "pack"} {
+					if err := os.MkdirAll(filepath.Join(objects, folder), 0o755); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if refs := git(t, checkout.service, "for-each-ref"); refs != "" {
+				t.Fatalf("%s: the checkout has refs %q, want none", unborn.name, refs)
+			}
+			if _, err := os.Stat(filepath.Join(checkout.service, ".stego", "state.yaml")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("%s: the checkout has a record (%v), want the change that removes it", unborn.name, err)
+			}
+			before := tree(t, checkout.service)
+			for _, args := range [][]string{{"plan"}, {"apply"}} {
+				stdout, stderr, err := checkout.stego(t, args...)
+				if err == nil || strings.Contains(stdout+stderr, "No base check") || !strings.Contains(stdout+stderr, "has no default branch") {
+					t.Errorf("%s: stego %s with HEAD not born, no ref and the files of a fetched commit: %v, want a refusal that names the missing default branch:\n%s%s", unborn.name, args[0], err, stdout, stderr)
+				}
+			}
+			if after := tree(t, checkout.service); !maps.Equal(before, after) {
+				t.Errorf("%s: a refused plan or apply changed a file of the checkout", unborn.name)
+			}
+		}
+		// An orphan branch: HEAD is not born, but the repository has refs, so it has commits.
+		orphan := s.copyService(t, "notes-orphan")
+		git(t, orphan.service, "branch", "-m", "main", "trunk")
+		git(t, orphan.service, "checkout", "-q", "--orphan", "fresh")
+		if err := os.Remove(filepath.Join(orphan.service, ".stego", "state.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if stdout, stderr, err := orphan.stego(t, "plan"); err == nil || strings.Contains(stdout+stderr, "No base check") || !strings.Contains(stdout+stderr, "has no default branch") {
+			t.Errorf("stego plan on an orphan branch of a repository with refs: %v, want a refusal that names the missing default branch:\n%s%s", err, stdout, stderr)
 		}
 	})
 	t.Run("ST-DECL-UC03-R03-T02 Plan refuses a declaration that checking refuses, also when it needs add steps", func(t *testing.T) {
