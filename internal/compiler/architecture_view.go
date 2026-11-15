@@ -644,6 +644,30 @@ func roleName(r ArchRole) string {
 	return name
 }
 
+// breakableName gives the escaped markup of a role name that may break after the # of its relation and after the
+// word as, never inside a word. It escapes each part apart and puts <wbr> between the parts, so a break never falls
+// inside an entity such as &#39; that the escape of a quote writes (security review of PR #345, F3).
+func breakableName(name string) string {
+	var b strings.Builder
+	for name != "" {
+		at, n := len(name), 0
+		if i := strings.Index(name, "#"); i >= 0 {
+			at, n = i, 1
+		}
+		if i := strings.Index(name, " as "); i >= 0 && i < at {
+			at, n = i, len(" as")
+		}
+		if n == 0 {
+			b.WriteString(html.EscapeString(name))
+			break
+		}
+		b.WriteString(html.EscapeString(name[:at+n]))
+		b.WriteString("<wbr>")
+		name = name[at+n:]
+	}
+	return b.String()
+}
+
 // accessForm writes the access matrix (ST-GEN-UC08-R14): a line for each role and a cell for each operation,
 // command, query and worker, with the marks of the kinds of grant in it, the operations grouped by collection.
 // When the operations outnumber the roles, the matrix is turned: a column for each role and a line for each
@@ -698,7 +722,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 			}
 			// A role name breaks after its subject and after the # of its relation, never inside a word.
 			w.raw("<th scope=\"col\" class=\"role\"" + attr("data-id", l.id) + attr("title", l.name) + ">")
-			w.raw(strings.NewReplacer("#", "#<wbr>", " as ", " as<wbr> ").Replace(html.EscapeString(l.name)))
+			w.raw(breakableName(l.name))
 			w.raw("</th>")
 		}
 		w.raw("</tr></thead>")
