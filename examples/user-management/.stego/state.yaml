@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115053423-30fff430f74d
+        module_version: v0.0.0-20261115053803-083cd18a0120
         vcs: git
-        revision: 30fff430f74d0d99fafcde8ca2f9631766d75f12
+        revision: 083cd18a0120997750c5b3bef53383cd8137748c
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -209,6 +209,7 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         architecture/architecture.json: 33d94779ce3c2e88add9beefc35994ca5c4aae4ca527b47105db01b7ebc863ef
+        architecture/index.html: 6da1d2d8e0fe4b0b1788b9d19bda9d57e7b96cbb1ea532cac6fd98231b197d6c
         deploy/platform-requirements.yaml: 0bc0e13201cf6a61c1c1c884d3e62b72a57179a4b3f8971733aa2f2de98df519
     archetype:
         name: rest-crud
