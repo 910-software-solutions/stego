@@ -393,6 +393,8 @@ hand; see [Specification checks](#specification-checks).
 | Command | Usage |
 |---|---|
 | `stego apply` | `stego apply [--saved-plan] [--replace-hand-edits] [--base <ref>]` |
+| `stego architecture export` | `stego architecture export --format structurizr\|mermaid [--view <view>]` |
+| `stego architecture facts` | `stego architecture facts --topic personal-data\|tenant-isolation\|access\|audit\|data-protection\|owner-code\|retention\|configuration [--json]` |
 | `stego assets` | `stego assets --directory <folder> --output <zip>` |
 | `stego build` | `stego build --source <repo> --revision <commit> [--module <path>] --target <path> --go <sdk>/bin/go --work <folder> --output <folder> --module-cache <folder>` |
 | `stego build download` | `stego build download --source <repo> --revision <commit> [--module <path>] --target <path> --go <sdk>/bin/go --output <folder> [--runtime-folder <stego checkout>/registry/runtime]` |
