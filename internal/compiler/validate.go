@@ -782,3 +782,27 @@ func authorizationGeneratorMissing(service *types.ServiceDeclaration, reg *regis
 	}
 	return fmt.Errorf("generation refused: the declaration binds authorization, but the registry holds no component %s with a generator in this compiler build, which generates the authorization checks; STEGO does not generate a service without them. stego validate accepts the declaration, and generation runs once the registry holds %s", authorizationComponent, authorizationComponent)
 }
+
+// databaseConversions gives the conversions that the database component among components declares, by name, and
+// whether one of them declares conversions: the component that provides the storage-adapter port.
+func databaseConversions(components map[string]*registry.Component) (map[string]types.Conversion, bool) {
+	for _, name := range sortedKeys(components) {
+		component := components[name]
+		if !slices.ContainsFunc(component.Provides, func(p registry.Port) bool { return p.Name == "storage-adapter" }) {
+			continue
+		}
+		out := map[string]types.Conversion{}
+		for _, c := range component.Conversions {
+			out[c.Name] = c
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// validateSchemaConversions checks the conversions of each retype against the database component among components
+// (declaration.ValidateSchemaConversions, ST-DECL-INV62, ST-DECL-INV63).
+func validateSchemaConversions(service *types.ServiceDeclaration, components map[string]*registry.Component) []ValidationError {
+	conversions, declared := databaseConversions(components)
+	return declaration.ValidateSchemaConversions(service, conversions, declared)
+}
