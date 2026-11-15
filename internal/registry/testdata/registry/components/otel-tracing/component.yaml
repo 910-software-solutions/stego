@@ -11,3 +11,8 @@ provides:
   - tracing
 
 slots: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    tracing: inbound

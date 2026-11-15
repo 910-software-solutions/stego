@@ -30,8 +30,20 @@ provides:
 
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeCreate
     default: passthrough
   - name: validate
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.Validate
     default: passthrough
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: outbound
+    storage-adapter: outbound
+    http-server: inbound
+    openapi-spec: inbound

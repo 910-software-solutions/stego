@@ -33,9 +33,12 @@ type State struct {
 // reference. Version 3 adds archetype: the archetype's name, version and
 // runtime library pin (ST-GEN-EN01). Version 4 added data_path, the data path
 // of the run, runtime or store (ST-SUP-RC01-OC41), and version 5 removes it
-// again: the runtime data path is the only data path (ST-SUP-RC20-OC39). This
-// compiler reads versions 0 to 5, and the next apply writes version 5.
-const StateFormatVersion = 5
+// again: the runtime data path is the only data path (ST-SUP-RC20-OC39).
+// Version 6 adds project_files: the digest of each generated file that apply
+// places in the project folder out of the generated output, the platform
+// requirements (ST-DLV-REPO01). This compiler reads versions 0 to 6, and the
+// next apply writes version 6.
+const StateFormatVersion = 6
 
 // formatWithDataPath is the one format version whose last_applied held the
 // data path. The compiler drops that key when it reads such a record, and its
@@ -94,6 +97,10 @@ type AppliedState struct {
 
 	// Files records the SHA-256 hash of each generated file.
 	Files map[string]string `yaml:"files,omitempty"`
+
+	// ProjectFiles records the SHA-256 hash of each generated file that apply places in the project folder out of
+	// the generated output, by its path in the project folder: the platform requirements (ST-DLV-REPO01).
+	ProjectFiles map[string]string `yaml:"project_files,omitempty"`
 
 	// Archetype records the archetype of the run with its runtime library pin.
 	// State before format version 3 omits it.
@@ -291,6 +298,14 @@ func validateStatePaths(state *State) error {
 	for _, path := range sortedKeys(state.LastApplied.Files) {
 		if err := gen.ValidatePath(path); err != nil {
 			return err
+		}
+		if isProjectGeneratedFile(path) {
+			return fmt.Errorf("the record names %s as generated output, which is a file of the project folder", path)
+		}
+	}
+	for _, path := range sortedKeys(state.LastApplied.ProjectFiles) {
+		if !isProjectGeneratedFile(path) {
+			return fmt.Errorf("the record names %s as a generated file of the project folder, which it is not", path)
 		}
 	}
 	return nil

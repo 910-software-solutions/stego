@@ -26,6 +26,9 @@ var tablesTests []byte
 //go:embed testdata/table_steps_test.go
 var tableStepsTests []byte
 
+//go:embed testdata/relax_steps_test.go
+var relaxStepsTests []byte
+
 const tablesModule = "example.com/tables-check"
 
 // runtimeService gives the context of a pooled service on the runtime data path whose adapter writes to ns and
@@ -186,7 +189,10 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 		{boardBase("boardsbase", "boardsbasetenancy"), "boardsbase_access.json"}, {boardSteps("boards", "boardtenancy"), "boards_access.json"},
 		{boardNoDefault("boardsnote", "boardsnotetenancy"), "boardsnote_access.json"}, {boardSlug("boardsslug", "boardsslugtenancy"), "boardsslug_access.json"},
 		{boardRenameBase("boardsrnbase", "boardsrnbasetenancy"), "boardsrnbase_access.json"}, {boardRename("boardsrn", "boardsrntenancy"), "boardsrn_access.json"},
-		{boardRenameContract("boardsrnc", "boardsrnctenancy"), "boardsrnc_access.json"}} {
+		{boardRenameContract("boardsrnc", "boardsrnctenancy"), "boardsrnc_access.json"},
+		{boardRetypeBase("boardsrtbase", "boardsrtbasetenancy"), "boardsrtbase_access.json"}, {boardRetype("boardsrt", "boardsrttenancy"), "boardsrt_access.json"},
+		{boardRetypeContract("boardsrtc", "boardsrtctenancy"), "boardsrtc_access.json"},
+		{relaxBase("boardsrxbase", "boardsrxbasetenancy"), "boardsrxbase_access.json"}, {relaxHead("boardsrx", "boardsrxtenancy"), "boardsrx_access.json"}} {
 		// The adapter names the roles of the tenancy component in the migration of a step.
 		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
 		files, wiring, err := new(postgresadapter.Generator).Generate(service.ctx)
@@ -216,7 +222,7 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for name, body := range map[string][]byte{"tables_test.go": tablesTests, "table_steps_test.go": tableStepsTests} {
+	for name, body := range map[string][]byte{"tables_test.go": tablesTests, "table_steps_test.go": tableStepsTests, "relax_steps_test.go": relaxStepsTests} {
 		if err := os.WriteFile(filepath.Join(project, "check", name), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -325,6 +331,16 @@ func TestTables(t *testing.T) {
 		}
 		passedIn(t, passed, log, "TestTableSteps", id)
 	}
+	onRelax := func(t *testing.T, id string) {
+		t.Helper()
+		if !database {
+			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
+				t.Fatal("PostgreSQL fixture is required")
+			}
+			t.Skip("PostgreSQL fixture is not configured")
+		}
+		passedIn(t, passed, log, "TestRelaxSteps", id)
+	}
 
 	t.Run("ST-SUP-RC01-OC41-T01 The tables are SQL from the declaration, with no store", func(t *testing.T) {
 		current := orderService("storage")
@@ -431,6 +447,14 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC25-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC25-T01") })
 	t.Run("ST-SUP-RC01-OC23-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T05") })
 	t.Run("ST-GEN-UC12-R03-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R03-T02") })
+	t.Run("ST-SUP-RC01-OC23-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T02") })
+	t.Run("ST-SUP-RC01-OC33-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC33-T01") })
+	t.Run("ST-SUP-RC01-OC33-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC33-T02") })
+	t.Run("ST-SUP-RC01-OC36-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC36-T02") })
+	t.Run("ST-SUP-RC01-OC37-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC37-T02") })
+	t.Run("ST-SUP-RC01-OC39-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T04") })
+	t.Run("ST-SUP-RC01-OC24-T09 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T09") })
+	t.Run("ST-GEN-UC12-R03-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R03-T03") })
 
 	t.Run("ST-SUP-RC01-OC22-T03 An add step takes a database with rows to the schema of a new database, and the release before still runs on it", func(t *testing.T) {
 		onPostgres(t, "ST-SUP-RC01-OC22-T03")
@@ -481,12 +505,20 @@ func TestTables(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC01-OC24-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T01") })
 	t.Run("ST-SUP-RC01-OC44-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T01") })
+	// The cases of testdata/relax_steps_test.go run in the same generated module, under TestRelaxSteps.
+	t.Run("ST-SUP-RC01-OC45-T03 Each relax migration scans no row under its strong lock, and the release before starts and works after each one", func(t *testing.T) {
+		onRelax(t, "ST-SUP-RC01-OC45-T03")
+	})
+	t.Run("ST-SUP-RC01-OC45-T04 The migration job takes a database with rows through the relax steps to the schema of a new database, and the release before migrates again on it", func(t *testing.T) {
+		onRelax(t, "ST-SUP-RC01-OC45-T04")
+	})
 	t.Run("ST-SUP-RC01-OC44-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T02") })
 	t.Run("ST-SUP-RC01-OC39-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T01") })
 	t.Run("ST-SUP-RC01-OC24-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T03") })
 	t.Run("ST-SUP-RC01-OC24-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T04") })
 	t.Run("ST-SUP-RC01-OC24-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T05") })
 	t.Run("ST-SUP-RC01-OC24-T06 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T06") })
+	t.Run("ST-SUP-RC01-OC24-T07 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T07") })
 	t.Run("ST-SUP-RC01-OC40-T04 The schema manifest names the tenant key of each owned table, which holds on PostgreSQL with row-level security", func(t *testing.T) {
 		files, _, err := new(postgresadapter.Generator).Generate(widgetService(widgetEntities()))
 		if err != nil {

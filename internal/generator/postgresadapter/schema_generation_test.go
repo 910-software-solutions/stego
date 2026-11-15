@@ -278,6 +278,27 @@ func TestSyncTemplateCopy(t *testing.T) {
 				t.Errorf("the generator's copy of the %s differs from registry/runtime/%s", c.name, c.path)
 			}
 		}
+		// The conversion list of the sync template: the generator's copy has the runtime's text with its own names.
+		block := func(path, head string) string {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, rest, ok := strings.Cut(string(data), head)
+			text, _, end := strings.Cut(rest, "return list")
+			if !ok || !end {
+				t.Fatalf("%s holds no conversion list", path)
+			}
+			return text
+		}
+		runtimeList := block(filepath.Join("..", "..", "..", "registry", "runtime", "manifest", "sync.go"), "list := []Conversion{")
+		for _, name := range []string{"Name", "From", "To", "Forward", "Back", "Guard", "Deparsed"} {
+			runtimeList = strings.ReplaceAll(runtimeList, name+": ", strings.ToLower(name)+": ")
+		}
+		runtimeList = strings.ReplaceAll(runtimeList, "Conversion{", "syncConversion{")
+		if copied := block("schema_steps.go", "list := []syncConversion{"); copied != runtimeList {
+			t.Errorf("the generator's copy of the conversion list differs from registry/runtime/manifest/sync.go:\n%s\nwant:\n%s", copied, runtimeList)
+		}
 		// The contract check of the ledger takes a report as current for the runtime's window of intervals.
 		source, err := os.ReadFile(filepath.Join("..", "..", "..", "registry", "runtime", "lease", "release.go"))
 		if err != nil {

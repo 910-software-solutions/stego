@@ -11,3 +11,8 @@ provides:
   - health-endpoint
 
 slots: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    health-endpoint: inbound

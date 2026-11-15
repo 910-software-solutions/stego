@@ -3,11 +3,14 @@
 package gen
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/types"
@@ -224,9 +227,10 @@ type Context struct {
 // history: each schema change whose first step is at the position steps or after it is undone, the change whose
 // step is last first. AtSchemaStep(0) is the baseline, the shape of the first release, and AtSchemaStep with the
 // length of the schema history is the context itself. An add of an entity is undone with the entity and each
-// collection over it, an add of a field with the field, and a rename by giving the field the column From, with its
-// API name kept (StoredNames). Generation carries out no other kind of schema change yet, so AtSchemaStep refuses
-// one, and a change with no step.
+// collection over it, an add of a field with the field, a rename by giving the field the column From, with its
+// API name kept (StoredNames), and a relax by giving the field what it was before the change
+// (types.SchemaChange.RelaxedFrom). Generation carries out no other kind of schema change yet, so AtSchemaStep
+// refuses one, and a change with no step.
 func (c Context) AtSchemaStep(steps int) (Context, error) {
 	first := map[string]int{}
 	for i, step := range c.SchemaHistory {
@@ -240,7 +244,7 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if !stepped {
 			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
 		}
-		if change.Kind != "add" && change.Kind != "rename" {
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" {
 			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
 		}
 		if at >= steps {
@@ -268,6 +272,19 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if at < 0 {
 			return Context{}, fmt.Errorf("schema change %q adds to the entity %s, which the declaration does not have", change.ID, change.Entity)
 		}
+		if change.Kind == "relax" {
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.ColumnName() == change.Field })
+			if found < 0 {
+				return Context{}, fmt.Errorf("schema change %q relaxes the column %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+			}
+			before, reason := change.RelaxedFrom(fields[found])
+			if reason != "" {
+				return Context{}, fmt.Errorf("schema change %q: %s", change.ID, reason)
+			}
+			fields[found] = before
+			continue
+		}
 		if change.Kind == "rename" {
 			// A rename is undone by giving the field its column before the change; its API name stays.
 			fields := shaped.Entities[at].Fields
@@ -279,6 +296,28 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 			if fields[found].Column == fields[found].Name {
 				fields[found].Column = ""
 			}
+			continue
+		}
+		if change.Kind == "retype" {
+			// A retype is undone by giving the field its type and constraints before the change, in the column before
+			// it: the column of the retype before it on the field, or the field's name (StoredNames).
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == change.Field })
+			if found < 0 {
+				return Context{}, fmt.Errorf("schema change %q retypes the field %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+			}
+			before := RetypeField(change)
+			before.Name, before.Optional, before.Sensitivity = fields[found].Name, fields[found].Optional, fields[found].Sensitivity
+			if change.Definition == "" {
+				before.Default = nil
+			}
+			before.Column = ""
+			for _, earlier := range c.SchemaChanges {
+				if earlier.Kind == "retype" && earlier.Entity == change.Entity && earlier.Field == change.Field && first[earlier.ID] < first[change.ID] {
+					before.Column = RetypeColumn(change.Field, types.FieldType(change.From))
+				}
+			}
+			fields[found] = before
 			continue
 		}
 		if change.Field == "" {
@@ -322,7 +361,13 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 			renamed[[2]string{change.Entity, change.Field}] = change.From
 		}
 	}
-	if len(renamed) == 0 {
+	retyped := map[[2]string]bool{}
+	for _, change := range changes {
+		if change.Kind == "retype" {
+			retyped[[2]string{change.Entity, change.Field}] = true
+		}
+	}
+	if len(renamed) == 0 && len(retyped) == 0 {
 		return entities, nil
 	}
 	out := make([]types.Entity, len(entities))
@@ -330,6 +375,22 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 		entity.Fields = append([]types.Field(nil), entity.Fields...)
 		for j, field := range entity.Fields {
 			from, ok := renamed[[2]string{entity.Name, field.Name}]
+			if retyped[[2]string{entity.Name, field.Name}] {
+				// A retyped field keeps its API name and is stored in the column <field>_<type> of its type after its
+				// last retype (decision on ST-GEN-Q23 (a), orchestrator under the owner's delegation, 2026-11-14).
+				if ok {
+					return nil, fmt.Errorf("the entity %s: generation does not rename and retype the field %s both yet", entity.Name, field.Name)
+				}
+				if reason := namedElsewhere(entity, field.Name, invariants, collections); reason != "" {
+					return nil, fmt.Errorf("the entity %s: generation does not retype the field %s yet, because %s names it by its declared name; STEGO does not map that name to the column yet", entity.Name, field.Name, reason)
+				}
+				column := RetypeColumn(field.Name, field.Type)
+				if slices.ContainsFunc(entities[i].Fields, func(f types.Field) bool { return f.Name == column || f.Column == column }) {
+					return nil, fmt.Errorf("the entity %s declares a field %s, which is the column of the retyped field %s; give the field another name", entity.Name, column, field.Name)
+				}
+				entity.Fields[j].Column = column
+				continue
+			}
 			if !ok {
 				continue
 			}
@@ -351,6 +412,82 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 		out[i] = entity
 	}
 	return out, nil
+}
+
+// DefinitionField reads the Definition of a dropped field, as [name:] type[, constraint value]..., such as
+// legacy: string, max_length 64, into a field. It gives a reason when the Definition cannot be read.
+func DefinitionField(definition string) (types.Field, string) {
+	parts := strings.Split(definition, ",")
+	head := strings.TrimSpace(parts[0])
+	if _, typ, named := strings.Cut(head, ":"); named {
+		head = strings.TrimSpace(typ)
+	}
+	field := types.Field{Type: types.FieldType(head)}
+	if !types.ValidFieldTypes[field.Type] {
+		return field, fmt.Sprintf("the type %q is not a field type", head)
+	}
+	for i, part := range parts[1:] {
+		key, value, _ := strings.Cut(strings.TrimSpace(part), " ")
+		if key == "pattern" {
+			// A pattern can hold a comma, as in {1,9}, so it is the last constraint and takes the rest of the text.
+			_, rest, _ := strings.Cut(strings.Join(parts[i+1:], ","), "pattern")
+			field.Pattern = strings.TrimSpace(rest)
+			break
+		}
+		value = strings.TrimSpace(value)
+		number, err := strconv.ParseFloat(value, 64)
+		switch key {
+		case "min_length", "max_length":
+			length, err := strconv.Atoi(value)
+			if err != nil {
+				return field, fmt.Sprintf("the constraint %s %q is not a whole number", key, value)
+			}
+			if key == "min_length" {
+				field.MinLength = &length
+			} else {
+				field.MaxLength = &length
+			}
+		case "min", "max":
+			if err != nil {
+				return field, fmt.Sprintf("the constraint %s %q is not a number", key, value)
+			}
+			if key == "min" {
+				field.Min = &number
+			} else {
+				field.Max = &number
+			}
+		case "pattern":
+			field.Pattern = value
+		case "default", "optional", "unique":
+		default:
+			return field, fmt.Sprintf("the constraint %q is not one a field has", key)
+		}
+	}
+	return field, ""
+}
+
+// RetypeColumn gives the column of a field after a retype to the type typ: <field>_<type>, cut as the other
+// generated names are cut, to its first 46 bytes and 16 hexadecimal digits of the sha256 digest of the whole name
+// when it is longer than 63 bytes (decision on ST-GEN-Q23 (a), orchestrator under the owner's delegation, 2026-11-14).
+func RetypeColumn(field string, typ types.FieldType) string {
+	name := field + "_" + string(typ)
+	if len(name) <= 63 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return name[:46] + "_" + hex.EncodeToString(sum[:8])
+}
+
+// RetypeField gives the field before a retype: the field of its Definition when it has one, else a field of the type
+// From with no constraint (decision on ST-GEN-Q07 (a), orchestrator under the owner's delegation, 2026-11-13).
+func RetypeField(change types.SchemaChange) types.Field {
+	if change.Definition != "" {
+		if field, reason := DefinitionField(change.Definition); reason == "" {
+			field.Name = change.Field
+			return field
+		}
+	}
+	return types.Field{Name: change.Field, Type: types.FieldType(change.From)}
 }
 
 // namedElsewhere tells what, other than the field itself, names the field of the entity, or empty.

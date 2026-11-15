@@ -3,6 +3,7 @@ package compiler
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/slot"
@@ -143,6 +145,10 @@ type ReconcilerInput struct {
 	// its binding and that it is qualified. Validate, plan and apply stop on
 	// each fault it gives. cmd/stego gives fill.QualificationFaults.
 	QualifyFills FillQualifier
+
+	// WriteRequirements writes the platform requirements from the needs of the active set; cmd/stego gives
+	// delivery.WriteRequirements. Without it a run writes no platform requirements.
+	WriteRequirements RequirementsWriter
 
 	// CheckOnly marks a plan that stego validate makes only to read the pins it uses. Such a plan is never
 	// written, so Reconcile does not refuse it for a part of the declaration that no component can generate yet.
@@ -481,6 +487,30 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	allFiles = append(allFiles, sharedFiles...)
 
+	// The platform requirements and the architecture model are the files of the run out of the generated output; no
+	// generator may take their paths (ST-DLV-UC01-R05, ST-GEN-UC08).
+	for _, file := range allFiles {
+		if isProjectGeneratedFile(file.Path) {
+			return nil, fmt.Errorf("the generated file %s takes a path that apply keeps for its own project files", file.Path)
+		}
+	}
+	var requirements []byte
+	if input.WriteRequirements != nil {
+		file, err := requirementsFile(input.WriteRequirements, svcDecl, componentNames, components)
+		if err != nil {
+			return nil, err
+		}
+		requirements = file.Content
+		allFiles = append(allFiles, file)
+	}
+	// The architecture model comes from the declaration, the registry parts and the wiring of this run alone, and
+	// a component or slot that does not state its place stops the run before any file is written (ST-GEN-UC08-R05).
+	architecture, err := architectureFiles(input, svcDecl, reg, archetype, componentNames, components, wirings, requirements)
+	if err != nil {
+		return nil, err
+	}
+	allFiles = append(allFiles, architecture...)
+
 	// Validate no duplicate file paths across all sources (generators, slots,
 	// assembler). A duplicate means one generator's output would silently
 	// overwrite another's.
@@ -618,6 +648,66 @@ func applyWithFault(plan *Plan, projectDir, outDir string, fault applyFault) err
 // root. The application owns its module and checksum files.
 func isProjectRootFile(filePath string) bool {
 	return filePath == "go.mod" || filePath == "go.sum"
+}
+
+// RequirementsFile is the path, in the project folder, of the platform requirements that apply writes: the path of
+// delivery.RequirementsFile (ST-DLV-EN01-TB), which Generating may not import.
+const RequirementsFile = "deploy/platform-requirements.yaml"
+
+// isProjectGeneratedFile tells if a generated file is placed at its path in the project folder, out of the
+// generated output, and owned by STEGO whole: the record keeps its digest under project_files, so that apply refuses
+// a hand edit of it and drift names one (ST-DLV-UC01-R05).
+func isProjectGeneratedFile(filePath string) bool {
+	return filePath == RequirementsFile || filePath == ArchitectureFile || filePath == ArchitectureViewFile
+}
+
+// architectureFiles derives the architecture model of the run and renders its view (ST-GEN-CMD05): from the declaration, the registry
+// parts of the active set and the bound mixins, the wiring, the platform requirements of the run and the declared
+// authorization schema.
+func architectureFiles(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, archetype *registry.Archetype,
+	names []string, components map[string]*registry.Component, wirings []ComponentWiring, requirements []byte) ([]gen.File, error) {
+	mixinNames, err := boundMixins(reg, svcDecl.Mixins)
+	if err != nil {
+		return nil, err
+	}
+	mixins := make([]*registry.Mixin, 0, len(mixinNames))
+	for _, name := range mixinNames {
+		mixins = append(mixins, reg.Mixin(name))
+	}
+	schema, err := declaration.ReadAuthzSchema(svcDecl, os.DirFS(input.ProjectDir))
+	if err != nil {
+		return nil, fmt.Errorf("reading the authorization schema for the architecture model: %w", err)
+	}
+	return WriteArchitecture(ArchitectureInput{Service: svcDecl, Archetype: archetype, Components: components, Names: names, Mixins: mixins,
+		Wirings: wirings, Requirements: requirements, Schema: schema})
+}
+
+// RequirementsWriter writes the platform requirements of the service from the needs that its components state
+// (ST-DLV-CMD01). The compiler owns this port and Delivering's delivery package implements it, because Generating
+// may not import Delivering (ST-STD-CODE-R03).
+type RequirementsWriter func(service string, components []ComponentNeeds) ([]byte, error)
+
+// ComponentNeeds is one component of the active set with the needs it states and its settings as the declaration
+// and the registry give them.
+type ComponentNeeds struct {
+	Component string
+	Needs     []registry.Need
+	Settings  map[string]any
+}
+
+// requirementsFile writes the platform requirements of the active set, in the order of the active set
+// (ST-DLV-DS01). The derivation reads the declaration and the registry alone, never the generated code or a fill.
+func requirementsFile(write RequirementsWriter, svcDecl *types.ServiceDeclaration, names []string, components map[string]*registry.Component) (gen.File, error) {
+	needs := make([]ComponentNeeds, 0, len(names))
+	for _, name := range names {
+		component := components[name]
+		needs = append(needs, ComponentNeeds{Component: name, Needs: component.Needs, Settings: resolveComponentConfig(component, svcDecl)})
+	}
+	data, err := write(svcDecl.Name, needs)
+	if err != nil {
+		return gen.File{}, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
+	}
+	return gen.File{Path: RequirementsFile, Content: data}, nil
 }
 
 // collectComponentNames assembles the ordered list of component names from the
@@ -935,9 +1025,15 @@ func computePlan(
 	if existingState.LastApplied != nil && existingState.LastApplied.Files != nil {
 		existingHashes = existingState.LastApplied.Files
 	}
+	existingProject := make(map[string]string)
+	if existingState.LastApplied != nil && existingState.LastApplied.ProjectFiles != nil {
+		existingProject = existingState.LastApplied.ProjectFiles
+	}
 
 	var planned []PlannedFile
 	newFileHashes := make(map[string]string)
+	var newProjectHashes map[string]string
+	var handEdited []string
 
 	for _, f := range generatedFiles {
 		content := f.Bytes()
@@ -946,7 +1042,12 @@ func computePlan(
 		}
 		hash := HashBytes(content)
 		// The application owns go.mod. Go tools can update it after apply.
-		if !isProjectRootFile(f.Path) {
+		if isProjectGeneratedFile(f.Path) {
+			if newProjectHashes == nil {
+				newProjectHashes = make(map[string]string)
+			}
+			newProjectHashes[f.Path] = hash
+		} else if !isProjectRootFile(f.Path) {
 			newFileHashes[f.Path] = hash
 		}
 
@@ -956,6 +1057,10 @@ func computePlan(
 			return nil, err
 		}
 		snapshots[name] = snapshot
+		if _, tracked := existingProject[f.Path]; isProjectGeneratedFile(f.Path) && !tracked && snapshot.Exists && snapshot.Hash != hash {
+			// A file that the record does not track yet is the author's: apply does not replace it unasked.
+			handEdited = append(handEdited, f.Path)
+		}
 		action := ActionUpdate
 		if !snapshot.Exists {
 			action = ActionGenerate
@@ -991,9 +1096,21 @@ func computePlan(
 			planned = append(planned, PlannedFile{Path: path, Action: ActionDelete})
 		}
 	}
+	for path := range existingProject {
+		if _, stillGenerated := newProjectHashes[path]; !stillGenerated {
+			_, snapshot, err := readSnapshot(root, path, maxTrackedFileBytes, false)
+			if err != nil {
+				return nil, err
+			}
+			snapshots[path] = snapshot
+			planned = append(planned, PlannedFile{Path: path, Action: ActionDelete})
+		}
+	}
 
-	var handEdited []string
-	for path, recorded := range existingHashes {
+	tracked := make(map[string]string, len(existingHashes)+len(existingProject))
+	maps.Copy(tracked, existingHashes)
+	maps.Copy(tracked, existingProject)
+	for path, recorded := range tracked {
 		if isProjectRootFile(path) {
 			continue
 		}
@@ -1049,6 +1166,7 @@ func computePlan(
 			Components:            pins,
 			Entities:              entitySnapshot,
 			Files:                 newFileHashes,
+			ProjectFiles:          newProjectHashes,
 		},
 	}
 

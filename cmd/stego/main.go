@@ -18,6 +18,7 @@ import (
 	"github.com/jsell-rh/stego/internal/buildidentity"
 	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/declaration"
+	"github.com/jsell-rh/stego/internal/delivery"
 	"github.com/jsell-rh/stego/internal/fill"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/auditlog"
@@ -98,6 +99,8 @@ func main() {
 		err = runDrift(os.Args[2:])
 	case "compat":
 		err = runCompat(os.Args[2:], os.Stdout)
+	case "architecture":
+		err = runArchitecture(os.Args[2:], os.Stdout)
 	case "test":
 		err = runTest(os.Args[2:])
 	case "fill":
@@ -108,6 +111,8 @@ func main() {
 		err = runLifecycle(os.Args[2:])
 	case "fleet":
 		err = runFleet(os.Args[2:])
+	case "env":
+		err = runEnv(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		printUsage()
@@ -144,6 +149,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  deps            Resolve and check project dependencies")
 	fmt.Fprintln(os.Stderr, "  drift           Detect hand-edits to generated files")
 	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Architecture:")
+	fmt.Fprintln(os.Stderr, "  architecture export  Print the architecture as Structurizr DSL or Mermaid text")
+	fmt.Fprintln(os.Stderr, "  architecture facts   Print the facts of a topic, such as personal data, with their sources")
+	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Validation:")
 	fmt.Fprintln(os.Stderr, "  validate        Check service.yaml against registry")
 	fmt.Fprintln(os.Stderr, "  compat          Check service.yaml against the version that runs now")
@@ -159,6 +168,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  lifecycle withdraw  Record that a digest must not be used, with its fail date")
 	fmt.Fprintln(os.Stderr, "  fleet               Name every service that pins a component digest")
 	fmt.Fprintln(os.Stderr, "  fleet vex           Print an OpenVEX statement per service and advisory")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Delivery:")
+	fmt.Fprintln(os.Stderr, "  env check       Check an environment file against the platform requirements")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Other:")
 	fmt.Fprintln(os.Stderr, "  version         Print version")
@@ -1077,7 +1089,33 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 		ReadFill:     fill.ReadCollection,
 		ReadFillSlot: fill.ReadImplements,
 		QualifyFills: fill.QualificationFaults,
+
+		WriteRequirements: writeRequirements,
 	}, nil
+}
+
+// writeRequirements gives the compiler's port for the platform requirements to Delivering
+// (delivery.WriteRequirements, ST-DLV-CMD01). A setting that is not one scalar value gives no value to a need name.
+func writeRequirements(service string, components []compiler.ComponentNeeds) ([]byte, error) {
+	stated := make([]delivery.ComponentNeeds, 0, len(components))
+	for _, component := range components {
+		needs := make([]delivery.Need, 0, len(component.Needs))
+		for _, need := range component.Needs {
+			needs = append(needs, delivery.Need{Kind: need.Kind, Name: need.Name, Keys: need.Keys, Engine: need.Engine, Port: need.Port,
+				APIGroup: need.APIGroup, Resource: need.Resource, Verbs: need.Verbs, Level: need.Level})
+		}
+		settings := map[string]string{}
+		for key, value := range component.Settings {
+			switch value := value.(type) {
+			case string:
+				settings[key] = value
+			case int, int64, uint64, float64, bool:
+				settings[key] = fmt.Sprint(value)
+			}
+		}
+		stated = append(stated, delivery.ComponentNeeds{Component: component.Component, Needs: needs, Settings: settings})
+	}
+	return delivery.WriteRequirements(service, stated)
 }
 
 func defaultGenerators() map[string]gen.Generator {

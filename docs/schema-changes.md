@@ -8,7 +8,8 @@ release.
 ## Declare a schema change
 
 A schema change has an ID, a kind and the entity and the field it changes.
-The kinds are `add`, `rename`, `retype`, `require`, `drop` and `unique`. The
+The kinds are `add`, `rename`, `retype`, `require`, `drop`, `unique` and
+`relax`. The
 schema history puts the steps of the changes in order. A step moves one change
 to `expand` or to `contract`.
 
@@ -51,6 +52,63 @@ checkout by commit, such as `git fetch <url> <ref>` and
 `git checkout FETCH_HEAD`, has commits but no branch. Such a repository, any
 other repository with commits but no such branch, or one that git cannot read,
 stops plan and apply: name the base with `--base`.
+
+## Relax steps
+
+A relax changes one field in place, in one release, with no new column and no
+copy of the rows (decision on finding F12 of the schema-change research,
+owner, 2026-11-13). It has an expand step only, and that step finishes it.
+Declare it with the field and a `definition` that says what the field was
+before the change, one item for each attribute that the change relaxes:
+
+| Change | Item | Example |
+| --- | --- | --- |
+| A longer `max_length` | `max_length N`, the old length | `max_length 40` |
+| More enum values | `values V1 V2 ...`, the old values | `values calm busy` |
+| A default where there was none | `no default` | `no default` |
+| A required field made optional | `required` | `required` |
+| An enum made a string with no `max_length` | `type enum, values V1 V2 ...` | `type enum, values a b` |
+
+```yaml
+schema_changes:
+  - {id: note-title-relax, kind: relax, entity: Note, field: title, definition: max_length 40}
+  - {id: note-size-relax, kind: relax, entity: Note, field: size, definition: "required, no default"}
+schema_history:
+  - {change: note-title-relax, phase: expand}
+  - {change: note-size-relax, phase: expand}
+```
+
+Every value that the release before writes stays valid, and it can read every
+value that the new release writes, so both releases run on the same schema.
+The check against the base refuses a narrowing: a shorter `max_length`, an
+enum value taken away, a field made required, and a type change that
+PostgreSQL cannot make without a rewrite, such as an enum made a string with a
+`max_length`. Those still need a new field, a copy and a drop. `stego compat`
+names the relax to declare when you relax a field with no schema change.
+
+The step's own migration runs one `ALTER TABLE` that reads no row under its
+`ACCESS EXCLUSIVE` lock: the new `CHECK` of the field `NOT VALID` as
+`<table>_<column>_relax`, a longer `character varying`, `DROP NOT NULL` and
+`SET DEFAULT`. `ALTER COLUMN TYPE` scans the table again for each validated
+`CHECK` on the column, so when the type changes, the old `CHECK` goes in the
+same statement; the new `CHECK` holds each new write. In the same transaction,
+after the `ALTER TABLE`, the migration gives the column a comment, the relax
+marker, that states the exact form after the step of each attribute that it
+relaxes: the type, nullable, the default and the `CHECK`. A second migration
+validates the new `CHECK`, which blocks no read and no write, and a third drops
+the old `CHECK`, when it is still there, and gives the new one the name
+`<table>_<column>_check`.
+
+The schema check of each release accepts on a marked column, for each
+attribute, only the form of its own manifest or the exact form that the marker
+states. Any other form stays a fault: a longer type, a dropped `NOT NULL`, a
+default or a `CHECK` that the relax did not declare is refused on a marked
+column as on any other. A release whose manifest states the relaxed form
+accepts only that form, so for it the marker no longer counts. A role that owns
+the table can write such a marker by hand, as it can change the table itself.
+A relax needs the runtime library v0.108.0 or later in the release before:
+`stego compat` refuses a relax on a base that pins an older one, and names the
+version to deploy first.
 
 ## The migrations of the steps
 
@@ -108,6 +166,72 @@ an earlier ledger refuses the row of a step that it does not know. The check
 against the base refuses a new step on such a base and names the version to
 deploy first.
 
+## Retype and require
+
+A retype gives a field a new type. Declare the conversion to the new type
+and the inverse conversion back, by the names that the database component
+declares, and the type before the change in `from`:
+
+```yaml
+schema_changes:
+  - {id: orgsetting-rank-retype, kind: retype, entity: OrgSetting, field: rank,
+     from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}
+```
+
+The postgres-adapter declares these conversions: `integer_to_int64`,
+`int64_to_integer`, `integer_to_text`, `int64_to_text`, `bool_to_text`,
+`text_to_integer`, `text_to_int64` and `text_to_bool` (`integer` is
+`int32`). A conversion is total, or total only under a constraint of the
+field: a text converts to an int64 only under one of the patterns
+`^[0-9]{1,9}$`, `^-?[0-9]{1,9}$`, `^[0-9]{1,18}$` and `^-?[0-9]{1,18}$`.
+Checking refuses a conversion that the component does not declare for the
+two types, a conversion that is not total over the field before the change
+and has no `fill_value`, and an inverse conversion that is not total over
+the field after the change (ST-DECL-INV62, ST-DECL-INV63). Checking also
+refuses a retype where the CHECK of one column could refuse a converted
+value of the other: between two integer types the fields before and after
+the change have the same `min` and `max`, and between a number or a boolean
+and a text neither field has a `min`, a `max`, a `min_length`, a
+`max_length` or `values`. Give the field
+before the change, with its constraints, in `definition`, such as
+`string, pattern ^[0-9]{1,9}$`; a pattern is the last item, as it can hold
+a comma.
+
+The field keeps its name in the API. Its values go to a new column,
+`<field>_<type>`, such as `rank_string`, which stays its column after the
+contract step. The expand step adds the column, nullable, its CHECK
+`NOT VALID` and its indexes, and then the sync trigger, which converts each
+write of the release before into the new column and each write of the new
+release back into the old one. A value that does not convert gets the fill
+value. The migration job of the
+new release converts the rows there before the rollout, under the lease of
+the change, and the contract step waits for a backfill with no failed row.
+Only one rename or retype can be at expand on a table at one time. A retype
+of a field in a unique key or that is unique after it, of a reference, of a
+string with a `max_length`, and of the counter `generation` is not built,
+and neither is a require of a unique field, whose rows would all get the
+fill value. The contract step counts the rows with the old column set and
+the new one empty last, and waits while one is left.
+
+A require adds a required field with no default. Declare the value that
+each row there gets in `fill_value`:
+
+```yaml
+  - {id: user-locale-require, kind: require, entity: User, field: locale, fill_value: en}
+```
+
+Its expand step adds the column with the fill value as its default, and
+nullable. PostgreSQL keeps the default in the catalog and rewrites no row,
+so each row there and each insert of the release before read the fill
+value at once. A require has no sync trigger and no backfill. Its contract
+step makes the column NOT NULL in short steps (a CHECK `NOT VALID`, its
+validation, `SET NOT NULL`, the drop of the CHECK) and keeps the default.
+
+A retype whose conversion is not total declares its fill value with its
+expand step. A later release cannot add or change it, because the expand
+step holds it and its ledger digest covers it: the check against the base
+refuses the change (ST-GEN-Q24).
+
 ## Restarts during a rolling deploy
 
 A pod of the release before a step restarts on the database after the
@@ -133,7 +257,7 @@ in the exact form that the step gives it, on the table of a declared entity:
   security every other unique index that the manifest does not name fails
   the check, because a write that fails on it would tell one tenant that
   another tenant holds the value;
-- the sync trigger of the expand step of a rename, a retype or a require:
+- the sync trigger of the expand step of a rename or a retype:
   a BEFORE INSERT OR UPDATE row trigger whose function is the fixed
   template of this release, in the schema `stego_steps`, for one column
   that the release before knows and one new column (ST-SUP-RP15-LC02).

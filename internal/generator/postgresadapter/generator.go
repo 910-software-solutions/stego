@@ -1082,10 +1082,24 @@ func (r *contractRefusal) Refusal() string { return r.text }
 // step made, CREATE TRIGGER <trigger> BEFORE INSERT OR UPDATE ON <table> FOR
 // EACH ROW EXECUTE FUNCTION stego_steps.<trigger>(), as one that fires only on
 // an INSERT, on an UPDATE OF another column, with a WHEN condition, for each
-// statement or after the row (security review of PR #320, L1).
+// statement or after the row (security review of PR #320, L1). It reads the
+// catalog with the search path pg_catalog, pg_temp, so pg_get_triggerdef
+// names the schema of the sync function whatever the search path of the
+// session, and only the operators of pg_catalog run in the compare; then it
+// sets the search path of tx back (review of PR #320, info).
 func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
+	var path string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)"); err != nil {
+		return err
+	}
 	var trigger, syncing, column bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace JOIN pg_catalog.pg_class r ON r.oid = t.tgrelid JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0 AND pg_catalog.pg_get_triggerdef(t.oid) = 'CREATE TRIGGER ' || pg_catalog.quote_ident($2) || ' BEFORE INSERT OR UPDATE ON ' || pg_catalog.quote_ident(rn.nspname) || '.' || pg_catalog.quote_ident(r.relname) || ' FOR EACH ROW EXECUTE FUNCTION stego_steps.' || pg_catalog.quote_ident($2) || '()'), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', $1, true)", path); err != nil {
 		return err
 	}
 	if !trigger && !column {
@@ -1130,6 +1144,16 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 			count = fmt.Sprint(left)
 		}
 		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: %s; rows of the listed tenants with the old column set and the new one empty: %s; run the migration job of the release before until the backfill completes", c.Change, state, count)}
+	}
+	// A last count of the rows with the old column set and the new one empty: a write that the completeness CHECK
+	// let through, as a value that does not convert with no fill value, would lose its value when the old column
+	// goes (security review of PR #335, L5, orchestrator under the owner's delegation, 2026-11-14).
+	left, err := rowsLeft(ctx, tx, c)
+	if err != nil {
+		return err
+	}
+	if left > 0 {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: rows of the listed tenants with the old column set and the new one empty: %d; run the migration job of the release before until the backfill completes", c.Change, left)}
 	}
 	return runningReleases(ctx, tx, c)
 }

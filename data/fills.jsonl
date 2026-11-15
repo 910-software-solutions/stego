@@ -373,6 +373,7 @@
 {"source_id":"ST-GEN-CH02","target_id":"ST-PAT-GO-CODE-SL03"}
 {"source_id":"ST-GEN-CH03","target_id":"ST-PAT-GO-CODE-SL03"}
 {"source_id":"ST-GEN-CH04","target_id":"ST-PAT-GO-CODE-SL03"}
+{"source_id":"ST-GEN-CH05","target_id":"ST-PAT-GO-CODE-SL03"}
 {"source_id":"ST-GEN-CMD01-H","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-GEN-CMD02-H","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-GEN-CMD03-H","target_id":"ST-PAT-GO-CODE-SL01"}
@@ -426,6 +427,8 @@
 {"source_id":"ST-GEN-QRY02-H","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-GEN-QRY03-H","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-GEN-QRY04-H","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-GEN-QRY05-H","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-GEN-QRY06-H","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-GEN-REPO01","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-GEN-RM01-PJ","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-GEN-RM01-RD","target_id":"ST-PAT-GO-CODE-SL02"}
@@ -816,6 +819,7 @@
 {"source_id":"ST-SUP-RP14-LF07","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RP15","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RP15-LF01","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-SUP-RP15-LF04","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-SP01-PR","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-SP02-PR","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-SP03-PR","target_id":"ST-PAT-GO-CODE-SL01"}

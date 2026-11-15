@@ -9,6 +9,8 @@ adds_components:
 
 adds_slots:
   - name: on_entity_changed
+    phase: after_store
+    operations: [create, update, delete, upsert, patch]
     proto: stego.mixins.event_publisher.slots.OnEntityChanged
     default: noop
 

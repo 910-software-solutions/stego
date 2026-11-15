@@ -123,7 +123,7 @@ func TestCommandsRejectInvalidGoPackageNamespaces(t *testing.T) {
 			registry := t.TempDir()
 			files := map[string]string{
 				"archetypes/application/archetype.yaml": "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: application\nlanguage: go\nversion: 1.0.0\ncomponents: [controller]\n",
-				"components/controller/component.yaml":  "kind: component\nname: controller\nversion: 1.0.0\nstage: ga\noutput_namespace: " + namespace + "\n",
+				"components/controller/component.yaml":  "kind: component\nname: controller\nversion: 1.0.0\nstage: ga\noutput_namespace: " + namespace + "\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\n",
 			}
 			for name, data := range files {
 				name = filepath.Join(registry, name)
@@ -180,7 +180,8 @@ func TestCommandsRejectNormalizedSlotCollisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(component, append(data, []byte("  - name: before__create\n    proto: stego.components.rest_api.slots.BeforeRetry\n    default: passthrough\n")...), 0600); err != nil {
+	slot := "slots:\n  - name: before__create\n    phase: before_store\n    operations: [create]\n    proto: stego.components.rest_api.slots.BeforeRetry\n    default: passthrough\n"
+	if err := os.WriteFile(component, []byte(strings.Replace(string(data), "slots:\n", slot, 1)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	data, err = os.ReadFile(filepath.Join(registry, "components/rest-api/slots/before_create.proto"))

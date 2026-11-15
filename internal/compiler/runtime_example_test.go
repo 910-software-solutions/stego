@@ -29,8 +29,8 @@ func TestRuntimeExample(t *testing.T) {
 	if err := os.CopyFS(p.dir, os.DirFS(filepath.Join("..", "..", "examples", "user-management"))); err != nil {
 		t.Fatal(err)
 	}
-	if record := p.read(".stego/state.yaml"); !strings.Contains(record, "format_version: 5") || strings.Contains(record, "out/internal/storage/store.go") {
-		t.Fatal("the record of the example user-management is not of format version 5 on the runtime data path")
+	if record := p.read(".stego/state.yaml"); !strings.Contains(record, "format_version: 6") || strings.Contains(record, "out/internal/storage/store.go") {
+		t.Fatal("the record of the example user-management is not of format version 6 on the runtime data path")
 	}
 	check, err := os.ReadFile(filepath.Join(exampleFixture, "check", "example_test.go"))
 	if err != nil {

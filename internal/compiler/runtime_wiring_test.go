@@ -284,8 +284,8 @@ func TestRuntimeDataPath(t *testing.T) {
 		}
 		fresh.stego("apply")
 		record := fresh.read(".stego/state.yaml")
-		if !strings.Contains(record, "format_version: 5") || strings.Contains(record, "data_path") {
-			t.Errorf("the record is not of format version 5 without a data path:\n%s", record)
+		if !strings.Contains(record, "format_version: 6") || strings.Contains(record, "data_path") {
+			t.Errorf("the record is not of format version 6 without a data path:\n%s", record)
 		}
 
 		// The same declaration without the command or the query generator: no component serves its data, so the
@@ -354,8 +354,8 @@ func TestRuntimeDataPath(t *testing.T) {
 			if !strings.Contains(string(output), "Summary: 0 to generate, 0 to update, 0 to delete") {
 				t.Errorf("the plan of the example %s changes its generated output:\n%s", example, output)
 			}
-			if record := p.read(".stego/state.yaml"); !strings.Contains(record, "format_version: 5") || strings.Contains(record, "data_path") {
-				t.Errorf("the record of the example %s is not of format version 5 without a data path", example)
+			if record := p.read(".stego/state.yaml"); !strings.Contains(record, "format_version: 6") || strings.Contains(record, "data_path") {
+				t.Errorf("the record of the example %s is not of format version 6 without a data path", example)
 			}
 			if _, err := os.Stat(filepath.Join(p.dir, "out", "internal", "storage", "store.go")); err == nil {
 				t.Errorf("the example %s holds the GORM store", example)

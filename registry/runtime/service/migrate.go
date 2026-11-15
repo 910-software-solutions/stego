@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -458,12 +459,7 @@ func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 		}
 		return endedTxConn{conn}, nil
 	}
-	// A session goes back to the pool as the login role, with its own search path. Each transaction of the session
-	// ended on this goroutine before (endedTxConn), so no Close of database/sql runs at the same time as the reset.
-	release := func(conn endedTxConn) {
-		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "RESET ROLE; RESET search_path")
-		_ = conn.Close()
-	}
+	release := func(conn endedTxConn) { releaseBackfillSession(ctx, conn) }
 	for _, b := range m.Backfills {
 		settings := b.Settings
 		if settings.Observer == nil {
@@ -556,6 +552,17 @@ func (c endedTxConn) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx,
 		return nil, err
 	}
 	return c.Conn.BeginTx(context.WithoutCancel(ctx), opts)
+}
+
+// releaseBackfillSession gives the backfill session conn back to the pool as the login role, with its own search
+// path. Each transaction of the session ended on this goroutine before (endedTxConn), so no Close of database/sql
+// runs at the same time as the reset. A session whose reset fails can still run as the owner role, so it is closed
+// and does not go back to the pool (review of PR #327, low).
+func releaseBackfillSession(ctx context.Context, conn endedTxConn) {
+	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "RESET ROLE; RESET search_path"); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+	_ = conn.Close()
 }
 
 // MinSessionPause is the shortest wait of the backfill step after a broken session, whatever the retry period of the
@@ -773,7 +780,7 @@ func CopyBackfills(copies []lease.Copy, tenantSchema string) ([]Backfill, error)
 			return nil, err
 		}
 		key, parts := c.Settings()
-		out = append(out, Backfill{Change: c.Change, Step: step, Settings: lease.BackfillSettings{Key: key, KeyParts: parts, Pause: BackfillPause,
+		out = append(out, Backfill{Change: c.Change, Step: step, Settings: lease.BackfillSettings{FillDigest: c.FillDigest, Key: key, KeyParts: parts, Pause: BackfillPause,
 			Validate: c.Validate(), Check: c.Check}, Table: c.Table})
 	}
 	return out, nil
