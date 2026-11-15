@@ -76,6 +76,7 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 	for _, e := range m.Containers {
 		declare(e.ID)
 	}
+	declareContext(m, declare)
 	for _, e := range m.Components {
 		declare(e.ID)
 	}
@@ -230,6 +231,9 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 		for _, f := range t.Facts {
 			refer(f.ID, f.About)
 		}
+	}
+	if err := checkContext(m, refer); err != nil && fault == nil {
+		fault = err
 	}
 	if fault != nil {
 		return fault

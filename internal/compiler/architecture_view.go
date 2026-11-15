@@ -2,7 +2,9 @@ package compiler
 
 import (
 	"bytes"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -71,7 +73,7 @@ func RenderArchitectureView(model []byte) ([]byte, error) {
 		return nil, fmt.Errorf("architecture view: the shell has no place for the text forms")
 	}
 	var out bytes.Buffer
-	out.WriteString(strings.NewReplacer("{{name}}", html.EscapeString(m.System.Name), "{{record}}", html.EscapeString(m.Record.Path),
+	out.WriteString(strings.NewReplacer("{{csp}}", viewPolicy(architectureViewShell), "{{name}}", html.EscapeString(m.System.Name), "{{record}}", html.EscapeString(m.Record.Path),
 		"{{archetype}}", html.EscapeString(m.System.Archetype+" "+m.System.ArchetypeVersion)).Replace(before))
 	writeForms(&out, &m)
 	out.WriteString(after)
@@ -86,10 +88,48 @@ func RenderArchitectureView(model []byte) ([]byte, error) {
 	json.HTMLEscape(&out, compact.Bytes())
 	out.WriteString("</script>\n<script type=\"application/json\" id=\"layout\">")
 	out.Write(layout)
-	out.WriteString("</script>\n<script>\n")
-	out.WriteString(architectureViewScript)
+	out.WriteString("</script>\n<script>")
+	out.WriteString(viewerScript())
 	out.WriteString("</script>\n</body>\n</html>\n")
 	return out.Bytes(), nil
+}
+
+// viewerScript is the text of the viewer's script element, which the policy of the view admits by its hash.
+func viewerScript() string { return "\n" + architectureViewScript }
+
+// inlineScripts gives the text of each script element of the shell that runs: one with no type.
+func inlineScripts(shell string) []string {
+	var out []string
+	for rest := shell; ; {
+		start := strings.Index(rest, "<script>")
+		if start < 0 {
+			return out
+		}
+		rest = rest[start+len("<script>"):]
+		end := strings.Index(rest, "</script>")
+		if end < 0 {
+			return out
+		}
+		out = append(out, rest[:end])
+		rest = rest[end:]
+	}
+}
+
+// scriptHash gives the CSP source of a script by the SHA-256 of its text.
+func scriptHash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+}
+
+// viewPolicy gives the content security policy of the view (#342 F1): it loads nothing, and runs only the scripts
+// of the view, each named by the hash of its text, which Go computes when it renders the view. The style of the view
+// is inline in the file, so style-src admits inline style; the model download is a data: address.
+func viewPolicy(shell string) string {
+	var hashes []string
+	for _, text := range append(inlineScripts(shell), viewerScript()) {
+		hashes = append(hashes, scriptHash(text))
+	}
+	return "default-src 'none'; script-src " + strings.Join(hashes, " ") + "; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"
 }
 
 // formWriter writes the text forms, escaping every text that comes from the model.
@@ -208,8 +248,12 @@ func writeForms(b *bytes.Buffer, m *ArchitectureModel) {
 }
 
 func overviewForm(w formWriter, m *ArchitectureModel) {
-	w.key("Entry: a collection that callers reach through the network edge", "Container: a unit that runs or stores", "Line: a call into the service, or a store it uses")
+	w.key("Person: the caller", "Entry: a collection that callers reach through the network edge", "Container: a unit that runs or stores",
+		"Double box: a system outside the service", "Line: a relation of the service; a dashed line runs later")
 	w.head("Element", "Kind", "What it is", "Source")
+	for _, a := range m.Actors {
+		w.row(a.ID, a.Name, "actor, "+a.Kind, actorText(a), sourceText(a.Source))
+	}
 	for _, c := range m.Containers {
 		what := "the service process"
 		if c.Kind != "service" {
@@ -236,6 +280,43 @@ func overviewForm(w formWriter, m *ArchitectureModel) {
 		}
 	}
 	w.end()
+	if len(m.Relations) > 0 {
+		names := map[string]string{}
+		for _, c := range m.Containers {
+			names[c.ID] = c.Name
+		}
+		for _, a := range m.Actors {
+			names[a.ID] = a.Name
+		}
+		w.h3("Relations")
+		w.head("From", "Relation", "To", "Through", "When", "Source")
+		for _, r := range m.Relations {
+			when := "in the request"
+			if r.Mode == "async" {
+				when = "later, after the response"
+			}
+			w.row(r.ID, names[r.From], r.Text, names[r.To], shortID(r.Through), when, sourceText(r.Source))
+		}
+		w.end()
+	}
+}
+
+// actorText says what an actor is, in fixed words.
+func actorText(a ArchActor) string {
+	switch a.Kind {
+	case actorCaller:
+		return "calls the operations of the collections"
+	case actorTokenIssuer:
+		return "issues the tokens that " + shortID(a.StatedBy) + " checks"
+	case actorAuthorization:
+		return "decides each permission that an operation checks"
+	case actorStore:
+		return "keeps the rows that " + shortID(a.StatedBy) + " writes"
+	}
+	if a.StatedBy != "" {
+		return "a system outside the service that " + shortID(a.StatedBy) + " calls"
+	}
+	return "a system outside the service"
 }
 
 func portText(p ArchComponentPort) string {
@@ -488,9 +569,86 @@ func settingBy(s ArchSetting) string {
 	return sourceText(s.Source)
 }
 
+// accessGroup is one group of the columns (or the lines) of the access matrix: the operations of one collection,
+// or the commands, queries and workers.
+type accessGroup struct {
+	name   string
+	checks []ArchCheck
+}
+
+// accessGroups gives the checks of the access matrix grouped by collection, in the order of the collections and of
+// the operations of the data model, then the commands, queries and workers.
+func accessGroups(m *ArchitectureModel) []accessGroup {
+	bySubject := map[string]ArchCheck{}
+	for _, c := range m.Access.Checks {
+		bySubject[c.Subject] = c
+	}
+	var groups []accessGroup
+	used := map[string]bool{}
+	for _, col := range m.Collections {
+		g := accessGroup{name: col.Name}
+		for _, verb := range collectionVerbs {
+			if c, ok := bySubject["operation:"+col.Name+"."+verb]; ok {
+				g.checks = append(g.checks, c)
+				used[c.ID] = true
+			}
+		}
+		if len(g.checks) > 0 {
+			groups = append(groups, g)
+		}
+	}
+	rest := accessGroup{name: "commands, queries and workers"}
+	for _, c := range m.Access.Checks {
+		if !used[c.ID] {
+			rest.checks = append(rest.checks, c)
+		}
+	}
+	if len(rest.checks) > 0 {
+		groups = append(groups, rest)
+	}
+	return groups
+}
+
+// accessHead writes the head of the operation of a check: its name in its group, what it checks, and whether the
+// grant paths of its permission are complete.
+func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchPermission, attrs string) {
+	what := c.ResourceType + "#" + c.Permission
+	if c.Public {
+		what = "public"
+	}
+	name := shortID(c.Subject)
+	if strings.HasPrefix(c.Subject, "operation:") {
+		name = strings.TrimPrefix(name, group+".")
+	}
+	w.raw("<th" + attrs + attr("data-id", c.ID) + attr("title", shortID(c.Subject)+": "+what) + ">")
+	w.text(name)
+	w.tag("span", " class=\"sub\"", what)
+	if p := perms[c.Grants]; p != nil && !p.Complete {
+		w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: a limit was reached")
+	}
+	w.raw("</th>")
+}
+
+// roleName gives the name of a role of the access matrix, with its conditions.
+func roleName(r ArchRole) string {
+	name := r.SubjectType + " as " + r.On + "#" + r.Relation
+	if r.Wildcard {
+		name = r.SubjectType + ":* as " + r.On + "#" + r.Relation
+	}
+	if r.Caveat != "" {
+		name += ", when " + r.Caveat + " holds"
+	}
+	if r.Expiration {
+		name += ", until it expires"
+	}
+	return name
+}
+
 // accessForm writes the access matrix (ST-GEN-UC08-R14): a line for each role and a cell for each operation,
-// command, query and worker, with the marks of the kinds of grant in it. It shows no relationship of a real
-// subject, because the model holds none.
+// command, query and worker, with the marks of the kinds of grant in it, the operations grouped by collection.
+// When the operations outnumber the roles, the matrix is turned: a column for each role and a line for each
+// operation, so that every operation shows on a screen. It shows no relationship of a real subject, because the
+// model holds none.
 func accessForm(w formWriter, m *ArchitectureModel) {
 	w.h3("Access matrix: who may call each operation")
 	keys := []string{"◇ public: the operation checks no permission", "· no grant"}
@@ -503,62 +661,91 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		perms[m.Access.Permissions[i].ID] = &m.Access.Permissions[i]
 	}
 	checks := m.Access.Checks
+	groups := accessGroups(m)
 	if !m.Access.RolesComplete {
 		w.tag("p", " class=\"incomplete\" role=\"note\" id=\"roles-incomplete\"", "⚠ Incomplete: a limit was reached. A limit cut the grant paths of a permission short, so more roles may get a permission than this matrix shows.")
 	}
-	w.raw("<div class=\"scroll\"><table class=\"matrix access\" aria-label=\"Access matrix\"><thead><tr>")
-	w.tag("th", " scope=\"col\"", "Role")
-	for _, c := range checks {
-		what := c.ResourceType + "#" + c.Permission
-		if c.Public {
-			what = "public"
-		}
-		w.raw("<th scope=\"col\"" + attr("data-id", c.ID) + ">")
-		w.text(shortID(c.Subject))
-		w.tag("span", " class=\"sub\"", what)
-		if p := perms[c.Grants]; p != nil && !p.Complete {
-			w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: a limit was reached")
-		}
-		w.raw("</th>")
-	}
-	w.raw("</tr></thead><tbody>")
 	roles := m.Access.Roles
-	if len(roles) == 0 {
-		w.raw("<tr><td" + attr("colspan", fmt.Sprint(len(checks)+1)) + ">The declared authorization schema grants no role a permission that an operation checks.</td></tr>")
-	}
-	for _, r := range roles {
-		w.raw("<tr" + attr("data-id", r.ID) + ">")
-		name := r.SubjectType + " as " + r.On + "#" + r.Relation
-		if r.Wildcard {
-			name = r.SubjectType + ":* as " + r.On + "#" + r.Relation
-		}
-		if r.Caveat != "" {
-			name += ", when " + r.Caveat + " holds"
-		}
-		if r.Expiration {
-			name += ", until it expires"
-		}
-		w.tag("th", " scope=\"row\"", name)
-		for _, c := range checks {
-			matrixTD(w, c, r.ID, perms[c.Grants])
-		}
-		w.raw("</tr>")
-	}
 	stopped := false
 	for _, c := range checks {
 		if len(matrixCell(perms[c.Grants], "")) > 0 {
 			stopped = true
 		}
 	}
-	if stopped {
-		w.raw("<tr>")
-		w.tag("th", " scope=\"row\"", "Paths that stop, with no role")
-		for _, c := range checks {
-			matrixTD(w, c, "", perms[c.Grants])
-		}
-		w.raw("</tr>")
+	type line struct{ id, name string }
+	var lines []line
+	for _, r := range roles {
+		lines = append(lines, line{r.ID, roleName(r)})
 	}
-	w.raw("</tbody></table></div>")
+	if stopped {
+		lines = append(lines, line{"", "Paths that stop, with no role"})
+	}
+	turned := len(checks) > len(roles)
+	orientation := "roles in lines"
+	if turned {
+		orientation = "operations in lines"
+	}
+	w.raw("<div class=\"scroll matrix-wrap\"><table class=\"matrix access\" aria-label=\"Access matrix\"" + attr("data-orientation", orientation) + ">")
+	if len(roles) == 0 {
+		w.raw("<tbody><tr><td>The declared authorization schema grants no role a permission that an operation checks.</td></tr></tbody></table></div>")
+	} else if turned {
+		w.raw("<thead><tr>")
+		w.tag("th", " scope=\"col\"", "Operation")
+		for _, l := range lines {
+			if l.id == "" {
+				w.tag("th", " scope=\"col\" class=\"role\"", l.name)
+				continue
+			}
+			// A role name breaks after its subject and after the # of its relation, never inside a word.
+			w.raw("<th scope=\"col\" class=\"role\"" + attr("data-id", l.id) + attr("title", l.name) + ">")
+			w.raw(strings.NewReplacer("#", "#<wbr>", " as ", " as<wbr> ").Replace(html.EscapeString(l.name)))
+			w.raw("</th>")
+		}
+		w.raw("</tr></thead>")
+		for _, g := range groups {
+			w.raw("<tbody><tr class=\"group\">")
+			w.tag("th", " scope=\"rowgroup\""+attr("colspan", fmt.Sprint(len(lines)+1)), g.name)
+			w.raw("</tr>")
+			for _, c := range g.checks {
+				w.raw("<tr>")
+				accessHead(w, c, g.name, perms, " scope=\"row\"")
+				for _, l := range lines {
+					matrixTD(w, c, l.id, perms[c.Grants])
+				}
+				w.raw("</tr>")
+			}
+			w.raw("</tbody>")
+		}
+		w.raw("</table></div>")
+	} else {
+		w.raw("<thead><tr class=\"group\">")
+		w.tag("th", " scope=\"col\" rowspan=\"2\"", "Role")
+		for _, g := range groups {
+			w.tag("th", " scope=\"colgroup\""+attr("colspan", fmt.Sprint(len(g.checks))), g.name)
+		}
+		w.raw("</tr><tr>")
+		for _, g := range groups {
+			for _, c := range g.checks {
+				accessHead(w, c, g.name, perms, " scope=\"col\"")
+			}
+		}
+		w.raw("</tr></thead><tbody>")
+		for _, l := range lines {
+			if l.id != "" {
+				w.raw("<tr" + attr("data-id", l.id) + ">")
+			} else {
+				w.raw("<tr>")
+			}
+			w.tag("th", " scope=\"row\"", l.name)
+			for _, g := range groups {
+				for _, c := range g.checks {
+					matrixTD(w, c, l.id, perms[c.Grants])
+				}
+			}
+			w.raw("</tr>")
+		}
+		w.raw("</tbody></table></div>")
+	}
 	w.h3("What each operation checks")
 	w.head("Operation", "Resource type", "Permission", "Source")
 	for _, c := range checks {
@@ -586,24 +773,25 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	w.raw("</ul>")
 }
 
-// matrixTD writes one cell of the access matrix.
+// matrixTD writes one cell of the access matrix, which names its check and its role.
 func matrixTD(w formWriter, c ArchCheck, role string, p *ArchPermission) {
+	cell := attr("data-check", c.ID) + attr("data-role", role)
 	if c.Public {
 		if role == "" {
-			w.raw("<td></td>")
+			w.raw("<td" + cell + "></td>")
 			return
 		}
-		w.raw("<td class=\"public\">◇<span class=\"sr\"> public</span></td>")
+		w.raw("<td class=\"public\"" + cell + ">◇<span class=\"sr\"> public</span></td>")
 		return
 	}
 	paths := matrixCell(p, role)
 	if len(paths) == 0 {
-		w.raw("<td>·<span class=\"sr\"> no grant</span></td>")
+		w.raw("<td" + cell + ">·<span class=\"sr\"> no grant</span></td>")
 		return
 	}
 	glyphs, names := cellGlyphs(paths)
 	label := strings.Join(names, ", ")
-	w.raw("<td><button type=\"button\" class=\"cell\"" + attr("data-check", c.ID) + attr("data-role", role) + attr("aria-label", shortID(c.Subject)+": "+label) + ">")
+	w.raw("<td" + cell + "><button type=\"button\" class=\"cell\"" + attr("data-check", c.ID) + attr("data-role", role) + attr("aria-label", shortID(c.Subject)+": "+label) + attr("title", label) + ">")
 	w.text(glyphs)
 	w.raw("</button></td>")
 }

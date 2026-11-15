@@ -181,6 +181,39 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R02-T04 The policy of the view admits each of its scripts by the hash of its text, and nothing else", func(t *testing.T) {
+		for _, v := range [][]byte{view, accessView} {
+			p := parseView(t, v)
+			metas := p.all(func(n *html.Node) bool {
+				return n.Data == "meta" && attrOf(n, "http-equiv") == "Content-Security-Policy"
+			})
+			if len(metas) != 1 {
+				t.Fatalf("the view has %d policies", len(metas))
+			}
+			policy := attrOf(metas[0], "content")
+			directives := map[string]string{}
+			for _, d := range strings.Split(policy, ";") {
+				name, value, _ := strings.Cut(strings.TrimSpace(d), " ")
+				directives[name] = value
+			}
+			for name, want := range map[string]string{"default-src": "'none'", "style-src": "'unsafe-inline'", "img-src": "data:", "base-uri": "'none'", "form-action": "'none'"} {
+				if directives[name] != want {
+					t.Errorf("the policy gives %s %q, not %q", name, directives[name], want)
+				}
+			}
+			var want []string
+			for _, n := range p.all(func(n *html.Node) bool { return n.Data == "script" && attrOf(n, "type") == "" }) {
+				want = append(want, scriptHash(textOf(n)))
+			}
+			if got := strings.Fields(directives["script-src"]); len(want) != 2 || !reflect.DeepEqual(got, want) {
+				t.Errorf("script-src is %v, and the scripts of the view hash to %v", got, want)
+			}
+			if !strings.HasPrefix(string(v), "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta http-equiv=\"Content-Security-Policy\"") {
+				t.Error("the policy does not come before every script of the head")
+			}
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R03-T03 Each element in the view names the declaration entry or registry part it comes from", func(t *testing.T) {
 		forms := page.byID("forms")
 		rows := map[string]string{}
@@ -260,8 +293,8 @@ func TestArchitectureView(t *testing.T) {
 		if err := json.Unmarshal([]byte(textOf(page.byID("layout"))), &layout); err != nil {
 			t.Fatal(err)
 		}
-		if len(layout.Flows.Steps) != len(m.Flows) {
-			t.Fatal("the layout does not place every flow")
+		if layout.Flows.W == 0 || len(layout.Trust.Wide.Regions) != len(m.Boundaries) {
+			t.Fatal("the layout does not place the flows or every boundary")
 		}
 	})
 
@@ -391,27 +424,54 @@ func TestArchitectureView(t *testing.T) {
 		if len(tables) != 1 {
 			t.Fatal("the view has no access matrix")
 		}
-		lines := within(tables[0], func(n *html.Node) bool { return n.Data == "tr" && strings.HasPrefix(attrOf(n, "data-id"), "role:") })
-		if len(lines) != len(am.Access.Roles) {
-			t.Fatalf("the matrix has %d role lines for %d roles", len(lines), len(am.Access.Roles))
+		// More operations than roles turn the matrix: a column for each role and a line for each operation.
+		turned := len(am.Access.Checks) > len(am.Access.Roles)
+		if want := map[bool]string{true: "operations in lines", false: "roles in lines"}[turned]; attrOf(tables[0], "data-orientation") != want {
+			t.Fatalf("the matrix of %d operations and %d roles is not %s", len(am.Access.Checks), len(am.Access.Roles), want)
 		}
-		cell := func(role, check string) string {
-			for _, l := range lines {
-				if attrOf(l, "data-id") != role {
-					continue
-				}
-				tds := within(l, func(n *html.Node) bool { return n.Data == "td" })
-				if len(tds) != len(am.Access.Checks) {
-					t.Fatalf("the line of %s has %d cells for %d operations", role, len(tds), len(am.Access.Checks))
-				}
-				for i, c := range am.Access.Checks {
-					if c.ID == check {
-						return textOf(tds[i])
-					}
+		heads := within(tables[0], func(n *html.Node) bool { return n.Data == "th" && strings.HasPrefix(attrOf(n, "data-id"), "role:") })
+		if !turned {
+			heads = within(tables[0], func(n *html.Node) bool { return n.Data == "tr" && strings.HasPrefix(attrOf(n, "data-id"), "role:") })
+		}
+		if len(heads) != len(am.Access.Roles) {
+			t.Fatalf("the matrix has %d role lines for %d roles", len(heads), len(am.Access.Roles))
+		}
+		cells := map[string]string{}
+		for _, td := range within(tables[0], func(n *html.Node) bool { return n.Data == "td" }) {
+			key := attrOf(td, "data-role") + "|" + attrOf(td, "data-check")
+			if _, twice := cells[key]; twice {
+				t.Fatalf("the matrix has two cells for %s", key)
+			}
+			cells[key] = textOf(td)
+		}
+		for _, r := range am.Access.Roles {
+			for _, c := range am.Access.Checks {
+				if _, ok := cells[r.ID+"|"+c.ID]; !ok {
+					t.Errorf("the matrix has no cell for %s and %s", r.ID, c.ID)
 				}
 			}
-			t.Fatalf("no cell for %s and %s", role, check)
-			return ""
+		}
+		// The operations are grouped by collection, in the order of the collections.
+		var groups []string
+		for _, n := range within(tables[0], func(n *html.Node) bool { return n.Data == "th" && strings.HasSuffix(attrOf(n, "scope"), "group") }) {
+			groups = append(groups, textOf(n))
+		}
+		var wantGroups []string
+		for _, c := range am.Collections {
+			wantGroups = append(wantGroups, c.Name)
+		}
+		if len(am.Actions) > 0 {
+			wantGroups = append(wantGroups, "commands, queries and workers")
+		}
+		if strings.Join(groups, ",") != strings.Join(wantGroups, ",") {
+			t.Errorf("the operations are grouped as %v, not by collection %v", groups, wantGroups)
+		}
+		cell := func(role, check string) string {
+			got, ok := cells[role+"|"+check]
+			if !ok {
+				t.Fatalf("no cell for %s and %s", role, check)
+			}
+			return got
 		}
 		for _, c := range []struct{ role, check, want string }{
 			{"role:organization#owner@user", "check:operation:organizations.read", "●"},
@@ -536,7 +596,9 @@ func contrast(a, b [3]float64) float64 {
 const hostileValue = "</script><img src=x onerror=alert(1)><!-- \u2028 & end"
 
 // hostileModel gives the model of user-management with the hostile text in the reason of its empty aspect, the
-// reason of each public check and the first step of each flow.
+// reason of each public check, the first step of each flow, the name of the system, and the name and the ID of a
+// component, an entity, a collection and an actor; one fill takes the ID __proto__, which an index of the elements
+// by ID must hold as a plain key (#342 F5, F6).
 func hostileModel(t *testing.T) ([]byte, string) {
 	t.Helper()
 	data, err := os.ReadFile("testdata/architecture/user-management.json")
@@ -556,6 +618,13 @@ func hostileModel(t *testing.T) ([]byte, string) {
 	for _, f := range m["flows"].([]any) {
 		f.(map[string]any)["steps"].([]any)[0].(map[string]any)["text"] = hostileValue
 	}
+	m["system"].(map[string]any)["name"] = hostileValue
+	for _, list := range []string{"components", "entities", "collections", "actors"} {
+		e := m[list].([]any)[0].(map[string]any)
+		kind, _, _ := strings.Cut(e["id"].(string), ":")
+		e["name"], e["id"] = hostileValue, kind+":"+hostileValue
+	}
+	m["fills"].([]any)[0].(map[string]any)["id"] = "__proto__"
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
