@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -81,6 +84,17 @@ func crudContext() gen.Context {
 			{Name: "generation", Type: types.FieldTypeInt64, Default: 1}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "quota", Permissions: map[types.Operation]string{types.OpRead: "view", types.OpList: "view", types.OpUpsert: "edit"},
 				References: map[string]types.Reference{"folder_id": {Relation: "folder", Permission: "edit"}}}},
+		// Rack, Card and Mark give a parent chain of three levels: a mark is of a card, which is of a rack, which is
+		// of a folder (ST-SUP-RC20-OC24).
+		types.Entity{Name: "Rack", Fields: []types.Field{{Name: "folder_id", Type: types.FieldTypeRef, To: "Folder"}, {Name: "name", Type: types.FieldTypeString}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "rack", Permissions: permissions(), PublicReasons: reasons,
+				References: map[string]types.Reference{"folder_id": {Relation: "parent", Permission: "edit"}}}},
+		types.Entity{Name: "Card", Fields: []types.Field{{Name: "rack_id", Type: types.FieldTypeRef, To: "Rack"}, {Name: "title", Type: types.FieldTypeString}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "card", Permissions: permissions(), PublicReasons: reasons,
+				References: map[string]types.Reference{"rack_id": {Relation: "parent", Permission: "edit"}}}},
+		types.Entity{Name: "Mark", Fields: []types.Field{{Name: "card_id", Type: types.FieldTypeRef, To: "Card"}, {Name: "label", Type: types.FieldTypeString}, {Name: "note", Type: types.FieldTypeString}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "mark", Permissions: permissions(types.OpUpdate, types.OpPatch, types.OpDelete, types.OpUpsert), PublicReasons: reasons,
+				References: map[string]types.Reference{"card_id": {Relation: "parent", Permission: "edit"}}}},
 	)
 	return withSchema(gen.Context{
 		ModuleName:      crudModule,
@@ -102,6 +116,11 @@ func crudContext() gen.Context {
 			{Name: "books", Entity: "Book", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate}},
 			{Name: "folder-flags", Entity: "Setting", Scope: map[string]string{"folder_id": "Folder"}, Implicit: map[string]string{"source": "flag"}, PathPrefix: "/folders/{folder_id}/flags", Operations: []types.Operation{types.OpUpsert}, UpsertKey: []string{"name"}},
 			{Name: "folder-quotas", Entity: "Quota", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpList, types.OpUpsert}, UpsertKey: []string{"name"}, Concurrency: types.ConcurrencyOptimistic},
+			// /folders/{folder_id}/racks, /folders/{folder_id}/racks/{rack_id}/cards and
+			// /folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks.
+			{Name: "folder-racks", Entity: "Rack", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}},
+			{Name: "rack-cards", Entity: "Card", Scope: map[string]string{"rack_id": "Rack"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}},
+			{Name: "card-marks", Entity: "Mark", Scope: map[string]string{"card_id": "Card"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpPatch, types.OpDelete, types.OpUpsert}, Patchable: []string{"note"}, UpsertKey: []string{"label"}},
 		},
 		SlotBindings: []types.SlotDeclaration{
 			{Slot: "before_create", Collection: "orders", Chain: []string{"order-gate"}, ShortCircuit: true},
@@ -553,6 +572,79 @@ func TestTopLevelCreate(t *testing.T) {
 	})
 }
 
+func TestNestedScope(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC24-T11 A collection under a scoped collection is generated with the route and the OpenAPI parameters of each ancestor, and a chain that names a parameter twice or out of order is refused", func(t *testing.T) {
+		marks := "/api/v1/folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks"
+		files, wiring, err := new(Generator).Generate(crudContext())
+		if err != nil {
+			t.Fatalf("a collection three levels under its top ancestor is refused: %v", err)
+		}
+		routes := strings.Join(wiring.Routes, "\n")
+		for _, route := range []string{"POST " + marks, "GET " + marks, "PUT " + marks, "GET " + marks + "/{id}", "PUT " + marks + "/{id}",
+			"PATCH " + marks + "/{id}", "DELETE " + marks + "/{id}", "POST /api/v1/folders/{folder_id}/racks/{rack_id}/cards"} {
+			if !strings.Contains(routes, fmt.Sprintf("%q", route)) {
+				t.Errorf("the wiring has no route %s:\n%s", route, routes)
+			}
+		}
+		var doc struct {
+			Paths map[string]map[string]struct {
+				Parameters []struct{ Name, In string } `json:"parameters"`
+			} `json:"paths"`
+		}
+		for _, f := range files {
+			if strings.HasSuffix(f.Path, "openapi.json") {
+				if err := json.Unmarshal(f.Content, &doc); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		for path, want := range map[string][]string{marks: {"folder_id", "rack_id", "card_id"}, marks + "/{id}": {"folder_id", "rack_id", "card_id", "id"}} {
+			operations, ok := doc.Paths[path]
+			if !ok {
+				t.Fatalf("the OpenAPI document has no path %s", path)
+			}
+			for method, op := range operations {
+				var got []string
+				for _, p := range op.Parameters {
+					if p.In == "path" {
+						got = append(got, p.Name)
+					}
+				}
+				if !slices.Equal(got, want) {
+					t.Errorf("%s %s has the path parameters %v, want %v", method, path, got, want)
+				}
+			}
+		}
+		// A leaf path prefix keeps the chain of its ancestors.
+		c := crudContext()
+		c.Collections[len(c.Collections)-1].PathPrefix = "/notes"
+		_, wiring, err = new(Generator).Generate(c)
+		if err != nil || !strings.Contains(strings.Join(wiring.Routes, "\n"), "\"GET /api/v1/folders/{folder_id}/racks/{rack_id}/cards/{card_id}/notes/{id}\"") {
+			t.Errorf("a leaf path prefix under the chain gave %v, want the route under each ancestor", err)
+		}
+		for name, change := range map[string]func(*gen.Context){
+			"a scope field of the same name at two levels": func(c *gen.Context) {
+				mark := &c.Entities[len(c.Entities)-1]
+				mark.Fields[0].Name = "rack_id"
+				mark.References = map[string]types.Reference{"rack_id": {Relation: "parent", Permission: "edit"}}
+				c.Collections[len(c.Collections)-1].Scope = map[string]string{"rack_id": "Card"}
+			},
+			"a full path that names a parameter of no ancestor": func(c *gen.Context) {
+				c.Collections[len(c.Collections)-1].PathPrefix = "/folders/{folder_id}/boxes/{box_id}/cards/{card_id}/marks"
+			},
+			"a full path that names the ancestors out of order": func(c *gen.Context) {
+				c.Collections[len(c.Collections)-1].PathPrefix = "/racks/{rack_id}/folders/{folder_id}/cards/{card_id}/marks"
+			},
+		} {
+			c := crudContext()
+			change(&c)
+			if files, wiring, err := new(Generator).Generate(c); err == nil || files != nil || wiring != nil {
+				t.Errorf("%s: generation gave %d files and %v, want a refusal", name, len(files), err)
+			}
+		}
+	})
+}
+
 func TestFieldRelationship(t *testing.T) {
 	t.Run("ST-SUP-RC29-OC05-T06 A public create of an entity with a field-sourced relationship is refused, and a refused field value is 400 naming the field", func(t *testing.T) {
 		c := crudContext()
@@ -613,6 +705,8 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a patch keeps the implicit value",
 	"ST-SUP-RC20-OC24-T06 A list cursor of one parent is refused for another",
 	"ST-SUP-RC20-OC24-T07 An upper-case UUID in a path or a ref names the same row as its lower-case form",
+	"ST-SUP-RC20-OC24-T09 A collection three levels under its top ancestor checks every ancestor of the path, and a wrong, foreign or smuggled ancestor is 404",
+	"ST-SUP-RC20-OC24-T10 A caller that may not read one ancestor of the path gets 404, the same as for a missing ancestor",
 	"ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders",
 	"ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages",
 }

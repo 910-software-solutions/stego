@@ -108,6 +108,30 @@ definition quota {
 	permission edit = owner + folder->edit
 }
 
+definition rack {
+	relation parent: folder
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer + parent->edit
+	permission edit = owner + parent->edit
+}
+
+definition card {
+	relation parent: rack
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer + parent->edit
+	permission edit = owner + parent->edit
+}
+
+definition mark {
+	relation parent: card
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer + parent->edit
+	permission edit = owner + parent->edit
+}
+
 definition event {
 	relation owner: user
 	permission view = owner
@@ -116,7 +140,7 @@ definition event {
 `
 )
 
-var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas"}
+var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "racks", "cards", "marks"}
 
 // env is the running service: its database with the runtime role, its runtimes and its HTTP server.
 type env struct {
@@ -358,7 +382,23 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	folderSettings := api.NewFolderSettingsHandler(rt, slots.NewValidateGate(settingGate{e}), slots.NewOnEntityChangedGate(settingChanged{e}))
 	folderFlags := api.NewFolderFlagsHandler(rt)
 	folderQuotas := api.NewFolderQuotasHandler(rt)
+	folderRacks, rackCards, cardMarks := api.NewFolderRacksHandler(rt), api.NewRackCardsHandler(rt), api.NewCardMarksHandler(rt)
 	mux := http.NewServeMux()
+	// The routes of the parent chain of three levels, as the wiring of the generator gives them (ST-SUP-RC20-OC24).
+	mux.HandleFunc("POST /api/v1/folders/{folder_id}/racks", folderRacks.Create)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{id}", folderRacks.Read)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks", folderRacks.List)
+	mux.HandleFunc("POST /api/v1/folders/{folder_id}/racks/{rack_id}/cards", rackCards.Create)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{rack_id}/cards/{id}", rackCards.Read)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{rack_id}/cards", rackCards.List)
+	marks := "/api/v1/folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks"
+	mux.HandleFunc("POST "+marks, cardMarks.Create)
+	mux.HandleFunc("GET "+marks+"/{id}", cardMarks.Read)
+	mux.HandleFunc("GET "+marks, cardMarks.List)
+	mux.HandleFunc("PUT "+marks+"/{id}", cardMarks.Update)
+	mux.HandleFunc("PATCH "+marks+"/{id}", cardMarks.Patch)
+	mux.HandleFunc("DELETE "+marks+"/{id}", cardMarks.Delete)
+	mux.HandleFunc("PUT "+marks, cardMarks.Upsert)
 	mux.HandleFunc("POST /api/v1/folders", folders.Create)
 	mux.HandleFunc("GET /api/v1/folders/{id}", folders.Read)
 	mux.HandleFunc("GET /api/v1/folders", folders.List)
@@ -648,6 +688,62 @@ func (e *env) create(c caller, collection, resourceType, body string) string {
 	id := created.member(t, "id")
 	e.own(c, resourceType, id)
 	return id
+}
+
+// createUnder creates one resource of resourceType under the path below /api/v1 with a new key and gives its ID; it
+// writes no relation of the caller, so the caller reaches it through its parent. The relay of the check does not
+// run, so createUnder relays the parent relation of the row (relayParent).
+func (e *env) createUnder(c caller, path, resourceType, parentType, parentID, body string) string {
+	t := e.t
+	t.Helper()
+	created := e.send(c, http.MethodPost, "/api/v1"+path, "k-"+uuid.NewString(), body)
+	if created.status != http.StatusCreated {
+		t.Fatalf("the create under %s answered %d %s, want 201", path, created.status, created.body)
+	}
+	id := created.member(t, "id")
+	e.relayParent(c, resourceType, id, parentType, parentID)
+	return id
+}
+
+// relayParent finds the one tuple <resourceType>:<id>#parent that the write of the row enqueued for the relay, checks
+// that its subject is the parent parentType:parentID of the caller's tenant, and writes it to SpiceDB, as the relay
+// does (ST-SUP-RP10-LC05).
+func (e *env) relayParent(c caller, resourceType, id, parentType, parentID string) {
+	t := e.t
+	t.Helper()
+	resourceID, err := authz.ResourceID(c.tenant, id)
+	must(t, err)
+	parent, err := authz.ResourceID(c.tenant, parentID)
+	must(t, err)
+	rows, err := e.admin.QueryContext(e.ctx, `SELECT convert_from(payload, 'UTF8') FROM stego_outbox.messages WHERE destination = 'authz'
+AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,resource_type}' = $1 AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,resource_id}' = $2
+AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,relation}' = 'parent'`, resourceType, resourceID)
+	must(t, err)
+	defer rows.Close()
+	type relayed struct {
+		Op    string `json:"op"`
+		Tuple struct {
+			SubjectType string `json:"subject_type"`
+			SubjectID   string `json:"subject_id"`
+		} `json:"tuple"`
+	}
+	var tuples []relayed
+	for rows.Next() {
+		var text string
+		var tuple relayed
+		must(t, rows.Scan(&text))
+		must(t, json.Unmarshal([]byte(text), &tuple))
+		tuples = append(tuples, tuple)
+	}
+	must(t, rows.Err())
+	if len(tuples) != 1 || tuples[0].Op != "touch" || tuples[0].Tuple.SubjectType != parentType || tuples[0].Tuple.SubjectID != parent {
+		t.Fatalf("the write of %s:%s enqueued the parent tuples %+v, want one touch of the subject %s:%s", resourceType, id, tuples, parentType, parent)
+	}
+	_, err = v1.NewPermissionsServiceClient(e.spice).WriteRelationships(e.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Relation: "parent",
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: parentType, ObjectId: parent}}}}}})
+	must(t, err)
 }
 
 func (e *env) count(query string, args ...any) int {
@@ -1498,6 +1594,171 @@ func TestCrud(t *testing.T) {
 		}
 		if n := e.count(`SELECT count(*) FROM books`); n != before {
 			t.Errorf("%d book rows after the refused creates, want %d", n, before)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC24-T09 A collection three levels under its top ancestor checks every ancestor of the path, and a wrong, foreign or smuggled ancestor is 404", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		// The caller owns the folders only: each rack, card and mark is reached through the parent relation that the
+		// runtime writes from its reference, so a read of a mark proves the relations along the chain.
+		f1 := e.create(a, "folders", "folder", `{"name":"one"}`)
+		f2 := e.create(a, "folders", "folder", `{"name":"two"}`)
+		racks := func(f string) string { return "/folders/" + f + "/racks" }
+		cards := func(f, r string) string { return racks(f) + "/" + r + "/cards" }
+		marks := func(f, r, c string) string { return cards(f, r) + "/" + c + "/marks" }
+		rack := func(f, name string) string {
+			return e.createUnder(a, racks(f), "rack", "folder", f, `{"name":"`+name+`"}`)
+		}
+		r1, r2, r3 := rack(f1, "r1"), rack(f2, "r2"), rack(f2, "r3")
+		card := func(f, r, title string) string {
+			return e.createUnder(a, cards(f, r), "card", "rack", r, `{"title":"`+title+`"}`)
+		}
+		c1, c2, c3 := card(f1, r1, "c1"), card(f2, r2, "c2"), card(f2, r2, "c3")
+		e.createUnder(a, marks(f1, r1, c1), "mark", "card", c1, `{"label":"l1","note":"n1"}`)
+		created := e.send(a, http.MethodPost, "/api/v1"+marks(f2, r2, c2), "k-"+uuid.NewString(), `{"label":"l2","note":"n2","card_id":"`+c1+`"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create of a mark answered %d %s, want 201", created.status, created.body)
+		}
+		m2 := created.member(t, "id")
+		// The parent of the mark is the card of the path, also when the body names another card.
+		e.relayParent(a, "mark", m2, "card", c2)
+		if href := created.member(t, "href"); href != "/api/v1"+marks(f2, r2, c2)+"/"+m2 {
+			t.Errorf("the href is %q, want the path of the mark under each of its ancestors", href)
+		}
+		if n := e.count(`SELECT count(*) FROM marks WHERE id = $1::uuid AND card_id = $2::uuid`, m2, c2); n != 1 {
+			t.Errorf("%d mark rows on the card of the path, want 1", n)
+		}
+		if r := e.send(a, http.MethodGet, "/api/v1"+marks(f2, r2, c2)+"/"+m2, "", ""); r.status != http.StatusOK || r.member(t, "href") != "/api/v1"+marks(f2, r2, c2)+"/"+m2 {
+			t.Fatalf("the read under its ancestors answered %d %s, want 200 with its href", r.status, r.body)
+		}
+		// The foreign keys of the chain hold the tenant: a card of another tenant cannot name a rack of this one.
+		for _, fk := range []struct{ table, to string }{{"racks", "folders"}, {"cards", "racks"}, {"marks", "cards"}} {
+			if n := e.count(`SELECT count(*) FROM pg_catalog.pg_constraint WHERE contype = 'f' AND conrelid = ('public.' || $1)::regclass AND confrelid = ('public.' || $2)::regclass AND array_length(conkey, 1) = 2`, fk.table, fk.to); n != 1 {
+				t.Errorf("%d foreign keys from %s to %s with the tenant column, want 1", n, fk.table, fk.to)
+			}
+		}
+		other := e.as("u-1", newTenant())
+		fx := e.create(other, "folders", "folder", `{"name":"x"}`)
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO cards (tenant_id, id, rack_id, title) VALUES ($1, $2::uuid, $3::uuid, 'x')`, other.tenant.ID(), uuid.NewString(), r2); err == nil || !strings.Contains(err.Error(), "cards_rack_id_fkey") {
+			t.Errorf("a card of another tenant under a rack of this tenant gave %v, want the refusal of the foreign key cards_rack_id_fkey", err)
+		}
+		rx := e.createUnder(other, racks(fx), "rack", "folder", fx, `{"name":"rx"}`)
+		cx := e.createUnder(other, cards(fx, rx), "card", "rack", rx, `{"title":"cx"}`)
+		beforeMarks := e.count(`SELECT count(*) FROM marks`)
+		item := func(base string) string { return "/api/v1" + base + "/" + m2 }
+		// Each case is a path to the mark m2 that a check refuses; chain tells that the chain itself is wrong, so the
+		// collection operations under it are refused too.
+		for _, c := range []struct {
+			name  string
+			who   caller
+			base  string
+			chain bool
+		}{
+			{"a rack of another folder", a, marks(f1, r2, c2), true},
+			{"a card of another rack", a, marks(f2, r3, c2), true},
+			{"a mark of another card", a, marks(f2, r2, c3), false},
+			{"the mark smuggled under another chain", a, marks(f1, r1, c1), false},
+			{"a folder that is not an ID", a, marks("x", r2, c2), true},
+			{"a rack that is not an ID", a, marks(f2, "x", c2), true},
+			{"a card that is not an ID", a, marks(f2, r2, "x"), true},
+			{"a missing folder", a, marks(uuid.NewString(), r2, c2), true},
+			{"the chain from another tenant", other, marks(f2, r2, c2), true},
+			{"a card of another tenant smuggled under the caller's rack", other, marks(fx, rx, c2), true},
+			{"the caller's card under a rack of another tenant", a, marks(f2, r2, cx), true},
+		} {
+			for _, op := range []struct{ method, key, body string }{
+				{http.MethodGet, "", ""},
+				{http.MethodPut, "", `{"label":"l2","note":"moved"}`},
+				{http.MethodPatch, "k-" + uuid.NewString(), `{"note":"moved"}`},
+				{http.MethodDelete, "", ""},
+			} {
+				if r := e.send(c.who, op.method, item(c.base), op.key, op.body); r.status != http.StatusNotFound {
+					t.Errorf("%s: %s of the mark answered %d %s, want 404", c.name, op.method, r.status, r.body)
+				}
+			}
+			if !c.chain {
+				continue
+			}
+			for _, op := range []struct{ method, key, body string }{
+				{http.MethodGet, "", ""},
+				{http.MethodPost, "k-" + uuid.NewString(), `{"label":"new","note":"no"}`},
+				{http.MethodPut, "", `{"label":"l2","note":"moved"}`},
+			} {
+				if r := e.send(c.who, op.method, "/api/v1"+c.base, op.key, op.body); r.status != http.StatusNotFound {
+					t.Errorf("%s: %s of the collection answered %d %s, want 404", c.name, op.method, r.status, r.body)
+				}
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM marks`); n != beforeMarks {
+			t.Errorf("%d mark rows after the refused requests, want %d", n, beforeMarks)
+		}
+		if n := e.count(`SELECT count(*) FROM marks WHERE id = $1::uuid AND card_id = $2::uuid AND note = 'n2'`, m2, c2); n != 1 {
+			t.Errorf("%d mark rows as created after the refused writes, want 1", n)
+		}
+		// Under its own ancestors each operation runs: the list holds the marks of the card of the path only.
+		list := e.send(a, http.MethodGet, "/api/v1"+marks(f2, r2, c2), "", "")
+		var page struct {
+			Items []map[string]any `json:"items"`
+		}
+		must(t, json.Unmarshal(list.body, &page))
+		if list.status != http.StatusOK || len(page.Items) != 1 || page.Items[0]["id"] != m2 {
+			t.Errorf("the list of the card answered %d %s, want its one mark", list.status, list.body)
+		}
+		if r := e.send(a, http.MethodPut, "/api/v1"+marks(f2, r2, c2), "", `{"label":"l2","note":"upserted"}`); r.status != http.StatusOK {
+			t.Errorf("the upsert of the stored mark answered %d %s, want 200", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodPatch, item(marks(f2, r2, c2)), "k-"+uuid.NewString(), `{"note":"patched"}`); r.status != http.StatusOK {
+			t.Errorf("the patch under its ancestors answered %d %s, want 200", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodDelete, item(marks(f2, r2, c2)), "", ""); r.status != http.StatusNoContent {
+			t.Errorf("the delete under its ancestors answered %d %s, want 204", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC24-T10 A caller that may not read one ancestor of the path gets 404, the same as for a missing ancestor", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		f := e.create(a, "folders", "folder", `{"name":"f"}`)
+		r := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"r"}`)
+		c := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards", "card", "rack", r, `{"title":"c"}`)
+		base := "/api/v1/folders/" + f + "/racks/" + r + "/cards/" + c + "/marks"
+		m := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards/"+c+"/marks", "mark", "card", c, `{"label":"l","note":"n"}`)
+		// viewer gives view on one resource only: in this schema no viewer of a parent may view its children, so
+		// each ancestor is decided apart.
+		ids := map[string]string{"folder": f, "rack": r, "card": c, "mark": m}
+		reader := func(subject string, without string) caller {
+			b := e.as(subject, tn)
+			for _, resourceType := range []string{"folder", "rack", "card", "mark"} {
+				if resourceType != without {
+					e.relate(b, "viewer", resourceType, ids[resourceType])
+				}
+			}
+			return b
+		}
+		if got := e.send(reader("u-all", ""), http.MethodGet, base+"/"+m, "", ""); got.status != http.StatusOK {
+			t.Fatalf("a viewer of every ancestor and of the mark read it with %d %s, want 200", got.status, got.body)
+		}
+		missingRead := e.send(a, http.MethodGet, "/api/v1/folders/"+f+"/racks/"+r+"/cards/"+uuid.NewString()+"/marks/"+m, "", "")
+		if missingRead.status != http.StatusNotFound {
+			t.Fatalf("a read under a missing card answered %d %s, want 404", missingRead.status, missingRead.body)
+		}
+		missingList := e.send(a, http.MethodGet, "/api/v1/folders/"+uuid.NewString()+"/racks/"+r+"/cards/"+c+"/marks", "", "")
+		if missingList.status != http.StatusNotFound {
+			t.Fatalf("a list under a missing folder answered %d %s, want 404", missingList.status, missingList.body)
+		}
+		for _, without := range []string{"folder", "rack", "card"} {
+			b := reader("u-no-"+without, without)
+			got := e.send(b, http.MethodGet, base+"/"+m, "", "")
+			if got.status != http.StatusNotFound || got.member(t, "detail") != missingRead.member(t, "detail") {
+				t.Errorf("a caller that may not read the %s read the mark with %d %s, want 404 with the detail %q of a missing ancestor", without, got.status, got.body, missingRead.member(t, "detail"))
+			}
+			list := e.send(b, http.MethodGet, base, "", "")
+			if list.status != http.StatusNotFound || list.member(t, "title") != missingList.member(t, "title") || strings.Contains(string(list.body), m) {
+				t.Errorf("a caller that may not read the %s listed the marks with %d %s, want 404 with no mark", without, list.status, list.body)
+			}
 		}
 	})
 
