@@ -36,6 +36,9 @@ type ArchitectureModel struct {
 	Flows []ArchFlow `json:"flows"`
 	// Platform edges.
 	Needs []ArchNeed `json:"needs"`
+	// Variables are the environment variables of the platform requirements' list, copied from it unchanged
+	// (ST-GEN-UC08-R16).
+	Variables []ArchVariable `json:"variables"`
 	// Trust and tenancy.
 	Boundaries  []ArchBoundary `json:"boundaries"`
 	Settings    []ArchSetting  `json:"settings"`
@@ -282,6 +285,20 @@ type ArchNeed struct {
 	Name     string     `json:"name"`
 	Shape    string     `json:"shape,omitempty"`
 	StatedBy []string   `json:"stated_by"`
+	Source   ArchSource `json:"source"`
+}
+
+// ArchVariable is one environment variable of the platform requirements' list (ST-DLV-EN08, ST-GEN-UC08-R16): the
+// components that read it, its type, whether it is required, its default and whether it is secret. A secret
+// variable holds no default.
+type ArchVariable struct {
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	ReadBy   []string   `json:"read_by"`
+	Type     string     `json:"type"`
+	Required bool       `json:"required"`
+	Default  *string    `json:"default,omitempty"`
+	Secret   bool       `json:"secret"`
 	Source   ArchSource `json:"source"`
 }
 

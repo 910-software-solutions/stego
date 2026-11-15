@@ -1,6 +1,6 @@
 kind: component
 name: runtime-configuration
-version: 1.0.0
+version: 2.0.0
 stage: ga
 output_namespace: configuration
 config:
@@ -33,6 +33,13 @@ config:
           max_length:
             type: int
             optional: true
+          description:
+            type: string
+          required:
+            type: bool
+          secret:
+            type: bool
+            optional: true
 requires: []
 provides:
   - typed-runtime-configuration
@@ -45,3 +52,5 @@ architecture:
   flow: "Reads the typed runtime configuration that the service starts with."
   ports:
     typed-runtime-configuration: inbound
+
+environment: []

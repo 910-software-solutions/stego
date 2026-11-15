@@ -35,7 +35,7 @@ func newConsumersFixture(t *testing.T) *consumersFixture {
 	t.Helper()
 	f := &consumersFixture{supplyingFixture: newSupplyingFixture(t), checkouts: map[string]string{}}
 	experiment := func(name, sunset string) string {
-		return "kind: component\nname: " + name + "\nversion: 0.3.0\nstage: beta\nsunset: " + sunset +
+		return "kind: component\nenvironment: []\nname: " + name + "\nversion: 0.3.0\nstage: beta\nsunset: " + sunset +
 			"\noutput_namespace: internal/" + name + "\nrequires: []\nprovides: [" + name + "-port]\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    " + name + "-port: inbound\n"
 	}
 	commonSHA := commitRegistry(t, f.common, map[string]string{

@@ -29,3 +29,19 @@ architecture:
   flow: "Runs the declared command in the transaction of the caller's tenant."
   ports:
     commands: inbound
+
+environment:
+  - name: STEGO_MODE
+    type: list
+    required: false
+    default: "all"
+    description: "The modes that the process runs when no --mode option is given. When it has no value, the process runs all modes."
+    secret: false
+    example: "api,worker"
+    allowed: {values: ["api", "worker", "controller", "all"]}
+  - name: STEGO_SERVICE_VERSION
+    type: string
+    required: false
+    description: "The version of the release, which each audit row and the controller lease carry. When it has no value, they carry an empty version."
+    secret: false
+    example: "1.4.2"

@@ -496,12 +496,12 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	var requirements []byte
 	if input.WriteRequirements != nil {
-		file, err := requirementsFile(input.WriteRequirements, svcDecl, componentNames, components)
+		files, err := requirementsFiles(input.WriteRequirements, svcDecl, componentNames, components, input.Generators, resolved.Contexts)
 		if err != nil {
 			return nil, err
 		}
-		requirements = file.Content
-		allFiles = append(allFiles, file)
+		requirements = files[0].Content
+		allFiles = append(allFiles, files...)
 	}
 	// The architecture model comes from the declaration, the registry parts and the wiring of this run alone, and
 	// a component or slot that does not state its place stops the run before any file is written (ST-GEN-UC08-R05).
@@ -658,8 +658,12 @@ const RequirementsFile = "deploy/platform-requirements.yaml"
 // generated output, and owned by STEGO whole: the record keeps its digest under project_files, so that apply refuses
 // a hand edit of it and drift names one (ST-DLV-UC01-R05).
 func isProjectGeneratedFile(filePath string) bool {
-	return filePath == RequirementsFile || filePath == ArchitectureFile
+	return filePath == RequirementsFile || filePath == ReferenceFile || filePath == ArchitectureFile
 }
+
+// ReferenceFile is the path, in the project folder, of the environment variable reference that apply writes: the
+// path of delivery.ReferenceFile (ST-DLV-UC01-R07).
+const ReferenceFile = "deploy/environment-variables.md"
 
 // architectureFile derives the architecture model of the run (ST-GEN-CMD05): from the declaration, the registry
 // parts of the active set and the bound mixins, the wiring, the platform requirements of the run and the declared
@@ -682,32 +686,59 @@ func architectureFile(input ReconcilerInput, svcDecl *types.ServiceDeclaration, 
 		Wirings: wirings, Requirements: requirements, Schema: schema})
 }
 
-// RequirementsWriter writes the platform requirements of the service from the needs that its components state
-// (ST-DLV-CMD01). The compiler owns this port and Delivering's delivery package implements it, because Generating
-// may not import Delivering (ST-STD-CODE-R03).
-type RequirementsWriter func(service string, components []ComponentNeeds) ([]byte, error)
+// RequirementsWriter writes the platform requirements of the service from the needs and the environment variables
+// that its components state, with the environment variable reference rendered from the same list (ST-DLV-CMD01).
+// The compiler owns this port and Delivering's delivery package implements it, because Generating may not import
+// Delivering (ST-STD-CODE-R03).
+type RequirementsWriter func(service string, components []ComponentNeeds) (RequirementsFiles, error)
 
-// ComponentNeeds is one component of the active set with the needs it states and its settings as the declaration
-// and the registry give them.
+// RequirementsFiles are the bytes of the platform requirements and of the environment variable reference.
+type RequirementsFiles struct {
+	Requirements []byte
+	Reference    []byte
+}
+
+// ComponentNeeds is one component of the active set with the needs and the environment variables it states, the
+// variables that the declaration gives it, and its settings as the declaration and the registry give them. A
+// setting marked secret is left out, so that no output can carry its value (ST-SUP-INV23).
 type ComponentNeeds struct {
 	Component string
 	Needs     []registry.Need
+	Variables []registry.EnvironmentVariable
+	Declared  []gen.DeclaredVariables
 	Settings  map[string]any
 }
 
-// requirementsFile writes the platform requirements of the active set, in the order of the active set
-// (ST-DLV-DS01). The derivation reads the declaration and the registry alone, never the generated code or a fill.
-func requirementsFile(write RequirementsWriter, svcDecl *types.ServiceDeclaration, names []string, components map[string]*registry.Component) (gen.File, error) {
+// requirementsFiles writes the platform requirements and the environment variable reference of the active set, in
+// the order of the active set (ST-DLV-DS01). The derivation reads the declaration and the registry alone, never the
+// generated code or a fill. A component whose generator gives variables from its declaration entries, such as
+// runtime-configuration, gives them through gen.VariableDeclarer.
+func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclaration, names []string, components map[string]*registry.Component,
+	generators map[string]gen.Generator, contexts map[string]gen.Context) ([]gen.File, error) {
 	needs := make([]ComponentNeeds, 0, len(names))
 	for _, name := range names {
 		component := components[name]
-		needs = append(needs, ComponentNeeds{Component: name, Needs: component.Needs, Settings: resolveComponentConfig(component, svcDecl)})
+		settings := resolveComponentConfig(component, svcDecl)
+		for key, field := range component.Config {
+			if field.Secret {
+				delete(settings, key)
+			}
+		}
+		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: component.Variables(), Settings: settings}
+		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
+			declared, err := declarer.DeclaredVariables(contexts[name])
+			if err != nil {
+				return nil, fmt.Errorf("reading the environment variables that the declaration gives %s: %w", name, err)
+			}
+			stated.Declared = declared
+		}
+		needs = append(needs, stated)
 	}
 	data, err := write(svcDecl.Name, needs)
 	if err != nil {
-		return gen.File{}, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
+		return nil, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
 	}
-	return gen.File{Path: RequirementsFile, Content: data}, nil
+	return []gen.File{{Path: RequirementsFile, Content: data.Requirements}, {Path: ReferenceFile, Content: data.Reference}}, nil
 }
 
 // collectComponentNames assembles the ordered list of component names from the

@@ -21,3 +21,5 @@ architecture:
   flow: "Gives back the stored answer of a request that repeats an idempotency key."
   ports:
     idempotency-keys: inbound
+
+environment: []

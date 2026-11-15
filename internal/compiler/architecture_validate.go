@@ -118,6 +118,9 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 	for _, e := range m.Needs {
 		declare(e.ID)
 	}
+	for _, e := range m.Variables {
+		declare(e.ID)
+	}
 	for _, e := range m.Boundaries {
 		declare(e.ID)
 	}
@@ -277,7 +280,7 @@ func checkAspects(m *ArchitectureModel) error {
 		{"structure", m.Aspects.Structure, len(m.Components)},
 		{"data_model", m.Aspects.DataModel, len(m.Entities)},
 		{"request_flows", m.Aspects.RequestFlows, len(m.Flows)},
-		{"platform_edges", m.Aspects.PlatformEdges, len(m.Needs)},
+		{"platform_edges", m.Aspects.PlatformEdges, len(m.Needs) + len(m.Variables)},
 		{"trust_and_tenancy", m.Aspects.TrustAndTenancy, len(m.Boundaries) + len(m.Settings)},
 	} {
 		if (a.aspect.State == "empty") != (a.count == 0) {

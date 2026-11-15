@@ -20,3 +20,66 @@ architecture:
   flow: "Exports a trace span of each request to the OpenTelemetry collector."
   ports:
     tracing: inbound
+
+environment:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    type: url
+    required: false
+    description: "The HTTPS origin of the OpenTelemetry collector. When it has no value, the service exports no telemetry."
+    secret: false
+    example: "https://collector.example.com:4317"
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    type: string
+    required: false
+    default: "grpc"
+    description: "The OTLP protocol of the export, which can only be grpc. When it has no value, the export uses grpc."
+    secret: false
+    allowed: {values: ["grpc"]}
+  - name: OTEL_EXPORTER_OTLP_CERTIFICATE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities that verify the collector. When it has no value, the export uses the system roots."
+    secret: false
+    example: "/etc/stego/otel/ca.crt"
+  - name: OTEL_SERVICE_NAME
+    type: string
+    required: false
+    description: "The service name in the telemetry. When it has no value, the telemetry uses the declared service name."
+    secret: false
+    example: "orders-api"
+  - name: OTEL_TRACES_SAMPLER_ARG
+    type: number
+    required: false
+    default: "0.1"
+    description: "The ratio of traces that the service samples. When it has no value, the ratio is 0.1."
+    secret: false
+    example: "0.5"
+    allowed: {min: "0", max: "1"}
+  - name: OTEL_METRICS_EXPORTER
+    type: string
+    required: false
+    default: "otlp"
+    description: "Set to none to stop the export of metrics. When it has no value, the service exports metrics with OTLP."
+    secret: false
+    allowed: {values: ["otlp", "none"]}
+  - name: OTEL_LOGS_EXPORTER
+    type: string
+    required: false
+    default: "otlp"
+    description: "Set to none to stop the export of logs. When it has no value, the service exports logs with OTLP."
+    secret: false
+    allowed: {values: ["otlp", "none"]}
+  - name: OTEL_METRIC_EXPORT_INTERVAL
+    type: integer
+    required: false
+    default: "10000"
+    description: "The time between two exports of metrics, in milliseconds. When it has no value, the time is 10000 milliseconds."
+    secret: false
+    example: "30000"
+    allowed: {min: "1000", max: "60000", unit: milliseconds}
+  - name: STEGO_OTEL_TOKEN_FILE
+    type: path
+    required: false
+    description: "The file of the bearer token for the collector at OTEL_EXPORTER_OTLP_ENDPOINT. When it has no value, the export sends no token."
+    secret: false
+    example: "/etc/stego/otel/token"

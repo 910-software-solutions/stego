@@ -43,6 +43,12 @@ type field struct {
 	Max       *string `json:"max,omitempty"`
 	MinLength *int    `json:"min_length,omitempty"`
 	MaxLength *int    `json:"max_length,omitempty"`
+	// Description, Required and Secret are the facts that the platform requirements list for the field
+	// (ST-SUP-RC22-OC09): what the variable controls, whether the service fails to start without it, and whether
+	// its value is a secret.
+	Description *string `json:"description"`
+	Required    *bool   `json:"required"`
+	Secret      *bool   `json:"secret,omitempty"`
 }
 
 var exportedName = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
@@ -104,7 +110,7 @@ func exactKeys(config map[string]any) bool {
 		return false
 	}
 	allowed := map[string]bool{"name": true, "env": true, "type": true, "default": true,
-		"min": true, "max": true, "min_length": true, "max_length": true}
+		"min": true, "max": true, "min_length": true, "max_length": true, "description": true, "required": true, "secret": true}
 	total := 0
 	for _, value := range groups {
 		group, ok := value.(map[string]any)
@@ -125,14 +131,18 @@ func exactKeys(config map[string]any) bool {
 		}
 		for _, value := range fields {
 			field, ok := value.(map[string]any)
-			if !ok || len(field) < 3 || len(field) > len(allowed) {
+			if !ok || len(field) < 5 || len(field) > len(allowed) {
 				return false
 			}
 			for name, value := range field {
 				if !allowed[name] {
 					return false
 				}
-				if name == "min_length" || name == "max_length" {
+				if name == "required" || name == "secret" {
+					if _, ok := value.(bool); !ok {
+						return false
+					}
+				} else if name == "min_length" || name == "max_length" {
 					switch value.(type) {
 					case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 					default:
@@ -159,7 +169,31 @@ func integer(value string) (int64, bool) {
 	return n, err == nil && strconv.FormatInt(n, 10) == value
 }
 
+// sentenceEnd is the end of one sentence of a description.
+var sentenceEnd = regexp.MustCompile(`\.( |$)`)
+
+// validFacts holds a field to ST-SUP-RC22-OC09: a description of one or two sentences of at most 200 characters on
+// one line, a required flag, a default when it is optional and none when it is required, and no default when it is
+// secret.
+func validFacts(f field) bool {
+	if f.Description == nil || f.Required == nil {
+		return false
+	}
+	text := *f.Description
+	if strings.TrimSpace(text) != text || text == "" || utf8.RuneCountInString(text) > 200 || strings.ContainsAny(text, "\n\r\t\v\f\u2028\u2029") ||
+		!strings.HasSuffix(text, ".") || len(sentenceEnd.FindAllStringIndex(text, -1)) > 2 {
+		return false
+	}
+	if *f.Required == (f.Default != nil) {
+		return false
+	}
+	return f.Secret == nil || !*f.Secret || f.Default == nil
+}
+
 func validField(f field) bool {
+	if !validFacts(f) {
+		return false
+	}
 	if f.Default != nil && !validText(*f.Default) {
 		return false
 	}
@@ -194,6 +228,39 @@ func validField(f field) bool {
 		return f.Min == nil && f.Max == nil && f.MinLength == nil && f.MaxLength == nil && (f.Default == nil || *f.Default == "true" || *f.Default == "false")
 	}
 	return false
+}
+
+// DeclaredVariables gives the configuration fields of the declaration as the environment variables of their groups,
+// so that the platform requirements list each one (ST-DLV-INV11, ST-SUP-RC22-OC09). A secret field gives no
+// default.
+func (*Generator) DeclaredVariables(ctx gen.Context) ([]gen.DeclaredVariables, error) {
+	config, err := prepare(ctx)
+	if err != nil {
+		return nil, err
+	}
+	types := map[string]string{"string": "string", "integer": "integer", "duration": "duration", "boolean": "boolean"}
+	groups := make([]gen.DeclaredVariables, 0, len(config.Groups))
+	for _, group := range config.Groups {
+		declared := gen.DeclaredVariables{Group: group.Name}
+		for _, f := range group.Fields {
+			variable := gen.DeclaredVariable{Name: f.Env, Type: types[f.Type], Required: *f.Required, Description: *f.Description,
+				Secret: f.Secret != nil && *f.Secret}
+			if !variable.Secret {
+				variable.Default = f.Default
+				switch f.Type {
+				case "string":
+					variable.Allowed = fmt.Sprintf("%d to %d bytes", *f.MinLength, *f.MaxLength)
+				case "integer", "duration":
+					variable.Allowed = *f.Min + " to " + *f.Max
+				case "boolean":
+					variable.Allowed = "true, false"
+				}
+			}
+			declared.Variables = append(declared.Variables, variable)
+		}
+		groups = append(groups, declared)
+	}
+	return groups, nil
 }
 
 func (*Generator) ValidateContext(ctx gen.Context) error {

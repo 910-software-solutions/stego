@@ -93,6 +93,7 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -113,6 +114,7 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1369,6 +1371,7 @@ func TestReconcile_ServicePortBindingOverridePassedToResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	altAuthYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1417,6 +1420,7 @@ bindings:
 		t.Fatal(err)
 	}
 	jwtYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1437,6 +1441,7 @@ slots: []
 	// Update stub-api to require auth-provider.
 	apiDir := filepath.Join(registryDir, "components", "stub-api")
 	apiYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1517,6 +1522,7 @@ func TestReconcile_OverrideLoadsComponentFromRegistryViaResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	jwtYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1541,6 +1547,7 @@ slots: []
 		t.Fatal(err)
 	}
 	rhSSOYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1587,6 +1594,7 @@ bindings:
 	// Update stub-api to require auth-provider.
 	apiDir := filepath.Join(registryDir, "components", "stub-api")
 	apiYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1691,6 +1699,7 @@ func TestReconcile_NoNamespaceComponentProducingFilesRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	noNsYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2249,6 +2258,7 @@ message SlotResult {
 
 	// Update stub-api component to declare the slot.
 	compYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2352,6 +2362,7 @@ message SlotResult {
 	}
 
 	compYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2475,6 +2486,7 @@ bindings: {}
 		t.Fatal(err)
 	}
 	compYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2564,6 +2576,7 @@ bindings: {}
 		t.Fatal(err)
 	}
 	compYAML := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2660,6 +2673,7 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2680,6 +2694,7 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2816,6 +2831,7 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2836,6 +2852,7 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2965,6 +2982,7 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -2985,6 +3003,7 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -3105,6 +3124,7 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -3125,6 +3145,7 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.

@@ -34,7 +34,7 @@ func pinProject(t *testing.T, version, runtime string) (string, string) {
 	project, registryDir := t.TempDir(), t.TempDir()
 	files := map[string]string{
 		"archetypes/svc-arch/archetype.yaml": "kind: archetype\nname: svc-arch\nlanguage: go\nversion: " + version + "\n" + runtime + "components: [hello]\nconventions:\n  layout: flat\n",
-		"components/hello/component.yaml":    "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: hello\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/hello\nrequires: []\nprovides: []\nslots: []\n",
+		"components/hello/component.yaml":    "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: hello\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/hello\nrequires: []\nprovides: []\nslots: []\n",
 	}
 	for name, data := range files {
 		target := filepath.Join(registryDir, filepath.FromSlash(name))

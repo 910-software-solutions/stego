@@ -519,7 +519,18 @@ func (d *deriver) compliance() {
 	}
 	put("retention", setting("retention", "audit retention", "audit.retention"))
 	put("retention", fact("retention", system, "data retention", nil, "unstated", unstated))
-	for _, topic := range []string{"personal-data", "tenant-isolation", "access", "audit", "data-protection", "owner-code", "retention"} {
+	// The configuration topic: each environment variable that the service accepts, its readers, whether it is
+	// required, its default and whether it is secret, with the source of each fact (ST-GEN-UC16-R07). A secret
+	// variable has no default fact.
+	for _, v := range m.Variables {
+		put("configuration", fact("configuration", v.ID, "read by", strings.Join(v.ReadBy, ", "), "stated", v.Source))
+		put("configuration", fact("configuration", v.ID, "required", v.Required, "stated", v.Source))
+		put("configuration", fact("configuration", v.ID, "secret", v.Secret, "stated", v.Source))
+		if v.Default != nil && !v.Secret {
+			put("configuration", fact("configuration", v.ID, "default", *v.Default, "stated", v.Source))
+		}
+	}
+	for _, topic := range []string{"personal-data", "tenant-isolation", "access", "audit", "data-protection", "owner-code", "retention", "configuration"} {
 		facts := topics[topic]
 		if facts == nil {
 			facts = []ArchFact{}
@@ -545,7 +556,7 @@ func (d *deriver) aspects() {
 		Structure:       state(len(m.Components) > 0, reasonNoComponents),
 		DataModel:       state(len(m.Entities) > 0, reasonNoEntity),
 		RequestFlows:    state(len(m.Flows) > 0, flowReason),
-		PlatformEdges:   state(len(m.Needs) > 0, reasonNoNeed),
+		PlatformEdges:   state(len(m.Needs)+len(m.Variables) > 0, reasonNoNeed),
 		TrustAndTenancy: state(true, ""),
 	}
 }
@@ -610,6 +621,10 @@ func emptyLists(m *ArchitectureModel) {
 			if *l == nil {
 				*l = []ArchNeed{}
 			}
+		case *[]ArchVariable:
+			if *l == nil {
+				*l = []ArchVariable{}
+			}
 		case *[]ArchBoundary:
 			if *l == nil {
 				*l = []ArchBoundary{}
@@ -625,7 +640,7 @@ func emptyLists(m *ArchitectureModel) {
 		}
 	}
 	for _, list := range []any{&m.Containers, &m.Components, &m.Mixins, &m.Ports, &m.Bindings, &m.Slots, &m.Fills, &m.Entities, &m.References,
-		&m.Collections, &m.Operations, &m.Actions, &m.Flows, &m.Needs, &m.Boundaries, &m.Settings, &m.AuthnPoints, &m.AuthzPoints} {
+		&m.Collections, &m.Operations, &m.Actions, &m.Flows, &m.Needs, &m.Variables, &m.Boundaries, &m.Settings, &m.AuthnPoints, &m.AuthzPoints} {
 		empty(list)
 	}
 }

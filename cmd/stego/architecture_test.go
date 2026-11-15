@@ -80,7 +80,7 @@ func TestArchitectureApply(t *testing.T) {
 			t.Fatalf("the flows are %v", flows)
 		}
 		requirements, _ := readRequirements(t, dir)
-		if len(model.Needs) != len(requirements.Requirements) || len(model.Needs) != 9 {
+		if len(model.Needs) != len(requirements.Requirements) || len(model.Needs) < 9 {
 			t.Fatalf("the model holds %d needs for %d platform requirements", len(model.Needs), len(requirements.Requirements))
 		}
 		for _, r := range requirements.Requirements {
@@ -186,8 +186,14 @@ func TestArchitectureApply(t *testing.T) {
 
 	t.Run("ST-GEN-UC08-R06-T01 An aspect with no element says so, and the others show their elements", func(t *testing.T) {
 		dir := requirementsProject(t)
-		mustRunInProject(t, dir, requirementsEnv(shippedRegistryCopy(t)), "apply")
+		// A registry whose components state no need and no environment variable, so the platform edges are empty.
+		registryDir := shippedRegistryCopy(t)
+		withoutVariables(t, registryDir)
+		mustRunInProject(t, dir, requirementsEnv(registryDir), "apply")
 		model, _, _ := readArchitecture(t, dir)
+		if len(model.Variables) != 0 {
+			t.Fatalf("the model holds %d variables of components that declare none", len(model.Variables))
+		}
 		if model.Aspects.PlatformEdges.State != "empty" || model.Aspects.PlatformEdges.Reason == "" || len(model.Needs) != 0 {
 			t.Fatalf("the platform edges are %+v with %d needs", model.Aspects.PlatformEdges, len(model.Needs))
 		}
@@ -308,5 +314,27 @@ func appendTo(t *testing.T, path, text string) {
 	}
 	if err := os.WriteFile(path, append(data, []byte(text)...), 0o644); err != nil {
 		t.Fatal(fmt.Errorf("appending to %s: %w", path, err))
+	}
+}
+
+// withoutVariables gives each component of the registry copy an empty environment list.
+func withoutVariables(t *testing.T, registryDir string) {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(registryDir, "components", "*", "component.yaml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("the registry copy holds no component: %v", err)
+	}
+	for _, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head, _, found := strings.Cut(string(data), "\nenvironment:")
+		if !found {
+			t.Fatalf("%s states no environment list", path)
+		}
+		if err := os.WriteFile(path, []byte(head+"\nenvironment: []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

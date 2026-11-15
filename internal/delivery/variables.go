@@ -1,0 +1,289 @@
+package delivery
+
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"strings"
+	"unicode/utf8"
+)
+
+// The environment variable list of the platform requirements (ST-DLV-EN08, ST-DLV-UC01-R06 to R09, owner,
+// 2026-11-14): every environment variable that the service accepts, from the components of the active set and the
+// configuration fields of the declaration, derived once on each apply. The platform requirements hold the list, and
+// the reference deploy/environment-variables.md is rendered from the same list.
+
+// Variable is one environment variable as a component or the declaration states it: its name may hold the
+// placeholders {service} and {settings.<key>}, and its default may be {settings.<key>}.
+type Variable struct {
+	Name        string
+	Type        string
+	Required    bool
+	Default     *string
+	Description string
+	Secret      bool
+	// Example is one value the reader can copy, for a variable that is not secret; only the reference shows it.
+	Example *string
+	// Allowed are the allowed values as one text, such as "otlp, none" or "1s to 30m".
+	Allowed string
+}
+
+// DeclaredVariables are the environment variables that the declaration gives one group of a component, such as the
+// configuration fields of one group of runtime-configuration (ST-SUP-RC22-OC09). Their names hold no placeholder.
+type DeclaredVariables struct {
+	Group     string
+	Variables []Variable
+}
+
+// AcceptedVariable is one environment variable that the service accepts, as the platform requirements list it
+// (ST-DLV-EN08). A secret variable holds its name, readers, type, required flag, description and secret flag only
+// (ST-DLV-INV12).
+type AcceptedVariable struct {
+	Name string `yaml:"name"`
+	// ReadBy are the components that read the variable, in name order, or runtime-configuration with the group.
+	ReadBy      []string `yaml:"read_by"`
+	Type        string   `yaml:"type"`
+	Required    bool     `yaml:"required"`
+	Default     *string  `yaml:"default,omitempty"`
+	Description string   `yaml:"description"`
+	Secret      bool     `yaml:"secret"`
+	Allowed     string   `yaml:"allowed,omitempty"`
+	// example is the example of the first reader, for the reference alone: the platform requirements never hold
+	// it, because an example is often a host name (ST-DLV-INV02).
+	example *string
+}
+
+// VariableError is an environment variable that the platform requirements cannot list: the sources that state it,
+// the variable and why. A conflict names both sources (ST-DLV-UC01-R09).
+type VariableError struct {
+	Sources  []string
+	Variable string
+	Reason   string
+}
+
+func (e *VariableError) Error() string {
+	return fmt.Sprintf("%s: environment variable %s: %s", strings.Join(e.Sources, " and "), e.Variable, e.Reason)
+}
+
+// variableTypes are the types of ST-VO63.
+var variableTypes = []string{"string", "integer", "number", "duration", "boolean", "url", "path", "address", "list"}
+
+var (
+	// variableName is a resolved variable name.
+	variableName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
+	// settingDefault is a default that is a setting of the component.
+	settingDefault = regexp.MustCompile(`^\{settings\.([a-z][a-z0-9_]*)\}$`)
+	// sentenceStop is the end of one sentence of a description.
+	sentenceStop = regexp.MustCompile(`\.( |$)`)
+)
+
+// maxVariableValue bounds a default and an allowed value text.
+const maxVariableValue = 512
+
+// source names a source of a variable in a message: a component, or runtime-configuration with its group.
+func source(component, group string) string {
+	if group == "" {
+		return "component " + component
+	}
+	return fmt.Sprintf("component %s group %s", component, group)
+}
+
+// reader names a reader of a variable in the list.
+func reader(component, group string) string {
+	if group == "" {
+		return component
+	}
+	return fmt.Sprintf("%s (%s)", component, group)
+}
+
+// deriveVariables derives the environment variable list of the service from the variables that its components
+// state and that the declaration gives them, in name order (ST-DLV-DS01, ST-DLV-INV11). It fills each name and
+// each setting default, refuses a variable whose facts break their rules, and refuses one name that two sources
+// state with a different type, required flag, default, secret flag or allowed values (ST-DLV-UC01-R09). The
+// description and the example of a variable that several sources state are those of the first reader in name order.
+func deriveVariables(service string, components []ComponentNeeds) ([]AcceptedVariable, error) {
+	type stated struct {
+		variable AcceptedVariable
+		source   string
+		// first is the first reader in name order, whose description and example the list shows.
+		first string
+	}
+	byName := map[string]*stated{}
+	var names []string
+	add := func(component, group string, settings map[string]string, variable Variable) error {
+		src := source(component, group)
+		accepted, err := acceptedOf(service, settings, variable)
+		if err != nil {
+			return &VariableError{Sources: []string{src}, Variable: variable.Name, Reason: err.Error()}
+		}
+		accepted.ReadBy = []string{reader(component, group)}
+		previous, seen := byName[accepted.Name]
+		if !seen {
+			byName[accepted.Name] = &stated{variable: accepted, source: src, first: accepted.ReadBy[0]}
+			names = append(names, accepted.Name)
+			return nil
+		}
+		if slices.Contains(previous.variable.ReadBy, accepted.ReadBy[0]) {
+			return &VariableError{Sources: []string{src}, Variable: accepted.Name, Reason: "the source states the variable twice"}
+		}
+		if fact := conflict(previous.variable, accepted); fact != "" {
+			// The two sources in byte order, so that the message is the same whatever order they load in.
+			both := []string{previous.source, src}
+			slices.Sort(both)
+			return &VariableError{Sources: both, Variable: accepted.Name,
+				Reason: fmt.Sprintf("the sources state the variable with a different %s; one variable has one %s", fact, fact)}
+		}
+		previous.variable.ReadBy = append(previous.variable.ReadBy, accepted.ReadBy[0])
+		// The description and the example of the first reader in name order.
+		if accepted.ReadBy[0] < previous.first {
+			previous.first = accepted.ReadBy[0]
+			previous.variable.Description, previous.variable.example = accepted.Description, accepted.example
+		}
+		return nil
+	}
+	for _, component := range components {
+		for _, variable := range component.Variables {
+			if err := add(component.Component, "", component.Settings, variable); err != nil {
+				return nil, err
+			}
+		}
+		for _, group := range component.Declared {
+			for _, variable := range group.Variables {
+				if strings.ContainsAny(variable.Name, "{}") || (variable.Default != nil && strings.ContainsAny(*variable.Default, "{}")) {
+					return nil, &VariableError{Sources: []string{source(component.Component, group.Group)}, Variable: variable.Name,
+						Reason: "a variable that the declaration gives holds no placeholder"}
+				}
+				if err := add(component.Component, group.Group, nil, variable); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+	slices.Sort(names)
+	list := make([]AcceptedVariable, 0, len(names))
+	for _, name := range names {
+		variable := byName[name].variable
+		slices.Sort(variable.ReadBy)
+		list = append(list, variable)
+	}
+	return list, nil
+}
+
+// conflict gives the first fact on which two statements of one variable differ, or "".
+func conflict(a, b AcceptedVariable) string {
+	switch {
+	case a.Type != b.Type:
+		return "type"
+	case a.Required != b.Required:
+		return "required flag"
+	case a.Secret != b.Secret:
+		return "secret flag"
+	case (a.Default == nil) != (b.Default == nil) || (a.Default != nil && *a.Default != *b.Default):
+		return "default"
+	case a.Allowed != b.Allowed:
+		return "allowed values"
+	}
+	return ""
+}
+
+// acceptedOf fills the name and a setting default of one variable and checks the entry it gives. A secret variable
+// keeps no default, no example and no allowed values (ST-DLV-INV12, ST-DLV-UC01-R08).
+func acceptedOf(service string, settings map[string]string, variable Variable) (AcceptedVariable, error) {
+	name, err := fillName(strings.ToUpper(strings.ReplaceAll(service, "-", "_")), settings, variable.Name)
+	if err != nil {
+		return AcceptedVariable{}, err
+	}
+	accepted := AcceptedVariable{Name: name, Type: variable.Type, Required: variable.Required, Description: variable.Description,
+		Secret: variable.Secret, Allowed: variable.Allowed}
+	if !variable.Secret {
+		accepted.example = variable.Example
+		if variable.Default != nil {
+			value := *variable.Default
+			if match := settingDefault.FindStringSubmatch(value); match != nil {
+				given, ok := settings[match[1]]
+				if !ok || given == "" {
+					// A setting that the declaration does not give leaves the variable with no default.
+					value = ""
+				} else {
+					value = given
+				}
+			}
+			if value != "" {
+				accepted.Default = &value
+			}
+		}
+	} else if variable.Default != nil || variable.Example != nil {
+		return AcceptedVariable{}, fmt.Errorf("the variable is secret and states a default or an example; a secret variable has none")
+	}
+	if variable.Secret {
+		accepted.Allowed = ""
+	}
+	if err := checkAccepted(accepted); err != nil {
+		return AcceptedVariable{}, err
+	}
+	return accepted, nil
+}
+
+// checkAccepted holds one entry of the list to its rules: a variable name, a known type, a description of one or
+// two sentences, no default for a required or a secret variable, and no allowed values for a secret one.
+func checkAccepted(v AcceptedVariable) error {
+	if !variableName.MatchString(v.Name) {
+		return fmt.Errorf("the name %q is not a variable name of capital letters, digits and '_' of at most 128 characters", v.Name)
+	}
+	if !slices.Contains(variableTypes, v.Type) {
+		return fmt.Errorf("the type %q is not one of %s", v.Type, strings.Join(variableTypes, ", "))
+	}
+	if err := checkDescription(v.Description); err != nil {
+		return err
+	}
+	if v.Default != nil && (v.Required || v.Secret) {
+		return fmt.Errorf("a required or a secret variable has no default")
+	}
+	if v.Default != nil && (len(*v.Default) > maxVariableValue || strings.ContainsAny(*v.Default, "\n\r")) {
+		return fmt.Errorf("the default is not one line of at most %d characters", maxVariableValue)
+	}
+	if v.Secret && v.Allowed != "" {
+		return fmt.Errorf("a secret variable lists no allowed values")
+	}
+	if len(v.Allowed) > maxVariableValue || strings.ContainsAny(v.Allowed, "\n\r") {
+		return fmt.Errorf("the allowed values are not one line of at most %d characters", maxVariableValue)
+	}
+	return nil
+}
+
+// checkDescription holds a description to one or two sentences of at most 200 characters on one line (ST-VO64-C01).
+func checkDescription(text string) error {
+	switch {
+	case strings.TrimSpace(text) == "" || strings.TrimSpace(text) != text:
+		return fmt.Errorf("the description is empty or starts or ends with a space")
+	case utf8.RuneCountInString(text) > 200:
+		return fmt.Errorf("the description has more than 200 characters")
+	case strings.ContainsAny(text, "\n\r\t\v\f  "):
+		return fmt.Errorf("the description holds a line break")
+	case !strings.HasSuffix(text, "."):
+		return fmt.Errorf("the description does not end with a full stop")
+	case len(sentenceStop.FindAllStringIndex(text, -1)) > 2:
+		return fmt.Errorf("the description has more than two sentences")
+	}
+	return nil
+}
+
+// configurationNeeds gives one configuration requirement for each required variable of the list that is not secret,
+// with the components that read it (ST-DLV-INV11): the environment file must give each such variable its value.
+func configurationNeeds(list []AcceptedVariable) []Requirement {
+	var needs []Requirement
+	for _, variable := range list {
+		if !variable.Required || variable.Secret {
+			continue
+		}
+		components := make([]string, 0, len(variable.ReadBy))
+		for _, name := range variable.ReadBy {
+			component, _, _ := strings.Cut(name, " (")
+			if !slices.Contains(components, component) {
+				components = append(components, component)
+			}
+		}
+		needs = append(needs, Requirement{Kind: Configuration, Name: variable.Name, Components: components})
+	}
+	return needs
+}

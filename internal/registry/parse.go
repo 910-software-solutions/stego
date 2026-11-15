@@ -69,6 +69,12 @@ func ParseComponentFromBytes(data []byte, path string) (*Component, error) {
 	if err := checkNeeds(&component); err != nil {
 		return nil, err
 	}
+	// The registry refuses a component that leaves out a fact of an environment variable, states a default or an
+	// example for a secret, or a default for a required variable, naming the variable and the fact
+	// (ST-SUP-UC01-R09).
+	if err := checkEnvironment(&component); err != nil {
+		return nil, err
+	}
 	// The registry refuses a component that does not state its place, naming it and the statement
 	// (ST-SUP-UC01-R05).
 	if fault := statesPlace(&component); fault != nil {
@@ -206,8 +212,12 @@ func checkNeedName(component *Component, name string) error {
 			continue
 		}
 		key, isSetting := strings.CutPrefix(inner, "settings.")
-		if _, declared := component.Config[key]; !isSetting || !declared {
+		setting, declared := component.Config[key]
+		if !isSetting || !declared {
 			return fmt.Errorf("the placeholder %s is not {service} or {settings.<key>} of a setting of the component", placeholder)
+		}
+		if setting.Secret {
+			return fmt.Errorf("the placeholder %s names the secret setting %s; a name never holds a secret (ST-SUP-INV23)", placeholder, key)
 		}
 	}
 	for _, text := range needPlaceholder.Split(name, -1) {

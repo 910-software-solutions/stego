@@ -17,3 +17,10 @@ architecture:
   ports:
     postgres-reads: inbound
     postgres-databases: inbound
+
+environment:
+  - name: PGSERVICE
+    type: string
+    required: false
+    description: "A PostgreSQL service name. It must have no value, because the PostgreSQL reads refuse it."
+    secret: false

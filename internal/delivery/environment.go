@@ -41,8 +41,12 @@ type EnvironmentFit struct {
 	Service     string
 	Environment string
 	Rows        []FitRow
-	// Unused are the values of the environment file that no platform requirement names, by kind and name.
+	// Unused are the values of the environment file that no platform requirement and no listed environment variable
+	// names, by kind and name.
 	Unused []string
+	// Notices are the grants of the environment file that are wider than a requirement asks for: a less strict pod
+	// security level or extra cluster verbs. They meet the requirement and do not fail the check.
+	Notices []string
 }
 
 // Met tells whether the environment file meets every platform requirement and every value has its type.
@@ -102,6 +106,8 @@ type environmentEntry struct {
 	fields map[string]*yaml.Node
 	// fault is why the entry does not have the type of its kind, or "".
 	fault string
+	// empty marks a configuration value that is null or empty: it gives no value.
+	empty bool
 }
 
 // environment is the environment file as the check reads it.
@@ -273,13 +279,19 @@ func readEntry(section string, kind RequirementKind, known []string, name string
 		if err != nil {
 			return nil, err
 		}
-		// The values of the keys are not read.
-		entry.keys = keys.order
+		// The values of the keys are not kept: the decoder sees only whether a key has a value. A key whose value is
+		// null or empty counts as missing.
+		for _, key := range keys.order {
+			if !emptyValue(keys.nodes[key]) {
+				entry.keys = append(entry.keys, key)
+			}
+		}
 		return entry, nil
 	case Configuration:
 		if node.Kind != yaml.ScalarNode {
 			entry.fault = "a configuration value is one value, not a " + nodeKind(node)
 		}
+		entry.empty = emptyValue(node)
 		return entry, nil
 	}
 	if node.Kind != yaml.MappingNode {
@@ -296,6 +308,11 @@ func readEntry(section string, kind RequirementKind, known []string, name string
 	entry.fields = given.nodes
 	entry.fault = typeFault(given.nodes)
 	return entry, nil
+}
+
+// emptyValue tells whether a value is null or the empty text, without keeping the value.
+func emptyValue(node *yaml.Node) bool {
+	return node.Kind == yaml.ScalarNode && (node.Tag == "!!null" || node.Value == "")
 }
 
 // typeFault gives why a field of an entry does not have the type that the environment schema states for it, or "".
@@ -359,18 +376,50 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 	}
 	named := map[string]bool{}
 	for _, requirement := range requirements.Requirements {
-		named[requirement.Name] = true
+		named[string(requirement.Kind)+" "+requirement.Name] = true
 		status, detail := requirementMet(requirement, env)
 		fit.Rows = append(fit.Rows, FitRow{Requirement: string(requirement.Kind) + " " + requirement.Name, Status: status, Detail: detail})
+		if status == Met {
+			if notice := widerGrant(requirement, env); notice != "" {
+				fit.Notices = append(fit.Notices, string(requirement.Kind)+" "+requirement.Name+": "+notice)
+			}
+		}
+	}
+	// A required environment variable that no requirement holds, a secret one, is met by a configuration value or a
+	// secret of its name; the check names one that the file gives no value (ST-DLV-UC02-R06). It reads the name of a
+	// secret variable only, never its value (ST-DLV-UC02-R03).
+	listed := map[string]bool{}
+	for _, variable := range requirements.Environment {
+		listed[variable.Name] = true
+		if !variable.Required || named[string(Configuration)+" "+variable.Name] {
+			continue
+		}
+		given := false
+		for _, kind := range []RequirementKind{Configuration, Secret} {
+			if entry := env.lookup(kind, variable.Name); entry != nil && !(entry.kind == Configuration && entry.empty) && !(entry.kind == Secret && len(entry.keys) == 0) {
+				given = true
+			}
+		}
+		if !given {
+			fit.Rows = append(fit.Rows, FitRow{Requirement: "variable " + variable.Name, Status: Missing,
+				Detail: fmt.Sprintf("the environment file gives the required environment variable %s no value", variable.Name)})
+		}
 	}
 	for _, entry := range env.entries {
-		if named[entry.name] {
-			if requirement := requirementNamed(requirements, entry.name); requirement.Kind == Secret && entry.kind == Secret {
+		if named[string(entry.kind)+" "+entry.name] {
+			if requirement := requirementOfKind(requirements, entry.kind, entry.name); requirement.Kind == Secret {
 				for _, key := range entry.keys {
 					if !slices.Contains(requirement.Keys, key) {
 						fit.Unused = append(fit.Unused, fmt.Sprintf("%s %s key %s", entry.kind, entry.name, key))
 					}
 				}
+			}
+			continue
+		}
+		if (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] {
+			// A value of a listed environment variable.
+			if entry.fault != "" {
+				fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType, Detail: entry.fault})
 			}
 			continue
 		}
@@ -382,14 +431,42 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 	return fit, nil
 }
 
-// requirementNamed gives the requirement with the name.
-func requirementNamed(requirements Requirements, name string) Requirement {
+// requirementOfKind gives the requirement of the kind with the name.
+func requirementOfKind(requirements Requirements, kind RequirementKind, name string) Requirement {
 	for _, requirement := range requirements.Requirements {
-		if requirement.Name == name {
+		if requirement.Kind == kind && requirement.Name == name {
 			return requirement
 		}
 	}
 	return Requirement{}
+}
+
+// widerGrant gives a notice when the environment file meets a requirement with a wider grant than it asks for: a
+// less strict pod security level, or cluster verbs that it does not name; else "".
+func widerGrant(requirement Requirement, env environment) string {
+	entry := env.lookup(requirement.Kind, requirement.Name)
+	if entry == nil {
+		return ""
+	}
+	switch requirement.Kind {
+	case PodSecurity:
+		if node := entry.fields["level"]; node != nil && slices.Index(podLevelOrder, node.Value) < slices.Index(podLevelOrder, requirement.Level) {
+			return fmt.Sprintf("the environment admits pods of the less strict level %s; the service needs only the level %s", node.Value, requirement.Level)
+		}
+	case ClusterPermission:
+		var extra []string
+		if node := entry.fields["verbs"]; node != nil {
+			for _, verb := range node.Content {
+				if !slices.Contains(requirement.Verbs, verb.Value) && !slices.Contains(extra, verb.Value) {
+					extra = append(extra, verb.Value)
+				}
+			}
+		}
+		if len(extra) > 0 {
+			return "the environment also grants the verbs " + strings.Join(extra, ", ") + ", which the service does not need"
+		}
+	}
+	return ""
 }
 
 // podLevelOrder ranks the pod security levels from the most open to the strictest.
@@ -419,6 +496,10 @@ func requirementMet(requirement Requirement, env environment) (FitStatus, string
 		return node.Value, true
 	}
 	switch requirement.Kind {
+	case Configuration:
+		if entry.empty {
+			return Missing, "the configuration value " + requirement.Name + " is empty"
+		}
 	case Secret:
 		var missing []string
 		for _, key := range requirement.Keys {
@@ -495,6 +576,8 @@ func requirementMet(requirement Requirement, env environment) (FitStatus, string
 		if admitted > slices.Index(podLevelOrder, requirement.Level) {
 			return Missing, fmt.Sprintf("the environment admits pods of the level %s; the service needs the level %s", level, requirement.Level)
 		}
+	default:
+		return WrongType, fmt.Sprintf("the requirement kind %q is not known to the check", requirement.Kind)
 	}
 	return Met, ""
 }

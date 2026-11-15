@@ -22,3 +22,5 @@ architecture:
   flow: "Gives callers a typed Go client of the service's API."
   ports:
     application-go-sdk: inbound
+
+environment: []

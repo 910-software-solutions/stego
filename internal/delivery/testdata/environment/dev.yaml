@@ -14,6 +14,9 @@ secrets:
     password: CANARY-SECRET-VALUE
 configuration:
   LOG_LEVEL: info
+  STEGO_QUERY_CURSOR_KEY_FILE: /etc/orders/cursor/key
+  STEGO_SPICEDB_ENDPOINT: spicedb.dev.example.com:50051
+  STEGO_SPICEDB_KEY_FILE: /etc/orders/spicedb/key
 backing_stores:
   orders-db:
     engine: postgres

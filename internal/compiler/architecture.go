@@ -60,7 +60,7 @@ const (
 	reasonNoEntity     = "The declaration states no entity."
 	reasonNoOperation  = "The declaration states no collection operation."
 	reasonNoServer     = "No component of the active set serves the collections."
-	reasonNoNeed       = "No component of the active set states a platform need."
+	reasonNoNeed       = "No component of the active set states a platform need or an environment variable."
 	reasonNoComponents = "The active set holds no component."
 )
 
@@ -468,6 +468,14 @@ type platformRequirements struct {
 		Level      string   `yaml:"level"`
 		Components []string `yaml:"components"`
 	} `yaml:"requirements"`
+	Environment []struct {
+		Name     string   `yaml:"name"`
+		ReadBy   []string `yaml:"read_by"`
+		Type     string   `yaml:"type"`
+		Required bool     `yaml:"required"`
+		Default  *string  `yaml:"default"`
+		Secret   bool     `yaml:"secret"`
+	} `yaml:"environment"`
 }
 
 // needs builds the platform edges from the platform requirements of the run, and a container for each backing
@@ -515,6 +523,37 @@ func (d *deriver) needs() error {
 			d.model.Containers = append(d.model.Containers, ArchContainer{ID: "container:" + r.Name, Name: r.Name, Kind: r.Kind, Source: need.Source})
 		}
 	}
+	// Each variable of the list, copied unchanged; a secret one with no default (ST-GEN-UC08-R16).
+	for _, v := range file.Environment {
+		if len(v.ReadBy) == 0 {
+			return &ArchitectureRefusal{fmt.Errorf("the environment variable %s of the platform requirements names no reader", v.Name)}
+		}
+		variable := ArchVariable{ID: "variable:" + v.Name, Name: v.Name, Type: v.Type, Required: v.Required, Default: v.Default, Secret: v.Secret}
+		if v.Secret {
+			variable.Default = nil
+		}
+		for _, reader := range v.ReadBy {
+			name, group, grouped := strings.Cut(reader, " (")
+			if d.in.Components[name] == nil {
+				return &ArchitectureRefusal{fmt.Errorf("the environment variable %s names %s, which is no component of the active set", v.Name, reader)}
+			}
+			id := componentID(name)
+			if grouped {
+				id += "/" + strings.TrimSuffix(group, ")")
+			}
+			variable.ReadBy = append(variable.ReadBy, id)
+			// The source is the statement of the first reader in name order: the component's environment list, or
+			// the declaration's group of the component.
+			if variable.Source == (ArchSource{}) {
+				variable.Source = componentSource(d.in.Components[name], "environment")
+				if grouped {
+					variable.Source = ArchSource{Declaration: "overrides." + name}
+				}
+			}
+		}
+		slices.Sort(variable.ReadBy)
+		d.model.Variables = append(d.model.Variables, variable)
+	}
 	return nil
 }
 
@@ -540,6 +579,7 @@ func sortModel(m *ArchitectureModel) {
 	sortByID(m.Actions, func(e ArchAction) string { return e.ID })
 	sortByID(m.Flows, func(e ArchFlow) string { return e.ID })
 	sortByID(m.Needs, func(e ArchNeed) string { return e.ID })
+	sortByID(m.Variables, func(e ArchVariable) string { return e.ID })
 	sortByID(m.Boundaries, func(e ArchBoundary) string { return e.ID })
 	sortByID(m.Settings, func(e ArchSetting) string { return e.ID })
 	sortByID(m.AuthnPoints, func(e ArchPoint) string { return e.ID })

@@ -260,3 +260,11 @@ architecture:
   ports:
     health-endpoint: outbound
     kubernetes-service-deployment: inbound
+
+environment:
+  - name: STEGO_ALLOCATION_NETWORK_ENDPOINTS
+    type: string
+    required: false
+    description: "A JSON object that gives the IP address and port list of each declared network endpoint. The allocator refuses to start when a declared endpoint has no value."
+    secret: false
+    example: "{\"registry\":[\"10.0.0.5:443\"]}"

@@ -1,0 +1,208 @@
+package registry
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// envComponent is the YAML of a component that declares two variables: an optional duration with a range and a
+// default, and a secret one. The test cases change one fact of it.
+const envComponent = `kind: component
+name: env-a
+version: 1.0.0
+stage: ga
+config:
+  issuer: {type: string}
+  key: {type: string, secret: true}
+  mode: {type: string, enum: [FAST, SLOW]}
+requires: []
+provides: []
+slots: []
+architecture: {layer: handler, flow: "Serves the test.", ports: {}}
+environment:
+  - name: ENV_A_TIMEOUT
+    type: duration
+    required: false
+    default: "5m"
+    description: "The longest time of a call. When it has no value, it is 5 minutes."
+    secret: false
+    example: "2m"
+    allowed: {min: "1s", max: "30m"}
+  - name: ENV_A_DATABASE_URL
+    type: string
+    required: false
+    description: "The connection string of the database."
+    secret: true
+`
+
+// parseEnv parses envComponent with one text replaced, and fails the test when the text is not in it.
+func parseEnv(t *testing.T, old, replacement string) (*Component, error) {
+	t.Helper()
+	if !strings.Contains(envComponent, old) {
+		t.Fatalf("the fixture holds no %q", old)
+	}
+	return ParseComponentFromBytes([]byte(strings.Replace(envComponent, old, replacement, 1)), "env-a/component.yaml")
+}
+
+func TestVariableType(t *testing.T) {
+	t.Run("ST-VO63-C01-T An environment variable type is accepted only when it is one of the nine known types", func(t *testing.T) {
+		for _, known := range []string{"string", "integer", "number", "duration", "boolean", "url", "path", "address", "list"} {
+			if _, err := ParseVariableType(known); err != nil {
+				t.Errorf("the type %s is refused: %v", known, err)
+			}
+		}
+		for _, unknown := range []string{"", "int", "String", "secret", "duration "} {
+			if _, err := ParseVariableType(unknown); err == nil {
+				t.Errorf("the type %q is accepted", unknown)
+			}
+		}
+	})
+}
+
+func TestVariableDescription(t *testing.T) {
+	t.Run("ST-VO64-C01-T A description is accepted only as one or two sentences of at most 200 characters on one line", func(t *testing.T) {
+		for _, good := range []string{"The port.", "The address 127.0.0.1:9090 of the server. When it has no value, the server uses it.", strings.Repeat("a", 199) + "."} {
+			if _, err := ParseVariableDescription(good); err != nil {
+				t.Errorf("the description %q is refused: %v", good, err)
+			}
+		}
+		for _, bad := range []string{"", " ", "The port", "One. Two. Three.", "The port.\nIt is a number.", strings.Repeat("a", 200) + ".", " The port.", "The\tport."} {
+			if _, err := ParseVariableDescription(bad); err == nil {
+				t.Errorf("the description %q is accepted", bad)
+			}
+		}
+	})
+}
+
+// refusal is one case of a component that the registry refuses, with the variable and the fact it must name.
+type refusal struct {
+	name, old, replacement, variable, fact string
+}
+
+// expectRefused fails the test unless the registry refuses each case and names the component, the variable and the
+// fact, and it never shows the canary text.
+func expectRefused(t *testing.T, cases []refusal) {
+	t.Helper()
+	for _, tc := range cases {
+		_, err := parseEnv(t, tc.old, tc.replacement)
+		if err == nil {
+			t.Errorf("%s: the component is accepted", tc.name)
+			continue
+		}
+		for _, part := range []string{"env-a", tc.variable, tc.fact} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("%s: the refusal does not name %s: %v", tc.name, part, err)
+			}
+		}
+		if strings.Contains(err.Error(), "CANARY") {
+			t.Errorf("%s: the refusal shows the canary text: %v", tc.name, err)
+		}
+	}
+}
+
+func TestEnvironmentDeclaration(t *testing.T) {
+	if _, err := parseEnv(t, "", ""); err != nil {
+		t.Fatalf("the fixture is refused: %v", err)
+	}
+	t.Run("ST-SUP-INV22-T A component states its environment list, and each variable its name, type, required flag, description and secret flag", func(t *testing.T) {
+		expectRefused(t, []refusal{
+			{"no name", "  - name: ENV_A_TIMEOUT\n", "  - name: \"\"\n", "", "name"},
+			{"a lower-case name", "  - name: ENV_A_TIMEOUT\n", "  - name: env_a_timeout\n", "env_a_timeout", "name"},
+			{"no type", "    type: duration\n", "", "ENV_A_TIMEOUT", "type"},
+			{"an unknown type", "    type: duration\n", "    type: seconds\n", "ENV_A_TIMEOUT", "type"},
+			{"no required flag", "    required: false\n    default: \"5m\"\n", "    default: \"5m\"\n", "ENV_A_TIMEOUT", "required"},
+			{"no secret flag", "    secret: false\n    example", "    example", "ENV_A_TIMEOUT", "secret"},
+			{"no description", "    description: \"The longest time of a call. When it has no value, it is 5 minutes.\"\n", "", "ENV_A_TIMEOUT", "description"},
+			{"a description of 201 characters", "The longest time of a call. When it has no value, it is 5 minutes.", strings.Repeat("a", 200) + ".", "ENV_A_TIMEOUT", "description"},
+			{"a description with a line break", "\"The longest time of a call. When it has no value, it is 5 minutes.\"", "\"The longest time.\\nIt is long.\"", "ENV_A_TIMEOUT", "description"},
+			{"a variable twice", "  - name: ENV_A_DATABASE_URL\n", "  - name: ENV_A_TIMEOUT\n", "ENV_A_TIMEOUT", "name"},
+			{"a placeholder of a setting with no enum", "  - name: ENV_A_TIMEOUT\n", "  - name: \"ENV_{settings.issuer}\"\n", "", "name"},
+		})
+		head, _, _ := strings.Cut(envComponent, "environment:\n")
+		if _, err := ParseComponentFromBytes([]byte(head), "env-a/component.yaml"); err == nil || !strings.Contains(err.Error(), "env-a: environment:") {
+			t.Errorf("a component with no environment list is accepted, or the refusal does not name the list: %v", err)
+		}
+		component, err := parseEnv(t, "  - name: ENV_A_TIMEOUT\n", "  - name: \"ENV_{settings.mode}_TIMEOUT\"\n")
+		if err != nil || len(component.Variables()) != 2 {
+			t.Fatalf("a name from a setting of names is refused: %v", err)
+		}
+	})
+	t.Run("ST-SUP-INV23-T A secret variable or setting states no default and no example, and no name holds a secret setting", func(t *testing.T) {
+		expectRefused(t, []refusal{
+			{"a secret with a default", "    secret: true\n", "    secret: true\n    default: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "default"},
+			{"a secret with an example", "    secret: true\n", "    secret: true\n    example: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "example"},
+			{"a secret setting with a default", "key: {type: string, secret: true}", "key: {type: string, secret: true, default: CANARY-SECRET-VALUE}", "setting key", "default"},
+			{"a default from a secret setting", "    default: \"5m\"\n", "    default: \"{settings.key}\"\n", "ENV_A_TIMEOUT", "default"},
+			{"a variable name from a secret setting", "  - name: ENV_A_TIMEOUT\n", "  - name: \"ENV_{settings.key}\"\n", "", "name"},
+		})
+		component := `kind: component
+name: env-a
+version: 1.0.0
+stage: ga
+config:
+  key: {type: string, secret: true}
+requires: []
+provides: []
+slots: []
+architecture: {layer: handler, flow: "Serves the test.", ports: {}}
+environment: []
+needs:
+  - {kind: topic, name: "{settings.key}-events"}
+`
+		_, err := ParseComponentFromBytes([]byte(component), "env-a/component.yaml")
+		if err == nil || !strings.Contains(err.Error(), "secret setting key") {
+			t.Fatalf("a need name that holds a secret setting is accepted, or the refusal does not name it: %v", err)
+		}
+	})
+	t.Run("ST-SUP-INV24-T A required variable states no default, and a default or an example is of its type and inside its allowed values", func(t *testing.T) {
+		expectRefused(t, []refusal{
+			{"a required variable with a default", "    required: false\n    default: \"5m\"\n", "    required: true\n    default: \"5m\"\n", "ENV_A_TIMEOUT", "default"},
+			{"a default that is not a duration", "    default: \"5m\"\n", "    default: \"five\"\n", "ENV_A_TIMEOUT", "default"},
+			{"a default above the range", "    default: \"5m\"\n", "    default: \"31m\"\n", "ENV_A_TIMEOUT", "default"},
+			{"an example below the range", "    example: \"2m\"\n", "    example: \"500ms\"\n", "ENV_A_TIMEOUT", "example"},
+			{"a reversed range", "{min: \"1s\", max: \"30m\"}", "{min: \"30m\", max: \"1s\"}", "ENV_A_TIMEOUT", "allowed"},
+			{"a range and a list", "{min: \"1s\", max: \"30m\"}", "{min: \"1s\", max: \"30m\", values: [\"5m\"]}", "ENV_A_TIMEOUT", "allowed"},
+			{"a default outside the list", "    type: duration\n    required: false\n    default: \"5m\"\n", "    type: string\n    required: false\n    default: \"fast\"\n", "ENV_A_TIMEOUT", "allowed"},
+			{"a default of a setting the component has not", "    default: \"5m\"\n", "    default: \"{settings.other}\"\n", "ENV_A_TIMEOUT", "default"},
+		})
+	})
+	t.Run("ST-SUP-UC01-R09-T01 The registry refuses a component that leaves out a fact, or states a default or an example for a secret or a default for a required variable, and names the component, the variable and the fact", func(t *testing.T) {
+		expectRefused(t, []refusal{
+			{"a left-out description", "    description: \"The connection string of the database.\"\n", "", "ENV_A_DATABASE_URL", "description"},
+			{"a left-out type", "    type: string\n    required: false\n    description: \"The connection", "    required: false\n    description: \"The connection", "ENV_A_DATABASE_URL", "type"},
+			{"a default for a secret", "    secret: true\n", "    secret: true\n    default: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "default"},
+			{"an example for a secret", "    secret: true\n", "    secret: true\n    example: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "example"},
+			{"a default for a required variable", "    required: false\n    default: \"5m\"\n", "    required: true\n    default: \"5m\"\n", "ENV_A_TIMEOUT", "default"},
+			{"a name that holds a secret setting", "  - name: ENV_A_TIMEOUT\n", "  - name: \"ENV_{settings.key}\"\n", "", "name"},
+			{"a configuration need", "environment:\n", "needs:\n  - {kind: configuration, name: ENV_A_TIMEOUT}\nenvironment:\n", "", "configuration"},
+		})
+	})
+}
+
+func TestShippedEnvironment(t *testing.T) {
+	t.Run("ST-SUP-UC01-R08-T01 Each shipped component declares its environment list, and each variable states its facts in a valid form", func(t *testing.T) {
+		reg, err := Load(filepath.Join("..", "..", "registry"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		declared := 0
+		for name, component := range reg.Components() {
+			if component.Environment == nil {
+				t.Errorf("the component %s states no environment list", name)
+			}
+			for _, variable := range component.Variables() {
+				declared++
+				if _, err := ParseVariableDescription(variable.Description); err != nil {
+					t.Errorf("component %s variable %s: %v", name, variable.Name, err)
+				}
+				if variable.IsSecret() && (variable.Default != nil || variable.Example != nil) {
+					t.Errorf("component %s: the secret variable %s states a default or an example", name, variable.Name)
+				}
+			}
+		}
+		if declared < 50 {
+			t.Fatalf("the shipped components declare %d variables, fewer than the code reads", declared)
+		}
+	})
+}

@@ -19,12 +19,12 @@ var runtimeTests []byte
 func fixture() map[string]any {
 	var result map[string]any
 	_ = json.Unmarshal([]byte(`{"groups":[{"name":"Worker","fields":[
- {"name":"Address","env":"WIDGET_ADDRESS","type":"string","min_length":1,"max_length":256},
- {"name":"WatchLimit","env":"WIDGET_WATCH_LIMIT","type":"integer","min":"0","max":"1000","default":"0"},
- {"name":"Resync","env":"WIDGET_RESYNC","type":"duration","min":"1ms","max":"1h","default":"30s"},
- {"name":"Enabled","env":"WIDGET_ENABLED","type":"boolean","default":"false"},
- {"name":"Optional","env":"WIDGET_OPTIONAL","type":"string","min_length":0,"max_length":32,"default":""}
- ]},{"name":"Storage","fields":[{"name":"Address","env":"WIDGET_ADDRESS","type":"string","min_length":1,"max_length":256}]}]}`), &result)
+ {"name":"Address","env":"WIDGET_ADDRESS","type":"string","min_length":1,"max_length":256,"required":true,"description":"The address of the widget service."},
+ {"name":"WatchLimit","env":"WIDGET_WATCH_LIMIT","type":"integer","min":"0","max":"1000","default":"0","required":false,"description":"The most watches. When it has no value, the limit is 0."},
+ {"name":"Resync","env":"WIDGET_RESYNC","type":"duration","min":"1ms","max":"1h","default":"30s","required":false,"description":"The time between two full reads."},
+ {"name":"Enabled","env":"WIDGET_ENABLED","type":"boolean","default":"false","required":false,"description":"Turns the widget on."},
+ {"name":"Optional","env":"WIDGET_OPTIONAL","type":"string","min_length":0,"max_length":32,"default":"","required":false,"description":"An optional text."}
+ ]},{"name":"Storage","fields":[{"name":"Address","env":"WIDGET_ADDRESS","type":"string","min_length":1,"max_length":256,"required":true,"secret":true,"description":"The address of the widget store."}]}]}`), &result)
 	return result
 }
 
@@ -84,13 +84,20 @@ func TestConfigurationDeclaration(t *testing.T) {
 	}
 }
 
+// withFacts gives a field the facts of ST-SUP-RC22-OC09 that fit its default.
+func withFacts(f field) field {
+	description, required := "A test field.", f.Default == nil
+	f.Description, f.Required = &description, &required
+	return f
+}
+
 func TestConfigurationNumericContracts(t *testing.T) {
 	for _, f := range []field{
 		{Type: "integer", Min: pointer("-9223372036854775808"), Max: pointer("9223372036854775807"), Default: pointer("0")},
 		{Type: "duration", Min: pointer("-1h"), Max: pointer("1h"), Default: pointer("1.5ms")},
 		{Type: "boolean", Default: pointer("true")},
 	} {
-		if !validField(f) {
+		if !validField(withFacts(f)) {
 			t.Fatal("valid typed declaration rejected")
 		}
 	}
@@ -102,7 +109,7 @@ func TestConfigurationNumericContracts(t *testing.T) {
 		{Type: "duration", Min: pointer("0s"), Max: pointer("1h"), Default: pointer("0" + strings.Repeat("0", 64) + "s")},
 		{Type: "boolean", Default: pointer("1")},
 	} {
-		if validField(f) {
+		if validField(withFacts(f)) {
 			t.Fatal("invalid typed declaration accepted")
 		}
 	}
@@ -144,4 +151,61 @@ func TestGeneratedConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFieldFacts proves ST-SUP-RC22-OC09: the generator refuses a declared field that leaves out its description or
+// its required flag, whose description breaks its rule, that is required and states a default, that is optional and
+// states none, or that is secret and states a default; it accepts the fixture, and gives each field to the platform
+// requirements with its facts.
+func TestFieldFacts(t *testing.T) {
+	for name, change := range map[string]func(f map[string]any){
+		"no description":           func(f map[string]any) { delete(f, "description") },
+		"no required flag":         func(f map[string]any) { delete(f, "required") },
+		"empty description":        func(f map[string]any) { f["description"] = "" },
+		"long description":         func(f map[string]any) { f["description"] = strings.Repeat("Word ", 40) + "end." },
+		"two-line description":     func(f map[string]any) { f["description"] = "The address.\nIt has two lines." },
+		"three sentences":          func(f map[string]any) { f["description"] = "One. Two. Three." },
+		"no full stop":             func(f map[string]any) { f["description"] = "The address" },
+		"text required flag":       func(f map[string]any) { f["required"] = "yes" },
+		"required with default":    func(f map[string]any) { f["default"] = "widget.example.com" },
+		"optional with no default": func(f map[string]any) { f["required"] = false },
+		"secret with default": func(f map[string]any) {
+			f["secret"], f["required"], f["default"] = true, false, "private-sentinel"
+		},
+	} {
+		t.Run("ST-SUP-RC22-OC09-T01 "+name, func(t *testing.T) {
+			config := fixture()
+			field := config["groups"].([]any)[0].(map[string]any)["fields"].([]any)[0].(map[string]any)
+			change(field)
+			ctx := gen.Context{OutputNamespace: "settings", ComponentConfig: config}
+			if err := new(Generator).ValidateContext(ctx); err == nil || strings.Contains(err.Error(), "private-sentinel") {
+				t.Fatal("the generator accepted a field with a missing or wrong fact, or showed its value")
+			}
+			if _, err := new(Generator).DeclaredVariables(ctx); err == nil {
+				t.Fatal("the generator gave the variables of a refused declaration")
+			}
+		})
+	}
+	t.Run("ST-SUP-RC22-OC09-T02 each field goes to the platform requirements with its facts, and a secret field with no default", func(t *testing.T) {
+		groups, err := new(Generator).DeclaredVariables(gen.Context{OutputNamespace: "settings", ComponentConfig: fixture()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(groups) != 2 || groups[0].Group != "Worker" || len(groups[0].Variables) != 5 || groups[1].Group != "Storage" {
+			t.Fatalf("the groups are %+v", groups)
+		}
+		resync := groups[0].Variables[2]
+		if resync.Name != "WIDGET_RESYNC" || resync.Type != "duration" || resync.Required || resync.Default == nil || *resync.Default != "30s" ||
+			resync.Allowed != "1ms to 1h" || resync.Description != "The time between two full reads." || resync.Secret {
+			t.Fatalf("the field Resync gives %+v", resync)
+		}
+		address := groups[0].Variables[0]
+		if !address.Required || address.Default != nil || address.Allowed != "1 to 256 bytes" {
+			t.Fatalf("the field Address gives %+v", address)
+		}
+		store := groups[1].Variables[0]
+		if !store.Secret || store.Default != nil || store.Allowed != "" {
+			t.Fatalf("the secret field gives %+v", store)
+		}
+	})
 }

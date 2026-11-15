@@ -18,3 +18,11 @@ architecture:
   flow: "Gives an operator a command-line client that calls the service."
   ports:
     application-cli: inbound
+
+environment:
+  - name: APPLY_CONFIG
+    type: path
+    required: false
+    description: "The file of the configuration of the apply command. When it has no value, the CLI uses apply/config.json in the configuration folder of the user."
+    secret: false
+    example: "/home/user/.config/apply/config.json"
