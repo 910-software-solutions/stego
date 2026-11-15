@@ -86,8 +86,8 @@ PostgreSQL cannot make without a rewrite, such as an enum made a string with a
 `max_length`. Those still need a new field, a copy and a drop. `stego compat`
 names the relax to declare when you relax a field with no schema change.
 
-The step's own migration marks the column with the comment `stego relax`, and
-runs one `ALTER TABLE` that reads no row under its `ACCESS EXCLUSIVE` lock:
+The step's own migration marks the column with a comment, the relax marker
+(`RelaxMarker` of the runtime library's schema check), and runs one `ALTER TABLE` that reads no row under its `ACCESS EXCLUSIVE` lock:
 the new `CHECK` of the field `NOT VALID` as `<table>_<column>_relax`, a longer
 `character varying`, `DROP NOT NULL` and `SET DEFAULT`. `ALTER COLUMN TYPE`
 scans the table again for each validated `CHECK` on the column, so when the
