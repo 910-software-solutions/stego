@@ -77,8 +77,13 @@ func RenderArchitectureView(model []byte) ([]byte, error) {
 	out.WriteString(after)
 	// The model holds free text, so the view embeds it with <, >, & and U+2028 and U+2029 escaped as \u sequences:
 	// the same JSON value, which no text in it can end or turn into markup.
+	// It is written compact: the same JSON value in fewer bytes.
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, model); err != nil {
+		return nil, err
+	}
 	out.WriteString("<script type=\"application/json\" id=\"model\">")
-	json.HTMLEscape(&out, model)
+	json.HTMLEscape(&out, compact.Bytes())
 	out.WriteString("</script>\n<script type=\"application/json\" id=\"layout\">")
 	out.Write(layout)
 	out.WriteString("</script>\n<script>\n")
