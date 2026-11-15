@@ -71,7 +71,10 @@ type runtimeWiringData struct {
 	Discovery            bool
 	CAFile, SubjectClaim string
 	Algorithms           []string
-	Grants               []string
+	// AuthComponent is the auth provider of the declaration, such as jwt-auth or oidc-auth, which the start stage of
+	// a refused verifier setting names (ST-SUP-RP14-LC05).
+	AuthComponent string
+	Grants        []string
 	// Provisioning is true for a service that declares its tenant provisioning, whose two routes the service serves
 	// itself (ST-SUP-RC27-OC09).
 	Provisioning bool
@@ -337,6 +340,7 @@ func authProviders(names []string, components map[string]*registry.Component) []
 // take, and a provider whose tenant claim is not the declared tenancy claim.
 func declaredAuthentication(in runtimeWiringInput, data *runtimeWiringData) error {
 	for _, name := range authProviders(in.Names, in.Components) {
+		data.AuthComponent = name
 		if provider, ok := in.Generators[name].(gen.RuntimeAuthProvider); ok {
 			auth, err := provider.RuntimeAuth(in.Contexts[name])
 			if err != nil {
