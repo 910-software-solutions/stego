@@ -377,8 +377,17 @@ func TestDeliveryObjectApply(t *testing.T) {
 
 	t.Run("ST-DLV-UC07-R04-T01 Applying the plan writes an ApplicationSet whose environment values come from the platform's environment files", func(t *testing.T) {
 		object, application := readSet(t)
-		if application.Service != "orders" || application.Project != "orders" || application.Base != delivery.BaseFolder {
-			t.Errorf("the ApplicationSet names the service %q, the project %q and the base %q", application.Service, application.Project, application.Base)
+		if application.Service != "orders" || application.Project != "orders" {
+			t.Errorf("the ApplicationSet names the service %q and the project %q", application.Service, application.Project)
+		}
+		// The overlay pulls the base pinned to a commit; STEGO states the line in the plan and in the file header.
+		line := "https://git.example/orders.git//deploy/base?ref=<the full 40-character commit of the release>"
+		data, _ := os.ReadFile(filepath.Join(dir, delivery.ApplicationSetFile))
+		if !strings.Contains(printed, line) || !strings.Contains(string(data), line) {
+			t.Errorf("the plan and the file header do not both state the resource line %s:\n%s", line, printed)
+		}
+		if !strings.Contains(printed, "locked AppProject") {
+			t.Errorf("the plan does not say that the platform must lock the AppProject:\n%s", printed)
 		}
 		generators, _ := field(object, "spec", "generators").([]any)
 		files, _ := field(generators[0], "git", "files").([]any)
@@ -394,9 +403,9 @@ func TestDeliveryObjectApply(t *testing.T) {
 				t.Errorf("the destination %s is %v, want the parameter %s", name, got, want)
 			}
 		}
-		sources, _ := field(spec, "sources").([]any)
-		if len(sources) != 2 || field(sources[0], "path") != "{{.destination.overlay_path}}" || field(sources[1], "repoURL") != "https://git.example/orders.git" {
-			t.Errorf("the sources are %v, want the overlay parameter and the service's repository", sources)
+		source := field(spec, "source")
+		if field(spec, "sources") != nil || field(source, "path") != "{{.destination.overlay_path}}" || field(source, "repoURL") != "https://git.example/platform.git" {
+			t.Errorf("the template has the source %v and the sources %v, want one source: the overlay of the environment file", source, field(spec, "sources"))
 		}
 
 		// The contract fake of the Argo CD files generator: it reads the environment file of ST-DLV-TD02 as the
@@ -425,7 +434,7 @@ func TestDeliveryObjectApply(t *testing.T) {
 		for value, want := range map[any]any{
 			field(spec, "destination", "server"):    field(parameters, "destination", "cluster"),
 			field(spec, "destination", "namespace"): field(parameters, "destination", "namespace"),
-			field(sources[0], "path"):               field(parameters, "destination", "overlay_path"),
+			field(source, "path"):                   field(parameters, "destination", "overlay_path"),
 		} {
 			if got := render(value); got != want {
 				t.Errorf("the template field %v renders %q, want %v from the environment file", value, got, want)
@@ -488,6 +497,34 @@ func TestDeliveryObjectApply(t *testing.T) {
 			}
 			if after := folderDigests(t, project); !maps.Equal(before, after) {
 				t.Errorf("the refused apply with %s changed the project folder", field)
+			}
+		}
+	})
+}
+
+func TestDeliveryStanzaChecks(t *testing.T) {
+	registry := requirementsRegistry(t)
+	env := requirementsEnv(registry)
+	t.Run("ST-DLV-UC07-R04-T03 The project default and an unknown CI provider are refused by stego validate and stego apply, naming the path", func(t *testing.T) {
+		for field, stanza := range map[string]string{
+			"delivery.argocd.project":     strings.Replace(deliveryStanza, "project: orders", "project: default", 1),
+			"delivery.ci":                 "delivery:\n  ci: jenkins\n",
+			"delivery.argocd.source.repo": strings.Replace(deliveryStanza, "https://git.example/orders.git", "ssh://git@-oproxy/orders.git", 1),
+		} {
+			project := deliveryProject(t, stanza)
+			before := folderDigests(t, project)
+			for _, command := range []string{"validate", "apply"} {
+				stdout, stderr, err := runInProject(t, project, env, command)
+				if err == nil {
+					t.Errorf("stego %s accepts %s:\n%s", command, field, stdout)
+					continue
+				}
+				if !strings.Contains(stdout+stderr, field) {
+					t.Errorf("stego %s does not name %s:\n%s\n%s", command, field, stdout, stderr)
+				}
+			}
+			if after := folderDigests(t, project); !maps.Equal(before, after) {
+				t.Errorf("a refused run with %s changed the project folder", field)
 			}
 		}
 	})
