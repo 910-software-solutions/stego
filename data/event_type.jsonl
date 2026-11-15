@@ -15,7 +15,7 @@
 {"id":"ST-DIS-EV08-ET","title":"publish-release.outputs.release","domain_event_id":"ST-DIS-EV08","delivery":"in process","file":".github/workflows/proof-run.yml"}
 {"id":"ST-DLV-EV01-ET","title":"delivery.RequirementsWritten","domain_event_id":"ST-DLV-EV01","delivery":"outbox","file":"internal/delivery/events.go"}
 {"id":"ST-DLV-EV02-ET","title":"delivery.PipelineWritten","domain_event_id":"ST-DLV-EV02","delivery":"in process","file":"internal/delivery/events.go"}
-{"id":"ST-DLV-EV03-ET","title":"delivery.BaseWritten","domain_event_id":"ST-DLV-EV03","delivery":"in process","file":"internal/delivery/events.go"}
+{"id":"ST-DLV-EV03-ET","title":"delivery.BaseWritten","domain_event_id":"ST-DLV-EV03","delivery":"in process","file":"internal/delivery/base.go"}
 {"id":"ST-DLV-EV04-ET","title":"delivery.ApplicationWritten","domain_event_id":"ST-DLV-EV04","delivery":"in process","file":"internal/delivery/events.go"}
 {"id":"ST-DLV-EV05-ET","title":"delivery.CandidatePassed","domain_event_id":"ST-DLV-EV05","delivery":"outbox","file":"internal/delivery/events.go"}
 {"id":"ST-EXT-EV01-ET","title":"fill.FillScaffolded","domain_event_id":"ST-EXT-EV01","delivery":"in process","file":"internal/fill/events.go"}

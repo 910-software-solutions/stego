@@ -1,0 +1,207 @@
+package delivery
+
+import (
+	"fmt"
+	"path"
+	"regexp"
+	"strings"
+)
+
+// ApplicationSetFile is the path, in the project folder, of the delivery object (ST-DLV-EN05-TB).
+const ApplicationSetFile = "deploy/argocd/applicationset.yaml"
+
+// applicationHeader is the first lines of the delivery object.
+const applicationHeader = "# The delivery object of the service. stego apply writes this file from the delivery stanza of the declaration.\n" +
+	"# Each environment file of the platform gives the cluster, the namespace and the overlay. Do not edit it.\n"
+
+// ArgoCDStanza is the Argo CD part of the delivery stanza of the declaration (ST-DLV-Q12 (A)): the project, the
+// address of the service's repository with the path of the base in it, and the repository, the revision and the
+// path pattern of the platform's environment files.
+type ArgoCDStanza struct {
+	Project             string
+	SourceRepo          string
+	SourcePath          string
+	EnvironmentRepo     string
+	EnvironmentRevision string
+	EnvironmentPath     string
+}
+
+// Application is the delivery object of one service (ST-DLV-EN05): the Argo CD ApplicationSet that the platform's
+// environment files feed.
+type Application struct {
+	Service string
+	Project string
+	Base    string
+	File    []byte
+}
+
+var (
+	// argoProject is an Argo CD project name: a DNS label.
+	argoProject = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// repoAddress is the address of a Git repository: https or ssh, with no query, fragment, space or user
+	// information other than the git user of an ssh address.
+	repoAddress = regexp.MustCompile(`^(https://[A-Za-z0-9.-]+(:[0-9]+)?|ssh://git@[A-Za-z0-9.-]+(:[0-9]+)?|git@[A-Za-z0-9.-]+:)[A-Za-z0-9._/~-]+$`)
+	// revisionName is a branch, a tag or a commit.
+	revisionName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
+	// filePattern is a relative path pattern of the platform's environment files.
+	filePattern = regexp.MustCompile(`^[A-Za-z0-9._*/-]+\.(yaml|yml|json)$`)
+)
+
+// StanzaError is a field of the delivery stanza that apply cannot write a delivery object from: its path in the
+// declaration and why.
+type StanzaError struct {
+	Path   string
+	Reason string
+}
+
+func (e *StanzaError) Error() string {
+	return fmt.Sprintf("the declaration field %s: %s", e.Path, e.Reason)
+}
+
+// relativeClean tells if a path is relative, clean and stays in its repository.
+func relativeClean(name string) bool {
+	return name != "" && !path.IsAbs(name) && path.Clean(name) == name && name != ".." && !strings.HasPrefix(name, "../")
+}
+
+// checkStanza refuses an Argo CD stanza whose fields cannot name what they must, naming the path of each field.
+func checkStanza(stanza ArgoCDStanza) error {
+	switch {
+	case !argoProject.MatchString(stanza.Project):
+		return &StanzaError{Path: "delivery.argocd.project", Reason: "an Argo CD project is a DNS label"}
+	case !repoAddress.MatchString(stanza.SourceRepo):
+		return &StanzaError{Path: "delivery.argocd.source.repo", Reason: "the address of the service's repository is an https or ssh Git address"}
+	case !relativeClean(stanza.SourcePath) || (stanza.SourcePath != BaseFolder && !strings.HasSuffix(stanza.SourcePath, "/"+BaseFolder)):
+		return &StanzaError{Path: "delivery.argocd.source.path", Reason: "the path of the base is a clean relative path that ends in " + BaseFolder}
+	case !repoAddress.MatchString(stanza.EnvironmentRepo):
+		return &StanzaError{Path: "delivery.argocd.environments.repo", Reason: "the address of the platform's repository is an https or ssh Git address"}
+	case !revisionName.MatchString(stanza.EnvironmentRevision):
+		return &StanzaError{Path: "delivery.argocd.environments.revision", Reason: "the revision is a branch, a tag or a commit"}
+	case !relativeClean(stanza.EnvironmentPath) || !filePattern.MatchString(stanza.EnvironmentPath):
+		return &StanzaError{Path: "delivery.argocd.environments.path", Reason: "the path of the environment files is a clean relative pattern of YAML or JSON files"}
+	}
+	return nil
+}
+
+// WriteApplication writes the Argo CD ApplicationSet of the service from the delivery stanza (ST-DLV-CMD04), as the
+// base is written (ST-DLV-PO04). Its template names the service, the project and the base; its files generator
+// lists the platform's environment files, and the destination cluster, the namespace and the overlay path of each
+// Application are parameters of that generator, never values of the declaration (ST-DLV-INV10, ST-DLV-UC07-R04).
+// The Application builds the overlay of its environment file from the platform's repository; the overlay builds
+// on the base, which the second source names.
+func WriteApplication(written BaseWritten, stanza ArgoCDStanza) (Application, error) {
+	if err := checkStanza(stanza); err != nil {
+		return Application{}, err
+	}
+	object := map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1",
+		"kind":       "ApplicationSet",
+		"metadata":   map[string]any{"name": written.Service, "labels": map[string]any{"app.kubernetes.io/name": written.Service}},
+		"spec": map[string]any{
+			"goTemplate":        true,
+			"goTemplateOptions": []any{"missingkey=error"},
+			"generators": []any{map[string]any{"git": map[string]any{
+				"repoURL":  stanza.EnvironmentRepo,
+				"revision": stanza.EnvironmentRevision,
+				"files":    []any{map[string]any{"path": stanza.EnvironmentPath}},
+			}}},
+			"template": map[string]any{
+				"metadata": map[string]any{
+					"name":        written.Service + "-{{.environment}}",
+					"labels":      map[string]any{"app.kubernetes.io/name": written.Service},
+					"annotations": map[string]any{"stego.dev/base": stanza.SourceRepo + "//" + stanza.SourcePath},
+				},
+				"spec": map[string]any{
+					"project": stanza.Project,
+					"sources": []any{
+						map[string]any{"repoURL": stanza.EnvironmentRepo, "targetRevision": stanza.EnvironmentRevision, "path": overlayParameter},
+						map[string]any{"repoURL": stanza.SourceRepo, "targetRevision": "HEAD", "ref": "base"},
+					},
+					"destination": map[string]any{"server": clusterParameter, "namespace": namespaceParameter},
+				},
+			},
+		},
+	}
+	data, err := encodeWith(applicationHeader, object)
+	if err != nil {
+		return Application{}, err
+	}
+	application, err := LoadApplicationSet(data)
+	if err != nil {
+		return Application{}, fmt.Errorf("the ApplicationSet of %s does not read back: %w", written.Service, err)
+	}
+	return application, nil
+}
+
+// applicationSetDocument is the shape of the ApplicationSet that STEGO writes, and nothing more: a sync policy, a
+// literal destination or any other field is not in it, so the strict decoder refuses it.
+type applicationSetDocument struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name   string            `yaml:"name"`
+		Labels map[string]string `yaml:"labels"`
+	} `yaml:"metadata"`
+	Spec struct {
+		GoTemplate        bool     `yaml:"goTemplate"`
+		GoTemplateOptions []string `yaml:"goTemplateOptions"`
+		Generators        []struct {
+			Git struct {
+				RepoURL  string `yaml:"repoURL"`
+				Revision string `yaml:"revision"`
+				Files    []struct {
+					Path string `yaml:"path"`
+				} `yaml:"files"`
+			} `yaml:"git"`
+		} `yaml:"generators"`
+		Template struct {
+			Metadata struct {
+				Name        string            `yaml:"name"`
+				Labels      map[string]string `yaml:"labels"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"metadata"`
+			Spec struct {
+				Project string `yaml:"project"`
+				Sources []struct {
+					RepoURL        string `yaml:"repoURL"`
+					TargetRevision string `yaml:"targetRevision"`
+					Path           string `yaml:"path,omitempty"`
+					Ref            string `yaml:"ref,omitempty"`
+				} `yaml:"sources"`
+				Destination struct {
+					Server    string `yaml:"server"`
+					Namespace string `yaml:"namespace"`
+				} `yaml:"destination"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	} `yaml:"spec"`
+}
+
+// The parameters of the files generator that each environment file gives (ST-DLV-TM02).
+const (
+	clusterParameter   = "{{.destination.cluster}}"
+	namespaceParameter = "{{.destination.namespace}}"
+	overlayParameter   = "{{.destination.overlay_path}}"
+)
+
+// LoadApplicationSet reads the delivery object back through the strict decoder (ST-DLV-REPO04): one document of the
+// shape that STEGO writes, with one files generator, whose destination cluster, namespace and overlay path are the
+// parameters of that generator and never a literal value (ST-DLV-INV10).
+func LoadApplicationSet(data []byte) (Application, error) {
+	var document applicationSetDocument
+	if err := decodeStrict(data, MaxRequirementsBytes, &document); err != nil {
+		return Application{}, err
+	}
+	spec := document.Spec.Template.Spec
+	switch {
+	case document.APIVersion != "argoproj.io/v1alpha1" || document.Kind != "ApplicationSet":
+		return Application{}, fmt.Errorf("the file is not an Argo CD ApplicationSet")
+	case len(document.Spec.Generators) != 1 || len(document.Spec.Generators[0].Git.Files) != 1:
+		return Application{}, fmt.Errorf("the ApplicationSet has not exactly one files generator")
+	case spec.Destination.Server != clusterParameter || spec.Destination.Namespace != namespaceParameter:
+		return Application{}, fmt.Errorf("the destination is not the cluster and the namespace of the environment file")
+	case len(spec.Sources) != 2 || spec.Sources[0].Path != overlayParameter || spec.Sources[1].Ref != "base" || spec.Sources[1].Path != "":
+		return Application{}, fmt.Errorf("the sources are not the overlay of the environment file and the base")
+	}
+	base := strings.TrimPrefix(document.Spec.Template.Metadata.Annotations["stego.dev/base"], spec.Sources[1].RepoURL+"//")
+	return Application{Service: document.Metadata.Name, Project: spec.Project, Base: base, File: data}, nil
+}

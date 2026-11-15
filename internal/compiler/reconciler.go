@@ -71,6 +71,10 @@ type Plan struct {
 	// hand-edited files (stego apply --replace-hand-edits).
 	ReplaceHandEdits bool
 
+	// Notes are the lines that the plan states besides its files, such as that the run writes no delivery object
+	// because the declaration has no delivery stanza (ST-DLV-UC07-R05).
+	Notes []string
+
 	// saved is the saved plan that apply carries out, when it is given one.
 	saved *SavedPlan
 
@@ -149,6 +153,11 @@ type ReconcilerInput struct {
 	// WriteRequirements writes the platform requirements from the needs of the active set; cmd/stego gives
 	// delivery.WriteRequirements. Without it a run writes no platform requirements.
 	WriteRequirements RequirementsWriter
+
+	// WriteDeployment writes the Kubernetes base from the platform requirements of the run and the probes of the
+	// active set; cmd/stego gives delivery.WriteDeployment. Without it, or without platform requirements, a run
+	// writes no Kubernetes base.
+	WriteDeployment DeploymentWriter
 
 	// CheckOnly marks a plan that stego validate makes only to read the pins it uses. Such a plan is never
 	// written, so Reconcile does not refuse it for a part of the declaration that no component can generate yet.
@@ -503,6 +512,15 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		requirements = files[0].Content
 		allFiles = append(allFiles, files...)
 	}
+	var notes []string
+	if input.WriteDeployment != nil && requirements != nil {
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements)
+		if err != nil {
+			return nil, err
+		}
+		allFiles = append(allFiles, files...)
+		notes = written
+	}
 	// The architecture model comes from the declaration, the registry parts and the wiring of this run alone, and
 	// a component or slot that does not state its place stops the run before any file is written (ST-GEN-UC08-R05).
 	architecture, err := architectureFiles(input, svcDecl, reg, archetype, componentNames, components, wirings, requirements)
@@ -536,6 +554,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	plan.inputManifestSHA = manifest.SHA256
 	plan.registry = reg
+	plan.Notes = notes
 	if err := plan.verifyRegistry(); err != nil {
 		return nil, err
 	}
@@ -658,7 +677,72 @@ const RequirementsFile = "deploy/platform-requirements.yaml"
 // generated output, and owned by STEGO whole: the record keeps its digest under project_files, so that apply refuses
 // a hand edit of it and drift names one (ST-DLV-UC01-R05).
 func isProjectGeneratedFile(filePath string) bool {
-	return filePath == RequirementsFile || filePath == ReferenceFile || filePath == ArchitectureFile || filePath == ArchitectureViewFile
+	return filePath == RequirementsFile || filePath == ReferenceFile || filePath == ArchitectureFile || filePath == ArchitectureViewFile ||
+		slices.Contains(BaseFiles, filePath) || filePath == DeliveryObjectFile
+}
+
+// DeliveryObjectFile is the path, in the project folder, of the Argo CD ApplicationSet: the path of
+// delivery.ApplicationSetFile (ST-DLV-EN05-TB).
+const DeliveryObjectFile = "deploy/argocd/applicationset.yaml"
+
+// BaseFiles are the paths, in the project folder, of every file that the Kubernetes base may hold: the paths of
+// delivery.BaseFiles (ST-DLV-EN04-TB), which Generating may not import. A run writes the files that the platform
+// requirements need, and apply removes a file of the base that a run no longer writes.
+var BaseFiles = []string{"deploy/base/kustomization.yaml", "deploy/base/service-account.yaml", "deploy/base/deployment.yaml",
+	"deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml"}
+
+// DeploymentWriter writes the Kubernetes base of the service from the platform requirements of the run and the
+// probes of the active set, and then the delivery object or the plan line that says why the run writes none
+// (ST-DLV-CMD03, ST-DLV-PO04). The compiler owns this port and Delivering's delivery package implements it,
+// because Generating may not import Delivering (ST-STD-CODE-R03).
+type DeploymentWriter func(DeploymentInput) (DeploymentFiles, error)
+
+// DeploymentInput is what the Kubernetes base is written from: the service name, the platform requirements file
+// of the run, and the probes of the component of the active set that serves them, if one does.
+type DeploymentInput struct {
+	Service      string
+	Requirements []byte
+	Probes       *gen.Probes
+	// Delivery is the delivery stanza of the declaration, or nil (ST-DLV-Q12 (A)).
+	Delivery *types.Delivery
+}
+
+// DeploymentFiles are the files of the Kubernetes base and of the delivery object, and the lines of the plan.
+type DeploymentFiles struct {
+	Files []gen.File
+	Notes []string
+}
+
+// deploymentFiles writes the Kubernetes base of the run from its platform requirements and the probes that a
+// component of the active set serves, in the order of the active set (ST-DLV-INV08). It refuses a file out of the
+// paths of the base.
+func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, names []string, generators map[string]gen.Generator,
+	contexts map[string]gen.Context, requirements []byte) ([]gen.File, []string, error) {
+	var probes *gen.Probes
+	for _, name := range names {
+		declarer, ok := generators[name].(gen.ProbeDeclarer)
+		if !ok {
+			continue
+		}
+		served, err := declarer.Probes(contexts[name])
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading the probes that %s serves: %w", name, err)
+		}
+		if probes != nil {
+			return nil, nil, fmt.Errorf("two components of the active set serve the probes of the Kubernetes base; %s is the second", name)
+		}
+		probes = &served
+	}
+	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery})
+	if err != nil {
+		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
+	}
+	for _, file := range written.Files {
+		if !slices.Contains(BaseFiles, file.Path) && file.Path != DeliveryObjectFile {
+			return nil, nil, fmt.Errorf("the Kubernetes base writes %s, which is not a file of the base or the delivery object", file.Path)
+		}
+	}
+	return written.Files, written.Notes, nil
 }
 
 // ReferenceFile is the path, in the project folder, of the environment variable reference that apply writes: the
@@ -1427,6 +1511,9 @@ func FormatPlan(plan *Plan) string {
 
 	result.WriteString("Plan:\n")
 	result.WriteString(sb.String())
+	for _, note := range plan.Notes {
+		fmt.Fprintf(&result, "  note:     %s\n", note)
+	}
 	if plan.StateChanged {
 		result.WriteString("  update:   compiler state\n")
 	}
