@@ -24,3 +24,5 @@ architecture:
   flow: "Checks that the caller's tenant is active and scopes the request to it."
   ports:
     tenant-isolation: inbound
+
+environment: []

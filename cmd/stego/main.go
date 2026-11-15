@@ -1095,8 +1095,9 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 }
 
 // writeRequirements gives the compiler's port for the platform requirements to Delivering
-// (delivery.WriteRequirements, ST-DLV-CMD01). A setting that is not one scalar value gives no value to a need name.
-func writeRequirements(service string, components []compiler.ComponentNeeds) ([]byte, error) {
+// (delivery.WriteRequirements, ST-DLV-CMD01): the needs, the environment variables that each component declares,
+// and those that the declaration gives it. A setting that is not one scalar value gives no value to a need name.
+func writeRequirements(service string, components []compiler.ComponentNeeds) (compiler.RequirementsFiles, error) {
 	stated := make([]delivery.ComponentNeeds, 0, len(components))
 	for _, component := range components {
 		needs := make([]delivery.Need, 0, len(component.Needs))
@@ -1113,9 +1114,29 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) ([]
 				settings[key] = fmt.Sprint(value)
 			}
 		}
-		stated = append(stated, delivery.ComponentNeeds{Component: component.Component, Needs: needs, Settings: settings})
+		variables := make([]delivery.Variable, 0, len(component.Variables))
+		for _, variable := range component.Variables {
+			variables = append(variables, delivery.Variable{Name: variable.Name, Type: variable.Type, Required: variable.IsRequired(),
+				Default: variable.Default, Description: variable.Description, Secret: variable.IsSecret(), Example: variable.Example,
+				Allowed: variable.Allowed.Text()})
+		}
+		declared := make([]delivery.DeclaredVariables, 0, len(component.Declared))
+		for _, group := range component.Declared {
+			list := make([]delivery.Variable, 0, len(group.Variables))
+			for _, variable := range group.Variables {
+				list = append(list, delivery.Variable{Name: variable.Name, Type: variable.Type, Required: variable.Required, Default: variable.Default,
+					Description: variable.Description, Secret: variable.Secret, Allowed: variable.Allowed})
+			}
+			declared = append(declared, delivery.DeclaredVariables{Group: group.Group, Variables: list})
+		}
+		stated = append(stated, delivery.ComponentNeeds{Component: component.Component, Needs: needs, Settings: settings,
+			Variables: variables, Declared: declared})
 	}
-	return delivery.WriteRequirements(service, stated)
+	files, err := delivery.WriteRequirements(service, stated)
+	if err != nil {
+		return compiler.RequirementsFiles{}, err
+	}
+	return compiler.RequirementsFiles{Requirements: files.Requirements, Reference: files.Reference}, nil
 }
 
 func defaultGenerators() map[string]gen.Generator {

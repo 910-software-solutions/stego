@@ -32,6 +32,7 @@ type Open func(context.Context)(Application,error)
 // Startup has ten seconds. Shutdown has twenty seconds, including domain cleanup
 // and telemetry flush. A callback that does not stop cannot keep the process alive.
 func Main(open Open){
+ stegoRefuseEnvironment()
  ctx,stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM)
  address:=os.Getenv("STEGO_RPC_MONITOR_ADDR")
  if address==""{address="127.0.0.1:9082"}

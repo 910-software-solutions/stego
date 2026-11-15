@@ -17,3 +17,5 @@ architecture:
   ports:
     application-http: outbound
     kubernetes-resources: inbound
+
+environment: []

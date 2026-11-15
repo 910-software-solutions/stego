@@ -26,3 +26,5 @@ architecture:
   flow: "Gives callers a typed TypeScript client of the service's API."
   ports:
     application-typescript-sdk: inbound
+
+environment: []

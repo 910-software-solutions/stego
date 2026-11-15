@@ -78,6 +78,10 @@ type Component struct {
 	// Architecture is the component's architecture role, from which the architecture model places it alone
 	// (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05).
 	Architecture *ArchitectureRole `yaml:"architecture"`
+	// Environment is every environment variable that the component's emitted code or its runtime provider reads
+	// (ST-SUP-EN09, ST-SUP-EN14, ST-SUP-UC01-R08). It is a pointer so that the registry refuses a component that
+	// states no list.
+	Environment *[]EnvironmentVariable `yaml:"environment"`
 }
 
 // ArchitectureRole is where a component sits in a service: its layer, its flow part, and the side of each port it

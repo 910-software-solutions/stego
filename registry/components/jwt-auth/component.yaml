@@ -35,3 +35,63 @@ architecture:
   flow: "Checks the token of the request and puts the caller's identity on it."
   ports:
     auth-provider: inbound
+
+environment:
+  - name: STEGO_AUTH_PUBLIC_KEY_FILE
+    type: path
+    required: false
+    description: "The file of the RSA public key that verifies tokens. When it has no value, the verifier uses the public_key_file setting."
+    secret: false
+    example: "/etc/stego/auth/public.pem"
+  - name: STEGO_AUTH_ISSUER
+    type: url
+    required: false
+    default: "{settings.issuer}"
+    description: "The issuer that each token must name. When it has no value, the verifier uses the issuer setting."
+    secret: false
+    example: "https://sso.example.com/realms/main"
+  - name: STEGO_AUTH_AUDIENCE
+    type: string
+    required: false
+    default: "{settings.audience}"
+    description: "The audience that each token must name. When it has no value, the verifier uses the audience setting."
+    secret: false
+    example: "my-service"
+  - name: STEGO_AUTH_ROLES_CLAIM
+    type: string
+    required: false
+    description: "The claim of the token that holds the roles of the caller. When it has no value, the verifier uses the roles_claim setting."
+    secret: false
+    example: "realm_access.roles"
+  - name: STEGO_AUTHN_ISSUER
+    type: url
+    required: false
+    default: "{settings.issuer}"
+    description: "The issuer that each bearer token must name, which must be equal to the issuer setting. When it has no value, the verifier uses the issuer setting."
+    secret: false
+    example: "https://sso.example.com/realms/main"
+  - name: STEGO_AUTHN_AUDIENCE
+    type: string
+    required: false
+    default: "{settings.audience}"
+    description: "The audience that each bearer token must name, which must be equal to the audience setting. When it has no value, the verifier uses the audience setting."
+    secret: false
+    example: "my-service"
+  - name: STEGO_AUTHN_KEYS_URL
+    type: url
+    required: false
+    description: "The HTTPS URL of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_FILE when the component states no key file and no discovery."
+    secret: false
+    example: "https://sso.example.com/realms/main/certs"
+  - name: STEGO_AUTHN_KEYS_FILE
+    type: path
+    required: false
+    description: "The file of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_URL when the component states no key file and no discovery."
+    secret: false
+    example: "/etc/stego/authn/keys.json"
+  - name: STEGO_AUTHN_CA_FILE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities that the verifier adds to the system roots, unless the component states a CA file. When it has no value, the verifier uses the system roots."
+    secret: false
+    example: "/etc/stego/authn/ca.crt"

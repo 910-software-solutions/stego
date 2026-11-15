@@ -29,7 +29,7 @@ func commonRegistryFiles() map[string]string {
 			}
 		}
 		slots = strings.ReplaceAll(slots, "\n    proto:", "\n    phase: before_store\n    operations: [create]\n    proto:")
-		return "kind: component\nname: " + name + "\nversion: 1.0.0\nstage: ga\noutput_namespace: " + namespace +
+		return "kind: component\nenvironment: []\nname: " + name + "\nversion: 1.0.0\nstage: ga\noutput_namespace: " + namespace +
 			"\n\nconfig:\n  enabled:\n    type: bool\n\nrequires: " + requires + "\n\nprovides: " + provides + "\n\nslots: " + slots +
 			"\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:" + map[bool]string{true: " {}", false: ""}[sides == ""] + sides + "\n"
 	}
@@ -64,7 +64,7 @@ func commonRegistryFiles() map[string]string {
 func localRegistryFiles() map[string]string {
 	return map[string]string{
 		".gitignore": "*.log\n",
-		"components/local-a/component.yaml": "kind: component\nname: local-a\nversion: 0.1.0\nstage: beta\nsunset: " + daysFromToday(60) + "\noutput_namespace: internal/local\n\n" +
+		"components/local-a/component.yaml": "kind: component\nenvironment: []\nname: local-a\nversion: 0.1.0\nstage: beta\nsunset: " + daysFromToday(60) + "\noutput_namespace: internal/local\n\n" +
 			"config:\n  enabled:\n    type: bool\n\nrequires: []\n\nprovides: [local-port]\n\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    local-port: inbound\n",
 	}
 }
@@ -288,7 +288,7 @@ func TestRegistryComposeLimits(t *testing.T) {
 		for i := 3; i <= 9; i++ {
 			name := fmt.Sprintf("local-%d", i)
 			repository, commit := registryRepository(t, name+"-registry", map[string]string{
-				"components/" + name + "/component.yaml": "kind: component\nname: " + name + "\nversion: 0.1.0\nstage: ga\noutput_namespace: internal/" + name + "\nrequires: []\nprovides: []\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\n",
+				"components/" + name + "/component.yaml": "kind: component\nenvironment: []\nname: " + name + "\nversion: 0.1.0\nstage: ga\noutput_namespace: internal/" + name + "\nrequires: []\nprovides: []\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\n",
 			})
 			sources = append(sources, pinned(repository, commit))
 		}
@@ -442,7 +442,7 @@ func TestRegistryComposeLimits(t *testing.T) {
 
 	t.Run("ST-SUP-UC02-R03-T07 Every source is captured before any source is validated", func(t *testing.T) {
 		f := newSupplyingFixture(t)
-		commonSHA := commitRegistry(t, f.common, map[string]string{"components/store-a/component.yaml": "kind: component\nname: [store-a\n"})
+		commonSHA := commitRegistry(t, f.common, map[string]string{"components/store-a/component.yaml": "kind: component\nenvironment: []\nname: [store-a\n"})
 		if err := os.Symlink("local-a", filepath.Join(f.local, "components", "link")); err != nil {
 			t.Fatal(err)
 		}
@@ -475,7 +475,7 @@ func TestRegistryComposePins(t *testing.T) {
 
 	t.Run("ST-SUP-UC02-R04-T02 A cached copy is used only at the pinned commit", func(t *testing.T) {
 		f := newSupplyingFixture(t)
-		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
+		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
 		first := f.compose(t)
 		digest := strings.SplitN(first.accepted(t), "\n", 2)[0]
 		var cached string
@@ -520,7 +520,7 @@ func TestRegistryComposePins(t *testing.T) {
 	t.Run("ST-SUP-UC02-R04-T03 A vendored copy at another commit is refused without a fetch", func(t *testing.T) {
 		f := newSupplyingFixture(t)
 		f.compose(t).accepted(t)
-		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
+		other := commitRegistry(t, f.local, map[string]string{"components/other/component.yaml": "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: other\nversion: 0.1.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"})
 		vendored(t, f, other)
 		run := f.compose(t)
 		run.refused(t, "file://"+f.local, f.localSHA, other)
@@ -540,7 +540,7 @@ func TestRegistryComposePins(t *testing.T) {
 
 	t.Run("ST-SUP-UC02-R04-T05 A vendored copy with a modified, an ignored or an untracked file is refused", func(t *testing.T) {
 		for _, change := range []struct{ file, data string }{
-			{"components/local-a/component.yaml", "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: local-a\nversion: 9.9.9\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"},
+			{"components/local-a/component.yaml", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: local-a\nversion: 9.9.9\nstage: ga\nrequires: []\nprovides: []\nslots: []\n"},
 			{"build.log", "ignored\n"},
 			{"components/local-a/notes.yaml", "untracked: true\n"},
 		} {
@@ -599,7 +599,7 @@ func TestRegistryComposeStages(t *testing.T) {
 		for _, stage := range []string{"beta", "alpha"} {
 			f := newSupplyingFixture(t)
 			commonSHA := commitRegistry(t, f.common, map[string]string{
-				"components/exp-a/component.yaml": "kind: component\nname: exp-a\nversion: 0.1.0\nstage: " + stage + "\noutput_namespace: internal/exp\nrequires: []\nprovides: [exp-port]\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    exp-port: inbound\n",
+				"components/exp-a/component.yaml": "kind: component\nenvironment: []\nname: exp-a\nversion: 0.1.0\nstage: " + stage + "\noutput_namespace: internal/exp\nrequires: []\nprovides: [exp-port]\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    exp-port: inbound\n",
 			})
 			registryProject(t, f.project, "", pinned(f.common, commonSHA), pinned(f.local, f.localSHA))
 			f.compose(t).refused(t, "exp-a", "sunset date is missing")

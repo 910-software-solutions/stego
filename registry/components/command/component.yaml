@@ -29,3 +29,68 @@ architecture:
   flow: "Runs the declared command in the transaction of the caller's tenant."
   ports:
     commands: inbound
+
+environment:
+  - name: STEGO_MODE
+    type: list
+    required: false
+    default: "all"
+    description: "The modes that the process runs when no --mode option is given. When it has no value, the process runs all modes."
+    secret: false
+    example: "api,worker"
+    allowed: {values: ["api", "worker", "controller", "all"]}
+  - name: STEGO_SERVICE_VERSION
+    type: string
+    required: false
+    description: "The version of the release, which each audit row and the controller lease carry. When it has no value, they carry an empty version."
+    secret: false
+    example: "1.4.2"
+  - name: GODEBUG
+    type: string
+    required: false
+    description: "Read by the Go runtime and standard library: settings that change their behavior. The service does not start when it holds a tls or x509 setting, because that can turn off a TLS check."
+    secret: false
+    example: "panicnil=1"
+  - name: GOGC
+    type: string
+    required: false
+    default: "100"
+    description: "Read by the Go runtime: the garbage collection target as a percent, or off. When it has no value, it is 100."
+    secret: false
+    example: "200"
+  - name: GOMEMLIMIT
+    type: string
+    required: false
+    description: "Read by the Go runtime: the soft memory limit of the process, such as 512MiB. When it has no value, there is no limit."
+    secret: false
+    example: "512MiB"
+  - name: GOMAXPROCS
+    type: integer
+    required: false
+    description: "Read by the Go runtime: the most operating system threads that run Go code at one time. When it has no value, the runtime uses the CPU limit."
+    secret: false
+    example: "2"
+    allowed: {min: "1", max: "1024"}
+  - name: GOTRACEBACK
+    type: string
+    required: false
+    default: "single"
+    description: "Read by the Go runtime: how much a crash report shows. When it has no value, it shows the goroutine that failed."
+    secret: false
+    allowed: {values: [none, single, all, system, crash]}
+  - name: SSL_CERT_FILE
+    type: path
+    required: false
+    description: "Read by the Go TLS library for the system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection."
+    secret: false
+  - name: SSL_CERT_DIR
+    type: string
+    required: false
+    description: "Read by the Go TLS library for folders of system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection."
+    secret: false
+  - name: TZ
+    type: string
+    required: false
+    description: "Read by the Go time library: the local time zone of the process. When it has no value, it uses the system time zone."
+    secret: false
+    example: "UTC"

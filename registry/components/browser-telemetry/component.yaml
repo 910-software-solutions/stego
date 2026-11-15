@@ -19,3 +19,5 @@ architecture:
   flow: "Receives the telemetry that the browser sends."
   ports:
     browser-telemetry: inbound
+
+environment: []

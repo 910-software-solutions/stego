@@ -49,3 +49,24 @@ architecture:
     auth-provider: outbound
     authz-decision: inbound
     authz-relationships: inbound
+
+environment:
+  - name: STEGO_SPICEDB_ENDPOINT
+    type: address
+    required: true
+    description: "The host and port of SpiceDB. The service does not start when it has no value."
+    secret: false
+    example: "spicedb.example.svc:50051"
+  - name: STEGO_SPICEDB_KEY_FILE
+    type: path
+    required: true
+    description: "The file of the preshared key of SpiceDB. The service does not start when it has no value."
+    secret: false
+    example: "/etc/stego/spicedb/key"
+  - name: STEGO_SPICEDB_INSECURE_LOOPBACK
+    type: boolean
+    required: false
+    default: "0"
+    description: "Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS."
+    secret: false
+    allowed: {values: ["0", "1"]}

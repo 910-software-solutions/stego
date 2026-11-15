@@ -240,7 +240,7 @@ func TestLoadInvalidComponent(t *testing.T) {
 	if err := os.MkdirAll(compDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(compDir, "component.yaml"), []byte("kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: 123\nversion: [invalid]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(compDir, "component.yaml"), []byte("kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: 123\nversion: [invalid]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := registry.Load(dir)
@@ -361,7 +361,7 @@ func TestLoadComponentNameMismatch(t *testing.T) {
 	if err := os.MkdirAll(compDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(compDir, "component.yaml"), []byte("kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: bar\nversion: 1.0.0\nstage: ga\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(compDir, "component.yaml"), []byte("kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: bar\nversion: 1.0.0\nstage: ga\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, err := registry.Load(dir)
@@ -463,6 +463,7 @@ func TestLoadComponentMissingProtoFile(t *testing.T) {
 	}
 	// Component references a slot but no proto file exists.
 	yaml := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -497,6 +498,7 @@ func TestLoadComponentWithProtoFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	yaml := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -927,6 +929,7 @@ func TestComponentUnmarshalWithConfig(t *testing.T) {
 	// map-of-fields (expose.items) and leaf-list (operations.items) forms.
 	input := `
 kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1008,6 +1011,7 @@ provides:
 func TestComponentUnmarshal(t *testing.T) {
 	input := `
 kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -1110,10 +1114,10 @@ func TestStrictRegistryDocuments(t *testing.T) {
 		target            any
 	}{
 		{"archetype", "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nconventions: {loging: json}\n", "conventions.loging", &registry.Archetype{}},
-		{"component", "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {port: {type: int, defaut: 8080}}\n", "config.port.defaut", &registry.Component{}},
-		{"nested component", "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {items: {type: list, items: {name: {type: string, optonal: true}}}}\n", "items.name.optonal", &registry.Component{}},
-		{"inline component", "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {items: {type: list, items: {type: string, optonal: true}}}\n", "items.optonal", &registry.Component{}},
-		{"port", "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    auth: outbound\nrequires: [{name: auth, optonal: true}]\n", "requires[0].optonal", &registry.Component{}},
+		{"component", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {port: {type: int, defaut: 8080}}\n", "config.port.defaut", &registry.Component{}},
+		{"nested component", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {items: {type: list, items: {name: {type: string, optonal: true}}}}\n", "items.name.optonal", &registry.Component{}},
+		{"inline component", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nconfig: {items: {type: list, items: {type: string, optonal: true}}}\n", "items.optonal", &registry.Component{}},
+		{"port", "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    auth: outbound\nrequires: [{name: auth, optonal: true}]\n", "requires[0].optonal", &registry.Component{}},
 		{"mixin", "kind: mixin\nadds_slots: [{name: test, protto: test}]\n", "adds_slots[0].protto", &registry.Mixin{}},
 		{"config", "registry: [{url: example, reff: abc}]\n", "registry[0].reff", &registry.RegistryConfig{}},
 	}

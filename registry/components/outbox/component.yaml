@@ -17,3 +17,5 @@ architecture:
   flow: "Writes each change message to the outbox in the transaction of the write."
   ports:
     durable-outbox: inbound
+
+environment: []

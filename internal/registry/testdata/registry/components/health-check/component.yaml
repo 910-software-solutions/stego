@@ -1,4 +1,5 @@
 kind: component
+environment: []
 name: health-check
 version: 0.1.0
 stage: ga

@@ -48,8 +48,9 @@ func applicationPreflightInput(t *testing.T, generator gen.Generator, factory st
 	}
 	writeFile(t, archPath, strings.Replace(string(arch), "  - stub-store", "  - stub-store\n  - jwt-auth", 1))
 	mkdirAll(t, filepath.Join(registry, "components/jwt-auth"))
-	writeFile(t, filepath.Join(registry, "components/jwt-auth/component.yaml"), "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    auth-provider: inbound\nname: jwt-auth\nversion: 1.0.0\nstage: ga\noutput_namespace: auth\nprovides: [auth-provider]\n")
+	writeFile(t, filepath.Join(registry, "components/jwt-auth/component.yaml"), "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    auth-provider: inbound\nname: jwt-auth\nversion: 1.0.0\nstage: ga\noutput_namespace: auth\nprovides: [auth-provider]\n")
 	writeFile(t, filepath.Join(registry, "components/stub-api/component.yaml"), `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -94,7 +95,7 @@ func processPreflightInput(t *testing.T, schema, namespace string) ReconcilerInp
 	changed = strings.Replace(changed, "  storage-adapter: stub-store", "  storage-adapter: stub-store\n  auth-provider: jwt-auth\n  tracing: otel-tracing", 1)
 	writeFile(t, archPath, changed)
 	mkdirAll(t, filepath.Join(input.RegistryDir, "components/otel-tracing"))
-	writeFile(t, filepath.Join(input.RegistryDir, "components/otel-tracing/component.yaml"), "kind: component\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    tracing: inbound\nname: otel-tracing\nversion: 1.0.0\nstage: ga\noutput_namespace: tracing\nprovides: [tracing]\n")
+	writeFile(t, filepath.Join(input.RegistryDir, "components/otel-tracing/component.yaml"), "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    tracing: inbound\nname: otel-tracing\nversion: 1.0.0\nstage: ga\noutput_namespace: tracing\nprovides: [tracing]\n")
 	input.Generators["otel-tracing"] = rejectedInputGenerator{t}
 	writeFile(t, filepath.Join(input.RegistryDir, "components/stub-api/component.yaml"), schema)
 	factory, err := os.ReadFile(filepath.Join("..", "generator", "grpcapplication", "testdata", "process_factory.go"))
@@ -111,6 +112,7 @@ func processPreflightInput(t *testing.T, schema, namespace string) ReconcilerInp
 // processStubSchema is the configuration schema of stub-api as grpc-processes with one process and the proto file
 // api.proto.
 const processStubSchema = `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.

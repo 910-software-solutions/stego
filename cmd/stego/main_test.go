@@ -630,6 +630,7 @@ components:
 		t.Fatal(err)
 	}
 	compData := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -697,6 +698,7 @@ message SlotResult {
 		t.Fatal(err)
 	}
 	jwtData := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -760,6 +762,7 @@ message SlotResult {
 		t.Fatal(err)
 	}
 	compAData := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.
@@ -788,6 +791,7 @@ slots:
 		t.Fatal(err)
 	}
 	compBData := `kind: component
+environment: []
 architecture:
   layer: handler
   flow: Serves the test.

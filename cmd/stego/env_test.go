@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -198,7 +199,7 @@ func TestEnvironmentCheck(t *testing.T) {
 		c := newEnvCase(t)
 		original := c.read(t, "dev.yaml")
 		var outputs []string
-		for _, value := range []string{"CANARY-SECRET-VALUE", "0", "", "{canary: CANARY-SECRET-VALUE}"} {
+		for _, value := range []string{"CANARY-SECRET-VALUE", "0", "{canary: CANARY-SECRET-VALUE}"} {
 			c.write(t, "dev.yaml", strings.ReplaceAll(original, ": CANARY-SECRET-VALUE\n", ":"+map[bool]string{true: "", false: " "}[value == ""]+value+"\n"))
 			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
 			if !passed {
@@ -260,7 +261,7 @@ func TestEnvironmentCheck(t *testing.T) {
 		stdout, stderr, passed := c.check(t, "no-such-requirements.yaml", "dev.yaml")
 		expectFailed(t, stdout, stderr, passed, "platform requirements file no-such-requirements.yaml")
 		original := c.read(t, "platform-requirements.yaml")
-		c.change(t, "platform-requirements.yaml", "version: 1\n", "version: 99\n")
+		c.change(t, "platform-requirements.yaml", "version: 2\n", "version: 99\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectFailed(t, stdout, stderr, passed, "platform requirements file platform-requirements.yaml", "field version")
 		head, _, _ := strings.Cut(original, "requirements:\n  - ")
@@ -317,5 +318,114 @@ func TestEnvironmentCheckFlow(t *testing.T) {
 		if unused := unusedLines(stdout); len(unused) != 0 {
 			t.Fatalf("the check lists unused values: %v", unused)
 		}
+	})
+}
+
+// TestEnvironmentVariablesCheck proves the environment check of the environment variable list (ST-DLV-UC02-R05,
+// R06) and the follow-ups of the review of #338 (F1 to F7).
+func TestEnvironmentVariablesCheck(t *testing.T) {
+	const cursorLine = "  STEGO_QUERY_CURSOR_KEY_FILE: /etc/orders/cursor/key\n"
+	t.Run("ST-DLV-UC02-R06-T01 A required environment variable with no value fails the check, and is named", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", cursorLine, "")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE")
+		// A required secret variable has no configuration need: the check names it as a variable, and reads only
+		// its name when the file gives it.
+		c = newEnvCase(t)
+		c.change(t, "platform-requirements.yaml", "  - name: DATABASE_URL\n    read_by:\n      - postgres-adapter\n    type: string\n    required: false\n",
+			"  - name: DATABASE_URL\n    read_by:\n      - postgres-adapter\n    type: string\n    required: true\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
+		c.change(t, "dev.yaml", "secrets:\n", "secrets:\n  DATABASE_URL:\n    value: CANARY-SECRET-VALUE\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		if strings.Contains(stdout+stderr, "CANARY") {
+			t.Fatalf("the check shows the value of a secret variable:\n%s\n%s", stdout, stderr)
+		}
+	})
+	t.Run("ST-DLV-UC02-R06-T02 An optional variable with no value does not fail the check, and an empty value of a required one does", func(t *testing.T) {
+		c := newEnvCase(t)
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		if strings.Contains(stdout, "PORT") {
+			t.Fatalf("the check names the optional variable PORT:\n%s", stdout)
+		}
+		c.change(t, "dev.yaml", cursorLine, "  STEGO_QUERY_CURSOR_KEY_FILE: \"\"\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE", "empty")
+	})
+	t.Run("ST-DLV-UC02-R05-T03 An unknown environment variable is listed as unused, and a value of a listed variable is not", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, configBlock+"  STEGO_UNKNOWN_SETTING: \"1\"\n  PORT: \"8443\"\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		unused := unusedLines(stdout)
+		if len(unused) != 1 || !strings.Contains(unused[0], "configuration STEGO_UNKNOWN_SETTING") || !strings.Contains(unused[0], "no listed environment variable") {
+			t.Fatalf("the check does not list exactly STEGO_UNKNOWN_SETTING as unused:\n%s", stdout)
+		}
+	})
+	t.Run("ST-DLV-UC02-R05-T04 A value is matched to a requirement by its kind and its name", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", "topics:\n", "topics:\n  orders-database:\n    topic: dev.orders.database\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		if unused := unusedLines(stdout); len(unused) != 1 || !strings.Contains(unused[0], "topic orders-database") {
+			t.Fatalf("the check does not list the topic orders-database as unused:\n%s", stdout)
+		}
+	})
+	t.Run("ST-DLV-UC02-R01-T03 The check prints each text of a file escaped, so that a file cannot forge a line", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", "    engine: postgres\n", "    engine: \"mysql\\r\\u001b[2Kmet: forged\\u202e\"\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "backing store orders-db")
+		if strings.ContainsAny(stdout, "\r\x1b\u202e") || !strings.Contains(stdout, `\u{001B}`) {
+			t.Fatalf("the check prints a control or bidirectional character as it is:\n%q", stdout)
+		}
+	})
+	t.Run("ST-DLV-UC02-R01-T04 A wider grant meets its requirement and prints a notice", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", "    level: restricted\n", "    level: baseline\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		for _, part := range []string{"notice: pod security pod-security", "baseline", "notice: cluster permission read-config-maps", "list"} {
+			if !strings.Contains(stdout, part) {
+				t.Errorf("the check does not print %q:\n%s", part, stdout)
+			}
+		}
+	})
+	t.Run("ST-DLV-UC02-R02-T03 A secret key with an empty or null value counts as missing", func(t *testing.T) {
+		for _, empty := range []string{" \"\"", "", " null"} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", passwordLine, "    password:"+empty+"\n")
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, "secret orders-database", "password")
+		}
+	})
+	t.Run("ST-DLV-UC02-R02-T04 A secret environment variable given as a plain configuration value is of the wrong type", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, configBlock+"  DATABASE_URL: CANARY-SECRET-VALUE\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "wrong type: configuration DATABASE_URL", "secret")
+		if strings.Contains(stdout+stderr, "CANARY") {
+			t.Fatalf("the check shows the value of the secret variable:\n%s\n%s", stdout, stderr)
+		}
+	})
+	t.Run("ST-DLV-UC02-R01-T05 An error of the check is printed escaped too", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", passwordLine, passwordLine+"    \"X\u202eY\": a\n    \"X\u202eY\": b\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "environment file dev.yaml", `\u{202E}`)
+		if strings.ContainsRune(stdout+stderr, '\u202e') {
+			t.Fatalf("the check prints a bidirectional character as it is:\n%q", stderr)
+		}
+	})
+	t.Run("ST-DLV-UC02-R04-T04 A file that is not a regular file is a failed check", func(t *testing.T) {
+		c := newEnvCase(t)
+		if err := syscall.Mkfifo(filepath.Join(c.dir, "pipe.yaml"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "pipe.yaml")
+		expectFailed(t, stdout, stderr, passed, "environment file pipe.yaml", "not a regular file")
 	})
 }
