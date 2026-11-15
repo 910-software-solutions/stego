@@ -97,7 +97,7 @@ func validateTransactionPath(outputDir, name string) error {
 	if err := gen.ValidatePath(name); err != nil {
 		return err
 	}
-	if isProjectRootFile(name) || name == ".stego/state.yaml" {
+	if isProjectRootFile(name) || isProjectGeneratedFile(name) || name == ".stego/state.yaml" {
 		return nil
 	}
 	if !strings.HasPrefix(name, outputDir+"/") {
@@ -115,7 +115,7 @@ func prepareTransaction(plan *Plan, relative string) (*transaction, error) {
 		name = filepath.ToSlash(name)
 		// Source inputs are checked before the transaction starts. Recovery
 		// completes saved output and preserves later source edits.
-		if !isProjectRootFile(name) && name != ".stego/state.yaml" && !strings.HasPrefix(name, tx.OutputDir+"/") {
+		if !isProjectRootFile(name) && !isProjectGeneratedFile(name) && name != ".stego/state.yaml" && !strings.HasPrefix(name, tx.OutputDir+"/") {
 			continue
 		}
 		tx.Expected[name] = snapshot
@@ -127,7 +127,11 @@ func prepareTransaction(plan *Plan, relative string) (*transaction, error) {
 			return nil, fmt.Errorf("duplicate generated file %s", file.Path)
 		}
 		data := file.Bytes()
-		if !isProjectRootFile(file.Path) && plan.NewState.LastApplied.Files[file.Path] != HashBytes(data) {
+		if isProjectGeneratedFile(file.Path) {
+			if plan.NewState.LastApplied.ProjectFiles[file.Path] != HashBytes(data) {
+				return nil, fmt.Errorf("plan content does not match state for %s", file.Path)
+			}
+		} else if !isProjectRootFile(file.Path) && plan.NewState.LastApplied.Files[file.Path] != HashBytes(data) {
 			return nil, fmt.Errorf("plan content does not match state for %s", file.Path)
 		}
 		files[file.Path] = data
@@ -279,7 +283,18 @@ func validateTransaction(tx *transaction, projectDir string) (map[string][]byte,
 			return nil, fmt.Errorf("transaction state does not match output %s", path)
 		}
 	}
+	for name, hash := range state.LastApplied.ProjectFiles {
+		if !isProjectGeneratedFile(name) {
+			return nil, fmt.Errorf("transaction state claims %s as a generated file of the project folder", name)
+		}
+		if !final[name].Exists || final[name].Hash != hash {
+			return nil, fmt.Errorf("transaction state does not match output %s", name)
+		}
+	}
 	for path, snapshot := range final {
+		if _, written := contents[path]; written && isProjectGeneratedFile(path) && state.LastApplied.ProjectFiles[path] != snapshot.Hash {
+			return nil, fmt.Errorf("transaction output is not tracked: %s", path)
+		}
 		if strings.HasPrefix(path, tx.OutputDir+"/") && snapshot.Exists {
 			name := strings.TrimPrefix(path, tx.OutputDir+"/")
 			if state.LastApplied.Files[name] != snapshot.Hash {

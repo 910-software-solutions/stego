@@ -59,10 +59,15 @@ func DecodeStrictWithLimit(data []byte, path string, target any, limit int) erro
 		return err
 	}
 	if len(undeclared) > 0 {
-		first := undeclared[0]
-		return &ParseError{Path: path, Line: first.Line, Column: first.Column, Context: lineAt(data, first.Line), Err: fmt.Errorf("unknown field %q", first.Path)}
+		return UndeclaredError(data, path, undeclared[0])
 	}
 	return nil
+}
+
+// UndeclaredError is the error of DecodeStrict for a key that the target type does not declare, at its place in
+// the document.
+func UndeclaredError(data []byte, path string, field UndeclaredField) error {
+	return &ParseError{Path: path, Line: field.Line, Column: field.Column, Context: lineAt(data, field.Line), Err: fmt.Errorf("unknown field %q", field.Path)}
 }
 
 // UndeclaredField is a key that the target type does not declare: its path in the document, such as

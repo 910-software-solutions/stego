@@ -67,7 +67,7 @@ func TestStoreRemoved(t *testing.T) {
 			t.Errorf("the registry holds the component tsl-search: %v", err)
 		}
 
-		// Each example is generated on the runtime data path: its record is of format version 5, with no data path
+		// Each example is generated on the runtime data path: its record is of format version 6, with no data path
 		// and no file of the GORM store. ST-SUP-RC01-OC41-T06 generates each example again and expects no change.
 		for _, example := range []string{"user-management", "user-management-rhsso"} {
 			record, err := os.ReadFile(filepath.Join(root, "examples", example, ".stego", "state.yaml"))
@@ -75,8 +75,8 @@ func TestStoreRemoved(t *testing.T) {
 				t.Fatal(err)
 			}
 			text := string(record)
-			if !strings.HasPrefix(text, "format_version: 5\n") || strings.Contains(text, "data_path") {
-				t.Errorf("the record of the example %s is not of format version 5 without a data path", example)
+			if !strings.HasPrefix(text, "format_version: 6\n") || strings.Contains(text, "data_path") {
+				t.Errorf("the record of the example %s is not of format version 6 without a data path", example)
 			}
 			for _, file := range []string{"internal/storage/store.go", "internal/storage/models.go", "contracts/storage/"} {
 				if strings.Contains(text, file) {
