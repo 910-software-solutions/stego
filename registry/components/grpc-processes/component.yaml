@@ -132,3 +132,8 @@ environment:
     description: "The loopback address of the health monitor of an RPC process. When it has no value, the monitor listens on 127.0.0.1:9082."
     secret: false
     example: "127.0.0.1:9182"
+# The platform needs (ST-SUP-EN09): the TLS certificate of the gRPC server, its port and the pod security level.
+needs:
+  - {kind: secret, name: "{service}-grpc-tls", keys: [tls-crt, tls-key]}
+  - {kind: ingress, name: grpc, port: 9090}
+  - {kind: pod security, name: pod-security, level: restricted}

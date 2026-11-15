@@ -73,12 +73,18 @@ const requirementsVariable = `  - {name: LOG_LEVEL, type: string, required: true
 `
 
 // requirementsRegistry gives a copy of the shipped registry whose components state the needs and the variable of
-// ST-DLV-TD01.
+// ST-DLV-TD01, and no other need: the other shipped components state no need in the copy.
 func requirementsRegistry(t *testing.T) string {
 	t.Helper()
 	registry := shippedRegistryCopy(t)
-	for component, needs := range requirementsNeeds {
-		setNeeds(t, registry, component, needs)
+	entries, err := os.ReadDir(filepath.Join(registry, "components"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			setNeeds(t, registry, entry.Name(), requirementsNeeds[entry.Name()])
+		}
 	}
 	addVariables(t, registry, "health-check", requirementsVariable)
 	return registry
@@ -296,6 +302,53 @@ func TestPlatformRequirementsApply(t *testing.T) {
 		}
 		if !bytes.Equal(data, fixture) {
 			t.Fatalf("the fixture of ST-DLV-TD02 is not the file that apply writes:\n%s", data)
+		}
+	})
+
+	t.Run("ST-DLV-UC01-R01-T02 The shipped components state their real platform needs, and an environment file with no database does not meet them", func(t *testing.T) {
+		registry := shippedRegistryCopy(t)
+		dir := requirementsProject(t)
+		env := requirementsEnv(registry)
+		mustRunInProject(t, dir, env, "apply")
+		requirements, _ := readRequirements(t, dir)
+		expectStated(t, requirements.Requirements, []delivery.Requirement{
+			{Kind: delivery.Secret, Name: "orders-database", Keys: []string{"migration-url", "url", "worker-url"}, Components: []string{"postgres-adapter"}},
+			{Kind: delivery.Secret, Name: "orders-database-relay", Keys: []string{"url"}, Components: []string{"spicedb-authz"}},
+			{Kind: delivery.Secret, Name: "orders-query-cursor", Keys: []string{"key"}, Components: []string{"query"}},
+			{Kind: delivery.Secret, Name: "orders-spicedb", Keys: []string{"preshared-key"}, Components: []string{"spicedb-authz"}},
+			{Kind: delivery.BackingStore, Name: "orders-db", Engine: "postgres", Components: []string{"postgres-adapter"}},
+			{Kind: delivery.Topic, Name: "orders-events", Components: []string{"kafka-producer"}},
+			{Kind: delivery.IdentityIssuer, Name: "orders-issuer", Components: []string{"rh-sso-auth"}},
+			{Kind: delivery.Ingress, Name: "http", Port: 8080, Components: []string{"health-check"}},
+			{Kind: delivery.Egress, Name: "orders-db-network", Port: 5432, Components: []string{"postgres-adapter"}},
+			{Kind: delivery.Egress, Name: "orders-issuer-keys", Port: 443, Components: []string{"rh-sso-auth"}},
+			{Kind: delivery.Egress, Name: "orders-kafka", Port: 9093, Components: []string{"kafka-producer"}},
+			{Kind: delivery.Egress, Name: "spicedb", Port: 50051, Components: []string{"spicedb-authz"}},
+			{Kind: delivery.PodSecurity, Name: "pod-security", Level: "restricted", Components: []string{"health-check"}},
+		})
+		// No need name holds a value of a setting: the issuer setting of rh-sso-auth is a URL with a host name.
+		for _, requirement := range requirements.Requirements {
+			if strings.Contains(requirement.Name, "example") {
+				t.Errorf("the need %s holds a value of a setting", requirement.Name)
+			}
+		}
+		// The walkthrough file of G6: only the three configuration values, and no database, no secret and no issuer.
+		environmentFile := filepath.Join(dir, "staging-nodb.yaml")
+		if err := os.WriteFile(environmentFile, []byte("version: 1\nservice: orders\nenvironment: staging\n"+
+			"image: quay.io/example/orders@sha256:"+strings.Repeat("ab", 32)+"\n"+
+			"destination: {cluster: https://api.example.com:6443, namespace: orders, overlay_path: overlays/staging}\n"+
+			"configuration:\n  STEGO_QUERY_CURSOR_KEY_FILE: /etc/orders/cursor/key\n  STEGO_SPICEDB_ENDPOINT: spicedb.example.com:50051\n"+
+			"  STEGO_SPICEDB_KEY_FILE: /etc/orders/spicedb/key\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := runInProject(t, dir, env, "env", "check", "--requirements", compiler.RequirementsFile, environmentFile)
+		if err == nil {
+			t.Fatalf("the check passes an environment file with no database:\n%s\n%s", stdout, stderr)
+		}
+		for _, part := range []string{"missing: backing store orders-db", "missing: secret orders-database", "missing: identity issuer orders-issuer", "missing: ingress http", "missing: egress spicedb"} {
+			if !strings.Contains(stdout, part) {
+				t.Errorf("the check does not name %s:\n%s\n%s", part, stdout, stderr)
+			}
 		}
 	})
 

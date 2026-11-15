@@ -118,3 +118,12 @@ environment:
     description: "The file of the keys that encrypt the browser sessions. The backend does not start when it has no value."
     secret: false
     example: "/etc/stego/browser/session-keys"
+# The platform needs (ST-SUP-EN09): the TLS certificate of the backend, the OAuth client secret and the session keys,
+# the OpenID Connect issuer and the network path to it, the HTTP port and the pod security level.
+needs:
+  - {kind: secret, name: "{service}-tls", keys: [tls-crt, tls-key]}
+  - {kind: secret, name: "{service}-browser", keys: [client-secret, session-keys]}
+  - {kind: identity issuer, name: "{service}-issuer"}
+  - {kind: egress, name: "{service}-issuer-keys", port: 443}
+  - {kind: ingress, name: http, port: 8080}
+  - {kind: pod security, name: pod-security, level: restricted}
