@@ -1,0 +1,5 @@
+# The platform requirements of the service: what its environment must supply. stego apply writes this file
+# from the declaration and the needs of its components. Do not edit it: change the declaration or the registry.
+version: 1
+service: user-management
+requirements: []

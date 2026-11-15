@@ -1,8 +1,10 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/registry"
@@ -38,6 +40,13 @@ func loadCompilationSource(input ReconcilerInput) (*compilationSource, error) {
 	}
 	reg, err := registry.LoadDirectories(dirs...)
 	if err != nil {
+		// A need is named as the service sees it, with the service name in place of {service} (ST-DLV-UC01-R02).
+		var refused *registry.NeedError
+		if errors.As(err, &refused) {
+			named := *refused
+			named.Need = strings.ReplaceAll(named.Need, "{service}", service.Name)
+			return nil, fmt.Errorf("loading registry: %w", &named)
+		}
 		return nil, fmt.Errorf("loading registry: %w", err)
 	}
 	return &compilationSource{ServiceData: data, Service: service, Undeclared: undeclared, Registry: reg}, nil

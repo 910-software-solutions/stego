@@ -1,0 +1,321 @@
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"io/fs"
+	"maps"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// These tests prove stego env check (ST-DLV-UC02) on the files of ST-DLV-TD02: the platform requirements that
+// stego apply writes for the service of ST-DLV-TD01, kept as a fixture, and an environment file that meets them.
+// ST-DLV-UC01-R01-T01 holds the fixture to the file that apply writes.
+
+// environmentFixtureDir holds the files of ST-DLV-TD02.
+var environmentFixtureDir = filepath.Join("..", "..", "internal", "delivery", "testdata", "environment")
+
+// passMessage is the part of the report of a check that passes.
+const passMessage = "meets each platform requirement"
+
+// envCase is a copy of the files of ST-DLV-TD02 in a new folder.
+type envCase struct {
+	dir string
+}
+
+// newEnvCase copies the two files of ST-DLV-TD02 into a new folder.
+func newEnvCase(t *testing.T) *envCase {
+	t.Helper()
+	c := &envCase{dir: t.TempDir()}
+	for _, name := range []string{"platform-requirements.yaml", "dev.yaml"} {
+		data, err := os.ReadFile(filepath.Join(environmentFixtureDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.write(t, name, string(data))
+	}
+	return c
+}
+
+func (c *envCase) read(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(c.dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func (c *envCase) write(t *testing.T, name, data string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(c.dir, name), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// change replaces the text old, which the file must hold once, by new.
+func (c *envCase) change(t *testing.T, name, old, new string) {
+	t.Helper()
+	data := c.read(t, name)
+	if strings.Count(data, old) != 1 {
+		t.Fatalf("%s does not hold %q once", name, old)
+	}
+	c.write(t, name, strings.Replace(data, old, new, 1))
+}
+
+// check runs stego env check as a child process in the folder, with --requirements and the environment file, and
+// gives what it printed on standard output and standard error and whether it exited 0.
+func (c *envCase) check(t *testing.T, requirements, environment string) (string, string, bool) {
+	t.Helper()
+	stdout, stderr, err := runInProject(t, c.dir, nil, "env", "check", "--requirements", requirements, environment)
+	return stdout, stderr, err == nil
+}
+
+// unmetLines gives the lines of the report that name an unmet requirement.
+func unmetLines(stdout string) []string {
+	var lines []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "missing: ") || strings.HasPrefix(line, "wrong type: ") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// unusedLines gives the lines of the report that list an unused value.
+func unusedLines(stdout string) []string {
+	var lines []string
+	for _, line := range strings.Split(stdout, "\n") {
+		if strings.HasPrefix(line, "unused: ") {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// expectFailed fails the test unless the check failed, said nothing of a pass and named each part.
+func expectFailed(t *testing.T, stdout, stderr string, passed bool, parts ...string) {
+	t.Helper()
+	if passed {
+		t.Fatalf("the check passed:\n%s\n%s", stdout, stderr)
+	}
+	if strings.Contains(stdout+stderr, passMessage) {
+		t.Errorf("the failed check says that the environment meets the requirements:\n%s\n%s", stdout, stderr)
+	}
+	for _, part := range parts {
+		if !strings.Contains(stdout+stderr, part) {
+			t.Errorf("the check does not name %s:\n%s\n%s", part, stdout, stderr)
+		}
+	}
+}
+
+// expectPassed fails the test unless the check passed, said so and named no unmet requirement.
+func expectPassed(t *testing.T, stdout, stderr string, passed bool) {
+	t.Helper()
+	if !passed || !strings.Contains(stdout, passMessage) || len(unmetLines(stdout)) != 0 {
+		t.Fatalf("the check did not pass with each requirement met:\n%s\n%s", stdout, stderr)
+	}
+}
+
+// fileState is the digest and the modification time of a file.
+type fileState struct {
+	digest   string
+	modified time.Time
+}
+
+// envFolderState gives the state of each file of the folder.
+func envFolderState(t *testing.T, dir string) map[string]fileState {
+	t.Helper()
+	files := map[string]fileState{}
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		sum := sha256.Sum256(data)
+		files[path] = fileState{digest: hex.EncodeToString(sum[:]), modified: info.ModTime()}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+const (
+	passwordLine = "    password: CANARY-SECRET-VALUE\n"
+	egressBlock  = "egresses:\n  payments:\n    address: payments.dev.example.com\n    port: 443\n"
+	imageLine    = "image: quay.io/example/orders@sha256:3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a\n"
+	configBlock  = "configuration:\n  LOG_LEVEL: info\n"
+)
+
+func TestEnvironmentCheck(t *testing.T) {
+	t.Run("ST-DLV-UC02-R01-T01 The environment check names each unmet requirement with what is missing, and fails", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", passwordLine, "")
+		c.change(t, "dev.yaml", egressBlock, "")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed)
+		unmet := unmetLines(stdout)
+		if len(unmet) != 2 || !strings.Contains(unmet[0], "secret orders-database") || !strings.Contains(unmet[0], "password") ||
+			!strings.Contains(unmet[1], "egress payments") || !strings.HasPrefix(unmet[1], "missing: ") {
+			t.Fatalf("the check does not name exactly the secret orders-database with the key password and the egress payments as missing:\n%s\n%s", stdout, stderr)
+		}
+	})
+
+	t.Run("ST-DLV-UC02-R01-T02 The environment check passes when the environment file meets each requirement", func(t *testing.T) {
+		c := newEnvCase(t)
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+	})
+
+	t.Run("ST-DLV-UC02-R02-T01 The environment check refuses an image named by tag", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", imageLine, "image: quay.io/example/orders:latest\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "image", "quay.io/example/orders:latest", "digest")
+	})
+
+	t.Run("ST-DLV-UC02-R02-T02 The environment check refuses a secret without a key that its requirement names", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", passwordLine, "")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "secret orders-database", "password")
+	})
+
+	t.Run("ST-DLV-UC02-R03-T01 The environment check does not read secret values, and shows none, whether it passes or fails", func(t *testing.T) {
+		c := newEnvCase(t)
+		original := c.read(t, "dev.yaml")
+		var outputs []string
+		for _, value := range []string{"CANARY-SECRET-VALUE", "0", "", "{canary: CANARY-SECRET-VALUE}"} {
+			c.write(t, "dev.yaml", strings.ReplaceAll(original, ": CANARY-SECRET-VALUE\n", ":"+map[bool]string{true: "", false: " "}[value == ""]+value+"\n"))
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			if !passed {
+				t.Fatalf("the check failed with the secret value %q:\n%s\n%s", value, stdout, stderr)
+			}
+			outputs = append(outputs, stdout+"\x00"+stderr)
+		}
+		for i, output := range outputs[1:] {
+			if output != outputs[0] {
+				t.Errorf("the output of run %d differs from the first:\n%q\n%q", i+2, output, outputs[0])
+			}
+		}
+		c.write(t, "dev.yaml", original)
+		c.change(t, "dev.yaml", passwordLine, "")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "secret orders-database", "password")
+		outputs = append(outputs, stdout+stderr)
+		for i, output := range outputs {
+			if strings.Contains(output, "CANARY-SECRET-VALUE") {
+				t.Errorf("run %d shows the canary secret value:\n%s", i+1, output)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC02-R03-T02 The environment check changes no file, whether it passes or fails", func(t *testing.T) {
+		c := newEnvCase(t)
+		unmet := strings.Replace(c.read(t, "dev.yaml"), egressBlock, "", 1)
+		c.write(t, "unmet.yaml", unmet)
+		for _, run := range []struct {
+			file string
+			pass bool
+		}{{"dev.yaml", true}, {"unmet.yaml", false}} {
+			before := envFolderState(t, c.dir)
+			time.Sleep(10 * time.Millisecond)
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", run.file)
+			if passed != run.pass {
+				t.Fatalf("the check of %s passed %v, want %v:\n%s\n%s", run.file, passed, run.pass, stdout, stderr)
+			}
+			if after := envFolderState(t, c.dir); !maps.Equal(before, after) {
+				t.Fatalf("the check of %s changed the folder: %v, then %v", run.file, before, after)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC02-R04-T01 An environment file that cannot be read is a failed check that names the file and the place", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", "service: orders\n", "service: orders: again\n")
+		if line := strings.Split(c.read(t, "dev.yaml"), "\n")[3]; line != "service: orders: again" {
+			t.Fatalf("line 4 of the environment file is %q", line)
+		}
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "environment file dev.yaml", "line 4")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "no-such-environment.yaml")
+		expectFailed(t, stdout, stderr, passed, "environment file no-such-environment.yaml")
+	})
+
+	t.Run("ST-DLV-UC02-R04-T02 Platform requirements that cannot be read or have an unknown shape are a failed check that names the file and the place", func(t *testing.T) {
+		c := newEnvCase(t)
+		stdout, stderr, passed := c.check(t, "no-such-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "platform requirements file no-such-requirements.yaml")
+		original := c.read(t, "platform-requirements.yaml")
+		c.change(t, "platform-requirements.yaml", "version: 1\n", "version: 99\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "platform requirements file platform-requirements.yaml", "field version")
+		head, _, _ := strings.Cut(original, "requirements:\n  - ")
+		c.write(t, "platform-requirements.yaml", head+"requirements:\n  orders-database: {kind: secret, keys: [url, password], components: [postgres-adapter]}\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "platform requirements file platform-requirements.yaml", "field requirements")
+	})
+
+	t.Run("ST-DLV-UC02-R04-T03 An environment file of an unknown shape is a failed check that names the place", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", "secrets:\n  orders-database:\n    url: CANARY-SECRET-VALUE\n"+passwordLine, "secrets:\n  - orders-database\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "environment file dev.yaml", "field secrets")
+	})
+
+	t.Run("ST-DLV-UC02-R05-T01 A value that no requirement names is listed as unused, and the check still passes", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, configBlock+"  LOG_FORMAT: json\n")
+		c.change(t, "dev.yaml", "secrets:\n", "secrets:\n  legacy-cache:\n    token: CANARY-SECRET-VALUE\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		unused := strings.Join(unusedLines(stdout), "\n")
+		for _, value := range []string{"secret legacy-cache", "configuration LOG_FORMAT"} {
+			if !strings.Contains(unused, value) {
+				t.Errorf("the check does not list %s as unused:\n%s", value, stdout)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC02-R05-T02 An unused value does not change why the check fails", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, configBlock+"  LOG_FORMAT: json\n")
+		c.change(t, "dev.yaml", egressBlock, "")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed)
+		unmet := unmetLines(stdout)
+		if len(unmet) != 1 || !strings.Contains(unmet[0], "egress payments") {
+			t.Fatalf("the check does not name the egress payments as the one unmet requirement:\n%s\n%s", stdout, stderr)
+		}
+		if unused := unusedLines(stdout); len(unused) != 1 || !strings.Contains(unused[0], "configuration LOG_FORMAT") {
+			t.Fatalf("the check does not list LOG_FORMAT as unused:\n%s", stdout)
+		}
+		if strings.Contains(strings.Join(unmet, "\n")+stderr, "LOG_FORMAT") {
+			t.Fatalf("the check names LOG_FORMAT as a cause of the failure:\n%s\n%s", stdout, stderr)
+		}
+	})
+}
+
+func TestEnvironmentCheckFlow(t *testing.T) {
+	t.Run("ST-DLV-UC02-FL-T Checking an environment file that supplies each need reports that it meets every requirement", func(t *testing.T) {
+		c := newEnvCase(t)
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		if unused := unusedLines(stdout); len(unused) != 0 {
+			t.Fatalf("the check lists unused values: %v", unused)
+		}
+	})
+}

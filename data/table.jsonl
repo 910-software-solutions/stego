@@ -16,12 +16,12 @@
 {"id":"ST-DIS-RM01-TB","title":"fleet.Sweep","read_model_id":"ST-DIS-RM01","name":"fleet.Sweep","storage":"in memory","file":"internal/fleet/sweep.go"}
 {"id":"ST-DIS-RM03-TB","title":"lifecycle.Standing","read_model_id":"ST-DIS-RM03","name":"lifecycle.Standing","storage":"in memory","file":"internal/lifecycle/standing.go"}
 {"id":"ST-DIS-RM04-TB","title":"main.compilerIdentity","read_model_id":"ST-DIS-RM04","name":"compilerIdentity","storage":"in memory","file":"cmd/stego/version.go"}
-{"id":"ST-DLV-EN01-TB","title":"platform-requirements.yaml","entity_id":"ST-DLV-EN01","name":"deploy/platform-requirements.yaml","storage":"file","file":"internal/delivery/requirements.go"}
+{"id":"ST-DLV-EN01-TB","title":"delivery.RequirementsFile","entity_id":"ST-DLV-EN01","name":"deploy/platform-requirements.yaml","storage":"file","file":"internal/delivery/requirements.go"}
 {"id":"ST-DLV-EN03-TB","title":"delivery_pipeline","entity_id":"ST-DLV-EN03","name":".github/workflows/stego.yml or .tekton/<service>-push.yaml","storage":"file","file":"internal/delivery/pipeline.go"}
 {"id":"ST-DLV-EN04-TB","title":"kustomization.yaml","entity_id":"ST-DLV-EN04","name":"deploy/base/kustomization.yaml","storage":"file","file":"internal/generator/kubernetesservice/kustomize.go"}
 {"id":"ST-DLV-EN05-TB","title":"applicationset.yaml","entity_id":"ST-DLV-EN05","name":"deploy/argocd/applicationset.yaml","storage":"file","file":"internal/delivery/argocd.go"}
 {"id":"ST-DLV-EN06-TB","title":"delivery_candidate","entity_id":"ST-DLV-EN06","name":"delivery-check.json","storage":"file","file":"internal/delivery/check.go"}
-{"id":"ST-DLV-RM01-TB","title":"delivery.CheckEnvironment","read_model_id":"ST-DLV-RM01","name":"delivery.CheckEnvironment","storage":"in memory","file":"internal/delivery/environment.go"}
+{"id":"ST-DLV-RM01-TB","title":"delivery.EnvironmentFit","read_model_id":"ST-DLV-RM01","name":"delivery.CheckEnvironment","storage":"in memory","file":"internal/delivery/environment.go"}
 {"id":"ST-EXT-EN01-TB","title":"fill.ManifestFile","entity_id":"ST-EXT-EN01","name":"fill.yaml","storage":"file","file":"internal/fill/fill.go"}
 {"id":"ST-EXT-RM01-TB","title":"fill.CatalogEntry","read_model_id":"ST-EXT-RM01","name":"fill.CatalogEntry","storage":"in memory","file":"internal/fill/catalog.go"}
 {"id":"ST-EXT-RM02-TB","title":"fill.Qualification","read_model_id":"ST-EXT-RM02","name":"fill.Qualification","storage":"in memory","file":"internal/fill/qualification.go"}
