@@ -243,8 +243,16 @@ func TestPlatformRequirementsApply(t *testing.T) {
 			t.Fatalf("the plan does not list %s:\n%s", compiler.RequirementsFile, plan)
 		}
 		mustRunInProject(t, dir, env, "apply")
-		requirements, _ := readRequirements(t, dir)
+		requirements, data := readRequirements(t, dir)
 		expectStated(t, requirements.Requirements, wantRequirements)
+		// The environment check tests keep this file as the fixture of ST-DLV-TD02.
+		fixture, err := os.ReadFile(filepath.Join(environmentFixtureDir, "platform-requirements.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, fixture) {
+			t.Fatalf("the fixture of ST-DLV-TD02 is not the file that apply writes:\n%s", data)
+		}
 	})
 
 	t.Run("ST-DLV-UC01-R02-T01 The written platform requirements hold no value that differs per environment", func(t *testing.T) {
