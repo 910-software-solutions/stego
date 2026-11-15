@@ -1,6 +1,8 @@
 package compiler
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,15 +20,26 @@ type ArchitectureReadError struct {
 	Cause string
 }
 
+// Error names the file and the cause with each control and bidirectional character escaped, because a cause can quote
+// a value of the model and the message goes to a terminal.
 func (e *ArchitectureReadError) Error() string {
-	return fmt.Sprintf("%s: %s", e.File, e.Cause)
+	return fmt.Sprintf("%s: %s", printable(e.File), printable(e.Cause))
+}
+
+// ArchitectureRead is a model that ReadArchitecture accepted: its bytes, the model decoded with each number kept
+// as written, and the last apply of the record that lists it, which holds the input digests.
+type ArchitectureRead struct {
+	Data   []byte
+	Model  ArchitectureModel
+	Record *AppliedState
 }
 
 // ReadArchitecture is the one way the queries of the architecture model read it (ST-GEN-RM04): the file
 // architecture/architecture.json that the last apply wrote in the project folder, checked against the record's hash
 // and against the schema and its rules. It refuses a missing model, a model that does not match the record, and a
-// model that is not valid, naming the file and the cause.
-func ReadArchitecture(projectDir string) ([]byte, error) {
+// model that is not valid, naming the file and the cause. It gives the model with the record it was checked against,
+// so a query reads the record once, with the model.
+func ReadArchitecture(projectDir string) (*ArchitectureRead, error) {
 	file := ArchitectureFile
 	data, err := readArchitectureFile(projectDir)
 	if err != nil {
@@ -45,7 +58,13 @@ func ReadArchitecture(projectDir string) ([]byte, error) {
 	if err := ValidateArchitecture(data); err != nil {
 		return nil, &ArchitectureReadError{File: file, Cause: err.Error()}
 	}
-	return data, nil
+	read := &ArchitectureRead{Data: data, Record: state.LastApplied}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&read.Model); err != nil {
+		return nil, &ArchitectureReadError{File: file, Cause: err.Error()}
+	}
+	return read, nil
 }
 
 // readArchitectureFile reads the model through the project folder as a root, so that no part of the path leaves it;
