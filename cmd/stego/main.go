@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -51,6 +53,7 @@ import (
 	"github.com/jsell-rh/stego/internal/generator/spicedbauthz"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/generator/typescriptsdk"
+	workergen "github.com/jsell-rh/stego/internal/generator/worker"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/slot"
 	"gopkg.in/yaml.v3"
@@ -1090,7 +1093,41 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 		QualifyFills: fill.QualificationFaults,
 
 		WriteRequirements: writeRequirements,
+		WriteDeployment:   writeDeployment,
 	}, nil
+}
+
+// writeDeployment gives the compiler's port for the Kubernetes base and the delivery object to Delivering
+// (delivery.WriteDeployment, ST-DLV-CMD03, ST-DLV-PO04): the platform requirements of the run and the probes of the
+// active set. It gives the files in path order.
+func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, error) {
+	var probes *delivery.ProbeSource
+	if input.Probes != nil {
+		probes = &delivery.ProbeSource{Liveness: input.Probes.Liveness, Readiness: input.Probes.Readiness, PortVariable: input.Probes.PortVariable}
+	}
+	var stanza *delivery.ArgoCDStanza
+	if input.Delivery != nil && input.Delivery.ArgoCD != nil {
+		argo := input.Delivery.ArgoCD
+		stanza = &delivery.ArgoCDStanza{Project: argo.Project, SourceRepo: argo.Source.Repo, SourcePath: argo.Source.Path,
+			EnvironmentRepo: argo.Environments.Repo, EnvironmentRevision: argo.Environments.Revision, EnvironmentPath: argo.Environments.Path}
+	}
+	provider := ""
+	if input.Delivery != nil {
+		provider = input.Delivery.CI
+	}
+	pins := map[string]delivery.PipelinePins{}
+	for name, stated := range input.Pipelines {
+		pins[name] = delivery.PipelinePins{Pipeline: stated.Pipeline, Checks: stated.Checks, Signer: stated.Signer}
+	}
+	written, err := delivery.WriteDelivery(input.Service, input.Requirements, probes, stanza, provider, pins)
+	if err != nil {
+		return compiler.DeploymentFiles{}, err
+	}
+	files := make([]gen.File, 0, len(written.Files))
+	for _, name := range slices.Sorted(maps.Keys(written.Files)) {
+		files = append(files, gen.File{Path: name, Content: written.Files[name]})
+	}
+	return compiler.DeploymentFiles{Files: files, Notes: written.Notes}, nil
 }
 
 // writeRequirements gives the compiler's port for the platform requirements to Delivering
@@ -1102,7 +1139,7 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) (co
 		needs := make([]delivery.Need, 0, len(component.Needs))
 		for _, need := range component.Needs {
 			needs = append(needs, delivery.Need{Kind: need.Kind, Name: need.Name, Keys: need.Keys, Engine: need.Engine, Port: need.Port,
-				APIGroup: need.APIGroup, Resource: need.Resource, Verbs: need.Verbs, Level: need.Level})
+				APIGroup: need.APIGroup, Resource: need.Resource, Verbs: need.Verbs, ResourceNames: need.ResourceNames, Level: need.Level})
 		}
 		settings := map[string]string{}
 		for key, value := range component.Settings {
@@ -1171,6 +1208,7 @@ func defaultGenerators() map[string]gen.Generator {
 		"query":                 &querygen.Generator{},
 		"spicedb-authz":         &spicedbauthz.Generator{},
 		"command":               &command.Generator{},
+		"worker":                &workergen.Generator{},
 	}
 }
 

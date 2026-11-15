@@ -83,10 +83,17 @@ func (e *SchemaError) Error() string {
 // names the line, for a schema that does not compile. Before it compiles, it refuses a schema beyond the shape bounds
 // of checkSchemaShape with a *SchemaError that names the limit (ST-DECL-INV88).
 func CompileAuthzSchema(schemaPath string, source []byte) (*AuthzSchema, error) {
+	return shapedCompile(schemaPath, source, compileSchema)
+}
+
+// shapedCompile refuses a schema beyond the shape bounds of checkSchemaShape, and gives only a schema in the bounds to
+// compile. CompileAuthzSchema gives it compileSchema; a test gives it a compile that fails the test, to show that a
+// refused schema never reaches the compiler.
+func shapedCompile(schemaPath string, source []byte, compile func(string, []byte) (*AuthzSchema, error)) (*AuthzSchema, error) {
 	if err := checkSchemaShape(schemaPath, source); err != nil {
 		return nil, err
 	}
-	return compileSchema(schemaPath, source)
+	return compile(schemaPath, source)
 }
 
 // compileSchema compiles and reads the .zed schema as CompileAuthzSchema does, with no shape bound. Only
@@ -291,6 +298,17 @@ func (s *AuthzSchema) Relations(typeName string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// RelationAdmits tells whether the type of the schema has the relation and the relation admits the subject type,
+// such as tenant#worker_sync_partner_orders and service_account (ST-SUP-RC35-OC13).
+func (s *AuthzSchema) RelationAdmits(typeName, relation, subjectType string) bool {
+	for _, subject := range s.definitions[typeName].relations[relation] {
+		if subject == subjectType {
+			return true
+		}
+	}
+	return false
 }
 
 // grants tells whether a relation of the schema admits the subject type.
@@ -709,6 +727,13 @@ func SlotRelationUnknown(service *types.ServiceDeclaration, schema *AuthzSchema)
 // system principal is a subject the schema grants relations to, and never a bypass.
 func validateSystemPrincipal(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	var faults []ValidationError
+	// The subject of a request's identity is never service_account: a person with the subject service_account:<name>
+	// would get the grants of the worker or the controller named name (security review of PR #337, I7; decision on
+	// ST-SUP-Q141).
+	if subject := service.Authorization.SubjectFromIdentity; subject == types.SystemSubjectType {
+		faults = append(faults, ValidationError{Category: "authorization", Rule: "no-bypass", Path: "authorization.subject_from_identity", Found: subject,
+			Message: fmt.Sprintf("the subject type of a request's identity is %s, the subject type of the system principals; a caller would act as the worker or controller of the same name, so name the subject type of the people, such as user", types.SystemSubjectType)})
+	}
 	subjectType := service.Authorization.SystemSubjectType
 	if subjectType != "" {
 		fault := ValidationError{Category: "authorization", Rule: "no-bypass", Path: "authorization.system_subject_type", Found: subjectType}

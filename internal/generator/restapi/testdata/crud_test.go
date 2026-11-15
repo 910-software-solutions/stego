@@ -2071,6 +2071,126 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC24-T12 A write by a caller that may edit the row but not read one ancestor of the path gets 404 and changes nothing", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		f := e.create(a, "folders", "folder", `{"name":"f"}`)
+		r := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"r"}`)
+		c := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards", "card", "rack", r, `{"title":"c"}`)
+		base := "/api/v1/folders/" + f + "/racks/" + r + "/cards/" + c + "/marks"
+		m := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards/"+c+"/marks", "mark", "card", c, `{"label":"l","note":"n"}`)
+		missing := e.send(a, http.MethodGet, "/api/v1/folders/"+f+"/racks/"+r+"/cards/"+uuid.NewString()+"/marks/"+m, "", "")
+		if missing.status != http.StatusNotFound {
+			t.Fatalf("a read under a missing card answered %d %s, want 404", missing.status, missing.body)
+		}
+		ids := map[string]string{"folder": f, "rack": r, "card": c}
+		for _, without := range []string{"folder", "rack", "card"} {
+			// The caller may edit the mark: as the owner of the card, which gives edit on its marks and the create of
+			// one, or as the owner of the mark when the card is the ancestor it may not read. It may read every
+			// other ancestor.
+			b := e.as("u-edit-no-"+without, tn)
+			for _, resourceType := range []string{"folder", "rack"} {
+				if resourceType != without {
+					e.relate(b, "viewer", resourceType, ids[resourceType])
+				}
+			}
+			writes := []struct{ name, method, path, key, body string }{
+				{"update", http.MethodPut, base + "/" + m, "", `{"label":"l","note":"updated"}`},
+				{"patch", http.MethodPatch, base + "/" + m, "k-" + uuid.NewString(), `{"note":"patched"}`},
+				{"upsert", http.MethodPut, base, "", `{"label":"l","note":"upserted"}`},
+				{"delete", http.MethodDelete, base + "/" + m, "", ""},
+			}
+			if without == "card" {
+				// The create of a mark decides edit on the card, which gives read on it too, so only the writes of
+				// the stored mark can hold edit with no read of the card.
+				e.own(b, "mark", m)
+			} else {
+				e.own(b, "card", c)
+				writes = append(writes, struct{ name, method, path, key, body string }{"create", http.MethodPost, base, "k-" + uuid.NewString(), `{"label":"new","note":"created"}`})
+			}
+			for _, w := range writes {
+				got := e.send(b, w.method, w.path, w.key, w.body)
+				if got.status != http.StatusNotFound || got.member(t, "title") != missing.member(t, "title") {
+					t.Errorf("the %s by a caller that may not read the %s answered %d %s, want 404 as for a missing ancestor", w.name, without, got.status, got.body)
+				}
+			}
+			if n := e.count(`SELECT count(*) FROM marks WHERE tenant_id = $1`, tn); n != 1 {
+				t.Errorf("%d marks in the tenant after the refused writes by a caller that may not read the %s, want 1", n, without)
+			}
+			if n := e.count(`SELECT count(*) FROM marks WHERE id = $1::uuid AND note = 'n'`, m); n != 1 {
+				t.Errorf("the mark changed after the refused writes by a caller that may not read the %s", without)
+			}
+			// The refusals come from the ancestor: with read on it, the same caller patches the mark.
+			e.relate(b, "viewer", without, ids[without])
+			if got := e.send(b, http.MethodPatch, base+"/"+m, "k-"+uuid.NewString(), `{"note":"n"}`); got.status != http.StatusOK {
+				t.Errorf("the patch by the caller with read on the %s too answered %d %s, want 200", without, got.status, got.body)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC24-T13 The parent chain check reads the ancestors from the top down, so a caller learns nothing of a row below an ancestor it may not read", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		f := e.create(a, "folders", "folder", `{"name":"f"}`)
+		r := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"r"}`)
+		other := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"other"}`)
+		c := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards", "card", "rack", r, `{"title":"c"}`)
+		m := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards/"+c+"/marks", "mark", "card", c, `{"label":"l","note":"n"}`)
+		under := func(rack string) string { return "/api/v1/folders/" + f + "/racks/" + rack + "/cards/" + c + "/marks" }
+		missing := e.send(a, http.MethodGet, "/api/v1/folders/"+f+"/racks/"+r+"/cards/"+uuid.NewString()+"/marks/"+m, "", "")
+		if missing.status != http.StatusNotFound {
+			t.Fatalf("a read under a missing card answered %d %s, want 404", missing.status, missing.body)
+		}
+		ids := map[string]string{"folder": f, "rack": r, "card": c, "mark": m}
+		// poison makes each read of a row of the tenant in the tables fail, with no change to the rows of other
+		// tenants: a check that reads such a row answers 500, and not 404.
+		poison := func(tables ...string) func() {
+			for _, table := range tables {
+				_, err := e.admin.ExecContext(e.ctx, "CREATE POLICY t13_poison ON "+table+" AS RESTRICTIVE USING (CASE WHEN tenant_id = '"+tn+"' THEN 1 / (length(tenant_id) - length(tenant_id)) = 1 ELSE true END)")
+				must(t, err)
+			}
+			return func() {
+				for _, table := range tables {
+					_, err := e.admin.ExecContext(e.ctx, "DROP POLICY IF EXISTS t13_poison ON "+table)
+					must(t, err)
+				}
+			}
+		}
+		for _, c := range []struct {
+			without string
+			below   []string
+		}{{"folder", []string{"racks", "cards"}}, {"rack", []string{"cards"}}} {
+			b := e.as("u-no-"+c.without, tn)
+			for _, resourceType := range []string{"folder", "rack", "card", "mark"} {
+				if resourceType != c.without {
+					e.relate(b, "viewer", resourceType, ids[resourceType])
+				}
+			}
+			cure := poison(c.below...)
+			// The poison holds: the owner, who may read the whole chain, reads a poisoned row and gets 500.
+			if got := e.send(a, http.MethodGet, under(r)+"/"+m, "", ""); got.status != http.StatusInternalServerError {
+				t.Errorf("with the rows below the %s poisoned, the owner's read answered %d %s, want 500", c.without, got.status, got.body)
+			}
+			// The caller may read the card and the mark but not the ancestor c.without: the check stops at it, so no
+			// row below it is read, with the rack of the card or with another rack in the path.
+			for _, rack := range []string{r, other} {
+				got := e.send(b, http.MethodGet, under(rack)+"/"+m, "", "")
+				if got.status != http.StatusNotFound || got.member(t, "detail") != missing.member(t, "detail") {
+					t.Errorf("a caller that may not read the %s read the mark under the rack %s with %d %s, want 404 with the detail %q and no read below the %s", c.without, rack, got.status, got.body, missing.member(t, "detail"), c.without)
+				}
+				if list := e.send(b, http.MethodGet, under(rack), "", ""); list.status != http.StatusNotFound {
+					t.Errorf("a caller that may not read the %s listed the marks under the rack %s with %d %s, want 404 and no read below the %s", c.without, rack, list.status, list.body, c.without)
+				}
+			}
+			cure()
+		}
+		if got := e.send(a, http.MethodGet, under(r)+"/"+m, "", ""); got.status != http.StatusOK {
+			t.Errorf("after the poison, the owner's read answered %d %s, want 200", got.status, got.body)
+		}
+	})
+
 	t.Run("ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())

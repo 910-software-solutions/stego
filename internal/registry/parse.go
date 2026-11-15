@@ -66,6 +66,9 @@ func ParseComponentFromBytes(data []byte, path string) (*Component, error) {
 	if component.Kind != "component" {
 		return nil, &parser.ParseError{Path: path, Err: fmt.Errorf("expected kind %q, got %q", "component", component.Kind)}
 	}
+	if err := checkPipelines(&component); err != nil {
+		return nil, &parser.ParseError{Path: path, Err: err}
+	}
 	if err := checkNeeds(&component); err != nil {
 		return nil, err
 	}
@@ -152,9 +155,11 @@ func checkNeeds(component *Component) error {
 		}
 		seen[need.Name] = true
 		given := map[string]bool{"keys": len(need.Keys) > 0, "engine": need.Engine != "", "port": need.Port != 0,
-			"api_group": need.APIGroup != "", "resource": need.Resource != "", "verbs": len(need.Verbs) > 0, "level": need.Level != ""}
-		for _, field := range []string{"keys", "engine", "port", "api_group", "resource", "verbs", "level"} {
-			ofKind := slices.Contains(shape, field) || (field == "api_group" && need.Kind == "cluster permission")
+			"api_group": need.APIGroup != "", "resource": need.Resource != "", "verbs": len(need.Verbs) > 0, "level": need.Level != "",
+			"resource_names": len(need.ResourceNames) > 0}
+		for _, field := range []string{"keys", "engine", "port", "api_group", "resource", "verbs", "resource_names", "level"} {
+			// api_group and resource_names are the optional shape fields of a cluster permission (ST-DLV-Q14).
+			ofKind := slices.Contains(shape, field) || ((field == "api_group" || field == "resource_names") && need.Kind == "cluster permission")
 			if given[field] && !ofKind {
 				return fault(field, "a %s need has no field %s", need.Kind, field)
 			}

@@ -95,3 +95,7 @@ environment:
     description: "A PEM file of certificate authorities that the verifier adds to the system roots, unless the component states a CA file. When it has no value, the verifier uses the system roots."
     secret: false
     example: "/etc/stego/authn/ca.crt"
+# The platform needs (ST-SUP-EN09): the issuer of the bearer tokens and the network path to its key set.
+needs:
+  - {kind: identity issuer, name: "{service}-issuer"}
+  - {kind: egress, name: "{service}-issuer-keys", port: 443}

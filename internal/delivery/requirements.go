@@ -70,7 +70,10 @@ type Need struct {
 	APIGroup string
 	Resource string
 	Verbs    []string
-	Level    string
+	// ResourceNames are the names of the objects that a cluster permission is limited to, which may hold the
+	// placeholders of a need name (ST-DLV-Q14).
+	ResourceNames []string
+	Level         string
 }
 
 // ComponentNeeds is one component of the service with the needs it states and its settings as the declaration and
@@ -97,7 +100,9 @@ type Requirement struct {
 	APIGroup string          `yaml:"api_group,omitempty"`
 	Resource string          `yaml:"resource,omitempty"`
 	Verbs    []string        `yaml:"verbs,omitempty"`
-	Level    string          `yaml:"level,omitempty"`
+	// ResourceNames limit a cluster permission to the objects with these names (ST-DLV-Q14).
+	ResourceNames []string `yaml:"resource_names,omitempty"`
+	Level         string   `yaml:"level,omitempty"`
 	// Components are the components that state the need, by name.
 	Components []string `yaml:"components"`
 }
@@ -249,6 +254,9 @@ func shape(r Requirement) string {
 	if len(r.Verbs) > 0 {
 		parts = append(parts, "verbs "+strings.Join(r.Verbs, ", "))
 	}
+	if len(r.ResourceNames) > 0 {
+		parts = append(parts, "resource names "+strings.Join(r.ResourceNames, ", "))
+	}
 	if r.Level != "" {
 		parts = append(parts, "level "+r.Level)
 	}
@@ -274,8 +282,20 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 	if err != nil {
 		return Requirement{}, fault(name, "kind", "%s", err)
 	}
+	var resourceNames []string
+	for _, resourceName := range need.ResourceNames {
+		filled, err := fillName(service, component.Settings, resourceName)
+		if err != nil {
+			return Requirement{}, fault(name, "resource_names", "%s", err)
+		}
+		resourceNames = append(resourceNames, filled)
+	}
+	if resourceNames != nil {
+		slices.Sort(resourceNames)
+	}
 	requirement := Requirement{Kind: kind, Name: name, Keys: slices.Sorted(slices.Values(need.Keys)), Engine: need.Engine, Port: need.Port,
-		APIGroup: need.APIGroup, Resource: need.Resource, Verbs: slices.Sorted(slices.Values(need.Verbs)), Level: need.Level, Components: []string{component.Component}}
+		APIGroup: need.APIGroup, Resource: need.Resource, Verbs: slices.Sorted(slices.Values(need.Verbs)), ResourceNames: resourceNames, Level: need.Level,
+		Components: []string{component.Component}}
 	if field, reason := checkShape(requirement); field != "" {
 		return Requirement{}, fault(name, field, "%s", reason)
 	}
@@ -352,7 +372,44 @@ func checkShape(r Requirement) (string, string) {
 	if r.Level != "" && !slices.Contains(podLevels, r.Level) {
 		return "level", fmt.Sprintf("the level %q is not one of %s", r.Level, strings.Join(podLevels, ", "))
 	}
+	if len(r.ResourceNames) > 0 && r.Kind != ClusterPermission {
+		return "resource_names", fmt.Sprintf("a %s need has no field resource_names", r.Kind)
+	}
+	for i, resourceName := range r.ResourceNames {
+		if len(resourceName) > maxWord || !requirementName.MatchString(resourceName) {
+			return "resource_names", fmt.Sprintf("the resource name %q is not a name of at most %d letters, digits, '-' or '_'", resourceName, maxWord)
+		}
+		if i > 0 && r.ResourceNames[i-1] == resourceName {
+			return "resource_names", fmt.Sprintf("the resource name %s is stated twice", resourceName)
+		}
+	}
+	if r.Kind == ClusterPermission {
+		if reason := sensitivePermission(r); reason != "" {
+			return "resource", reason
+		}
+	}
 	return "", ""
+}
+
+// sensitivePermission gives why a cluster permission can take over the namespace, or "" (ST-DLV-Q14): a permission
+// on an RBAC resource, the token of a service account, a way into a pod, create on pods (which runs a pod as any
+// service account), list or watch on secrets, and get on secrets that names no object.
+func sensitivePermission(r Requirement) string {
+	switch {
+	case r.APIGroup == "rbac.authorization.k8s.io":
+		return "a permission on an RBAC resource can grant every permission, so a need may not state one"
+	case r.APIGroup == "" && r.Resource == "serviceaccounts/token":
+		return "a permission to make service account tokens can act as each service account, so a need may not state one"
+	case r.APIGroup == "" && slices.Contains([]string{"pods/exec", "pods/attach", "pods/portforward", "pods/proxy"}, r.Resource):
+		return fmt.Sprintf("a permission on %s reaches into each pod, so a need may not state one", r.Resource)
+	case r.APIGroup == "" && r.Resource == "pods" && slices.Contains(r.Verbs, "create"):
+		return "create on pods runs a pod as each service account, so a need may not state it"
+	case r.APIGroup == "" && r.Resource == "secrets" && (slices.Contains(r.Verbs, "list") || slices.Contains(r.Verbs, "watch")):
+		return "list or watch on secrets reads each secret of the namespace, so a need may not state it"
+	case r.APIGroup == "" && r.Resource == "secrets" && slices.Contains(r.Verbs, "get") && len(r.ResourceNames) == 0:
+		return "get on secrets must name its secrets in resource_names"
+	}
+	return ""
 }
 
 // requirementsHeader opens the platform requirements file.

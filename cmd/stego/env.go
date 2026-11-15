@@ -38,8 +38,12 @@ func runEnvTo(args []string, stdout io.Writer) error {
 		return fmt.Errorf("unknown env subcommand: %s", args[0])
 	}
 	fs := flag.NewFlagSet("env check", flag.ContinueOnError)
+	fs.Usage = printEnvUsage
 	requirementsPath := fs.String("requirements", "", "the service's platform requirements file")
 	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if *requirementsPath == "" {
@@ -125,9 +129,46 @@ func readCheckedFile(path string, limit int) ([]byte, error) {
 	return data, nil
 }
 
-func printEnvUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: stego env check --requirements <platform-requirements.yaml> <environment-file>")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Checks an environment file against the service's platform requirements. Prints every")
-	fmt.Fprintln(os.Stderr, "requirement that the environment does not meet and exits non-zero when one is unmet.")
-}
+func printEnvUsage() { fmt.Fprint(os.Stderr, envUsage) }
+
+// envUsage is the help of stego env check: the command, the schema of the environment file and one example
+// (docs/environment-file.md has the full text).
+const envUsage = `Usage: stego env check --requirements <platform-requirements.yaml> <environment-file>
+
+Checks an environment file against the service's platform requirements, which stego apply writes to
+deploy/platform-requirements.yaml. Prints every requirement that the environment does not meet, each value of
+the wrong type and each value that no requirement names, and exits non-zero when one requirement is unmet or one
+value has the wrong type. The check reads the key names of a secret, never a secret value, and changes no file.
+
+The environment file is one YAML map with these fields (docs/environment-file.md):
+  version              the schema version, 1
+  service              the service of the platform requirements
+  environment          the name of the environment
+  image                the image by digest: repository@sha256:<digest>
+  destination          {cluster, namespace, overlay_path}
+  secrets              name: {key: value, ...}; only the key names are read
+  configuration        variable: value; each value has the type, allowed values and range of its variable
+  backing_stores       name: {engine}
+  topics               name: {topic}
+  identity_issuers     name: {issuer}, an HTTPS URL
+  ingresses            name: {port, host}
+  egresses             name: {address, port}; the address is a host name or an IP address
+  cluster_permissions  name: {api_group, resource, verbs}
+  pod_security         name: {level}: privileged, baseline or restricted
+
+Example:
+  version: 1
+  service: tasks
+  environment: staging
+  image: quay.io/example/tasks@sha256:3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a
+  destination: {cluster: https://api.staging.example.com:6443, namespace: tasks-staging, overlay_path: overlays/staging}
+  secrets:
+    tasks-database: {url: <secret>, migration-url: <secret>, worker-url: <secret>}
+  configuration:
+    PORT: 8080
+    STEGO_SPICEDB_ENDPOINT: spicedb.staging.example.com:50051
+  backing_stores:
+    tasks-db: {engine: postgres}
+  egresses:
+    spicedb: {address: spicedb.staging.example.com, port: 50051}
+`

@@ -433,7 +433,13 @@ func TestArchitectureQueries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		projectFiles := slices.Sorted(maps.Keys(state.LastApplied.ProjectFiles))
+		// The files of the Kubernetes base are project files too (ST-DLV-UC07); this test looks at the others.
+		var projectFiles []string
+		for _, name := range slices.Sorted(maps.Keys(state.LastApplied.ProjectFiles)) {
+			if !strings.HasPrefix(name, "deploy/base/") {
+				projectFiles = append(projectFiles, name)
+			}
+		}
 		if strings.Join(projectFiles, " ") != "architecture/architecture.json architecture/index.html deploy/environment-variables.md deploy/platform-requirements.yaml" {
 			t.Fatalf("the record lists the project files %v, want the architecture model, the architecture view, the environment variable reference and the platform requirements", projectFiles)
 		}

@@ -70,3 +70,9 @@ environment:
     description: "Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS."
     secret: false
     allowed: {values: ["0", "1"]}
+# The platform needs (ST-SUP-EN09): the preshared key of SpiceDB, the connection string of the relay role and the
+# network path to SpiceDB on its gRPC port.
+needs:
+  - {kind: secret, name: "{service}-spicedb", keys: [preshared-key]}
+  - {kind: secret, name: "{service}-database-relay", keys: [url]}
+  - {kind: egress, name: spicedb, port: 50051}

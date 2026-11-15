@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.123.1",
+    "archetype_version": "3.121.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -48,6 +48,32 @@
       "source": {
         "declaration": "name"
       }
+    },
+    {
+      "id": "container:user-management-db",
+      "name": "user-management-db",
+      "kind": "backing store",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "container:user-management-events",
+      "name": "user-management-events",
+      "kind": "topic",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "needs"
+        }
+      }
     }
   ],
   "actors": [
@@ -68,16 +94,72 @@
       }
     },
     {
-      "id": "actor:outside.kafka-producer",
+      "id": "actor:egress.spicedb",
       "kind": "outside system",
-      "name": "System that kafka-producer calls",
-      "stated_by": "component:kafka-producer",
+      "name": "spicedb",
+      "stated_by": "need:egress.spicedb",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "actor:egress.user-management-db-network",
+      "kind": "outside system",
+      "name": "user-management-db-network",
+      "stated_by": "need:egress.user-management-db-network",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "actor:egress.user-management-issuer-keys",
+      "kind": "outside system",
+      "name": "user-management-issuer-keys",
+      "stated_by": "need:egress.user-management-issuer-keys",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "actor:egress.user-management-kafka",
+      "kind": "outside system",
+      "name": "user-management-kafka",
+      "stated_by": "need:egress.user-management-kafka",
       "source": {
         "registry": {
           "part": "component",
           "name": "kafka-producer",
           "version": "3.0.0",
-          "field": "architecture.layer"
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "actor:identity-issuer.user-management-issuer",
+      "kind": "token issuer",
+      "name": "user-management-issuer",
+      "stated_by": "need:identity-issuer.user-management-issuer",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "needs"
         }
       }
     },
@@ -91,20 +173,6 @@
           "part": "component",
           "name": "otel-tracing",
           "version": "1.19.0",
-          "field": "architecture.layer"
-        }
-      }
-    },
-    {
-      "id": "actor:store.postgres-adapter",
-      "kind": "store",
-      "name": "Store of postgres-adapter",
-      "stated_by": "component:postgres-adapter",
-      "source": {
-        "registry": {
-          "part": "component",
-          "name": "postgres-adapter",
-          "version": "6.6.0",
           "field": "architecture.layer"
         }
       }
@@ -148,18 +216,82 @@
       }
     },
     {
-      "id": "relation:user-management/outside.kafka-producer",
+      "id": "relation:user-management/egress.spicedb",
       "from": "container:user-management",
-      "to": "actor:outside.kafka-producer",
-      "text": "sends change messages, later",
+      "to": "actor:egress.spicedb",
+      "text": "calls",
+      "through": "component:spicedb-authz",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/egress.user-management-db-network",
+      "from": "container:user-management",
+      "to": "actor:egress.user-management-db-network",
+      "text": "calls",
+      "through": "component:postgres-adapter",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/egress.user-management-issuer-keys",
+      "from": "container:user-management",
+      "to": "actor:egress.user-management-issuer-keys",
+      "text": "calls",
+      "through": "component:jwt-auth",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/egress.user-management-kafka",
+      "from": "container:user-management",
+      "to": "actor:egress.user-management-kafka",
+      "text": "calls",
       "through": "component:kafka-producer",
-      "mode": "async",
+      "mode": "sync",
       "source": {
         "registry": {
           "part": "component",
           "name": "kafka-producer",
           "version": "3.0.0",
-          "field": "architecture.layer"
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/identity-issuer.user-management-issuer",
+      "from": "container:user-management",
+      "to": "actor:identity-issuer.user-management-issuer",
+      "text": "checks tokens",
+      "through": "component:jwt-auth",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "needs"
         }
       }
     },
@@ -180,22 +312,6 @@
       }
     },
     {
-      "id": "relation:user-management/store.postgres-adapter",
-      "from": "container:user-management",
-      "to": "actor:store.postgres-adapter",
-      "text": "keeps rows",
-      "through": "component:postgres-adapter",
-      "mode": "sync",
-      "source": {
-        "registry": {
-          "part": "component",
-          "name": "postgres-adapter",
-          "version": "6.6.0",
-          "field": "architecture.layer"
-        }
-      }
-    },
-    {
       "id": "relation:user-management/token-issuer.jwt-auth",
       "from": "container:user-management",
       "to": "actor:token-issuer.jwt-auth",
@@ -208,6 +324,38 @@
           "name": "jwt-auth",
           "version": "2.5.0",
           "field": "config.issuer"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/user-management-db",
+      "from": "container:user-management",
+      "to": "container:user-management-db",
+      "text": "keeps rows",
+      "through": "component:postgres-adapter",
+      "mode": "sync",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "relation:user-management/user-management-events",
+      "from": "container:user-management",
+      "to": "container:user-management-events",
+      "text": "publishes change messages, later",
+      "through": "component:kafka-producer",
+      "mode": "async",
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "needs"
         }
       }
     }
@@ -949,7 +1097,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.123.1",
+          "version": "3.121.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -963,7 +1111,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.123.1",
+          "version": "3.121.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -977,7 +1125,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.123.1",
+          "version": "3.121.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -991,7 +1139,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.123.1",
+          "version": "3.121.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -4661,6 +4809,23 @@
   ],
   "needs": [
     {
+      "id": "need:backing-store.user-management-db",
+      "kind": "backing store",
+      "name": "user-management-db",
+      "shape": "engine postgres",
+      "stated_by": [
+        "component:postgres-adapter"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
       "id": "need:configuration.STEGO_QUERY_CURSOR_KEY_FILE",
       "kind": "configuration",
       "name": "STEGO_QUERY_CURSOR_KEY_FILE",
@@ -4704,6 +4869,208 @@
           "part": "component",
           "name": "spicedb-authz",
           "version": "1.3.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:egress.spicedb",
+      "kind": "egress",
+      "name": "spicedb",
+      "shape": "port 50051",
+      "stated_by": [
+        "component:spicedb-authz"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:egress.user-management-db-network",
+      "kind": "egress",
+      "name": "user-management-db-network",
+      "shape": "port 5432",
+      "stated_by": [
+        "component:postgres-adapter"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:egress.user-management-issuer-keys",
+      "kind": "egress",
+      "name": "user-management-issuer-keys",
+      "shape": "port 443",
+      "stated_by": [
+        "component:jwt-auth"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:egress.user-management-kafka",
+      "kind": "egress",
+      "name": "user-management-kafka",
+      "shape": "port 9093",
+      "stated_by": [
+        "component:kafka-producer"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:identity-issuer.user-management-issuer",
+      "kind": "identity issuer",
+      "name": "user-management-issuer",
+      "stated_by": [
+        "component:jwt-auth"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "jwt-auth",
+          "version": "2.5.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:ingress.http",
+      "kind": "ingress",
+      "name": "http",
+      "shape": "port 8080",
+      "stated_by": [
+        "component:health-check"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "health-check",
+          "version": "1.1.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:pod-security.pod-security",
+      "kind": "pod security",
+      "name": "pod-security",
+      "shape": "level restricted",
+      "stated_by": [
+        "component:health-check"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "health-check",
+          "version": "1.1.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:secret.user-management-database",
+      "kind": "secret",
+      "name": "user-management-database",
+      "shape": "keys migration-url, url, worker-url",
+      "stated_by": [
+        "component:postgres-adapter"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:secret.user-management-database-relay",
+      "kind": "secret",
+      "name": "user-management-database-relay",
+      "shape": "keys url",
+      "stated_by": [
+        "component:spicedb-authz"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:secret.user-management-query-cursor",
+      "kind": "secret",
+      "name": "user-management-query-cursor",
+      "shape": "keys key",
+      "stated_by": [
+        "component:query"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "query",
+          "version": "1.1.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:secret.user-management-spicedb",
+      "kind": "secret",
+      "name": "user-management-spicedb",
+      "shape": "keys preshared-key",
+      "stated_by": [
+        "component:spicedb-authz"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "spicedb-authz",
+          "version": "1.2.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
+      "id": "need:topic.user-management-events",
+      "kind": "topic",
+      "name": "user-management-events",
+      "stated_by": [
+        "component:kafka-producer"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.0.0",
           "field": "needs"
         }
       }
@@ -7212,7 +7579,8 @@
         "operation:user-activity.create",
         "operation:user-activity.list",
         "operation:org-activity.create",
-        "operation:org-activity.list"
+        "operation:org-activity.list",
+        "need:ingress.http"
       ],
       "source": {
         "rule": "ST-GEN-UC08-R11"

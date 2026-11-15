@@ -1124,6 +1124,122 @@ func TestWiring(t *testing.T) {
 		t.Fatalf("after 60 s the audit-sink messages did not all land in the default table: %s\n%s", last, s.log)
 	})
 
+	// The workers follow the tenant list (ST-SUP-RC35, ST-SUP-RC27-OC12): at each tick, every 10 s, the worker
+	// sync-partner-orders adds one to the qty of the seeded order syncedOrder in each tenant of the list whose ID
+	// starts with org-w, and the worker may sync that order only by the grant that seed writes.
+	const syncedOrder = "5b7c2f0e-3a1d-4c8e-9f60-1d2e3f4a5b6c"
+	ticks := func(t *testing.T, tenantID string) int {
+		return count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE tenant_id = $1 AND id = $2`, tenantID, syncedOrder)
+	}
+	seed := func(t *testing.T, tenantID string) {
+		t.Helper()
+		_, err := s.admin.Exec(`INSERT INTO orders (tenant_id, id, sku, qty) VALUES ($1, $2, 'synced', 0)`, tenantID, syncedOrder)
+		must(t, err)
+		resourceID, err := authz.ResourceID(s.as("u-seed", tenantID).tenant, syncedOrder)
+		must(t, err)
+		_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+			Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "order", ObjectId: resourceID}, Relation: "syncer",
+				Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "sync-partner-orders"}}}}}})
+		must(t, err)
+	}
+	kept, retired := "org-wa-"+short(), "org-wr-"+short()
+	t.Run("ST-SUP-RC35-OC02-T02 A generated service runs one runner for each declared worker in the worker mode", func(t *testing.T) {
+		s.t = t
+		s.provisioned(t, kept)
+		s.provisioned(t, retired)
+		seed(t, kept)
+		seed(t, retired)
+		s.eventually(t, "the ticker of sync-partner-orders runs for each provisioned tenant", func() bool {
+			return ticks(t, kept) >= 1 && ticks(t, retired) >= 1
+		})
+		// A single worker runs under its lease, one instance at a time.
+		if n := count(t, s.admin, `SELECT count(*) FROM leases WHERE name = 'stego.worker.sync-partner-orders'`); n != 1 {
+			t.Errorf("%d rows of the lease of sync-partner-orders, want one", n)
+		}
+		// The consumer apply-note-replies is the one handler of note-replies, and runs as the worker role, which holds
+		// SELECT, INSERT and UPDATE on idempotency_keys (ST-SUP-Q136): each message that add-note staged is done.
+		for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+			if count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'note-replies' AND state = 'done'`) >= 1 &&
+				count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'note-replies' AND state <> 'done'`) == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				var states string
+				must(t, s.admin.QueryRow(`SELECT coalesce(string_agg(state || ' ' || attempts || ' ' || failure_code || ' ' || origin, '; '), '')
+ FROM stego_outbox.messages WHERE destination = 'note-replies'`).Scan(&states))
+				t.Fatalf("after 60 s the consumer did not run each message of note-replies: %s\n%s", states, s.log)
+			}
+		}
+	})
+	t.Run("ST-SUP-RC35-OC06-T04 A consuming worker that writes commits as the worker role, which may write nothing it did not declare", func(t *testing.T) {
+		s.t = t
+		writer := s.as("u-"+uuid.NewString()[:8], kept)
+		created := s.send(&writer, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"consumed","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		s.own(writer, id)
+		s.canEdit(t, writer, id)
+		// The decisions of the worker may see the grant below some time after it is written: the fill fails the
+		// message with the text consume until it may edit the order, so the outbox tries it again.
+		// The worker may sync the order, its declared permission, by the relation syncer.
+		resourceID, err := authz.ResourceID(writer.tenant, id)
+		must(t, err)
+		_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+			Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "order", ObjectId: resourceID}, Relation: "syncer",
+				Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "apply-note-replies"}}}}}})
+		must(t, err)
+		// The decision of the command may see the owner tuple some time after canEdit does: a denied note writes
+		// nothing and stages nothing, so the check sends it again until it passes.
+		s.eventually(t, "the note of the owner passes", func() bool {
+			return s.send(&writer, http.MethodPost, "/orders/"+id+"/notes", "k-"+uuid.NewString(), `{"text":"consume"}`).status/100 == 2
+		})
+		// The consumer adds 1000 to the qty in the transaction of the outbox worker, a session of the worker role.
+		for deadline := time.Now().Add(60 * time.Second); count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE tenant_id = $1 AND id = $2`, kept, id) != 1001; time.Sleep(200 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				var states string
+				must(t, s.admin.QueryRow(`SELECT coalesce(string_agg(state || ' ' || attempts || ' ' || coalesce(failure_code, ''), '; '), '')
+ FROM stego_outbox.messages WHERE destination = 'note-replies' AND tenant_id = $1`, kept).Scan(&states))
+				t.Fatalf("after 60 s the consumer did not write the order (qty %d); the messages of note-replies: %s", count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE id = $1`, id), states)
+			}
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND resource_id = $2 AND actor_id = 'service_account:apply-note-replies'`, kept, id); n != 1 {
+			t.Errorf("%d audit rows of the consumer's write, want 1", n)
+		}
+		// The worker role holds the least grants of the declared writes: no DELETE on orders, and nothing on notes,
+		// which no consumer writes.
+		for _, c := range []struct {
+			table, privilege string
+			want             bool
+		}{
+			{"public.orders", "UPDATE", true}, {"public.orders", "INSERT", true}, {"public.orders", "DELETE", false},
+			{"public.notes", "SELECT", false}, {"public.notes", "INSERT", false}, {"public.idempotency_keys", "INSERT", true},
+		} {
+			var has bool
+			must(t, s.admin.QueryRow(`SELECT has_table_privilege($1, $2, $3)`, stegoruntime.WorkerRole, c.table, c.privilege).Scan(&has))
+			if has != c.want {
+				t.Errorf("the worker role has %s on %s: %t, want %t", c.privilege, c.table, has, c.want)
+			}
+		}
+	})
+	t.Run("ST-SUP-RC27-OC12-T05 A retired tenant gets no worker run from the next tick, and its rows stay", func(t *testing.T) {
+		s.t = t
+		if got := s.retire(&s.operator, retired, "k-"+uuid.NewString()); got.status != http.StatusOK {
+			t.Fatalf("the retire of %s answered %d %s, want 200", retired, got.status, got.body)
+		}
+		// A run that read the list before the retire may still commit; from the next tick none runs.
+		base := ticks(t, kept)
+		s.eventually(t, "the next tick runs for the kept tenant", func() bool { return ticks(t, kept) >= base+1 })
+		stopped := ticks(t, retired)
+		s.eventually(t, "two more ticks run for the kept tenant", func() bool { return ticks(t, kept) >= base+3 })
+		if n := ticks(t, retired); n != stopped || n == 0 {
+			t.Errorf("the seeded order of the retired tenant holds the qty %d, want its qty %d kept and no new tick", n, stopped)
+		}
+	})
+
 	t.Run("ST-SUP-RC33-OC02-T04 A declared query reaches its fill through the generated main.go", func(t *testing.T) {
 		s.t = t
 		if order == "" {

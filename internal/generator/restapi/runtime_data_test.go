@@ -346,7 +346,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.112.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.111.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -723,6 +723,8 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC24-T07 An upper-case UUID in a path or a ref names the same row as its lower-case form",
 	"ST-SUP-RC20-OC24-T09 A collection three levels under its top ancestor checks every ancestor of the path, and a wrong, foreign or smuggled ancestor is 404",
 	"ST-SUP-RC20-OC24-T10 A caller that may not read one ancestor of the path gets 404, the same as for a missing ancestor",
+	"ST-SUP-RC20-OC24-T12 A write by a caller that may edit the row but not read one ancestor of the path gets 404 and changes nothing",
+	"ST-SUP-RC20-OC24-T13 The parent chain check reads the ancestors from the top down, so a caller learns nothing of a row below an ancestor it may not read",
 	"ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders",
 	"ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time",
 	"ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages",

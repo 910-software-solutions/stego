@@ -157,6 +157,18 @@ func TestSchemaNames(t *testing.T) {
 	})
 }
 
+func TestIdentitySubject(t *testing.T) {
+	service, schema := td03Files(t)
+	t.Run("ST-DECL-INV24-T The subject type service_account for a request's identity is refused", func(t *testing.T) {
+		changed := change(t, service, "subject_from_identity: user", "subject_from_identity: service_account")
+		fault := expectOneFault(t, checkTD03(t, changed, schema), "no-bypass", "service_account")
+		if fault.Path != "authorization.subject_from_identity" {
+			t.Errorf("want the fault at authorization.subject_from_identity, got %+v", fault)
+		}
+		expectAccepted(t, checkTD03(t, service, schema))
+	})
+}
+
 func TestWrittenRelations(t *testing.T) {
 	service, schema := td03Files(t)
 	binding := func(written string) string {

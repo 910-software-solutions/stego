@@ -1,8 +1,10 @@
 package gen
 
+import "slices"
+
 // EnvironmentGuardSource is the Go source of stegoRefuseEnvironment, which each emitted main calls first (the
 // service, a controller process and an RPC process). Libraries that the components use read environment variables
-// of their own: the pgx driver reads PG variables for each part that a connection string leaves out, grpc-go reads
+// of their own: the pgx driver reads its PG variables for each part that a connection string leaves out, grpc-go reads
 // GRPC_ variables, and the Go standard library reads SSL_CERT_FILE and SSL_CERT_DIR, which can change TLS trust, and
 // GODEBUG. The guard stops the process when one of those has a value, so that only the declared variables configure
 // the service (#344 security review M2). The log settings of grpc-go stay allowed, and so does a GODEBUG with no
@@ -37,12 +39,14 @@ func stegoRefuseEnvironment() {
 // stegoRefusedVariable tells whether a library reads the variable and the service does not take it.
 func stegoRefusedVariable(name string) bool {
 	switch name {
-	case "SSL_CERT_FILE", "SSL_CERT_DIR":
+	case "SSL_CERT_FILE", "SSL_CERT_DIR",
+		// The names that the pgx driver reads (pgconn), and no other name that starts with PG, such as PG_IMAGE.
+		"PGAPPNAME", "PGCHANNELBINDING", "PGCONNECT_TIMEOUT", "PGDATABASE", "PGHOST", "PGMAXPROTOCOLVERSION", "PGMINPROTOCOLVERSION", "PGOPTIONS", "PGPASSFILE", "PGPASSWORD", "PGPORT", "PGREQUIREAUTH", "PGSERVICE", "PGSERVICEFILE", "PGSSLCERT", "PGSSLKEY", "PGSSLMODE", "PGSSLNEGOTIATION", "PGSSLPASSWORD", "PGSSLROOTCERT", "PGSSLSNI", "PGTARGETSESSIONATTRS", "PGTZ", "PGUSER":
 		return true
 	case "GRPC_GO_LOG_SEVERITY_LEVEL", "GRPC_GO_LOG_VERBOSITY_LEVEL", "GRPC_GO_LOG_FORMATTER":
 		return false
 	}
-	return len(name) >= 2 && name[:2] == "PG" || len(name) >= 5 && name[:5] == "GRPC_"
+	return len(name) >= 5 && name[:5] == "GRPC_"
 }
 
 // stegoWeakensTLS tells whether a GODEBUG value holds a tls or an x509 setting.
@@ -73,5 +77,10 @@ func RefusedVariable(name string) bool {
 	case "GRPC_GO_LOG_SEVERITY_LEVEL", "GRPC_GO_LOG_VERBOSITY_LEVEL", "GRPC_GO_LOG_FORMATTER":
 		return false
 	}
-	return len(name) >= 2 && name[:2] == "PG" || len(name) >= 5 && name[:5] == "GRPC_"
+	return slices.Contains(PGVariables, name) || len(name) >= 5 && name[:5] == "GRPC_"
 }
+
+// PGVariables are the names that the pgx driver reads, which the guard refuses: the PG names of the pgconn source of
+// the pgx version that the runtime module requires, the same list that the release scan takes from that source. A
+// name that starts with PG and that pgx does not read, such as PG_IMAGE, is not refused.
+var PGVariables = []string{"PGAPPNAME", "PGCHANNELBINDING", "PGCONNECT_TIMEOUT", "PGDATABASE", "PGHOST", "PGMAXPROTOCOLVERSION", "PGMINPROTOCOLVERSION", "PGOPTIONS", "PGPASSFILE", "PGPASSWORD", "PGPORT", "PGREQUIREAUTH", "PGSERVICE", "PGSERVICEFILE", "PGSSLCERT", "PGSSLKEY", "PGSSLMODE", "PGSSLNEGOTIATION", "PGSSLPASSWORD", "PGSSLROOTCERT", "PGSSLSNI", "PGTARGETSESSIONATTRS", "PGTZ", "PGUSER"}

@@ -1875,7 +1875,9 @@ func (w *runtimeHandlerWriter) start(body bool) {
 // ancestors writes the parent chain check at the start of a fill: each ancestor that the path names is read in the
 // tenant, which decides the read permission that its entity declares, and must name the next ancestor of the path.
 // A missing, denied or wrong ancestor is not found, so a caller learns nothing of a row of another parent or tenant
-// (ST-SUP-RC20-OC24). In a query (inQuery) the rows are read through the query handle qh, and in a command through
+// (ST-SUP-RC20-OC24). The check reads the top ancestor first and goes down the path, so it compares the link of a row
+// only when the caller may read every ancestor above that row: a caller who may read a row but not its parent cannot
+// learn from the work of the check whether a parent ID that it sends is the row's (review of PR #333, L1). In a query (inQuery) the rows are read through the query handle qh, and in a command through
 // the command handle ch; zero is the zero value that the fill returns with an error.
 func (w *runtimeHandlerWriter) ancestors(inQuery bool, zero string) {
 	if len(w.c.chain) == 0 {
@@ -1885,8 +1887,9 @@ func (w *runtimeHandlerWriter) ancestors(inQuery bool, zero string) {
 	if inQuery {
 		notFound = "query.ErrNotFound"
 	}
-	w.f("\t\t// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of\n\t\t// the ancestor above it (ST-SUP-RC20-OC24).\n")
-	for i, level := range w.c.chain {
+	w.f("\t\t// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller\n\t\t// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).\n")
+	for i := len(w.c.chain) - 1; i >= 0; i-- {
+		level := w.c.chain[i]
 		w.f("\t\t{\n")
 		if inQuery {
 			w.f("\t\t\tancestors, err := query.Repo(qh, data.Entity%sView())\n", level.entity)

@@ -43,6 +43,9 @@ import (
 {{- if .Queries}}
 	queryserve {{printf "%q" .Queries}}
 {{- end}}
+{{- if .Workers}}
+	workerrunners {{printf "%q" .Workers}}
+{{- end}}
 )
 
 // The declaration of the service.
@@ -177,7 +180,21 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 			},
 			NewRelay: svcauthz.NewRelay, WatchInterval: svcauthz.WatchInterval,
 			AuditJobs: svcaudit.Jobs, AnchorPeriod: svcaudit.AnchorPeriod, RetentionMonths: svcaudit.RetentionMonths, TenantSchema: tenantSchema,
+{{- if .Tickers}}
+			// The ticker of each worker with an every trigger, bound to its one fill (ST-SUP-RC35-OC02, ST-SUP-RC35-OC04).
+			Tickers: workerrunners.Tickers(workerrunners.BoundFills()),
+{{- end}}
+{{- if .Consumers}}
+			// The one destination handler of each worker with a consumes trigger (ST-SUP-RC35-OC06).
+			Consumers: workerrunners.Consumers(workerrunners.BoundFills()),
+			// The tables that the consumers write, on which the migration job grants the worker role SELECT, INSERT and
+			// UPDATE (ST-SUP-Q141).
+			ConsumerTables: workerrunners.ConsumerTables(),
+{{- end}}
 		},
+{{- if .Workers}}
+		WorkerEntities: workerrunners.Entities(), WorkerNames: workerrunners.Names(),
+{{- end}}
 {{- if .Commands}}
 		Commands: commandhandlers.Entities(),
 {{- end}}
@@ -436,6 +453,10 @@ func Migrate(ctx context.Context) error {
 		Definitions: svcauthz.Definitions,
 		Grants:      grants, TenantSchema: tenantSchema,
 		Service:     Service, Backfills: backfills, Parts: &declaredParts,
+{{- if .Workers}}
+		// The lease row of each single worker (ST-SUP-RC35-OC05).
+		WorkerLeases: workerrunners.Leases(),
+{{- end}}
 	})
 }
 
