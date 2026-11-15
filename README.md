@@ -401,6 +401,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego compat` | `stego compat --base <ref> [--json]` |
 | `stego deps` | `stego deps` |
 | `stego drift` | `stego drift` |
+| `stego env check` | `stego env check --requirements <platform-requirements.yaml> <environment-file>` |
 | `stego fill create` | `stego fill create <name> --slot <slot> [--component <component>] [--collection <collection>]` |
 | `stego fill sign` | `stego fill sign <name>` |
 | `stego fill status` | `stego fill status` |

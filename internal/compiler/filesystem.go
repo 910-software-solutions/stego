@@ -19,14 +19,14 @@ func outputRelative(projectDir, outDir string) (string, error) {
 	}
 	first := strings.Split(filepath.ToSlash(relative), "/")[0]
 	switch strings.ToLower(first) {
-	case "fills", ".stego", ".git", "go.mod", "go.sum", "service.yaml":
+	case "fills", ".stego", ".git", "go.mod", "go.sum", "service.yaml", "deploy":
 		return "", fmt.Errorf("OutDir must not use reserved directory %q", first)
 	}
 	return relative, nil
 }
 
 func projectFilePath(outDir, name string) string {
-	if isProjectRootFile(name) {
+	if isProjectRootFile(name) || isProjectGeneratedFile(name) {
 		return name
 	}
 	return filepath.Join(outDir, name)
