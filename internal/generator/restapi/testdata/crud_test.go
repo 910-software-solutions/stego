@@ -1388,9 +1388,33 @@ func TestCrud(t *testing.T) {
 		if n := e.count(`SELECT count(*) FROM meetings WHERE id = $1::uuid AND starts_at = '2026-12-01T08:00:00Z' AND ends_at = '2026-12-01T09:30:00.5Z' AND noted_at > now() - interval '1 hour'`, id); n != 1 {
 			t.Errorf("%d meeting rows with the client's times and the server's noted_at, want 1", n)
 		}
-		// The same key with another time is another request (the fingerprint holds the client-set field).
-		if r := e.send(a, http.MethodPost, "/api/v1/meetings", key, strings.Replace(body, "10:00:00", "10:05:00", 1)); r.status == http.StatusCreated {
-			t.Errorf("the same key with another starts_at answered %d %s, want a refusal of the reused key", r.status, r.body)
+		// The same key with another time is another request (the fingerprint holds the client-set field): 422. The
+		// decoder matches a member name to a field under case folding, so STARTS_AT with another time is also 422,
+		// and STARTS_AT with the same time is the same request, which replays the first answer (ST-SUP-RP07-LC10).
+		reused := func(what, key, body string) {
+			t.Helper()
+			r := e.send(a, http.MethodPost, "/api/v1/meetings", key, body)
+			if problem, _ := r.object(t)["type"].(string); r.status != http.StatusUnprocessableEntity || !strings.HasSuffix(problem, "idempotency-key-reused") {
+				t.Errorf("the same key with %s answered %d %s, want 422 idempotency-key-reused", what, r.status, r.body)
+			}
+		}
+		folded := strings.Replace(body, `"starts_at"`, `"STARTS_AT"`, 1)
+		reused("another starts_at", key, strings.Replace(body, "10:00:00", "10:05:00", 1))
+		reused("STARTS_AT holding another time", key, strings.Replace(folded, "10:00:00", "10:05:00", 1))
+		// A first request that names the field as STARTS_AT: the same key with STARTS_AT holding another time is
+		// 422, not the replay of the first answer.
+		other := "k-" + uuid.NewString()
+		first := e.send(a, http.MethodPost, "/api/v1/meetings", other, folded)
+		if first.status != http.StatusCreated || first.member(t, "starts_at") != "2026-12-01T08:00:00Z" {
+			t.Fatalf("the create with STARTS_AT answered %d %s, want 201 with the client's starts_at", first.status, first.body)
+		}
+		e.own(a, "meeting", first.member(t, "id"))
+		reused("STARTS_AT holding another time after a first STARTS_AT", other, strings.Replace(folded, "10:00:00", "10:05:00", 1))
+		if r := e.send(a, http.MethodPost, "/api/v1/meetings", key, strings.Replace(body, `"starts_at"`, `"STARTS_AT"`, 1)); r.status != http.StatusCreated || r.member(t, "id") != id {
+			t.Errorf("the same key with STARTS_AT holding the same time answered %d %s, want the replay of the first answer", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 2 {
+			t.Errorf("%d meeting rows after the reused keys, want 2", n)
 		}
 		answered("the read", e.send(a, http.MethodGet, "/api/v1/meetings/"+id, "", ""), map[string]string{"starts_at": "2026-12-01T08:00:00Z"})
 		// A value that is not an RFC 3339 time, the zero time, and a required time left out or null are refused with
@@ -1416,8 +1440,8 @@ func TestCrud(t *testing.T) {
 				t.Errorf("the create %s answered %d %s, want 400 naming %s and RFC 3339", c.body, r.status, r.body, c.field)
 			}
 		}
-		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 1 {
-			t.Errorf("%d meeting rows after the refused creates, want 1", n)
+		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 2 {
+			t.Errorf("%d meeting rows after the refused creates, want 2", n)
 		}
 		// An update sets the client's time and keeps the server's noted_at; a patch changes one time.
 		updated := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", `{"title":"plan","starts_at":"2026-12-02T09:00:00-05:00"}`)
