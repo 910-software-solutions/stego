@@ -30,7 +30,7 @@ var orgUsersCreateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 }))
 
 // orgUsersReadQuery is the query of a read of org-users (ST-SUP-RP11).
-var orgUsersReadQuery = mustQuery(query.NewQuery("read", data.EntityUserView()))
+var orgUsersReadQuery = mustQuery(query.NewQuery("read", data.EntityUserView(), data.EntityOrganizationView()))
 
 // orgUsersUpdateCommand is the generated command of a update of org-users (ST-SUP-RC20-OC37).
 var orgUsersUpdateCommand = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{
@@ -45,7 +45,7 @@ var orgUsersUpdateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 // orgUsersDeleteCommand is the generated command of a delete of org-users (ST-SUP-RC20-OC37).
 var orgUsersDeleteCommand = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{
 	Name:         "delete",
-	Writes:       []command.Declared{data.UserEntity},
+	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
 	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.deleted"}}},
 	Permission:   "edit",
@@ -53,7 +53,7 @@ var orgUsersDeleteCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 }))
 
 // orgUsersListQuery is the query of a list of org-users, on the list permission of User (ST-SUP-RP11-LC07).
-var orgUsersListQuery = mustQuery(query.NewListQuery("list", data.EntityUserView(), "view"))
+var orgUsersListQuery = mustQuery(query.NewListQuery("list", data.EntityUserView(), "view", data.EntityOrganizationView()))
 
 // orgUsersPatchCommand is the generated command of a patch of org-users (ST-SUP-RC20-OC37).
 var orgUsersPatchCommand = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{
@@ -207,6 +207,7 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 	if err != nil {
 		handleError(w, r, BadRequest("the body cannot be read"))
@@ -233,6 +234,19 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, "")
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersCreateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := data.OrganizationRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			_ = ancestor
+		}
 		id, err := uuid.NewV7()
 		if err != nil {
 			return idempotency.Response{}, err
@@ -332,6 +346,7 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	if !command.ValidUUID(id) {
 		handleError(w, r, NotFound("User", id))
 		return
@@ -345,6 +360,19 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := query.Run(r.Context(), h.rt.Queries, orgUsersReadQuery, h.rt.boundQuery(r.Context(), b, orgUsersReadQuery), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (User, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := query.Repo(qh, data.EntityOrganizationView())
+			if err != nil {
+				return User{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return User{}, err
+			}
+			_ = ancestor
+		}
 		repo, err := query.Repo(qh, data.EntityUserView())
 		if err != nil {
 			return User{}, err
@@ -353,7 +381,8 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return User{}, err
 		}
-		if loaded.Value().OrgID != scope {
+		view := loaded.Value()
+		if view.OrgID != scope {
 			return User{}, query.ErrNotFound
 		}
 		return orgUsersFromView(loaded.Value()), nil
@@ -379,6 +408,7 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 	if err != nil {
 		handleError(w, r, BadRequest("the body cannot be read"))
@@ -397,6 +427,19 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersUpdateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := data.OrganizationRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			_ = ancestor
+		}
 		repo, err := data.UserRepository(ch)
 		if err != nil {
 			return idempotency.Response{}, err
@@ -471,6 +514,7 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	requestID := command.NewID()
 	fingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, nil)
 	if err != nil {
@@ -479,6 +523,19 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersDeleteCommand, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := data.OrganizationRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			_ = ancestor
+		}
 		repo, err := data.UserRepository(ch)
 		if err != nil {
 			return idempotency.Response{}, err
@@ -540,6 +597,7 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	limit := 100
 	if text := r.URL.Query().Get("pageSize"); text != "" {
 		n, err := strconv.Atoi(text)
@@ -581,6 +639,19 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, orgUsersListQuery, h.rt.boundQuery(r.Context(), b, orgUsersListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (orgUsersPage, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := query.Repo(qh, data.EntityOrganizationView())
+			if err != nil {
+				return orgUsersPage{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return orgUsersPage{}, err
+			}
+			_ = ancestor
+		}
 		repo, err := query.Repo(qh, data.EntityUserView())
 		if err != nil {
 			return orgUsersPage{}, err
@@ -597,6 +668,10 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 	})
 	if isBadCursor(err) {
 		handleError(w, r, BadRequest("the cursor is not valid"))
+		return
+	}
+	if errors.Is(err, query.ErrNotFound) {
+		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
 	if errors.Is(err, query.ErrBadRequest) {
@@ -638,6 +713,7 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, NotFound("Organization", scope))
 		return
 	}
+	chain := [1]string{scope}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 	if err != nil {
 		handleError(w, r, BadRequest("the body cannot be read"))
@@ -664,6 +740,19 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersPatchCommand, req, decodeOrgUsersPatch, func(ctx context.Context, patch OrgUsersPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {
+		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
+		// the ancestor above it (ST-SUP-RC20-OC24).
+		{
+			ancestors, err := data.OrganizationRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			ancestor, err := ancestors.Get(ctx, chain[0])
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			_ = ancestor
+		}
 		repo, err := data.UserRepository(ch)
 		if err != nil {
 			return idempotency.Response{}, err
