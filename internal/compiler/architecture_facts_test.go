@@ -71,7 +71,7 @@ func claimFixtureProject(t *testing.T, reason string) (*ArchitectureModel, strin
 
 // testClaimWords is the list of this test of the words that would claim compliance, kept apart from claimWords so a
 // change of one is caught by the other.
-var testClaimWords = regexp.MustCompile(`(?i)\b(compliant|complies|comply|compliance|passes|passed|pass|meets|meet|fails|failed|fail|satisfies|conforms|certified)\b`)
+var testClaimWords = regexp.MustCompile(`(?i)\b(compliant|complies|comply|compliance|passes|passed|pass|meets|meet|fails|failed|fail|satisfies|conforms|certified|secure|safe|protected|approved)\b`)
 
 // quotedText is a quotation in the text output: a double-quoted string with its escapes.
 var quotedText = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
@@ -284,13 +284,57 @@ func TestComplianceFactList(t *testing.T) {
 				if !bytes.Equal(first, second) || !bytes.Equal(first, elsewhere) {
 					t.Fatalf("the list of %s (JSON %v) differs between two reads of the same model", topic, structured)
 				}
-				if structured && !bytes.HasPrefix(first, []byte("{\n  \"topic\": \""+topic+"\",\n  \"service\": \"docs\",\n  \"model\": \"architecture/architecture.json\",\n  \"record\": \".stego/state.yaml\",\n  \"facts\": [")) {
+				keys := "{\n  \"topic\": \"" + topic + "\",\n  \"service\": \"docs\",\n  \"model\": \"architecture/architecture.json\",\n  \"record\": \".stego/state.yaml\",\n"
+				if topic == "access" {
+					keys += "  \"scope\": \"" + accessScope + "\",\n"
+				}
+				if structured && !bytes.HasPrefix(first, []byte(keys+"  \"facts\": [")) {
 					t.Fatalf("the JSON keys are not in their order:\n%s", first)
 				}
 				if strings.Contains(string(first), "encrypted") || strings.Contains(string(first), "vault") {
 					t.Fatalf("the list takes text from a hand-written note:\n%s", first)
 				}
 			}
+		}
+	})
+
+	t.Run("ST-GEN-UC16-R04-T02 The access list states its limits: it covers only the declared operations, a permission with no known grant paths is said to be unknown, and a path that reaches no role says so", func(t *testing.T) {
+		model, project := claimFixtureProject(t, "a new doc has no resource before it exists")
+		text, list, _ := factsOf(t, project, "access")
+		if list.Scope != accessScope || !strings.Contains(text, "\nThe list covers only the operations, commands, queries and workers that the declaration states.") {
+			t.Fatalf("the access list does not state what it covers:\n%s", text)
+		}
+		if strings.Contains(text, "granted to no role") {
+			t.Fatalf("a path with no role reads as a grant:\n%s", text)
+		}
+		stopped := false
+		for _, p := range model.Access.Permissions {
+			for _, g := range p.Paths {
+				stopped = stopped || g.Role == ""
+			}
+		}
+		if stopped && !strings.Contains(text, "    a path that reaches no role, by a path of kind ") {
+			t.Fatalf("a path that reaches no role is not said so:\n%s", text)
+		}
+		// A check that names a permission of which the model holds no grant path.
+		for i := range model.Access.Checks {
+			if model.Access.Checks[i].Subject == "operation:docs.read" {
+				model.Access.Checks[i].Grants = ""
+			}
+		}
+		data, err := json.MarshalIndent(model, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, list, _ = factsOf(t, archProject(t, append(data, '\n')), "access")
+		unknown := false
+		for _, f := range list.Facts {
+			if f.About == "operation:docs.read" && f.Name == "checks" {
+				unknown = f.GrantsUnknown && f.Grants == nil
+			}
+		}
+		if !unknown || !strings.Contains(text, "    the grants of doc#read are not known: the model holds no grant path of it\n") {
+			t.Fatalf("a check with no known grants is not said to be unknown:\n%s", text)
 		}
 	})
 }

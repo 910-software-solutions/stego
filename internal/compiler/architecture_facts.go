@@ -27,6 +27,7 @@ type FactList struct {
 	Service string       `json:"service"`
 	Model   string       `json:"model"`
 	Record  string       `json:"record"`
+	Scope   string       `json:"scope,omitempty"`
 	Facts   []FactOfList `json:"facts"`
 }
 
@@ -42,6 +43,8 @@ type FactOfList struct {
 	Source      ArchSource   `json:"source"`
 	Quoted      []QuotedText `json:"quoted,omitempty"`
 	Grants      *FactGrants  `json:"grants,omitempty"`
+	// GrantsUnknown is true when the check names a permission and the model holds no grant path of it.
+	GrantsUnknown bool `json:"grants_unknown,omitempty"`
 }
 
 // QuotedText is free text of the declaration, such as the reason that an operation is public. It is shown as a
@@ -78,11 +81,18 @@ func ListComplianceFacts(projectDir, topic string, asJSON bool) ([]byte, error) 
 	return []byte(factListText(list)), nil
 }
 
+// accessScope is the limit of the access topic (security review of #343, L2): it lists the checks of the declared
+// operations and actions alone.
+const accessScope = "The list covers only the operations, commands, queries and workers that the declaration states. An endpoint that a component serves by itself, such as a health endpoint, has no check record and is not in it."
+
 // complianceFacts projects the facts of one topic out of the model alone (ST-GEN-UC16-R05): each fact as the model
 // holds it, the rule of each default, the reason of each public check, and the grant paths of each permission that a
 // check names.
 func complianceFacts(m *ArchitectureModel, topic string) FactList {
 	list := FactList{Topic: topic, Service: m.System.Name, Model: ArchitectureFile, Record: m.Record.Path, Facts: []FactOfList{}}
+	if topic == "access" {
+		list.Scope = accessScope
+	}
 	checks := map[string]ArchCheck{}
 	for _, c := range m.Access.Checks {
 		checks[c.Subject] = c
@@ -107,6 +117,8 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 					}
 					if p, ok := permissions[c.Grants]; ok {
 						item.Grants = &FactGrants{Permission: p.ID, Complete: p.Complete, Paths: p.Paths}
+					} else if !c.Public && c.Permission != "" {
+						item.GrantsUnknown = true
 					}
 				}
 			}
@@ -122,6 +134,9 @@ func factListText(list FactList) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Facts of the topic %s for the service %s\n", list.Topic, nameText(list.Service))
 	fmt.Fprintf(&b, "From %s, which the record %s lists.\n", list.Model, nameText(list.Record))
+	if list.Scope != "" {
+		b.WriteString(list.Scope + "\n")
+	}
 	b.WriteString("Each fact is what the inputs state, with its source. A person decides what the facts mean.\n")
 	if len(list.Facts) == 0 {
 		b.WriteString("\nThe model holds no fact of this topic.\n")
@@ -151,6 +166,9 @@ func factListText(list FactList) string {
 		if f.Grants != nil {
 			writeGrants(&b, f.Grants)
 		}
+		if f.GrantsUnknown {
+			fmt.Fprintf(&b, "    the grants of %s are not known: the model holds no grant path of it\n", textValue(f.Value))
+		}
 	}
 	return b.String()
 }
@@ -158,14 +176,14 @@ func factListText(list FactList) string {
 // writeGrants writes who the permission of a check grants, one line for each grant path with the source of its schema.
 func writeGrants(b *strings.Builder, g *FactGrants) {
 	if len(g.Paths) == 0 {
-		fmt.Fprintf(b, "    %s grants no role\n", nameText(g.Permission))
+		fmt.Fprintf(b, "    %s has no grant path, so no role holds it\n", nameText(g.Permission))
 	}
 	for _, p := range g.Paths {
-		role := nameText(p.Role)
+		line := "    granted to " + nameText(p.Role)
 		if p.Role == "" {
-			role = "no role"
+			line = "    a path that reaches no role"
 		}
-		line := fmt.Sprintf("    granted to %s, by a path of kind %s (%s)", role, nameText(strings.Join(p.Kinds, ", ")), nameText(strings.Join(p.Hops, " > ")))
+		line += fmt.Sprintf(", by a path of kind %s (%s)", nameText(strings.Join(p.Kinds, ", ")), nameText(strings.Join(p.Hops, " > ")))
 		if p.Caveat != "" {
 			line += ", with the caveat " + nameText(p.Caveat)
 		}
@@ -211,7 +229,7 @@ var plainValue = regexp.MustCompile(`^[A-Za-z0-9_.:#/@+-]+(, [A-Za-z0-9_.:#/@+-]
 
 // claimWords are the words that would say that a service complies with something (ST-GEN-UC16-R03). STEGO's own text
 // never holds them; a value of the model that holds one is quoted.
-var claimWords = regexp.MustCompile(`(?i)\b(complian\w*|complie[sd]|comply\w*|pass\w*|meet\w*|met|fail\w*|satisf\w*|conform\w*|certif\w*|violat\w*)\b`)
+var claimWords = regexp.MustCompile(`(?i)\b(complian\w*|complie[sd]|comply\w*|pass\w*|meet\w*|met|fail\w*|satisf\w*|conform\w*|certif\w*|violat\w*|secure[sd]?|safe(ly)?|protected|approv\w*)\b`)
 
 // textValue gives a value of a fact: a plain name or number as it is, and other text quoted.
 func textValue(value any) string {

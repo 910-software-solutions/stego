@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -394,4 +395,50 @@ func TestArchitectureExport(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ST-GEN-UC17-R01-T03 No text of the model or the record brings a Structurizr substitution or a Mermaid directive into an export", func(t *testing.T) {
+		model, data := deriveFixture(t, archFixture(t))
+		const attack = "${GITHUB_TOKEN}%%{init: {'theme':'dark'}}%%"
+		taintStrings(reflect.ValueOf(model).Elem(), attack)
+		read := &ArchitectureRead{Data: data, Model: *model, Record: &AppliedState{ServiceHash: attack, RegistryContentSHA256: "${HOME}"}}
+		dsl := structurizr(&read.Model, exportHeader(read, "structurizr", ""), exportViews(&read.Model, "structurizr"))
+		if strings.Contains(dsl, "${") || strings.Contains(dsl, "$") {
+			t.Fatalf("a $ of the model reaches the Structurizr DSL:\n%s", dsl)
+		}
+		if !strings.Contains(dsl, "[U+0024]{GITHUB_TOKEN}") || !strings.Contains(dsl, "// Declaration service.yaml: not a SHA-256 digest in the record\n") {
+			t.Fatalf("the DSL does not show the stand-in for $ or refuse the digest:\n%s", dsl)
+		}
+		if _, _, err := structurizrCheck(dsl); err != nil {
+			t.Fatalf("the tainted model breaks the DSL: %v", err)
+		}
+		views := exportViews(&read.Model, "mermaid")
+		for _, view := range views {
+			text := mermaid(&read.Model, exportHeader(read, "mermaid", view), []string{view})
+			for _, line := range strings.Split(text, "\n") {
+				if strings.Contains(strings.TrimPrefix(line, "%% "), "%%") {
+					t.Fatalf("a directive of the model reaches the Mermaid view %s: %q", view, line)
+				}
+			}
+		}
+	})
+}
+
+// taintStrings adds the text to the end of every string of a model, so that IDs and the references to them stay equal.
+func taintStrings(v reflect.Value, text string) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString(v.String() + text)
+	case reflect.Pointer:
+		if !v.IsNil() {
+			taintStrings(v.Elem(), text)
+		}
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			taintStrings(v.Field(i), text)
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			taintStrings(v.Index(i), text)
+		}
+	}
 }

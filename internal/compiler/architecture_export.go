@@ -73,10 +73,13 @@ func exportHeader(read *ArchitectureRead, format, view string) []string {
 	}
 	record := read.Record
 	digest := func(name, value string) {
-		if value == "" {
+		switch {
+		case value == "":
 			value = "not recorded"
-		} else {
-			value = "sha256:" + diagramText(value)
+		case hexDigest.MatchString(value):
+			value = "sha256:" + value
+		default:
+			value = "not a SHA-256 digest in the record"
 		}
 		lines = append(lines, name+": "+value)
 	}
@@ -102,6 +105,10 @@ func exportHeader(read *ArchitectureRead, format, view string) []string {
 	}
 	return lines
 }
+
+// hexDigest is a SHA-256 digest as the record writes it. The header names only such digests, so a record edited by
+// hand cannot bring other text into it (security review of #343, L1).
+var hexDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // diagramText gives text of the model for a diagram: each control and bidirectional character as [U+XXXX], each
 // double quote as a single quote and each backslash as a slash, so that the text cannot end a string of the diagram
@@ -190,7 +197,7 @@ func componentEdges(m *ArchitectureModel, f ArchFlow) []flowEdge {
 func structurizr(m *ArchitectureModel, header, views []string) string {
 	var b strings.Builder
 	for _, line := range header {
-		b.WriteString("// " + line + "\n")
+		b.WriteString("// " + dslText(line) + "\n")
 	}
 	ids := newIdentifiers()
 	system := ids.of(m.System.ID)
@@ -298,7 +305,14 @@ func stepText(f ArchFlow) string {
 
 // dslString gives text of the model as a quoted string of Structurizr DSL.
 func dslString(text string) string {
-	return `"` + diagramText(text) + `"`
+	return `"` + dslText(text) + `"`
+}
+
+// dslText gives text of the model for Structurizr DSL: the text of diagramText with each $ as [U+0024]. The DSL puts
+// the value of a constant, a variable or an environment variable of the renderer in place of ${NAME} in any token and
+// has no escape for it, so a $ of the model could publish a secret of the renderer (security review of #343, M1).
+func dslText(text string) string {
+	return strings.ReplaceAll(diagramText(text), "$", "[U+0024]")
 }
 
 // mermaid gives the model as Mermaid text: the entity-relationship diagram and a sequence diagram of each request
@@ -318,10 +332,10 @@ func mermaid(m *ArchitectureModel, header, views []string) string {
 			b.WriteString("```mermaid\n")
 		}
 		for _, line := range header {
-			b.WriteString("%% " + line + "\n")
+			b.WriteString("%% " + mermaidText(line) + "\n")
 		}
 		if len(views) > 1 {
-			b.WriteString("%% View: " + diagramText(view) + "\n")
+			b.WriteString("%% View: " + mermaidText(view) + "\n")
 		}
 		if view == viewDataModel {
 			mermaidEntities(&b, m)

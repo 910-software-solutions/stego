@@ -57,11 +57,8 @@ func runArchitectureExport(projectDir string, args []string) ([]byte, error) {
 	fs := flag.NewFlagSet("architecture export", flag.ContinueOnError)
 	format := fs.String("format", "", "the format: "+strings.Join(compiler.ExportFormats, " or "))
 	view := fs.String("view", "", "one view, such as one request flow")
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil, err
-		}
-		return nil, exitStatus{architectureUsage, err.Error()}
+	if err := parseArchitectureFlags(fs, args); err != nil {
+		return nil, err
 	}
 	if fs.NArg() != 0 || *format == "" {
 		return nil, exitStatus{architectureUsage, "architecture export takes --format and no argument: stego architecture export --format " + strings.Join(compiler.ExportFormats, "|") + " [--view <view>]"}
@@ -74,14 +71,27 @@ func runArchitectureFacts(projectDir string, args []string) ([]byte, error) {
 	fs := flag.NewFlagSet("architecture facts", flag.ContinueOnError)
 	topic := fs.String("topic", "", "the topic: "+strings.Join(compiler.ComplianceTopics, ", "))
 	structured := fs.Bool("json", false, "print the facts as one JSON object")
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil, err
-		}
-		return nil, exitStatus{architectureUsage, err.Error()}
+	if err := parseArchitectureFlags(fs, args); err != nil {
+		return nil, err
 	}
 	if fs.NArg() != 0 || *topic == "" {
 		return nil, exitStatus{architectureUsage, "architecture facts takes --topic and no argument: stego architecture facts --topic " + strings.Join(compiler.ComplianceTopics, "|") + " [--json]"}
 	}
 	return compiler.ListComplianceFacts(projectDir, *topic, *structured)
+}
+
+// parseArchitectureFlags parses the flags of a subcommand. The flag package does not print the error with the usage, so
+// main prints a usage error once; --help prints the flags.
+func parseArchitectureFlags(fs *flag.FlagSet, args []string) error {
+	fs.SetOutput(io.Discard)
+	err := fs.Parse(args)
+	if errors.Is(err, flag.ErrHelp) {
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+		return err
+	}
+	if err != nil {
+		return exitStatus{architectureUsage, err.Error()}
+	}
+	return nil
 }
