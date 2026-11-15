@@ -73,7 +73,7 @@ type DeploymentFiles struct {
 }
 
 // NoDeliveryStanza is the end of the plan line of a run whose declaration has no delivery stanza (ST-DLV-UC07-R05).
-const NoDeliveryStanza = "the declaration has no delivery stanza"
+const NoDeliveryStanza = "the declaration has no delivery stanza with an argocd part"
 
 // NoBase is the plan line of a run whose active set serves no probes: such a service is not deployed as a
 // Deployment, so the run writes no Kubernetes base.
@@ -84,9 +84,9 @@ const NoBase = "no Kubernetes base is written: no component of the service serve
 const noProbePort = "no Kubernetes base is written: the platform requirements give no default port for the probes in %s"
 
 // WriteDeployment writes the Kubernetes base of the service from its platform requirements and its probes
-// (ST-DLV-CMD03), and then, as the base is written, the delivery object (ST-DLV-PO04). A declaration has no
-// delivery stanza (ST-DLV-Q12), so the run writes no delivery object and says so in the plan (ST-DLV-UC07-R05).
-func WriteDeployment(service string, requirements []byte, probes *ProbeSource) (DeploymentFiles, error) {
+// (ST-DLV-CMD03), and then, as the base is written, the delivery object from the Argo CD part of the delivery
+// stanza, or none when the declaration has no such part (ST-DLV-PO04).
+func WriteDeployment(service string, requirements []byte, probes *ProbeSource, stanza *ArgoCDStanza) (DeploymentFiles, error) {
 	if probes == nil {
 		return DeploymentFiles{Notes: []string{NoBase}}, nil
 	}
@@ -97,14 +97,32 @@ func WriteDeployment(service string, requirements []byte, probes *ProbeSource) (
 	if err != nil {
 		return DeploymentFiles{}, err
 	}
-	return DeploymentFiles{Files: base.Files, Notes: []string{deliveryObjectFor(written)}}, nil
+	application, note, err := deliveryObjectFor(written, stanza)
+	if err != nil {
+		return DeploymentFiles{}, err
+	}
+	if application != nil {
+		base.Files[ApplicationSetFile] = application.File
+	}
+	var notes []string
+	if note != "" {
+		notes = append(notes, note)
+	}
+	return DeploymentFiles{Files: base.Files, Notes: notes}, nil
 }
 
 // deliveryObjectFor is the policy Write the delivery object for a written base (ST-DLV-PO04): it hears the base of
-// the service written and states the delivery object of the run. No declaration has a delivery stanza yet
-// (ST-DLV-Q12), so it writes none and gives the plan line that says so, with no destination, project or path.
-func deliveryObjectFor(written BaseWritten) string {
-	return fmt.Sprintf("no delivery object (Argo CD ApplicationSet) is written for the base of %s: %s", written.Service, NoDeliveryStanza)
+// the service written and writes the ApplicationSet from the Argo CD part of the delivery stanza. Without that part,
+// it writes none and gives the plan line that says so, with no destination, project or path (ST-DLV-UC07-R05).
+func deliveryObjectFor(written BaseWritten, stanza *ArgoCDStanza) (*Application, string, error) {
+	if stanza == nil {
+		return nil, fmt.Sprintf("no delivery object (Argo CD ApplicationSet) is written for the base of %s: %s", written.Service, NoDeliveryStanza), nil
+	}
+	application, err := WriteApplication(written, *stanza)
+	if err != nil {
+		return nil, "", err
+	}
+	return &application, "", nil
 }
 
 // WriteBase writes the plain kustomize base of the service (ST-DLV-CMD03) from its platform requirements alone: a
@@ -269,8 +287,13 @@ func containerPort(requirement Requirement) map[string]any {
 // encodeResource gives one YAML document with the header of the base. The keys of each map are in name order, so
 // the same requirements give the same bytes (ST-DLV-DS01).
 func encodeResource(object map[string]any) ([]byte, error) {
+	return encodeWith(baseHeader, object)
+}
+
+// encodeWith gives one YAML document with the header.
+func encodeWith(header string, object map[string]any) ([]byte, error) {
 	var out bytes.Buffer
-	out.WriteString(baseHeader)
+	out.WriteString(header)
 	encoder := yaml.NewEncoder(&out)
 	encoder.SetIndent(2)
 	if err := encoder.Encode(object); err != nil {
