@@ -128,3 +128,20 @@ func sortedNames(m map[string]string) []string {
 	slices.Sort(names)
 	return names
 }
+
+// CheckPlace gives the fault of a component that does not state its place, or nil. The architecture model calls it
+// again before it derives, which catches a component that came from no decoder (ST-GEN-UC08-R05).
+func CheckPlace(component *Component) error {
+	if fault := statesPlace(component); fault != nil {
+		return fault
+	}
+	return nil
+}
+
+// CheckMixinPlace gives the fault of a mixin slot that states no phase or no operations, or nil.
+func CheckMixinPlace(mixin *Mixin) error {
+	if fault := slotsStatePlace("mixin "+mixin.Name, mixin.AddsSlots); fault != nil {
+		return fault
+	}
+	return nil
+}
