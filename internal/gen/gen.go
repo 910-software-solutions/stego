@@ -97,6 +97,22 @@ type VariableDeclarer interface {
 	DeclaredVariables(ctx Context) ([]DeclaredVariables, error)
 }
 
+// Probes are the HTTP paths of the liveness and readiness probes that a
+// component serves, and the environment variable whose default is the port
+// they are served on.
+type Probes struct {
+	Liveness     string
+	Readiness    string
+	PortVariable string
+}
+
+// ProbeDeclarer gives the probes that a component serves, so that the
+// Kubernetes base carries them (ST-DLV-UC07-R03). It must check the context
+// as Generate does.
+type ProbeDeclarer interface {
+	Probes(ctx Context) (Probes, error)
+}
+
 // InputProvider declares source files before generation. The compiler reads
 // each file once and checks its snapshot again before it applies output.
 type InputProvider interface {

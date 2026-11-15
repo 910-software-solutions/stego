@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -1090,7 +1092,27 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 		QualifyFills: fill.QualificationFaults,
 
 		WriteRequirements: writeRequirements,
+		WriteDeployment:   writeDeployment,
 	}, nil
+}
+
+// writeDeployment gives the compiler's port for the Kubernetes base and the delivery object to Delivering
+// (delivery.WriteDeployment, ST-DLV-CMD03, ST-DLV-PO04): the platform requirements of the run and the probes of the
+// active set. It gives the files in path order.
+func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, error) {
+	var probes *delivery.ProbeSource
+	if input.Probes != nil {
+		probes = &delivery.ProbeSource{Liveness: input.Probes.Liveness, Readiness: input.Probes.Readiness, PortVariable: input.Probes.PortVariable}
+	}
+	written, err := delivery.WriteDeployment(input.Service, input.Requirements, probes)
+	if err != nil {
+		return compiler.DeploymentFiles{}, err
+	}
+	files := make([]gen.File, 0, len(written.Files))
+	for _, name := range slices.Sorted(maps.Keys(written.Files)) {
+		files = append(files, gen.File{Path: name, Content: written.Files[name]})
+	}
+	return compiler.DeploymentFiles{Files: files, Notes: written.Notes}, nil
 }
 
 // writeRequirements gives the compiler's port for the platform requirements to Delivering
