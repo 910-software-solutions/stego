@@ -32,31 +32,18 @@ func (s *smallService) savedPlan(t *testing.T) (files []savedPlanFile, recordCha
 	return plan.Files, plan.RecordSHA256 != ""
 }
 
-// changedOutput gives each path under out, and each project file that STEGO generates whole (the platform
-// requirements and the architecture model and view), whose hash differs between the two trees, with its new hash,
-// or "" when it is gone.
+// changedOutput gives each path under out whose hash differs between the two
+// trees, with its new hash, or "" when it is gone.
 func changedOutput(before, after map[string]string) map[string]string {
-	name := func(path string) (string, bool) {
-		if strings.HasPrefix(path, "out/") {
-			return strings.TrimPrefix(path, "out/"), true
-		}
-		switch path {
-		case "deploy/platform-requirements.yaml", "architecture/architecture.json", "architecture/index.html":
-			return path, true
-		}
-		return "", false
-	}
 	changed := map[string]string{}
 	for path, hash := range after {
-		if n, ok := name(path); ok && before[path] != hash {
-			changed[n] = hash
+		if strings.HasPrefix(path, "out/") && before[path] != hash {
+			changed[strings.TrimPrefix(path, "out/")] = hash
 		}
 	}
 	for path := range before {
-		if _, kept := after[path]; !kept {
-			if n, ok := name(path); ok {
-				changed[n] = ""
-			}
+		if _, kept := after[path]; !kept && strings.HasPrefix(path, "out/") {
+			changed[strings.TrimPrefix(path, "out/")] = ""
 		}
 	}
 	return changed
@@ -68,7 +55,7 @@ func plannedOutput(files []savedPlanFile) map[string]string {
 	planned := map[string]string{}
 	for _, file := range files {
 		// The module files and the project files of STEGO, such as the architecture model, are not under out.
-		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile {
+		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile || file.Path == compiler.ArchitectureViewFile {
 			continue
 		}
 		planned[file.Path] = file.SHA256

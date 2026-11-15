@@ -212,6 +212,7 @@ function drawLanes(svg, d){
   d.lanes.forEach(function(l, i){
     svg.appendChild(s("rect", {x:l.x, y:l.y, width:l.w, height:l.h, rx:10, style:"fill:color-mix(in srgb, "+col(l.layer)+" 6%, transparent);stroke:var(--rule)"}));
     svg.appendChild(s("text", {"class":"lane-label", x:l.x+8, y:l.y+16, text:(i+1)+" "+LAYER_NAME[l.layer]}));
+    if (!d.nodes.some(function(n){ return n.layer === l.layer; })) svg.appendChild(s("text", {"class":"sub", x:l.x+8, y:l.y+34, text:"no component"}));
   });
 }
 function drawComponents(svg, d, ctx){
@@ -302,6 +303,7 @@ function renderFlows(root){
   });
   root.appendChild(h("h3", {text:"All flows"}));
   root.appendChild(mini);
+  if (M.actions.length) root.appendChild(h("p", {"class":"question", id:"noFlowActions", text:"The model has a request flow only for each operation of a collection. These commands, queries and workers have no flow here; the access matrix shows what each one checks: "+M.actions.map(function(a){ return a.name+" ("+a.kind+")"; }).join(", ")+"."}));
   var f = byId[state.flow]; if (!f) return;
   var n = f.steps.length; state.step = Math.min(Math.max(state.step, 1), n);
   var o = byId[f.operation];
@@ -337,6 +339,7 @@ function renderFlows(root){
     var btn = h("button", {type:"button", "data-step":String(i+1), "data-id":st.element, "aria-current":cur ? "step" : "false", onclick:function(){ state.step = i+1; state.sel = st.element; render(); focusStep(); }});
     btn.appendChild(h("span", {"class":"k", text:st.kind+" · "+LAYER_NAME[M.layers[stepLane(f, i)]]+(st.mode === "async" ? " · later" : "")+(st.via_port ? " · port "+short(st.via_port) : "")}));
     btn.appendChild(h("span", {}, [h("span", {"class":"n", text:(i+1)+"."}), nameOf(st.element)+": "+st.text]));
+    if (st.kind === "store" && byId[st.element] && byId[st.element].layer && byId[st.element].layer !== "store") btn.appendChild(h("span", {"class":"exit", "data-note":"store", text:"No component of the active set is in the store layer, so the model names "+nameOf(st.element)+", the "+LAYER_NAME[byId[st.element].layer].toLowerCase()+" that writes the store."}));
     f.exits.filter(function(e){ return e.after_step === i+1; }).forEach(function(e){ btn.appendChild(h("span", {"class":"exit", text:"↳ stops: "+e.result+", when "+e.when})); });
     li.appendChild(btn); ol.appendChild(li);
   });

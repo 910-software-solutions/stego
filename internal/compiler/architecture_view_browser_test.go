@@ -216,8 +216,13 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		if !strings.HasSuffix(order, " event") {
 			t.Error("the flow does not end with its event")
 		}
+		var store string
+		b.eval(`(document.querySelector('.steps [data-note="store"]')||{}).textContent || ""`, &store)
+		if !strings.Contains(store, "No component of the active set is in the store layer") {
+			t.Errorf("the store step does not say that the model names the repository: %q", store)
+		}
 		var exits int
-		b.eval(`document.querySelectorAll(".steps .exit").length`, &exits)
+		b.eval(`document.querySelectorAll(".steps .exit:not([data-note])").length`, &exits)
 		if exits != len(flow.Exits) {
 			t.Errorf("the flow shows %d exits for %d", exits, len(flow.Exits))
 		}

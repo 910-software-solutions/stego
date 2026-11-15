@@ -138,6 +138,15 @@ func TestArchitectureView(t *testing.T) {
 				t.Errorf("flow %d is %s, not the flow %s of %s", i, attrOf(flows[i], "data-id"), o.Flow, o.ID)
 			}
 		}
+		note := page.byID("form-no-flow-actions")
+		for _, a := range m.Actions {
+			if note == nil || !strings.Contains(textOf(note), a.Name) {
+				t.Errorf("the request flows do not say that %s has no flow", a.ID)
+			}
+		}
+		if len(m.Actions) == 0 {
+			t.Error("the fixture has no command, query or worker")
+		}
 		platform := dataIDs(parseView(t, accessView).byID("form-platform"))
 		for _, n := range am.Needs {
 			if !platform[n.ID] {

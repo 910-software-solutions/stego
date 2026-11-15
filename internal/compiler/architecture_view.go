@@ -368,6 +368,17 @@ func flowForm(w formWriter, m *ArchitectureModel) {
 	for _, o := range m.Operations {
 		ops[o.ID] = o
 	}
+	layer := map[string]string{}
+	for _, c := range m.Components {
+		layer[c.ID] = c.Layer
+	}
+	if len(m.Actions) > 0 {
+		var names []string
+		for _, a := range m.Actions {
+			names = append(names, a.Name+" ("+a.Kind+")")
+		}
+		w.tag("p", " class=\"question\" id=\"form-no-flow-actions\"", "The model has a request flow only for each operation of a collection. These commands, queries and workers have no flow here; the access matrix shows what each one checks: "+strings.Join(names, ", ")+".")
+	}
 	for _, f := range m.Flows {
 		o := ops[f.Operation]
 		w.raw("<div class=\"flow\"" + attr("data-id", f.ID) + ">")
@@ -385,6 +396,9 @@ func flowForm(w formWriter, m *ArchitectureModel) {
 			}
 			w.tag("span", " class=\"k\"", label+" · "+shortID(s.Element))
 			w.text(" " + s.Text)
+			if l, ok := layer[s.Element]; ok && s.Kind == "store" && l != "store" {
+				w.tag("span", " class=\"exit\"", "No component of the active set is in the store layer, so the model names "+shortID(s.Element)+", the "+l+" component that writes the store.")
+			}
 			for _, x := range f.Exits {
 				if x.AfterStep == s.N {
 					w.tag("span", " class=\"exit\"", "↳ stops: "+x.Result+", when "+x.When)
