@@ -127,6 +127,9 @@ func readBase(ref string) (compiler.BaseSource, error) {
 	}
 	commit, err := compatGit("rev-parse", "--verify", "--quiet", "--end-of-options", ref+"^{commit}")
 	if err != nil {
+		if empty, emptyErr := noCommit(); emptyErr == nil && empty {
+			return base, fmt.Errorf("the base ref %s names no commit of the service's repository, which has no commit: for the first release, run with no --base", ref)
+		}
 		return base, fmt.Errorf("the base ref %s names no commit of the service's repository", ref)
 	}
 	base.Commit = strings.TrimSpace(string(commit))
@@ -291,7 +294,62 @@ func defaultBaseRef() (ref string, found bool, err error) {
 			return name, true, nil
 		}
 	}
+	if empty, err := noCommit(); err != nil {
+		return "", false, err
+	} else if empty {
+		return "", false, errNoCommit
+	}
 	return "", false, fmt.Errorf("the repository of the service folder has no default branch: refs/remotes/origin/HEAD is not set and there is no branch main or master; name the base with --base")
+}
+
+// errNoCommit is the answer of defaultBaseRef for a repository with no commit, whose default branch is not born: it
+// holds no base, so no record of a release.
+var errNoCommit = errors.New("the repository of the service folder has no commit")
+
+// noCommit tells whether the repository of the working folder is a new repository before its first commit: HEAD
+// names no commit (its branch is not born), no ref exists, and the repository is not shallow. A checkout by commit,
+// such as git fetch <url> <ref> and git checkout FETCH_HEAD, has a commit at HEAD and no ref, so "no ref" alone is
+// not "no commit": such a checkout has a base that the check cannot find, and it is refused rather than taken as a
+// first release (finding H1 of the security review of PR 318). Also, HEAD can be unborn with no ref while the object
+// store holds the commits of a fetch, as after git fetch <url> <ref> and git checkout FETCH_HEAD -- ., git restore
+// --source=FETCH_HEAD, git read-tree -u FETCH_HEAD, or an orphan branch with the other branches deleted: a
+// repository whose object store holds a commit, or that has a FETCH_HEAD, is not a new repository (the medium
+// finding of round 2 of that review).
+func noCommit() (bool, error) {
+	if _, err := compatGit("rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err == nil {
+		return false, nil
+	}
+	refs, err := compatGit("for-each-ref", "--count=1", "--format=%(refname)")
+	if err != nil {
+		return false, fmt.Errorf("git cannot read the refs of the repository of the service folder, so the base check cannot run: %w", err)
+	}
+	if len(bytes.TrimSpace(refs)) != 0 {
+		return false, nil
+	}
+	shallow, err := compatGit("rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return false, fmt.Errorf("git cannot tell whether the repository of the service folder is shallow, so the base check cannot run: %w", err)
+	}
+	if strings.TrimSpace(string(shallow)) != "false" {
+		return false, nil
+	}
+	fetchHead, err := compatGit("rev-parse", "--git-path", "FETCH_HEAD")
+	if err != nil {
+		return false, fmt.Errorf("git cannot name the FETCH_HEAD of the repository of the service folder, so the base check cannot run: %w", err)
+	}
+	if _, err := os.Lstat(strings.TrimSpace(string(fetchHead))); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	types, err := compatGit("cat-file", "--batch-all-objects", "--unordered", "--batch-check=%(objecttype)")
+	if err != nil {
+		return false, fmt.Errorf("git cannot list the objects of the repository of the service folder, so the base check cannot run: %w", err)
+	}
+	for _, objectType := range strings.Split(string(types), "\n") {
+		if objectType == "commit" {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // gitEntryAbove tells whether a .git entry exists in the working folder or in a folder above it, up to the root. A
@@ -344,6 +402,9 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 	gate := baseGate{ref: named}
 	if named == "" {
 		ref, found, err := defaultBaseRef()
+		if errors.Is(err, errNoCommit) {
+			return gate, firstRelease(stdout)
+		}
 		if err != nil {
 			return gate, err
 		}
@@ -399,6 +460,22 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 		return gate, err
 	}
 	return gate, nil
+}
+
+// firstRelease lets plan and apply go on with no base check in a repository with no commit, when the service has no
+// record of a release: no release of the service has run, so any stored shape is accepted (ST-GEN-UC14-R02,
+// decision on finding G1 of the walkthrough re-run, 2026-11-14). When the service has a record, a release may have
+// run, and the base check cannot be skipped: the author commits the service first.
+func firstRelease(stdout io.Writer) error {
+	state, err := compiler.LoadState(".stego/state.yaml")
+	if err != nil {
+		return err
+	}
+	if state.LastApplied != nil {
+		return fmt.Errorf("the repository of the service folder has no commit, and the service has a record, so a release of it may have run: commit the service folder with its record, or name the base with --base")
+	}
+	fmt.Fprintln(stdout, "No base check: the repository has no commit and the service has no record, so this is the first release. Commit the service folder with its record before the next release.")
+	return nil
 }
 
 // printNewSchemaSteps lists each schema step of the declaration that the base does not hold, with its change, its
