@@ -148,7 +148,7 @@ func validateRecord(record *Record) error {
 	if !safePath(record.Target) {
 		return failure
 	}
-	if !reflect.DeepEqual(record.Environment, buildEnvironmentRecord()) || record.GoTelemetry != "off" || !reflect.DeepEqual(record.BuildFlags, []string{"build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-pgo=off", "-p=2", "-o", "<artifact>", "./" + record.Target}) {
+	if !reflect.DeepEqual(record.Environment, buildEnvironmentRecord()) || record.GoTelemetry != "off" || !reflect.DeepEqual(record.BuildFlags, BuildFlags("<artifact>", record.Target)) {
 		return failure
 	}
 	switch record.DependencyProxy {
