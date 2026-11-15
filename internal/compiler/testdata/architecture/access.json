@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.113.0",
+    "archetype_version": "3.114.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -800,7 +800,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -814,7 +814,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -828,7 +828,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -842,7 +842,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -4394,14 +4394,14 @@
       "kind": "fill code",
       "label": "The owner code of each fill",
       "contains": [
-        "fill:rbac-policy",
         "fill:admin-creation-policy",
-        "fill:send-welcome",
-        "fill:user-change-notifier",
         "fill:audit-logger",
+        "fill:check-dependencies",
         "fill:org-name-validator",
         "fill:org-provisioner",
-        "fill:check-dependencies"
+        "fill:rbac-policy",
+        "fill:send-welcome",
+        "fill:user-change-notifier"
       ],
       "crossed_by": [
         "slot:org-users.after_create",
@@ -5174,7 +5174,10 @@
             "hops": [
               "activity_entry#view",
               "activity_entry#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5195,7 +5198,10 @@
             "hops": [
               "member#edit",
               "member#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           },
           {
             "id": "grant:member#edit.002",
@@ -5208,7 +5214,10 @@
               "member#organization",
               "organization#edit",
               "organization#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5229,7 +5238,10 @@
             "hops": [
               "member#view",
               "member#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           },
           {
             "id": "grant:member#view.002",
@@ -5242,7 +5254,10 @@
               "member#organization",
               "organization#view",
               "organization#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           },
           {
             "id": "grant:member#view.003",
@@ -5257,7 +5272,10 @@
               "organization#view",
               "organization#viewer"
             ],
-            "caveat": "within_hours"
+            "caveat": "within_hours",
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5280,7 +5298,10 @@
               "org_setting#organization",
               "organization#edit",
               "organization#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5303,7 +5324,10 @@
               "org_setting#organization",
               "organization#view",
               "organization#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           },
           {
             "id": "grant:org_setting#view.002",
@@ -5314,7 +5338,10 @@
               "org_setting#view",
               "org_setting#parent"
             ],
-            "stops": "recursion: org_setting#parent grants through itself, and the path is not expanded again"
+            "stops": "recursion: org_setting#parent grants through itself, and the path is not expanded again",
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5335,7 +5362,10 @@
             "hops": [
               "organization#edit",
               "organization#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5356,7 +5386,10 @@
             "hops": [
               "organization#view",
               "organization#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           },
           {
             "id": "grant:organization#view.002",
@@ -5368,7 +5401,10 @@
               "organization#view",
               "organization#viewer"
             ],
-            "caveat": "within_hours"
+            "caveat": "within_hours",
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           },
           {
             "id": "grant:organization#view.003",
@@ -5382,7 +5418,10 @@
             ],
             "requires": [
               "organization#owner"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           },
           {
             "id": "grant:organization#view.004",
@@ -5397,7 +5436,10 @@
             ],
             "except": [
               "organization#banned"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5418,7 +5460,10 @@
             "hops": [
               "service#provision",
               "service#operator"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5439,7 +5484,10 @@
             "hops": [
               "service#retire",
               "service#operator"
-            ]
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
           }
         ],
         "source": {
@@ -5453,49 +5501,70 @@
         "subject_type": "user",
         "relation": "owner",
         "on": "activity_entry",
-        "wildcard": false
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
       },
       {
         "id": "role:member#owner@user",
         "subject_type": "user",
         "relation": "owner",
         "on": "member",
-        "wildcard": false
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
       },
       {
         "id": "role:organization#auditor@user",
         "subject_type": "user",
         "relation": "auditor",
         "on": "organization",
-        "wildcard": false
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
       },
       {
         "id": "role:organization#owner@user",
         "subject_type": "user",
         "relation": "owner",
         "on": "organization",
-        "wildcard": false
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
       },
       {
         "id": "role:organization#public@user:*",
         "subject_type": "user",
         "relation": "public",
         "on": "organization",
-        "wildcard": true
+        "wildcard": true,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
       },
       {
         "id": "role:organization#viewer@user",
         "subject_type": "user",
         "relation": "viewer",
         "on": "organization",
-        "wildcard": false
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
       },
       {
         "id": "role:service#operator@user",
         "subject_type": "user",
         "relation": "operator",
         "on": "service",
-        "wildcard": false
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
       }
     ]
   },

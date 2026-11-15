@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.113.0",
+    "archetype_version": "3.114.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -788,7 +788,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -802,7 +802,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -816,7 +816,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -830,7 +830,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.113.0",
+          "version": "3.114.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -4347,14 +4347,14 @@
       "kind": "fill code",
       "label": "The owner code of each fill",
       "contains": [
-        "fill:rbac-policy",
         "fill:admin-creation-policy",
-        "fill:send-welcome",
-        "fill:user-change-notifier",
         "fill:audit-logger",
+        "fill:check-dependencies",
         "fill:org-name-validator",
         "fill:org-provisioner",
-        "fill:check-dependencies"
+        "fill:rbac-policy",
+        "fill:send-welcome",
+        "fill:user-change-notifier"
       ],
       "crossed_by": [
         "slot:org-users.after_create",
@@ -5117,7 +5117,22 @@
         "id": "permission:activity_entry#view",
         "resource_type": "activity_entry",
         "name": "view",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:activity_entry#view.001",
+            "role": "role:activity_entry#owner@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "activity_entry#view",
+              "activity_entry#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5126,7 +5141,38 @@
         "id": "permission:member#edit",
         "resource_type": "member",
         "name": "edit",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:member#edit.001",
+            "role": "role:member#owner@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "member#edit",
+              "member#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:member#edit.002",
+            "role": "role:organization#owner@user",
+            "kinds": [
+              "arrow"
+            ],
+            "hops": [
+              "member#edit",
+              "member#organization->edit",
+              "organization#edit",
+              "organization#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5135,7 +5181,54 @@
         "id": "permission:member#view",
         "resource_type": "member",
         "name": "view",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:member#view.001",
+            "role": "role:member#owner@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "member#view",
+              "member#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:member#view.002",
+            "role": "role:organization#owner@user",
+            "kinds": [
+              "arrow"
+            ],
+            "hops": [
+              "member#view",
+              "member#organization->view",
+              "organization#view",
+              "organization#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:member#view.003",
+            "role": "role:organization#viewer@user",
+            "kinds": [
+              "arrow"
+            ],
+            "hops": [
+              "member#view",
+              "member#organization->view",
+              "organization#view",
+              "organization#viewer"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5144,7 +5237,24 @@
         "id": "permission:org_setting#edit",
         "resource_type": "org_setting",
         "name": "edit",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:org_setting#edit.001",
+            "role": "role:organization#owner@user",
+            "kinds": [
+              "arrow"
+            ],
+            "hops": [
+              "org_setting#edit",
+              "org_setting#organization->edit",
+              "organization#edit",
+              "organization#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5153,7 +5263,40 @@
         "id": "permission:org_setting#view",
         "resource_type": "org_setting",
         "name": "view",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:org_setting#view.001",
+            "role": "role:organization#owner@user",
+            "kinds": [
+              "arrow"
+            ],
+            "hops": [
+              "org_setting#view",
+              "org_setting#organization->view",
+              "organization#view",
+              "organization#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:org_setting#view.002",
+            "role": "role:organization#viewer@user",
+            "kinds": [
+              "arrow"
+            ],
+            "hops": [
+              "org_setting#view",
+              "org_setting#organization->view",
+              "organization#view",
+              "organization#viewer"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5162,7 +5305,22 @@
         "id": "permission:organization#edit",
         "resource_type": "organization",
         "name": "edit",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:organization#edit.001",
+            "role": "role:organization#owner@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "organization#edit",
+              "organization#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5171,7 +5329,36 @@
         "id": "permission:organization#view",
         "resource_type": "organization",
         "name": "view",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:organization#view.001",
+            "role": "role:organization#owner@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "organization#view",
+              "organization#owner"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:organization#view.002",
+            "role": "role:organization#viewer@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "organization#view",
+              "organization#viewer"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5180,7 +5367,22 @@
         "id": "permission:service#provision",
         "resource_type": "service",
         "name": "provision",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:service#provision.001",
+            "role": "role:service#operator@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "service#provision",
+              "service#operator"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5189,13 +5391,79 @@
         "id": "permission:service#retire",
         "resource_type": "service",
         "name": "retire",
-        "paths": [],
+        "paths": [
+          {
+            "id": "grant:service#retire.001",
+            "role": "role:service#operator@user",
+            "kinds": [
+              "direct"
+            ],
+            "hops": [
+              "service#retire",
+              "service#operator"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          }
+        ],
         "source": {
           "declaration": "authorization.schema_path"
         }
       }
     ],
-    "roles": []
+    "roles": [
+      {
+        "id": "role:activity_entry#owner@user",
+        "subject_type": "user",
+        "relation": "owner",
+        "on": "activity_entry",
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
+      },
+      {
+        "id": "role:member#owner@user",
+        "subject_type": "user",
+        "relation": "owner",
+        "on": "member",
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
+      },
+      {
+        "id": "role:organization#owner@user",
+        "subject_type": "user",
+        "relation": "owner",
+        "on": "organization",
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
+      },
+      {
+        "id": "role:organization#viewer@user",
+        "subject_type": "user",
+        "relation": "viewer",
+        "on": "organization",
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
+      },
+      {
+        "id": "role:service#operator@user",
+        "subject_type": "user",
+        "relation": "operator",
+        "on": "service",
+        "wildcard": false,
+        "source": {
+          "declaration": "authorization.schema_path"
+        }
+      }
+    ]
   },
   "compliance": [
     {
