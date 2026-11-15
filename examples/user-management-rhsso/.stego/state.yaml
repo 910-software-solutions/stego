@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115101138-e86ce68c3420
+        module_version: v0.0.0-20261115102243-39e27636dc3d
         vcs: git
-        revision: e86ce68c3420303baa4a8f5a55e4bcc2893656c0
+        revision: 39e27636dc3da845386ade1a95abff159e571ed6
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: 561397eb09e1090a3467d4baa849b99fd825a0b2cabf7fb47cc5eb391167804d
+    registry_content_sha256: 322293c8d78d116328a13fdba1c59de4c7985ec0e50392340209ae627fe4af58
     components:
         audit-log:
             version: 1.1.1
@@ -54,10 +54,10 @@ last_applied:
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
         health-check:
             version: 1.1.0
-            sha: 7950e3a8f48b6eb2460b5259dd004581d4c6bdee80f97891138532b39cbae49c
+            sha: 3cb26b4e571aacebb710d1a1f98e356232c3a3bd95869356077a04c88b6f74d9
         kafka-producer:
             version: 3.0.0
-            sha: 2948192b1f913b330c2ae480688f309611820774cee403c157b8809cc8f6e0de
+            sha: 811d5031afce79c1b637456792441d15cd9f9c98084e19adfcad7d2012980bb6
         otel-tracing:
             version: 1.19.0
             sha: 493f1a9b4c15574a0ad10f70ca302558d5d81541676353883275d0ca4ffd80ee
@@ -66,19 +66,19 @@ last_applied:
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
             version: 6.6.0
-            sha: 6a43823916d0277abeda5038a48a53dfb57dc2d807933b2d9b663b79fc425126
+            sha: 70ea36bf22c4755486d45b7aba533308cb5b66a48d2d87c9da86f7be4db27629
         query:
             version: 1.1.0
-            sha: 5ab09c20180221b30bc2ba9ed88f936b5aeff8d1330e31888ed5f6ca04f7c52e
+            sha: 37a689632775341e4990640816ebfc8202cfec6b0abd4480e647a8817e6d75fd
         rest-api:
             version: 4.4.1
             sha: ce9cc759f49f69c89e048a69cb680f0e5f202a67638d30d278e95d6a1dd4f223
         rh-sso-auth:
             version: 2.1.0
-            sha: 670047b3074ab2798f541db0e563259624912c526242524aaf59ae6385e1e580
+            sha: b093db5a6be5e393498d807d190a5d0b07dbdc79de6f27239d618588b239a45f
         spicedb-authz:
             version: 1.2.0
-            sha: 4f4c15a95754e70a6f6297e885f9d5153ec91a95aad34ec411eec2aac1f034c6
+            sha: e303736d15a9af2ca9a4dba223ce83383edb4450ab6590e79dfb3efbfb438cb9
         tenancy:
             version: 1.2.0
             sha: 459c5b970f3bc2e14d0ff577e0c0d905bdbfd5335273e42c78229790f538443d
@@ -154,7 +154,7 @@ last_applied:
         internal/tenancy/migrations/roles.sql: 131dcb112a94f82ead145bcb5797c5915ad94a230564e2181883d19944450fc9
         internal/tenancy/migrations/row_security.sql: caccad6f4187109df25ad4a8ee109608014161ef8c2dd5ef91ba2e503bd78c84
         internal/tenancy/row_security.go: cca2a9b3101f9317b1555f8fd25ccc1cd37a08f73b4f1e19277e2f96a7eee674
-        main.go: f4643ff51154b293387ea23c0be7adfe18deec7a1a1c56844c86202450502a2c
+        main.go: 1a80bf8339d2ecb25777d1e137d8a863dc561c3dd6eeff9a450edeb00445113f
         probes/observations.json: 3219f8292bdb4a47a2882aa87528a231132ea9219db88c094ea0051559fad046
         probes/probes.go: 4d0a5939ebb0f24a9aed17dda470f9719da09077585d68734950f561504ac7d1
         slots/after_create.go: 03242bcad46578176c9ac819f42390080ebebb94f72c480316f09740289ad80f
@@ -193,10 +193,13 @@ last_applied:
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
-        architecture/architecture.json: 3bd5d6f6128db270d609836c37c9b640483c8ca297cece438c1eb2b83ef788d5
-        architecture/index.html: fafb5326e4dc402efe169f16a5f084e72c73b7d7392562f550902dbf1cf79d45
+        architecture/architecture.json: 0300bbcc15e9016c4e68619da8477f15d876d6d37e9bc9afce1f56639110003a
+        architecture/index.html: 292532ee56705550cccfc113a32aa1ae9e8427ac40f9e7be66c98eefa8dd2db8
+        deploy/base/deployment.yaml: 1db52c23930248664f335dfaaa32c265ada256c5d3c97eb6af45fac8cf09c400
+        deploy/base/kustomization.yaml: 0ca4224412b919b7f6273002bae6bc0d7eaeb0878820073075871fb59308b7b6
+        deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/environment-variables.md: d46826cb1f2ad23de313a7a6ec2e31dfbdd980efcc7005aa41566509cebbda7b
-        deploy/platform-requirements.yaml: 370bf5733578df49caf1428a0fabd223e0b368d783109a7dad69d5c6d71f55c7
+        deploy/platform-requirements.yaml: fca0777227e6ae968fbaf3584c5f6a49c5da9c768a50a03606f56427ba3d0f15
     archetype:
         name: rest-crud
         version: 3.116.4
