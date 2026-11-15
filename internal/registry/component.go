@@ -69,6 +69,9 @@ type Component struct {
 	Provides        []Port                       `yaml:"provides"`
 	Slots           []SlotDefinition             `yaml:"slots"`
 	OutputNamespace string                       `yaml:"output_namespace,omitempty"`
+	// Conversions are the conversions of a retype that a database component carries out, each with the field types
+	// it converts and where it is total (ST-DECL-INV62, ST-DECL-INV63).
+	Conversions []types.Conversion `yaml:"conversions,omitempty"`
 	// Needs are what the component needs the environment to supply, from which apply writes the platform
 	// requirements of a service (ST-SUP-EN09 field Platform needs, ST-DLV-Q04 (A)).
 	Needs []Need `yaml:"needs,omitempty"`

@@ -70,7 +70,7 @@ func noteFields(fields string) string {
 const (
 	renamedTitle = "[{name: heading, type: string}]"
 	titleRename  = "schema_changes:\n  - {id: note-title-rename, kind: rename, entity: Note, field: heading, from: title}\nschema_history:\n  - {change: note-title-rename, phase: expand}\n"
-	titleRetype  = "schema_changes:\n  - {id: note-title-retype, kind: retype, entity: Note, field: title, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text}\nschema_history:\n  - {change: note-title-retype, phase: expand}\n"
+	titleUnique  = "invariants:\n  - {name: unique_title, kind: unique, on: Note, by: [title]}\nschema_changes:\n  - {id: note-title-unique, kind: unique, entity: Note, field: unique_title}\nschema_history:\n  - {change: note-title-unique, phase: expand}\n"
 )
 
 func TestCompat(t *testing.T) {
@@ -213,6 +213,30 @@ func TestCompat(t *testing.T) {
 		result, code := s.compatJSON(t)
 		if code != 1 || result.BaseRef != "HEAD" || result.BaseCommit != commit {
 			t.Errorf("--json: exit %d, base ref %q and base commit %q, want 1, HEAD and %s", code, result.BaseRef, result.BaseCommit, commit)
+		}
+	})
+	t.Run("ST-GEN-UC13-R07-T01 A fill value that a later release adds to a retype at expand is refused", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		retype := func(fill string) string {
+			return noteFields("[{name: title, type: int64}]") + "schema_changes:\n  - {id: note-title-retype, kind: retype, entity: Note, field: title, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text" +
+				fill + "}\nschema_history:\n  - {change: note-title-retype, phase: expand}\n"
+		}
+		// The release of the retype, with its fill value, is the base (decision on ST-GEN-Q24 (c)).
+		s.write(t, "service.yaml", retype(", fill_value: 0"))
+		s.must(t, "apply", "--base", "HEAD")
+		git(t, s.service, "add", "-A")
+		git(t, s.service, "commit", "-q", "-m", "the retype at expand")
+		for _, fill := range []string{", fill_value: 1", ""} {
+			s.write(t, "service.yaml", retype(fill))
+			output, code := s.compat(t, "--base", "HEAD")
+			if code != 1 || !strings.Contains(output, "ST-GEN-INV33") || !strings.Contains(output, "note-title-retype") || !strings.Contains(output, "also its fill value") {
+				t.Errorf("a head with %q in place of the fill value 0: exit %d, want 1 and a fault that names the change and its fill value:\n%s", fill, code, output)
+			}
+		}
+		s.write(t, "service.yaml", retype(", fill_value: 0"))
+		if output, code := s.compat(t, "--base", "HEAD"); code != 0 {
+			t.Errorf("the head with the fill value of the base: exit %d, want 0:\n%s", code, output)
 		}
 	})
 	t.Run("ST-GEN-UC14-FL-T An undeclared rename is refused against the base, and the same rename as a schema change is accepted", func(t *testing.T) {

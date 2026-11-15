@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,21 +30,31 @@ type evolution struct {
 	plans     map[string]string
 }
 
-// The declaration of v2 of ST-GEN-TD04, by the edits of the declaration of v1: the add of User.nickname and the
-// rename of User.email to contact_email, each at expand. The other kinds of ST-GEN-TD04 v2 wait for their builds
-// (interim scope of the harness, accepted by the orchestrator, 2026-11-13).
+// The declaration of v1 of ST-GEN-TD04, by the edit of the declaration of the example: the field OrgSetting.rank.
+var evolutionV1 = [2]string{"      - { name: generation, type: int64 }\n", "      - { name: generation, type: int64 }\n      - { name: rank, type: int64 }\n"}
+
+// The declaration of v2 of ST-GEN-TD04, by the edits of the declaration of v1: the add of User.nickname, the rename
+// of User.email to contact_email, the retype of OrgSetting.rank from int64 to string and the require of
+// User.locale, each at expand. The drop and the unique of ST-GEN-TD04 v2 wait for their builds (interim scope of the
+// harness, accepted by the orchestrator, 2026-11-13).
 var evolutionV2 = [][2]string{
 	{"      - { name: email, type: string, unique: true, max_length: 255 }\n",
-		"      - { name: contact_email, type: string, unique: true, max_length: 255 }\n      - { name: nickname, type: string, optional: true, max_length: 50 }\n"},
+		"      - { name: contact_email, type: string, unique: true, max_length: 255 }\n      - { name: nickname, type: string, optional: true, max_length: 50 }\n" +
+			"      - { name: locale, type: string, max_length: 10 }\n"},
+	{"      - { name: rank, type: int64 }\n", "      - { name: rank, type: string, pattern: \"^-?[0-9]{1,18}$\" }\n"},
 	{"\ncollections:\n", "\nschema_changes:\n  - {id: user-nickname-add, kind: add, entity: User, field: nickname}\n" +
 		"  - {id: user-email-rename, kind: rename, entity: User, field: contact_email, from: email}\n" +
-		"schema_history:\n  - {change: user-nickname-add, phase: expand}\n  - {change: user-email-rename, phase: expand}\n\ncollections:\n"},
+		"  - {id: orgsetting-rank-retype, kind: retype, entity: OrgSetting, field: rank, from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}\n" +
+		"  - {id: user-locale-require, kind: require, entity: User, field: locale, fill_value: en}\n" +
+		"schema_history:\n  - {change: user-nickname-add, phase: expand}\n  - {change: user-email-rename, phase: expand}\n" +
+		"  - {change: orgsetting-rank-retype, phase: expand}\n  - {change: user-locale-require, phase: expand}\n\ncollections:\n"},
 }
 
-// The declaration of v3 of ST-GEN-TD04, by the edit of the declaration of v2: the contract step of the rename of
-// User.email at the end of the schema history (ST-GEN-UC15).
-var evolutionV3 = [2]string{"  - {change: user-email-rename, phase: expand}\n",
-	"  - {change: user-email-rename, phase: expand}\n  - {change: user-email-rename, phase: contract}\n"}
+// The declaration of v3 of ST-GEN-TD04, by the edit of the declaration of v2: the contract steps of the rename, the
+// retype and the require at the end of the schema history (ST-GEN-UC15).
+var evolutionV3 = [2]string{"  - {change: user-locale-require, phase: expand}\n",
+	"  - {change: user-locale-require, phase: expand}\n  - {change: user-email-rename, phase: contract}\n" +
+		"  - {change: orgsetting-rank-retype, phase: contract}\n  - {change: user-locale-require, phase: contract}\n"}
 
 // newEvolution makes the repository of ST-GEN-TD04 with the commit v1, the example as it is, and the commit v2,
 // which stego plan --base v1 and stego apply make from the declaration of v2, and builds the service binary of each
@@ -71,6 +82,25 @@ func newEvolution(t *testing.T) *evolution {
 		t.Fatalf("copy the example: %v\n%s", err, output)
 	}
 	e.git(t, "init", "-q")
+	// v1 is the example with the required field OrgSetting.rank, an int64, which v2 retypes: the example has no other
+	// stored integer, and its generation is the counter that the server keeps.
+	example, err := os.ReadFile(filepath.Join(e.repo, "service.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(example), evolutionV1[0]) {
+		t.Fatalf("the declaration of the example has no %q to edit for v1", evolutionV1[0])
+	}
+	if err := os.WriteFile(filepath.Join(e.repo, "service.yaml"), []byte(strings.Replace(string(example), evolutionV1[0], evolutionV1[1], 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// No release of the example ran on the database of ST-GEN-TD04, so v1 is its first release, with no record.
+	if err := os.Remove(filepath.Join(e.repo, ".stego", "state.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if out, failed := e.stego(t, stego, "apply"); failed != "" {
+		t.Fatalf("stego apply of v1: %s\n%s", failed, out)
+	}
 	e.git(t, "add", "-A")
 	e.git(t, "commit", "-q", "-m", "v1")
 	e.git(t, "tag", "v1")
@@ -290,6 +320,9 @@ func TestSchemaEvolution(t *testing.T) {
 	t.Run("ST-GEN-UC12-R02-T01 After the expand migration the old column is as it was and the new one is nullable", func(t *testing.T) {
 		result(t, "ST-GEN-UC12-R02-T01")
 	})
+	t.Run("ST-GEN-UC12-R03-T04 Each release reads what the other writes for a retype and a require at expand, and no value is lost", func(t *testing.T) {
+		result(t, "ST-GEN-UC12-R03-T04")
+	})
 	t.Run("ST-GEN-UC12-R04-T01 After the rename the API still names the field email", func(t *testing.T) {
 		result(t, "ST-GEN-UC12-R04-T01")
 		// The User schema of v2 is the one of v1 with the added field nickname, and holds email and no
@@ -305,18 +338,27 @@ func TestSchemaEvolution(t *testing.T) {
 		}
 		trimmed := map[string]any{}
 		for k, v := range got {
-			if k != "nickname" {
+			if k != "nickname" && k != "locale" {
 				trimmed[k] = v
 			}
 		}
-		if !reflect.DeepEqual(trimmed, properties(before)) || !reflect.DeepEqual(after["required"], before["required"]) {
-			t.Fatalf("the User schema of v2 is not the one of v1 with nickname:\n v1 %v\n v2 %v", before, after)
+		// The require adds the required field locale (decision on ST-GEN-Q22 (a)).
+		required, _ := after["required"].([]any)
+		required = slices.DeleteFunc(slices.Clone(required), func(v any) bool { return v == "locale" })
+		if !reflect.DeepEqual(trimmed, properties(before)) || !reflect.DeepEqual(required, before["required"]) || got["locale"] == nil {
+			t.Fatalf("the User schema of v2 is not the one of v1 with nickname and the required locale:\n v1 %v\n v2 %v", before, after)
 		}
 	})
 	t.Run("ST-GEN-UC12-FL-T The email rename starts while v1 and v2 both run on a table with rows", func(t *testing.T) {
 		plan := e.plans["v2 plan"]
 		if e.plans["v2 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at expand; migration internal/storage/migrations/step_0002_user-email-rename_expand.sql; trigger users_contact_email_sync; backfill in the migration job under the lease stego.backfill.user-email-rename") {
 			t.Fatalf("stego plan --base v1 of v2 (%s) does not list the rename with its kind, phase, migration, trigger and backfill:\n%s", e.plans["v2 plan error"], plan)
+		}
+		for _, line := range []string{"orgsetting-rank-retype: retype OrgSetting.rank at expand; migration internal/storage/migrations/step_0003_orgsetting-rank-retype_expand.sql; trigger org_settings_rank_sync; backfill in the migration job under the lease stego.backfill.orgsetting-rank-retype",
+			"user-locale-require: require User.locale at expand; migration internal/storage/migrations/step_0004_user-locale-require_expand.sql; trigger none; backfill none"} {
+			if !strings.Contains(plan, line) {
+				t.Fatalf("stego plan --base v1 of v2 does not list %q:\n%s", line, plan)
+			}
 		}
 		if refused := e.plans["undeclared plan"]; e.plans["undeclared plan error"] == "" || !strings.Contains(refused, "rename") || e.plans["undeclared status"] != " M service.yaml\n" {
 			t.Fatalf("the plan of a head that renames email with no schema change exits with %q, leaves %q, and says:\n%s\nwant a refusal that names a schema change of kind rename, and nothing written",
@@ -347,7 +389,7 @@ func TestSchemaEvolution(t *testing.T) {
 	})
 	t.Run("ST-GEN-UC15-FL-T The email rename finishes while v2 and v3 both run, and v1 can no longer start", func(t *testing.T) {
 		plan := e.plans["v3 plan"]
-		if e.plans["v3 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at contract; migration internal/storage/migrations/step_0003_user-email-rename_contract.sql; trigger none; backfill none") {
+		if e.plans["v3 plan error"] != "" || !strings.Contains(plan, "user-email-rename: rename User.contact_email at contract; migration internal/storage/migrations/step_0005_user-email-rename_contract.sql; trigger none; backfill none") {
 			t.Fatalf("stego plan --base v2 of v3 (%s) does not list the contract migration of the rename:\n%s", e.plans["v3 plan error"], plan)
 		}
 		if e.plans["removed compat error"] == "" || !strings.Contains(e.plans["removed compat"], "user-email-rename") {

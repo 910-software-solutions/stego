@@ -365,19 +365,19 @@ func TestSchemaStepPlan(t *testing.T) {
 	t.Run("ST-GEN-UC12-R02-T03 Plan and apply refuse a declared schema change whose kind generation does not carry out yet", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)
-		s.write(t, "service.yaml", noteFields("[{name: title, type: int64}]")+titleRetype)
+		s.write(t, "service.yaml", noteFields("[{name: title, type: string}]")+titleUnique)
 		before := tree(t, s.service)
 		for _, command := range []string{"plan", "apply"} {
 			stdout, stderr, err := s.stego(t, command, "--base", "HEAD")
-			if err == nil || !strings.Contains(stdout+stderr, "does not carry out the schema change note-title-retype (retype) yet") {
-				t.Errorf("stego %s of a declared retype: %v, want a refusal that names the change and its kind:\n%s%s", command, err, stdout, stderr)
+			if err == nil || !strings.Contains(stdout+stderr, "does not carry out the schema change note-title-unique (unique) yet") {
+				t.Errorf("stego %s of a declared unique: %v, want a refusal that names the change and its kind:\n%s%s", command, err, stdout, stderr)
 			}
 		}
 		if !maps.Equal(before, tree(t, s.service)) {
 			t.Error("a refused plan or apply changed a file")
 		}
 		if stdout, stderr, err := s.stego(t, "validate"); err != nil {
-			t.Errorf("stego validate refuses the declared retype, which checking accepts: %v\n%s%s", err, stdout, stderr)
+			t.Errorf("stego validate refuses the declared unique, which checking accepts: %v\n%s%s", err, stdout, stderr)
 		}
 	})
 	t.Run("ST-GEN-UC12-R01-T02 Plan lists a new add step with its kind, phase and migration, and no trigger or backfill", func(t *testing.T) {

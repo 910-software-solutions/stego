@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -41,7 +42,7 @@ var schemaValues = map[string]map[string]schemaValue{
 	"conversion":         {"retype": valueRequired},
 	"inverse_conversion": {"retype": valueRequired},
 	"fill_value":         {"require": valueRequired, "retype": valueOptional, "drop": valueOptional},
-	"definition":         {"drop": valueRequired},
+	"definition":         {"drop": valueRequired, "retype": valueOptional},
 }
 
 func schemaValueOf(change types.SchemaChange, value string) bool {
@@ -281,51 +282,11 @@ func validateSchemaChangeMode(service *types.ServiceDeclaration) []ValidationErr
 	return faults
 }
 
-// definitionField reads the Definition of a dropped field, as [name:] type[, constraint value]..., such as
-// legacy: string, max_length 64, into a field. It gives a reason when the Definition cannot be read.
-func definitionField(definition string) (types.Field, string) {
-	parts := strings.Split(definition, ",")
-	head := strings.TrimSpace(parts[0])
-	if _, typ, named := strings.Cut(head, ":"); named {
-		head = strings.TrimSpace(typ)
-	}
-	field := types.Field{Type: types.FieldType(head)}
-	if !types.ValidFieldTypes[field.Type] {
-		return field, fmt.Sprintf("the type %q is not a field type", head)
-	}
-	for _, part := range parts[1:] {
-		key, value, _ := strings.Cut(strings.TrimSpace(part), " ")
-		value = strings.TrimSpace(value)
-		number, err := strconv.ParseFloat(value, 64)
-		switch key {
-		case "min_length", "max_length":
-			length, err := strconv.Atoi(value)
-			if err != nil {
-				return field, fmt.Sprintf("the constraint %s %q is not a whole number", key, value)
-			}
-			if key == "min_length" {
-				field.MinLength = &length
-			} else {
-				field.MaxLength = &length
-			}
-		case "min", "max":
-			if err != nil {
-				return field, fmt.Sprintf("the constraint %s %q is not a number", key, value)
-			}
-			if key == "min" {
-				field.Min = &number
-			} else {
-				field.Max = &number
-			}
-		case "pattern":
-			field.Pattern = value
-		case "default", "optional", "unique":
-		default:
-			return field, fmt.Sprintf("the constraint %q is not one a field has", key)
-		}
-	}
-	return field, ""
-}
+// ValueSuits tells whether a value suits the type and the constraints of a field, as valueSuits does.
+func ValueSuits(field types.Field, value any) (bool, string) { return valueSuits(field, value) }
+
+// definitionField reads the Definition of a dropped or a retyped field (gen.DefinitionField).
+func definitionField(definition string) (types.Field, string) { return gen.DefinitionField(definition) }
 
 // valueSuits tells whether a value suits the type and the constraints of a field, and gives the reason when it
 // does not.
@@ -392,6 +353,17 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 			}
 			if !found {
 				continue
+			}
+			if change.Kind == "retype" && change.Definition != "" {
+				// The Definition of a retype is the field before the change, whose type is From (decision on
+				// ST-GEN-Q07 (a), orchestrator under the owner's delegation, 2026-11-13).
+				old, reason := definitionField(change.Definition)
+				switch {
+				case reason != "":
+					fault(".definition", change.Definition, fmt.Sprintf("the definition %q cannot be read: %s", change.Definition, reason))
+				case string(old.Type) != change.From:
+					fault(".definition", change.Definition, fmt.Sprintf("the definition %q is of the type %s, and the retype is from %s; the Definition gives the field before the change", change.Definition, old.Type, change.From))
+				}
 			}
 			if change.Kind == "require" && (field.Optional || field.Default != nil) {
 				fault(".field", change.Field, fmt.Sprintf("the field %s.%s of a require must be required with no default; a field that is optional or has a default is an add", change.Entity, change.Field))

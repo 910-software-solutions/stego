@@ -1145,6 +1145,16 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 		}
 		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: %s; rows of the listed tenants with the old column set and the new one empty: %s; run the migration job of the release before until the backfill completes", c.Change, state, count)}
 	}
+	// A last count of the rows with the old column set and the new one empty: a write that the completeness CHECK
+	// let through, as a value that does not convert with no fill value, would lose its value when the old column
+	// goes (security review of PR #335, L5, orchestrator under the owner's delegation, 2026-11-14).
+	left, err := rowsLeft(ctx, tx, c)
+	if err != nil {
+		return err
+	}
+	if left > 0 {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: rows of the listed tenants with the old column set and the new one empty: %d; run the migration job of the release before until the backfill completes", c.Change, left)}
+	}
 	return runningReleases(ctx, tx, c)
 }
 
