@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/registry"
 )
 
@@ -666,6 +667,12 @@ func TestEnvironmentScan(t *testing.T) {
 		}
 		for _, fault := range checkScan(t, root, reg) {
 			t.Error(fault)
+		}
+		// The start guard refuses exactly the names that pgx reads, from the same source (walkthrough 3, item 4).
+		for _, library := range libraryReads(t, root) {
+			if library.label == "pgx" && !slices.Equal(library.names, slices.Sorted(slices.Values(gen.PGVariables))) {
+				t.Errorf("the start guard refuses the PG names %v, and pgx reads %v", gen.PGVariables, library.names)
+			}
 		}
 	})
 	t.Run("ST-SUP-UC01-R10-T02 The release scan names the component, the variable and the file of a read that is not declared", func(t *testing.T) {

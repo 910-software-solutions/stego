@@ -9,8 +9,8 @@ import (
 )
 
 func TestEnvironmentGuard(t *testing.T) {
+	dir := t.TempDir()
 	t.Run("ST-SUP-UC01-R10-T04 A process refuses at start a variable that a library would read and that the service does not take, and names it, never its value", func(t *testing.T) {
-		dir := t.TempDir()
 		program := "package main\n\nimport \"os\"\n\nfunc main() {\n\tstegoRefuseEnvironment()\n\t_, _ = os.Stdout.WriteString(\"started\")\n}\n" + EnvironmentGuardSource
 		if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(program), 0o644); err != nil {
 			t.Fatal(err)
@@ -52,5 +52,25 @@ func TestEnvironmentGuard(t *testing.T) {
 		if !RefusedVariable("PGHOST") || RefusedVariable("GRPC_GO_LOG_FORMATTER") || RefusedVariable("TZ") {
 			t.Error("RefusedVariable does not give the names of the guard")
 		}
+		guardRun = run
+	})
+	t.Run("ST-SUP-UC01-R10-T05 The guard refuses each name that pgx reads and starts a process with another name that starts with PG, such as PG_IMAGE", func(t *testing.T) {
+		if guardRun == nil {
+			t.Fatal("the guard binary of ST-SUP-UC01-R10-T04 is not built: a missing result is not a pass")
+		}
+		for _, name := range PGVariables {
+			if output, err := guardRun(name + "=CANARY"); err == nil || !strings.Contains(output, name) || strings.Contains(output, "CANARY") {
+				t.Errorf("%s: the process started, or does not name the variable, or shows its value: %v\n%s", name, err, output)
+			}
+		}
+		for _, allowed := range []string{"PG_IMAGE=docker.io/library/postgres:17", "PGX_TEST_DATABASE=x", "PGDATA=/var/lib/postgresql/data", "PG=1"} {
+			name, _, _ := strings.Cut(allowed, "=")
+			if output, err := guardRun(allowed); err != nil || output != "started" || RefusedVariable(name) {
+				t.Errorf("%q: the guard refuses a name that pgx does not read: %v\n%s", allowed, err, output)
+			}
+		}
 	})
 }
+
+// guardRun runs the guard binary that ST-SUP-UC01-R10-T04 builds, with extra entries in its environment.
+var guardRun func(extra ...string) (string, error)
