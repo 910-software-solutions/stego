@@ -220,9 +220,10 @@ type Context struct {
 // history: each schema change whose first step is at the position steps or after it is undone, the change whose
 // step is last first. AtSchemaStep(0) is the baseline, the shape of the first release, and AtSchemaStep with the
 // length of the schema history is the context itself. An add of an entity is undone with the entity and each
-// collection over it, an add of a field with the field, and a rename by giving the field the column From, with its
-// API name kept (StoredNames). Generation carries out no other kind of schema change yet, so AtSchemaStep refuses
-// one, and a change with no step.
+// collection over it, an add of a field with the field, a rename by giving the field the column From, with its
+// API name kept (StoredNames), and a relax by giving the field what it was before the change
+// (types.SchemaChange.RelaxedFrom). Generation carries out no other kind of schema change yet, so AtSchemaStep
+// refuses one, and a change with no step.
 func (c Context) AtSchemaStep(steps int) (Context, error) {
 	first := map[string]int{}
 	for i, step := range c.SchemaHistory {
@@ -236,7 +237,7 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if !stepped {
 			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
 		}
-		if change.Kind != "add" && change.Kind != "rename" {
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "relax" {
 			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
 		}
 		if at >= steps {
@@ -263,6 +264,19 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		}
 		if at < 0 {
 			return Context{}, fmt.Errorf("schema change %q adds to the entity %s, which the declaration does not have", change.ID, change.Entity)
+		}
+		if change.Kind == "relax" {
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.ColumnName() == change.Field })
+			if found < 0 {
+				return Context{}, fmt.Errorf("schema change %q relaxes the column %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+			}
+			before, reason := change.RelaxedFrom(fields[found])
+			if reason != "" {
+				return Context{}, fmt.Errorf("schema change %q: %s", change.ID, reason)
+			}
+			fields[found] = before
+			continue
 		}
 		if change.Kind == "rename" {
 			// A rename is undone by giving the field its column before the change; its API name stays.

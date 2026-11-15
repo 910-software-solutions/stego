@@ -1235,7 +1235,7 @@ func checkConfined(ctx context.Context, tx *sql.Tx, role, owner string, named ma
 // checkTable refuses an unlisted column of any table whose type is no built-in base type of pg_catalog, such as a
 // domain with a CHECK that calls a function (decision of the orchestrator under the owner's delegation, 2026-11-13).
 // A listed column keeps the default of the manifest.
-func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column, entity bool) ([]string, error) {
+func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column, entity bool, relaxed map[string]bool) ([]string, error) {
 	want := map[string]string{}
 	listed := map[string]bool{}
 	for _, c := range columns {
@@ -1270,7 +1270,7 @@ func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column
 		switch {
 		case d.generated != "":
 			faults = append(faults, "column "+d.name+" is a generated column, which the manifest does not state")
-		case expected == "" && entity && !listed[d.name]:
+		case expected == "" && entity && (!listed[d.name] || relaxed[d.name]):
 			if _, _, ok := literal(d.expr); !ok || !builtinType.MatchString(d.typ) {
 				faults = append(faults, "column "+d.name+" has a default that the manifest does not state, and that is not a constant of a built-in type")
 			}
@@ -1562,9 +1562,21 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 	// inherits from (ST-SUP-RP15-LC02 rule 1).
 	plainTable := kind == "r" && !partition && !child && !parent
 	var stepCols map[string]tableColumn
+	// relaxed holds the columns that the relax step of a later release marked (ST-SUP-RP15-LC04).
+	var relaxed *relaxState
 	if t.Entity && plainTable {
 		if stepCols, err = stepColumns(ctx, tx, oid); err != nil {
 			return nil, err
+		}
+		marked, err := relaxedColumns(ctx, tx, oid)
+		if err != nil {
+			return nil, err
+		}
+		if len(marked) > 0 {
+			relaxed = &relaxState{table: t.Name, columns: marked, named: map[string]Constraint{}}
+			for _, c := range t.Constraints {
+				relaxed.named[c.Name] = c
+			}
 		}
 	}
 
@@ -1601,9 +1613,9 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 		switch {
 		case !ok:
 			fault("column %s is missing", want.Name)
-		case got.typ != want.Type:
+		case got.typ != want.Type && !(relaxed.marked(want.Name) && relaxedType(want.Type, got.typ)):
 			fault("column %s has the type %s, and the manifest needs %s", want.Name, got.typ, want.Type)
-		case want.NotNull && !got.notNull:
+		case want.NotNull && !got.notNull && !relaxed.marked(want.Name):
 			fault("column %s is nullable, and the manifest needs NOT NULL", want.Name)
 		case !got.plainCollation:
 			fault("column %s has the collation %s, and the manifest needs the default or the C collation", want.Name, got.collation)
@@ -1629,7 +1641,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 			fault("column %s is not in the manifest and has the type %s, which is no built-in base type of pg_catalog", n, columns[n].typ)
 		}
 	}
-	found, err := checkDefaults(ctx, tx, oid, t.Columns, t.Entity)
+	found, err := checkDefaults(ctx, tx, oid, t.Columns, t.Entity, relaxed.markedColumns())
 	if err != nil {
 		return nil, err
 	}
@@ -1644,10 +1656,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 		fault("%s", f)
 	}
 
-	type constraint struct {
-		kind, definition string
-		validated        bool
-	}
+	type constraint = constraintRow
 	constraints := map[string]constraint{}
 	rows, err = tx.QueryContext(ctx, `SELECT c.conname, c.contype::text, pg_catalog.pg_get_constraintdef(c.oid), c.convalidated
   FROM pg_catalog.pg_constraint c WHERE c.conrelid = $1`, oid)
@@ -1686,6 +1695,10 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 		slices.Sort(extra)
 		for _, n := range extra {
 			kind := constraints[n].kind
+			// The CHECK of a relax of a marked column (ST-SUP-RP15-LC04).
+			if relaxed.acceptRelax(n, constraints[n]) {
+				continue
+			}
 			// On the table of a declared entity, the foreign key and the CHECK of a later add step are accepted in
 			// their exact forms (ST-SUP-RP15-LC03, ST-SUP-RP15-LC01).
 			if t.Entity && plainTable && kind != kindExclusion {
@@ -1741,6 +1754,9 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 	}
 	for _, want := range t.Constraints {
 		got, ok := constraints[want.Name]
+		if relaxed.acceptNamed(want, got, ok, constraints) {
+			continue
+		}
 		switch {
 		case !ok:
 			fault("constraint %s is missing", want.Name)

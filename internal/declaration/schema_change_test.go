@@ -199,3 +199,81 @@ func TestSchemaChangeCount(t *testing.T) {
 		wantNoFault(t, schemaFaults(t, many(true)))
 	})
 }
+
+// The relax kind (decision on finding F12 of the schema-change research, owner, 2026-11-13).
+func TestSchemaRelax(t *testing.T) {
+	longer := []string{"{name: title, type: string, min_length: 1, max_length: 500}", "{name: done, type: bool, default: false}"}
+	relax := "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: max_length 255}"
+	t.Run("ST-DECL-INV57-T A relax with its field and its definition is accepted", func(t *testing.T) {
+		wantNoFault(t, schemaFaults(t, todoFields(longer, "", []string{relax}, "todo-title-relax expand")))
+	})
+	for _, c := range []struct{ name, change, names string }{
+		{"a relax with no Definition", "{id: todo-title-relax, kind: relax, entity: Todo, field: title}", "no definition"},
+		{"a relax with no Field", "{id: todo-title-relax, kind: relax, entity: Todo, definition: max_length 255}", "no field"},
+		{"a relax with a From", "{id: todo-title-relax, kind: relax, entity: Todo, field: title, from: text, definition: max_length 255}", "from"},
+		{"a relax with a Fill value", "{id: todo-title-relax, kind: relax, entity: Todo, field: title, fill_value: x, definition: max_length 255}", "fill_value"},
+	} {
+		t.Run("ST-DECL-INV57-T A schema change with "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, schemaFaults(t, todoFields(longer, "", []string{c.change}, "todo-title-relax expand"), "schema-change-kind"), c.names)
+		})
+	}
+	t.Run("ST-DECL-INV58-T A relax of a field that the entity does not declare is refused", func(t *testing.T) {
+		change := "{id: todo-title-relax, kind: relax, entity: Todo, field: heading, definition: max_length 255}"
+		wantFault(t, schemaFaults(t, todoFields(longer, "", []string{change}, "todo-title-relax expand"), "schema-change-entity"), `"todo-title-relax"`)
+	})
+	t.Run("ST-DECL-INV59-T A relax with a contract step is refused", func(t *testing.T) {
+		wantFault(t, schemaFaults(t, todoFields(longer, "", []string{relax}, "todo-title-relax expand", "todo-title-relax contract"), "schema-step"), "relax has an expand step only")
+	})
+	t.Run("ST-DECL-INV60-T Two relaxes of one field are accepted, and a relax after the expand step of an open change on the field is refused", func(t *testing.T) {
+		longest := []string{"{name: title, type: string, min_length: 1, max_length: 900}", "{name: done, type: bool, default: false}"}
+		again := "{id: todo-title-relax-2, kind: relax, entity: Todo, field: title, definition: max_length 500}"
+		wantNoFault(t, schemaFaults(t, todoFields(longest, "", []string{relax, again}, "todo-title-relax expand", "todo-title-relax-2 expand")))
+		renamedLonger := []string{"{name: summary, type: string, min_length: 1, max_length: 500}", "{name: done, type: bool, default: false}"}
+		summary := "{id: todo-summary-relax, kind: relax, entity: Todo, field: summary, definition: max_length 255}"
+		wantFault(t, schemaFaults(t, todoFields(renamedLonger, "", []string{rename, summary}, "todo-title-rename expand", "todo-summary-relax expand"), "schema-change-open"),
+			`"todo-summary-relax"`, `"todo-title-rename"`)
+		wantNoFault(t, schemaFaults(t, todoFields(renamedLonger, "", []string{rename, summary}, "todo-title-rename expand", "todo-title-rename contract", "todo-summary-relax expand")))
+	})
+	t.Run("ST-DECL-INV62-T Two relaxes of one field, the later one an enum made a string, are each checked against the field as it left them", func(t *testing.T) {
+		values := "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: values a b}"
+		text := "{id: todo-title-relax-2, kind: relax, entity: Todo, field: title, definition: \"type enum, values a b c\"}"
+		wantNoFault(t, schemaFaults(t, todoFields([]string{"{name: title, type: string}", "{name: done, type: bool, default: false}"}, "", []string{values, text}, "todo-title-relax expand", "todo-title-relax-2 expand")))
+	})
+	t.Run("ST-DECL-INV60-T A relax before the expand step of an open change on its field is accepted", func(t *testing.T) {
+		retype := "{id: title-retype, kind: retype, entity: Todo, field: title, from: string, conversion: text_to_integer, inverse_conversion: integer_to_text}"
+		service := todoFields([]string{"{name: title, type: int64}", "{name: done, type: bool, default: false}"}, "", []string{relax, retype}, "todo-title-relax expand", "title-retype expand")
+		wantNoFault(t, schemaFaults(t, service, "schema-change-open"))
+	})
+	with := func(field, definition string) string {
+		return todoFields([]string{field, "{name: done, type: bool, default: false}"}, "", []string{"{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: \"" + definition + "\"}"}, "todo-title-relax expand")
+	}
+	for _, c := range []struct{ name, field, definition string }{
+		{"a longer max_length", "{name: title, type: string, max_length: 500}", "max_length 255"},
+		{"a new enum value", "{name: title, type: enum, values: [a, b, c]}", "values a b"},
+		{"a new default", "{name: title, type: string, default: x}", "no default"},
+		{"a required field made optional", "{name: title, type: string, optional: true}", "required"},
+		{"an enum made a string", "{name: title, type: string}", "type enum, values a b"},
+		{"all at once", "{name: title, type: enum, values: [a, b, c], optional: true, default: a}", "values a b, required, no default"},
+	} {
+		t.Run("ST-DECL-INV62-T The relax of "+c.name+" is accepted", func(t *testing.T) {
+			wantNoFault(t, schemaFaults(t, with(c.field, c.definition)))
+		})
+	}
+	for _, c := range []struct{ name, field, definition, names string }{
+		{"a shorter max_length", "{name: title, type: string, max_length: 100}", "max_length 255", "only makes a max_length longer"},
+		{"a max_length taken away", "{name: title, type: string}", "max_length 255", "needs a retype"},
+		{"an enum value taken away", "{name: title, type: enum, values: [a]}", "values a b", "only adds enum values"},
+		{"the same enum values", "{name: title, type: enum, values: [a, b]}", "values a b", "relax nothing"},
+		{"a field made required", "{name: title, type: string}", "required", "needs a require"},
+		{"a default where the field has none", "{name: title, type: string}", "no default", "has no default now"},
+		{"an enum made a string with a max_length", "{name: title, type: string, max_length: 9}", "type enum, values a b", "no max_length"},
+		{"an enum made an integer", "{name: title, type: int64}", "type enum, values a b", "no max_length"},
+		{"an unknown item", "{name: title, type: string, max_length: 500}", "max_length 255, pattern x", "not one a relax takes"},
+		{"the same max_length", "{name: title, type: string, max_length: 255}", "max_length 255", "only makes a max_length longer"},
+		{"an item twice", "{name: title, type: string, max_length: 500}", "max_length 255, max_length 200", "twice"},
+	} {
+		t.Run("ST-DECL-INV62-T The relax of "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, schemaFaults(t, with(c.field, c.definition), "schema-change-value"), c.names)
+		})
+	}
+}

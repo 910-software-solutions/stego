@@ -251,3 +251,83 @@ func TestCompat(t *testing.T) {
 		}
 	})
 }
+
+// relaxNotes gives the declaration of ST-GEN-TD03 with the fields of Note before the relax steps: title of at most
+// 40 characters, the enum mood, the required size and the optional enum kind.
+func relaxNotes(fields string) string {
+	return noteFields(fields)
+}
+
+const relaxBaseFields = "[{name: title, type: string, min_length: 1, max_length: 40}, {name: mood, type: enum, values: [calm, busy]}, {name: size, type: string, max_length: 8}, {name: kind, type: enum, optional: true, values: [a, b]}]"
+
+func TestCompatRelax(t *testing.T) {
+	t.Run("ST-GEN-UC14-R03-T02 stego compat accepts each relax of a field of the base and refuses each narrowing", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// The release before is a first release with the fields of relaxBaseFields.
+		if err := os.RemoveAll(filepath.Join(s.service, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		s.write(t, "service.yaml", relaxNotes(relaxBaseFields))
+		s.must(t, "apply")
+		git(t, s.service, "init", "-q")
+		git(t, s.service, "add", "-A")
+		git(t, s.service, "commit", "-q", "-m", "notes before the relax steps")
+		field := func(from, to string) string { return strings.Replace(relaxBaseFields, from, to, 1) }
+		relaxed := func(fields string, changes ...string) string {
+			declaration := relaxNotes(fields) + "schema_changes:\n"
+			var steps []string
+			for _, change := range changes {
+				declaration += "  - " + change + "\n"
+				id := strings.SplitN(strings.TrimPrefix(change, "{id: "), ",", 2)[0]
+				steps = append(steps, "  - {change: "+id+", phase: expand}\n")
+			}
+			return declaration + "schema_history:\n" + strings.Join(steps, "")
+		}
+		const (
+			title = "{id: note-title-relax, kind: relax, entity: Note, field: title, definition: max_length 40}"
+			mood  = "{id: note-mood-relax, kind: relax, entity: Note, field: mood, definition: values calm busy}"
+			size  = "{id: note-size-relax, kind: relax, entity: Note, field: size, definition: \"required, no default\"}"
+			kind  = "{id: note-kind-relax, kind: relax, entity: Note, field: kind, definition: \"type enum, values a b\"}"
+		)
+		longer := field("max_length: 40", "max_length: 80")
+		more := field("values: [calm, busy]", "values: [calm, busy, sleepy]")
+		optional := field("{name: size, type: string, max_length: 8}", "{name: size, type: string, max_length: 8, optional: true, default: m}")
+		text := field("{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: string, optional: true}")
+		all := strings.NewReplacer("max_length: 40", "max_length: 80", "values: [calm, busy]", "values: [calm, busy, sleepy]",
+			"{name: size, type: string, max_length: 8}", "{name: size, type: string, max_length: 8, optional: true, default: m}",
+			"{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: string, optional: true}").Replace(relaxBaseFields)
+		for _, c := range []struct{ name, declaration string }{
+			{"a longer max_length", relaxed(longer, title)},
+			{"a new enum value", relaxed(more, mood)},
+			{"a required field made optional with a new default", relaxed(optional, size)},
+			{"an enum made a string in place", relaxed(text, kind)},
+			{"all four", relaxed(all, title, mood, size, kind)},
+		} {
+			s.write(t, "service.yaml", c.declaration)
+			if output, code := s.compat(t, "--base", "HEAD"); code != 0 {
+				t.Errorf("%s: exit %d, want 0:\n%s", c.name, code, output)
+			}
+		}
+		for _, c := range []struct{ name, declaration, says string }{
+			{"a shorter max_length", relaxed(field("max_length: 40", "max_length: 20"), title), "only makes a max_length longer"},
+			{"an enum value taken away", relaxed(field("values: [calm, busy]", "values: [calm]"), mood), "only adds enum values"},
+			{"an optional field made required", relaxed(field("{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: enum, values: [a, b]}"),
+				"{id: note-kind-relax, kind: relax, entity: Note, field: kind, definition: required}"), "needs a require"},
+			{"a retype that needs a rewrite", relaxed(field("{name: kind, type: enum, optional: true, values: [a, b]}", "{name: kind, type: string, optional: true, max_length: 9}"), kind), "no max_length"},
+			{"an undeclared shorter max_length", relaxNotes(field("max_length: 40", "max_length: 20")), "a relax only makes a max_length longer"},
+		} {
+			s.write(t, "service.yaml", c.declaration)
+			output, code := s.compat(t, "--base", "HEAD")
+			if code != 1 || !strings.Contains(output, c.says) {
+				t.Errorf("%s: exit %d, want 1 and %q:\n%s", c.name, code, c.says, output)
+			}
+		}
+		// An undeclared relax names the relax to declare.
+		s.write(t, "service.yaml", relaxNotes(longer))
+		result, code := s.compatJSON(t)
+		if code != 1 || len(result.Faults) != 1 || len(result.Faults[0].Declare) != 1 || result.Faults[0].Declare[0].Kind != "relax" || result.Faults[0].Declare[0].Needs != "the definition max_length 40" {
+			t.Errorf("an undeclared longer max_length: exit %d, faults %+v; want one that declares a relax with the definition max_length 40", code, result.Faults)
+		}
+	})
+}
