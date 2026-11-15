@@ -44,7 +44,6 @@ const (
 	StepAuditTables         = "audit_tables"
 	StepAuditSink           = "audit_sink"
 	StepIdempotencyKeys     = "idempotency_keys"
-	StepWorkerGrants        = "worker_grants"
 	StepAuthorizationTables = "authorization_tables"
 	StepRuntimeGrants       = "runtime_grants"
 	StepAuditPartitions     = "audit_partitions"
@@ -313,13 +312,12 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole, m.WorkerLeases)},
 		{StepAuditSink, sinkTable},
 		{StepIdempotencyKeys, keys},
-		// Before the authorization tables, whose text gives the worker role its column grants on the token of each
-		// protected table again, which a table-level REVOKE takes back too.
-		{StepWorkerGrants, workerText},
-		{StepAuthorizationTables, m.Authorization},
-		// The grant of the worker role on the revocation floor follows the grants of the runtime role, after the
-		// authorization tables made the floor.
-		{StepRuntimeGrants, granted(m.Grants, m.RuntimeRole) + floorText},
+		// The grants of the worker role are in the one transaction of the authorization tables: a table-level REVOKE
+		// also takes back the column grants on the token of each protected table, which the authorization text gives
+		// again, and the floor exists only after that text. So no committed state lacks a grant that the running
+		// release needs (security review of PR #337, M2).
+		{StepAuthorizationTables, workerText + m.Authorization + ";\n" + floorText},
+		{StepRuntimeGrants, granted(m.Grants, m.RuntimeRole)},
 	}
 	for _, t := range texts {
 		if err := step(t.name, func() error { return textStep(ctx, conn, m.OwnerRole, t.name, t.text) }); err != nil {
@@ -670,7 +668,7 @@ type tableGrant struct {
 // consumerGrants are the grants of the worker role that the fill of a consuming worker needs in the transaction of
 // the claimed message, which the outbox worker opens as the worker role (ST-SUP-RC35-OC06): SELECT, INSERT and
 // UPDATE on the table of each entity that a consuming worker writes (WorkerParts.ConsumerTables), and no DELETE,
-// since a worker declares no delete; SELECT and INSERT on the audit events and SELECT, INSERT and UPDATE on the chain
+// since a worker declares no delete; INSERT on the audit events and SELECT, INSERT and UPDATE on the chain
 // heads, which the audit row of each write needs; SELECT, INSERT and UPDATE on the key table, which RunConsumer
 // writes the message identity to; and SELECT on the revocation floor, which each decision reads. Each table keeps
 // its row-level security and its tenant policy for every role. A service with no consuming worker gets none
@@ -684,7 +682,8 @@ func consumerGrants(p *Parts) []tableGrant {
 		grants = append(grants, tableGrant{schema: "public", table: table, privileges: []string{"SELECT", "INSERT", "UPDATE"}})
 	}
 	grants = append(grants,
-		tableGrant{schema: audit.RecordSchema, table: audit.EventsTable, privileges: []string{"SELECT", "INSERT"}},
+		// The insert of an audit event returns no row, so it needs INSERT only (security review of PR #337, L4).
+		tableGrant{schema: audit.RecordSchema, table: audit.EventsTable, privileges: []string{"INSERT"}},
 		tableGrant{schema: audit.RecordSchema, table: audit.HeadsTable, privileges: []string{"SELECT", "INSERT", "UPDATE"}},
 		tableGrant{schema: idempotency.KeySchema, table: "idempotency_keys", privileges: []string{"SELECT", "INSERT", "UPDATE"}})
 	if p.AuthzSchema != "" {
@@ -693,10 +692,9 @@ func consumerGrants(p *Parts) []tableGrant {
 	return grants
 }
 
-// workerGrants gives the text of the step worker_grants, which runs before the authorization tables, whose text
-// gives the worker role its column grants on the token of each protected table again, and the text of the grant on
-// the revocation floor, which the step runtime_grants ends with, as the authorization tables make the floor. It first
-// takes back from the worker role each privilege on
+// workerGrants gives the grants of the worker role, which the step authorization_tables runs in its one transaction:
+// tables before the authorization text, whose text gives the worker role its column grants on the token of each
+// protected table again, and floor after it, as that text makes the revocation floor. It first takes back from the worker role each privilege on
 // each table and sequence that the runtime role gets (Migration.Grants), on the audit events and chain heads, on the
 // key table and on the revocation floor, so a grant of an earlier release whose consuming worker the declaration no
 // longer has is gone; it then gives the worker role the grants of consumerGrants and nothing more. It refuses a
