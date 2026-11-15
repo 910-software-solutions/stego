@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -404,14 +405,15 @@ func TestArchitectureQueries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(state.LastApplied.ProjectFiles) != 2 || state.LastApplied.ProjectFiles[compiler.ArchitectureFile] == "" {
-			t.Fatalf("the record lists the project files %v, want the platform requirements and the architecture model", state.LastApplied.ProjectFiles)
+		projectFiles := slices.Sorted(maps.Keys(state.LastApplied.ProjectFiles))
+		if strings.Join(projectFiles, " ") != "architecture/architecture.json architecture/index.html deploy/platform-requirements.yaml" {
+			t.Fatalf("the record lists the project files %v, want the architecture model, the architecture view and the platform requirements", projectFiles)
 		}
 		entries, err := os.ReadDir(filepath.Join(dir, "architecture"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(entries) != 1 || entries[0].Name() != "architecture.json" {
+		if len(entries) != 2 || entries[0].Name() != "architecture.json" || entries[1].Name() != "index.html" {
 			t.Fatalf("apply wrote %v in architecture/", entries)
 		}
 		for path := range state.LastApplied.Files {

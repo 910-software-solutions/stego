@@ -133,20 +133,20 @@ func factListText(list FactList) string {
 		switch f.State {
 		case "unstated":
 			fmt.Fprintf(&b, "  %s: unstated. The inputs do not state it.\n", nameText(f.Name))
-			fmt.Fprintf(&b, "    source: %s\n", sourceText(f.Source))
+			fmt.Fprintf(&b, "    source: %s\n", factSourceText(f.Source))
 		case "default":
 			fmt.Fprintf(&b, "  %s: %s\n", nameText(f.Name), textValue(f.Value))
 			if f.DefaultRule != "" {
 				fmt.Fprintf(&b, "    default, set by the rule %s\n", nameText(f.DefaultRule))
 			} else {
-				fmt.Fprintf(&b, "    default, source: %s\n", sourceText(f.Source))
+				fmt.Fprintf(&b, "    default, source: %s\n", factSourceText(f.Source))
 			}
 		default:
 			fmt.Fprintf(&b, "  %s: %s\n", nameText(f.Name), textValue(f.Value))
-			fmt.Fprintf(&b, "    source: %s\n", sourceText(f.Source))
+			fmt.Fprintf(&b, "    source: %s\n", factSourceText(f.Source))
 		}
 		for _, q := range f.Quoted {
-			fmt.Fprintf(&b, "    %s, quoted from %s: %s\n", nameText(q.Name), sourceText(q.Source), quoted(q.Text))
+			fmt.Fprintf(&b, "    %s, quoted from %s: %s\n", nameText(q.Name), factSourceText(q.Source), quoted(q.Text))
 		}
 		if f.Grants != nil {
 			writeGrants(&b, f.Grants)
@@ -178,15 +178,15 @@ func writeGrants(b *strings.Builder, g *FactGrants) {
 		if p.Stops != "" {
 			line += ", stopped: " + nameText(p.Stops)
 		}
-		b.WriteString(line + "; source: " + sourceText(p.Source) + "\n")
+		b.WriteString(line + "; source: " + factSourceText(p.Source) + "\n")
 	}
 	if !g.Complete {
 		fmt.Fprintf(b, "    a limit cut a path of %s short, so it can grant more roles than these\n", nameText(g.Permission))
 	}
 }
 
-// sourceText names the source of a fact in words.
-func sourceText(s ArchSource) string {
+// factSourceText names the source of a fact in words.
+func factSourceText(s ArchSource) string {
 	switch {
 	case s.Declaration != "":
 		return "the declaration at " + nameText(s.Declaration)
