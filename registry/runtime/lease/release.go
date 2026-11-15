@@ -107,13 +107,40 @@ type Beat struct {
 	done                     chan struct{}
 	once                     sync.Once
 	failing                  bool
+	// made is true once the catalog of the database has shown the function release_beat: until then each report
+	// first reads the catalog, and calls the function only when it is there, so a database where no step has made
+	// it logs no error in PostgreSQL (walkthrough 3, item 5).
+	made bool
+}
+
+// beatMade reads the catalog for the two functions of the release reports by their exact signatures, so an overload
+// of either name neither stops nor starts the reports (security review of PR #354, L1). It reads pg_proc and
+// pg_namespace, which every role may read, so it needs no grant and no schema, and it names each operator in
+// pg_catalog (I3). The argument types are text (oid 25) and integer (oid 23).
+const beatMade = `SELECT pg_catalog.count(DISTINCT p.proname) OPERATOR(pg_catalog.=) 2
+ FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+ WHERE n.nspname OPERATOR(pg_catalog.=) 'stego_schema' AND (
+  (p.proname OPERATOR(pg_catalog.=) 'release_beat' AND p.proargtypes::pg_catalog.text OPERATOR(pg_catalog.=) '25 25 25 23')
+  OR (p.proname OPERATOR(pg_catalog.=) 'release_stop' AND p.proargtypes::pg_catalog.text OPERATOR(pg_catalog.=) '25'))`
+
+// ready reports whether the functions of the reports are there. It reads the catalog only until it has seen them
+// once, because no step removes them.
+func (b *Beat) ready(ctx context.Context) (bool, error) {
+	if b.made {
+		return true, nil
+	}
+	if err := b.db.QueryRowContext(ctx, beatMade).Scan(&b.made); err != nil {
+		return false, err
+	}
+	return b.made, nil
 }
 
 // StartBeat reports the process as the release release, with the label version (STEGO_SERVICE_VERSION), on db, the
 // pool of the runtime role: once before it returns and then every ReleaseEvery (ST-SUP-RP09-LC14). The holder is 16
 // random bytes, so no other process can stop the report. A report that fails, such as on a database where no step
 // has made the table yet, is logged once with no error text of the database and tried again at the next time; it
-// never stops the process; a database where no step has made the function logs it at the debug level only. The label keeps its printable ASCII characters, at most 64.
+// never stops the process. On a database where no step has made the function the report reads only the catalog, so
+// PostgreSQL logs no error, and logs at the debug level only; once the catalog shows the function, it calls it. The label keeps its printable ASCII characters, at most 64.
 func StartBeat(ctx context.Context, db *sql.DB, release, version string) (*Beat, error) {
 	return startBeat(ctx, db, release, version, ReleaseEvery)
 }
@@ -148,7 +175,16 @@ func label(version string) string {
 func (b *Beat) beat(parent context.Context) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), b.every)
 	defer cancel()
-	_, err := b.db.ExecContext(ctx, "SELECT stego_schema.release_beat($1, $2, $3, $4)", b.holder, b.release, b.version, int(b.every/time.Millisecond))
+	made, err := b.ready(ctx)
+	if err == nil && !made {
+		// No step has made the function yet: the database has had no rename at expand, and no contract step reads
+		// the reports. The report is a quiet no-op until a step makes it.
+		slog.Debug("lease: the release report has no function yet", "release", b.release)
+		return
+	}
+	if err == nil {
+		_, err = b.db.ExecContext(ctx, "SELECT stego_schema.release_beat($1, $2, $3, $4)", b.holder, b.release, b.version, int(b.every/time.Millisecond))
+	}
 	var state interface{ SQLState() string }
 	switch {
 	case err != nil && errors.As(err, &state) && (state.SQLState() == "42883" || state.SQLState() == "3F000"):
@@ -190,7 +226,15 @@ func (b *Beat) Stop(ctx context.Context) error {
 		<-b.done
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.every)
 		defer cancel()
-		if _, stopErr := b.db.ExecContext(ctx, "SELECT stego_schema.release_stop($1)", b.holder); stopErr != nil {
+		made, stopErr := b.ready(ctx)
+		if stopErr == nil && !made {
+			// With no function there is no report to delete.
+			return
+		}
+		if stopErr == nil {
+			_, stopErr = b.db.ExecContext(ctx, "SELECT stego_schema.release_stop($1)", b.holder)
+		}
+		if stopErr != nil {
 			err = errors.New("lease: the delete of the release report failed")
 		}
 	})

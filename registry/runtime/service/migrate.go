@@ -17,6 +17,7 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/audit/auditsink"
+	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
@@ -49,6 +50,7 @@ const (
 	StepAuditPartitions     = "audit_partitions"
 	StepReleaseReports      = "release_reports"
 	StepSchemaAgain         = "authorization_schema_again"
+	StepSchemaServed        = "authorization_schema_served"
 	StepManifestBefore      = "manifest_before_backfill"
 	StepBackfill            = "backfill"
 	StepManifest            = "manifest"
@@ -83,6 +85,10 @@ type Migration struct {
 	// WriteSchema writes the authorization schema of the release to SpiceDB, which refuses a schema that removes a
 	// definition or a relation that has relationships (ST-SUP-RC29-OC23).
 	WriteSchema func(ctx context.Context, conn grpc.ClientConnInterface) error
+	// Definitions are the definitions of the schema that WriteSchema writes. After the last write the job waits
+	// until SpiceDB serves each of them (authz.AwaitSchema), so the release does not start while a read of a new
+	// resource type fails (StepSchemaServed; walkthrough 3, G4; ST-SUP-Q140).
+	Definitions []string
 	// Parts are the declared parts of the service, which service.New takes: the job checks the database against the
 	// same joined schema manifest at its end (StepManifest), and refuses a database that does not satisfy it, as the
 	// start of a pod only alerts (decision on finding F10 of the schema-change research, owner, 2026-11-13, and the
@@ -149,6 +155,9 @@ func Stage(err error) string {
 // connection.
 var stepped func(step string, conn *sql.Conn)
 
+// awaitSchema waits until SpiceDB serves each definition of the written schema; a test of the package replaces it.
+var awaitSchema = authz.AwaitSchema
+
 // retried, when a test of the package sets it, runs each time a migration text waited too long for a lock and is
 // run again, with the step's name.
 var retried func(step string)
@@ -178,7 +187,7 @@ const (
 // with the lease table and the row of the controller lease (ControllerLease); the grants of
 // the runtime role; the audit partitions of this month and the next; the delete of the release reports older than
 // one day (lease.CleanReleases); WriteSchema again, so the release ends on
-// its own schema; the schema manifest check before the backfills (StepManifestBefore); the backfills; and the schema
+// its own schema; the wait until SpiceDB serves every definition of that schema (StepSchemaServed); the schema manifest check before the backfills (StepManifestBefore); the backfills; and the schema
 // manifest check again (StepManifest). It stops at the first step that fails, with a StepError that names the step. After the owner role
 // it takes the job lock, which it holds until the backfill, so a second job of the database waits for it (StepJobLock); and
 // it runs the tenant list and each migration text under a lock timeout of 1 s, and again after a pause when a lock
@@ -186,8 +195,8 @@ const (
 // on a database that it made, so the job runs on every release.
 func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	if m.OwnerRole == "" || m.RuntimeRole == "" || m.WorkerRole == "" || m.PurgeRole == "" || m.OutboxRelayRole == "" || m.TenantConfig == nil || m.LedgerCheck == nil || m.Ledger == nil ||
-		m.WriteSchema == nil || m.Outbox == "" || m.Audit == "" || m.Authorization == "" || m.Parts == nil {
-		return failed(StepSettings, errors.New("the migration job needs its roles, the adapter, the ledger, the migration texts, the schema writer and the declared parts"))
+		m.WriteSchema == nil || len(m.Definitions) == 0 || m.Outbox == "" || m.Audit == "" || m.Authorization == "" || m.Parts == nil {
+		return failed(StepSettings, errors.New("the migration job needs its roles, the adapter, the ledger, the migration texts, the schema writer with its definitions and the declared parts"))
 	}
 	for _, name := range m.WorkerLeases {
 		if !workerName.MatchString(name) {
@@ -266,7 +275,16 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		return failed(StepAuthorizationSchema, err)
 	}
 	defer spice.Close()
-	if err := step(StepAuthorizationSchema, func() error { return m.WriteSchema(ctx, spice) }); err != nil {
+	// The token of the schema before the write: the wait after the last write reads at least as fresh as it, as a
+	// check at a floor of the running release does (StepSchemaServed).
+	var since authz.Token
+	if err := step(StepAuthorizationSchema, func() error {
+		var err error
+		if since, err = authz.SchemaToken(ctx, spice); err != nil {
+			return err
+		}
+		return m.WriteSchema(ctx, spice)
+	}); err != nil {
 		return err
 	}
 	tenants := m.TenantSchema
@@ -345,6 +363,12 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		return err
 	}
 	if err := step(StepSchemaAgain, func() error { return m.WriteSchema(ctx, spice) }); err != nil {
+		return err
+	}
+	// SpiceDB reads at a quantized revision, which for some seconds after the write does not know a new definition:
+	// the job ends only when SpiceDB serves every definition, within the bound of authz.AwaitSchema, and else fails
+	// closed with authz.ErrSchemaNotServed, so the release does not start (ST-SUP-Q140).
+	if err := step(StepSchemaServed, func() error { return awaitSchema(ctx, spice, m.Definitions, since) }); err != nil {
 		return err
 	}
 	// Before the backfills, which write the rows of the entity tables as the owner role, the job refuses a database

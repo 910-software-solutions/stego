@@ -669,6 +669,10 @@ func (s *state) decideCommand(ctx context.Context, permission string, r *Resourc
 		return ErrDenied
 	case errors.Is(err, ErrConflict) || errors.Is(err, ErrInternal):
 		return err
+	case authz.Transient(err):
+		// The provider could not decide now, such as for some seconds after a schema write: 503 with Retry-After
+		// (ST-SUP-Q140).
+		return ErrUndecided
 	case err != nil:
 		return internalf("the permission of the command was not decided")
 	}

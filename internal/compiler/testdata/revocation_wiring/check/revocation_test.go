@@ -365,6 +365,22 @@ func (f *fakeSpiceDB) ReadSchema(ctx context.Context, _ *v1.ReadSchemaRequest) (
 	return &v1.ReadSchemaResponse{SchemaText: f.schema, ReadAt: &v1.ZedToken{Token: f.token()}}, nil
 }
 
+// ReadRelationships serves the probe of the migration job that waits for the schema (ST-SUP-Q140): a resource type
+// that the written schema defines has no relationship to read here, and any other type is an unknown definition, as
+// SpiceDB answers it.
+func (f *fakeSpiceDB) ReadRelationships(request *v1.ReadRelationshipsRequest, stream grpc.ServerStreamingServer[v1.ReadRelationshipsResponse]) error {
+	if err := f.authorize(stream.Context()); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defined := strings.Contains(f.schema, "definition "+request.GetRelationshipFilter().GetResourceType()+" {")
+	f.mu.Unlock()
+	if !defined {
+		return status.Error(codes.FailedPrecondition, "object definition not found")
+	}
+	return nil
+}
+
 // callsOf gives a copy of the write calls that name the document resourceID.
 func (f *fakeSpiceDB) callsOf(resourceID string) []call {
 	f.mu.Lock()

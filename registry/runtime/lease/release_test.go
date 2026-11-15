@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -268,4 +269,114 @@ func mustConfig(t *testing.T, dsn string) *pgx.ConnConfig {
 		t.Fatal(err)
 	}
 	return config
+}
+
+// failedStatements records each statement of a pool and each one that ended with an error.
+type failedStatements struct {
+	mu           sync.Mutex
+	sent, faults []string
+}
+
+func (f *failedStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, data.SQL)
+	return context.WithValue(ctx, failedKey{}, data.SQL)
+}
+
+func (f *failedStatements) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if data.Err == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	text, _ := ctx.Value(failedKey{}).(string)
+	f.faults = append(f.faults, text)
+}
+
+func (f *failedStatements) read() (sent, faults []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.sent...), append([]string(nil), f.faults...)
+}
+
+type failedKey struct{}
+
+func TestReleaseQuiet(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC14-T03 Before a step makes the functions of the reports, the report and Stop send no statement that fails, and the first report after the step calls release_beat", func(t *testing.T) {
+		ctx := context.Background()
+		d := openDatabase(t)
+		role := "lease_quiet_rt"
+		d.exec(t, "DROP ROLE IF EXISTS "+role)
+		d.exec(t, "CREATE ROLE "+role+" LOGIN PASSWORD 'lease-quiet'")
+		t.Cleanup(func() {
+			_, _ = d.other.Exec("DROP OWNED BY " + role)
+			_, _ = d.other.Exec("DROP ROLE IF EXISTS " + role)
+		})
+		config := mustConfig(t, d.dsn)
+		config.User, config.Password = role, "lease-quiet"
+		trace := &failedStatements{}
+		config.Tracer = trace
+		pool := stdlib.OpenDB(*config)
+		t.Cleanup(func() { _ = pool.Close() })
+		// The interval is the longest that release_beat takes, so the ticker does not run in the test: each report
+		// below is one call of beat.
+		beat, err := startBeat(ctx, pool, "step_0001_x_expand", "v1", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 3 {
+			beat.beat(ctx)
+		}
+		// A process that stops before any step made the functions deletes nothing and sends no statement that fails.
+		early, err := startBeat(ctx, pool, "step_0001_x_expand", "v1", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := early.Stop(ctx); err != nil {
+			t.Fatalf("Stop before the step: %v", err)
+		}
+		sent, faults := trace.read()
+		if len(faults) != 0 {
+			t.Fatalf("before the step the reports sent statements that failed: %q", faults)
+		}
+		for _, statement := range sent {
+			if strings.Contains(statement, "release_beat(") || strings.Contains(statement, "release_stop(") {
+				t.Fatalf("before the step a report called a function of the reports: %q", statement)
+			}
+		}
+		if len(sent) != 6 {
+			t.Errorf("five reports and one Stop sent %d statements, want one catalog read each", len(sent))
+		}
+		// The step makes the functions; the next report calls release_beat and writes the report.
+		text, err := Releases(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// An overload of release_beat alone does not make the reports start: only the exact signatures count.
+		d.exec(t, "CREATE SCHEMA IF NOT EXISTS stego_schema")
+		d.exec(t, "GRANT USAGE ON SCHEMA stego_schema TO "+role)
+		d.exec(t, "CREATE FUNCTION stego_schema.release_beat(text) RETURNS void LANGUAGE sql AS 'SELECT NULL'")
+		d.exec(t, "CREATE FUNCTION stego_schema.release_stop(integer) RETURNS void LANGUAGE sql AS 'SELECT NULL'")
+		d.exec(t, "CREATE FUNCTION stego_schema.release_stop(text, text) RETURNS void LANGUAGE sql AS 'SELECT NULL'")
+		beat.beat(ctx)
+		if sent, faults := trace.read(); len(faults) != 0 || len(sent) != 7 {
+			t.Fatalf("with the overloads only, the report sent %d statements and %q failed, want one catalog read and none failed", len(sent), faults)
+		}
+		// The text makes the exact signatures; with the overloads still there, the next report calls release_beat.
+		d.exec(t, text)
+		beat.beat(ctx)
+		if _, ok := readRelease(t, d, beat.Holder()); !ok {
+			t.Fatal("the first report after the step wrote no report")
+		}
+		if err := beat.Stop(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := readRelease(t, d, beat.Holder()); ok {
+			t.Error("the report is there after Stop")
+		}
+		if _, faults := trace.read(); len(faults) != 0 {
+			t.Fatalf("the reports sent statements that failed: %q", faults)
+		}
+	})
 }

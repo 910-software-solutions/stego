@@ -170,7 +170,8 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, ErrBadCursor), errors.Is(err, ErrBadRequest):
 		return http.StatusBadRequest
-	case errors.Is(err, ErrUndecided):
+	case Transient(err):
+		// A read that the provider could not decide now; a refusal of the provider is 500 (ST-SUP-Q140).
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
@@ -182,6 +183,10 @@ func writeProblem(w http.ResponseWriter, status int) { writeCodedProblem(w, stat
 
 // writeCodedProblem writes the problem response of status with the fixed code, when there is one.
 func writeCodedProblem(w http.ResponseWriter, status int, code string) {
+	if status == http.StatusServiceUnavailable {
+		// A 503 is a read that the provider could not decide now; the client may try again (ST-SUP-Q140).
+		w.Header().Set("Retry-After", RetryAfter())
+	}
 	title := titles[status]
 	if title == "" {
 		title = http.StatusText(status)

@@ -809,6 +809,9 @@ func declaredResourceTypes(entities []types.Entity) map[string]bool {
 // typeNames gives the names of the schema's definitions, in order.
 func (s *AuthzSchema) typeNames() []string { return sortedKeys(s.definitions) }
 
+// TypeNames gives the names of the definitions of the schema, sorted.
+func (s *AuthzSchema) TypeNames() []string { return s.typeNames() }
+
 func sortedOperations(m map[types.Operation]string) []types.Operation {
 	operations := make([]types.Operation, 0, len(m))
 	for operation := range m {
