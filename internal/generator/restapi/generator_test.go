@@ -3595,6 +3595,21 @@ func TestIsServerManaged(t *testing.T) {
 				expect: true,
 			},
 			{
+				name:   "client-set timestamp field",
+				field:  types.Field{Name: "due_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+				expect: false,
+			},
+			{
+				name:   "created_at marked client_set",
+				field:  types.Field{Name: "created_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+				expect: true,
+			},
+			{
+				name:   "updated_at marked client_set",
+				field:  types.Field{Name: "updated_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+				expect: true,
+			},
+			{
 				name:   "regular string field",
 				field:  types.Field{Name: "name", Type: types.FieldTypeString},
 				expect: false,
@@ -4694,6 +4709,43 @@ func TestRuntimeWrites(t *testing.T) {
 			if _, ok := request.Properties[name]; !ok {
 				t.Errorf("TodoCreateRequest has no field %s", name)
 			}
+		}
+	})
+	t.Run("ST-SUP-RC20-OC20-T05 A create-request schema holds a client-set timestamp as an RFC 3339 time and leaves out a server-managed one", func(t *testing.T) {
+		var schemas struct {
+			Components struct {
+				Schemas map[string]struct {
+					Properties map[string]struct {
+						Type        string `json:"type"`
+						Format      string `json:"format"`
+						Description string `json:"description"`
+					} `json:"properties"`
+					Required []string `json:"required"`
+				} `json:"schemas"`
+			} `json:"components"`
+		}
+		if err := json.Unmarshal(files["api/openapi.json"], &schemas); err != nil {
+			t.Fatal(err)
+		}
+		request, ok := schemas.Components.Schemas["MeetingCreateRequest"]
+		if !ok {
+			t.Fatal("the document has no MeetingCreateRequest")
+		}
+		for _, name := range []string{"starts_at", "ends_at"} {
+			p, ok := request.Properties[name]
+			if !ok || p.Type != "string" || p.Format != "date-time" || !strings.Contains(p.Description, "RFC 3339") || !strings.Contains(p.Description, "UTC") {
+				t.Errorf("MeetingCreateRequest holds %s as %+v (present %t), want a string of format date-time described as an RFC 3339 time in UTC", name, p, ok)
+			}
+		}
+		if _, ok := request.Properties["noted_at"]; ok {
+			t.Error("MeetingCreateRequest holds the server-managed timestamp noted_at")
+		}
+		if !slices.Contains(request.Required, "starts_at") || slices.Contains(request.Required, "ends_at") {
+			t.Errorf("MeetingCreateRequest requires %v, want starts_at and not ends_at", request.Required)
+		}
+		patch, ok := schemas.Components.Schemas["MeetingsPatchRequest"]
+		if _, has := patch.Properties["starts_at"]; !ok || !has || patch.Properties["starts_at"].Format != "date-time" {
+			t.Errorf("the patch schema of meetings is %+v (present %t), want starts_at of format date-time", patch, ok)
 		}
 	})
 	t.Run("ST-SUP-RC20-OC20-T04 The write operation points at the create-request schema", func(t *testing.T) {

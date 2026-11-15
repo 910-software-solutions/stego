@@ -248,6 +248,39 @@ func TestBaseCompat(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ST-GEN-INV33-T The index check of the collections reads a retyped field with its type before the change, and follows a rename chain back and forth only in history order", func(t *testing.T) {
+		t.Parallel()
+		// Review of PR #314, L14, and the reviewer's red-team cases: the baseline has a retyped field of its type
+		// From, so its search index follows that field, with the sensitivity of the head.
+		td01 := string(userManagementBase(t))
+		pii := func(s, field string) string {
+			return strings.Replace(s, "{ name: "+field+", type: string", "{ name: "+field+", type: string, sensitivity: pii", 1)
+		}
+		there := "  - {id: act-r1, kind: rename, entity: ActivityEntry, field: verb, from: action}\n"
+		back := "  - {id: act-r2, kind: rename, entity: ActivityEntry, field: action, from: verb}\n"
+		thereStep, backStep := "  - {change: act-r1, phase: expand}\n", "  - {change: act-r2, phase: expand}\n"
+		retype := "  - {id: dn-retype, kind: retype, entity: User, field: display_name, from: string}\n"
+		retypeStep := "  - {change: dn-retype, phase: expand}\n"
+		basePii := pii(td01, "display_name")
+		for _, c := range []struct {
+			name, base, head string
+			fault            bool
+		}{
+			{"a rename there and back, with no other change", td01, withChanges(td01, there+back, thereStep+backStep), false},
+			{"a rename there and back, the field marked pii at the end", td01, withChanges(pii(td01, "action"), there+back, thereStep+backStep), true},
+			{"a rename there and back listed in the other order, the field marked pii", td01, withChanges(pii(td01, "action"), back+there, thereStep+backStep), true},
+			{"a rename there and back whose steps are in the other order", td01, withChanges(td01, there+back, backStep+thereStep), true},
+			{"a retype of a pii field to a type that is not searched, with pii taken away", basePii,
+				withChanges(strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: jsonb }", 1), retype, retypeStep), true},
+			{"a retype of a pii field to a type that is not searched, still pii", basePii,
+				withChanges(strings.Replace(basePii, "{ name: display_name, type: string, sensitivity: pii, min_length: 1, max_length: 100 }", "{ name: display_name, type: jsonb, sensitivity: pii }", 1), retype, retypeStep), false},
+		} {
+			faults := collectionIndexFaults(parseHead(t, c.base), parseHead(t, c.head))
+			if (len(faults) > 0) != c.fault {
+				t.Errorf("%s: the faults are %+v, want a fault %v", c.name, faults, c.fault)
+			}
+		}
+	})
 	t.Run("ST-GEN-INV33-T A new order of the fields of a base entity, which changes 001_initial and the marker, is refused", func(t *testing.T) {
 		t.Parallel()
 		td01 := string(userManagementBase(t))

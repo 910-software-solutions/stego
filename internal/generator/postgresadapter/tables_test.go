@@ -190,6 +190,8 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 		{boardNoDefault("boardsnote", "boardsnotetenancy"), "boardsnote_access.json"}, {boardSlug("boardsslug", "boardsslugtenancy"), "boardsslug_access.json"},
 		{boardRenameBase("boardsrnbase", "boardsrnbasetenancy"), "boardsrnbase_access.json"}, {boardRename("boardsrn", "boardsrntenancy"), "boardsrn_access.json"},
 		{boardRenameContract("boardsrnc", "boardsrnctenancy"), "boardsrnc_access.json"},
+		{boardRetypeBase("boardsrtbase", "boardsrtbasetenancy"), "boardsrtbase_access.json"}, {boardRetype("boardsrt", "boardsrttenancy"), "boardsrt_access.json"},
+		{boardRetypeContract("boardsrtc", "boardsrtctenancy"), "boardsrtc_access.json"},
 		{relaxBase("boardsrxbase", "boardsrxbasetenancy"), "boardsrxbase_access.json"}, {relaxHead("boardsrx", "boardsrxtenancy"), "boardsrx_access.json"}} {
 		// The adapter names the roles of the tenancy component in the migration of a step.
 		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
@@ -445,6 +447,14 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC25-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC25-T01") })
 	t.Run("ST-SUP-RC01-OC23-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T05") })
 	t.Run("ST-GEN-UC12-R03-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R03-T02") })
+	t.Run("ST-SUP-RC01-OC23-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T02") })
+	t.Run("ST-SUP-RC01-OC33-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC33-T01") })
+	t.Run("ST-SUP-RC01-OC33-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC33-T02") })
+	t.Run("ST-SUP-RC01-OC36-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC36-T02") })
+	t.Run("ST-SUP-RC01-OC37-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC37-T02") })
+	t.Run("ST-SUP-RC01-OC39-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T04") })
+	t.Run("ST-SUP-RC01-OC24-T09 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T09") })
+	t.Run("ST-GEN-UC12-R03-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R03-T03") })
 
 	t.Run("ST-SUP-RC01-OC22-T03 An add step takes a database with rows to the schema of a new database, and the release before still runs on it", func(t *testing.T) {
 		onPostgres(t, "ST-SUP-RC01-OC22-T03")

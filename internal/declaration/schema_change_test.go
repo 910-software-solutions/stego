@@ -170,6 +170,8 @@ func TestSchemaChangeValues(t *testing.T) {
 		{"a require of a field with a default", "{name: owner, type: string, max_length: 20, default: x}", "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: nobody}", `"owner-require"`},
 		{"a fill value longer than 20", required, "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: " + strings.Repeat("n", 21) + "}", "max_length 20"},
 		{"a drop of legacy whose Definition is int64 with the fill value abc", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: int64, fill_value: abc}", "abc"},
+		{"a retype of owner whose Definition is not of its type From", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: int32}", "the retype is from string"},
+		{"a retype of owner whose Definition cannot be read", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, colour red\"}", "cannot be read"},
 	} {
 		t.Run("ST-DECL-INV62-T "+c.name+" is refused", func(t *testing.T) {
 			wantFault(t, schemaFaults(t, with(c.owner, c.change), "schema-change-value"), c.names)

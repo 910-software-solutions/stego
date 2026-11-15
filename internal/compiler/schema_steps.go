@@ -85,7 +85,7 @@ func MissingAddSteps(base BaseSource, head *types.ServiceDeclaration) ([]types.S
 // adds the new column, the sync trigger and the backfill of its change (ST-GEN-UC12-R02, ST-GEN-UC12-R03,
 // ST-GEN-UC13); its contract step waits for ST-GEN-UC15. A relax changes one column in place at its expand step
 // (ST-SUP-RC01-OC45; decision on finding F12, owner, 2026-11-13).
-var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "relax": true}
+var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "retype": true, "require": true, "relax": true}
 
 // unbuiltSchemaChanges refuses a declaration with a schema change of a kind that generation does not carry out
 // yet, naming the change and its kind. Checking still accepts it (stego validate), so the author can declare it.

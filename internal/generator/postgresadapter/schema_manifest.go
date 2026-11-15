@@ -230,6 +230,9 @@ func manifestSource(models []tableModel, key string, optional map[string][]syncT
 		if triggers := optional[table.name]; len(triggers) > 0 {
 			b.WriteString("OptionalTriggers: []manifest.Trigger{\n")
 			for _, trigger := range triggers {
+				if trigger.name == "" {
+					continue
+				}
 				fmt.Fprintf(&b, "{Name: %q, Timing: \"BEFORE\", Row: true, Events: []string{\"INSERT\", \"UPDATE\"},\nFunction: manifest.Function{Name: %q, Language: \"plpgsql\", Source: %q, Config: []string{%q}}},\n",
 					trigger.name, StepSchema+"."+trigger.name, trigger.source, syncConfig)
 			}
@@ -237,7 +240,9 @@ func manifestSource(models []tableModel, key string, optional map[string][]syncT
 			// drops it (decision on ST-SUP-Q120 (c), orchestrator under the owner's delegation, 2026-11-14).
 			b.WriteString("},\nOptionalConstraints: []manifest.Constraint{\n")
 			for _, trigger := range triggers {
-				fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindCheck, Definition: %q},\n", trigger.check, trigger.definition)
+				if trigger.check != "" {
+					fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindCheck, Definition: %q},\n", trigger.check, trigger.definition)
+				}
 				// The contract step of the rename of a required field adds this CHECK NOT VALID, validates it and drops it,
 				// each in its own short transaction, while this release runs (ST-SUP-RC01-OC39).
 				if trigger.notNull != "" {
@@ -280,10 +285,23 @@ func openRenames(ctx gen.Context, models []tableModel) (map[string][]syncTrigger
 	optional := map[string][]syncTrigger{}
 	var open []openRename
 	for _, change := range ctx.SchemaChanges {
-		if change.Kind != "rename" || last[change.ID] != "expand" {
+		if change.Kind == "require" && last[change.ID] == "expand" {
+			// An open require has no sync trigger; its contract step adds CHECK (U IS NOT NULL) NOT VALID, validates
+			// it and drops it while this release runs (decision on ST-GEN-Q22 (a), orchestrator under the owner's
+			// delegation, 2026-11-14).
+			name := tableName(change.Entity)
+			optional[name] = append(optional[name], syncTrigger{notNull: NotNullCheckName(change.Entity, change.Field),
+				notNullDefinition: "CHECK ((" + deparsedName(change.Field) + " IS NOT NULL))"})
+			continue
+		}
+		if (change.Kind != "rename" && change.Kind != "retype") || last[change.ID] != "expand" {
 			continue
 		}
 		_, owner, err := serviceRoles(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		pair, err := pairOf(ctx, change)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -294,24 +312,29 @@ func openRenames(ctx gen.Context, models []tableModel) (map[string][]syncTrigger
 			}
 			required := false
 			for j := range models[i].columns {
-				if models[i].columns[j].name == change.Field {
+				if models[i].columns[j].name == pair.u {
 					required = models[i].columns[j].notNull
 					models[i].columns[j].notNull, models[i].columns[j].manifestDefault = false, ""
 				}
 			}
 			trigger := SyncTriggerName(change.Entity, change.Field)
-			sync := syncTrigger{name: trigger, source: syncSource(change.ID, owner, change.From, change.Field),
-				check: CompleteCheckName(change.Entity, change.Field), definition: completeDefinition(change.From, change.Field)}
+			sync := syncTrigger{name: trigger, source: syncSourceOf(change.ID, owner, pair),
+				check: CompleteCheckName(change.Entity, pair.u), definition: completeDefinitionOf(pair)}
 			if required {
-				sync.notNull = NotNullCheckName(change.Entity, change.Field)
-				sync.notNullDefinition = "CHECK ((" + deparsedName(change.Field) + " IS NOT NULL))"
+				sync.notNull = NotNullCheckName(change.Entity, pair.u)
+				sync.notNullDefinition = "CHECK ((" + deparsedName(pair.u) + " IS NOT NULL))"
 			}
 			optional[name] = append(optional[name], sync)
 			tenant := ""
 			if models[i].owned {
 				tenant = tenantColumn(ctx)
 			}
-			open = append(open, openRename{change: change.ID, table: name, tenant: tenant, from: change.From, to: change.Field, check: CompleteCheckName(change.Entity, change.Field)})
+			convert := ""
+			if pair.conv.name != "identity" {
+				convert = pair.forward("{K}")
+			}
+			open = append(open, openRename{change: change.ID, table: name, tenant: tenant, from: pair.k, to: pair.u, check: CompleteCheckName(change.Entity, pair.u),
+				convert: convert, guard: pair.failGuard("{K}"), fillDigest: pair.fillDigest()})
 		}
 	}
 	return optional, open, nil
@@ -319,7 +342,7 @@ func openRenames(ctx gen.Context, models []tableModel) (map[string][]syncTrigger
 
 // openRename is the copy of the backfill of an open rename: its change, its table, the tenant column of an owned
 // table, and the old and the new column (registry/runtime/lease.Copy).
-type openRename struct{ change, table, tenant, from, to, check string }
+type openRename struct{ change, table, tenant, from, to, check, convert, guard, fillDigest string }
 
 // stepsSource gives the variables SchemaSteps, the IDs of the open renames, which the writer marker names
 // (ST-SUP-RC01-OC23), and BackfillCopies, the copy of the backfill of each (ST-GEN-UC13).
@@ -327,7 +350,11 @@ func stepsSource(open []openRename, release string) string {
 	var ids, copies strings.Builder
 	for _, r := range open {
 		fmt.Fprintf(&ids, "%q,\n", r.change)
-		fmt.Fprintf(&copies, "{Change: %q, Table: %q, TenantColumn: %q, From: %q, To: %q, Check: %q},\n", r.change, r.table, r.tenant, r.from, r.to, r.check)
+		if r.convert == "" {
+			fmt.Fprintf(&copies, "{Change: %q, Table: %q, TenantColumn: %q, From: %q, To: %q, Check: %q},\n", r.change, r.table, r.tenant, r.from, r.to, r.check)
+			continue
+		}
+		fmt.Fprintf(&copies, "{Change: %q, Table: %q, TenantColumn: %q, From: %q, To: %q, Check: %q, Convert: %q, Guard: %q, FillDigest: %q},\n", r.change, r.table, r.tenant, r.from, r.to, r.check, r.convert, r.guard, r.fillDigest)
 	}
 	return fmt.Sprintf(`
 // SchemaSteps are the IDs of the schema changes of this release whose last step is expand and that have a sync
@@ -353,6 +380,9 @@ const SchemaRelease = %q
 func generateSchemaManifest(ctx gen.Context) (gen.File, error) {
 	models, err := tableModels(ctx)
 	if err != nil {
+		return gen.File{}, err
+	}
+	if models, err = requiredAt(ctx, models, len(ctx.SchemaHistory)); err != nil {
 		return gen.File{}, err
 	}
 	optional, open, err := openRenames(ctx, models)

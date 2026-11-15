@@ -208,7 +208,7 @@ func syncRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarati
 
 // validateBaseSchema enforces ST-GEN-INV33 on a head declaration against the declaration of a base that has a
 // record: the head's schema steps start with the base's steps in the same order and unchanged, the base's schema
-// changes stay and change only by a fill value that a retype at expand gets, no change gets its expand and its
+// changes stay as they are, also the fill value of a retype (ST-GEN-Q24 (c)), no change gets its expand and its
 // contract step in one release, and the baseline of the head, its stored shape with every schema step undone, is
 // the baseline of the base. STEGO cannot count rows, so it takes each table of the base as a table with rows.
 func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
@@ -386,8 +386,18 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 			position[step.Change] = i
 		}
 	}
+	// A rename with no step yet comes after each one with a step, in the order of the schema changes.
+	at := func(change types.SchemaChange) int {
+		if i, ok := position[change.ID]; ok {
+			return i
+		}
+		return len(service.SchemaHistory)
+	}
 	var renames []types.SchemaChange
 	added := map[string]bool{}
+	// first is the first retype of each field in the order of the schema history: the baseline has the field of its
+	// type From, so the search index of 001_initial follows that field, not the declared one (review of PR #314, L14).
+	first := map[string]types.SchemaChange{}
 	for _, change := range service.SchemaChanges {
 		if change.Entity != entity {
 			continue
@@ -395,18 +405,15 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 		switch change.Kind {
 		case "rename":
 			renames = append(renames, change)
-		case "add":
+		case "add", "require":
 			if change.Field != "" {
 				added[change.Field] = true
 			}
+		case "retype":
+			if earlier, seen := first[change.Field]; !seen || at(change) < at(earlier) {
+				first[change.Field] = change
+			}
 		}
-	}
-	// A rename with no step yet comes after each one with a step, in the order of the schema changes.
-	at := func(change types.SchemaChange) int {
-		if i, ok := position[change.ID]; ok {
-			return i
-		}
-		return len(service.SchemaHistory)
 	}
 	slices.SortStableFunc(renames, func(a, b types.SchemaChange) int { return at(a) - at(b) })
 	original := func(field string) string {
@@ -443,6 +450,11 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 	}
 	if declared, ok := findStoredEntity(service, entity); ok && listed {
 		for _, field := range declared.Fields {
+			if retype, ok := first[field.Name]; ok {
+				sensitivity := field.Sensitivity
+				field = gen.RetypeField(retype)
+				field.Sensitivity = sensitivity
+			}
 			if !added[field.Name] && postgresadapter.Searchable(field) {
 				filtered[original(field.Name)] = true
 			}
@@ -506,8 +518,7 @@ func baseStepFaults(base, head *types.ServiceDeclaration) []BaseFault {
 	return nil
 }
 
-// baseChangeFaults refuses a head that removes a schema change of the base or changes it other than by the fill
-// value of a retype at expand.
+// baseChangeFaults refuses a head that removes a schema change of the base or changes it in any way.
 func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 	var faults []BaseFault
 	for _, change := range base.SchemaChanges {
@@ -516,12 +527,10 @@ func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head removes the schema change %s of the base; the declaration keeps every schema change, also a finished one, until a new baseline folds it (ST-GEN-UC15-R03)", change.ID)})
 			continue
 		}
-		now := head.SchemaChanges[index]
-		if change.Kind == "retype" && phaseOf(head, change.ID) == "expand" {
-			now.FillValue = change.FillValue
-		}
-		if !reflect.DeepEqual(now, change) {
-			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head changes the schema change %s of the base; a schema change that a release declared stays as it is, and only a retype at expand may get a fill value", change.ID)})
+		// A fill value of a retype is in the text of its expand step, which the ledger digest covers, so it does not
+		// change either (decision on ST-GEN-Q24 (c), orchestrator under the owner's delegation, 2026-11-14).
+		if now := head.SchemaChanges[index]; !reflect.DeepEqual(now, change) {
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head changes the schema change %s of the base; a schema change that a release declared stays as it is, also its fill value, which its expand step holds", change.ID)})
 		}
 	}
 	return faults

@@ -17,7 +17,7 @@ var sixChanges = strings.Replace(td02, "      - {name: title, type: string, min_
 schema_changes:
   - {id: todo-note-add, kind: add, entity: Todo, field: note}
   - {id: todo-title-rename, kind: rename, entity: Todo, field: summary, from: title}
-  - {id: todo-priority-retype, kind: retype, entity: Todo, field: priority, from: string, conversion: text_to_integer, inverse_conversion: integer_to_text}
+  - {id: todo-priority-retype, kind: retype, entity: Todo, field: priority, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, fill_value: 0}
   - {id: todo-owner-require, kind: require, entity: Todo, field: owner, fill_value: nobody}
   - {id: todo-legacy-drop, kind: drop, entity: Todo, field: legacy, definition: "legacy: string, max_length 64"}
   - {id: todo-summary-unique, kind: unique, entity: Todo, field: unique_summary}

@@ -166,6 +166,72 @@ an earlier ledger refuses the row of a step that it does not know. The check
 against the base refuses a new step on such a base and names the version to
 deploy first.
 
+## Retype and require
+
+A retype gives a field a new type. Declare the conversion to the new type
+and the inverse conversion back, by the names that the database component
+declares, and the type before the change in `from`:
+
+```yaml
+schema_changes:
+  - {id: orgsetting-rank-retype, kind: retype, entity: OrgSetting, field: rank,
+     from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}
+```
+
+The postgres-adapter declares these conversions: `integer_to_int64`,
+`int64_to_integer`, `integer_to_text`, `int64_to_text`, `bool_to_text`,
+`text_to_integer`, `text_to_int64` and `text_to_bool` (`integer` is
+`int32`). A conversion is total, or total only under a constraint of the
+field: a text converts to an int64 only under one of the patterns
+`^[0-9]{1,9}$`, `^-?[0-9]{1,9}$`, `^[0-9]{1,18}$` and `^-?[0-9]{1,18}$`.
+Checking refuses a conversion that the component does not declare for the
+two types, a conversion that is not total over the field before the change
+and has no `fill_value`, and an inverse conversion that is not total over
+the field after the change (ST-DECL-INV62, ST-DECL-INV63). Checking also
+refuses a retype where the CHECK of one column could refuse a converted
+value of the other: between two integer types the fields before and after
+the change have the same `min` and `max`, and between a number or a boolean
+and a text neither field has a `min`, a `max`, a `min_length`, a
+`max_length` or `values`. Give the field
+before the change, with its constraints, in `definition`, such as
+`string, pattern ^[0-9]{1,9}$`; a pattern is the last item, as it can hold
+a comma.
+
+The field keeps its name in the API. Its values go to a new column,
+`<field>_<type>`, such as `rank_string`, which stays its column after the
+contract step. The expand step adds the column, nullable, its CHECK
+`NOT VALID` and its indexes, and then the sync trigger, which converts each
+write of the release before into the new column and each write of the new
+release back into the old one. A value that does not convert gets the fill
+value. The migration job of the
+new release converts the rows there before the rollout, under the lease of
+the change, and the contract step waits for a backfill with no failed row.
+Only one rename or retype can be at expand on a table at one time. A retype
+of a field in a unique key or that is unique after it, of a reference, of a
+string with a `max_length`, and of the counter `generation` is not built,
+and neither is a require of a unique field, whose rows would all get the
+fill value. The contract step counts the rows with the old column set and
+the new one empty last, and waits while one is left.
+
+A require adds a required field with no default. Declare the value that
+each row there gets in `fill_value`:
+
+```yaml
+  - {id: user-locale-require, kind: require, entity: User, field: locale, fill_value: en}
+```
+
+Its expand step adds the column with the fill value as its default, and
+nullable. PostgreSQL keeps the default in the catalog and rewrites no row,
+so each row there and each insert of the release before read the fill
+value at once. A require has no sync trigger and no backfill. Its contract
+step makes the column NOT NULL in short steps (a CHECK `NOT VALID`, its
+validation, `SET NOT NULL`, the drop of the CHECK) and keeps the default.
+
+A retype whose conversion is not total declares its fill value with its
+expand step. A later release cannot add or change it, because the expand
+step holds it and its ledger digest covers it: the check against the base
+refuses the change (ST-GEN-Q24).
+
 ## Restarts during a rolling deploy
 
 A pod of the release before a step restarts on the database after the
@@ -191,7 +257,7 @@ in the exact form that the step gives it, on the table of a declared entity:
   security every other unique index that the manifest does not name fails
   the check, because a write that fails on it would tell one tenant that
   another tenant holds the value;
-- the sync trigger of the expand step of a rename, a retype or a require:
+- the sync trigger of the expand step of a rename or a retype:
   a BEFORE INSERT OR UPDATE row trigger whose function is the fixed
   template of this release, in the schema `stego_steps`, for one column
   that the release before knows and one new column (ST-SUP-RP15-LC02).

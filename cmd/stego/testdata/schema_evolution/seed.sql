@@ -1,5 +1,5 @@
 -- The rows of ST-GEN-TD04, loaded after the migration job of v1: 10 tenants, each with one Organization, 1,000 User
--- rows each with its own email, and 10 OrgSetting rows with distinct keys. The check runs it as a superuser in one
+-- rows each with its own email, and 10 OrgSetting rows with distinct keys, each with a rank. The check runs it as a superuser in one
 -- transaction; the tables are owned and row-level security does not apply to a superuser.
 BEGIN;
 INSERT INTO public.stego_tenants (tenant_id)
@@ -11,8 +11,8 @@ INSERT INTO public.users (tenant_id, id, email, display_name, role, org_id)
   SELECT 't-' || pg_catalog.lpad((n / 1000)::text, 2, '0'), pg_catalog.gen_random_uuid(), 'user' || n || '@seed.test', 'User ' || n, 'member',
     ('00000000-0000-0000-0000-0000000000' || pg_catalog.lpad((n / 1000)::text, 2, '0'))::uuid
   FROM pg_catalog.generate_series(0, 9999) AS n;
-INSERT INTO public.org_settings (tenant_id, id, org_id, key, value, generation)
+INSERT INTO public.org_settings (tenant_id, id, org_id, key, value, generation, rank)
   SELECT 't-' || pg_catalog.lpad((n / 10)::text, 2, '0'), pg_catalog.gen_random_uuid(),
-    ('00000000-0000-0000-0000-0000000000' || pg_catalog.lpad((n / 10)::text, 2, '0'))::uuid, 'key-' || (n % 10), '{}'::jsonb, 1
+    ('00000000-0000-0000-0000-0000000000' || pg_catalog.lpad((n / 10)::text, 2, '0'))::uuid, 'key-' || (n % 10), '{}'::jsonb, 1, n * 1000003 - 50000000
   FROM pg_catalog.generate_series(0, 99) AS n;
 COMMIT;
