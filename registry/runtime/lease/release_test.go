@@ -353,7 +353,17 @@ func TestReleaseQuiet(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// An overload of release_beat alone does not make the reports start: only the exact signatures count.
 		d.exec(t, "CREATE SCHEMA IF NOT EXISTS stego_schema")
+		d.exec(t, "GRANT USAGE ON SCHEMA stego_schema TO "+role)
+		d.exec(t, "CREATE FUNCTION stego_schema.release_beat(text) RETURNS void LANGUAGE sql AS 'SELECT NULL'")
+		d.exec(t, "CREATE FUNCTION stego_schema.release_stop(integer) RETURNS void LANGUAGE sql AS 'SELECT NULL'")
+		d.exec(t, "CREATE FUNCTION stego_schema.release_stop(text, text) RETURNS void LANGUAGE sql AS 'SELECT NULL'")
+		beat.beat(ctx)
+		if sent, faults := trace.read(); len(faults) != 0 || len(sent) != 7 {
+			t.Fatalf("with the overloads only, the report sent %d statements and %q failed, want one catalog read and none failed", len(sent), faults)
+		}
+		// The text makes the exact signatures; with the overloads still there, the next report calls release_beat.
 		d.exec(t, text)
 		beat.beat(ctx)
 		if _, ok := readRelease(t, d, beat.Holder()); !ok {

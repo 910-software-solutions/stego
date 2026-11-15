@@ -6,10 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -330,9 +333,20 @@ func TestServe(t *testing.T) {
 		decision.mu.Unlock()
 		undecided := get(t, list, "/orders", "t1", "user:u-7")
 		wantProblem(t, undecided, http.StatusServiceUnavailable, "the provider is down")
-		if undecided.retryAfter != RetryAfter {
-			t.Errorf("the 503 of an undecided list has Retry-After %q, want %q (ST-SUP-Q140)", undecided.retryAfter, RetryAfter)
+		if !slices.Contains([]string{"1", "2", "3"}, undecided.retryAfter) {
+			t.Errorf("the 503 of an undecided list has Retry-After %q, want 1 to 3 s (ST-SUP-Q140)", undecided.retryAfter)
 		}
+		// A provider that refuses the call, such as for a bad key, is no retry case: 500 with no Retry-After.
+		decision.mu.Lock()
+		decision.fault = providerError(status.Error(codes.PermissionDenied, "bad key"))
+		decision.mu.Unlock()
+		refused := get(t, list, "/orders", "t1", "user:u-7")
+		if refused.status != http.StatusInternalServerError || refused.retryAfter != "" || strings.Contains(refused.body, "bad key") {
+			t.Errorf("a refused provider answered %d with Retry-After %q: %s, want 500 with none and no provider text", refused.status, refused.retryAfter, refused.body)
+		}
+		decision.mu.Lock()
+		decision.fault = nil
+		decision.mu.Unlock()
 		if page.retryAfter != "" {
 			t.Errorf("the 200 of the list has Retry-After %q", page.retryAfter)
 		}

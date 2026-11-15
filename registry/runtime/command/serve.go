@@ -119,10 +119,6 @@ type Outcome struct {
 	Field, Reason string
 }
 
-// RetryAfter is the Retry-After value, in seconds, of a 503 answer of a command whose decision the provider could not
-// make now (ST-SUP-Q140).
-const RetryAfter = "1"
-
 // ErrUndecided is the error of a command whose permission the decision port could not decide now, such as for some
 // seconds after a schema write; OutcomeOf answers it 503 undecided, with Retry-After (ST-SUP-Q140).
 var ErrUndecided = errors.New("command: the permission of the command could not be decided now")
@@ -483,7 +479,7 @@ func writeProblem(w http.ResponseWriter, httpStatus int, problemType, code strin
 func writeFieldProblem(w http.ResponseWriter, httpStatus int, problemType, code, field string) {
 	if httpStatus == http.StatusServiceUnavailable {
 		// A 503 is a decision that the provider could not make now; the client may try again (ST-SUP-Q140).
-		w.Header().Set("Retry-After", RetryAfter)
+		w.Header().Set("Retry-After", authz.RetryAfter())
 	}
 	if problemType == "" {
 		problemType = "about:blank"

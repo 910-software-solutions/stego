@@ -950,14 +950,14 @@ func canonicalID(id string) string {
 }
 
 // answerRead answers an error of a read: a row that is not there or that the caller may not read is 404, a read
-// that the authorization provider could not decide is 503 with Retry-After, and every other error 500
-// (ST-SUP-RP11-LC06).
+// that the authorization provider could not decide now is 503 with Retry-After, and every other error, a refusal of
+// the provider included, 500 (ST-SUP-RP11-LC06, ST-SUP-Q140).
 func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err error) {
 	if errors.Is(err, query.ErrNotFound) {
 		handleError(w, r, NotFound(kind, id))
 		return
 	}
-	if errors.Is(err, query.ErrUndecided) {
+	if query.Transient(err) {
 		answerUndecided(w, r)
 		return
 	}
@@ -965,10 +965,10 @@ func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err err
 }
 
 // answerUndecided answers a request whose permission the authorization provider could not decide now, such as for
-// some seconds after a schema write: 503 with Retry-After, never a bare 500. The runtime logs the fixed cause
+// some seconds after a schema write: 503 with Retry-After of 1 to 3 s, never a bare 500. The runtime logs the fixed cause
 // (walkthrough 3, G4; ST-SUP-Q140).
 func answerUndecided(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Retry-After", "1")
+	w.Header().Set("Retry-After", query.RetryAfter())
 	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
 }
 
@@ -2331,7 +2331,7 @@ func (w *runtimeHandlerWriter) list() {
 		w.f("\tif errors.Is(err, query.ErrNotFound) {\n\t\thandleError(w, r, NotFound(%q, scope))\n\t\treturn\n\t}\n", c.decl.ParentEntity())
 	}
 	w.f("\tif errors.Is(err, query.ErrBadRequest) {\n\t\thandleError(w, r, BadRequest(\"the list request is not valid\"))\n\t\treturn\n\t}\n")
-	w.f("\tif errors.Is(err, query.ErrUndecided) {\n\t\tanswerUndecided(w, r)\n\t\treturn\n\t}\n")
+	w.f("\tif query.Transient(err) {\n\t\tanswerUndecided(w, r)\n\t\treturn\n\t}\n")
 	w.f("\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 	w.f("\titems := make([]any, 0, len(page.items))\n\tfor _, item := range page.items {\n\t\titems = append(items, selectFields(%sPresented(%s), fields))\n\t}\n", c.camel, w.presentedArgs("item"))
 	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")

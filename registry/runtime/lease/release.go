@@ -113,10 +113,15 @@ type Beat struct {
 	made bool
 }
 
-// beatMade reads the catalog for the two functions of the release reports. It needs no grant: every role may read
-// pg_proc and pg_namespace.
-const beatMade = `SELECT pg_catalog.count(*) = 2 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
- WHERE n.nspname = 'stego_schema' AND p.proname IN ('release_beat', 'release_stop')`
+// beatMade reads the catalog for the two functions of the release reports by their exact signatures, so an overload
+// of either name neither stops nor starts the reports (security review of PR #354, L1). It reads pg_proc and
+// pg_namespace, which every role may read, so it needs no grant and no schema, and it names each operator in
+// pg_catalog (I3). The argument types are text (oid 25) and integer (oid 23).
+const beatMade = `SELECT pg_catalog.count(DISTINCT p.proname) OPERATOR(pg_catalog.=) 2
+ FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) p.pronamespace
+ WHERE n.nspname OPERATOR(pg_catalog.=) 'stego_schema' AND (
+  (p.proname OPERATOR(pg_catalog.=) 'release_beat' AND p.proargtypes::pg_catalog.text OPERATOR(pg_catalog.=) '25 25 25 23')
+  OR (p.proname OPERATOR(pg_catalog.=) 'release_stop' AND p.proargtypes::pg_catalog.text OPERATOR(pg_catalog.=) '25'))`
 
 // ready reports whether the functions of the reports are there. It reads the catalog only until it has seen them
 // once, because no step removes them.

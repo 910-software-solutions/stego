@@ -820,12 +820,38 @@ func (r *Repository[T]) searchPage(ctx context.Context, limit int, after Cursor,
 	return result, nil
 }
 
+// undecidedError is the error of a read that the decision port could not decide: it matches ErrUndecided, and
+// Transient tells whether a retry may pass. Its text is that of ErrUndecided alone, so a missing and a present row give
+// the same error for the same cause (ST-SUP-RP11-LC06).
+type undecidedError struct{ transient bool }
+
+func (e *undecidedError) Error() string        { return ErrUndecided.Error() }
+func (e *undecidedError) Is(target error) bool { return target == ErrUndecided }
+
+// Transient reports whether err is a read that the decision port could not decide now and a retry may pass
+// (authz.Transient): a handler answers it 503 with Retry-After, and every other ErrUndecided 500 (security review of
+// PR #354, L2; ST-SUP-Q140).
+func Transient(err error) bool {
+	var undecided *undecidedError
+	return errors.As(err, &undecided) && undecided.transient
+}
+
+// RetryAfter gives the Retry-After value of a 503 answer: 1 to 3 whole seconds, at random (authz.RetryAfter).
+func RetryAfter() string { return authz.RetryAfter() }
+
+// undecidedLog holds back the warning of an undecided read to one line for each cause in each authz.LogEvery.
+var undecidedLog = authz.NewCauseLog(nil)
+
 // undecided logs a read that the decision port could not decide, with the entity and the fixed cause of the error
-// (authz.Cause), and gives ErrUndecided, which a handler answers 503 with Retry-After. The log line holds no text of
-// the provider, no subject and no row key (ST-SUP-RP06-LC20), so a failed read is never an error that no log
-// explains (walkthrough 3, G4; ST-SUP-Q140).
+// (authz.Cause), at most one line for each cause in each authz.LogEvery with the count of the lines held back, and
+// gives the undecided error, which a handler answers 503 with Retry-After when it is transient and 500 else. The log
+// line holds no text of the provider, no subject and no row key (ST-SUP-RP06-LC20), so a failed read is never an error
+// that no log explains (walkthrough 3, G4; ST-SUP-Q140).
 func undecided(ctx context.Context, entity string, err error) error {
-	slog.WarnContext(ctx, "query: the authorization provider could not decide the read", "entity", entity, "cause", authz.Cause(err),
-		"transient", authz.Transient(err))
-	return ErrUndecided
+	cause, transient := authz.Cause(err), authz.Transient(err)
+	if ok, held := undecidedLog.Allow(cause); ok {
+		slog.WarnContext(ctx, "query: the authorization provider could not decide the read", "entity", entity, "cause", cause,
+			"transient", transient, "held_back", held)
+	}
+	return &undecidedError{transient: transient}
 }

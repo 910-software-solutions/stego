@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -398,11 +399,11 @@ func TestOutcomeTransient(t *testing.T) {
 			}
 		}
 		// Serve writes the 503 with Retry-After, and no other answer has it.
-		for status, want := range map[int]string{http.StatusServiceUnavailable: RetryAfter, http.StatusInternalServerError: "", http.StatusNotFound: ""} {
+		for status, want := range map[int][]string{http.StatusServiceUnavailable: {"1", "2", "3"}, http.StatusInternalServerError: {""}, http.StatusNotFound: {""}} {
 			w := httptest.NewRecorder()
 			writeProblem(w, status, "", "code")
-			if got := w.Header().Get("Retry-After"); got != want || w.Code != status {
-				t.Errorf("the answer %d has Retry-After %q (status %d), want %q", status, got, w.Code, want)
+			if got := w.Header().Get("Retry-After"); !slices.Contains(want, got) || w.Code != status {
+				t.Errorf("the answer %d has Retry-After %q (status %d), want one of %q", status, got, w.Code, want)
 			}
 		}
 	})

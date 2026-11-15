@@ -44,7 +44,7 @@ and its migration job runs Migration and then WriteSchema before the service
 starts. After the last WriteSchema the job waits until SpiceDB serves each
 name of Definitions, at most about 30 s, and fails when it does not, so a new
 resource type is served from the first request of the release. A read or a
-write that SpiceDB cannot decide now answers 503 with Retry-After, and the log
-names the cause (ST-SUP-Q140). In the worker mode the service runtime runs the relay on the relay
-role, which writes the relations of each committed write to the provider, and
-the watch of the relay.
+write that SpiceDB cannot decide now answers 503 with Retry-After, a refusal of
+SpiceDB answers 500, and the log names the cause (ST-SUP-Q140). In the worker
+mode the service runtime runs the relay on the relay role, which writes the
+relations of each committed write to the provider, and the watch of the relay.

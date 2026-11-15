@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"sort"
+	"strconv"
+	"sync"
 	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -542,7 +545,8 @@ func Transient(err error) bool {
 	}
 }
 
-// The bound of AwaitSchema: at most SchemaPolls probe rounds, SchemaPause apart, so the wait ends after about 30 s.
+// The bound of AwaitSchema: at most SchemaPolls probe rounds, SchemaPause apart, each probe within probeTimeout, so
+// the wait ends after about 30 s when SpiceDB answers.
 // A check at least as fresh as a token older than a schema write reads at the revision that the quantization window
 // of SpiceDB (5 s by default) and its staleness allowance keep behind the head, so a new definition is served to it
 // after about 5 to 10 s.
@@ -557,6 +561,9 @@ const (
 // ErrSchemaNotServed is the error of AwaitSchema when SpiceDB does not serve every definition of the written schema
 // within its bound: the migration job then fails, and the release does not start (ST-SUP-Q140).
 var ErrSchemaNotServed = errors.New("authz: SpiceDB does not serve every definition of the written schema to a check of an older floor within the bound")
+
+// probeTimeout is the deadline of one probe call of AwaitSchema; a test of the package shortens it.
+var probeTimeout = 2 * time.Second
 
 // schemaPause waits between two probe rounds of AwaitSchema; a test of the package replaces it to count the rounds.
 var schemaPause = func(ctx context.Context) error {
@@ -644,8 +651,10 @@ func awaitSchema(ctx context.Context, permissions v1.PermissionsServiceClient, d
 
 // serves probes one definition at the consistency at: true when SpiceDB serves it, false when it does not yet, or
 // does not answer now. Any other error is a refusal that a wait does not change.
-func serves(ctx context.Context, permissions v1.PermissionsServiceClient, definition string, at *v1.Consistency) (bool, error) {
-	ctx, cancel := context.WithCancel(ctx)
+func serves(parent context.Context, permissions v1.PermissionsServiceClient, definition string, at *v1.Consistency) (bool, error) {
+	// Each probe has its own deadline, so a call that hangs costs one round and the bound of the wait holds (security
+	// review of PR #354, I2).
+	ctx, cancel := context.WithTimeout(parent, probeTimeout)
 	defer cancel()
 	stream, err := permissions.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
 		Consistency:        at,
@@ -659,8 +668,49 @@ func serves(ctx context.Context, permissions v1.PermissionsServiceClient, defini
 		return true, nil
 	}
 	failure := spiceError("read the relationships of a definition", err)
-	if Transient(failure) && ctx.Err() == nil {
+	if (Transient(failure) || errors.Is(ctx.Err(), context.DeadlineExceeded)) && parent.Err() == nil {
 		return false, nil
 	}
 	return false, failure
 }
+
+// LogEvery is the shortest time between two log lines of one cause of a CauseLog: a provider outage logs one line
+// for each cause in each LogEvery, with the count of the lines it held back (security review of PR #354, L3).
+const LogEvery = 10 * time.Second
+
+// CauseLog lets one log line of each cause through in each LogEvery and counts the others. Its zero value is ready;
+// it is safe for concurrent use.
+type CauseLog struct {
+	mu   sync.Mutex
+	now  func() time.Time
+	last map[string]time.Time
+	held map[string]int
+}
+
+// NewCauseLog gives a CauseLog that reads the time from now; nil is time.Now.
+func NewCauseLog(now func() time.Time) *CauseLog { return &CauseLog{now: now} }
+
+// Allow reports whether a line of cause may be logged now, and how many lines of cause it held back since the last
+// one it let through.
+func (l *CauseLog) Allow(cause string) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
+	if l.last == nil {
+		l.last, l.held = map[string]time.Time{}, map[string]int{}
+	}
+	if last, ok := l.last[cause]; ok && now.Sub(last) < LogEvery {
+		l.held[cause]++
+		return false, 0
+	}
+	held := l.held[cause]
+	l.last[cause], l.held[cause] = now, 0
+	return true, held
+}
+
+// RetryAfter gives the Retry-After value of a 503 answer to a decision that the provider could not make now: a whole
+// number of seconds from 1 to 3, at random, so the clients of an outage do not retry in step (L3).
+func RetryAfter() string { return strconv.Itoa(1 + rand.IntN(3)) }

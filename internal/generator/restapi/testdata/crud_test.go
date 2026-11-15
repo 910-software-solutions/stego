@@ -1445,7 +1445,7 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, and the log names the cause", func(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
 		id := e.create(a, "orders", "order", `{"sku":"s-503","qty":1}`)
@@ -1473,17 +1473,33 @@ func TestCrud(t *testing.T) {
 				}
 				r := e.send(a, call.method, call.path, key, call.body)
 				problem := r.object(t)
-				if r.status != http.StatusServiceUnavailable || r.header.Get("Retry-After") != "1" || problem["status"] != float64(http.StatusServiceUnavailable) ||
+				if r.status != http.StatusServiceUnavailable || !slices.Contains([]string{"1", "2", "3"}, r.header.Get("Retry-After")) || problem["status"] != float64(http.StatusServiceUnavailable) ||
 					!strings.HasSuffix(fmt.Sprint(problem["code"]), "-INT-001") {
-					t.Errorf("%s: %s %s answered %d with Retry-After %q: %s, want 503 with Retry-After 1 and an INT code", fault.name, call.method, call.path, r.status, r.header.Get("Retry-After"), r.body)
+					t.Errorf("%s: %s %s answered %d with Retry-After %q: %s, want 503 with Retry-After 1 to 3 and an INT code", fault.name, call.method, call.path, r.status, r.header.Get("Retry-After"), r.body)
 				}
 			}
 			logged := e.logs.String()[before:]
-			if strings.Count(logged, `"cause":"`+fault.cause+`"`) < 3 {
-				t.Errorf("%s: the log names the cause %s fewer than 3 times: %s", fault.name, fault.cause, logged)
+			// The query and the command runtime each log a cause once in each interval.
+			if strings.Count(logged, `"cause":"`+fault.cause+`"`) < 1 {
+				t.Errorf("%s: the log does not name the cause %s: %s", fault.name, fault.cause, logged)
 			}
 			if strings.Contains(logged, "not found\"") || strings.Contains(logged, "connection refused") || strings.Contains(logged, id) {
 				t.Errorf("%s: the log holds provider text or the row key: %s", fault.name, logged)
+			}
+		}
+		// A refusal of the provider, such as for a bad key, is no retry case: 500 with no Retry-After.
+		e.decision.fail(t, status.Error(codes.PermissionDenied, "bad key"))
+		for _, call := range []struct{ method, path, body string }{
+			{http.MethodGet, "/api/v1/orders", ""},
+			{http.MethodGet, "/api/v1/orders/" + id, ""},
+			{http.MethodPatch, "/api/v1/orders/" + id, `{"qty":3}`},
+		} {
+			key := ""
+			if call.method != http.MethodGet {
+				key = "k-" + uuid.NewString()
+			}
+			if r := e.send(a, call.method, call.path, key, call.body); r.status != http.StatusInternalServerError || r.header.Get("Retry-After") != "" || strings.Contains(string(r.body), "bad key") {
+				t.Errorf("a refused provider: %s %s answered %d with Retry-After %q: %s, want 500 with none", call.method, call.path, r.status, r.header.Get("Retry-After"), r.body)
 			}
 		}
 		e.decision.fail(t, nil)

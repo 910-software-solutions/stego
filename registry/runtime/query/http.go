@@ -163,10 +163,6 @@ func Serve[Req, Res, P any](rt *Runtime, s HTTP[Req, Res, P]) (http.Handler, err
 	}), nil
 }
 
-// RetryAfter is the Retry-After value, in seconds, of a 503 answer of a read that the provider could not decide now
-// (ST-SUP-Q140).
-const RetryAfter = "1"
-
 // statusOf is the status of an error of Run.
 func statusOf(err error) int {
 	switch {
@@ -174,7 +170,8 @@ func statusOf(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, ErrBadCursor), errors.Is(err, ErrBadRequest):
 		return http.StatusBadRequest
-	case errors.Is(err, ErrUndecided):
+	case Transient(err):
+		// A read that the provider could not decide now; a refusal of the provider is 500 (ST-SUP-Q140).
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
@@ -188,7 +185,7 @@ func writeProblem(w http.ResponseWriter, status int) { writeCodedProblem(w, stat
 func writeCodedProblem(w http.ResponseWriter, status int, code string) {
 	if status == http.StatusServiceUnavailable {
 		// A 503 is a read that the provider could not decide now; the client may try again (ST-SUP-Q140).
-		w.Header().Set("Retry-After", RetryAfter)
+		w.Header().Set("Retry-After", RetryAfter())
 	}
 	title := titles[status]
 	if title == "" {

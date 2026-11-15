@@ -750,9 +750,16 @@ type servedStream struct {
 
 func (servedStream) Recv() (*v1.ReadRelationshipsResponse, error) { return nil, io.EOF }
 
-func (s *schemaProbes) ReadRelationships(context.Context, *v1.ReadRelationshipsRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[v1.ReadRelationshipsResponse], error) {
+// errHang is an answer of schemaProbes that waits until the probe's context ends, as a stream that hangs.
+var errHang = errors.New("hang")
+
+func (s *schemaProbes) ReadRelationships(ctx context.Context, _ *v1.ReadRelationshipsRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[v1.ReadRelationshipsResponse], error) {
 	answer := s.answers[min(s.probes, len(s.answers)-1)]
 	s.probes++
+	if answer == errHang {
+		<-ctx.Done()
+		return nil, status.FromContextError(ctx.Err()).Err()
+	}
 	if answer != nil {
 		return nil, answer
 	}
@@ -825,7 +832,7 @@ func TestAwaitSchema(t *testing.T) {
 			t.Fatalf("after AwaitSchema the check gives %v, %v, want one deny", results, err)
 		}
 	})
-	t.Run("ST-SUP-RP06-LC05-T07 AwaitSchema fails closed with a named error after its bound, at once on a refusal, and needs every definition served on two rounds in a row", func(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC05-T07 AwaitSchema fails closed with a named error after its bound, at once on a refusal, ends a hung probe at its own deadline, and needs every definition served on two rounds in a row", func(t *testing.T) {
 		ctx := context.Background()
 		saved := schemaPause
 		pauses := 0
@@ -859,8 +866,58 @@ func TestAwaitSchema(t *testing.T) {
 		if err := awaitSchema(ctx, two, []string{"task", "comment"}, Fresh(), 10); err != nil || two.probes != 6 {
 			t.Errorf("two definitions give %v after %d probes, want nil after 6", err, two.probes)
 		}
+		// A probe that hangs ends at its own deadline and counts as one round that is not served: the wait keeps
+		// its bound of rounds, and a hang of the probe before a served answer does not stop it.
+		savedTimeout := probeTimeout
+		probeTimeout = time.Millisecond
+		t.Cleanup(func() { probeTimeout = savedTimeout })
+		hung := &schemaProbes{answers: []error{errHang}}
+		if err := awaitSchema(ctx, hung, []string{"comment"}, Fresh(), 3); !errors.Is(err, ErrSchemaNotServed) || hung.probes != 3 {
+			t.Errorf("a probe that hangs gives %v after %d probes, want ErrSchemaNotServed after 3", err, hung.probes)
+		}
+		late := &schemaProbes{answers: []error{errHang, nil, nil}}
+		if err := awaitSchema(ctx, late, []string{"comment"}, Fresh(), 5); err != nil || late.probes != 3 {
+			t.Errorf("a hang and then two served rounds give %v after %d probes, want nil after 3", err, late.probes)
+		}
 		if err := AwaitSchema(ctx, nil, []string{"comment"}, Token{}); err == nil {
 			t.Error("AwaitSchema takes no connection")
+		}
+	})
+}
+
+func TestCauseLog(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC20-T02 A cause log lets one line of each cause through in each interval with the count held back, and Retry-After is 1 to 3 whole seconds", func(t *testing.T) {
+		now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+		l := NewCauseLog(func() time.Time { return now })
+		type answer struct {
+			ok   bool
+			held int
+		}
+		check := func(cause string, want answer) {
+			t.Helper()
+			if ok, held := l.Allow(cause); ok != want.ok || held != want.held {
+				t.Errorf("Allow(%s) at %v gives %v, %d, want %v, %d", cause, now, ok, held, want.ok, want.held)
+			}
+		}
+		check(CauseUnavailable, answer{true, 0})
+		check(CauseUnavailable, answer{false, 0})
+		check(CauseUnavailable, answer{false, 0})
+		check(CauseSchemaNotServed, answer{true, 0})
+		now = now.Add(LogEvery - time.Nanosecond)
+		check(CauseUnavailable, answer{false, 0})
+		now = now.Add(time.Nanosecond)
+		check(CauseUnavailable, answer{true, 3})
+		check(CauseSchemaNotServed, answer{true, 0})
+		var zero CauseLog
+		if ok, _ := zero.Allow(CauseDeadline); !ok {
+			t.Error("the zero CauseLog holds back the first line")
+		}
+		seen := map[string]int{}
+		for range 300 {
+			seen[RetryAfter()]++
+		}
+		if len(seen) != 3 || seen["1"] == 0 || seen["2"] == 0 || seen["3"] == 0 {
+			t.Errorf("RetryAfter gave %v in 300 calls, want each of 1, 2 and 3 and nothing else", seen)
 		}
 	})
 }
