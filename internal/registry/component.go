@@ -112,6 +112,9 @@ type Need struct {
 	APIGroup string   `yaml:"api_group,omitempty"`
 	Resource string   `yaml:"resource,omitempty"`
 	Verbs    []string `yaml:"verbs,omitempty"`
+	// ResourceNames are the names of the objects a cluster permission is limited to; get on secrets must give them
+	// (ST-DLV-Q14).
+	ResourceNames []string `yaml:"resource_names,omitempty"`
 	// Level is the pod security level: privileged, baseline or restricted.
 	Level string `yaml:"level,omitempty"`
 }

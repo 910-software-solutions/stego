@@ -243,6 +243,45 @@ func TestKubernetesBaseApply(t *testing.T) {
 		expect(t, buildBase(t, overlay), "1Gi")
 	})
 
+	t.Run("ST-DLV-UC07-R03-T03 The written Kubernetes base always sets the restricted security context and a read-only root file system", func(t *testing.T) {
+		resources := buildBase(t, base)
+		for _, resource := range resources {
+			if resource["kind"] != "Deployment" {
+				continue
+			}
+			pod := field(resource, "spec", "template", "spec")
+			if field(pod, "securityContext", "runAsNonRoot") != true || field(pod, "securityContext", "seccompProfile", "type") != "RuntimeDefault" {
+				t.Errorf("the pod security context is %v, want runAsNonRoot and the RuntimeDefault seccomp profile", field(pod, "securityContext"))
+			}
+			volumes, _ := field(pod, "volumes").([]any)
+			if len(volumes) != 1 || field(volumes[0], "name") != "tmp" || field(volumes[0], "emptyDir", "sizeLimit") == nil {
+				t.Errorf("the pod volumes are %v, want one bounded emptyDir tmp", volumes)
+			}
+		}
+		for _, container := range containersOf(t, resources) {
+			context := field(container, "securityContext")
+			drop, _ := field(context, "capabilities", "drop").([]any)
+			if field(context, "allowPrivilegeEscalation") != false || field(context, "readOnlyRootFilesystem") != true || len(drop) != 1 || drop[0] != "ALL" {
+				t.Errorf("container %v: the security context is %v, want no privilege escalation, a read-only root and every capability dropped", container["name"], context)
+			}
+			mounts, _ := field(container, "volumeMounts").([]any)
+			if len(mounts) != 1 || field(mounts[0], "mountPath") != "/tmp" {
+				t.Errorf("container %v: the mounts are %v, want tmp at /tmp", container["name"], mounts)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC07-R02-T02 The written Kubernetes base names an image that no registry serves, and the plan says each overlay must set the digest", func(t *testing.T) {
+		for _, container := range containersOf(t, buildBase(t, base)) {
+			if image := container["image"]; image != "stego.invalid/orders:set-by-overlay" {
+				t.Errorf("container %v: the image is %v, want the placeholder stego.invalid/orders:set-by-overlay", container["name"], image)
+			}
+		}
+		if !strings.Contains(printed, "every overlay must set the image by digest") {
+			t.Errorf("the plan does not say that each overlay must set the image digest:\n%s", printed)
+		}
+	})
+
 	t.Run("ST-DLV-UC07-R05-T01 With no delivery stanza, applying the plan writes no ApplicationSet, says so, and invents no destination", func(t *testing.T) {
 		if !strings.Contains(printed, "no delivery object (Argo CD ApplicationSet) is written for the base of orders: "+delivery.NoDeliveryStanza) {
 			t.Fatalf("the plan does not say that no delivery object is written:\n%s", printed)

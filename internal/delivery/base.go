@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,7 +38,25 @@ var ResourceDefaults = map[string]map[string]string{
 
 // baseHeader is the first lines of each file of the base.
 const baseHeader = "# The Kubernetes base of the service. stego apply writes this file from the declaration and the platform\n" +
-	"# requirements, with no value that differs per environment: the platform's overlay supplies them. Do not edit it.\n"
+	"# requirements, with no value that differs per environment: the platform's overlay supplies them, and every\n" +
+	"# overlay must set the image by digest, because the image of the base is a name that no registry serves. Do not\n" +
+	"# edit it.\n"
+
+// serviceLabel is a Kubernetes object name that the base gives each resource: a DNS label.
+var serviceLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// TmpSizeLimit bounds the emptyDir at /tmp, within the ephemeral storage limit of the container.
+const TmpSizeLimit = "64Mi"
+
+// ImagePlaceholder is the image of the base: a name in the reserved domain stego.invalid, which no registry serves,
+// so that a pod whose overlay sets no image digest fails to pull and never runs an image of another owner. Every
+// overlay must set the image by digest.
+func ImagePlaceholder(service string) string {
+	return "stego.invalid/" + service + ":set-by-overlay"
+}
+
+// ImageNote is the plan line of a run that writes the base: every overlay must set the image digest.
+const ImageNote = "the Kubernetes base names the image %s, which no registry serves: every overlay must set the image by digest"
 
 // portName is a Kubernetes port name (IANA_SVC_NAME): at most 15 lower-case letters, digits and '-', with a letter.
 var portName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,13}[a-z0-9])?$`)
@@ -97,7 +116,7 @@ func WriteDeployment(service string, requirements []byte, probes *ProbeSource) (
 	if err != nil {
 		return DeploymentFiles{}, err
 	}
-	return DeploymentFiles{Files: base.Files, Notes: []string{deliveryObjectFor(written)}}, nil
+	return DeploymentFiles{Files: base.Files, Notes: []string{fmt.Sprintf(ImageNote, ImagePlaceholder(service)), deliveryObjectFor(written)}}, nil
 }
 
 // deliveryObjectFor is the policy Write the delivery object for a written base (ST-DLV-PO04): it hears the base of
@@ -116,6 +135,9 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 	if err != nil {
 		return Base{}, BaseWritten{}, err
 	}
+	if !serviceLabel.MatchString(service) {
+		return Base{}, BaseWritten{}, fmt.Errorf("the service name %q is not a Kubernetes name: a DNS label that starts and ends with a letter or a digit", service)
+	}
 	if stated.Service != service {
 		return Base{}, BaseWritten{}, fmt.Errorf("the platform requirements are of the service %s, not %s", stated.Service, service)
 	}
@@ -127,15 +149,12 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 	metadata := map[string]any{"name": service, "labels": labels}
 
 	var ingress, permissions []Requirement
-	restricted := false
 	for _, requirement := range stated.Requirements {
 		switch requirement.Kind {
 		case Ingress:
 			ingress = append(ingress, requirement)
 		case ClusterPermission:
 			permissions = append(permissions, requirement)
-		case PodSecurity:
-			restricted = restricted || requirement.Level == "restricted"
 		}
 	}
 
@@ -158,7 +177,7 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 
 	container := map[string]any{
 		"name":           service,
-		"image":          service,
+		"image":          ImagePlaceholder(service),
 		"readinessProbe": httpProbe(probes.Readiness, port),
 		"livenessProbe":  httpProbe(probes.Liveness, port),
 		"resources":      ResourceDefaults,
@@ -170,12 +189,15 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 	if len(ports) > 0 {
 		container["ports"] = ports
 	}
-	pod := map[string]any{"serviceAccountName": service, "automountServiceAccountToken": len(permissions) > 0, "containers": []any{container}}
-	if restricted {
-		// The settings that the restricted Pod Security Standard asks of a pod and its containers.
-		pod["securityContext"] = map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}}
-		container["securityContext"] = map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}
-	}
+	// The base always writes the settings of the restricted Pod Security Standard and a read-only root file
+	// system, whatever level the requirements state; an overlay may relax them, the base never does (ST-DLV-Q14).
+	// The process writes its temporary files to an emptyDir at /tmp.
+	container["securityContext"] = map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}},
+		"readOnlyRootFilesystem": true}
+	container["volumeMounts"] = []any{map[string]any{"name": "tmp", "mountPath": "/tmp"}}
+	pod := map[string]any{"serviceAccountName": service, "automountServiceAccountToken": len(permissions) > 0, "containers": []any{container},
+		"securityContext": map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
+		"volumes":         []any{map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": TmpSizeLimit}}}}
 	if err := add(DeploymentFile, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
 		"spec": map[string]any{"selector": map[string]any{"matchLabels": labels},
 			"template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": pod}}}); err != nil {
@@ -204,7 +226,18 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 			for i, verb := range requirement.Verbs {
 				verbs[i] = verb
 			}
-			rules = append(rules, map[string]any{"apiGroups": []any{requirement.APIGroup}, "resources": []any{requirement.Resource}, "verbs": verbs})
+			if reason := sensitivePermission(requirement); reason != "" {
+				return Base{}, BaseWritten{}, fmt.Errorf("the cluster permission %s: %s", requirement.Name, reason)
+			}
+			rule := map[string]any{"apiGroups": []any{requirement.APIGroup}, "resources": []any{requirement.Resource}, "verbs": verbs}
+			if len(requirement.ResourceNames) > 0 {
+				names := make([]any, len(requirement.ResourceNames))
+				for i, name := range requirement.ResourceNames {
+					names[i] = name
+				}
+				rule["resourceNames"] = names
+			}
+			rules = append(rules, rule)
 		}
 		if err := add(RoleFile, map[string]any{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata, "rules": rules}); err != nil {
 			return Base{}, BaseWritten{}, err
@@ -223,7 +256,7 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 		return Base{}, BaseWritten{}, err
 	}
 	files[KustomizationFile] = data
-	base := Base{Service: service, Image: service, Files: files}
+	base := Base{Service: service, Image: ImagePlaceholder(service), Files: files}
 	if _, err := LoadBase(base.Files); err != nil {
 		return Base{}, BaseWritten{}, fmt.Errorf("the Kubernetes base is not a plain kustomize base: %w", err)
 	}
@@ -282,6 +315,9 @@ func encodeResource(object map[string]any) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// baseKinds are the kinds of resource that a Kubernetes base may hold.
+var baseKinds = []string{"ServiceAccount", "Deployment", "Service", "Role", "RoleBinding"}
+
 // LoadBase reads the files of a Kubernetes base back and holds them to plain kustomize (ST-DLV-REPO03,
 // ST-DLV-INV09): each file is one of the base folder; the kustomization file has only its apiVersion, its kind and
 // its resources, so it names no generator, transformer, Helm chart or remote base; each resource is a file of the
@@ -311,7 +347,7 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 	resources := map[string]map[string]any{}
 	for _, name := range kustomization.Resources {
 		file := BaseFolder + "/" + name
-		if path.Base(name) != name || name == KustomizationFile || !slices.Contains(BaseFiles, file) {
+		if path.Base(name) != name || name == path.Base(KustomizationFile) || !slices.Contains(BaseFiles, file) {
 			return nil, fmt.Errorf("%s lists %s, which is not a file of the base folder", KustomizationFile, name)
 		}
 		content, held := files[file]
@@ -322,12 +358,15 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 			return nil, fmt.Errorf("%s lists %s twice", KustomizationFile, name)
 		}
 		var resource map[string]any
-		if err := yaml.Unmarshal(content, &resource); err != nil {
+		if err := decodeStrict(content, MaxRequirementsBytes, &resource); err != nil {
 			return nil, fmt.Errorf("%s: %w", file, err)
 		}
 		metadata, _ := resource["metadata"].(map[string]any)
-		if resource["apiVersion"] == nil || resource["kind"] == nil || metadata == nil || metadata["name"] == nil {
+		if resource["apiVersion"] == nil || metadata == nil || metadata["name"] == nil {
 			return nil, fmt.Errorf("%s is not a Kubernetes resource with an apiVersion, a kind and a name", file)
+		}
+		if kind, _ := resource["kind"].(string); !slices.Contains(baseKinds, kind) {
+			return nil, fmt.Errorf("%s holds the kind %v, which is not one of %s", file, resource["kind"], strings.Join(baseKinds, ", "))
 		}
 		resources[file] = resource
 	}
