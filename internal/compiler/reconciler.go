@@ -678,8 +678,12 @@ const RequirementsFile = "deploy/platform-requirements.yaml"
 // a hand edit of it and drift names one (ST-DLV-UC01-R05).
 func isProjectGeneratedFile(filePath string) bool {
 	return filePath == RequirementsFile || filePath == ReferenceFile || filePath == ArchitectureFile || filePath == ArchitectureViewFile ||
-		slices.Contains(BaseFiles, filePath)
+		slices.Contains(BaseFiles, filePath) || filePath == DeliveryObjectFile
 }
+
+// DeliveryObjectFile is the path, in the project folder, of the Argo CD ApplicationSet: the path of
+// delivery.ApplicationSetFile (ST-DLV-EN05-TB).
+const DeliveryObjectFile = "deploy/argocd/applicationset.yaml"
 
 // BaseFiles are the paths, in the project folder, of every file that the Kubernetes base may hold: the paths of
 // delivery.BaseFiles (ST-DLV-EN04-TB), which Generating may not import. A run writes the files that the platform
@@ -699,6 +703,8 @@ type DeploymentInput struct {
 	Service      string
 	Requirements []byte
 	Probes       *gen.Probes
+	// Delivery is the delivery stanza of the declaration, or nil (ST-DLV-Q12 (A)).
+	Delivery *types.Delivery
 }
 
 // DeploymentFiles are the files of the Kubernetes base and of the delivery object, and the lines of the plan.
@@ -727,13 +733,13 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 		}
 		probes = &served
 	}
-	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes})
+	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery})
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
 	}
 	for _, file := range written.Files {
-		if !slices.Contains(BaseFiles, file.Path) {
-			return nil, nil, fmt.Errorf("the Kubernetes base writes %s, which is not a file of the base", file.Path)
+		if !slices.Contains(BaseFiles, file.Path) && file.Path != DeliveryObjectFile {
+			return nil, nil, fmt.Errorf("the Kubernetes base writes %s, which is not a file of the base or the delivery object", file.Path)
 		}
 	}
 	return written.Files, written.Notes, nil
