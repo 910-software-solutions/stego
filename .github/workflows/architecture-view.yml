@@ -1,0 +1,67 @@
+name: Architecture view checks
+
+on:
+  push:
+    paths:
+      - 'internal/compiler/architecture*'
+      - 'internal/compiler/testdata/architecture/**'
+      - '.github/workflows/architecture-view.yml'
+  pull_request:
+    paths:
+      - 'internal/compiler/architecture*'
+      - 'internal/compiler/testdata/architecture/**'
+      - '.github/workflows/architecture-view.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: architecture-view-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.11'
+          cache: true
+      - name: Check the architecture view in a headless browser
+        env:
+          GOMAXPROCS: '2'
+          GOMEMLIMIT: 768MiB
+          STEGO_BROWSER: /usr/bin/google-chrome
+          STEGO_BROWSER_NO_SANDBOX: '1'
+          STEGO_REQUIRE_BROWSER_VIEW: '1'
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/architecture-view"
+          google-chrome --version | tee "$RUNNER_TEMP/architecture-view/browser.txt"
+          go test -v -count=1 -mod=readonly -timeout=4m ./internal/compiler \
+            -run '^TestArchitectureView(Browser)?$' | tee "$RUNNER_TEMP/architecture-view/tests.log"
+          python3 - "$RUNNER_TEMP/architecture-view/tests.log" <<'PY'
+          import re, sys
+          from pathlib import Path
+          log = Path(sys.argv[1]).read_text()
+          if re.search(r'^\s*--- SKIP: ', log, re.M):
+              raise SystemExit('A browser check was skipped')
+          for name in ['TestArchitectureView', 'TestArchitectureViewBrowser']:
+              if not re.search(r'^--- PASS: ' + name + r' ', log, re.M):
+                  raise SystemExit('Missing result: ' + name)
+          if len(re.findall(r'^    --- PASS: TestArchitectureViewBrowser/ST-GEN-UC08-', log, re.M)) < 11:
+              raise SystemExit('Missing browser results')
+          PY
+      - name: Retain the browser result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: architecture-view-${{ github.run_id }}
+          path: ${{ runner.temp }}/architecture-view
+          if-no-files-found: error
+          retention-days: 14
