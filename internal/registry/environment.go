@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"maps"
 	"net"
 	"net/url"
 	"path"
@@ -80,6 +81,16 @@ type EnvironmentVariable struct {
 	// Example is one value the reader can copy, for a variable that is not secret; only the reference file shows it.
 	Example *string        `yaml:"example,omitempty"`
 	Allowed *AllowedValues `yaml:"allowed,omitempty"`
+	// SecretSource is the secret need and the key that give the value of a secret variable, or the file of a path
+	// variable (ST-SUP-EN14 field Secret source, ST-DLV-Q19), so that the Kubernetes base can name them.
+	SecretSource *SecretSource `yaml:"secret_source,omitempty"`
+}
+
+// SecretSource is one key of one secret need: the need name, which may hold the placeholders of a need name, and
+// the key.
+type SecretSource struct {
+	Name string `yaml:"name"`
+	Key  string `yaml:"key"`
 }
 
 // IsRequired tells whether the component fails to start when the variable has no value.
@@ -185,6 +196,41 @@ func declaresVariables(component *Component) error {
 		}
 		if _, err := ParseVariableDescription(variable.Description); err != nil {
 			return fault("description", "%s; give one or two sentences of ASD-STE100 Simplified Technical English", err)
+		}
+		if source := variable.SecretSource; source != nil {
+			if !variable.IsSecret() && variable.Type != "path" {
+				return fault("secret_source", "only a secret variable, or a path variable that names the file of a secret, states a secret source")
+			}
+			if err := checkNeedName(component, source.Name); err != nil {
+				return fault("secret_source", "%s", err)
+			}
+			if len(source.Key) > maxNeedWord || !needWord.MatchString(source.Key) {
+				return fault("secret_source", "the key %q is not a key name of at most %d letters, digits, '-' or '_'", source.Key, maxNeedWord)
+			}
+		}
+	}
+	return nil
+}
+
+// checkSecretSources holds each secret source of each component to a secret need that a component of the registry
+// states with that key (ST-DLV-Q19). The release test runs it on the shipped registry. Load does not run it,
+// because a registry copy may leave out the component of a need; apply then wires no variable from that need, and
+// refuses a source whose need the service states without that key.
+func checkSecretSources(r *Registry) error {
+	keys := map[string][]string{}
+	for _, component := range r.components {
+		for _, need := range component.Needs {
+			if need.Kind == "secret" {
+				keys[need.Name] = append(keys[need.Name], need.Keys...)
+			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(r.components)) {
+		for _, variable := range r.components[name].Variables() {
+			if source := variable.SecretSource; source != nil && !slices.Contains(keys[source.Name], source.Key) {
+				return &VariableError{Component: name, Variable: variable.Name, Fact: "secret_source",
+					Reason: fmt.Sprintf("no component of the registry states the secret need %s with the key %s", source.Name, source.Key)}
+			}
 		}
 	}
 	return nil

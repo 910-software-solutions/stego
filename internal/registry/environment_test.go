@@ -180,6 +180,44 @@ needs:
 	})
 }
 
+func TestSecretSource(t *testing.T) {
+	t.Run("ST-SUP-UC01-R09-T02 The registry refuses a secret source on a variable that is not secret or a path, of a secret setting or a bad key, or of a need that no component states", func(t *testing.T) {
+		source := "    secret: true\n    secret_source: {name: \"{service}-database\", key: url}\n"
+		if _, err := parseEnv(t, "    secret: true\n", source); err != nil {
+			t.Fatalf("a secret source on a secret variable is refused: %v", err)
+		}
+		expectRefused(t, []refusal{
+			{"a source on a duration", "    secret: false\n    example: \"2m\"\n", "    secret: false\n    secret_source: {name: \"{service}-database\", key: url}\n    example: \"2m\"\n", "ENV_A_TIMEOUT", "secret_source"},
+			{"a source of a secret setting", "    secret: true\n", "    secret: true\n    secret_source: {name: \"{settings.key}\", key: url}\n", "ENV_A_DATABASE_URL", "secret_source"},
+			{"a source with a bad key", "    secret: true\n", "    secret: true\n    secret_source: {name: \"{service}-database\", key: \"a/b\"}\n", "ENV_A_DATABASE_URL", "secret_source"},
+		})
+		component, err := parseEnv(t, "    secret: true\n", source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg := &Registry{components: map[string]*Component{"env-a": component}}
+		if err := checkSecretSources(reg); err == nil || !strings.Contains(err.Error(), "{service}-database") || !strings.Contains(err.Error(), "env-a") {
+			t.Errorf("a source of a need that no component states is not refused with the component and the need: %v", err)
+		}
+		component.Needs = []Need{{Kind: "secret", Name: "{service}-database", Keys: []string{"url"}}}
+		if err := checkSecretSources(reg); err != nil {
+			t.Errorf("a source of a stated need is refused: %v", err)
+		}
+		component.Needs[0].Keys = []string{"password"}
+		if err := checkSecretSources(reg); err == nil {
+			t.Error("a source of a key that the need does not state is accepted")
+		}
+		// Each source of the shipped registry names a need and a key that a shipped component states.
+		shipped, err := Load(filepath.Join("..", "..", "registry"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := checkSecretSources(shipped); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
 func TestShippedEnvironment(t *testing.T) {
 	t.Run("ST-SUP-UC01-R08-T01 Each shipped component declares its environment list, and each variable states its facts in a valid form", func(t *testing.T) {
 		reg, err := Load(filepath.Join("..", "..", "registry"))

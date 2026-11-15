@@ -26,6 +26,16 @@ type Variable struct {
 	Example *string
 	// Allowed are the allowed values as one text, such as "otlp, none" or "1s to 30m".
 	Allowed string
+	// SecretSource is the secret need and the key that give the value of a secret variable, or the file of a path
+	// variable; its name may hold the placeholders of a need name (ST-DLV-Q19).
+	SecretSource *SecretSource
+}
+
+// SecretSource is one key of one secret need: the need name and the key (ST-DLV-EN08 field Secret source,
+// ST-DLV-Q19). The Kubernetes base names the Secret and the key of a secret variable from it.
+type SecretSource struct {
+	Name string `yaml:"name"`
+	Key  string `yaml:"key"`
 }
 
 // DeclaredVariables are the environment variables that the declaration gives one group of a component, such as the
@@ -48,6 +58,9 @@ type AcceptedVariable struct {
 	Description string   `yaml:"description"`
 	Secret      bool     `yaml:"secret"`
 	Allowed     string   `yaml:"allowed,omitempty"`
+	// SecretSource is the secret need and the key that give the value, or the file of a path variable, when the
+	// service states that need (ST-DLV-Q19).
+	SecretSource *SecretSource `yaml:"secret_source,omitempty"`
 	// example is the example of the first reader, for the reference alone: the platform requirements never hold
 	// it, because an example is often a host name (ST-DLV-INV02).
 	example *string
@@ -134,6 +147,10 @@ func deriveVariables(service string, components []ComponentNeeds) ([]AcceptedVar
 				Reason: fmt.Sprintf("the sources state the variable with a different %s; one variable has one %s", fact, fact)}
 		}
 		previous.variable.ReadBy = append(previous.variable.ReadBy, accepted.ReadBy[0])
+		// A source that one reader states and another does not is the source of the variable.
+		if previous.variable.SecretSource == nil {
+			previous.variable.SecretSource = accepted.SecretSource
+		}
 		// The description and the example of the first reader in name order.
 		if accepted.ReadBy[0] < previous.first {
 			previous.first = accepted.ReadBy[0]
@@ -182,6 +199,8 @@ func conflict(a, b AcceptedVariable) string {
 		return "default"
 	case a.Allowed != b.Allowed:
 		return "allowed values"
+	case a.SecretSource != nil && b.SecretSource != nil && *a.SecretSource != *b.SecretSource:
+		return "secret source"
 	}
 	return ""
 }
@@ -195,6 +214,16 @@ func acceptedOf(service string, settings map[string]string, variable Variable) (
 	}
 	accepted := AcceptedVariable{Name: name, Type: variable.Type, Required: variable.Required, Description: variable.Description,
 		Secret: variable.Secret, Allowed: variable.Allowed}
+	if source := variable.SecretSource; source != nil {
+		if !variable.Secret && variable.Type != "path" {
+			return AcceptedVariable{}, fmt.Errorf("only a secret variable, or a path variable that names the file of a secret, states a secret source")
+		}
+		secretName, err := fillName(service, settings, source.Name)
+		if err != nil {
+			return AcceptedVariable{}, fmt.Errorf("the secret source: %w", err)
+		}
+		accepted.SecretSource = &SecretSource{Name: secretName, Key: source.Key}
+	}
 	if !variable.Secret {
 		accepted.example = variable.Example
 		if variable.Default != nil {

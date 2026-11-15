@@ -1152,9 +1152,13 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) (co
 		}
 		variables := make([]delivery.Variable, 0, len(component.Variables))
 		for _, variable := range component.Variables {
+			var source *delivery.SecretSource
+			if variable.SecretSource != nil {
+				source = &delivery.SecretSource{Name: variable.SecretSource.Name, Key: variable.SecretSource.Key}
+			}
 			variables = append(variables, delivery.Variable{Name: variable.Name, Type: variable.Type, Required: variable.IsRequired(),
 				Default: variable.Default, Description: variable.Description, Secret: variable.IsSecret(), Example: variable.Example,
-				Allowed: variable.Allowed.Text()})
+				Allowed: variable.Allowed.Text(), SecretSource: source})
 		}
 		declared := make([]delivery.DeclaredVariables, 0, len(component.Declared))
 		for _, group := range component.Declared {

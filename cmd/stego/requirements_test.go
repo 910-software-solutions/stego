@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -555,12 +556,26 @@ func expectOnlyRequirementFields(t *testing.T, data []byte) {
 	}
 	// An entry of the environment list holds its facts only, never an example; a secret one holds no default and no
 	// allowed values (ST-DLV-INV02, ST-DLV-INV12).
+	loaded, err := delivery.LoadRequirements(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stated := loaded.Requirements
 	variables, _ := file["environment"].([]any)
 	for _, item := range variables {
 		entry, _ := item.(map[string]any)
 		for field := range entry {
-			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed"}, field) {
+			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed", "secret_source"}, field) {
 				t.Errorf("the environment variable %v holds the field %s", entry["name"], field)
+			}
+		}
+		// A secret source names a secret requirement of the file and one of its keys, and nothing else (ST-DLV-Q19).
+		if source, given := entry["secret_source"].(map[string]any); given {
+			name, _ := source["name"].(string)
+			if len(source) != 2 || !slices.ContainsFunc(stated, func(r delivery.Requirement) bool {
+				return r.Kind == delivery.Secret && r.Name == name && slices.Contains(r.Keys, fmt.Sprint(source["key"]))
+			}) {
+				t.Errorf("the secret source of %v is not one key of a secret requirement of the file: %v", entry["name"], source)
 			}
 		}
 		if entry["secret"] == true && (entry["default"] != nil || entry["allowed"] != nil) {

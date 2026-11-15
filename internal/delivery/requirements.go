@@ -212,6 +212,16 @@ func DeriveRequirements(service string, components []ComponentNeeds) (Requiremen
 	if err != nil {
 		return Requirements{}, err
 	}
+	// A secret source names a secret need of the service and one of its keys. A source whose need the service does
+	// not state with that key is not kept: no Secret of the service holds that value, so the base wires no entry
+	// for it (ST-DLV-Q19). The release test of the registry proves that each shipped source names a shipped need.
+	for i, variable := range variables {
+		if source := variable.SecretSource; source != nil {
+			if requirement, stated := byName[source.Name]; !stated || requirement.Kind != Secret || !slices.Contains(requirement.Keys, source.Key) {
+				variables[i].SecretSource = nil
+			}
+		}
+	}
 	for _, requirement := range configurationNeeds(variables) {
 		if previous, stated := byName[requirement.Name]; stated {
 			return Requirements{}, &RequirementError{Components: append(slices.Clone(previous.Components[:1]), requirement.Components[0]), Need: requirement.Name,
@@ -500,6 +510,14 @@ func LoadRequirements(data []byte) (Requirements, error) {
 		listed[variable.Name] = true
 		if len(variable.ReadBy) == 0 {
 			return Requirements{}, fmt.Errorf("platform requirements: the environment variable %s names no reader", variable.Name)
+		}
+		if source := variable.SecretSource; source != nil {
+			if !variable.Secret && variable.Type != "path" {
+				return Requirements{}, fmt.Errorf("platform requirements: the environment variable %s is not secret and not a path, so it has no secret source", variable.Name)
+			}
+			if requirement := requirementOfKind(requirements, Secret, source.Name); requirement.Kind != Secret || !slices.Contains(requirement.Keys, source.Key) {
+				return Requirements{}, fmt.Errorf("platform requirements: the secret source of the environment variable %s names the key %s of %s, which is not a key of a secret requirement", variable.Name, source.Key, source.Name)
+			}
 		}
 	}
 	return requirements, nil

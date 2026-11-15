@@ -62,12 +62,14 @@ environment:
     required: true
     description: "The file of the PEM TLS certificate of the gRPC server. The server does not start when it has no value."
     secret: false
+    secret_source: {name: "{service}-grpc-tls", key: tls-crt}
     example: "/etc/stego/tls/tls.crt"
   - name: STEGO_GRPC_TLS_KEY
     type: path
     required: true
     description: "The file of the PEM TLS private key of the gRPC server. The server does not start when it has no value."
     secret: false
+    secret_source: {name: "{service}-grpc-tls", key: tls-key}
     example: "/etc/stego/tls/tls.key"
 # The platform needs (ST-SUP-EN09): the TLS certificate of the gRPC server, its port and the pod security level.
 needs:

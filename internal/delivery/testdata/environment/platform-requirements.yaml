@@ -102,6 +102,9 @@ environment:
     required: false
     description: The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    secret_source:
+      name: orders-database
+      key: url
   - name: DATABASE_URL_FILE
     read_by:
       - postgres-adapter
