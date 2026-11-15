@@ -42,6 +42,10 @@ func selectComponents(svc *types.ServiceDeclaration) []selection {
 	if svc.Idempotency != nil {
 		selected = append(selected, selection{Component: idempotencyComponent, Setting: "idempotency"})
 	}
+	if len(svc.Workers) > 0 {
+		// A declared worker selects the worker component, which generates its runner (ST-SUP-RC35, ST-SUP-Q131).
+		selected = append(selected, selection{Component: workerComponent, Setting: "workers"})
+	}
 	for _, entity := range svc.Entities {
 		if entity.Kind == "ledger" {
 			selected = append(selected, selection{Component: ledgerComponent, Setting: "entities." + entity.Name + ".kind"})

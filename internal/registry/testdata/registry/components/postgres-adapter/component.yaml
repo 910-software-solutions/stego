@@ -1,4 +1,5 @@
 kind: component
+environment: []
 name: postgres-adapter
 version: 2.0.0
 stage: ga
@@ -13,3 +14,8 @@ provides:
   - storage-adapter
 
 slots: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound

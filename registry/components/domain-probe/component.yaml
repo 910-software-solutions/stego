@@ -12,3 +12,21 @@ provides:
   - domain-probes
 
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: handler
+  flow: "Runs the declared domain probes and reports what they observe."
+  ports:
+    domain-probes: inbound
+
+environment:
+  - name: STEGO_PROBE_CONSOLE
+    type: string
+    required: false
+    default: "off"
+    description: "The format of the domain probe values on standard output. When it has no value, the probes write nothing to standard output."
+    secret: false
+    example: "json"
+    allowed: {values: ["json", "logfmt", "off"]}

@@ -3,8 +3,10 @@ package idempotency
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/catalogfirst"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
 )
 
@@ -43,15 +45,27 @@ const MaxPurgeBatch = 10000
 // is. It makes purgeRole when it is missing, which needs CREATEROLE. Migration refuses a role name that is not a
 // lower-case SQL name of at most 63 characters, and one name for both roles.
 func Migration(purgeRole, runtimeRole string) (string, error) {
-	for _, role := range []string{purgeRole, runtimeRole} {
+	return MigrationWithConsumers(purgeRole, runtimeRole, nil)
+}
+
+// MigrationWithConsumers is Migration for a service whose consumerRoles run a consuming worker's fill in their own
+// transaction, such as the worker role of a service with a consuming worker (ST-SUP-RC35-OC06): each gets SELECT,
+// INSERT and UPDATE on the table and nothing more, under the same tenant policy as every role (decision on
+// ST-SUP-Q136, orchestrator under the owner's delegation, 2026-11-15).
+func MigrationWithConsumers(purgeRole, runtimeRole string, consumerRoles []string) (string, error) {
+	for _, role := range append([]string{purgeRole, runtimeRole}, consumerRoles...) {
 		if !rolePattern.MatchString(role) {
 			return "", fmt.Errorf("idempotency: %q is not a role name the migration accepts", role)
 		}
 	}
-	if purgeRole == runtimeRole {
-		return "", fmt.Errorf("idempotency: the purge role must be a role apart from the runtime role")
+	if purgeRole == runtimeRole || slices.Contains(consumerRoles, purgeRole) {
+		return "", fmt.Errorf("idempotency: the purge role must be a role apart from the runtime role and the consumer roles")
 	}
-	return strings.NewReplacer("{{purge}}", purgeRole, "{{runtime}}", runtimeRole).Replace(migration), nil
+	text := strings.NewReplacer("{{purge}}", purgeRole, "{{runtime}}", runtimeRole).Replace(migration)
+	for _, role := range consumerRoles {
+		text += "\nGRANT SELECT, INSERT, UPDATE ON idempotency_keys TO " + role + ";\n"
+	}
+	return text, nil
 }
 
 // Manifest gives what the code of the key table needs of the database that Migration makes in schema for the same
@@ -63,10 +77,16 @@ func Migration(purgeRole, runtimeRole string) (string, error) {
 // to no role but its owner and the owner of the manifest. schema is a lower-case SQL name that needs no quotes, such as
 // public. Manifest refuses the roles that Migration refuses.
 func Manifest(schema, purgeRole, runtimeRole string) (manifest.Manifest, error) {
+	return ManifestWithConsumers(schema, purgeRole, runtimeRole, nil)
+}
+
+// ManifestWithConsumers is Manifest for the database that MigrationWithConsumers makes: the consumer roles get
+// SELECT, INSERT and UPDATE on the table too.
+func ManifestWithConsumers(schema, purgeRole, runtimeRole string, consumerRoles []string) (manifest.Manifest, error) {
 	if !rolePattern.MatchString(schema) {
 		return manifest.Manifest{}, fmt.Errorf("idempotency: %q is not a schema name the manifest accepts", schema)
 	}
-	text, err := Migration(purgeRole, runtimeRole)
+	text, err := MigrationWithConsumers(purgeRole, runtimeRole, consumerRoles)
 	if err != nil {
 		return manifest.Manifest{}, err
 	}
@@ -89,7 +109,7 @@ func Manifest(schema, purgeRole, runtimeRole string) (manifest.Manifest, error) 
 	}
 	wall := "(tenant_id = current_setting('app.tenant'::text, true))"
 	policies := []manifest.Policy{
-		{Name: "idempotency_keys_tenant", Command: "*", Using: wall, WithCheck: wall},
+		{Name: "idempotency_keys_tenant", Command: catalogfirst.EveryCommand, Using: wall, WithCheck: wall},
 		{Name: "idempotency_keys_purge_select", Command: "r", Using: "true", Roles: []string{purgeRole}},
 		{Name: "idempotency_keys_purge_delete", Command: "d", Using: "true", Roles: []string{purgeRole}},
 	}
@@ -97,9 +117,14 @@ func Manifest(schema, purgeRole, runtimeRole string) (manifest.Manifest, error) 
 		{Role: purgeRole, Privileges: []string{"SELECT", "DELETE"}},
 		{Role: runtimeRole, Privileges: []string{"SELECT", "INSERT", "UPDATE"}},
 	}
+	for _, role := range consumerRoles {
+		grants = append(grants, manifest.Grant{Role: role, Privileges: []string{"SELECT", "INSERT", "UPDATE"}})
+	}
 	return manifest.Manifest{
 		Tables: []manifest.Table{{Schema: schema, Name: "idempotency_keys", Columns: columns, Constraints: constraints,
-			Indexes:     []manifest.Index{{Name: "idempotency_keys_pkey", Columns: []string{"tenant_id", "principal_id", "key"}}},
+			// The lookup index of the purge: a start without it alerts and starts (decision on ST-SUP-Q123 (b)).
+			Indexes: []manifest.Index{{Name: "idempotency_keys_pkey", Columns: []string{"tenant_id", "principal_id", "key"}},
+				{Name: "idempotency_keys_expires_at", Columns: []string{"expires_at"}, Lookup: true}},
 			RowSecurity: true, Policies: policies, CheckGrants: true, Grants: grants}},
 		Functions: []manifest.Function{{Name: schema + "." + PurgeFunction, Args: "timestamptz, integer", Language: "plpgsql",
 			Source: strings.ReplaceAll(source, "%1$I", schema), SecurityDefiner: true, Config: []string{"search_path=pg_catalog, pg_temp"},
@@ -114,7 +139,29 @@ func Manifest(schema, purgeRole, runtimeRole string) (manifest.Manifest, error) 
 // rolePattern is a lower-case SQL name of at most 63 characters, which needs no quotes.
 var rolePattern = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
-const migration = `CREATE TABLE IF NOT EXISTS idempotency_keys (
+// keyObjects are the row-level security and the three policies of the key table, each read in the catalog first, so
+// a run of the migration job that changes nothing takes no lock on the table that conflicts with a request of the
+// running release; a missing or changed policy is made again.
+var keyObjects = func() string {
+	const keys = "'idempotency_keys'"
+	policy := func(p catalogfirst.Policy, create string) string {
+		p.Relation = keys
+		return catalogfirst.Unless(p.Holds(), "DROP POLICY IF EXISTS "+p.Name+" ON idempotency_keys;\n"+create)
+	}
+	purge := []string{"'{{purge}}'"}
+	return catalogfirst.Unless(catalogfirst.RowSecurity(keys), `ALTER TABLE idempotency_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE idempotency_keys FORCE ROW LEVEL SECURITY;`) +
+		policy(catalogfirst.Policy{Name: "idempotency_keys_tenant", Command: catalogfirst.EveryCommand, Using: catalogfirst.TenantForm, Check: catalogfirst.TenantForm},
+			`CREATE POLICY idempotency_keys_tenant ON idempotency_keys
+	USING (tenant_id = pg_catalog.current_setting('app.tenant', true))
+	WITH CHECK (tenant_id = pg_catalog.current_setting('app.tenant', true));`) +
+		policy(catalogfirst.Policy{Name: "idempotency_keys_purge_select", Command: "r", Roles: purge, Using: catalogfirst.TrueForm},
+			`CREATE POLICY idempotency_keys_purge_select ON idempotency_keys FOR SELECT TO {{purge}} USING (true);`) +
+		policy(catalogfirst.Policy{Name: "idempotency_keys_purge_delete", Command: "d", Roles: purge, Using: catalogfirst.TrueForm},
+			`CREATE POLICY idempotency_keys_purge_delete ON idempotency_keys FOR DELETE TO {{purge}} USING (true);`)
+}()
+
+var migration = `CREATE TABLE IF NOT EXISTS idempotency_keys (
 	tenant_id text NOT NULL,
 	principal_id text NOT NULL,
 	key varchar(255) NOT NULL,
@@ -128,7 +175,8 @@ const migration = `CREATE TABLE IF NOT EXISTS idempotency_keys (
 	PRIMARY KEY (tenant_id, principal_id, key),
 	CHECK (status <> 'completed' OR response_code IS NOT NULL)
 );
-CREATE INDEX IF NOT EXISTS idempotency_keys_expires_at ON idempotency_keys (expires_at);
+` + catalogfirst.Unless(catalogfirst.Exists("'idempotency_keys_expires_at'"),
+	"CREATE INDEX IF NOT EXISTS idempotency_keys_expires_at ON idempotency_keys (expires_at);") + `
 
 DO $do$ BEGIN
 	-- Only a role with CREATEROLE can run CREATE ROLE, so the text creates the role only when it is missing; the
@@ -139,17 +187,7 @@ DO $do$ BEGIN
 EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL;
 END $do$;
 
-ALTER TABLE idempotency_keys ENABLE ROW LEVEL SECURITY;
-ALTER TABLE idempotency_keys FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS idempotency_keys_tenant ON idempotency_keys;
-CREATE POLICY idempotency_keys_tenant ON idempotency_keys
-	USING (tenant_id = pg_catalog.current_setting('app.tenant', true))
-	WITH CHECK (tenant_id = pg_catalog.current_setting('app.tenant', true));
-DROP POLICY IF EXISTS idempotency_keys_purge_select ON idempotency_keys;
-CREATE POLICY idempotency_keys_purge_select ON idempotency_keys FOR SELECT TO {{purge}} USING (true);
-DROP POLICY IF EXISTS idempotency_keys_purge_delete ON idempotency_keys;
-CREATE POLICY idempotency_keys_purge_delete ON idempotency_keys FOR DELETE TO {{purge}} USING (true);
-REVOKE ALL ON idempotency_keys FROM {{purge}};
+` + keyObjects + `REVOKE ALL ON idempotency_keys FROM {{purge}};
 GRANT SELECT, DELETE ON idempotency_keys TO {{purge}};
 
 -- The purge role makes the function itself, so the role that runs the text needs only SET on it. CREATE on the

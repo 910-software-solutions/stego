@@ -84,6 +84,35 @@ func NewResource(t tenant.Tenant, resourceType, key string) (Resource, error) {
 	return resource, nil
 }
 
+// ErrQualifiedService is the error of a service-level resource whose ID is a tenant-qualified resource ID
+// (ST-SUP-RP06-LC22): the resource of the tenant provisioning is of the whole service, never of one tenant.
+var ErrQualifiedService = errors.New("authz: the service-level resource has a tenant-qualified ID")
+
+// ServiceResource returns the service-level resource <resource type>:<service name> of the tenant provisioning,
+// such as service:todo-svc, on which Provision and Retire are decided (ST-SUP-RC27-OC09). It is the one resource
+// that an evaluation names with an ID that is not tenant-qualified (ST-SUP-RP06-LC22): no handle, relay, fill or
+// generated code can write a tuple on it, because the handle and the relay refuse each tuple whose resource ID is
+// not tenant-qualified, so only an operator who writes to the provider directly grants the provision and retire
+// permissions on it. It refuses an ID that holds a /, so it never has the shape of a tenant-qualified ID.
+func ServiceResource(resourceType, service string) (Resource, error) {
+	resource := Resource{Type: resourceType, ID: service}
+	if err := resource.service(); err != nil {
+		return Resource{}, err
+	}
+	return resource, nil
+}
+
+// service checks a service-level resource: a valid resource whose ID holds no /, so it is not tenant-qualified.
+func (r Resource) service() error {
+	if err := r.valid(); err != nil {
+		return err
+	}
+	if strings.Contains(r.ID, "/") {
+		return ErrQualifiedService
+	}
+	return nil
+}
+
 // qualify is the tenant-qualified form of the tenant ID and the key.
 func qualify(tenantID, key string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(tenantID)) + "/" + base64.RawURLEncoding.EncodeToString([]byte(key))
@@ -402,7 +431,8 @@ func (t Tuple) valid() error {
 }
 
 // Filter selects the relationships that Delete removes and that a precondition matches. ResourceType is required;
-// each other empty field matches any value.
+// each other empty field matches any value in a precondition. Delete takes only an exact filter or one of
+// RelationFilter.
 type Filter struct {
 	ResourceType    string
 	ResourceID      string
@@ -416,6 +446,26 @@ type Filter struct {
 // empty for a direct subject.
 func (f Filter) Exact() bool {
 	return f.ResourceType != "" && f.ResourceID != "" && f.Relation != "" && f.SubjectType != "" && f.SubjectID != ""
+}
+
+// RelationFilter gives the filter of every tuple of one relation of one resource, which the delete of the
+// resource's row removes (ST-SUP-Q118). It names exactly one resource type, one resource ID and one relation, and no
+// subject. It refuses an empty or malformed one, so the filter never reaches the tuples of another resource.
+func RelationFilter(resource Resource, relation string) (Filter, error) {
+	if err := resource.qualified(); err != nil {
+		return Filter{}, err
+	}
+	if err := validType("relation", relation); err != nil {
+		return Filter{}, err
+	}
+	return Filter{ResourceType: resource.Type, ResourceID: resource.ID, Relation: relation}, nil
+}
+
+// OfRelation reports whether the filter names exactly one resource type, one resource ID and one relation, and no
+// subject: the only filter that is not exact which an adapter's Delete takes.
+func (f Filter) OfRelation() bool {
+	return f.ResourceType != "" && f.ResourceID != "" && f.Relation != "" && f.SubjectType == "" && f.SubjectID == "" &&
+		f.SubjectRelation == ""
 }
 
 // FilterOf returns the exact filter of one tuple.
@@ -547,6 +597,20 @@ func (p *Port) evaluate(ctx context.Context, request EvaluationRequest, floor To
 		return EvaluationResult{}, err
 	}
 	if err := request.Resource.qualified(); err != nil {
+		return EvaluationResult{}, err
+	}
+	request.Consistency = request.Consistency.raise(floor)
+	return p.provider.Evaluate(ctx, request)
+}
+
+// evaluateService decides one request on the service-level resource of the tenant provisioning, whose ID is not
+// tenant-qualified (ServiceResource, ST-SUP-RP06-LC22), at least as fresh as its consistency and the floor. Only the
+// tenant decision of a handle calls it.
+func (p *Port) evaluateService(ctx context.Context, request EvaluationRequest, floor Token) (EvaluationResult, error) {
+	if err := checkRequest(request.Subject, request.Action, request.Consistency); err != nil {
+		return EvaluationResult{}, err
+	}
+	if err := request.Resource.service(); err != nil {
 		return EvaluationResult{}, err
 	}
 	request.Consistency = request.Consistency.raise(floor)

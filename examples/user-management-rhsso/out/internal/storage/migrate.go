@@ -7,10 +7,15 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sort"
+	"strings"
+	"time"
 
 	stegotenancy "github.com/example/service/out/internal/tenancy"
+	runtimetenant "github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // MigrationFunc is a function that performs a database migration. It runs in the
@@ -19,11 +24,83 @@ type MigrationFunc func(ctx context.Context, tx *sql.Tx) error
 
 // Migration represents a named database migration. The digest covers the
 // migration body; an edited migration changes the digest and is rejected.
+// A migration of a schema step records its compatible_with set: the
+// migrations that code must register to run on a schema that holds its row
+// (ST-SUP-RC01-OC27). Step tells that the set is recorded; a row with no set
+// is an exact match.
+//
+// A migration of a schema step runs under the lock timeout of the step, and
+// under its statement timeout: the short one of a step that takes a strong
+// lock, or the long one of a VALIDATE or an index build, which take only a
+// weak lock (ST-SUP-RC01-OC22). Index, for the build of one index of a step
+// on a table with rows, is the qualified name of the index: the migration
+// runs CREATE INDEX CONCURRENTLY outside a transaction (ST-SUP-RC01-OC38), and
+// Definition is the definition of that index as pg_get_indexdef gives it.
+//
+// Contract, for the contract step of a schema change, is what the step
+// checks and runs, each statement in its own short transaction outside the
+// transaction of the ledger row (applyContract, ST-SUP-RC01-OC24,
+// ST-SUP-RC01-OC39).
 type Migration struct {
-	Name   string
-	Digest string
-	Func   MigrationFunc
+	Name             string
+	Digest           string
+	Func             MigrationFunc
+	Step             bool
+	CompatibleWith   []string
+	StatementTimeout string
+	Index            string
+	Definition       string
+	Body             string
+	Contract         *ContractStep
 }
+
+// ContractStep is what the contract step of a rename checks before it
+// changes the schema, and its statements in order: the change, the qualified
+// table, the completeness CHECK, its definition as pg_get_constraintdef gives
+// it and the sync trigger of its expand step, the expand migration, the name
+// of the old column, the old and the new column as quoted identifiers, and,
+// for an owned table, the tenant column and the qualified tenant list, by
+// which the check counts the rows left of each tenant.
+type ContractStep struct {
+	Change, Table, Check, Definition, Trigger, Expand string
+	From, Old, New, TenantColumn, Tenants             string
+	Statements                                        []ContractStatement
+}
+
+// ContractStatement is one statement of a contract step: SQL; When, a query
+// that gives whether the statement still has to run, or empty; Long for the
+// long statement timeout of a VALIDATE; Guard for the check of the step again
+// in the same transaction before the statement; and Also, the statements that
+// run after SQL in the same transaction, so that the drop of the sync trigger
+// and the drop of the old column commit together (security review of PR #316,
+// H1).
+type ContractStatement struct {
+	SQL, When   string
+	Long, Guard bool
+	Also        []string
+}
+
+// releaseWindow is how many report intervals a release report stays
+// current (registry/runtime/lease.ReleaseWindow).
+const releaseWindow = 3
+
+// The limits of a migration of a schema step (ST-SUP-RC01-OC22): it waits at
+// most stepLockTimeout for a lock, so the statements that queue behind it wait
+// no longer, and it runs again after a pause when the wait ends with SQLSTATE
+// 55P03, at most stepAttempts times. A step that takes a strong lock runs for
+// at most stepStatementTimeout; a VALIDATE and an index build, which take a
+// lock that blocks no read and no write, for at most longStatementTimeout.
+// CREATE INDEX CONCURRENTLY waits for each transaction older than its
+// snapshots, so it runs with no lock timeout (applyIndex). The drop of the
+// invalid index that a failed build left runs again after a pause, at most
+// dropAttempts times.
+const (
+	stepLockTimeout      = "1s"
+	stepStatementTimeout = "15s"
+	longStatementTimeout = "1h"
+	stepAttempts         = 10
+	dropAttempts         = 5
+)
 
 var migrations []Migration
 
@@ -52,6 +129,147 @@ func RegisterSQL(name, body string) {
 	}})
 }
 
+// RegisterStep adds the SQL migration of a schema step with its compatible_with
+// set: none for a step at expand, and the migration of the expand step of its
+// change for a step at contract (ST-SUP-RC01-OC27). It runs under the short
+// statement timeout of a step that takes a strong lock.
+func RegisterStep(name, body string, compatibleWith ...string) {
+	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: append([]string{}, compatibleWith...), StatementTimeout: stepStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, body)
+		return err
+	}})
+}
+
+// ValidateConstraint is one constraint that a validate migration validates:
+// the qualified table as SQL text, the name of the constraint with no quotes,
+// and Foreign for a foreign key.
+type ValidateConstraint struct {
+	Table, Name string
+	Foreign     bool
+}
+
+// RegisterValidateStep adds the migration that validates the constraints that
+// the step before it added NOT VALID, in its own transaction, under the long
+// statement timeout: VALIDATE CONSTRAINT takes a lock that blocks no read and
+// no write (ST-SUP-RC01-OC22). body is the text of the migration, one ALTER
+// TABLE ... VALIDATE CONSTRAINT for each of constraints in their order, which
+// the ledger digest covers. The migration validates a foreign key with the
+// helper of the tenant runtime, which checks each row past row-level security
+// (ST-SUP-RP04-LC10; security review of PR #320, info), and each other
+// constraint with its statement of body.
+func RegisterValidateStep(name, body string, constraints ...ValidateConstraint) {
+	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: []string{}, StatementTimeout: longStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
+		for _, c := range constraints {
+			if c.Foreign {
+				if err := runtimetenant.ValidateForeignKey(ctx, tx, c.Table, c.Name); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE "+c.Table+" VALIDATE CONSTRAINT \""+strings.ReplaceAll(c.Name, "\"", "\"\"")+"\""); err != nil {
+				return err
+			}
+		}
+		return nil
+	}})
+}
+
+// RegisterIndexStep adds the migration that builds the index index of a step on
+// a table with rows by its body, CREATE INDEX CONCURRENTLY, outside a
+// transaction (ST-SUP-RC01-OC38). A new database applies every migration in
+// one transaction on tables with no row, so there it builds the index by the
+// same statement without CONCURRENTLY. Definition is the definition of the
+// index as pg_get_indexdef gives it: IF NOT EXISTS builds nothing when a
+// relation of the name is there, so each path checks the index before its
+// ledger row (indexBuilt).
+func RegisterIndexStep(name, index, body, definition string) {
+	plain := strings.Replace(body, " CONCURRENTLY", "", 1)
+	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: []string{}, StatementTimeout: longStatementTimeout, Index: index, Definition: definition, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, plain); err != nil {
+			return err
+		}
+		return indexBuilt(ctx, tx, index, definition)
+	}})
+}
+
+// RegisterContractStep adds the contract migration of a schema change, whose
+// compatible_with set is the expand migration of its change
+// (ST-SUP-RC01-OC27). A new database applies every migration in one
+// transaction on tables with no row and with no release running, so there it
+// runs each statement that still has to run, with no check.
+func RegisterContractStep(name, body string, step ContractStep) {
+	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: []string{step.Expand}, StatementTimeout: stepStatementTimeout, Body: body, Contract: &step, Func: func(ctx context.Context, tx *sql.Tx) error {
+		for _, s := range step.Statements {
+			if s.When != "" {
+				var run bool
+				if err := tx.QueryRowContext(ctx, s.When).Scan(&run); err != nil {
+					return err
+				}
+				if !run {
+					continue
+				}
+			}
+			for _, statement := range append([]string{s.SQL}, s.Also...) {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}})
+}
+
+// indexBuilt checks that the index index is there, valid and ready, and has
+// the definition definition as pg_get_indexdef gives it. CREATE INDEX IF NOT
+// EXISTS builds nothing when a relation of the name is there, so a table, or
+// an index of another definition, of that name fails the migration before its
+// ledger row (ST-SUP-RC01-OC38).
+func indexBuilt(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, index, definition string) error {
+	var got string
+	var valid bool
+	err := q.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_indexdef(i.indexrelid), i.indisvalid AND i.indisready FROM pg_catalog.pg_index i WHERE i.indexrelid = pg_catalog.to_regclass($1)", index).Scan(&got, &valid)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("the index %s is not there after its build: a relation of that name that is no index holds the name", index)
+	case err != nil:
+		return err
+	case !valid:
+		return fmt.Errorf("the index %s is not valid and ready after its build", index)
+	case got != definition:
+		return fmt.Errorf("the index %s is %q, and the step builds %q", index, got, definition)
+	}
+	return nil
+}
+
+// refreshMarker rewrites, in the transaction of the migration job that
+// holds the ledger lock and whose ledger check passed, the marker digest that
+// a release before ST-SUP-RC01-OC42 wrote, the digest of the entities and the
+// collections of the baseline, to the digest of the stored shape. The marker
+// check of this release accepts both; a later release whose collections or
+// permissions differ accepts only the digest of the stored shape
+// (ST-SUP-RC01-OC42). A job that fails its ledger check leaves the marker as
+// it is.
+func refreshMarker(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, "UPDATE stego_schema.generation SET definition = $1 WHERE singleton AND generation = $2 AND definition = $3", SchemaDefinition, SchemaGeneration, schemaDefinitionBefore)
+	return err
+}
+
+// addCompatibleWith adds the nullable column compatible_with to the ledger
+// under the ledger lock, before the migration job reads the ledger, and
+// writes no value into the rows already there; it writes no ledger row
+// (ST-SUP-RC01-OC29).
+func addCompatibleWith(ctx context.Context, db Database) error {
+	return inTransaction(ctx, db, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+		if err := lockLedger(ctx, tx); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, "ALTER TABLE stego_schema.migrations ADD COLUMN IF NOT EXISTS compatible_with pg_catalog.text[]")
+		return err
+	})
+}
+
 // Migrate applies every registered migration and records each one in the
 // stego_schema.migrations ledger. Applied versions must match the
 // registered history exactly: a re-application, a version gap, an edited
@@ -68,12 +286,15 @@ func Migrate(ctx context.Context, db Database) error {
 			if err := m.Func(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s: %w", m.Name, err)
 			}
-			if err := recordMigration(ctx, tx, m.Name, m.Digest); err != nil {
+			if err := recordMigration(ctx, tx, m); err != nil {
 				return err
 			}
 		}
 		return nil
 	}); err != nil {
+		return err
+	}
+	if err := addCompatibleWith(ctx, db); err != nil {
 		return err
 	}
 	return applyPending(ctx, db, ordered)
@@ -110,7 +331,7 @@ func ApplyMigration(ctx context.Context, db Database, name, body string) error {
 		if err := checkLedger(applied, ordered); err != nil {
 			return err
 		}
-		if len(applied) < len(ordered) {
+		if len(applied) != len(ordered) {
 			return ErrMigrationLedger
 		}
 		if len(applied) > 0 && name <= applied[len(applied)-1].Name {
@@ -119,7 +340,7 @@ func ApplyMigration(ctx context.Context, db Database, name, body string) error {
 		if _, err := tx.ExecContext(ctx, body); err != nil {
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
-		return recordMigration(ctx, tx, name, Digest(body))
+		return recordMigration(ctx, tx, Migration{Name: name, Digest: Digest(body)})
 	})
 }
 
@@ -133,17 +354,43 @@ func orderedMigrations() []Migration {
 	return ordered
 }
 
-// recordMigration writes the ledger row of one migration in its transaction.
-func recordMigration(ctx context.Context, tx *sql.Tx, name, digest string) error {
-	_, err := tx.ExecContext(ctx, "INSERT INTO stego_schema.migrations(version,digest) VALUES($1,$2)", name, digest)
+// recordMigration writes the ledger row of one migration in its transaction,
+// with the compatible_with set of a schema step, as a text array literal, and
+// no set for every other migration (ST-SUP-RC01-OC27).
+func recordMigration(ctx context.Context, tx *sql.Tx, m Migration) error {
+	var set any
+	if m.Step {
+		set = arrayLiteral(m.CompatibleWith)
+	}
+	_, err := tx.ExecContext(ctx, "INSERT INTO stego_schema.migrations(version,digest,compatible_with) VALUES($1,$2,$3::pg_catalog.text[])", m.Name, m.Digest, set)
 	return err
+}
+
+// arrayLiteral writes migration names as a PostgreSQL text array literal.
+// A migration name holds no quote, backslash, comma or brace.
+func arrayLiteral(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = "\"" + name + "\""
+	}
+	return "{" + strings.Join(quoted, ",") + "}"
 }
 
 // appliedMigrations reads the ledger in apply order: the byte order of the
 // version, as orderedMigrations sorts the names, whatever the collation of
 // the database. It fails closed when the ledger is missing or unreadable.
+// A ledger that has no column compatible_with yet, which a release before
+// it wrote, holds rows with no set (ST-SUP-RC01-OC29).
 func appliedMigrations(ctx context.Context, tx *sql.Tx) ([]Migration, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT version, digest FROM stego_schema.migrations ORDER BY version COLLATE \"C\"")
+	var column bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'stego_schema.migrations'::pg_catalog.regclass AND attname = 'compatible_with' AND attnum > 0 AND NOT attisdropped)").Scan(&column); err != nil {
+		return nil, ErrMigrationLedger
+	}
+	query := "SELECT version, digest, NULL::pg_catalog.text[] FROM stego_schema.migrations ORDER BY version COLLATE \"C\""
+	if column {
+		query = "SELECT version, digest, compatible_with FROM stego_schema.migrations ORDER BY version COLLATE \"C\""
+	}
+	rows, err := tx.QueryContext(ctx, query)
 	if err != nil {
 		return nil, ErrMigrationLedger
 	}
@@ -151,8 +398,17 @@ func appliedMigrations(ctx context.Context, tx *sql.Tx) ([]Migration, error) {
 	var applied []Migration
 	for rows.Next() {
 		var row Migration
-		if err := rows.Scan(&row.Name, &row.Digest); err != nil {
+		var set sql.NullString
+		if err := rows.Scan(&row.Name, &row.Digest, &set); err != nil {
 			return nil, ErrMigrationLedger
+		}
+		if set.Valid {
+			row.Step = true
+			names, err := parseArray(set.String)
+			if err != nil {
+				return nil, ErrMigrationLedger
+			}
+			row.CompatibleWith = names
 		}
 		applied = append(applied, row)
 	}
@@ -162,14 +418,49 @@ func appliedMigrations(ctx context.Context, tx *sql.Tx) ([]Migration, error) {
 	return applied, nil
 }
 
+// parseArray reads a text array that recordMigration wrote: {} or
+// {"a","b"}, each name in double quotes with no quote, backslash or comma.
+func parseArray(text string) ([]string, error) {
+	if text == "{}" {
+		return []string{}, nil
+	}
+	if len(text) < 2 || text[0] != '{' || text[len(text)-1] != '}' {
+		return nil, ErrMigrationLedger
+	}
+	var names []string
+	for _, part := range strings.Split(text[1:len(text)-1], ",") {
+		name := strings.Trim(part, "\"")
+		if name == "" || strings.ContainsAny(name, "\"\\{} ") {
+			return nil, ErrMigrationLedger
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
 // checkLedger rejects any mismatch between the applied versions and the
-// registered history. Applied versions must be a prefix of the registered
-// list, in order, with matching digests: no gaps, no extras, no edits.
+// registered history. Applied versions must start with the registered list,
+// or be a prefix of it, in order, with matching digests: no gaps and no
+// edits. A row after the registered history is accepted only when it has a
+// compatible_with set and this code registers each migration that the set
+// names (ST-SUP-RC01-OC28).
 func checkLedger(applied, registered []Migration) error {
-	if len(applied) > len(registered) {
-		return ErrMigrationLedger
+	known := map[string]bool{}
+	for _, m := range registered {
+		known[m.Name] = true
 	}
 	for i, row := range applied {
+		if i >= len(registered) {
+			if !row.Step {
+				return ErrMigrationLedger
+			}
+			for _, name := range row.CompatibleWith {
+				if !known[name] {
+					return ErrMigrationLedger
+				}
+			}
+			continue
+		}
 		if row.Name != registered[i].Name || row.Digest != registered[i].Digest {
 			return ErrMigrationLedger
 		}
@@ -183,11 +474,17 @@ func checkLedger(applied, registered []Migration) error {
 // granted: it takes the ledger lock, reads the ledger again,
 // refuses a ledger that is not a prefix of the registered history, and
 // applies the next migration with its ledger row. A migration that another
-// job applied in the meantime is not applied again.
+// job applied in the meantime is not applied again. A migration of a schema
+// step runs under the limits of a step (stepTimeouts), and when it waits too
+// long for a lock it runs again after a pause, at most stepAttempts times
+// (ST-SUP-RC01-OC22). The build of an index of a step runs outside a
+// transaction (applyIndex).
 func applyPending(ctx context.Context, db Database, ordered []Migration) error {
+	tries := 0
 	for {
 		done := false
-		if err := inTransaction(ctx, db, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+		var index *Migration
+		err := inTransaction(ctx, db, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
 			if err := lockLedger(ctx, tx); err != nil {
 				return err
 			}
@@ -198,22 +495,537 @@ func applyPending(ctx context.Context, db Database, ordered []Migration) error {
 			if err := checkLedger(applied, ordered); err != nil {
 				return err
 			}
-			if len(applied) == len(ordered) {
+			if err := refreshMarker(ctx, tx); err != nil {
+				return err
+			}
+			if len(applied) >= len(ordered) {
 				done = true
 				return nil
 			}
 			m := ordered[len(applied)]
+			if m.Index != "" || m.Contract != nil {
+				index = &m
+				return nil
+			}
+			if m.Step {
+				if err := stepTimeouts(ctx, tx, m); err != nil {
+					return err
+				}
+			}
 			if err := m.Func(ctx, tx); err != nil {
 				return fmt.Errorf("migration %s: %w", m.Name, err)
 			}
-			return recordMigration(ctx, tx, m.Name, m.Digest)
-		}); err != nil {
-			return err
+			return recordMigration(ctx, tx, m)
+		})
+		if err == nil && index != nil && index.Contract != nil {
+			err = applyContract(ctx, db, ordered, *index)
+		} else if err == nil && index != nil {
+			err = applyIndex(ctx, db, ordered, *index)
 		}
+		if err != nil {
+			tries++
+			if !lockTimedOut(err) || tries >= stepAttempts {
+				return err
+			}
+			if err := pause(ctx, tries); err != nil {
+				return err
+			}
+			continue
+		}
+		tries = 0
 		if done {
 			return nil
 		}
 	}
+}
+
+// stepTimeouts sets, in the transaction of a migration of a schema step and
+// after the ledger lock, the lock timeout of a step and the statement timeout
+// of the migration (ST-SUP-RC01-OC22).
+func stepTimeouts(ctx context.Context, tx *sql.Tx, m Migration) error {
+	_, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", stepLockTimeout, m.StatementTimeout)
+	return err
+}
+
+// lockTimedOut tells whether err ends a wait for a lock at the lock timeout:
+// SQLSTATE 55P03, lock_not_available.
+func lockTimedOut(err error) bool {
+	var state interface{ SQLState() string }
+	return errors.As(err, &state) && state.SQLState() == "55P03"
+}
+
+// pause waits before the next attempt of a migration that waited too long for
+// a lock: a time that doubles with each attempt from 100ms to at most 5s, of
+// which a random part, so that two jobs do not try again at once.
+func pause(ctx context.Context, attempt int) error {
+	wait := 100 * time.Millisecond << min(attempt-1, 6)
+	wait = min(wait, 5*time.Second)
+	wait = wait/2 + rand.N(wait/2+1)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// ledgerLockKey is the key of the ledger lock: lockLedger takes it for a
+// transaction, and applyIndex for its session.
+const ledgerLockKey = "1937007983,1935894637"
+
+// applyIndex builds the index of the migration m of a schema step on a table
+// with rows (ST-SUP-RC01-OC38). It holds the ledger lock for its session, on
+// one connection, and no transaction is open on it while the index builds, so
+// CREATE INDEX CONCURRENTLY waits for no transaction of its own job. It reads
+// the ledger again, and builds nothing when another job has applied m. It
+// first drops an invalid index of the same name, which a build that stopped
+// part way left, by DROP INDEX CONCURRENTLY, and when the build fails it drops
+// the invalid index that the build left at once, so that no half-built index
+// stays (decision on finding F9); when that drop fails, it tries again
+// (dropAfterFailure). The build waits for each transaction older than its
+// snapshots, so it runs with no lock timeout and under the statement timeout
+// of m; the drops run under the lock timeout of a step. It writes the ledger
+// row only after the build succeeds and the index has the definition of m
+// (indexBuilt).
+func applyIndex(ctx context.Context, db Database, ordered []Migration, m Migration) error {
+	conn, release, err := sessionOf(ctx, db)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_catalog.pg_advisory_lock("+ledgerLockKey+")"); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_catalog.pg_advisory_unlock("+ledgerLockKey+")")
+	}()
+	position := -1
+	for i := range ordered {
+		if ordered[i].Name == m.Name {
+			position = i
+		}
+	}
+	pending := func(tx *sql.Tx) (bool, error) {
+		applied, err := appliedMigrations(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if err := checkLedger(applied, ordered); err != nil {
+			return false, err
+		}
+		return len(applied) == position, nil
+	}
+	next := false
+	if err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(tx *sql.Tx) error {
+		var err error
+		next, err = pending(tx)
+		return err
+	}); err != nil || !next {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, false), pg_catalog.set_config('statement_timeout', $2, false)", stepLockTimeout, m.StatementTimeout); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "RESET lock_timeout; RESET statement_timeout")
+	}()
+	if err := dropInvalid(ctx, conn, m.Index); err != nil {
+		return fmt.Errorf("migration %s: %w", m.Name, err)
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', '0', false)"); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, m.Body); err != nil {
+		build := fmt.Errorf("migration %s: %w", m.Name, err)
+		if err := dropAfterFailure(context.WithoutCancel(ctx), conn, m.Index); err != nil {
+			return fmt.Errorf("%w; %v", build, err)
+		}
+		return build
+	}
+	if err := indexBuilt(ctx, conn, m.Index, m.Definition); err != nil {
+		return fmt.Errorf("migration %s: %w", m.Name, err)
+	}
+	return inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+		next, err := pending(tx)
+		if err != nil || !next {
+			return err
+		}
+		return recordMigration(ctx, tx, m)
+	})
+}
+
+// applyContract runs the contract migration m of a schema change
+// (ST-SUP-RC01-OC24, ST-SUP-RC01-OC39). It holds the ledger lock for its
+// session on one connection, reads the ledger again and runs nothing when
+// another job has applied m. It first checks the step in its own transaction
+// (checkContract), and refuses with the change and the count of rows left,
+// changes no schema and writes no ledger row when the check fails. Then it
+// runs each statement in its own short transaction under the lock timeout and
+// the statement timeout of a step, again after a pause when the lock wait ends
+// at the timeout, at most stepAttempts times; the statement that drops the
+// sync trigger checks the step again in its transaction, and drops the
+// completeness CHECK and the old column in that same transaction, so no write
+// of the release before can change the old column alone after the trigger is
+// gone (security review of PR #316, H1). It writes the ledger row last.
+func applyContract(ctx context.Context, db Database, ordered []Migration, m Migration) error {
+	conn, release, err := sessionOf(ctx, db)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if _, err := conn.ExecContext(ctx, "SELECT pg_catalog.pg_advisory_lock("+ledgerLockKey+")"); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "SELECT pg_catalog.pg_advisory_unlock("+ledgerLockKey+")")
+	}()
+	position := -1
+	for i := range ordered {
+		if ordered[i].Name == m.Name {
+			position = i
+		}
+	}
+	pending := func(tx *sql.Tx) (bool, error) {
+		applied, err := appliedMigrations(ctx, tx)
+		if err != nil {
+			return false, err
+		}
+		if err := checkLedger(applied, ordered); err != nil {
+			return false, err
+		}
+		return len(applied) == position, nil
+	}
+	next := false
+	if err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true}, func(tx *sql.Tx) error {
+		var err error
+		next, err = pending(tx)
+		return err
+	}); err != nil || !next {
+		return err
+	}
+	c := *m.Contract
+	if err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+		if err := stepTimeouts(ctx, tx, m); err != nil {
+			return err
+		}
+		return checkContract(ctx, tx, c)
+	}); err != nil {
+		return fmt.Errorf("migration %s: %w", m.Name, err)
+	}
+	for _, s := range c.Statements {
+		if err := contractStatementRun(ctx, conn, m, c, s); err != nil {
+			return fmt.Errorf("migration %s: %w", m.Name, err)
+		}
+	}
+	return inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+		next, err := pending(tx)
+		if err != nil || !next {
+			return err
+		}
+		return recordMigration(ctx, tx, m)
+	})
+}
+
+// contractStatementRun runs one statement s of the contract step c of the
+// migration m, with its statements Also, in its own transaction, when its
+// query When gives that it still has to run, after the check of the step when
+// it is a Guard, under the lock
+// timeout of a step and the statement timeout of m, or the long one; it runs
+// it again after a pause when the lock wait ends at the timeout, at most
+// stepAttempts times. The last failure is wrapped as text, so the caller does
+// not take it for one more lock wait to retry.
+func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c ContractStep, s ContractStatement) error {
+	timeout := m.StatementTimeout
+	if s.Long {
+		timeout = longStatementTimeout
+	}
+	for attempt := 1; ; attempt++ {
+		err := inTransaction(ctx, conn, &sql.TxOptions{Isolation: sql.LevelReadCommitted}, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, true), pg_catalog.set_config('statement_timeout', $2, true)", stepLockTimeout, timeout); err != nil {
+				return err
+			}
+			if s.When != "" {
+				var run bool
+				if err := tx.QueryRowContext(ctx, s.When).Scan(&run); err != nil {
+					return err
+				}
+				if !run {
+					return nil
+				}
+			}
+			if s.Guard {
+				if err := checkContract(ctx, tx, c); err != nil {
+					return err
+				}
+			}
+			for _, statement := range append([]string{s.SQL}, s.Also...) {
+				if _, err := tx.ExecContext(ctx, statement); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err == nil {
+			return nil
+		}
+		if !lockTimedOut(err) {
+			return err
+		}
+		if attempt >= stepAttempts {
+			return fmt.Errorf("%s waited for its lock %d times, and the last wait ended with: %v", s.SQL, attempt, err)
+		}
+		if err := pause(ctx, attempt); err != nil {
+			return err
+		}
+	}
+}
+
+// contractRefusal is the refusal of a contract step: its text names the
+// change, the counts and the labels of the running releases, and no row
+// value, so the migration job may log it (Refusal).
+type contractRefusal struct{ text string }
+
+func (r *contractRefusal) Error() string   { return r.text }
+func (r *contractRefusal) Refusal() string { return r.text }
+
+// checkContract checks the contract step c in the transaction tx
+// (ST-SUP-RC01-OC24): while the sync trigger of the change or the old column
+// is there, the backfill row of the change must be complete with no failed
+// row, the completeness CHECK of the expand step must be there with its exact
+// definition, as inherited, and validated, which proves that no row of any
+// tenant has the old column set and the new one empty (decision on
+// ST-SUP-Q120 (c); security review of PR #316, L1), and no release that does
+// not know the change may run (runningReleases). A refusal gives the rows left
+// of each listed tenant. When the trigger and the old column are both gone, a
+// run before passed this check and dropped them in one transaction, so the
+// check passes and the rerun goes on; when only the trigger is gone, the check
+// runs in full again (security review of PR #316, H1). A trigger of the name
+// that is disabled, fires only on a replica, or does not run the sync function
+// stego_steps.<trigger>() does not copy the writes of the release before, so
+// the check refuses it (security review of PR #316, L2); so does a trigger
+// whose definition, as pg_get_triggerdef gives it, is not the one that the
+// step made, CREATE TRIGGER <trigger> BEFORE INSERT OR UPDATE ON <table> FOR
+// EACH ROW EXECUTE FUNCTION stego_steps.<trigger>(), as one that fires only on
+// an INSERT, on an UPDATE OF another column, with a WHEN condition, for each
+// statement or after the row (security review of PR #320, L1). It reads the
+// catalog and the tables of the step with the search path pg_catalog,
+// pg_temp, so pg_get_triggerdef names the schema of the sync function
+// whatever the search path of the session, and only the operators of
+// pg_catalog run in each compare, up to its last read (review of PR #320,
+// info; security review of PR #332, INFO-3). When the check passes, it sets
+// the search path of tx back for the statements of the step; a refusal or an
+// error rolls tx back, and the path with it.
+func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) {
+	var path string
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', 'pg_catalog, pg_temp', true)"); err != nil {
+		return err
+	}
+	defer func() {
+		if err == nil {
+			_, err = tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', $1, true)", path)
+		}
+	}()
+	var trigger, syncing, column bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace JOIN pg_catalog.pg_class r ON r.oid = t.tgrelid JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0 AND pg_catalog.pg_get_triggerdef(t.oid) = 'CREATE TRIGGER ' || pg_catalog.quote_ident($2) || ' BEFORE INSERT OR UPDATE ON ' || pg_catalog.quote_ident(rn.nspname) || '.' || pg_catalog.quote_ident(r.relname) || ' FOR EACH ROW EXECUTE FUNCTION stego_steps.' || pg_catalog.quote_ident($2) || '()'), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
+		return err
+	}
+	if !trigger && !column {
+		return nil
+	}
+	var complete bool
+	var failed int64
+	err = tx.QueryRowContext(ctx, "SELECT b.completed_at IS NOT NULL, b.failed_rows FROM stego_schema.backfills b WHERE b.change_id = $1", c.Change).Scan(&complete, &failed)
+	found := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var definition string
+	var noInherit, validated bool
+	err = tx.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_constraintdef(k.oid), k.contype <> 'c' OR k.connoinherit, k.convalidated FROM pg_catalog.pg_constraint k WHERE k.conrelid = pg_catalog.to_regclass($1) AND k.conname = $2", c.Table, c.Check).Scan(&definition, &noInherit, &validated)
+	present := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	exact := present && !noInherit && strings.TrimSuffix(definition, " NOT VALID") == c.Definition
+	state := ""
+	switch {
+	case trigger && !syncing:
+		state = "the sync trigger " + c.Trigger + " is disabled or does not run its sync function before each write of a row"
+	case !found:
+		state = "the backfill has no checkpoint row"
+	case failed > 0:
+		state = fmt.Sprintf("the backfill has %d failed rows", failed)
+	case !complete:
+		state = "the backfill is not complete"
+	case !present:
+		state = "the completeness CHECK " + c.Check + " is not there"
+	case !exact:
+		state = "the constraint " + c.Check + " is not the completeness CHECK of the change"
+	case !validated:
+		state = "the completeness CHECK " + c.Check + " is not validated"
+	}
+	if state != "" {
+		left, err := rowsLeft(ctx, tx, c)
+		count := "unknown"
+		if err == nil {
+			count = fmt.Sprint(left)
+		}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: %s; rows of the listed tenants with the old column set and the new one empty: %s; run the migration job of the release before until the backfill completes", c.Change, state, count)}
+	}
+	// A last count of the rows with the old column set and the new one empty: a write that the completeness CHECK
+	// let through, as a value that does not convert with no fill value, would lose its value when the old column
+	// goes (security review of PR #335, L5, orchestrator under the owner's delegation, 2026-11-14).
+	left, err := rowsLeft(ctx, tx, c)
+	if err != nil {
+		return err
+	}
+	if left > 0 {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: rows of the listed tenants with the old column set and the new one empty: %d; run the migration job of the release before until the backfill completes", c.Change, left)}
+	}
+	return runningReleases(ctx, tx, c)
+}
+
+// rowsLeft counts the rows of the table of c whose old column is set and
+// whose new column is empty: on an owned table, which has row-level security,
+// for each tenant of the tenant list in turn under its tenant setting.
+func rowsLeft(ctx context.Context, tx *sql.Tx, c ContractStep) (int64, error) {
+	count := "SELECT pg_catalog.count(*) FROM " + c.Table + " WHERE " + c.Old + " IS NOT NULL AND " + c.New + " IS NULL"
+	if c.TenantColumn == "" {
+		var n int64
+		err := tx.QueryRowContext(ctx, count).Scan(&n)
+		return n, err
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT t.tenant_id FROM "+c.Tenants+" t ORDER BY t.tenant_id COLLATE \"C\"")
+	if err != nil {
+		return 0, err
+	}
+	var tenants []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		tenants = append(tenants, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, id := range tenants {
+		var n int64
+		if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('app.tenant', $1, true)", id); err != nil {
+			return 0, err
+		}
+		if err := tx.QueryRowContext(ctx, count).Scan(&n); err != nil {
+			return 0, err
+		}
+		total += n
+	}
+	_, err = tx.ExecContext(ctx, "SELECT pg_catalog.set_config('app.tenant', '', true)")
+	return total, err
+}
+
+// runningReleases refuses while a process of a release that does not know
+// the change reports itself in stego_schema.releases (decision on finding F8
+// of the schema-change research, owner, 2026-11-13; ST-SUP-RP09-LC14): a
+// release whose last migration sorts before the expand migration of the
+// change, with a report younger than releaseWindow of its intervals. It
+// refuses when the table is missing, as the expand migration makes it.
+func runningReleases(ctx context.Context, tx *sql.Tx, c ContractStep) error {
+	var table bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&table); err != nil {
+		return err
+	}
+	if !table {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s finds no table stego_schema.releases of the release reports, which the expand migration of the change makes", c.Change)}
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT r.version, pg_catalog.count(*) FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < $1 COLLATE \"C\" AND r.seen_at > pg_catalog.clock_timestamp() - r.every_ms * $2::integer * interval '1 millisecond' GROUP BY r.version ORDER BY r.version COLLATE \"C\"", c.Expand, releaseWindow)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var running []string
+	for rows.Next() {
+		var version string
+		var n int64
+		if err := rows.Scan(&version, &n); err != nil {
+			return err
+		}
+		if version == "" {
+			version = "with no version"
+		}
+		running = append(running, fmt.Sprintf("%s (%d processes)", version, n))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(running) > 0 {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need the old column; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand)}
+	}
+	return nil
+}
+
+// dropAfterFailure drops the invalid index index that a failed build left,
+// under the lock timeout of a step, and when the drop fails it runs it again
+// after a pause, at most dropAttempts times. An invalid unique index that is
+// ready goes on enforcing its key on the writes of the release before, so a
+// drop that still fails gives an error that names the index, and the job
+// fails with it; it never stays silent (ST-SUP-RC01-OC38).
+func dropAfterFailure(ctx context.Context, conn *sql.Conn, index string) error {
+	var err error
+	for attempt := 1; attempt <= dropAttempts; attempt++ {
+		if attempt > 1 {
+			if err := pause(ctx, attempt-1); err != nil {
+				return err
+			}
+		}
+		if _, err = conn.ExecContext(ctx, "SELECT pg_catalog.set_config('lock_timeout', $1, false)", stepLockTimeout); err == nil {
+			if err = dropInvalid(ctx, conn, index); err == nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("the failed build left the invalid index %s, and %d drops of it failed, the last with: %v", index, dropAttempts, err)
+}
+
+// sessionOf gives one connection of db for a session setting, and the function
+// that gives it back: db itself when it is one connection, else a connection of
+// its pool.
+func sessionOf(ctx context.Context, db Database) (*sql.Conn, func(), error) {
+	switch d := db.(type) {
+	case *sql.Conn:
+		return d, func() {}, nil
+	case interface {
+		Conn(context.Context) (*sql.Conn, error)
+	}:
+		conn, err := d.Conn(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		return conn, func() { _ = conn.Close() }, nil
+	}
+	return nil, nil, ErrMigrationLedger
+}
+
+// dropInvalid drops the index index, outside a transaction, when it is there
+// and not valid.
+func dropInvalid(ctx context.Context, conn *sql.Conn, index string) error {
+	var invalid bool
+	if err := conn.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_index WHERE indexrelid = pg_catalog.to_regclass($1) AND NOT indisvalid)", index).Scan(&invalid); err != nil {
+		return err
+	}
+	if !invalid {
+		return nil
+	}
+	_, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+index)
+	return err
 }
 
 func init() {

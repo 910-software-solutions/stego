@@ -1,6 +1,6 @@
 kind: component
 name: runtime-configuration
-version: 1.0.0
+version: 2.0.0
 stage: ga
 output_namespace: configuration
 config:
@@ -33,7 +33,24 @@ config:
           max_length:
             type: int
             optional: true
+          description:
+            type: string
+          required:
+            type: bool
+          secret:
+            type: bool
+            optional: true
 requires: []
 provides:
   - typed-runtime-configuration
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: handler
+  flow: "Reads the typed runtime configuration that the service starts with."
+  ports:
+    typed-runtime-configuration: inbound
+
+environment: []

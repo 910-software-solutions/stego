@@ -31,7 +31,8 @@ the component generates the package internal/authz with:
 
 The settings are alert_bound (default 5s), the delivery alert bound of a
 revocation, and watch_interval (default 1s), the time between two reads of
-the oldest age of the authz outbox messages.
+the oldest age of the authz outbox messages. The alert bound is at most 10m,
+and the watch interval is from 100ms to the alert bound (ST-SUP-RC29-OC24).
 
 The component needs pooled tenancy with the tenant column tenant_id: every
 resource ID at the provider is tenant-qualified, and the relay stores the
@@ -40,6 +41,10 @@ token on the owning row by tenant_id.
 The stage is ga. On the runtime data path the service's main makes the
 authorization runtime with NewRuntime for the generated commands and queries,
 and its migration job runs Migration and then WriteSchema before the service
-starts. In the worker mode the service runtime runs the relay on the relay
-role, which writes the relations of each committed write to the provider, and
-the watch of the relay.
+starts. After the last WriteSchema the job waits until SpiceDB serves each
+name of Definitions, at most about 30 s, and fails when it does not, so a new
+resource type is served from the first request of the release. A read or a
+write that SpiceDB cannot decide now answers 503 with Retry-After, a refusal of
+SpiceDB answers 500, and the log names the cause (ST-SUP-Q140). In the worker
+mode the service runtime runs the relay on the relay role, which writes the
+relations of each committed write to the provider, and the watch of the relay.

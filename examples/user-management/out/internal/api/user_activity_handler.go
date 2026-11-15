@@ -124,7 +124,7 @@ func (h *UserActivityHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	key, err := idempotency.KeyFrom(r.Header, false)
 	if err != nil {
-		keyMissing(w, r)
+		keyMissing(w, r, err)
 		return
 	}
 	requestID := command.NewID()
@@ -226,6 +226,14 @@ func (h *UserActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := h.rt.Queries.AwaitWrite(w, r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, query.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		handleError(w, r, InternalError("internal error"))
+		return
+	}
 	page, err := query.Run(r.Context(), h.rt.Queries, userActivityListQuery, h.rt.boundQuery(r.Context(), b, userActivityListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (userActivityPage, error) {
 		repo, err := query.Repo(qh, data.EntityActivityEntryView())
 		if err != nil {
@@ -247,6 +255,10 @@ func (h *UserActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, query.ErrBadRequest) {
 		handleError(w, r, BadRequest("the list request is not valid"))
+		return
+	}
+	if query.Transient(err) {
+		answerUndecided(w, r)
 		return
 	}
 	if err != nil {

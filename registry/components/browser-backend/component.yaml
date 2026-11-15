@@ -45,3 +45,85 @@ requires:
 provides:
   - browser-session-http
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: edge
+  flow: "Serves the browser session over HTTP and passes its calls to the service."
+  ports:
+    storage-adapter: outbound
+    tracing: outbound
+    health-endpoint: outbound
+    browser-session-http: inbound
+
+environment:
+  - name: STEGO_HTTP_TLS_CERT
+    type: path
+    required: false
+    description: "The file of the PEM TLS certificate of the HTTP server. The browser backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/tls/tls.crt"
+  - name: STEGO_HTTP_TLS_KEY
+    type: path
+    required: false
+    description: "The file of the PEM TLS private key of the HTTP server. The browser backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/tls/tls.key"
+  - name: STEGO_BROWSER_ORIGIN
+    type: url
+    required: true
+    description: "The HTTPS origin of the browser backend. The backend does not start when it has no value."
+    secret: false
+    example: "https://app.example.com"
+  - name: STEGO_BROWSER_API_URL
+    type: url
+    required: false
+    description: "The HTTPS origin of the service API, which a local application must not have. In other cases, the backend does not start when it has no value."
+    secret: false
+    example: "https://api.example.com"
+  - name: STEGO_BROWSER_API_CA_FILE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities for the service API. When it has no value, the backend uses the system roots."
+    secret: false
+    example: "/etc/stego/browser/api-ca.crt"
+  - name: STEGO_BROWSER_ISSUER
+    type: url
+    required: true
+    description: "The HTTPS URL of the OpenID Connect issuer. The backend does not start when it has no value."
+    secret: false
+    example: "https://sso.example.com/realms/main"
+  - name: STEGO_BROWSER_ISSUER_CA_FILE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities for the issuer. When it has no value, the backend uses the system roots."
+    secret: false
+    example: "/etc/stego/browser/issuer-ca.crt"
+  - name: STEGO_BROWSER_CLIENT_ID
+    type: string
+    required: true
+    description: "The OAuth client ID of the browser backend. The backend does not start when it has no value."
+    secret: false
+    example: "orders-browser"
+  - name: STEGO_BROWSER_CLIENT_SECRET_FILE
+    type: path
+    required: true
+    description: "The file of the OAuth client secret. The backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/browser/client-secret"
+  - name: STEGO_BROWSER_SESSION_KEY_FILE
+    type: path
+    required: true
+    description: "The file of the keys that encrypt the browser sessions. The backend does not start when it has no value."
+    secret: false
+    example: "/etc/stego/browser/session-keys"
+# The platform needs (ST-SUP-EN09): the TLS certificate of the backend, the OAuth client secret and the session keys,
+# the OpenID Connect issuer and the network path to it, the HTTP port and the pod security level.
+needs:
+  - {kind: secret, name: "{service}-tls", keys: [tls-crt, tls-key]}
+  - {kind: secret, name: "{service}-browser", keys: [client-secret, session-keys]}
+  - {kind: identity issuer, name: "{service}-issuer"}
+  - {kind: egress, name: "{service}-issuer-keys", port: 443}
+  - {kind: ingress, name: http, port: 8080}
+  - {kind: pod security, name: pod-security, level: restricted}

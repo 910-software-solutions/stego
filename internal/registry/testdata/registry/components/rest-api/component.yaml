@@ -1,4 +1,5 @@
 kind: component
+environment: []
 name: rest-api
 version: 3.0.0
 stage: ga
@@ -43,29 +44,55 @@ provides:
 
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeCreate
     default: passthrough
   - name: before_upsert
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeUpsert
     default: passthrough
   - name: before_patch
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforePatch
     default: passthrough
   - name: before_delete
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeDelete
     default: passthrough
   - name: after_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.AfterCreate
     default: passthrough
   - name: after_upsert
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.AfterUpsert
     default: passthrough
   - name: after_patch
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.AfterPatch
     default: passthrough
   - name: after_delete
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.AfterDelete
     default: passthrough
   - name: validate
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.Validate
     default: passthrough
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: outbound
+    storage-adapter: outbound
+    http-server: inbound
+    openapi-spec: inbound

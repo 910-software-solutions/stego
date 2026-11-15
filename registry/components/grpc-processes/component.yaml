@@ -1,6 +1,6 @@
 kind: component
 name: grpc-processes
-version: 1.5.0
+version: 1.7.0
 stage: ga
 output_namespace: grpcapi
 config:
@@ -78,3 +78,62 @@ requires:
 provides:
   - application-grpc-processes
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: edge
+  flow: "Serves the gRPC calls of the service's processes."
+  ports:
+    auth-provider: outbound
+    tracing: outbound
+    application-grpc-processes: inbound
+
+environment:
+  - name: STEGO_GRPC_ADDR
+    type: address
+    required: false
+    default: "127.0.0.1:9090"
+    description: "The address where the gRPC server listens. When it has no value, the server listens on 127.0.0.1:9090."
+    secret: false
+    example: "0.0.0.0:9090"
+  - name: STEGO_GRPC_STREAM_TIMEOUT
+    type: duration
+    required: false
+    default: "5m"
+    description: "The longest time that a gRPC stream stays open. When it has no value, a stream stays open for 5 minutes."
+    secret: false
+    example: "2m30s"
+    allowed: {min: "1s", max: "30m"}
+  - name: STEGO_GRPC_STREAM_IO_TIMEOUT
+    type: duration
+    required: false
+    default: "10s"
+    description: "The longest time for one send or receive on a gRPC stream. When it has no value, the limit is 10 seconds."
+    secret: false
+    example: "5s"
+    allowed: {min: "1s", max: "10s"}
+  - name: STEGO_GRPC_TLS_CERT
+    type: path
+    required: true
+    description: "The file of the PEM TLS certificate of the gRPC server. The server does not start when it has no value."
+    secret: false
+    example: "/etc/stego/tls/tls.crt"
+  - name: STEGO_GRPC_TLS_KEY
+    type: path
+    required: true
+    description: "The file of the PEM TLS private key of the gRPC server. The server does not start when it has no value."
+    secret: false
+    example: "/etc/stego/tls/tls.key"
+  - name: STEGO_RPC_MONITOR_ADDR
+    type: address
+    required: false
+    default: "127.0.0.1:9082"
+    description: "The loopback address of the health monitor of an RPC process. When it has no value, the monitor listens on 127.0.0.1:9082."
+    secret: false
+    example: "127.0.0.1:9182"
+# The platform needs (ST-SUP-EN09): the TLS certificate of the gRPC server, its port and the pod security level.
+needs:
+  - {kind: secret, name: "{service}-grpc-tls", keys: [tls-crt, tls-key]}
+  - {kind: ingress, name: grpc, port: 9090}
+  - {kind: pod security, name: pod-security, level: restricted}

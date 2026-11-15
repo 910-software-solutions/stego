@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go/format"
 	"path"
+	"strings"
 	"text/template"
 
 	"github.com/jsell-rh/stego/internal/browserapplication"
@@ -25,6 +26,15 @@ const livePattern, readyPattern = "GET /livez", "GET /readyz"
 
 func (*Generator) HTTPRoutes(gen.Context) ([]gen.HTTPRoute, error) {
 	return []gen.HTTPRoute{{Pattern: livePattern, Discovery: true}, {Pattern: readyPattern, Discovery: true}}, nil
+}
+
+// Probes gives the paths of the routes that HTTPRoutes serves, as the liveness and readiness probes, on the port
+// of the variable PORT that the component declares (ST-DLV-UC07-R03).
+func (g *Generator) Probes(ctx gen.Context) (gen.Probes, error) {
+	if err := g.ValidateContext(ctx); err != nil {
+		return gen.Probes{}, err
+	}
+	return gen.Probes{Liveness: strings.TrimPrefix(livePattern, "GET "), Readiness: strings.TrimPrefix(readyPattern, "GET "), PortVariable: "PORT"}, nil
 }
 
 func (*Generator) MinimumGoVersion() string { return "1.25.0" }

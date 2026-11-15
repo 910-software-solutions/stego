@@ -1,6 +1,8 @@
+# Version 1.2.0 serves the declared tenant provisioning: Provision and Retire, decided on the service-level resource
+# and audited, and the tenant check of every other request (ST-SUP-RC27-OC09 to ST-SUP-RC27-OC12).
 kind: component
 name: tenancy
-version: 1.1.0
+version: 1.2.0
 stage: ga
 output_namespace: internal/tenancy
 
@@ -14,3 +16,13 @@ requires: []
 provides:
   - tenant-isolation
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: authentication
+  flow: "Checks that the caller's tenant is active and scopes the request to it."
+  ports:
+    tenant-isolation: inbound
+
+environment: []

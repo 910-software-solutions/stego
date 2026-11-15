@@ -251,3 +251,20 @@ requires:
 provides:
   - kubernetes-service-deployment
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: edge
+  flow: "Deploys the service to Kubernetes and exposes it with a Service."
+  ports:
+    health-endpoint: outbound
+    kubernetes-service-deployment: inbound
+
+environment:
+  - name: STEGO_ALLOCATION_NETWORK_ENDPOINTS
+    type: string
+    required: false
+    description: "A JSON object that gives the IP address and port list of each declared network endpoint. The allocator refuses to start when a declared endpoint has no value."
+    secret: false
+    example: "{\"registry\":[\"10.0.0.5:443\"]}"

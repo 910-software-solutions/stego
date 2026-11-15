@@ -1,9 +1,30 @@
 kind: component
 name: controller
-version: 1.25.1
+version: 1.27.0
 stage: ga
 output_namespace: controller
 requires: []
 provides:
   - reconciliation-runtime
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: handler
+  flow: "Reconciles each declared resource toward the state that its spec asks for."
+  ports:
+    reconciliation-runtime: inbound
+
+environment:
+  - name: STEGO_CONTROLLER_MONITOR_ADDR
+    type: address
+    required: false
+    default: "127.0.0.1:9081"
+    description: "The loopback address of the health and metrics monitor of the controller. When it has no value, the monitor listens on 127.0.0.1:9081."
+    secret: false
+    example: "127.0.0.1:9181"
+# The platform needs (ST-SUP-EN09): the pod security level of the controller process. The cluster permissions come
+# from the resources that the declaration watches, which no fixed need can name.
+needs:
+  - {kind: pod security, name: pod-security, level: restricted}

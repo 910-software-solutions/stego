@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
@@ -26,9 +27,16 @@ var (
 	serviceStopping  = builtin("service.stopping", Event, Info, serviceClass)
 	serviceFailed    = builtin("service.failed", Event, Error, serviceClass)
 	httpDiagnostic   = builtin("http.server.diagnostic", Event, Warn, serviceClass)
+	// schemaMismatch is the alert of a start whose database does not satisfy the schema manifest, one for each class
+	// of the faults: the service starts, and the migration job refuses the database (decision on finding F10 of the
+	// schema-change research, owner, 2026-11-13).
+	schemaMismatch = builtin("schema.manifest.mismatch", Event, Error, serviceClass, "class")
 
-	workerRunFailed       = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome")
-	workerTickSkipped     = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
+	workerRunFailed   = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome")
+	workerTickSkipped = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
+	// workerTickFailed is a tick that did not read the tenant list, so it ran no tenant (security review of PR #337,
+	// L2; decision on ST-SUP-Q141).
+	workerTickFailed      = builtin("worker.tick.failed", Event, Error, workerClass, "worker")
 	workerTenantUnreached = builtin("worker.tenant.unreached", Counter, Warn, workerClass, "worker")
 
 	backfillRows       = builtin("schema.backfill.rows", Counter, Info, backfillClass, "change")
@@ -36,10 +44,11 @@ var (
 	backfillDuplicates = builtin("schema.backfill.duplicate_groups", Counter, Warn, backfillClass, "change")
 	backfillCompleted  = builtin("schema.backfill.completed", Event, Info, backfillClass, "change")
 	backfillStalled    = builtin("schema.backfill.stalled", Event, Error, backfillClass, "change")
+	backfillThrottled  = builtin("schema.backfill.throttled", Counter, Warn, backfillClass, "change", "reason")
 )
 
 // builtinObservations are the built-in observations, whose names no declared observation may take.
-var builtinObservations = []*Observation{telemetryStarted, telemetryStopped, serviceReady, serviceStopping, serviceFailed, httpDiagnostic, workerRunFailed, workerTickSkipped, workerTenantUnreached, backfillRows, backfillFailedRows, backfillDuplicates, backfillCompleted, backfillStalled}
+var builtinObservations = []*Observation{telemetryStarted, telemetryStopped, serviceReady, serviceStopping, serviceFailed, httpDiagnostic, schemaMismatch, workerRunFailed, workerTickFailed, workerTickSkipped, workerTenantUnreached, backfillRows, backfillFailedRows, backfillDuplicates, backfillCompleted, backfillStalled, backfillThrottled}
 
 // builtinName tells whether name is the name of a built-in observation.
 func builtinName(name string) bool {
@@ -81,6 +90,22 @@ func (e ServiceEvent) observation() *Observation {
 	return nil
 }
 
+// SchemaFaultClasses are the values of the field class of schema.manifest.mismatch: the classes of the faults of
+// the schema manifest check (manifest.FaultClass), so that an operator can page on the classes that touch the
+// tenant wall and the grants only.
+var SchemaFaultClasses = []string{"rls", "policy", "grant", "owner", "trigger", "function", "rule", "column", "other"}
+
+// SchemaMismatch sends schema.manifest.mismatch, an Error, with the class of the faults. A class that is not one of
+// SchemaFaultClasses is dropped and counted.
+func (r *Runtime) SchemaMismatch(ctx context.Context, class string) {
+	r.core.builtin(ctx, schemaMismatch, 1, class)
+}
+
+// SchemaMismatch records schema.manifest.mismatch.
+func (r *Recorder) SchemaMismatch(ctx context.Context, class string) {
+	r.core.builtin(ctx, schemaMismatch, 1, class)
+}
+
 // WorkerOutcome is the fixed outcome of a worker run that did not commit (ST-SUP-RC35-OC09).
 type WorkerOutcome string
 
@@ -88,6 +113,9 @@ const (
 	WorkerRolledBack WorkerOutcome = "rolled_back"
 	WorkerFenced     WorkerOutcome = "fenced"
 	WorkerPanicked   WorkerOutcome = "panicked"
+	// WorkerNotGranted is the outcome of a consumer run that the database refused for a privilege that the worker
+	// role lacks (SQLSTATE 42501), whose message is parked (decision on ST-SUP-Q141).
+	WorkerNotGranted WorkerOutcome = "not_granted"
 )
 
 // SchemaChange is one schema change of the declaration. Open is set when its last step is expand.
@@ -153,9 +181,11 @@ func (c *core) builtin(ctx context.Context, o *Observation, count int64, values 
 			ok = c.builtins.workers[v]
 		case "change":
 			ok = c.builtins.open[v]
+		case "class":
+			ok = slices.Contains(SchemaFaultClasses, v)
 		case "outcome":
 			outcome := WorkerOutcome(v)
-			ok = outcome == WorkerRolledBack || outcome == WorkerFenced || outcome == WorkerPanicked
+			ok = outcome == WorkerRolledBack || outcome == WorkerFenced || outcome == WorkerPanicked || outcome == WorkerNotGranted
 		}
 		if !ok {
 			c.dropped.Add(1)
@@ -194,6 +224,9 @@ func (r *Recorder) Worker(name string) Worker { return Worker{core: r.core, name
 func (w Worker) RunFailed(ctx context.Context, outcome WorkerOutcome) {
 	w.core.builtin(ctx, workerRunFailed, 1, w.name, string(outcome))
 }
+
+// TickFailed sends worker.tick.failed for a tick that did not read the tenant list, with the worker name only.
+func (w Worker) TickFailed(ctx context.Context) { w.core.builtin(ctx, workerTickFailed, 1, w.name) }
 
 // TickSkipped adds one to worker.tick.skipped.
 func (w Worker) TickSkipped() { w.core.builtin(context.Background(), workerTickSkipped, 1, w.name) }
@@ -236,4 +269,9 @@ func (b Backfill) BackfillCompleted(change string) {
 // BackfillStalled sends schema.backfill.stalled.
 func (b Backfill) BackfillStalled(change string) {
 	b.core.builtin(context.Background(), backfillStalled, 1, change)
+}
+
+// BackfillThrottled adds one to schema.backfill.throttled, with the reason: replica_lag or batch_time.
+func (b Backfill) BackfillThrottled(change, reason string) {
+	b.core.builtin(context.Background(), backfillThrottled, 1, change, reason)
 }

@@ -1,6 +1,6 @@
 kind: component
 name: postgres-adapter
-version: 6.0.1
+version: 6.6.0
 stage: ga
 output_namespace: internal/storage
 
@@ -15,6 +15,7 @@ config:
     enum: [startup, external]
   connection_string:
     type: string
+    secret: true
 
 requires: []
 
@@ -22,3 +23,233 @@ provides:
   - storage-adapter
 
 slots: []
+
+# The conversions of a retype (ST-DECL-INV62, ST-DECL-INV63). A partial conversion is total only under one of its
+# total_when limits on the field before the change; else the retype needs a fill value.
+conversions:
+  - {name: integer_to_int64, from: int32, to: int64, total: true}
+  - {name: int64_to_integer, from: int64, to: int32, total: false, total_when: [{min: -2147483648, max: 2147483647}]}
+  - {name: integer_to_text, from: int32, to: string, total: true}
+  - {name: int64_to_text, from: int64, to: string, total: true}
+  - {name: bool_to_text, from: bool, to: string, total: true}
+  - {name: text_to_integer, from: string, to: int32, total: false, total_when: [{pattern: "^[0-9]{1,9}$"}, {pattern: "^-?[0-9]{1,9}$"}]}
+  - {name: text_to_int64, from: string, to: int64, total: false, total_when: [{pattern: "^[0-9]{1,9}$"}, {pattern: "^-?[0-9]{1,9}$"}, {pattern: "^[0-9]{1,18}$"}, {pattern: "^-?[0-9]{1,18}$"}]}
+  - {name: text_to_bool, from: string, to: bool, total: false, total_when: [{pattern: "^(true|false)$"}]}
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: repository
+  flow: "Reads and writes the rows of each entity in PostgreSQL in one transaction."
+  ports:
+    storage-adapter: inbound
+
+environment:
+  - name: DATABASE_URL
+    type: string
+    required: false
+    description: "The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
+    secret: true
+  - name: DATABASE_URL_FILE
+    type: path
+    required: false
+    description: "The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two."
+    secret: false
+    example: "/etc/stego/database/url"
+  - name: STEGO_MIGRATION_DATABASE_URL
+    type: string
+    required: false
+    description: "The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
+    secret: true
+  - name: STEGO_MIGRATION_DATABASE_URL_FILE
+    type: path
+    required: false
+    description: "The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two."
+    secret: false
+    example: "/etc/stego/database/migration-url"
+  - name: STEGO_WORKER_DATABASE_URL
+    type: string
+    required: false
+    description: "The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
+    secret: true
+  - name: STEGO_WORKER_DATABASE_URL_FILE
+    type: path
+    required: false
+    description: "The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two."
+    secret: false
+    example: "/etc/stego/database/worker-url"
+  - name: STEGO_RELAY_DATABASE_URL
+    type: string
+    required: false
+    description: "The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
+    secret: true
+  - name: STEGO_RELAY_DATABASE_URL_FILE
+    type: path
+    required: false
+    description: "The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two."
+    secret: false
+    example: "/etc/stego/database/relay-url"
+  - name: STEGO_DATABASE_MAX_OPEN_CONNECTIONS
+    type: integer
+    required: false
+    default: "16"
+    description: "The largest number of open connections in the database pool. When it has no value, the pool opens at most 16 connections."
+    secret: false
+    example: "32"
+    allowed: {min: "1", max: "1024"}
+  - name: STEGO_DATABASE_MAX_IDLE_CONNECTIONS
+    type: integer
+    required: false
+    description: "The largest number of idle connections in the database pool, at most the open limit. When it has no value, the limit is 4, or the open limit when it is less."
+    secret: false
+    example: "8"
+    allowed: {min: "0", max: "1024"}
+  - name: STEGO_DATABASE_CONNECTION_MAX_LIFETIME
+    type: duration
+    required: false
+    default: "30m"
+    description: "The longest time that the pool keeps one database connection. When it has no value, the limit is 30 minutes."
+    secret: false
+    example: "1h"
+    allowed: {min: "1s", max: "24h"}
+  - name: STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME
+    type: duration
+    required: false
+    default: "5m"
+    description: "The longest time that the pool keeps an idle database connection. When it has no value, the limit is 5 minutes."
+    secret: false
+    example: "10m"
+    allowed: {min: "1s", max: "24h"}
+  - name: STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK
+    type: boolean
+    required: false
+    default: "0"
+    description: "Set to 1 to let a loopback database connection go without TLS, for a local test only. When it has no value, each connection needs TLS."
+    secret: false
+    allowed: {values: ["0", "1"]}
+  - name: PGAPPNAME
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGCHANNELBINDING
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGCONNECT_TIMEOUT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGDATABASE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGHOST
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGMAXPROTOCOLVERSION
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGMINPROTOCOLVERSION
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGOPTIONS
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGPASSFILE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGPASSWORD
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: true
+  - name: PGPORT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGREQUIREAUTH
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSERVICE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSERVICEFILE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSSLCERT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSSLKEY
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSSLMODE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSSLNEGOTIATION
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSSLPASSWORD
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: true
+  - name: PGSSLROOTCERT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGSSLSNI
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGTARGETSESSIONATTRS
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGTZ
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+  - name: PGUSER
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL."
+    secret: false
+# The platform needs (ST-SUP-EN09): the PostgreSQL database and the connection strings of its roles. No name holds a
+# setting, so no secret setting can reach a name (#331 security review F1).
+needs:
+  - {kind: backing store, name: "{service}-db", engine: postgres}
+  - {kind: secret, name: "{service}-database", keys: [url, migration-url, worker-url]}
+  - {kind: egress, name: "{service}-db-network", port: 5432}

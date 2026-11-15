@@ -93,6 +93,13 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -107,6 +114,12 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound
 name: stub-store
 version: 1.0.0
 stage: ga
@@ -1358,6 +1371,12 @@ func TestReconcile_ServicePortBindingOverridePassedToResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	altAuthYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: inbound
 name: api-key-auth
 version: 1.0.0
 stage: ga
@@ -1401,6 +1420,12 @@ bindings:
 		t.Fatal(err)
 	}
 	jwtYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: inbound
 name: jwt-auth
 version: 1.0.0
 stage: ga
@@ -1416,6 +1441,14 @@ slots: []
 	// Update stub-api to require auth-provider.
 	apiDir := filepath.Join(registryDir, "components", "stub-api")
 	apiYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    auth-provider: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -1489,6 +1522,12 @@ func TestReconcile_OverrideLoadsComponentFromRegistryViaResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	jwtYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: inbound
 name: jwt-auth
 version: 1.0.0
 stage: ga
@@ -1508,6 +1547,12 @@ slots: []
 		t.Fatal(err)
 	}
 	rhSSOYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: inbound
 name: rh-sso-auth
 version: 1.0.0
 stage: ga
@@ -1549,6 +1594,14 @@ bindings:
 	// Update stub-api to require auth-provider.
 	apiDir := filepath.Join(registryDir, "components", "stub-api")
 	apiYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    auth-provider: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -1646,6 +1699,11 @@ func TestReconcile_NoNamespaceComponentProducingFilesRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	noNsYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports: {}
 name: no-ns-comp
 version: 1.0.0
 stage: ga
@@ -2200,6 +2258,13 @@ message SlotResult {
 
 	// Update stub-api component to declare the slot.
 	compYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -2210,6 +2275,8 @@ provides:
   - http-server
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.stub_api.slots.BeforeCreate
     default: passthrough
 `
@@ -2295,6 +2362,13 @@ message SlotResult {
 	}
 
 	compYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -2305,6 +2379,8 @@ provides:
   - http-server
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.stub_api.slots.BeforeCreate
     default: passthrough
 `
@@ -2410,6 +2486,12 @@ bindings: {}
 		t.Fatal(err)
 	}
 	compYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -2494,6 +2576,12 @@ bindings: {}
 		t.Fatal(err)
 	}
 	compYAML := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -2585,6 +2673,13 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -2599,6 +2694,12 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound
 name: stub-store
 version: 1.0.0
 stage: ga
@@ -2730,6 +2831,13 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -2744,6 +2852,12 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound
 name: stub-store
 version: 1.0.0
 stage: ga
@@ -2868,6 +2982,13 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -2882,6 +3003,12 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound
 name: stub-store
 version: 1.0.0
 stage: ga
@@ -2997,6 +3124,13 @@ bindings:
 		{
 			name: "stub-api",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: outbound
+    http-server: inbound
 name: stub-api
 version: 1.0.0
 stage: ga
@@ -3011,6 +3145,12 @@ slots: []
 		{
 			name: "stub-store",
 			yaml: `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    storage-adapter: inbound
 name: stub-store
 version: 1.0.0
 stage: ga

@@ -93,6 +93,32 @@ type Field struct {
 	Sensitivity string `yaml:"sensitivity,omitempty" json:"Sensitivity,omitempty"`
 	// Currency is the ISO 4217 code of a field of type money (ST-DECL-INV26).
 	Currency string `yaml:"currency,omitempty" json:"Currency,omitempty"`
+	// ClientSet marks a timestamp field whose value the client sets, such as a due date: the server does not
+	// manage it (ST-SUP-RC20-OC17), and the generated code checks that it is an RFC 3339 time and keeps it in UTC.
+	// Omitted means server-managed. The Product owner decided ST-DECL-Q16 on 2026-11-14.
+	ClientSet bool `yaml:"client_set,omitempty" json:"ClientSet,omitempty"`
+	// Column is the stored column of the field when it is not Name: generation names a renamed field in the API by
+	// its name before its first rename, and stores it in the column of its declared name (ST-GEN-UC12-R04). The
+	// declaration never sets it.
+	Column string `yaml:"-" json:"Column,omitempty"`
+}
+
+// ServerTimestampNames are the timestamp field names that always hold a time the server sets: the time a row was
+// created or last changed. A declaration cannot mark them client_set (ST-DECL-Q16).
+var ServerTimestampNames = map[string]bool{"created_at": true, "updated_at": true, "created_time": true, "updated_time": true}
+
+// ClientSetTime tells whether the field is a timestamp that the client sets (ST-DECL-Q16), not one that the server
+// manages (ST-SUP-RC20-OC17).
+func (f Field) ClientSetTime() bool {
+	return f.ClientSet && f.Type == FieldTypeTimestamp && !f.Computed && !ServerTimestampNames[f.Name]
+}
+
+// ColumnName gives the stored column of the field: Column, else Name.
+func (f Field) ColumnName() string {
+	if f.Column != "" {
+		return f.Column
+	}
+	return f.Name
 }
 
 // Entity represents a domain entity with its fields.
@@ -187,6 +213,9 @@ type ConfigField struct {
 	Items    *ConfigFieldItems `yaml:"items,omitempty"`
 	Optional bool              `yaml:"optional,omitempty"`
 	Enum     []string          `yaml:"enum,omitempty"`
+	// Secret marks a setting whose value is a secret: it has no default, and no name of a need or of an
+	// environment variable may hold it (ST-SUP-EN09 field Config schema, ST-SUP-INV23).
+	Secret bool `yaml:"secret,omitempty"`
 }
 
 // ConcurrencyMode for upsert operations.
@@ -255,6 +284,18 @@ func (c Collection) ParentEntity() string {
 		return v
 	}
 	return ""
+}
+
+// CreatesTopLevel tells whether a collection of collections serves the create of entity with no scope: the create
+// of an entity with no parent. No row names it, so it is decided on the service-level resource of the tenant
+// provisioning, <resource type>:<service name> (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09).
+func CreatesTopLevel(collections []Collection, entity string) bool {
+	for _, c := range collections {
+		if c.Entity == entity && len(c.Scope) == 0 && slices.Contains(c.Operations, OpCreate) {
+			return true
+		}
+	}
+	return false
 }
 
 // SlotDeclaration describes how a slot is bound in a service declaration.
@@ -337,6 +378,38 @@ type ServiceDeclaration struct {
 	Authorization *Authorization `yaml:"authorization,omitempty"`
 	// ExperimentalAcceptances are the components that are not ga that the service accepts (ST-DECL-EN07).
 	ExperimentalAcceptances []ExperimentalAcceptance `yaml:"experimental_acceptances,omitempty"`
+	// Delivery is the delivery stanza: the CI provider and the Argo CD delivery of the service (ST-DECL-EN01 field
+	// Delivery stanza, ST-DLV-Q12 (A)). It has no field for a cluster, a namespace, an overlay, a pipeline
+	// reference or a signer, so the strict decoder refuses each of them with its path.
+	Delivery *Delivery `yaml:"delivery,omitempty"`
+}
+
+// Delivery is the delivery stanza of a declaration. Without CI, apply writes no CI file; without ArgoCD, it writes
+// no delivery object.
+type Delivery struct {
+	CI     string          `yaml:"ci,omitempty"`
+	ArgoCD *ArgoCDDelivery `yaml:"argocd,omitempty"`
+}
+
+// ArgoCDDelivery is the Argo CD part of the delivery stanza: the project, where the Kubernetes base of the service
+// is, and where the platform's environment files are.
+type ArgoCDDelivery struct {
+	Project      string               `yaml:"project"`
+	Source       DeliverySource       `yaml:"source"`
+	Environments DeliveryEnvironments `yaml:"environments"`
+}
+
+// DeliverySource is the address of the service's repository and the path of its Kubernetes base in it.
+type DeliverySource struct {
+	Repo string `yaml:"repo"`
+	Path string `yaml:"path"`
+}
+
+// DeliveryEnvironments is the repository, the revision and the path pattern of the platform's environment files.
+type DeliveryEnvironments struct {
+	Repo     string `yaml:"repo"`
+	Revision string `yaml:"revision"`
+	Path     string `yaml:"path"`
 }
 
 // UnmarshalYAML implements custom YAML unmarshaling for ServiceDeclaration.

@@ -26,6 +26,13 @@ import (
 // job writes it to the provider with WriteSchema (ST-SUP-RC29-OC23); generation never does (ST-SUP-RC29-OC13).
 const Schema = `definition user {}
 
+// The service-level resource that an operator provisions and retires tenants on, whose ID is the service name.
+definition service {
+	relation operator: user
+	permission provision = operator
+	permission retire = operator
+}
+
 definition organization {
 	relation owner: user
 	relation viewer: user
@@ -57,6 +64,10 @@ definition stego_floor {
 }
 `
 
+// Definitions are the definitions of Schema. After the migration job writes Schema, it waits until SpiceDB
+// serves each of them, so the release does not start while a read of a new resource type fails (ST-SUP-Q140).
+var Definitions = []string{"activity_entry", "member", "org_setting", "organization", "service", "stego_floor", "user"}
+
 // DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.
 const DatabaseSchema = "public"
 
@@ -71,8 +82,21 @@ const AlertBound = time.Duration(5000000000)
 // setting watch_interval: 1s (ST-SUP-RP06-LC14).
 const WatchInterval = time.Duration(1000000000)
 
-// Operation is the decision of one operation of one collection: the permission of the resource type that it
-// checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01).
+// WaitCap is the longest wait for a revocation, the component setting wait_cap: 10s (ST-SUP-RC29-OC19).
+const WaitCap = time.Duration(10000000000)
+
+// Waiters is the most waits for a revocation at one time, the component setting waiter_limit: 100; TenantWaiters
+// is the most of one tenant, inside it, the component setting tenant_waiter_limit: 10 (ST-SUP-RC29-OC19).
+const (
+	Waiters       = 100
+	TenantWaiters = 10
+)
+
+// Operation is the decision of one operation: of an operation of a collection, the permission of the resource type
+// that it checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01); of the
+// revocation status route, its route and the decision Writer, which allows only the principal and tenant that made
+// the write and calls no provider (ST-SUP-RC29-OC18); of Provision and Retire, the permission of the service-level
+// resource type, the route and Tenant, the action of the tenant runtime, provision or retire (ST-SUP-RC27-OC09).
 type Operation struct {
 	Collection   string
 	Operation    string
@@ -80,9 +104,13 @@ type Operation struct {
 	Permission   string
 	Public       bool
 	Reason       string
+	Route        string
+	Writer       bool
+	Tenant       string
 }
 
-// Operations are the decisions of the operations of the collections, in declaration order.
+// Operations are the decisions of the operations of the collections, in declaration order, then of Provision and
+// Retire, and then of the revocation status route, from which alone the router registers those routes.
 var Operations = []Operation{
 	{Collection: "organizations", Operation: "create", ResourceType: "organization", Public: true, Reason: "a new organization has no resource to decide on before it exists"},
 	{Collection: "organizations", Operation: "read", ResourceType: "organization", Permission: "view"},
@@ -101,6 +129,9 @@ var Operations = []Operation{
 	{Collection: "user-activity", Operation: "list", ResourceType: "activity_entry", Permission: "view"},
 	{Collection: "org-activity", Operation: "create", ResourceType: "activity_entry", Public: true, Reason: "an activity entry of a caller has no resource to decide on before it exists"},
 	{Collection: "org-activity", Operation: "list", ResourceType: "activity_entry", Permission: "view"},
+	{Operation: "provision-tenant", ResourceType: "service", Permission: "provision", Route: "POST /api/user-mgmt/v1/stego/tenants", Tenant: "provision"},
+	{Operation: "retire-tenant", ResourceType: "service", Permission: "retire", Route: "POST /api/user-mgmt/v1/stego/tenants/{tenantId}/retire", Tenant: "retire"},
+	{Operation: "revocation-status", Route: "GET /authz/revocations/{id}", Writer: true},
 }
 
 // Owners maps each protected resource type to the table of its rows, whose authz_token holds the token of the
@@ -150,13 +181,13 @@ func Migration(runtimeRole, relayRole, outboxRelayRole, workerRole string) (stri
 	}
 	worker := "\"" + strings.ReplaceAll(workerRole, "\"", "\"\"") + "\""
 	var statements strings.Builder
-	statements.WriteString("ALTER TABLE public.\"organizations\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096);\n")
+	statements.WriteString("DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.\"organizations\"'::regclass AND attname = 'authz_token' AND NOT attisdropped) THEN ALTER TABLE public.\"organizations\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096); END IF; END $authz$;\n")
 	statements.WriteString("GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.\"organizations\" TO " + worker + ";\n")
-	statements.WriteString("ALTER TABLE public.\"users\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096);\n")
+	statements.WriteString("DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.\"users\"'::regclass AND attname = 'authz_token' AND NOT attisdropped) THEN ALTER TABLE public.\"users\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096); END IF; END $authz$;\n")
 	statements.WriteString("GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.\"users\" TO " + worker + ";\n")
-	statements.WriteString("ALTER TABLE public.\"org_settings\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096);\n")
+	statements.WriteString("DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.\"org_settings\"'::regclass AND attname = 'authz_token' AND NOT attisdropped) THEN ALTER TABLE public.\"org_settings\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096); END IF; END $authz$;\n")
 	statements.WriteString("GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.\"org_settings\" TO " + worker + ";\n")
-	statements.WriteString("ALTER TABLE public.\"activity_entries\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096);\n")
+	statements.WriteString("DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.\"activity_entries\"'::regclass AND attname = 'authz_token' AND NOT attisdropped) THEN ALTER TABLE public.\"activity_entries\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096); END IF; END $authz$;\n")
 	statements.WriteString("GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.\"activity_entries\" TO " + worker + ";\n")
 	return text + statements.String(), nil
 }
@@ -175,9 +206,11 @@ func WriteSchema(ctx context.Context, conn grpc.ClientConnInterface) error {
 
 // NewRuntime returns the authorization runtime of the service, which binds the handles of its transactions and
 // reads the revocation statuses. db is the runtime role's pool, provider the decision provider, and queue the
-// outbox queue in which a handle enqueues the relay's tuple writes.
+// outbox queue in which a handle enqueues the relay's tuple writes. A wait for a revocation is bounded by WaitCap,
+// Waiters and TenantWaiters (ST-SUP-RC29-OC19).
 func NewRuntime(db *sql.DB, provider stegoauthz.Decision, queue *outbox.Queue, meter metric.MeterProvider) (*stegoauthz.Runtime, error) {
-	return stegoauthz.New(stegoauthz.Config{Provider: provider, DB: db, Schema: DatabaseSchema, Outbox: queue, Meter: meter})
+	return stegoauthz.New(stegoauthz.Config{Provider: provider, DB: db, Schema: DatabaseSchema, Outbox: queue, Meter: meter,
+		WaitCap: WaitCap, Waiters: Waiters, TenantWaiters: TenantWaiters})
 }
 
 // NewRelay builds the relay of the service, the outbox destination authz, with the owning table of each protected

@@ -17,6 +17,8 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // tick is the tick of the worker tests: due at 1793966400 seconds since the Unix epoch, a multiple of 1m.
@@ -57,16 +59,36 @@ func updateOrder(ctx context.Context, h *Handle[testProbe], e *Entity[order], id
 }
 
 // testClock is the injected clock of the outbox in the consumer tests: the system clock, which the test moves on
-// with add.
+// with add. While the test holds it, it stands still and moves only with add, so a message that waits on the clock
+// is not dispatched again until the test moves it.
 type testClock struct {
 	mu     sync.Mutex
 	offset time.Duration
+	held   bool
+	at     time.Time
 }
 
 func (c *testClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.held {
+		return c.at.Add(c.offset)
+	}
 	return time.Now().Add(c.offset)
+}
+
+// hold stops the clock at its time now. The function it gives lets the clock run on from the time it shows.
+func (c *testClock) hold() (release func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held, c.at = true, time.Now()
+	return func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.held {
+			c.held, c.offset = false, c.at.Add(c.offset).Sub(time.Now())
+		}
+	}
 }
 
 func (c *testClock) add(d time.Duration) {
@@ -90,6 +112,9 @@ func (e *env) consumer(w *Worker[testProbe], change func(*outbox.WorkerConfig),
 	if err != nil {
 		e.t.Fatal(err)
 	}
+	if e.consumed == nil {
+		e.consumed = &observed{}
+	}
 	decode := func(payload []byte) (map[string]string, error) {
 		var m map[string]string
 		return m, json.Unmarshal(payload, &m)
@@ -97,7 +122,7 @@ func (e *env) consumer(w *Worker[testProbe], change func(*outbox.WorkerConfig),
 	// As the generated code does, the consumed destination is idempotent and must land (ST-SUP-RC35-OC06).
 	destinations := []outbox.Destination{{Name: "partner-replies", Idempotent: true, MustLand: true,
 		Handler: func(ctx context.Context, tx *sql.Tx, d outbox.Delivery) error {
-			return RunConsumer(ctx, e.rt, w, tx, d, decode, fill)
+			return ObserveConsumer(ctx, e.consumed, RunConsumer(ctx, e.rt, w, tx, d, decode, fill))
 		}}}
 	for _, name := range []string{"audit-sink", "billing", "partner-orders"} {
 		destinations = append(destinations, outbox.Destination{Name: name, Idempotent: true,
@@ -518,6 +543,14 @@ func updateOrderFrom(ctx context.Context, r *Repository[order], o Loaded[order],
 	return r.Update(ctx, o, v)
 }
 
+// retiredTenants is a fake tenant list in which every tenant is active but the ones it holds as retired.
+type retiredTenants struct{ retired sync.Map }
+
+func (l *retiredTenants) Active(_ context.Context, t tenant.Tenant) (bool, error) {
+	_, gone := l.retired.Load(t.ID())
+	return !gone, nil
+}
+
 func TestConsumers(t *testing.T) {
 	clock := &testClock{}
 	e := newEnv(t, func(c *envConfig) { c.queueClock = clock })
@@ -533,6 +566,9 @@ func TestConsumers(t *testing.T) {
 		s.Interval = 0
 		s.Stagers = map[string]string{"reserve-and-charge": "reserve"}
 	}, e.orders, e.chargeE, e.reservationE)
+	// The tenant list of the consumers: every tenant is active but the ones a subtest retires.
+	retired := &retiredTenants{}
+	e.rt.cfg.Tenants = retired
 	e.consumer(w, func(c *outbox.WorkerConfig) { c.MaxAttempts = 3 }, func(ctx context.Context, m map[string]string, _ string, h *Handle[testProbe]) error {
 		calls.Add(1)
 		if fill, ok := cases.Load(m["case"]); ok {
@@ -603,6 +639,10 @@ func TestConsumers(t *testing.T) {
 
 	t.Run("ST-SUP-RP10-LC26-T01 A worker conflict runs the tenant in the next tick, and a consumer conflict is dispatched again and is not an attempt", func(t *testing.T) {
 		e.exec(`DELETE FROM stego_outbox.messages WHERE destination = 'billing'`)
+		// A conflict makes the message wait 100 ms on the clock. On the system clock, a slow test sees the message
+		// done, or a dispatch again in progress that counts an attempt until its conflict is recorded. The held clock
+		// moves only when the test moves it, so each read below sees the message as it waits.
+		defer clock.hold()()
 		calls.Store(0)
 		mode.Store("conflict-once")
 		m := e.stage("t1", "o-1", map[string]string{"order": "o-1", "n": "4"})
@@ -668,6 +708,9 @@ func TestConsumers(t *testing.T) {
 		// until its lock timeout, and the outbox dispatches the message again with a conflict, not an attempt.
 		calls.Store(0)
 		a := e.session()
+		// The key row that the session holds blocks each delivery of the message, so it ends also when a check
+		// fails, and the later subtests that stage for o-3 do not wait behind the message.
+		defer func() { _ = a.tx.Rollback() }()
 		var held uuid.UUID
 		stager := e.runtime(nil)
 		stager.beforeCommit = func(ctx context.Context, tx *sql.Tx) error {
@@ -849,6 +892,25 @@ func TestConsumers(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC27-OC12-T04 A consumer refuses the message of a retired tenant permanently and runs no fill", func(t *testing.T) {
+		calls.Store(0)
+		// The tenant list holds t2 as retired before the message is dispatched; a command of t2 still stages it, as
+		// one that committed before the Retire did.
+		retired.retired.Store("t2", true)
+		defer retired.retired.Delete("t2")
+		m := e.stage("t2", "o-1", map[string]string{"order": "o-1", "n": "retired"})
+		e.waitState(t, m, "parked")
+		if calls.Load() != 0 || e.keyRows(m.String()) != 0 {
+			t.Fatalf("the message of the retired tenant ran the fill %d times or left a key row", calls.Load())
+		}
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND failure_code = 'delivery-refused-permanent'`, m); n != 1 {
+			t.Fatal("the message of the retired tenant is not parked as a permanent refusal")
+		}
+		if n := e.count(`SELECT count(*) FROM orders WHERE tenant_id = 't2' AND status = 'applied-retired'`); n != 0 {
+			t.Fatal("the message of the retired tenant changed its order")
+		}
+	})
+
 	t.Run("ST-SUP-RP10-LC26-T02 A consumer's deny of the staging principal and a declared refusal park the message", func(t *testing.T) {
 		e.decision.setAllow(func(subject, action, resource string) bool {
 			return !(subject == "user:u-7" && action == "reserve" && resource == "order:o-2")
@@ -872,6 +934,41 @@ func TestConsumers(t *testing.T) {
 			if calls.Load() != 1 || e.count(`SELECT count(*) FROM orders WHERE status = 'never'`) != 0 || e.keyRows(m.String()) != 0 {
 				t.Fatalf("%s: parked after %d calls, with a write or a key row left", name, calls.Load())
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T02 A consumer run that the database refuses for a missing privilege parks the message and is reported", func(t *testing.T) {
+		// The worker role of the test acts with the grants of the runtime role, which loses UPDATE on charges, so the
+		// locked read and the update of the charge fail with SQLSTATE 42501 on every dispatch.
+		e.exec("REVOKE UPDATE ON charges FROM " + e.roles[0])
+		defer e.exec("GRANT UPDATE ON charges TO " + e.roles[0])
+		cases.Store("not-granted", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			r := repo(t, h, e.chargeE)
+			c, err := r.Get(ctx, "c1")
+			if err != nil {
+				return err
+			}
+			v := c.Value()
+			v.Amount = 99
+			_, err = r.Update(ctx, c, v)
+			return err
+		})
+		calls.Store(0)
+		before, _, _ := e.consumed.snapshot()
+		m := e.stage("t1", "o-2", map[string]string{"case": "not-granted"})
+		e.waitState(t, m, "parked")
+		if calls.Load() != 1 || e.keyRows(m.String()) != 0 {
+			t.Fatalf("parked after %d calls or with a key row left, want one call and no key row", calls.Load())
+		}
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND failure_code = 'delivery-refused-permanent'`, m); n != 1 {
+			t.Fatal("the message is not parked as a permanent refusal")
+		}
+		if n := e.count(`SELECT count(*) FROM charges WHERE amount = 99`); n != 0 {
+			t.Fatal("the refused run changed the charge")
+		}
+		after, _, _ := e.consumed.snapshot()
+		if got := after[len(before):]; len(got) != 1 || got[0] != probe.WorkerNotGranted {
+			t.Fatalf("the consumer sent the outcomes %v, want one not_granted", got)
 		}
 	})
 }

@@ -141,7 +141,20 @@ git init
 stego init --archetype rest-crud
 ```
 
-Make the project in its own Git repository. Each shipped archetype generates
+Make the project in its own Git repository. `stego init` writes
+`.stego/.gitignore`, so the apply lock and the saved plan, which are local
+state, stay out of the commit and out of the build. This file keeps the two
+files out of a new service only. If a service committed them before, remove
+them from the index once and commit the change:
+
+```bash
+git rm --cached .stego/apply.lock .stego/plan.yaml
+git commit -m "Stop tracking the local STEGO state"
+```
+
+If only one of the two files is in the commit, give only that file.
+Commit `.stego/config.yaml`
+(the registry pin) and `.stego/state.yaml` (the record). Each shipped archetype generates
 the service on the runtime data path: generated commands and queries carry all
 data access, in the transaction of one tenant, and each operation is decided
 for the verified caller. Until the former data path is removed, STEGO reads the
@@ -168,6 +181,7 @@ tenancy:
   kind: pooled
   key: tenant_id
   claim: tenant
+  provisioning: {resource_type: service, provision: provision, retire: retire}
 authorization:
   provider: spicedb
   schema_path: authz/schema.zed
@@ -196,11 +210,19 @@ collections:
 
 The service needs pooled tenancy, SpiceDB authorization and the audit log. Each entity names
 its resource type and the permission of each operation. A create of a
-top-level entity is public, with a reason. Put the SpiceDB schema at
+top-level entity is public, with a reason. A pooled service also names its tenant
+provisioning: the resource type, with a definition of its own, on which an operator
+is allowed to provision and retire tenants. Put the SpiceDB schema at
 `authz/schema.zed`:
 
 ```zed
 definition user {}
+
+definition service {
+	relation operator: user
+	permission provision = operator
+	permission retire = operator
+}
 
 definition todo {
 	relation owner: user
@@ -371,13 +393,17 @@ hand; see [Specification checks](#specification-checks).
 | Command | Usage |
 |---|---|
 | `stego apply` | `stego apply [--saved-plan] [--replace-hand-edits] [--base <ref>]` |
+| `stego architecture export` | `stego architecture export --format structurizr\|mermaid [--view <view>]` |
+| `stego architecture facts` | `stego architecture facts --topic personal-data\|tenant-isolation\|access\|audit\|data-protection\|owner-code\|retention\|configuration [--json]` |
 | `stego assets` | `stego assets --directory <folder> --output <zip>` |
 | `stego build` | `stego build --source <repo> --revision <commit> [--module <path>] --target <path> --go <sdk>/bin/go --work <folder> --output <folder> --module-cache <folder>` |
-| `stego build download` | `stego build download --source <repo> --revision <commit> [--module <path>] --target <path> --go <sdk>/bin/go --output <folder>` |
+| `stego build download` | `stego build download --source <repo> --revision <commit> [--module <path>] --target <path> --go <sdk>/bin/go --output <folder> [--runtime-folder <stego checkout>/registry/runtime]` |
 | `stego build verify` | `stego build verify --record <file> --record-sha256 <digest> --artifact <file>` |
 | `stego build verify-source` | `stego build verify-source --record <file> --record-sha256 <digest> --source <folder>` |
+| `stego compat` | `stego compat --base <ref> [--json]` |
 | `stego deps` | `stego deps` |
 | `stego drift` | `stego drift` |
+| `stego env check` | `stego env check --requirements <platform-requirements.yaml> <environment-file>` |
 | `stego fill create` | `stego fill create <name> --slot <slot> [--component <component>] [--collection <collection>]` |
 | `stego fill sign` | `stego fill sign <name>` |
 | `stego fill status` | `stego fill status` |
@@ -404,6 +430,9 @@ hand; see [Specification checks](#specification-checks).
 | `stego validate` | `stego validate [--json]` |
 | `stego version` | `stego version [--json]` |
 <!-- stego:end -->
+
+The environment file of `stego env check` has a schema that STEGO owns: see
+[docs/environment-file.md](docs/environment-file.md), with one example file.
 
 ## Concepts
 

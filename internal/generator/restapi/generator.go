@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"go/format"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/gen"
@@ -847,6 +848,7 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\"bytes\"\n")
 	fmt.Fprintf(&buf, "\t\"context\"\n")
 	fmt.Fprintf(&buf, "\t_ \"embed\"\n")
+	fmt.Fprintf(&buf, "\t\"encoding/json\"\n")
 	fmt.Fprintf(&buf, "\t\"errors\"\n")
 	fmt.Fprintf(&buf, "\t\"fmt\"\n")
 	fmt.Fprintf(&buf, "\t\"io\"\n")
@@ -916,6 +918,16 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t\tr.Body.Close()\n")
 	fmt.Fprintf(&buf, "\t\t\tr.Body = io.NopCloser(bytes.NewReader(bodyBytes))\n\n")
 
+	// The schema check builds every failure before parseValidationErrors caps the list, so the count of tokens is
+	// bounded first (ST-SUP-RC20-OC21, CWE-770).
+	fmt.Fprintf(&buf, "\t\t\tif within, err := withinTokenLimit(bodyBytes); err != nil {\n")
+	fmt.Fprintf(&buf, "\t\t\t\thandleError(w, r, BadRequest(\"the request body is not valid JSON\"))\n")
+	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
+	fmt.Fprintf(&buf, "\t\t\t} else if !within {\n")
+	fmt.Fprintf(&buf, "\t\t\t\thandleError(w, r, Validation([]ValidationError{{Message: fmt.Sprintf(\"the request body holds more than %%d JSON values and member names\", MaxBodyTokens)}}))\n")
+	fmt.Fprintf(&buf, "\t\t\t\treturn\n")
+	fmt.Fprintf(&buf, "\t\t\t}\n\n")
+
 	// Validate request body.
 	fmt.Fprintf(&buf, "\t\t\tinput := &openapi3filter.RequestValidationInput{\n")
 	fmt.Fprintf(&buf, "\t\t\t\tRequest:    r,\n")
@@ -923,6 +935,8 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t\t\tRoute:      route,\n")
 	fmt.Fprintf(&buf, "\t\t\t\tOptions: &openapi3filter.Options{\n")
 	fmt.Fprintf(&buf, "\t\t\t\t\tAuthenticationFunc: openapi3filter.NoopAuthenticationFunc,\n")
+	// Every failed member gets its own entry, not only the first (ST-SUP-RC20-OC05).
+	fmt.Fprintf(&buf, "\t\t\t\t\tMultiError:         true,\n")
 	fmt.Fprintf(&buf, "\t\t\t\t},\n")
 	fmt.Fprintf(&buf, "\t\t\t}\n\n")
 
@@ -940,39 +954,93 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t}\n")
 	fmt.Fprintf(&buf, "}\n\n")
 
-	// parseValidationErrors extracts per-field validation details from kin-openapi errors.
+	// parseValidationErrors extracts per-field validation details from kin-openapi errors. The list has at most
+	// MaxValidationErrors entries for failed members, and one more entry that counts the failures it does not list,
+	// so a large body cannot make a large problem (ST-SUP-RC20-OC05). An entry carries only the member path and the
+	// rule that failed, never the value of the request: an error's own text can quote the value, so it is not used.
+	fmt.Fprintf(&buf, "// MaxBodyTokens is the largest number of JSON values and member names that a\n")
+	fmt.Fprintf(&buf, "// validated body may hold. The schema check makes one failure for each bad\n")
+	fmt.Fprintf(&buf, "// value before the list is capped, so a body with more is refused first.\n")
+	fmt.Fprintf(&buf, "const MaxBodyTokens = 10000\n\n")
+	fmt.Fprintf(&buf, "// withinTokenLimit reports whether body holds at most MaxBodyTokens JSON values\n")
+	fmt.Fprintf(&buf, "// and member names, and gives an error when body is not JSON, so no error passes\n")
+	fmt.Fprintf(&buf, "// the limit. Numbers are read as text, so a number out of the range of float64,\n")
+	fmt.Fprintf(&buf, "// such as 1e400, is a token and not an error. An empty body holds no token.\n")
+	fmt.Fprintf(&buf, "func withinTokenLimit(body []byte) (bool, error) {\n")
+	fmt.Fprintf(&buf, "\tdecoder := json.NewDecoder(bytes.NewReader(body))\n")
+	fmt.Fprintf(&buf, "\tdecoder.UseNumber()\n")
+	fmt.Fprintf(&buf, "\tcount, depth := 0, 0\n")
+	fmt.Fprintf(&buf, "\tfor {\n")
+	fmt.Fprintf(&buf, "\t\ttoken, err := decoder.Token()\n")
+	fmt.Fprintf(&buf, "\t\tif errors.Is(err, io.EOF) && depth == 0 {\n")
+	fmt.Fprintf(&buf, "\t\t\treturn true, nil\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
+	fmt.Fprintf(&buf, "\t\tif errors.Is(err, io.EOF) {\n")
+	fmt.Fprintf(&buf, "\t\t\treturn false, io.ErrUnexpectedEOF\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
+	fmt.Fprintf(&buf, "\t\tif err != nil {\n")
+	fmt.Fprintf(&buf, "\t\t\treturn false, err\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
+	fmt.Fprintf(&buf, "\t\tif delim, ok := token.(json.Delim); ok && (delim == ']' || delim == '}') {\n")
+	fmt.Fprintf(&buf, "\t\t\tdepth--\n")
+	fmt.Fprintf(&buf, "\t\t\tcontinue\n")
+	fmt.Fprintf(&buf, "\t\t} else if ok {\n")
+	fmt.Fprintf(&buf, "\t\t\tdepth++\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
+	fmt.Fprintf(&buf, "\t\tif count++; count > MaxBodyTokens {\n")
+	fmt.Fprintf(&buf, "\t\t\treturn false, nil\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "}\n\n")
+
+	fmt.Fprintf(&buf, "// MaxValidationErrors is the largest number of failed members that a validation problem lists.\n")
+	fmt.Fprintf(&buf, "const MaxValidationErrors = 50\n\n")
 	fmt.Fprintf(&buf, "// parseValidationErrors extracts per-field validation details from a\n")
-	fmt.Fprintf(&buf, "// kin-openapi validation error.\n")
+	fmt.Fprintf(&buf, "// kin-openapi validation error. It lists at most MaxValidationErrors failures,\n")
+	fmt.Fprintf(&buf, "// and then one entry that says how many more it does not list. No entry quotes\n")
+	fmt.Fprintf(&buf, "// a value of the request.\n")
 	fmt.Fprintf(&buf, "func parseValidationErrors(err error) []ValidationError {\n")
-	fmt.Fprintf(&buf, "\tvar result []ValidationError\n\n")
+	fmt.Fprintf(&buf, "\tvar result []ValidationError\n")
+	fmt.Fprintf(&buf, "\tmore := 0\n\n")
 	fmt.Fprintf(&buf, "\t// Unwrap RequestError to get the schema validation error.\n")
 	fmt.Fprintf(&buf, "\tvar reqErr *openapi3filter.RequestError\n")
 	fmt.Fprintf(&buf, "\tif errors.As(err, &reqErr) && reqErr.Err != nil {\n")
 	fmt.Fprintf(&buf, "\t\terr = reqErr.Err\n")
 	fmt.Fprintf(&buf, "\t}\n\n")
-	fmt.Fprintf(&buf, "\t// Check for MultiError (multiple schema failures).\n")
-	fmt.Fprintf(&buf, "\tif multiErr, ok := err.(openapi3.MultiError); ok {\n")
-	fmt.Fprintf(&buf, "\t\tfor _, e := range multiErr {\n")
-	fmt.Fprintf(&buf, "\t\t\taddSchemaErrors(&result, e)\n")
-	fmt.Fprintf(&buf, "\t\t}\n")
-	fmt.Fprintf(&buf, "\t} else {\n")
-	fmt.Fprintf(&buf, "\t\taddSchemaErrors(&result, err)\n")
-	fmt.Fprintf(&buf, "\t}\n\n")
+	fmt.Fprintf(&buf, "\taddSchemaErrors(&result, &more, err)\n\n")
 	fmt.Fprintf(&buf, "\tif len(result) == 0 {\n")
-	fmt.Fprintf(&buf, "\t\tresult = append(result, ValidationError{Message: err.Error()})\n")
-	fmt.Fprintf(&buf, "\t}\n\n")
+	fmt.Fprintf(&buf, "\t\tresult = append(result, ValidationError{Message: \"the request body is not valid\"})\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\tif more > 0 {\n")
+	fmt.Fprintf(&buf, "\t\tresult = append(result, ValidationError{Message: fmt.Sprintf(\"%%d more failures not listed\", more)})\n")
+	fmt.Fprintf(&buf, "\t}\n")
 	fmt.Fprintf(&buf, "\treturn result\n")
 	fmt.Fprintf(&buf, "}\n\n")
 
 	// addSchemaErrors helper.
-	fmt.Fprintf(&buf, "func addSchemaErrors(result *[]ValidationError, err error) {\n")
+	fmt.Fprintf(&buf, "// addSchemaErrors adds one entry for each schema failure in err. A MultiError, also one nested in another,\n")
+	fmt.Fprintf(&buf, "// gives an entry for each failure it holds, so each failed member is listed (ST-SUP-RC20-OC05). Past\n")
+	fmt.Fprintf(&buf, "// MaxValidationErrors entries, it only counts the failures in more.\n")
+	fmt.Fprintf(&buf, "func addSchemaErrors(result *[]ValidationError, more *int, err error) {\n")
+	fmt.Fprintf(&buf, "\tvar multi openapi3.MultiError\n")
+	fmt.Fprintf(&buf, "\tif errors.As(err, &multi) {\n")
+	fmt.Fprintf(&buf, "\t\tfor _, e := range multi {\n")
+	fmt.Fprintf(&buf, "\t\t\taddSchemaErrors(result, more, e)\n")
+	fmt.Fprintf(&buf, "\t\t}\n")
+	fmt.Fprintf(&buf, "\t\treturn\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\tif len(*result) >= MaxValidationErrors {\n")
+	fmt.Fprintf(&buf, "\t\t*more++\n")
+	fmt.Fprintf(&buf, "\t\treturn\n")
+	fmt.Fprintf(&buf, "\t}\n")
 	fmt.Fprintf(&buf, "\tvar schemaErr *openapi3.SchemaError\n")
 	fmt.Fprintf(&buf, "\tif errors.As(err, &schemaErr) {\n")
 	fmt.Fprintf(&buf, "\t\tpointer := schemaErr.JSONPointer()\n")
 	fmt.Fprintf(&buf, "\t\tfield := strings.Join(pointer, \".\")\n")
+	fmt.Fprintf(&buf, "\t\t// The reason names the rule; the error text would also quote the value.\n")
 	fmt.Fprintf(&buf, "\t\tmsg := schemaErr.Reason\n")
 	fmt.Fprintf(&buf, "\t\tif msg == \"\" {\n")
-	fmt.Fprintf(&buf, "\t\t\tmsg = schemaErr.Error()\n")
+	fmt.Fprintf(&buf, "\t\t\tmsg = \"the value does not match the schema\"\n")
 	fmt.Fprintf(&buf, "\t\t}\n")
 	fmt.Fprintf(&buf, "\t\t*result = append(*result, ValidationError{\n")
 	fmt.Fprintf(&buf, "\t\t\tField:   field,\n")
@@ -980,7 +1048,13 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\t})\n")
 	fmt.Fprintf(&buf, "\t\treturn\n")
 	fmt.Fprintf(&buf, "\t}\n")
-	fmt.Fprintf(&buf, "\t*result = append(*result, ValidationError{Message: err.Error()})\n")
+	fmt.Fprintf(&buf, "\t// A body that cannot be decoded: the parse error text quotes the value, so only its reason is used.\n")
+	fmt.Fprintf(&buf, "\tvar parseErr *openapi3filter.ParseError\n")
+	fmt.Fprintf(&buf, "\tif errors.As(err, &parseErr) && parseErr.Reason != \"\" {\n")
+	fmt.Fprintf(&buf, "\t\t*result = append(*result, ValidationError{Message: parseErr.Reason})\n")
+	fmt.Fprintf(&buf, "\t\treturn\n")
+	fmt.Fprintf(&buf, "\t}\n")
+	fmt.Fprintf(&buf, "\t*result = append(*result, ValidationError{Message: \"the request body is not valid\"})\n")
 	fmt.Fprintf(&buf, "}\n")
 
 	formatted, err := format.Source(buf.Bytes())
@@ -1348,6 +1422,12 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 			}
 		}
 
+		for method, op := range collectionOps {
+			collectionOps[method] = revocationHeaders(method, op)
+		}
+		for method, op := range itemOps {
+			itemOps[method] = revocationHeaders(method, op)
+		}
 		if op, ok := collectionOps["post"]; ok {
 			collectionOps["post"] = keys.apply(op, types.OpCreate)
 		}
@@ -1360,6 +1440,10 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		if len(itemOps) > 0 {
 			spec.Paths[itemPath] = openAPIPathItem{Operations: itemOps}
 		}
+	}
+
+	if len(spec.Paths) > 0 {
+		spec.Paths[revocationRoute] = openAPIPathItem{Operations: map[string]openAPIOperation{"get": revocationStatusOperation()}}
 	}
 
 	data, err := json.MarshalIndent(spec, "", "  ")
@@ -1428,6 +1512,9 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 	case types.FieldTypeTimestamp:
 		s.Type = "string"
 		s.Format = "date-time"
+		if f.ClientSetTime() {
+			s.Description = "An RFC 3339 time that the client sets, such as 2026-11-14T09:30:00Z; it is stored and answered in UTC."
+		}
 	case types.FieldTypeEnum:
 		s.Type = "string"
 		s.Enum = f.Values
@@ -1473,7 +1560,8 @@ func isServerManaged(f types.Field) bool {
 	if f.Computed {
 		return true
 	}
-	if f.Type == types.FieldTypeTimestamp {
+	// A timestamp is server-managed unless the declaration marks it client_set (ST-DECL-Q16).
+	if f.Type == types.FieldTypeTimestamp && !f.ClientSetTime() {
 		return true
 	}
 	if f.Name == "created_by" || f.Name == "updated_by" {
@@ -1577,6 +1665,8 @@ var handlerScopeIdentifiers = map[string]bool{
 	"refs": true, "parent": true, "patch": true, "limit": true, "order": true, "fields": true, "where": true,
 	"after": true, "page": true, "items": true, "value": true, "loaded": true, "next": true,
 	"response": true, "slotReq": true, "slotResult": true, "slotErr": true, "slotPayload": true,
+	// The parent chain of a scoped collection (ST-SUP-RC20-OC24).
+	"chain": true, "ancestor": true, "ancestors": true,
 }
 
 // safeVarName returns the given name with a trailing underscore appended if it
@@ -1855,7 +1945,14 @@ type openAPIMediaType struct {
 
 type openAPIResponse struct {
 	Description string                      `json:"description"`
+	Headers     map[string]openAPIHeader    `json:"headers,omitempty"`
 	Content     map[string]openAPIMediaType `json:"content,omitempty"`
+}
+
+// openAPIHeader is a response header of an operation.
+type openAPIHeader struct {
+	Description string        `json:"description,omitempty"`
+	Schema      openAPISchema `json:"schema"`
 }
 
 type openAPIComponents struct {
@@ -2855,4 +2952,82 @@ func (k *idempotencyHeader) apply(op openAPIOperation, operation types.Operation
 	responses["422"] = openAPIResponse{Description: "Problem " + k.reuse + ": the key was used with another request"}
 	op.Responses = responses
 	return op
+}
+
+// revocationRoute is the path of the revocation status route that the runtime wiring registers beside the collection
+// routes, outside the base path (ST-SUP-RC29-OC18).
+const revocationRoute = "/authz/revocations/{id}"
+
+// The revocation headers of the runtime data path (ST-SUP-Q119): a write that enqueued a tuple answers
+// Authz-Revocation and Authz-Revocation-Location, and a read or a list takes Authz-Revocation-After and answers the
+// state it read in Authz-Revocation.
+const (
+	revocationHeader         = "Authz-Revocation"
+	revocationLocationHeader = "Authz-Revocation-Location"
+	revocationAfterHeader    = "Authz-Revocation-After"
+)
+
+// revocationStates are the states of a revocation that Authz-Revocation and the status route give.
+var revocationStates = []string{"pending", "complete", "parked", "failed", "expired"}
+
+// revocationHeaders adds the revocation headers to an operation of a collection, as ST-SUP-RC20-OC43 states them: a
+// get, a read or a list, takes the optional request headers Authz-Revocation-After and Prefer, answers 400 to a value
+// that is no revocation, and answers the state in Authz-Revocation; each write answers Authz-Revocation and
+// Authz-Revocation-Location on each success when it enqueued a tuple.
+func revocationHeaders(method string, op openAPIOperation) openAPIOperation {
+	responses := make(map[string]openAPIResponse, len(op.Responses)+1)
+	for code, response := range op.Responses {
+		if code[0] == '2' {
+			headers := make(map[string]openAPIHeader, len(response.Headers)+2)
+			for name, header := range response.Headers {
+				headers[name] = header
+			}
+			if method == "get" {
+				headers[revocationHeader] = openAPIHeader{Description: "The state of the revocation that " + revocationAfterHeader + " names, or unknown when it is not one of the caller's own; absent with no " + revocationAfterHeader,
+					Schema: openAPISchema{Type: "string", Enum: append(slices.Clone(revocationStates), "unknown")}}
+			} else {
+				headers[revocationHeader] = openAPIHeader{Description: "pending when the write enqueued a relationship tuple; absent when it enqueued none",
+					Schema: openAPISchema{Type: "string", Enum: []string{"pending"}}}
+				headers[revocationLocationHeader] = openAPIHeader{Description: "The path of the status of the write's revocation under " + revocationRoute + "; absent when the write enqueued no tuple",
+					Schema: openAPISchema{Type: "string"}}
+			}
+			response.Headers = headers
+		}
+		responses[code] = response
+	}
+	op.Responses = responses
+	if method == "get" {
+		op.Parameters = append(op.Parameters,
+			openAPIParam{Name: revocationAfterHeader, In: "header", Required: false,
+				Description: "The identity of the caller's own revocation, or its " + revocationLocationHeader + " path: the request waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then shows the write",
+				Schema:      openAPISchema{Type: "string"}},
+			openAPIParam{Name: "Prefer", In: "header", Required: false, Description: "wait=N: wait at most N seconds for the revocation (RFC 7240)", Schema: openAPISchema{Type: "string"}})
+		if _, ok := op.Responses["400"]; !ok {
+			op.Responses["400"] = openAPIResponse{Description: "Bad request: the " + revocationAfterHeader + " header is not the identity of a revocation, or the request is not valid"}
+		}
+	}
+	return op
+}
+
+// revocationStatusOperation is the operation of the revocation status route (ST-SUP-RC29-OC17, ST-SUP-RC29-OC19).
+func revocationStatusOperation() openAPIOperation {
+	state := openAPIHeader{Description: "The state of the revocation", Schema: openAPISchema{Type: "string", Enum: revocationStates}}
+	return openAPIOperation{
+		Summary:     "Read the state of the caller's own revocation",
+		OperationID: "readRevocation",
+		Tags:        []string{"authz"},
+		Parameters: []openAPIParam{
+			{Name: "id", In: "path", Required: true, Description: "The identity of the revocation", Schema: openAPISchema{Type: "string", Format: "uuid"}},
+			{Name: "Prefer", In: "header", Required: false, Description: "wait=N: wait at most N seconds, and at most the wait cap, while the revocation is pending (RFC 7240)", Schema: openAPISchema{Type: "string"}},
+		},
+		Responses: map[string]openAPIResponse{
+			"200": {Description: "The state of the revocation",
+				Headers: map[string]openAPIHeader{revocationHeader: state,
+					"Preference-Applied": {Description: "wait=N with the seconds that the route allowed", Schema: openAPISchema{Type: "string"}}},
+				Content: jsonContent(openAPISchema{Type: "object", Required: []string{"id", "state"}, Properties: map[string]openAPISchema{
+					"id": {Type: "string", Format: "uuid"}, "state": {Type: "string", Enum: revocationStates}}})},
+			"401": {Description: "Unauthorized"},
+			"404": {Description: "Not found: no revocation of the caller has the identity"},
+		},
+	}
 }

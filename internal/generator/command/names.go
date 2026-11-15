@@ -46,6 +46,9 @@ func mixedCase(name string) string {
 // tableName is the table of an entity, as the PostgreSQL adapter creates it (ST-SUP-RC01-OC41).
 func tableName(entity string) string { return postgresadapter.TableName(entity) }
 
+// TableName is the table in public of the declared entity entity, as the PostgreSQL adapter names it.
+func TableName(entity string) string { return tableName(entity) }
+
 // retryAndLock reads the command's Retry on conflict and Lock timeout (ST-DECL-EN18): the retries from 0 to 3, and
 // the lock timeout as a Go duration expression, empty for the runtime's default.
 func retryAndLock(decl types.Command) (int, string, error) {

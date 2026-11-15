@@ -630,6 +630,15 @@ components:
 		t.Fatal(err)
 	}
 	compData := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: outbound
+    storage-adapter: outbound
+    http-server: inbound
+    openapi-spec: inbound
 name: rest-api
 version: 2.1.0
 stage: ga
@@ -646,6 +655,8 @@ provides:
   - openapi-spec
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeCreate
     default: passthrough
 `
@@ -687,6 +698,12 @@ message SlotResult {
 		t.Fatal(err)
 	}
 	jwtData := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    auth-provider: inbound
 name: jwt-auth
 version: 1.0.0
 stage: ga
@@ -745,11 +762,18 @@ message SlotResult {
 		t.Fatal(err)
 	}
 	compAData := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports: {}
 name: comp-a
 version: 1.0.0
 stage: ga
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.comp_a.slots.BeforeCreate
     default: passthrough
 `
@@ -767,11 +791,18 @@ slots:
 		t.Fatal(err)
 	}
 	compBData := `kind: component
+environment: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports: {}
 name: comp-b
 version: 1.0.0
 stage: ga
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.comp_b.slots.BeforeCreate
     default: passthrough
 `

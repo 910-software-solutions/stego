@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jsell-rh/stego/internal/compiler"
 )
 
 // These tests start from ST-GEN-TD03, save a plan with stego plan and carry it
@@ -52,7 +54,8 @@ func changedOutput(before, after map[string]string) map[string]string {
 func plannedOutput(files []savedPlanFile) map[string]string {
 	planned := map[string]string{}
 	for _, file := range files {
-		if file.Path == "go.mod" || file.Path == "go.sum" {
+		// The module files and the project files of STEGO, such as the architecture model, are not under out.
+		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile || file.Path == compiler.ArchitectureViewFile {
 			continue
 		}
 		planned[file.Path] = file.SHA256
@@ -64,6 +67,7 @@ func TestApplyCarriesOutSavedPlan(t *testing.T) {
 	t.Parallel()
 	t.Run("ST-GEN-UC05-R03-T01 Apply of a saved plan writes exactly the files that the plan names, with the planned content", func(t *testing.T) {
 		s := newSmallService(t)
+		s.unreleased(t)
 		s.write(t, "service.yaml", tagDeclaration)
 		s.must(t, "plan")
 		files, _ := s.savedPlan(t)
@@ -84,6 +88,7 @@ func TestApplyCarriesOutSavedPlan(t *testing.T) {
 
 	t.Run("ST-GEN-UC05-R03-T02 Apply refuses a saved plan whose inputs changed after planning, and writes nothing", func(t *testing.T) {
 		s := newSmallService(t)
+		s.unreleased(t)
 		s.write(t, "service.yaml", secondEntityDeclaration)
 		s.must(t, "plan")
 		s.write(t, "service.yaml", strings.Replace(secondEntityDeclaration, "{name: label, type: string}", "{name: label, type: string}, {name: color, type: string}", 1))
@@ -102,6 +107,7 @@ func TestSavedPlanFlow(t *testing.T) {
 	t.Parallel()
 	t.Run("ST-GEN-UC05-FL-T A saved plan lists every change, and apply then makes exactly those changes", func(t *testing.T) {
 		s := newSmallService(t)
+		s.unreleased(t)
 		s.write(t, "service.yaml", tagDeclaration)
 		before := tree(t, s.service)
 		printed := s.must(t, "plan")

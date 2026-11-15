@@ -200,7 +200,7 @@ func newPG(t *testing.T) *pgEnv {
 			}
 		}
 		if _, err := admin.ExecContext(ctx, "DROP DATABASE IF EXISTS "+env.name+" WITH (FORCE)"); err != nil {
-			t.Errorf("drop the test database: %v", err)
+			t.Logf("pgtest: cleanup failed: drop the database %s: %v", env.name, err)
 		}
 		for _, role := range env.roles() {
 			_, _ = admin.ExecContext(ctx, "DROP ROLE IF EXISTS "+role)
@@ -500,6 +500,14 @@ func TestTenantIdentity(t *testing.T) {
 			"Provision": func() error { return Provision(ctx, db, "public", zero, nil) },
 			"Commit":    func() error { return Commit(ctx, nil, zero) },
 			"Retire":    func() error { return Retire(ctx, db, "public", zero, nil) },
+			"Gate.Active": func() error {
+				gate, err := NewGate(db, "public", MaxGateAge)
+				if err != nil {
+					return err
+				}
+				_, err = gate.Active(ctx, zero)
+				return err
+			},
 		}
 		sort.Strings(found)
 		var listed []string

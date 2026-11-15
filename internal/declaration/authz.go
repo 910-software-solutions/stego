@@ -35,6 +35,9 @@ type AuthzSchema struct {
 	definitions map[string]schemaDefinition
 	// caveatParameters holds the parameter names of every caveat.
 	caveatParameters map[string]bool
+	// wildcards holds each type#name of a relation or permission that can grant a wildcard subject
+	// (wildcardReach).
+	wildcards map[string]bool
 }
 
 // schemaDefinition is one definition of the schema: each relation with the subject types it admits, and the names
@@ -42,6 +45,23 @@ type AuthzSchema struct {
 type schemaDefinition struct {
 	relations   map[string][]string
 	permissions map[string]bool
+	// subjects maps each relation to the subjects it admits, each with its relation and whether it is a wildcard
+	// such as user:*.
+	subjects map[string][]schemaSubject
+	// rewrites maps each permission to its expression.
+	rewrites map[string]*core.UsersetRewrite
+}
+
+// schemaSubject is one subject that a relation admits: a type, the relation of a userset such as group#member, and
+// whether it is the wildcard of the type, such as user:*.
+type schemaSubject struct {
+	namespace string
+	relation  string
+	wildcard  bool
+	// caveat is the caveat the relation requires of the subject, such as with ip_allowed, or "".
+	caveat string
+	// expiration tells whether the relation requires an expiration of the subject (with expiration).
+	expiration bool
 }
 
 // SchemaError is a .zed schema that does not compile: its path, the line where compiling stopped and why.
@@ -60,8 +80,26 @@ func (e *SchemaError) Error() string {
 
 // CompileAuthzSchema compiles the .zed schema source at the path with the SpiceDB schema compiler, and then checks
 // that every type, relation and caveat the schema refers to is one it defines. It returns a *SchemaError, which
-// names the line, for a schema that does not compile.
+// names the line, for a schema that does not compile. Before it compiles, it refuses a schema beyond the shape bounds
+// of checkSchemaShape with a *SchemaError that names the limit (ST-DECL-INV88).
 func CompileAuthzSchema(schemaPath string, source []byte) (*AuthzSchema, error) {
+	return shapedCompile(schemaPath, source, compileSchema)
+}
+
+// shapedCompile refuses a schema beyond the shape bounds of checkSchemaShape, and gives only a schema in the bounds to
+// compile. CompileAuthzSchema gives it compileSchema; a test gives it a compile that fails the test, to show that a
+// refused schema never reaches the compiler.
+func shapedCompile(schemaPath string, source []byte, compile func(string, []byte) (*AuthzSchema, error)) (*AuthzSchema, error) {
+	if err := checkSchemaShape(schemaPath, source); err != nil {
+		return nil, err
+	}
+	return compile(schemaPath, source)
+}
+
+// compileSchema compiles and reads the .zed schema as CompileAuthzSchema does, with no shape bound. Only
+// CompileAuthzSchema calls it outside the tests, and the tests call it to show that the checks after the compiler stay
+// linear on a schema beyond the bounds.
+func compileSchema(schemaPath string, source []byte) (*AuthzSchema, error) {
 	compiled, err := compiler.Compile(compiler.InputSchema{Source: input.Source(schemaPath), SchemaString: string(source)},
 		compiler.AllowUnprefixedObjectType(), compiler.DisallowImportFlag())
 	if err != nil {
@@ -84,15 +122,17 @@ func CompileAuthzSchema(schemaPath string, source []byte) (*AuthzSchema, error) 
 		}
 	}
 	for _, definition := range compiled.ObjectDefinitions {
-		entry := schemaDefinition{relations: map[string][]string{}, permissions: map[string]bool{}}
+		entry := schemaDefinition{relations: map[string][]string{}, permissions: map[string]bool{}, subjects: map[string][]schemaSubject{}, rewrites: map[string]*core.UsersetRewrite{}}
 		for _, relation := range definition.GetRelation() {
 			if relation.GetUsersetRewrite() != nil {
 				entry.permissions[relation.GetName()] = true
+				entry.rewrites[relation.GetName()] = relation.GetUsersetRewrite()
 				continue
 			}
 			var subjects []string
 			for _, allowed := range relation.GetTypeInformation().GetAllowedDirectRelations() {
 				subjects = append(subjects, allowed.GetNamespace())
+				entry.subjects[relation.GetName()] = append(entry.subjects[relation.GetName()], schemaSubject{namespace: allowed.GetNamespace(), relation: allowed.GetRelation(), wildcard: allowed.GetPublicWildcard() != nil, caveat: allowed.GetRequiredCaveat().GetCaveatName(), expiration: allowed.GetRequiredExpiration() != nil})
 			}
 			entry.relations[relation.GetName()] = subjects
 		}
@@ -101,6 +141,7 @@ func CompileAuthzSchema(schemaPath string, source []byte) (*AuthzSchema, error) 
 	if err := schema.checkReferences(compiled.ObjectDefinitions, caveats); err != nil {
 		return nil, err
 	}
+	schema.wildcards = schema.wildcardReach()
 	return schema, nil
 }
 
@@ -185,10 +226,89 @@ func (d schemaDefinition) has(name string) bool {
 	return relation || d.permissions[name]
 }
 
+// SchemaSubject is one subject that a relation of the schema admits: its type, the relation of a userset such as
+// group#member or "", the caveat that the relation requires of it or "", whether the relation requires an expiration
+// of it, and whether it is the wildcard of the type.
+type SchemaSubject struct {
+	Type       string
+	Relation   string
+	Caveat     string
+	Expiration bool
+	Wildcard   bool
+}
+
+// RelationSubjects gives the subjects that a relation of the type admits, in the order of the schema, and false when
+// the type has no relation of the name. The architecture model expands the grant paths from it (ST-GEN-UC08-R13).
+func (s *AuthzSchema) RelationSubjects(typeName, relation string) ([]SchemaSubject, bool) {
+	definition, ok := s.definitions[typeName]
+	if !ok {
+		return nil, false
+	}
+	if _, isRelation := definition.relations[relation]; !isRelation {
+		return nil, false
+	}
+	subjects := make([]SchemaSubject, 0, len(definition.subjects[relation]))
+	for _, subject := range definition.subjects[relation] {
+		subjects = append(subjects, SchemaSubject{Type: subject.namespace, Relation: subject.relation, Caveat: subject.caveat, Expiration: subject.expiration, Wildcard: subject.wildcard})
+	}
+	return subjects, true
+}
+
+// PermissionRewrite gives the expression of a permission of the type, and false when the type has no permission of
+// the name.
+func (s *AuthzSchema) PermissionRewrite(typeName, permission string) (*core.UsersetRewrite, bool) {
+	definition, ok := s.definitions[typeName]
+	if !ok || !definition.permissions[permission] {
+		return nil, false
+	}
+	return definition.rewrites[permission], true
+}
+
+// ReadAuthzSchema reads and compiles the .zed schema that the declaration binds, from the project folder, with the
+// same checks of the path and the size as checking makes; it gives nil and no error when the declaration binds no
+// schema.
+func ReadAuthzSchema(service *types.ServiceDeclaration, project fs.FS) (*AuthzSchema, error) {
+	if service.Authorization == nil || service.Authorization.SchemaPath == "" {
+		return nil, nil
+	}
+	schema, fault := readAuthzSchema(service.Authorization.SchemaPath, project)
+	if fault != nil {
+		return nil, fmt.Errorf("%s: %s", fault.Path, fault.Message)
+	}
+	return schema, nil
+}
+
 // Defines tells whether the schema has a definition of the type.
 func (s *AuthzSchema) Defines(typeName string) bool {
 	_, ok := s.definitions[typeName]
 	return ok
+}
+
+// Relations gives the names of the relations that the schema declares on the type, in sorted order, and none for a
+// type that the schema does not define. The command generator gives them to the runtime, which clears each on the
+// resource of a deleted row (ST-SUP-Q118).
+func (s *AuthzSchema) Relations(typeName string) []string {
+	definition, ok := s.definitions[typeName]
+	if !ok {
+		return nil
+	}
+	names := make([]string, 0, len(definition.relations))
+	for name := range definition.relations {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RelationAdmits tells whether the type of the schema has the relation and the relation admits the subject type,
+// such as tenant#worker_sync_partner_orders and service_account (ST-SUP-RC35-OC13).
+func (s *AuthzSchema) RelationAdmits(typeName, relation, subjectType string) bool {
+	for _, subject := range s.definitions[typeName].relations[relation] {
+		if subject == subjectType {
+			return true
+		}
+	}
+	return false
 }
 
 // grants tells whether a relation of the schema admits the subject type.
@@ -232,6 +352,7 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 	faults = append(faults, validateSchemaNames(service, schema)...)
 	faults = append(faults, validateWrittenRelations(service, schema)...)
 	faults = append(faults, validateSystemPrincipal(service, schema)...)
+	faults = append(faults, checkProvisioningSchema(service, schema)...)
 	return faults
 }
 
@@ -416,6 +537,36 @@ func relationshipName(entity types.Entity, relationship types.Relationship) stri
 	return entity.ResourceType + "#" + relation
 }
 
+// topLevelCreate checks the permission of the create of an entity with no parent, which a collection with no scope
+// serves: no row names the new row, so the create is decided on the service-level resource of the tenant
+// provisioning, and its permission is one that the schema declares on the provisioning's resource type
+// (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09). A declaration with no provisioning has no such resource, so only a public
+// create is accepted. An undefined resource type of the provisioning is the fault of checkProvisioningSchema.
+func topLevelCreate(service *types.ServiceDeclaration, schema *AuthzSchema, ei int, entity types.Entity, permission string) []ValidationError {
+	place := fmt.Sprintf("entities[%d].permissions.%s", ei, types.OpCreate)
+	if service.Tenancy == nil || service.Tenancy.Provisioning == nil || service.Tenancy.Provisioning.ResourceType == "" {
+		return []ValidationError{{Category: "authorization", Rule: "schema-names", Path: place, Found: permission,
+			Message: fmt.Sprintf("entity %q has no parent, so its create is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration does not declare; declare tenancy.provisioning, or make the create public with a reason", entity.Name)}}
+	}
+	provisioning := service.Tenancy.Provisioning
+	resourceType := provisioning.ResourceType
+	// Provision and Retire are decided on the service-level resource with no tenant in its ID, so a grant of them
+	// is platform-wide; a create is decided on the tenant-qualified ID of that resource (ST-SUP-Q127 (a)). One name
+	// with two meanings would let an operator who grants one of them in a tenant think that it grants nothing else.
+	for _, platform := range []struct{ name, permission string }{{"provision", provisioning.Provision}, {"retire", provisioning.Retire}} {
+		if platform.permission != "" && permission == platform.permission {
+			return []ValidationError{{Category: "authorization", Rule: "schema-names", Path: place, Found: permission,
+				Message: fmt.Sprintf("entity %q for the operation create names the permission %q, which tenancy.provisioning.%s also names: a %s is decided on the service-level resource %s:%s with no tenant, but a create is decided on that resource in the tenant of the request (ST-SUP-RC29-OC01), so it needs a permission of its own; declare another permission on %s for the create", entity.Name, permission, platform.name, platform.name, resourceType, service.Name, resourceType)}}
+		}
+	}
+	definition, defined := schema.definitions[resourceType]
+	if !defined || definition.permissions[permission] {
+		return nil
+	}
+	return []ValidationError{{Category: "authorization", Rule: "schema-names", Path: place, Found: permission, Allowed: sortedKeys(definition.permissions),
+		Message: fmt.Sprintf("entity %q for the operation create names the permission %q, which the resource type %s of the schema %s lacks; an entity with no parent is created on the service-level resource %s:%s of the tenant provisioning (ST-SUP-RC29-OC01)", entity.Name, permission, resourceType, schema.Path, resourceType, service.Name)}}
+}
+
 // validateSchemaNames checks that every name the declaration takes from the schema is in it (ST-DECL-INV22): the
 // subject type of a request's identity, each entity's resource type, the permission of each operation, the
 // relation and subject type of each relationship, and the caveat parameter of each context field.
@@ -442,6 +593,10 @@ func validateSchemaNames(service *types.ServiceDeclaration, schema *AuthzSchema)
 		if defined {
 			for _, operation := range sortedOperations(a.Permissions) {
 				permission := a.Permissions[operation]
+				if operation == types.OpCreate && permission != types.PermissionPublic && types.CreatesTopLevel(service.Collections, entity.Name) {
+					faults = append(faults, topLevelCreate(service, schema, ei, entity, permission)...)
+					continue
+				}
 				if permission != types.PermissionPublic && !definition.permissions[permission] {
 					lacks(fmt.Sprintf("entities[%d].permissions.%s", ei, operation), "permission", permission,
 						fmt.Sprintf("%s for the operation %s", where, operation), sortedKeys(definition.permissions))
@@ -572,6 +727,13 @@ func SlotRelationUnknown(service *types.ServiceDeclaration, schema *AuthzSchema)
 // system principal is a subject the schema grants relations to, and never a bypass.
 func validateSystemPrincipal(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	var faults []ValidationError
+	// The subject of a request's identity is never service_account: a person with the subject service_account:<name>
+	// would get the grants of the worker or the controller named name (security review of PR #337, I7; decision on
+	// ST-SUP-Q141).
+	if subject := service.Authorization.SubjectFromIdentity; subject == types.SystemSubjectType {
+		faults = append(faults, ValidationError{Category: "authorization", Rule: "no-bypass", Path: "authorization.subject_from_identity", Found: subject,
+			Message: fmt.Sprintf("the subject type of a request's identity is %s, the subject type of the system principals; a caller would act as the worker or controller of the same name, so name the subject type of the people, such as user", types.SystemSubjectType)})
+	}
 	subjectType := service.Authorization.SystemSubjectType
 	if subjectType != "" {
 		fault := ValidationError{Category: "authorization", Rule: "no-bypass", Path: "authorization.system_subject_type", Found: subjectType}
@@ -647,6 +809,9 @@ func declaredResourceTypes(entities []types.Entity) map[string]bool {
 // typeNames gives the names of the schema's definitions, in order.
 func (s *AuthzSchema) typeNames() []string { return sortedKeys(s.definitions) }
 
+// TypeNames gives the names of the definitions of the schema, sorted.
+func (s *AuthzSchema) TypeNames() []string { return s.typeNames() }
+
 func sortedOperations(m map[types.Operation]string) []types.Operation {
 	operations := make([]types.Operation, 0, len(m))
 	for operation := range m {
@@ -702,4 +867,173 @@ func slotSettings(service *types.ServiceDeclaration) []Setting {
 		settings = append(settings, resolved(fmt.Sprintf("slots[%d].runs_as", i), slot.RunsAs, types.RunsAsTenant))
 	}
 	return settings
+}
+
+// reachesWildcard tells whether the relation or permission name of the type can grant a wildcard subject, such as
+// user:*, so that every subject of that type holds it (wildcardReach).
+func (s *AuthzSchema) reachesWildcard(typeName, name string) bool {
+	return s.wildcards[typeName+"#"+name]
+}
+
+// wildcardReach computes, for every relation and permission of the schema, whether it can grant a wildcard subject:
+// a relation that admits a wildcard; a relation that admits a userset whose relation reaches one; or a permission
+// whose expression reaches one through its relations and arrows. A union reaches one when any part does, an
+// intersection when every part does, and an exclusion when its base does. Each rule is monotone, so the answer is
+// the least fixed point: every node starts at no wildcard, and a node is set when its rule holds by the nodes set so
+// far. A cycle with no wildcard stays at no wildcard.
+//
+// It is computed on an AND/OR graph (security reviews of PR 253, L3 and L4, and of PR 294, M1): each relation and
+// permission, each expression and each arrow is a gate, its inputs are the gates its rule reads, once each, and each
+// gate counts its inputs that are not set yet. An OR gate is set by its first set input, an AND gate by its last.
+// Each edge is followed once, so the work grows with the size of the schema, also on a wide intersection whose parts
+// repeat, and no schema makes checking slow.
+func (s *AuthzSchema) wildcardReach() map[string]bool {
+	g := &reachGraph{named: map[string]int{}, arrows: map[string]int{}, edges: map[[2]int]bool{}}
+	for typeName, definition := range s.definitions {
+		for name, subjects := range definition.subjects {
+			node := g.name(typeName + "#" + name)
+			for _, subject := range subjects {
+				switch {
+				case subject.wildcard:
+					g.wildcard(node)
+				case subject.relation != "" && subject.relation != "...":
+					g.input(node, g.name(subject.namespace+"#"+subject.relation))
+				}
+			}
+		}
+		for name, rewrite := range definition.rewrites {
+			g.input(g.name(typeName+"#"+name), s.rewriteGate(g, typeName, rewrite))
+		}
+	}
+	return g.run()
+}
+
+// rewriteGate gives the gate of a permission expression of the type: an OR gate for a union, an AND gate for an
+// intersection, and for an exclusion an OR gate whose only input is its base, which alone decides it.
+func (s *AuthzSchema) rewriteGate(g *reachGraph, typeName string, rewrite *core.UsersetRewrite) int {
+	var children []*core.SetOperation_Child
+	gate := g.gate(false)
+	switch {
+	case rewrite.GetUnion() != nil:
+		children = rewrite.GetUnion().GetChild()
+	case rewrite.GetIntersection() != nil:
+		children = rewrite.GetIntersection().GetChild()
+		gate = g.gate(true)
+	case rewrite.GetExclusion() != nil:
+		children = rewrite.GetExclusion().GetChild()
+		if len(children) > 1 {
+			children = children[:1]
+		}
+	}
+	for _, c := range children {
+		switch {
+		case c.GetComputedUserset() != nil:
+			g.input(gate, g.name(typeName+"#"+c.GetComputedUserset().GetRelation()))
+		case c.GetTupleToUserset() != nil || c.GetFunctionedTupleToUserset() != nil:
+			tupleset, computed := c.GetTupleToUserset().GetTupleset().GetRelation(), c.GetTupleToUserset().GetComputedUserset().GetRelation()
+			if f := c.GetFunctionedTupleToUserset(); f != nil {
+				tupleset, computed = f.GetTupleset().GetRelation(), f.GetComputedUserset().GetRelation()
+			}
+			g.input(gate, s.arrowGate(g, typeName, tupleset, computed))
+		case c.GetUsersetRewrite() != nil:
+			g.input(gate, s.rewriteGate(g, typeName, c.GetUsersetRewrite()))
+		default:
+			g.input(gate, g.gate(false)) // a part that never reaches a wildcard, such as nil
+		}
+	}
+	return gate
+}
+
+// arrowGate gives the OR gate of the arrow tupleset->computed of the type, one for each arrow: it is set when a
+// subject type of the tupleset is a wildcard, or when the computed relation of a subject type reaches one.
+func (s *AuthzSchema) arrowGate(g *reachGraph, typeName, tupleset, computed string) int {
+	key := typeName + "#" + tupleset + "->" + computed
+	if gate, ok := g.arrows[key]; ok {
+		return gate
+	}
+	gate := g.gate(false)
+	g.arrows[key] = gate
+	for _, subject := range s.definitions[typeName].subjects[tupleset] {
+		if subject.wildcard {
+			g.wildcard(gate)
+		} else {
+			g.input(gate, g.name(subject.namespace+"#"+computed))
+		}
+	}
+	return gate
+}
+
+// reachGraph is the AND/OR graph of wildcardReach.
+type reachGraph struct {
+	and     []bool         // whether each gate is an AND gate
+	unset   []int          // the inputs of each gate that are not set yet
+	outputs [][]int        // the gates that read each gate
+	set     []bool         // whether each gate is set
+	wild    []int          // the gates that a wildcard sets at the start
+	named   map[string]int // the gate of each relation and permission, by type#name
+	arrows  map[string]int // the gate of each arrow, by type#tupleset->computed
+	edges   map[[2]int]bool
+}
+
+func (g *reachGraph) gate(and bool) int {
+	g.and, g.unset, g.outputs, g.set = append(g.and, and), append(g.unset, 0), append(g.outputs, nil), append(g.set, false)
+	return len(g.and) - 1
+}
+
+// name gives the gate of a relation or permission. A name the schema does not define gets an OR gate with no input,
+// which is never set.
+func (g *reachGraph) name(node string) int {
+	if gate, ok := g.named[node]; ok {
+		return gate
+	}
+	gate := g.gate(false)
+	g.named[node] = gate
+	return gate
+}
+
+// input adds from as an input of the gate, once: a part that an expression repeats is one input.
+func (g *reachGraph) input(gate, from int) {
+	if g.edges[[2]int{from, gate}] {
+		return
+	}
+	g.edges[[2]int{from, gate}] = true
+	g.unset[gate]++
+	g.outputs[from] = append(g.outputs[from], gate)
+}
+
+func (g *reachGraph) wildcard(gate int) { g.wild = append(g.wild, gate) }
+
+// run sets the gates that a wildcard sets, and then each gate whose rule holds, following each edge once. An OR
+// gate is set by one set input, and an AND gate when it has inputs and all of them are set. It gives the relations
+// and permissions that are set.
+func (g *reachGraph) run() map[string]bool {
+	var work []int
+	mark := func(gate int) {
+		if !g.set[gate] {
+			g.set[gate] = true
+			work = append(work, gate)
+		}
+	}
+	for _, gate := range g.wild {
+		if !g.and[gate] {
+			mark(gate)
+		}
+	}
+	for len(work) > 0 {
+		gate := work[len(work)-1]
+		work = work[:len(work)-1]
+		for _, out := range g.outputs[gate] {
+			g.unset[out]--
+			if !g.and[out] || g.unset[out] == 0 {
+				mark(out)
+			}
+		}
+	}
+	reach := map[string]bool{}
+	for node, gate := range g.named {
+		if g.set[gate] {
+			reach[node] = true
+		}
+	}
+	return reach
 }

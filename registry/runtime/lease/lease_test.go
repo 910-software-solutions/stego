@@ -1,13 +1,17 @@
 package lease
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,8 +25,51 @@ import (
 // STEGO_TEST_POSTGRES_DSN names, else a container that the test binary starts and removes (ST-STD-LOCAL-R04).
 // Each test makes its own database on that server and drops it at the end.
 
-// TestMain gives the PostgreSQL tests of the package their local server (ST-STD-LOCAL-R04).
-func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
+// TestMain gives the PostgreSQL tests of the package their local server (ST-STD-LOCAL-R04). When the stall
+// variable names a database, the test binary is instead the holder of ST-SUP-RP09-LC04-T04, which stops inside a
+// write under the lease.
+func TestMain(m *testing.M) {
+	if dsn := os.Getenv(stallVariable); dsn != "" {
+		os.Exit(stallInWrite(dsn))
+	}
+	os.Exit(pgtest.Main(m))
+}
+
+// stallVariable names the database of the holder that stops inside a write under the lease.
+const stallVariable = "STEGO_LEASE_TEST_STALL_DSN"
+
+// stallTTL is the lease of the holder that stops inside a write under the lease.
+const stallTTL = 2 * time.Second
+
+// stallInWrite acquires the lease stego.controller as the holder "stalled", opens a write under the lease, writes
+// "fenced" when the write holds the lease row, and then waits in the write, so the test can stop the process with
+// the transaction open.
+func stallInWrite(dsn string) int {
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	db := stdlib.OpenDB(*config)
+	defer func() { _ = db.Close() }()
+	c, err := New(db, "stego.controller", "stalled", Settings{TTL: stallTTL, Renew: stallTTL / 2})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	h, err := c.Acquire(context.Background())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	err = h.WithToken(context.Background(), func(ctx context.Context, _ *sql.Tx, _ int64) error {
+		fmt.Println("fenced")
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	fmt.Fprintln(os.Stderr, err)
+	return 1
+}
 
 // statement is one statement that the recorder read, with the connection that sent it.
 type statement struct {
@@ -69,21 +116,23 @@ type database struct {
 	db    *sql.DB
 	other *sql.DB
 	rec   *recorder
+	dsn   string
 }
 
 func openDatabase(t *testing.T) *database {
 	t.Helper()
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(pgtest.Database(t, "lease"))
+	dsn := pgtest.Database(t, "lease")
+	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	plain := config.Copy()
 	rec := &recorder{}
 	config.Tracer = rec
-	d := &database{db: stdlib.OpenDB(*config), other: stdlib.OpenDB(*plain), rec: rec}
+	d := &database{db: stdlib.OpenDB(*config), other: stdlib.OpenDB(*plain), rec: rec, dsn: dsn}
 	t.Cleanup(func() { _ = d.db.Close(); _ = d.other.Close() })
-	for _, ddl := range []string{LeasesTable, "CREATE SCHEMA stego_schema", BackfillsTable} {
+	for _, ddl := range []string{LeasesTable, "CREATE SCHEMA stego_schema", BackfillsTable, BackfillFunctions} {
 		if _, err := d.other.ExecContext(ctx, ddl); err != nil {
 			t.Fatal(err)
 		}
@@ -230,23 +279,75 @@ func TestLeaseIsOneRow(t *testing.T) {
 		if err := h.Renew(ctx); err != nil {
 			t.Fatal(err)
 		}
-		wantAcquire := "UPDATE public.leases SET holder=$1, expires_at=now()+ttl, token=token+1 WHERE name=$2 AND (holder=$1 OR expires_at<now()) RETURNING token"
-		wantRenew := "UPDATE public.leases SET expires_at=now()+ttl, token=token+1 WHERE name=$2 AND holder=$1 AND token=$3 AND expires_at>=now() RETURNING token"
+		wantAcquire := "UPDATE public.leases SET holder=$1, expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) ttl, token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND (holder OPERATOR(pg_catalog.=) $1 OR expires_at OPERATOR(pg_catalog.<) pg_catalog.now()) RETURNING token"
+		wantRenew := "UPDATE public.leases SET expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) ttl, token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND holder OPERATOR(pg_catalog.=) $1 AND token OPERATOR(pg_catalog.=) $3 AND expires_at OPERATOR(pg_catalog.>=) pg_catalog.now() RETURNING token"
 		sent := d.rec.all()
 		if len(sent) != 2 {
 			t.Fatalf("Acquire and Renew sent %d statements, want 2: %v", len(sent), sent)
 		}
-		if got := strings.Replace(sent[0].sql, "make_interval(secs => $3)", "ttl", 1); got != wantAcquire {
+		if got := strings.Replace(sent[0].sql, "pg_catalog.make_interval(secs => $3)", "ttl", 1); got != wantAcquire {
 			t.Errorf("Acquire sent %q, want %q with ttl as $3", sent[0].sql, wantAcquire)
 		}
 		if a := sent[0].args; len(a) != 3 || a[0] != "h1" || a[1] != "stego.controller" || a[2] != 15.0 {
 			t.Errorf("Acquire binds %v, want h1, stego.controller and the lease of 15 s", a)
 		}
-		if got := strings.Replace(sent[1].sql, "make_interval(secs => $4)", "ttl", 1); got != wantRenew {
+		if got := strings.Replace(sent[1].sql, "pg_catalog.make_interval(secs => $4)", "ttl", 1); got != wantRenew {
 			t.Errorf("Renew sent %q, want %q with ttl as $4", sent[1].sql, wantRenew)
 		}
 		if a := sent[1].args; len(a) != 4 || a[0] != "h1" || a[1] != "stego.controller" || a[2] != h.Token()-1 || a[3] != 15.0 {
 			t.Errorf("Renew binds %v, want h1, stego.controller, the token it held and the lease of 15 s", a)
+		}
+	})
+
+	t.Run("ST-SUP-RP09-LC02-T08 Acquire and Renew run the functions and operators of pg_catalog on a search path that puts another schema before it", func(t *testing.T) {
+		d := openDatabase(t)
+		ctx := context.Background()
+		if err := Declare(ctx, d.db, "stego.controller"); err != nil {
+			t.Fatal(err)
+		}
+		// A schema before pg_catalog on the path has its own now(), make_interval and + of bigint and integer, each
+		// an exact match for the statements, which would set the lease far into the future and add 100 to the token.
+		for _, statement := range []string{
+			"CREATE SCHEMA hostile",
+			"CREATE FUNCTION hostile.now() RETURNS timestamptz LANGUAGE sql AS $$SELECT pg_catalog.now() + interval '100 years'$$",
+			"CREATE FUNCTION hostile.make_interval(secs double precision) RETURNS interval LANGUAGE sql AS $$SELECT interval '100 years'$$",
+			"CREATE FUNCTION hostile.add(bigint, integer) RETURNS bigint LANGUAGE sql AS $$SELECT $1 OPERATOR(pg_catalog.+) 100$$",
+			"CREATE OPERATOR hostile.+ (LEFTARG = bigint, RIGHTARG = integer, FUNCTION = hostile.add)",
+			"CREATE FUNCTION hostile.lt(timestamptz, timestamptz) RETURNS boolean LANGUAGE sql AS $$SELECT true$$",
+			"CREATE OPERATOR hostile.< (LEFTARG = timestamptz, RIGHTARG = timestamptz, FUNCTION = hostile.lt)",
+		} {
+			d.exec(t, statement)
+		}
+		conn, err := d.db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET search_path = hostile, pg_catalog, public"); err != nil {
+			t.Fatal(err)
+		}
+		// The schema is live for a plain statement of the session.
+		var far bool
+		if err := conn.QueryRowContext(ctx, "SELECT now() > pg_catalog.now() + interval '50 years'").Scan(&far); err != nil || !far {
+			t.Fatalf("the hostile now() is not live on the path (error %v)", err)
+		}
+		_, before, _ := d.leaseRow(t, "stego.controller")
+		h1 := acquire(t, newClient(t, conn, "stego.controller", "h1", Settings{TTL: 15 * time.Second}))
+		check := func(what string, want int64) {
+			t.Helper()
+			holder, token, expires := d.leaseRow(t, "stego.controller")
+			if holder != "h1" || token != want || h1.Token() != want || time.Until(expires) > time.Minute {
+				t.Fatalf("after %s the row holds %s with the token %d (the holder has %d) until %v, want h1 with %d for at most 15 s", what, holder, token, h1.Token(), expires, want)
+			}
+		}
+		check("the acquire", before+1)
+		if err := h1.Renew(ctx); err != nil {
+			t.Fatal(err)
+		}
+		check("the renew", before+2)
+		// Another holder cannot take the unexpired lease through the hostile < either.
+		if _, err := newClient(t, conn, "stego.controller", "h2", Settings{}).Acquire(ctx); !errors.Is(err, ErrTaken) {
+			t.Fatalf("h2 acquired the unexpired lease of h1 on the hostile path: %v", err)
 		}
 	})
 
@@ -644,6 +745,179 @@ func TestHolderStops(t *testing.T) {
 		var n int
 		if err := d.other.QueryRowContext(context.Background(), "SELECT count(*) FROM writes").Scan(&n); err != nil || n != 0 {
 			t.Fatalf("%d writes applied (%v), want none", n, err)
+		}
+	})
+}
+
+// TestStoppedHolder runs the holder in a process of its own and stops that process, as a frozen container, a
+// paused virtual machine or a long stall of the process does: no timer of the process runs, so only the database
+// can end the transaction that the process left open.
+func TestStoppedHolder(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC04-T04 A holder that stops inside a write under the lease keeps the lease row no longer than its lease", func(t *testing.T) {
+		d := openDatabase(t)
+		ctx := context.Background()
+		// The bound is the time the lease has left, never longer and never 0, which turns the timeout off.
+		if err := Declare(ctx, d.other, "stego.bound"); err != nil {
+			t.Fatal(err)
+		}
+		clock := newFakeClock()
+		conn, err := d.db.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		bounded := acquire(t, newClient(t, conn, "stego.bound", "bounded", Settings{TTL: stallTTL, Renew: stallTTL / 2, Clock: clock}))
+		clock.Advance(500*time.Millisecond + 300*time.Microsecond)
+		var timeout string
+		if err := bounded.WithToken(ctx, func(ctx context.Context, tx *sql.Tx, _ int64) error {
+			return tx.QueryRowContext(ctx, "SELECT current_setting('idle_in_transaction_session_timeout')").Scan(&timeout)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if want := "1499ms"; timeout != want {
+			t.Fatalf("the idle-in-transaction timeout of a write with 1499.7 ms of lease left is %s, want %s", timeout, want)
+		}
+		if err := conn.QueryRowContext(ctx, "SELECT current_setting('idle_in_transaction_session_timeout')").Scan(&timeout); err != nil || timeout != "0" {
+			t.Fatalf("after the write the session keeps the idle-in-transaction timeout %s (%v), want 0: the timeout is the transaction's only", timeout, err)
+		}
+		clock.Advance(stallTTL - 500*time.Millisecond - 300*time.Microsecond - 500*time.Microsecond)
+		tx, err := conn.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := bounded.Fence(ctx, tx); err == nil || !strings.Contains(err.Error(), "no time left") {
+			t.Fatalf("Fence with 0.5 ms of lease left gave %v, want the error of no time left", err)
+		}
+		var locks int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM pg_catalog.pg_locks WHERE pid = pg_catalog.pg_backend_pid() AND locktype = 'transactionid'").Scan(&locks); err != nil || locks != 0 {
+			t.Fatalf("Fence with no time left took %d row locks (%v), want none", locks, err)
+		}
+		_ = tx.Rollback()
+		if err := Declare(ctx, d.other, "stego.controller"); err != nil {
+			t.Fatal(err)
+		}
+		holder := exec.Command(os.Args[0], "-test.run=^$")
+		holder.Env = append(os.Environ(), stallVariable+"="+d.dsn)
+		holder.Stderr = os.Stderr
+		out, err := holder.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := holder.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = holder.Process.Signal(syscall.SIGCONT)
+			_ = holder.Process.Kill()
+			_ = holder.Wait()
+		})
+		fenced := make(chan bool, 1)
+		go func() {
+			line, _ := bufio.NewReader(out).ReadString('\n')
+			fenced <- line == "fenced\n"
+		}()
+		if !within(t, fenced, "the write of the holder under the lease") {
+			t.Fatal("the holder ended before its write held the lease row")
+		}
+		// The process stops with its transaction open and the lease row locked FOR SHARE.
+		if err := holder.Process.Signal(syscall.SIGSTOP); err != nil {
+			t.Fatal(err)
+		}
+		holderName, _, expires := d.leaseRow(t, "stego.controller")
+		if holderName != "stalled" {
+			t.Fatalf("the lease row holds %q, want the stopped holder", holderName)
+		}
+		// The other holder takes the lease once it expires, and not one lease later.
+		bound := expires.Add(stallTTL)
+		other := newClient(t, d.other, "stego.controller", "other", Settings{TTL: stallTTL, Renew: stallTTL / 2})
+		acquireCtx, cancel := context.WithDeadline(ctx, bound)
+		defer cancel()
+		for {
+			_, err := other.Acquire(acquireCtx)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, ErrTaken) || acquireCtx.Err() != nil {
+				t.Fatalf("the other holder did not take the lease within one lease after it expired at %s, while the stopped holder's transaction stays open: %v", expires.Format(time.RFC3339Nano), err)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		if h, _, _ := d.leaseRow(t, "stego.controller"); h != "other" {
+			t.Fatalf("the lease row holds %q after the takeover, want other", h)
+		}
+	})
+	t.Run("ST-SUP-RP09-LC04-T05 A holder that runs a statement under the lease and then stops keeps the lease row no longer than its lease", func(t *testing.T) {
+		// Review of PR #309, L1: the idle timeout counts only idle time, so a holder that worked 1.5 s in the
+		// transaction and then stopped kept the row 1.5 s past the expiry. transaction_timeout counts the statement too.
+		var version int
+		if err := openDatabase(t).other.QueryRow("SELECT current_setting('server_version_num')::integer").Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		if version < 170000 {
+			t.Skipf("PostgreSQL %d has no transaction_timeout", version)
+		}
+		// The bound is the transaction's only: a pooled session keeps no transaction_timeout after the write.
+		{
+			d := openDatabase(t)
+			ctx := context.Background()
+			if err := Declare(ctx, d.other, "stego.local"); err != nil {
+				t.Fatal(err)
+			}
+			conn, err := d.db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			local := acquire(t, newClient(t, conn, "stego.local", "local", Settings{TTL: 2 * time.Second, Renew: time.Second}))
+			var inside, after string
+			if err := local.WithToken(ctx, func(ctx context.Context, tx *sql.Tx, _ int64) error {
+				return tx.QueryRowContext(ctx, "SELECT current_setting('transaction_timeout')").Scan(&inside)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.QueryRowContext(ctx, "SELECT current_setting('transaction_timeout')").Scan(&after); err != nil || inside == "0" || after != "0" {
+				t.Fatalf("the transaction timeout is %s in the write and %s after it (%v), want a bound in the write and 0 after it", inside, after, err)
+			}
+		}
+		for _, work := range []string{"0", "1.5", "4"} {
+			t.Run("work "+work+" s then stop", func(t *testing.T) {
+				d := openDatabase(t)
+				ctx := context.Background()
+				if err := Declare(ctx, d.other, "stego.stop"); err != nil {
+					t.Fatal(err)
+				}
+				a := acquire(t, newClient(t, d.db, "stego.stop", "a", Settings{TTL: 2 * time.Second, Renew: time.Second}))
+				tx, err := d.db.BeginTx(ctx, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = tx.Rollback() }()
+				if _, err := a.Fence(ctx, tx); err != nil {
+					t.Fatal(err)
+				}
+				// The work: a statement of 4 s runs past the expiry, and the server ends it.
+				_, _ = tx.ExecContext(ctx, "SELECT pg_catalog.pg_sleep("+work+")")
+				// The process "stops": no statement and no timer of the holder.
+				_, _, expires := d.leaseRow(t, "stego.stop")
+				b := newClient(t, d.other, "stego.stop", "b", Settings{TTL: 2 * time.Second, Renew: time.Second})
+				var got time.Time
+				for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+					actx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+					_, err := b.Acquire(actx)
+					cancel()
+					if err == nil {
+						got = time.Now()
+						break
+					}
+				}
+				if got.IsZero() {
+					t.Fatal("the other holder never took the lease")
+				}
+				if late := got.Sub(expires); late > 500*time.Millisecond {
+					t.Fatalf("the other holder took the lease %v after the expiry, want at most 500 ms", late)
+				}
+			})
 		}
 	})
 }

@@ -161,6 +161,19 @@ func TestSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC30-OC03-T04 The create fingerprint holds a client-set timestamp and leaves out a server-managed one", func(t *testing.T) {
+		ctx := todoContext([]types.Operation{types.OpCreate}, "", todoBase)
+		ctx.Entities[0].Fields = append(ctx.Entities[0].Fields,
+			types.Field{Name: "due_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+			types.Field{Name: "updated_at", Type: types.FieldTypeTimestamp, ClientSet: true})
+		fingerprint := string(generated(t, ctx)["internal/idempotency/fingerprint.go"])
+		// The client sets due_at (ST-DECL-Q16), so a retry with another due_at is another request; created_at and
+		// updated_at are the server's, even when marked client_set.
+		if want := "request of the collection todos: the method, the path without\n// its query and the canonical body over the fields title, done, note, due_at.\n"; !strings.Contains(fingerprint, "create "+want) {
+			t.Errorf("the create fingerprint does not cover the fields title, done, note and due_at only:\n%s", fingerprint)
+		}
+	})
+
 	t.Run("ST-SUP-RC30-OC04-T05 The emitted retention is the declared one, or 24h when the declaration gives none", func(t *testing.T) {
 		for _, c := range []struct {
 			declared string

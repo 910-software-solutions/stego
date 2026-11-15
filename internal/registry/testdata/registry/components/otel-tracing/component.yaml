@@ -1,4 +1,5 @@
 kind: component
+environment: []
 name: otel-tracing
 version: 0.1.0
 stage: ga
@@ -11,3 +12,8 @@ provides:
   - tracing
 
 slots: []
+architecture:
+  layer: handler
+  flow: Serves the test.
+  ports:
+    tracing: inbound

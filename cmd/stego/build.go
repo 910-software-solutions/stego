@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/jsell-rh/stego/internal/appbuild"
@@ -35,6 +36,7 @@ func runBuild(args []string) error {
 		flags.StringVar(&options.Target, "target", "", "entry point path within the module")
 		flags.StringVar(&options.Go, "go", "", "bin/go in the selected official SDK")
 		flags.StringVar(&options.Output, "output", "", "new module cache directory")
+		flags.StringVar(&options.RuntimeFolder, "runtime-folder", "", "registry/runtime of a STEGO checkout, for a source with no runtime folder; it must hash to the runtime pin")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -43,8 +45,14 @@ func runBuild(args []string) error {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		_, err := appbuild.Download(ctx, options)
-		return err
+		record, err := appbuild.Download(ctx, options)
+		if err != nil {
+			return err
+		}
+		// A download that ends with no output looks the same as one that did nothing (walkthrough re-run, 2026-11-14).
+		fmt.Printf("Downloaded the module cache of revision %s into %s: %d module(s), recorded in %s.\n", record.SourceRevision,
+			options.Output, len(record.Modules), filepath.Join(options.Output, "module-cache.json"))
+		return nil
 	}
 	if len(args) > 0 && args[0] == "verify" {
 		flags := flag.NewFlagSet("build verify", flag.ContinueOnError)

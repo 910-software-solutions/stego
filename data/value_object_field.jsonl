@@ -48,3 +48,5 @@
 {"value_object_id":"ST-VO61","position":2,"name":"Currency","meaning":"The ISO 4217 code.","type":"text","required":true,"example":"EUR"}
 {"value_object_id":"ST-VO62","position":1,"name":"Path","meaning":"The path of the file, from the root of the service output.","type":"text","required":true,"example":"internal/api/handler.go"}
 {"value_object_id":"ST-VO62","position":2,"name":"Content","meaning":"The body of the file, without the generated header.","type":"text","required":true}
+{"value_object_id":"ST-VO63","position":1,"name":"Type","meaning":"One of string, integer, number, duration, boolean, url, path, address or list.","type":"text","required":true,"example":"duration"}
+{"value_object_id":"ST-VO64","position":1,"name":"Text","meaning":"One or two sentences that say what the variable controls and what happens when it has no value.","type":"text","required":true,"example":"The longest time that a gRPC stream stays open. When it has no value, the stream stays open for 5 minutes."}

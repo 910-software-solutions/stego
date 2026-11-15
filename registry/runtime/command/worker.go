@@ -107,9 +107,8 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 	if interval <= 0 || due.UnixNano()%interval.Nanoseconds() != 0 {
 		return fmt.Errorf("command: the tick of %s is not due at a multiple of its interval", w.spec.Name)
 	}
-	ctx, finish := rt.span(ctx, WorkerSpanName)
-	outcome := otel.OutcomeRolledBack
-	defer func() { finish(outcome, false, err != nil) }()
+	ctx, finish := rt.workerSpan(ctx, WorkerSpanName, w.spec.Name)
+	defer func() { finish(spanOutcome(err), false, err != nil) }()
 
 	var notAfter time.Time
 	if held != nil {
@@ -125,8 +124,23 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		ctx, cancel = context.WithDeadline(ctx, notAfter)
 		defer cancel()
 	}
+	// The tenant gate before the transaction: a tenant that was retired after the tick read the tenant list gets no
+	// run (security review of PR #337, L1).
+	if rt.cfg.Tenants != nil {
+		active, err := rt.cfg.Tenants.Active(ctx, t)
+		switch {
+		case err != nil:
+			return internalf("the tenant list was not read")
+		case !active:
+			return errTenantNotActive
+		}
+	}
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
+		return workerBegin(ctx, notAfter, err)
+	}
+	if err := rt.markStep(ctx, tx); err != nil {
+		_ = tx.Rollback()
 		return workerBegin(ctx, notAfter, err)
 	}
 	committed := false
@@ -180,9 +194,29 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		return deadlineOr(ctx, notAfter, err)
 	}
 	committed = true
-	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return nil
+}
+
+// workerOutcome is the fixed outcome of a worker run that did not commit (ST-SUP-RC35-OC09): fenced for a run that
+// its lease fenced, panicked for a fill that panicked, and rolled_back for any other error.
+func workerOutcome(err error) probe.WorkerOutcome {
+	switch {
+	case errors.Is(err, lease.ErrFenced):
+		return probe.WorkerFenced
+	case errors.Is(err, errPanic):
+		return probe.WorkerPanicked
+	}
+	return probe.WorkerRolledBack
+}
+
+// spanOutcome is the outcome of the span of a worker run: committed for a run that returned nil, and else the fixed
+// outcome of workerOutcome (ST-SUP-RC35-OC09).
+func spanOutcome(err error) otel.Outcome {
+	if err == nil {
+		return otel.OutcomeCommitted
+	}
+	return otel.Outcome(workerOutcome(err))
 }
 
 // workerBegin maps an error of tenant.Begin in a worker run.
@@ -206,6 +240,28 @@ func deadlineOr(ctx context.Context, notAfter time.Time, err error) error {
 	return err
 }
 
+// errTenantNotActive is the refusal of a message of a tenant that the tenant list does not hold as active, such as a
+// retired tenant (ST-SUP-RC27-OC12).
+var errTenantNotActive = errors.New("command: the tenant of the message is not an active tenant of the tenant list")
+
+// activeTenant checks the tenant of a claimed message against the tenant list of Config.Tenants, before any fill: a
+// tenant that the list does not hold as active, such as a retired tenant, is a permanent refusal, which parks the
+// message with an alert and runs no fill (ST-SUP-RC27-OC12, ST-SUP-RP01-LC12); a failed read of the list is a
+// transient refusal, so the message is tried again and no fill runs. With no Tenants it checks nothing.
+func (rt *Runtime) activeTenant(ctx context.Context, t tenant.Tenant) error {
+	if rt.cfg.Tenants == nil {
+		return nil
+	}
+	active, err := rt.cfg.Tenants.Active(ctx, t)
+	switch {
+	case err != nil:
+		return outbox.TransientRefusal(internalf("the tenant list was not read"))
+	case !active:
+		return outbox.PermanentRefusal(errTenantNotActive)
+	}
+	return nil
+}
+
 // MessageFill is the fill of a worker with a consumes trigger: it gets the decoded message, its effect name and the
 // handle.
 type MessageFill[M, P any] func(ctx context.Context, message M, effect string, h *Handle[P]) error
@@ -222,6 +278,9 @@ type MessageFill[M, P any] func(ctx context.Context, message M, effect string, h
 // the fill when that key is completed (ST-SUP-RP10-LC19); each staged effect's key derives from that identity
 // (ST-SUP-RP10-LC08).
 //
+// With Config.Tenants, a message of a tenant that the tenant list does not hold as active, such as a retired tenant,
+// is refused with outbox.PermanentRefusal before the fill, so the outbox parks it (ST-SUP-RC27-OC12).
+//
 // It returns nil when the outbox may commit tx with the message done; an error marked with outbox.Conflict for a
 // conflict, which the outbox dispatches again and does not count as an attempt (ST-SUP-RP10-LC26), except a unique
 // violation, which a dispatch again gives again and so is an attempt; an error marked
@@ -233,9 +292,20 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	if rt == nil || w == nil || tx == nil || decode == nil || fill == nil || d.Tenant.IsZero() {
 		return errors.New("command: RunConsumer needs the runtime, the worker, the transaction, the decoder, the fill and a claimed message")
 	}
-	ctx, finish := rt.span(ctx, ConsumerSpanName)
+	ctx, finish := rt.workerSpan(ctx, ConsumerSpanName, w.spec.Name)
 	outcome := otel.OutcomeRolledBack
-	defer func() { finish(outcome, false, err != nil && !outbox.IsConflict(err)) }()
+	defer func() {
+		if outcome == otel.OutcomeRolledBack {
+			outcome = otel.Outcome(workerOutcome(err))
+		}
+		finish(outcome, false, err != nil && !outbox.IsConflict(err))
+	}()
+	if err := rt.activeTenant(ctx, d.Tenant); err != nil {
+		return err
+	}
+	if err := rt.markStep(ctx, tx); err != nil {
+		return outbox.Conflict(fmt.Errorf("command: %s: set the writer marker: %w", w.spec.Name, err))
+	}
 
 	stagingPrincipal, err := authz.StagingPrincipal(staging.NewStaging(), d.Principal)
 	if err != nil {
@@ -292,6 +362,11 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		})
 	var failure *fillFailure
 	switch {
+	case s.notGranted || sqlState(err) == notGrantedState:
+		// The worker role lacks a privilege that the fill needs: a dispatch again fails the same way, so the message
+		// is parked and does not hold back its key without end (decision on ST-SUP-Q141, orchestrator under the
+		// owner's delegation, 2026-11-15).
+		return outbox.PermanentRefusal(&notGrantedError{worker: w.spec.Name})
 	case errors.As(err, &failure):
 		if failure.conflict && !uniqueConflict(failure.err) {
 			return outbox.Conflict(failure.err)
@@ -325,6 +400,29 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return nil
+}
+
+// ErrNotGranted matches the error of a consumer run whose statement failed with SQLSTATE 42501, as the worker role
+// lacks a privilege that the fill needs: RunConsumer parks the message (decision on ST-SUP-Q141).
+var ErrNotGranted = errors.New("command: the worker role lacks a privilege that the fill needs")
+
+// notGrantedError is the refusal of a consumer run that the database refused for a missing privilege. It names the
+// worker and no database text.
+type notGrantedError struct{ worker string }
+
+func (e *notGrantedError) Error() string {
+	return "command: " + e.worker + ": the worker role lacks a privilege that the fill needs (SQLSTATE 42501)"
+}
+func (e *notGrantedError) Is(target error) bool { return target == ErrNotGranted }
+
+// ObserveConsumer reports the error err of one RunConsumer of a consuming worker to its built-in observations and
+// returns it: a run that the database refused for a missing privilege is sent as worker.run.failed with the outcome
+// not_granted (decision on ST-SUP-Q141). The generated destination handler of a consuming worker calls it.
+func ObserveConsumer(ctx context.Context, observe WorkerObserver, err error) error {
+	if observe != nil && errors.Is(err, ErrNotGranted) {
+		observe.RunFailed(context.WithoutCancel(ctx), probe.WorkerNotGranted)
+	}
+	return err
 }
 
 // errDeclaredRefusal matches an error that Refusal marks.

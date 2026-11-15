@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/jsell-rh/stego/registry/runtime/internal/txhold"
 )
 
 // SettingName is the transaction-local setting that holds the tenant of a transaction. The row-level security
@@ -60,9 +62,20 @@ type Querier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// querier hides the *sql.Tx behind Querier, so a type assertion cannot reach Commit.
+// querier hides the *sql.Tx behind Querier, so a type assertion cannot reach Commit. Only the packages of the runtime
+// module reach the transaction, through the internal package txhold.
 type querier struct {
 	tx *sql.Tx
+}
+
+func init() {
+	txhold.Register(func(q any) (*sql.Tx, bool) {
+		held, ok := q.(querier)
+		if !ok || held.tx == nil {
+			return nil, false
+		}
+		return held.tx, true
+	})
 }
 
 func (q querier) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {

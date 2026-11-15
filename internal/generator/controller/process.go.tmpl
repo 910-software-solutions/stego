@@ -17,6 +17,7 @@ import (
 // only from main. The callback must join its work and close its dependencies
 // when the context ends. Probe commands never call the application callback.
 func Main(run func(context.Context,*Metrics)error) {
+ stegoRefuseEnvironment()
  address:=os.Getenv("STEGO_CONTROLLER_MONITOR_ADDR")
  if address==""{address="127.0.0.1:9081"}
  ctx,stop:=signal.NotifyContext(context.Background(),os.Interrupt,syscall.SIGTERM)

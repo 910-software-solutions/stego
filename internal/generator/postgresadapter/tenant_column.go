@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"strings"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/types"
@@ -43,7 +44,7 @@ func validateTenantColumn(ctx gen.Context) error {
 	}
 	for _, entity := range ctx.Entities {
 		for _, field := range entity.Fields {
-			if field.Name == key {
+			if field.Name == key || field.ColumnName() == key {
 				return fmt.Errorf("entity %s: field %q collides with the tenant column %q of pooled tenancy; remove the field, because the tenant comes from the verified identity", entity.Name, field.Name, key)
 			}
 			if field.Type == types.FieldTypeRef && !ownedEntity(entity) && owned[field.To] {
@@ -85,4 +86,51 @@ func runtimePrivileges(ctx gen.Context, entity types.Entity) []string {
 		return []string{"SELECT"}
 	}
 	return []string{"SELECT", "INSERT", "UPDATE", "DELETE"}
+}
+
+// TenantRowSecurity gives the row-level security of the table of one owned entity: it enables and forces row-level
+// security, drops the tenant policy and creates it again, with USING and WITH CHECK that compare the tenant column
+// key with the tenant setting of the transaction (ST-SUP-RC27-OC03). The tenancy component writes it for each owned
+// entity of the baseline in its migration, and the step that adds an owned entity writes it after the table, so both
+// give the same text for one table.
+func TenantRowSecurity(entity, key string) string {
+	setting := "pg_catalog.current_setting('app.tenant', true)"
+	table := "public." + sqlIdentifier(tableName(entity))
+	column := sqlIdentifier(key)
+	return fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY;\n", table) +
+		fmt.Sprintf("ALTER TABLE %s FORCE ROW LEVEL SECURITY;\n", table) +
+		fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s;\n", TenantPolicy, table) +
+		fmt.Sprintf("CREATE POLICY %s ON %s USING (%s = %s) WITH CHECK (%s = %s);\n", TenantPolicy, table, column, setting, column, setting)
+}
+
+// roleName is the grammar of a role name of the service: a lower-case SQL name of at most 63 characters.
+var roleName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
+
+// serviceRoles gives the runtime role and the owner role of a pooled service as the tenancy component names them:
+// its settings runtime_role and owner_role, or the service name in lower case with _runtime and _owner. The sync
+// function of a step names the owner role as the backfill role (ST-SUP-RC01-OC32), and the migration of a step
+// grants the backfill functions to the runtime role. It refuses a service without pooled tenancy, and a runtime role
+// that is the owner role.
+func serviceRoles(ctx gen.Context) (string, string, error) {
+	if ctx.Tenancy == nil {
+		return "", "", fmt.Errorf("a step with a sync trigger and a backfill needs the tenancy component, whose owner role runs the backfill")
+	}
+	base := strings.ToLower(strings.NewReplacer("-", "_", ".", "_").Replace(ctx.ServiceName))
+	runtime, owner := base+"_runtime", base+"_owner"
+	for name, value := range map[string]*string{"runtime_role": &runtime, "owner_role": &owner} {
+		if text, ok := ctx.PeerConfigs[gen.TenancyComponent][name].(string); ok {
+			*value = text
+		}
+	}
+	if !roleName.MatchString(runtime) || !roleName.MatchString(owner) {
+		return "", "", fmt.Errorf("the runtime role %q or the owner role %q is not a lower-case SQL name of at most 63 characters", runtime, owner)
+	}
+	// The sync trigger passes the writes of the backfill role, the owner role, in a transaction that names the change
+	// in stego.backfill_change, and any role can set that setting. So the runtime role must be another role, or the
+	// runtime could turn the sync off for its own writes (security review of PR #335, L4). The start check of the
+	// runtime refuses it too.
+	if runtime == owner {
+		return "", "", fmt.Errorf("the runtime role %q is also the owner role, which runs the backfill; set runtime_role and owner_role to two roles", runtime)
+	}
+	return runtime, owner, nil
 }

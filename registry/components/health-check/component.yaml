@@ -14,3 +14,43 @@ provides:
   - health-endpoint
 
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: edge
+  flow: "Answers /livez and /readyz for the platform."
+  ports:
+    health-endpoint: inbound
+
+environment:
+  - name: PORT
+    type: integer
+    required: false
+    default: "8080"
+    description: "The TCP port where the HTTP server listens. When it has no value, the server listens on port 8080."
+    secret: false
+    example: "8443"
+  - name: STEGO_HTTP_REQUIRE_TLS
+    type: boolean
+    required: false
+    default: "0"
+    description: "Set to 1 to make the HTTP server use TLS. When it has no value, the server uses TLS only when it has a certificate and a key."
+    secret: false
+    allowed: {values: ["0", "1"]}
+  - name: STEGO_HTTP_TLS_CERT
+    type: path
+    required: false
+    description: "The file of the PEM TLS certificate of the HTTP server. When it and STEGO_HTTP_TLS_KEY have no value, the server uses plain HTTP."
+    secret: false
+    example: "/etc/stego/tls/tls.crt"
+  - name: STEGO_HTTP_TLS_KEY
+    type: path
+    required: false
+    description: "The file of the PEM TLS private key of the HTTP server. When it and STEGO_HTTP_TLS_CERT have no value, the server uses plain HTTP."
+    secret: false
+    example: "/etc/stego/tls/tls.key"
+# The platform needs (ST-SUP-EN09): the HTTP port and the pod security level of the service process.
+needs:
+  - {kind: ingress, name: http, port: 8080}
+  - {kind: pod security, name: pod-security, level: restricted}

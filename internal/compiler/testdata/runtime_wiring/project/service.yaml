@@ -8,6 +8,7 @@ tenancy:
   kind: pooled
   key: tenant_id
   claim: tenant
+  provisioning: {resource_type: service, provision: provision, retire: retire}
 authorization:
   provider: spicedb
   schema_path: authz/schema.zed
@@ -24,6 +25,7 @@ experimental_acceptances:
   - {component: spicedb-authz, accepted_until: 2027-04-30, reason: the runtime data path decides each permission}
   - {component: audit-log, accepted_until: 2027-04-30, reason: the runtime data path audits each write}
   - {component: idempotency, accepted_until: 2027-04-30, reason: the runtime data path keys each create}
+  - {component: worker, accepted_until: 2027-04-30, reason: the generated service runs its declared workers}
 overrides:
   jwt-auth:
     issuer: https://issuer.wiring.test/realms/r1
@@ -65,6 +67,8 @@ commands:
     resource_member: orderId
     route: POST /orders/{orderId}/notes
     fill: add-note
+    effects:
+      - {destination: note-replies, name: note-added}
 queries:
   - name: get-order-summary
     reads: [Order]
@@ -73,3 +77,19 @@ queries:
     resource_member: orderId
     route: GET /orders/{orderId}/summary
     fill: get-order-summary
+# The worker sync-partner-orders adds one to the qty of the seeded order in each tenant of the list whose ID starts
+# with org-w at each tick, and apply-note-replies consumes the messages that add-note stages, in the transaction of
+# the outbox worker as the worker role (ST-SUP-RC35, ST-SUP-Q136).
+workers:
+  - name: sync-partner-orders
+    trigger: every 10s
+    writes: [Order]
+    resource_type: order
+    permission: sync
+    fill: sync-partner-orders
+  - name: apply-note-replies
+    trigger: consumes note-replies
+    writes: [Order]
+    resource_type: order
+    permission: sync
+    fill: apply-note-replies

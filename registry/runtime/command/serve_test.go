@@ -8,10 +8,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -307,12 +311,13 @@ func TestServeHelpers(t *testing.T) {
 			want   Outcome
 			answer string
 		}{
-			{"declared refusal", fmt.Errorf("wrapped: %w", declared), Outcome{http.StatusUnprocessableEntity, "reserve.short_stock", audit.OutcomeFailed}, "reserve.short_stock"},
-			{"refusal not declared", NewRefusal("reserve", "short_stock", http.StatusUnprocessableEntity, "reserve.short_stock"), Outcome{http.StatusInternalServerError, ErrorCodeInternal, audit.OutcomeFailed}, ErrorCodeInternal},
-			{"deny", ErrDenied, Outcome{http.StatusNotFound, ErrorCodeDenied, audit.OutcomeDenied}, ErrorCodeDenied},
-			{"conflict", &conflictError{text: "moved"}, Outcome{http.StatusConflict, audit.ErrorCodeConflict, audit.OutcomeFailed}, audit.ErrorCodeConflict},
-			{"commit of unknown outcome", ErrCommitUnknown, Outcome{http.StatusInternalServerError, audit.ErrorCodeCommitOutcomeUnknown, audit.OutcomeFailed}, ErrorCodeInternal},
-			{"another error", errors.New("no stock for " + secret), Outcome{http.StatusInternalServerError, ErrorCodeInternal, audit.OutcomeFailed}, ErrorCodeInternal},
+			{"declared refusal", fmt.Errorf("wrapped: %w", declared), Outcome{http.StatusUnprocessableEntity, "reserve.short_stock", audit.OutcomeFailed, "", ""}, "reserve.short_stock"},
+			{"refusal not declared", NewRefusal("reserve", "short_stock", http.StatusUnprocessableEntity, "reserve.short_stock"), Outcome{http.StatusInternalServerError, ErrorCodeInternal, audit.OutcomeFailed, "", ""}, ErrorCodeInternal},
+			{"deny", ErrDenied, Outcome{http.StatusNotFound, ErrorCodeDenied, audit.OutcomeDenied, "", ""}, ErrorCodeDenied},
+			{"conflict", &conflictError{text: "moved"}, Outcome{http.StatusConflict, audit.ErrorCodeConflict, audit.OutcomeFailed, "", ""}, audit.ErrorCodeConflict},
+			{"commit of unknown outcome", ErrCommitUnknown, Outcome{http.StatusInternalServerError, audit.ErrorCodeCommitOutcomeUnknown, audit.OutcomeFailed, "", ""}, ErrorCodeInternal},
+			{"another error", errors.New("no stock for " + secret), Outcome{http.StatusInternalServerError, ErrorCodeInternal, audit.OutcomeFailed, "", ""}, ErrorCodeInternal},
+			{"invalid value", fmt.Errorf("wrapped: %w", &invalidError{field: "owner_id", reason: reasonCreateOnly}), Outcome{http.StatusBadRequest, ErrorCodeInvalid, audit.OutcomeFailed, "owner_id", reasonCreateOnly}, ErrorCodeInvalid},
 		} {
 			got := OutcomeOf(c.err, declared)
 			if got != c.want || got.AnswerCode() != c.answer || strings.Contains(fmt.Sprint(got), secret) {
@@ -340,6 +345,66 @@ func TestServeHelpers(t *testing.T) {
 		}
 		if logged, _ := otel.ErrorCode(cancelled); logged != ErrorCodeInternal {
 			t.Fatalf("the completion log has the code %q, want %s", logged, ErrorCodeInternal)
+		}
+	})
+}
+
+// failingConn is a SpiceDB connection whose every call fails with err.
+type failingConn struct{ err error }
+
+func (c failingConn) Invoke(context.Context, string, any, any, ...grpc.CallOption) error {
+	return c.err
+}
+
+func (c failingConn) NewStream(context.Context, *grpc.StreamDesc, string, ...grpc.CallOption) (grpc.ClientStream, error) {
+	return nil, c.err
+}
+
+func TestOutcomeTransient(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC34-T02 A decision that the provider cannot make now maps to 503 undecided, and a refusal of the provider stays 500", func(t *testing.T) {
+		notServed, err := status.New(codes.FailedPrecondition, "object definition `comment` not found").WithDetails(
+			&errdetails.ErrorInfo{Reason: v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION.String(), Domain: "authzed.com"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		decide := func(cause error) error {
+			provider, err := authz.NewSpiceDB(failingConn{err: cause})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = provider.Evaluate(context.Background(), authz.EvaluationRequest{Subject: authz.Subject{Type: "user", ID: "u-7"},
+				Action: authz.Action{Name: "view"}, Resource: authz.Resource{Type: "comment", ID: "t1/c1"}, Consistency: authz.Fresh()})
+			if err == nil {
+				t.Fatal("the failing provider decided")
+			}
+			// The command runtime wraps a provider error so (decisionError).
+			return fmt.Errorf("command: decide: %w", err)
+		}
+		undecided := Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
+		internal := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+		for _, c := range []struct {
+			name string
+			err  error
+			want Outcome
+		}{
+			{"a command permission that could not be decided now", fmt.Errorf("wrapped: %w", ErrUndecided), undecided},
+			{"a definition that SpiceDB does not serve yet", decide(notServed.Err()), undecided},
+			{"a SpiceDB that does not answer", decide(status.Error(codes.Unavailable, "connection refused")), undecided},
+			{"a SpiceDB call that ran out of time", decide(status.Error(codes.DeadlineExceeded, "deadline")), undecided},
+			{"a refusal of SpiceDB", decide(status.Error(codes.FailedPrecondition, "the relation is not in the schema")), internal},
+			{"a key that SpiceDB does not take", decide(status.Error(codes.PermissionDenied, "bad key")), internal},
+		} {
+			if got := OutcomeOf(c.err); got != c.want {
+				t.Errorf("%s: OutcomeOf gave %+v, want %+v", c.name, got, c.want)
+			}
+		}
+		// Serve writes the 503 with Retry-After, and no other answer has it.
+		for status, want := range map[int][]string{http.StatusServiceUnavailable: {"1", "2", "3"}, http.StatusInternalServerError: {""}, http.StatusNotFound: {""}} {
+			w := httptest.NewRecorder()
+			writeProblem(w, status, "", "code")
+			if got := w.Header().Get("Retry-After"); !slices.Contains(want, got) || w.Code != status {
+				t.Errorf("the answer %d has Retry-After %q (status %d), want one of %q", status, got, w.Code, want)
+			}
 		}
 	})
 }

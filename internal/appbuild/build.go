@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"go/version"
 	"io"
+	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -170,12 +172,80 @@ func outside(parent, child string) bool {
 	return err == nil && (relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
+// shownSource is a --source URL as a refusal may quote it: only its scheme and its host. The user info, the path,
+// the query and the fragment can each hold a token (CWE-532), and a raw /, ? or # in the user info moves where a
+// parser sees the host, so when the host is not certain, only the scheme is shown.
+func shownSource(source string) string {
+	scheme, rest, ok := strings.Cut(source, "://")
+	if !ok || !schemePattern.MatchString(scheme) {
+		return "(a URL)"
+	}
+	parsed, err := url.Parse(source)
+	if err != nil || (parsed.User == nil && strings.Contains(rest, "@")) || !hostPattern.MatchString(parsed.Host) {
+		return scheme + "://"
+	}
+	return scheme + "://" + parsed.Host
+}
+
+var (
+	schemePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*$`)
+	hostPattern   = regexp.MustCompile(`^[A-Za-z0-9.:\[\]-]*$`)
+)
+
+// sourceUnreadable is the refusal of a --source folder that cannot be resolved. It wraps the cause without the
+// path, since a value such as user:TOKEN@host:org/repo is not a URL and reaches this check as a local path.
+func sourceUnreadable(err error) error {
+	var pathError *fs.PathError
+	if errors.As(err, &pathError) {
+		err = pathError.Err
+	}
+	return fmt.Errorf("--source: cannot read the local repository folder: %w", err)
+}
+
+// checkLocation checks the source, revision, module and target of a download or a build, and gives each check a
+// refusal that names the flag, what it found and what it expects (ST-BLD-UC02-R04). A target or a module that starts
+// with ./, as go build takes ./cmd/server, is taken as the same path without it, and a --source that is a file://
+// URL is taken as its local path; a URL of another scheme is refused, since the source is a local repository.
+func checkLocation(source, revision, module, target string) (string, string, string, error) {
+	if rest, ok := strings.CutPrefix(source, "file://"); ok {
+		if !strings.HasPrefix(rest, "/") {
+			return "", "", "", fmt.Errorf("--source %q: expected a file URL with an absolute path and no host, such as file:///home/me/service", shownSource(source))
+		}
+		source = rest
+	} else if scheme, _, ok := strings.Cut(source, "://"); ok && !strings.ContainsAny(scheme, "/") {
+		// A scheme that is not one of RFC 3986 can hold a token, such as user:TOKEN@host://org/x, so it is not shown.
+		if !schemePattern.MatchString(scheme) {
+			return "", "", "", fmt.Errorf("--source %s: expected a local Git repository folder or a file:// URL, not a local folder", shownSource(source))
+		}
+		return "", "", "", fmt.Errorf("--source %q: expected a local Git repository folder or a file:// URL, not a %s URL", shownSource(source), scheme)
+	}
+	if source != "" {
+		source = filepath.Clean(source)
+	}
+	if !revisionPattern.MatchString(revision) {
+		return "", "", "", fmt.Errorf("--revision %q: expected a full commit ID of 40 lower-case hexadecimal digits", revision)
+	}
+	module = strings.TrimPrefix(module, "./")
+	if module == "" {
+		module = "."
+	}
+	if module != "." && !safePath(module) {
+		return "", "", "", fmt.Errorf("--module %q: expected . or a clean relative path in the source with no .. or .git part", module)
+	}
+	target = strings.TrimPrefix(target, "./")
+	if !safePath(target) {
+		return "", "", "", fmt.Errorf("--target %q: expected a clean relative path of the program in the module, such as cmd/server or ./cmd/server, with no .. or .git part", target)
+	}
+	return source, module, target, nil
+}
+
 func prepare(options Options) (Options, error) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		return options, errors.New("application builds require Linux amd64")
 	}
-	if !revisionPattern.MatchString(options.Revision) || (options.Module != "." && !safePath(options.Module)) || !safePath(options.Target) {
-		return options, errors.New("build requires a commit, relative module, and relative target")
+	var err error
+	if options.Source, options.Module, options.Target, err = checkLocation(options.Source, options.Revision, options.Module, options.Target); err != nil {
+		return options, fmt.Errorf("build: %w", err)
 	}
 	if options.ModuleCache == "" {
 		return options, errors.New("build requires --module-cache: a module cache that stego build download recorded; a build never downloads modules")
@@ -190,10 +260,9 @@ func prepare(options Options) (Options, error) {
 		}
 		*pointer = absolute
 	}
-	var err error
 	options.Source, err = filepath.EvalSymlinks(options.Source)
 	if err != nil {
-		return options, err
+		return options, fmt.Errorf("build: %w", sourceUnreadable(err))
 	}
 	options.Go, err = filepath.EvalSymlinks(options.Go)
 	if err != nil {
@@ -317,8 +386,8 @@ func recordModuleSources(modules []Module, cache *ModuleCacheRecord) {
 			continue
 		}
 		for _, cached := range cache.Modules {
-			if cached.Source == RuntimeFolderSource && cached.Path == current.Path && cached.Version == current.Version && cached.Sum == current.Sum {
-				current.Source = RuntimeFolderSource
+			if runtimeSource(cached.Source) && cached.Path == current.Path && cached.Version == current.Version && cached.Sum == current.Sum {
+				current.Source = cached.Source
 			}
 		}
 	}

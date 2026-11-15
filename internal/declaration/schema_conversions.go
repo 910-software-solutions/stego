@@ -1,0 +1,105 @@
+package declaration
+
+import (
+	"fmt"
+	"slices"
+
+	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/types"
+)
+
+// conversionTotal tells whether the conversion is total over the constraints of the field: it is declared total, or
+// one of its limits holds the field, by a pattern that is the field's pattern byte for byte, or by bounds that the
+// field's min and max lie within.
+func conversionTotal(c types.Conversion, field types.Field) bool {
+	if c.Total {
+		return true
+	}
+	for _, limit := range c.TotalWhen {
+		if limit.Pattern != "" && limit.Pattern != field.Pattern {
+			continue
+		}
+		if limit.Min != nil && (field.Min == nil || *field.Min < *limit.Min) {
+			continue
+		}
+		if limit.Max != nil && (field.Max == nil || *field.Max > *limit.Max) {
+			continue
+		}
+		if limit.Pattern == "" && limit.Min == nil && limit.Max == nil {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// ValidateSchemaConversions checks the conversions of each retype against the database component (ST-DECL-INV62,
+// ST-DECL-INV63): the conversion and the inverse conversion are ones that it declares from From to the field's type
+// and back; the conversion is total over the constraints of the field before the change, or the change declares a
+// fill value; and the inverse conversion is total over the constraints of the field after the change.
+func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions map[string]types.Conversion, declared bool) []ValidationError {
+	var faults []ValidationError
+	for i, change := range service.SchemaChanges {
+		if change.Kind != "retype" || change.Conversion == "" || change.InverseConversion == "" {
+			continue
+		}
+		path := fmt.Sprintf("schema_changes[%d]", i)
+		fault := func(rule, where, found, message string) {
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: rule, Path: path + where, Found: found, Message: fmt.Sprintf("schema change %q: %s", change.ID, message)})
+		}
+		entity := slices.IndexFunc(service.Entities, func(e types.Entity) bool { return e.Name == change.Entity })
+		if entity < 0 {
+			continue
+		}
+		at := slices.IndexFunc(service.Entities[entity].Fields, func(f types.Field) bool { return f.Name == change.Field })
+		if at < 0 {
+			continue
+		}
+		after, before := service.Entities[entity].Fields[at], gen.RetypeField(change)
+		if !declared {
+			fault("schema-change-value", ".conversion", change.Conversion, "no database component of the service declares conversions, so the retype has none to use")
+			continue
+		}
+		forward, okForward := conversions[change.Conversion]
+		inverse, okInverse := conversions[change.InverseConversion]
+		switch {
+		case !okForward || forward.From != before.Type || forward.To != after.Type:
+			fault("schema-change-value", ".conversion", change.Conversion, fmt.Sprintf("the conversion %s is not one that the database component declares from %s to %s", change.Conversion, before.Type, after.Type))
+		case !conversionTotal(forward, before) && change.FillValue == nil:
+			fault("schema-change-total", ".conversion", change.Conversion, fmt.Sprintf("the conversion %s is not total over the field %s.%s before the change, so a value can fail it; declare a fill value, or give the field before the change, in its Definition, a constraint under which the conversion is total", change.Conversion, change.Entity, change.Field))
+		}
+		switch {
+		case !okInverse || inverse.From != after.Type || inverse.To != before.Type:
+			fault("schema-change-value", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not one that the database component declares from %s to %s", change.InverseConversion, after.Type, before.Type))
+		case !conversionTotal(inverse, after):
+			fault("schema-change-total", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not total over the field %s.%s after the change, so a write of the release of the change could fail it; give the field a constraint under which it is total", change.InverseConversion, change.Entity, change.Field))
+		}
+		if reason := checksKept(before, after); reason != "" && okForward && okInverse {
+			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused", change.Entity, change.Field, reason))
+		}
+	}
+	return faults
+}
+
+// checksKept tells why a value that one side of a retype holds could break the CHECK of the column of the other
+// side after its conversion, or gives empty: each side's CHECK holds every value of the other (security review of
+// PR #335, M1, orchestrator under the owner's delegation, 2026-11-14). Between two integer types the bounds min and
+// max of the field before and after the change must be the same; between a number or a boolean and a text, neither
+// field may have a min, a max, a min_length, a max_length or values, which the conversion does not keep. A pattern
+// is not a CHECK of the column, so it is not compared.
+func checksKept(before, after types.Field) string {
+	integer := func(t types.FieldType) bool { return t == types.FieldTypeInt32 || t == types.FieldTypeInt64 }
+	same := func(a, b *float64) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
+	if integer(before.Type) && integer(after.Type) {
+		if !same(before.Min, after.Min) || !same(before.Max, after.Max) {
+			return "the bounds min and max of the field before and after the change are not the same"
+		}
+		return ""
+	}
+	for _, f := range []types.Field{before, after} {
+		if f.Min != nil || f.Max != nil || f.MinLength != nil || f.MaxLength != nil || len(f.Values) > 0 {
+			return "a field before or after the change has a min, a max, a min_length, a max_length or values, which the conversion between a number and a text does not keep"
+		}
+	}
+	return ""
+}

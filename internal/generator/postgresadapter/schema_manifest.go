@@ -23,7 +23,24 @@ const (
 	schemaManifestFile     = "schema_manifest.go"
 	schemaManifestVariable = "SchemaManifest"
 	manifestImport         = "github.com/jsell-rh/stego/registry/runtime/manifest"
+	leaseImport            = "github.com/jsell-rh/stego/registry/runtime/lease"
+	runtimeTenantImport    = "github.com/jsell-rh/stego/registry/runtime/tenant"
 )
+
+// StepSchema is the held schema of the sync functions of the schema steps (ST-SUP-RP15-LC02): the manifest names it,
+// so the schema check of a release accepts the sync trigger of a later step, and the step that first needs it makes
+// it. Each table of the manifest is the table of a declared entity, on which the schema check accepts the sync
+// trigger, the foreign key and the constant default of a later step in their exact form.
+const StepSchema = "stego_steps"
+
+// TenantKeyName gives the name of the foreign key from the tenant column key of an owned table to the tenant list:
+// <table>_<key>_fkey, cut as sqlName cuts a name. No declared field has the name of the key (validateTenantColumn),
+// so no foreign key of a reference has this name.
+func TenantKeyName(table, key string) string { return sqlName(table, key, "fkey") }
+
+// tenantList is the tenant list of the migration job, in public, as pg_get_constraintdef names it with the search
+// path pg_catalog (the generated wiring gives the job the tenant schema public).
+const tenantList = "public.stego_tenants"
 
 // TenantPolicy is the name of the one tenant policy that the tenancy component makes on each owned table
 // (ST-SUP-RC27-OC03); the manifest names it.
@@ -170,14 +187,15 @@ func deparsedList(columns []string) string {
 
 // manifestSource gives the Go source of the manifest of the tables: for each table its columns with their types
 // and NOT NULL, its primary key, check and foreign key constraints with their definitions as pg_get_constraintdef
-// writes them, its primary key and unique indexes, and on an
-// owned table of a pooled service the row-level security and the tenant policy. The search indexes are left out:
-// a list that has no search index is slower, not wrong.
-func manifestSource(models []tableModel, key string) string {
+// writes them, its primary key and unique indexes, its search indexes as lookup indexes, and on an
+// owned table of a pooled service the row-level security and the tenant policy. A list that has no search index is
+// slower, not wrong, so a start without one alerts and starts, as for every fault (decision on ST-SUP-Q123 (b),
+// orchestrator under the owner's delegation, 2026-11-14).
+func manifestSource(models []tableModel, key string, optional map[string][]syncTrigger) string {
 	var b strings.Builder
-	b.WriteString("manifest.Manifest{Tables: []manifest.Table{\n")
+	fmt.Fprintf(&b, "manifest.Manifest{Schemas: []manifest.Schema{{Name: %q, Steps: true}},\nTables: []manifest.Table{\n", StepSchema)
 	for _, table := range models {
-		fmt.Fprintf(&b, "{Schema: %q, Name: %q,\n", "public", table.name)
+		fmt.Fprintf(&b, "{Schema: %q, Name: %q, Entity: true,\n", "public", table.name)
 		b.WriteString("Columns: []manifest.Column{\n")
 		for _, column := range table.columns {
 			if column.manifestDefault != "" {
@@ -196,21 +214,165 @@ func manifestSource(models []tableModel, key string) string {
 			fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindForeignKey, Definition: %q},\n", fk.name,
 				"FOREIGN KEY ("+deparsedList(fk.from)+") REFERENCES public."+deparsedName(fk.table)+"("+deparsedList(fk.to)+")")
 		}
+		if table.owned {
+			fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindForeignKey, Definition: %q},\n", TenantKeyName(table.name, key),
+				"FOREIGN KEY ("+deparsedName(key)+") REFERENCES "+tenantList+"(tenant_id)")
+		}
 		b.WriteString("},\nIndexes: []manifest.Index{\n")
 		fmt.Fprintf(&b, "{Name: %q, Columns: %#v},\n", primaryName(table.name), append(append([]string{}, table.lead...), keyColumn))
 		for _, columns := range table.unique {
 			fmt.Fprintf(&b, "{Name: %q, Columns: %#v},\n", uniqueName(table.name, columns), append(append([]string{}, table.lead...), columns...))
 		}
+		for _, column := range table.search {
+			fmt.Fprintf(&b, "{Name: %q, Columns: %#v, Lookup: true},\n", searchName(table.name, column), append(append([]string{}, table.lead...), column))
+		}
 		b.WriteString("},\n")
+		if triggers := optional[table.name]; len(triggers) > 0 {
+			b.WriteString("OptionalTriggers: []manifest.Trigger{\n")
+			for _, trigger := range triggers {
+				if trigger.name == "" {
+					continue
+				}
+				fmt.Fprintf(&b, "{Name: %q, Timing: \"BEFORE\", Row: true, Events: []string{\"INSERT\", \"UPDATE\"},\nFunction: manifest.Function{Name: %q, Language: \"plpgsql\", Source: %q, Config: []string{%q}}},\n",
+					trigger.name, StepSchema+"."+trigger.name, trigger.source, syncConfig)
+			}
+			// The completeness CHECK of each open rename is validated when the table has it, and the contract step
+			// drops it (decision on ST-SUP-Q120 (c), orchestrator under the owner's delegation, 2026-11-14).
+			b.WriteString("},\nOptionalConstraints: []manifest.Constraint{\n")
+			for _, trigger := range triggers {
+				if trigger.check != "" {
+					fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindCheck, Definition: %q},\n", trigger.check, trigger.definition)
+				}
+				// The contract step of the rename of a required field adds this CHECK NOT VALID, validates it and drops it,
+				// each in its own short transaction, while this release runs (ST-SUP-RC01-OC39).
+				if trigger.notNull != "" {
+					fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindCheck, Definition: %q, NotValid: true},\n", trigger.notNull, trigger.notNullDefinition)
+				}
+			}
+			b.WriteString("},\n")
+		}
 		if table.owned {
 			expression := tenantPolicyExpression(key)
 			fmt.Fprintf(&b, "RowSecurity: true,\nPolicies: []manifest.Policy{{Name: %q, Command: \"*\", Using: %q, WithCheck: %q}},\n",
 				TenantPolicy, expression, expression)
+			// The migration job adds the tenant key after the tenant list and validates it (decision on ST-SUP-Q124
+			// (a), orchestrator under the owner's delegation, 2026-11-14).
+			fmt.Fprintf(&b, "TenantKey: &manifest.TenantKey{Name: %q, Column: %q},\n", TenantKeyName(table.name, key), key)
 		}
 		b.WriteString("},\n")
 	}
 	b.WriteString("}}")
 	return b.String()
+}
+
+// syncConfig is the one setting of a sync function, as pg_proc.proconfig holds it (registry/runtime/manifest.SyncConfig).
+const syncConfig = "search_path=pg_catalog, pg_temp"
+
+// syncTrigger is the sync trigger of an open rename: its name, which is also the name of its function, and the
+// source of its function.
+type syncTrigger struct{ name, source, check, definition, notNull, notNullDefinition string }
+
+// openRenames gives, for each table, the sync trigger of each rename whose last step in the declaration is expand,
+// and makes the new column of each such rename nullable with no default in the models (ST-SUP-RC01-OC12): the
+// backfill has not set it in every row yet, and the release reads only the new column, so the manifest leaves out
+// the old column, its CHECK and its indexes, which the head's models do not hold, and names the sync trigger as
+// optional, because the contract step drops it while this release runs.
+func openRenames(ctx gen.Context, models []tableModel) (map[string][]syncTrigger, []openRename, error) {
+	last := map[string]string{}
+	for _, step := range ctx.SchemaHistory {
+		last[step.Change] = step.Phase
+	}
+	optional := map[string][]syncTrigger{}
+	var open []openRename
+	for _, change := range ctx.SchemaChanges {
+		if change.Kind == "require" && last[change.ID] == "expand" {
+			// An open require has no sync trigger; its contract step adds CHECK (U IS NOT NULL) NOT VALID, validates
+			// it and drops it while this release runs (decision on ST-GEN-Q22 (a), orchestrator under the owner's
+			// delegation, 2026-11-14).
+			name := tableName(change.Entity)
+			optional[name] = append(optional[name], syncTrigger{notNull: NotNullCheckName(change.Entity, change.Field),
+				notNullDefinition: "CHECK ((" + deparsedName(change.Field) + " IS NOT NULL))"})
+			continue
+		}
+		if (change.Kind != "rename" && change.Kind != "retype") || last[change.ID] != "expand" {
+			continue
+		}
+		_, owner, err := serviceRoles(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		pair, err := pairOf(ctx, change)
+		if err != nil {
+			return nil, nil, err
+		}
+		name := tableName(change.Entity)
+		for i := range models {
+			if models[i].name != name {
+				continue
+			}
+			required := false
+			for j := range models[i].columns {
+				if models[i].columns[j].name == pair.u {
+					required = models[i].columns[j].notNull
+					models[i].columns[j].notNull, models[i].columns[j].manifestDefault = false, ""
+				}
+			}
+			trigger := SyncTriggerName(change.Entity, change.Field)
+			sync := syncTrigger{name: trigger, source: syncSourceOf(change.ID, owner, pair),
+				check: CompleteCheckName(change.Entity, pair.u), definition: completeDefinitionOf(pair)}
+			if required {
+				sync.notNull = NotNullCheckName(change.Entity, pair.u)
+				sync.notNullDefinition = "CHECK ((" + deparsedName(pair.u) + " IS NOT NULL))"
+			}
+			optional[name] = append(optional[name], sync)
+			tenant := ""
+			if models[i].owned {
+				tenant = tenantColumn(ctx)
+			}
+			convert := ""
+			if pair.conv.name != "identity" {
+				convert = pair.forward("{K}")
+			}
+			open = append(open, openRename{change: change.ID, table: name, tenant: tenant, from: pair.k, to: pair.u, check: CompleteCheckName(change.Entity, pair.u),
+				convert: convert, guard: pair.failGuard("{K}"), fillDigest: pair.fillDigest()})
+		}
+	}
+	return optional, open, nil
+}
+
+// openRename is the copy of the backfill of an open rename: its change, its table, the tenant column of an owned
+// table, and the old and the new column (registry/runtime/lease.Copy).
+type openRename struct{ change, table, tenant, from, to, check, convert, guard, fillDigest string }
+
+// stepsSource gives the variables SchemaSteps, the IDs of the open renames, which the writer marker names
+// (ST-SUP-RC01-OC23), and BackfillCopies, the copy of the backfill of each (ST-GEN-UC13).
+func stepsSource(open []openRename, release string) string {
+	var ids, copies strings.Builder
+	for _, r := range open {
+		fmt.Fprintf(&ids, "%q,\n", r.change)
+		if r.convert == "" {
+			fmt.Fprintf(&copies, "{Change: %q, Table: %q, TenantColumn: %q, From: %q, To: %q, Check: %q},\n", r.change, r.table, r.tenant, r.from, r.to, r.check)
+			continue
+		}
+		fmt.Fprintf(&copies, "{Change: %q, Table: %q, TenantColumn: %q, From: %q, To: %q, Check: %q, Convert: %q, Guard: %q, FillDigest: %q},\n", r.change, r.table, r.tenant, r.from, r.to, r.check, r.convert, r.guard, r.fillDigest)
+	}
+	return fmt.Sprintf(`
+// SchemaSteps are the IDs of the schema changes of this release whose last step is expand and that have a sync
+// trigger. Each transaction that writes sets the writer marker stego.schema_step to them, so the sync trigger of each
+// copies the new column into the old one (ST-SUP-RC01-OC23).
+var SchemaSteps = []string{
+%s}
+
+// BackfillCopies are the batches of the backfill of each of them, which the migration job runs before the rollout
+// (ST-GEN-UC13).
+var BackfillCopies = []lease.Copy{
+%s}
+
+// SchemaRelease is the name of the last migration of this release, under which each process of the release reports
+// itself in the database, so that the contract step of a schema change that this release does not know refuses
+// while it runs (ST-SUP-RP09-LC14).
+const SchemaRelease = %q
+`, ids.String(), copies.String(), release)
 }
 
 // generateSchemaManifest gives schema_manifest.go of the runtime data path: the variable SchemaManifest, which the
@@ -220,19 +382,53 @@ func generateSchemaManifest(ctx gen.Context) (gen.File, error) {
 	if err != nil {
 		return gen.File{}, err
 	}
+	if models, err = requiredAt(ctx, models, len(ctx.SchemaHistory)); err != nil {
+		return gen.File{}, err
+	}
+	optional, open, err := openRenames(ctx, models)
+	if err != nil {
+		return gen.File{}, err
+	}
+	release, err := lastMigration(ctx)
+	if err != nil {
+		return gen.File{}, err
+	}
 	source := fmt.Sprintf(`package %s
 
-import %q
+import (
+	%q
+	%q
+)
 
 // %s is what the commands and queries of the service need of the tables of the declaration: the columns with
 // their types, the constraints, the primary key and unique indexes and, on an owned table, the row-level security
 // with its tenant policy. The service runtime reads the catalog as the runtime role before the service serves, and
 // refuses to start on a database that does not hold it (ST-SUP-RC01-OC12).
 var %s = %s
-`, path.Base(ctx.OutputNamespace), manifestImport, schemaManifestVariable, schemaManifestVariable, manifestSource(models, tenantColumn(ctx)))
+%s`, path.Base(ctx.OutputNamespace), leaseImport, manifestImport, schemaManifestVariable, schemaManifestVariable, manifestSource(models, tenantColumn(ctx), optional), stepsSource(open, release))
 	formatted, err := format.Source([]byte(source))
 	if err != nil {
 		return gen.File{}, fmt.Errorf("formatting %s: %w", schemaManifestFile, err)
 	}
 	return gen.File{Path: path.Join(ctx.OutputNamespace, schemaManifestFile), Content: formatted}, nil
+}
+
+// lastMigration gives the name of the last migration that the adapter registers: the last migration of the last
+// schema step, else the row-level security of a pooled service, else 001_initial (ST-SUP-RP09-LC14).
+func lastMigration(ctx gen.Context) (string, error) {
+	steps, err := schemaSteps(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(steps) > 0 {
+		return steps[len(steps)-1].Name, nil
+	}
+	security, err := rowSecurityImport(ctx)
+	if err != nil {
+		return "", err
+	}
+	if security != "" {
+		return tenancyMigration, nil
+	}
+	return "001_initial", nil
 }

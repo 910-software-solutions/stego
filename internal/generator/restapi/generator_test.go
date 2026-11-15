@@ -48,6 +48,36 @@ func onRuntime(ctx gen.Context) gen.Context {
 		entities[i] = e
 	}
 	ctx.Entities = entities
+	return withSchema(ctx)
+}
+
+// withSchema gives ctx the schema that its authorization setting names among the inputs, when ctx has none: a
+// definition of each resource type with the relations owner and viewer and the permissions view and edit. The
+// command generator reads the relations of each resource type from it (ST-SUP-Q118).
+func withSchema(ctx gen.Context) gen.Context {
+	if ctx.Authorization == nil || ctx.Authorization.SchemaPath == "" {
+		return ctx
+	}
+	if _, ok := ctx.Inputs[ctx.Authorization.SchemaPath]; ok {
+		return ctx
+	}
+	var b strings.Builder
+	// The subject type user has one definition; an entity of the resource type user gets the relations there.
+	b.WriteString("definition user {\n\trelation owner: user\n\trelation viewer: user\n\tpermission view = owner + viewer\n\tpermission edit = owner\n}\n")
+	seen := map[string]bool{}
+	for _, e := range ctx.Entities {
+		if e.ResourceType == "" || e.ResourceType == "user" || seen[e.ResourceType] {
+			continue
+		}
+		seen[e.ResourceType] = true
+		b.WriteString("\ndefinition " + e.ResourceType + " {\n\trelation owner: user\n\trelation viewer: user\n\tpermission view = owner + viewer\n\tpermission edit = owner\n}\n")
+	}
+	inputs := map[string][]byte{}
+	for path, data := range ctx.Inputs {
+		inputs[path] = data
+	}
+	inputs[ctx.Authorization.SchemaPath] = []byte(b.String())
+	ctx.Inputs = inputs
 	return ctx
 }
 
@@ -3565,6 +3595,21 @@ func TestIsServerManaged(t *testing.T) {
 				expect: true,
 			},
 			{
+				name:   "client-set timestamp field",
+				field:  types.Field{Name: "due_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+				expect: false,
+			},
+			{
+				name:   "created_at marked client_set",
+				field:  types.Field{Name: "created_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+				expect: true,
+			},
+			{
+				name:   "updated_at marked client_set",
+				field:  types.Field{Name: "updated_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+				expect: true,
+			},
+			{
 				name:   "regular string field",
 				field:  types.Field{Name: "name", Type: types.FieldTypeString},
 				expect: false,
@@ -4303,7 +4348,7 @@ func TestRuntimeProblemAnswers(t *testing.T) {
 			}
 		}
 		answer := extractMethodBody(string(files["api/runtime.go"]), "func (rt *Runtime) answerWrite(")
-		for _, part := range []string{"handleError(w, r, invalid.problem)", "handleError(w, r, errorForStatus(status, refused.detail))", "handleError(w, r, NotFound(kind, req.Resource))", "handleError(w, r, Conflict(", "handleError(w, r, InternalError("} {
+		for _, part := range []string{"handleError(w, r, invalid.problem)", "handleError(w, r, errorForStatus(status, refused.detail))", "handleError(w, r, missing(kind, req))", "handleError(w, r, Conflict(", "handleError(w, r, InternalError("} {
 			if !strings.Contains(answer, part) {
 				t.Errorf("answerWrite does not answer %s", part)
 			}
@@ -4424,7 +4469,7 @@ func TestRuntimeList(t *testing.T) {
 		}
 		var document struct {
 			Paths map[string]map[string]struct {
-				Parameters []struct{ Name string } `json:"parameters"`
+				Parameters []struct{ Name, In string } `json:"parameters"`
 			} `json:"paths"`
 		}
 		if err := json.Unmarshal(files["api/openapi.json"], &document); err != nil {
@@ -4432,7 +4477,9 @@ func TestRuntimeList(t *testing.T) {
 		}
 		var names []string
 		for _, p := range document.Paths["/api/v1/orders"]["get"].Parameters {
-			names = append(names, p.Name)
+			if p.In == "query" {
+				names = append(names, p.Name)
+			}
 		}
 		if strings.Join(names, ",") != "pageSize,cursor,orderBy,fields,search" {
 			t.Errorf("the document declares the list parameters %v", names)
@@ -4595,7 +4642,7 @@ func TestRuntimeWrites(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC16-T01 The emitted patch handler records who changed the record and when", func(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Update(")
 		// The command runtime sets updated_time at each update of a row, a patch too.
-		if !strings.Contains(string(files["api/data/entities.go"]), `\"generation\" = $10, \"version\" = \"version\" + 1, \"updated_time\" = now()`) {
+		if !strings.Contains(string(files["api/data/entities.go"]), `\"generation\" = $13, \"version\" = \"version\" + 1, \"updated_time\" = now()`) {
 			t.Error("the update of a todo does not set updated_time to the time of the change")
 		}
 		if !strings.Contains(string(files["api/runtime.go"]), "identity.Email()") {
@@ -4662,6 +4709,43 @@ func TestRuntimeWrites(t *testing.T) {
 			if _, ok := request.Properties[name]; !ok {
 				t.Errorf("TodoCreateRequest has no field %s", name)
 			}
+		}
+	})
+	t.Run("ST-SUP-RC20-OC20-T05 A create-request schema holds a client-set timestamp as an RFC 3339 time and leaves out a server-managed one", func(t *testing.T) {
+		var schemas struct {
+			Components struct {
+				Schemas map[string]struct {
+					Properties map[string]struct {
+						Type        string `json:"type"`
+						Format      string `json:"format"`
+						Description string `json:"description"`
+					} `json:"properties"`
+					Required []string `json:"required"`
+				} `json:"schemas"`
+			} `json:"components"`
+		}
+		if err := json.Unmarshal(files["api/openapi.json"], &schemas); err != nil {
+			t.Fatal(err)
+		}
+		request, ok := schemas.Components.Schemas["MeetingCreateRequest"]
+		if !ok {
+			t.Fatal("the document has no MeetingCreateRequest")
+		}
+		for _, name := range []string{"starts_at", "ends_at"} {
+			p, ok := request.Properties[name]
+			if !ok || p.Type != "string" || p.Format != "date-time" || !strings.Contains(p.Description, "RFC 3339") || !strings.Contains(p.Description, "UTC") {
+				t.Errorf("MeetingCreateRequest holds %s as %+v (present %t), want a string of format date-time described as an RFC 3339 time in UTC", name, p, ok)
+			}
+		}
+		if _, ok := request.Properties["noted_at"]; ok {
+			t.Error("MeetingCreateRequest holds the server-managed timestamp noted_at")
+		}
+		if !slices.Contains(request.Required, "starts_at") || slices.Contains(request.Required, "ends_at") {
+			t.Errorf("MeetingCreateRequest requires %v, want starts_at and not ends_at", request.Required)
+		}
+		patch, ok := schemas.Components.Schemas["MeetingsPatchRequest"]
+		if _, has := patch.Properties["starts_at"]; !ok || !has || patch.Properties["starts_at"].Format != "date-time" {
+			t.Errorf("the patch schema of meetings is %+v (present %t), want starts_at of format date-time", patch, ok)
 		}
 	})
 	t.Run("ST-SUP-RC20-OC20-T04 The write operation points at the create-request schema", func(t *testing.T) {

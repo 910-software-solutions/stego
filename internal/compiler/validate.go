@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/ports"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
@@ -42,9 +44,36 @@ func Validate(input ReconcilerInput) (*ValidationResult, error) {
 	result, err := validateSource(input, source)
 	if result != nil {
 		result.Settings = declaration.ResolvedSettings(source.Service)
-		result.Warnings = declaration.Warnings(source.Service)
+		result.Warnings = aliasNotices(source.Registry, source.Service, declaration.Warnings(source.Service))
 	}
 	return result, err
+}
+
+// aliasNotices gives, for each deprecated alias that the declaration binds, one notice that names the mixins of the
+// alias and the sunset date that the registry states for it (ST-SUP-INV17, decision on ST-SUP-Q117 (b)). The notice
+// takes the place of the notice of the declaration at the same path, which cannot know the date.
+func aliasNotices(reg *registry.Registry, service *types.ServiceDeclaration, warnings []ValidationError) []ValidationError {
+	if reg == nil || service == nil {
+		return warnings
+	}
+	for i, name := range service.Mixins {
+		alias := reg.Mixin(name)
+		if alias == nil || len(alias.AliasOf) == 0 {
+			continue
+		}
+		notice := ValidationError{Category: "mixin", Rule: "deprecated-alias", Path: fmt.Sprintf("mixins[%d]", i), Found: name, Allowed: slices.Clone(alias.AliasOf),
+			Message: fmt.Sprintf("the mixin %s is a deprecated alias of the mixins %s, and the registry removes it at its sunset on %s; bind %s instead", name, strings.Join(alias.AliasOf, " and "), alias.Sunset, strings.Join(alias.AliasOf, " and "))}
+		replaced := false
+		for j := range warnings {
+			if warnings[j].Rule == notice.Rule && warnings[j].Path == notice.Path {
+				warnings[j], replaced = notice, true
+			}
+		}
+		if !replaced {
+			warnings = append(warnings, notice)
+		}
+	}
+	return warnings
 }
 
 // validateSource is the common semantic gate for validate, plan, and apply.
@@ -87,6 +116,7 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 	if components != nil {
 		result.Errors = append(result.Errors, validateComponentConfig(svcDecl, components)...)
 		result.Errors = append(result.Errors, validateComponentNamespaces(components)...)
+		result.Errors = append(result.Errors, validateSchemaConversions(svcDecl, components)...)
 		for _, name := range sortedKeys(components) {
 			if !generatorAvailable(input.Generators[name]) {
 				result.Errors = append(result.Errors, ValidationError{
@@ -115,7 +145,8 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 		// mixin itself, not by any component, so they must be added to the
 		// available set separately.
 		var mixinSlots []registry.SlotDefinition
-		for _, mixinName := range svcDecl.Mixins {
+		mixins, _ := boundMixins(reg, svcDecl.Mixins)
+		for _, mixinName := range mixins {
 			mixin := reg.Mixin(mixinName)
 			if mixin != nil {
 				mixinSlots = append(mixinSlots, mixin.AddsSlots...)
@@ -165,12 +196,17 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 	}
 
 	if !result.HasErrors() {
-		resolved, err := prepareComponents(input, source, baselineNames, components)
+		// Validate writes nothing, so its generators get the stored shape with no schema step when generation does
+		// not carry out a declared change yet, as for a check-only plan (ST-DECL-UC09-R06).
+		checked := input
+		checked.CheckOnly = true
+		resolved, err := prepareComponents(checked, source, baselineNames, components)
 		if err != nil {
 			result.Errors = append(result.Errors, ValidationError{Category: "generator", Rule: "generator-input", Path: "archetype", Found: svcDecl.Archetype, Message: err.Error()})
 		} else {
 			source.Resolved = resolved
 			result.Errors = append(result.Errors, validateOperationRoutes(svcDecl, resolved.HTTPRoutes)...)
+			result.Errors = append(result.Errors, validateOwnComponentRoutes(svcDecl, resolved.HTTPRoutes)...)
 		}
 	}
 	return result, nil
@@ -364,6 +400,28 @@ func validateOperationRoutes(svcDecl *types.ServiceDeclaration, components map[s
 	return faults
 }
 
+// validateOwnComponentRoutes refuses each route of an active component under <base path>/stego/, which the generated
+// service keeps for its own routes, such as the routes of a collection whose path comes from its path_prefix or its
+// scope (ST-SUP-RC27-OC09, ST-SUP-RC27-OC11). Declaring refuses a declared path_prefix there already; this check holds
+// the routes as the components register them.
+func validateOwnComponentRoutes(svcDecl *types.ServiceDeclaration, components map[string][]gen.HTTPRoute) []ValidationError {
+	names := make([]string, 0, len(components))
+	for name := range components {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var faults []ValidationError
+	for _, name := range names {
+		for _, route := range components[name] {
+			if err := tenancy.CheckOwnPattern(svcDecl.BasePath, route.Pattern); err != nil {
+				faults = append(faults, ValidationError{Category: "component", Rule: "own-route", Path: "components." + name, Found: route.Pattern,
+					Message: fmt.Sprintf("component %q: %v", name, err)})
+			}
+		}
+	}
+	return faults
+}
+
 // compositionFacts reads what the checks of a service's composition need beside the declaration (ST-DECL-UC09):
 // the slot that each fill named by a command, a query or a worker implements, read through the fill slot reader, and the outbox
 // destinations that the active components declare in their setting destinations (ST-SUP-RC36-OC01). A fill that
@@ -461,7 +519,8 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			})
 		}
 	}
-	for _, mixinName := range svcDecl.Mixins {
+	mixins, _ := boundMixins(reg, svcDecl.Mixins)
+	for _, mixinName := range mixins {
 		mixin := reg.Mixin(mixinName)
 		if mixin == nil {
 			continue
@@ -471,6 +530,24 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 				Ref:      types.SlotRef{Component: mixin.Name, Slot: sd.Name},
 				Contract: "mixins/" + mixin.Name + "/slots/" + sd.Name + ".proto",
 			})
+		}
+	}
+	// A fill may name a slot of a mixin that an alias names by the alias, such as event-publisher.on_entity_changed:
+	// its contract is the one that the alias keeps in its own folder, so the digest of the fill's evidence holds.
+	for _, aliasName := range svcDecl.Mixins {
+		alias := reg.Mixin(aliasName)
+		if alias == nil || len(alias.AliasOf) == 0 {
+			continue
+		}
+		for _, target := range alias.AliasOf {
+			if mixin := reg.Mixin(target); mixin != nil {
+				for _, sd := range mixin.AddsSlots {
+					check.Slots = append(check.Slots, FillSlot{
+						Ref:      types.SlotRef{Component: alias.Name, Slot: sd.Name},
+						Contract: "mixins/" + alias.Name + "/slots/" + sd.Name + ".proto",
+					})
+				}
+			}
 		}
 	}
 	for _, c := range svcDecl.Collections {
@@ -687,6 +764,11 @@ func checkAuthorization(service *types.ServiceDeclaration, projectDir string) ([
 // that binds authorization (ST-SUP-RC29).
 const authorizationComponent = "spicedb-authz"
 
+// schemaReader names the components that get the declaration's authorization schema among their inputs: the
+// authorization component, and the command and rest-api components, which read the relations of each resource type
+// (ST-SUP-Q118).
+var schemaReader = map[string]bool{authorizationComponent: true, commandComponent: true, restAPIComponent: true, workerComponent: true}
+
 // authorizationGeneratorMissing refuses generation of a declaration that binds authorization while the registry
 // holds no authorization component with a generator, so that STEGO never generates a service without the checks
 // its declaration binds: authorization fails closed (ST-DECL-UC06-R07). Checking accepts such a declaration, since
@@ -699,4 +781,28 @@ func authorizationGeneratorMissing(service *types.ServiceDeclaration, reg *regis
 		return nil
 	}
 	return fmt.Errorf("generation refused: the declaration binds authorization, but the registry holds no component %s with a generator in this compiler build, which generates the authorization checks; STEGO does not generate a service without them. stego validate accepts the declaration, and generation runs once the registry holds %s", authorizationComponent, authorizationComponent)
+}
+
+// databaseConversions gives the conversions that the database component among components declares, by name, and
+// whether one of them declares conversions: the component that provides the storage-adapter port.
+func databaseConversions(components map[string]*registry.Component) (map[string]types.Conversion, bool) {
+	for _, name := range sortedKeys(components) {
+		component := components[name]
+		if !slices.ContainsFunc(component.Provides, func(p registry.Port) bool { return p.Name == "storage-adapter" }) {
+			continue
+		}
+		out := map[string]types.Conversion{}
+		for _, c := range component.Conversions {
+			out[c.Name] = c
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// validateSchemaConversions checks the conversions of each retype against the database component among components
+// (declaration.ValidateSchemaConversions, ST-DECL-INV62, ST-DECL-INV63).
+func validateSchemaConversions(service *types.ServiceDeclaration, components map[string]*registry.Component) []ValidationError {
+	conversions, declared := databaseConversions(components)
+	return declaration.ValidateSchemaConversions(service, conversions, declared)
 }

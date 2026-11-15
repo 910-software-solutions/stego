@@ -71,7 +71,51 @@ func (f *fixture) describe() []described {
 	return out
 }
 
-func subjects(owner string) *DocumentSubjects { return &DocumentSubjects{Owner: owner} }
+// ownerSubjects is the subject of the owner relationship of one Document row. An empty owner writes no tuple.
+type ownerSubjects struct {
+	Owner string
+}
+
+func subjects(owner string) *ownerSubjects { return &ownerSubjects{Owner: owner} }
+
+// documentRelations are the relations that the writes of the tests bind: the owner relation of document.
+var documentRelations = []stegoauthz.Relation{{ResourceType: "document", Name: "owner"}}
+
+// writeOwner enqueues through h the owner tuple changes of the Document row of key from before to after, as the
+// command runtime does for a declared relationship (ST-SUP-RP10-LC05): a changed owner deletes its old tuple and
+// then touches its new one. The relay tests use it to put tuples in the authz outbox. It gives the revocation and
+// whether it enqueued a tuple.
+func writeOwner(ctx context.Context, h *stegoauthz.Handle, tn tenant.Tenant, key string, before, after *ownerSubjects) (stegoauthz.Revocation, bool, error) {
+	var revocation stegoauthz.Revocation
+	resource, err := DocumentResource(tn, key)
+	if err != nil {
+		return revocation, false, err
+	}
+	var was, is string
+	if before != nil {
+		was = before.Owner
+	}
+	if after != nil {
+		is = after.Owner
+	}
+	if was == is {
+		return revocation, false, nil
+	}
+	wrote := false
+	if was != "" {
+		if revocation, err = h.Unrelate(ctx, stegoauthz.Tuple{Resource: resource, Relation: "owner", Subject: stegoauthz.Subject{Type: "user", ID: was}}); err != nil {
+			return revocation, wrote, err
+		}
+		wrote = true
+	}
+	if is != "" {
+		if revocation, err = h.Relate(ctx, stegoauthz.Tuple{Resource: resource, Relation: "owner", Subject: stegoauthz.Subject{Type: "user", ID: is}}); err != nil {
+			return revocation, wrote, err
+		}
+		wrote = true
+	}
+	return revocation, wrote, nil
+}
 
 // writes gives the tuple writes of the recorded calls of the fake port, other than the floor marker, as
 // touch name@subject or delete name@subject.
@@ -103,65 +147,6 @@ func resourceName(t *testing.T, tn tenant.Tenant, key string) string {
 }
 
 func TestAuthorization(t *testing.T) {
-	t.Run("ST-SUP-RC29-OC05-T01 Create, update and delete each enqueue the declared tuples", func(t *testing.T) {
-		f := newFixture(t)
-		rt := f.runtimeOf(fakeDecision{})
-		tn := f.tenantOf("tenant-a")
-		f.change(rt, tn, "d1", insertDocument, nil, subjects("u1"), false)
-		f.change(rt, tn, "d1", updateDocument, subjects("u1"), subjects("u2"), false)
-		f.change(rt, tn, "d1", deleteDocument, subjects("u2"), nil, false)
-		got := f.describe()
-		want := []described{
-			{Op: "touch", Key: "document:d1", Relation: "owner", Subject: "user:u1"},
-			{Op: "delete", Key: "document:d1", Relation: "owner", Subject: "user:u1"},
-			{Op: "touch", Key: "document:d1", Relation: "owner", Subject: "user:u2"},
-			{Op: "delete", Key: "document:d1", Relation: "owner", Subject: "user:u2"},
-		}
-		if len(got) != len(want) {
-			t.Fatalf("the authz outbox holds %+v, want %+v", got, want)
-		}
-		for i := range want {
-			got[i].Revocation = ""
-			if got[i] != want[i] {
-				t.Errorf("message %d is %+v, want %+v", i, got[i], want[i])
-			}
-		}
-	})
-
-	t.Run("ST-SUP-RC29-OC05-T02 The tuples commit and roll back with the row", func(t *testing.T) {
-		f := newFixture(t)
-		rt := f.runtimeOf(fakeDecision{})
-		tn := f.tenantOf("tenant-a")
-		if _, wrote := f.change(rt, tn, "d1", insertDocument, nil, subjects("u1"), true); !wrote {
-			t.Fatal("the create enqueued no tuple")
-		}
-		var rows int
-		if err := f.admin.QueryRowContext(f.ctx, "SELECT count(*) FROM public.documents").Scan(&rows); err != nil {
-			t.Fatal(err)
-		}
-		if rows != 0 || len(f.entries()) != 0 {
-			t.Errorf("after the rollback: %d Document rows and %d authz messages, want none", rows, len(f.entries()))
-		}
-	})
-
-	t.Run("ST-SUP-RC29-OC05-T03 A mapper's tuples join the transaction's revocation", func(t *testing.T) {
-		f := newFixture(t)
-		rt := f.runtimeOf(fakeDecision{})
-		tn := f.tenantOf("tenant-a")
-		f.change(rt, tn, "d1", insertDocument, nil, subjects("u1"), false)
-		revocation, _ := f.change(rt, tn, "d1", updateDocument, subjects("u1"), subjects("u2"), false)
-		got := f.describe()
-		if len(got) != 3 {
-			t.Fatalf("the authz outbox holds %+v, want three messages", got)
-		}
-		if got[1].Revocation != got[2].Revocation || got[1].Revocation != revocation.ID().String() {
-			t.Errorf("the delete names %s and the touch %s, want both the update's revocation %s", got[1].Revocation, got[2].Revocation, revocation.ID())
-		}
-		if got[0].Revocation == got[1].Revocation {
-			t.Error("the create and the update name one revocation")
-		}
-	})
-
 	t.Run("ST-SUP-RC29-OC06-T01 Every protected table gets an authz_token column", func(t *testing.T) {
 		f := newFixture(t)
 		for table, want := range map[string]bool{"documents": true, "projects": true, "notes": false} {
@@ -186,6 +171,59 @@ func TestAuthorization(t *testing.T) {
 		f.settled()
 		if token := f.rowToken(tn, "d1"); token != "t9" {
 			t.Errorf("the Document row's authz_token is %q, want t9", token)
+		}
+	})
+
+	t.Run("ST-SUP-RC29-OC06-T06 A run again of the migration takes no lock on a protected table", func(t *testing.T) {
+		f := newFixture(t)
+		migration, err := Migration(f.roles[0], f.roles[2], "authz_check"+outbox.RelaySuffix, f.roles[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A long transaction of the running release holds documents for the whole subtest.
+		long, err := f.admin.BeginTx(f.ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = long.Rollback() }()
+		if _, err := long.ExecContext(f.ctx, "SELECT count(*) FROM public.documents"); err != nil {
+			t.Fatal(err)
+		}
+		// The migration job runs the text again with no lock timeout, as a step that takes a lock on documents would
+		// wait behind the long transaction until the statement timeout, and a reader would queue behind it.
+		job, err := f.admin.Conn(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer job.Close()
+		if _, err := job.ExecContext(f.ctx, "SET statement_timeout = '5s'"); err != nil {
+			t.Fatal(err)
+		}
+		ran := make(chan error, 1)
+		go func() { _, err := job.ExecContext(f.ctx, migration); ran <- err }()
+		reader, err := f.admin.Conn(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reader.Close()
+		if _, err := reader.ExecContext(f.ctx, "SET statement_timeout = '2s'"); err != nil {
+			t.Fatal(err)
+		}
+		// The reader reads documents until the job ends, and at least five times.
+		var jobErr error
+		for reads, done := 0, false; !done || reads < 5; reads++ {
+			var n int
+			if err := reader.QueryRowContext(f.ctx, "SELECT count(*) FROM public.documents").Scan(&n); err != nil {
+				t.Fatalf("a read of documents during the run again of the migration failed after %d reads: %v", reads, err)
+			}
+			select {
+			case jobErr = <-ran:
+				done = true
+			default:
+			}
+		}
+		if jobErr != nil {
+			t.Fatalf("the run again of the migration failed while a transaction held documents: %v", jobErr)
 		}
 	})
 
@@ -665,8 +703,8 @@ func (f *fixture) writer() stegoauthz.Principal {
 }
 
 // change runs one transaction of tenant tn as the runtime role: it runs rows on the documents table and then the
-// emitted WriteDocumentRelationships from before to after, and commits, or rolls back when rollback is true.
-func (f *fixture) change(rt *stegoauthz.Runtime, tn tenant.Tenant, key string, rows string, before, after *DocumentSubjects, rollback bool) (stegoauthz.Revocation, bool) {
+// owner tuple writes of writeOwner from before to after, and commits, or rolls back when rollback is true.
+func (f *fixture) change(rt *stegoauthz.Runtime, tn tenant.Tenant, key string, rows string, before, after *ownerSubjects, rollback bool) (stegoauthz.Revocation, bool) {
 	f.t.Helper()
 	tx, err := tenant.Begin(f.ctx, f.runtime, tn, nil)
 	if err != nil {
@@ -682,11 +720,11 @@ func (f *fixture) change(rt *stegoauthz.Runtime, tn tenant.Tenant, key string, r
 			f.t.Fatalf("%s: %v", rows, err)
 		}
 	}
-	h, err := rt.Bind(tx, tn, f.writer(), DocumentRelations)
+	h, err := rt.Bind(tx, tn, f.writer(), documentRelations)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	revocation, wrote, err := WriteDocumentRelationships(f.ctx, h, tn, key, before, after)
+	revocation, wrote, err := writeOwner(f.ctx, h, tn, key, before, after)
 	if err != nil {
 		f.t.Fatal(err)
 	}

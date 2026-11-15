@@ -17,8 +17,9 @@ import (
 	"time"
 )
 
-// Manifest is what the code of a service needs in its database. A database may hold more: Check refuses only
-// what is missing or different, and a permissive policy that a table with row-level security does not name.
+// Manifest is what the code of a service needs in its database. A database may hold more: Check refuses what is
+// missing or different, and on a table with row-level security or that checks its grants each object that runs code
+// as the role that writes or reads a row and that the manifest does not name (see Table.RowSecurity).
 type Manifest struct {
 	Tables []Table
 	// Functions are the functions that the code calls and that are no trigger function, such as the SECURITY
@@ -48,10 +49,15 @@ type Manifest struct {
 // public, holds the objects of others too: it is not held whole, and only its CREATE is checked, which goes to no
 // role but the owner of the schema and the owner of the manifest, so no other role can make a function or a table
 // in it.
+//
+// A Steps schema is the held schema of the sync functions of schema steps (ST-SUP-RP15-LC02): it may be missing
+// until a step makes it, and besides the functions of the manifest it holds only sync functions in their strict
+// template form, each bound to the one sync trigger that Check accepts.
 type Schema struct {
 	Name   string
 	Usage  []string
 	Shared bool
+	Steps  bool
 }
 
 // Table is one table that the code reads or writes, in its schema.
@@ -65,10 +71,19 @@ type Table struct {
 	Columns []Column
 	// Constraints are the primary key, check and foreign key constraints of the table, by name.
 	Constraints []Constraint
-	// Indexes are the unique indexes that the code relies on: the primary key and each unique and upsert key.
+	// Indexes are the unique indexes that the table has: the primary key and each unique and upsert key; and each
+	// lookup index with an expression or a predicate that the table has.
 	Indexes []Index
-	// RowSecurity tells that row-level security is enabled and forced on the table. Then each permissive policy
-	// of the table is one of Policies.
+	// RowSecurity tells that row-level security is enabled and forced on the table. Then, as with CheckGrants, the
+	// table holds no object that runs code as the role that writes or reads a row and that the manifest does not
+	// name: each trigger, foreign key, check and exclusion constraint and policy (permissive or restrictive) is the
+	// manifest's, and so is each index with an expression or a predicate, since PostgreSQL computes these on each
+	// INSERT or UPDATE or on each read, with the functions that they call (decision of the orchestrator under the
+	// owner's delegation, 2026-11-13), and each unique index, which checks its key over the rows of every tenant
+	// (review of PR #270). On the table of a declared entity, Check accepts in their exact forms the sync trigger, the
+	// foreign key, the CHECK and the unique index that a later step gives (Entity). Each partition of a partitioned
+	// table holds no check, exclusion or foreign key constraint of its own, and no unique index or index with an
+	// expression or a predicate that is not a partition of an index of the table.
 	RowSecurity bool
 	// Policies are the row-level security policies of the table.
 	Policies []Policy
@@ -82,7 +97,37 @@ type Table struct {
 	// PartitionTriggers are the triggers that each partition of a partitioned table has of its own, each named by
 	// the partition's name and the trigger's Name as a suffix, such as audit_event_p202611 and _reject_statement.
 	PartitionTriggers []Trigger
+	// OptionalTriggers are triggers that the table may lack, such as the sync trigger of a schema step that a later
+	// contract step drops: when the table has a trigger of that exact name, it must be the trigger of the manifest,
+	// as one of Triggers must; when it lacks it, that is no fault. A name matches only as a whole.
+	OptionalTriggers []Trigger
+	// OptionalConstraints are constraints that the table may lack, such as the completeness CHECK of a schema step
+	// at expand, which the contract step drops: when the table has a constraint of that exact name, it must be the
+	// constraint of the manifest, of its kind and definition and validated, as one of Constraints must; when it lacks
+	// it, that is no fault (decision on ST-SUP-Q120 (c), orchestrator under the owner's delegation, 2026-11-14).
+	OptionalConstraints []Constraint
+	// Entity tells that the table is the table of a declared entity, which later schema steps change: on it, and only
+	// on it, Check accepts a sync trigger, a foreign key, a CHECK, a unique index and a column default that the
+	// manifest does not name, each only in the exact form that a later step gives (ST-SUP-RP15-LC02, ST-SUP-RP15-LC03,
+	// ST-SUP-RP15-LC01, ST-GEN-Q15). A runtime table is never an entity table.
+	Entity bool
+	// TenantKey, on an owned table of a pooled service, is the foreign key from the tenant column of the table to
+	// the tenant list stego_tenants, which the migration job adds NOT VALID and then validates, so a row of a tenant
+	// that the list does not hold cannot be written (decision on ST-SUP-Q124 (a), orchestrator under the owner's
+	// delegation, 2026-11-14). The table has row-level security; Constraints name the key, a foreign key, by the
+	// same name; and Indexes name an index that leads with the tenant column, so the check of a delete from the
+	// tenant list is an index probe.
+	TenantKey *TenantKey
 }
+
+// TenantKey is the foreign key of a table to the tenant list: its name and the tenant column of the table.
+type TenantKey struct {
+	Name, Column string
+}
+
+// runtimeTable is the grammar of the names of the tables of the runtime library, which are never the table of a
+// declared entity (ST-SUP-RP15-LC02 rule 1).
+var runtimeTable = regexp.MustCompile(`^(?:messages|idempotency_keys|leases|audit_.*|authz_.*)$`)
 
 // Column is one column: its name, its type as format_type gives it, such as character varying(255), and whether
 // the code needs it NOT NULL. A column that the code takes as nullable may be NOT NULL in the database. A column of a
@@ -136,25 +181,32 @@ const (
 	KindCheck      = "c"
 	KindForeignKey = "f"
 	KindUnique     = "u"
+	// kindExclusion is the kind of an exclusion constraint, which no manifest names.
+	kindExclusion = "x"
 )
 
 // Constraint is one constraint of a table, by name: its kind and its definition as pg_get_constraintdef gives it
 // with the search path pg_catalog, pg_temp, such as CHECK ((total >= 1)) or FOREIGN KEY (tenant_id, org_id)
 // REFERENCES public.organizations(tenant_id, id). The definition holds the expression of a check, and the columns,
 // the referenced table and columns, the actions, the match type and the deferrability of a foreign key. The
-// constraint must be validated.
+// constraint must be validated. NotValid, only for one of Table.OptionalConstraints, accepts it NOT VALID too, such
+// as the NOT NULL CHECK that the contract step of a schema change adds NOT VALID, validates, and drops in its own
+// short transactions while the release before runs (ST-SUP-RC01-OC39).
 type Constraint struct {
 	Name, Kind, Definition string
+	NotValid               bool
 }
 
 // Index is one unique index of a table: its key columns in order and its predicate as pg_get_expr gives it, or
 // empty for an index on every row. The index must be valid, ready, not deferrable, treat nulls as distinct, and
 // have no expression column, and each key column must have the default operator class and the default or the C
-// collation.
+// collation. A Lookup index is an index that is not unique, such as a partial index that orders the open messages
+// of the outbox, with the same rules but uniqueness.
 type Index struct {
 	Name      string
 	Columns   []string
 	Predicate string
+	Lookup    bool
 }
 
 // CommandAll is the command of a policy for every command.
@@ -293,6 +345,18 @@ func (m Manifest) Validate() error {
 	if len(m.Schemas) > 0 && m.Owner == "" {
 		return errors.New("manifest: a schema of the manifest needs the owner of the manifest")
 	}
+	steps := 0
+	for _, sc := range m.Schemas {
+		if sc.Steps {
+			steps++
+			if sc.Shared {
+				return fmt.Errorf("manifest: the schema %s of the sync functions is shared; it must be held whole", sc.Name)
+			}
+		}
+	}
+	if steps > 1 {
+		return errors.New("manifest: more than one schema holds the sync functions of the schema steps")
+	}
 	for _, r := range m.Confined {
 		if !name.MatchString(r) || r == "PUBLIC" {
 			return fmt.Errorf("manifest: the confined role %q needs a name of at most 63 bytes", r)
@@ -327,7 +391,7 @@ func (m Manifest) Validate() error {
 				return fmt.Errorf("manifest: table %s: the column %s has no type", id, c.Name)
 			}
 		}
-		for _, c := range t.Constraints {
+		for _, c := range slices.Concat(t.Constraints, t.OptionalConstraints) {
 			if err := named("constraint", c.Name); err != nil {
 				return err
 			}
@@ -338,12 +402,33 @@ func (m Manifest) Validate() error {
 				return fmt.Errorf("manifest: table %s: the constraint %s has no definition", id, c.Name)
 			}
 		}
+		for _, c := range t.Constraints {
+			if c.NotValid {
+				return fmt.Errorf("manifest: table %s: the constraint %s accepts NOT VALID and is not optional", id, c.Name)
+			}
+		}
+		for _, c := range t.OptionalConstraints {
+			if c.NotValid && c.Kind != KindCheck {
+				return fmt.Errorf("manifest: table %s: the constraint %s accepts NOT VALID and is no CHECK", id, c.Name)
+			}
+		}
 		for _, i := range t.Indexes {
 			if err := named("index", i.Name); err != nil {
 				return err
 			}
 			if len(i.Columns) == 0 {
 				return fmt.Errorf("manifest: table %s: the index %s has no column", id, i.Name)
+			}
+		}
+		if k := t.TenantKey; k != nil {
+			if !t.RowSecurity || !name.MatchString(k.Name) || !name.MatchString(k.Column) {
+				return fmt.Errorf("manifest: table %s: a tenant key needs row-level security, a name and a tenant column", id)
+			}
+			if !slices.ContainsFunc(t.Constraints, func(c Constraint) bool { return c.Name == k.Name && c.Kind == KindForeignKey }) {
+				return fmt.Errorf("manifest: table %s: the tenant key %s is no foreign key of the constraints", id, k.Name)
+			}
+			if !slices.ContainsFunc(t.Indexes, func(i Index) bool { return i.Columns[0] == k.Column && i.Predicate == "" }) {
+				return fmt.Errorf("manifest: table %s: no index leads with the tenant column %s of the tenant key %s", id, k.Column, k.Name)
 			}
 		}
 		for _, p := range t.Policies {
@@ -385,7 +470,13 @@ func (m Manifest) Validate() error {
 				return fmt.Errorf("manifest: table %s: the partition trigger %q is not complete", id, tr.Name)
 			}
 		}
-		for _, tr := range t.Triggers {
+		if t.Entity && (t.Partitioned || runtimeTable.MatchString(t.Name)) {
+			return fmt.Errorf("manifest: table %s is partitioned or a runtime table, so it is not the table of a declared entity", id)
+		}
+		if t.Partitioned && len(t.OptionalTriggers) > 0 {
+			return fmt.Errorf("manifest: table %s: a partitioned table has no optional trigger", id)
+		}
+		for _, tr := range slices.Concat(t.Triggers, t.OptionalTriggers) {
 			if err := named("trigger", tr.Name); err != nil {
 				return err
 			}
@@ -473,7 +564,47 @@ const Timeout = 30 * time.Second
 // states it, and each rule, extra permissive policy and extra trigger that it does not allow (ST-SUP-RC01-OC12). It reads only the catalog, so the runtime
 // role of the service can run it, and it writes nothing. An invalid manifest, or a catalog it cannot read, is an
 // error too, so the caller fails closed.
-func Check(ctx context.Context, db *sql.DB, m Manifest) (err error) {
+// Beginner is a database or one connection of it, on which Check opens its transaction: the main pool of the
+// runtime role at the start of a service, or the one connection of the migration job.
+type Beginner interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
+}
+
+func Check(ctx context.Context, db Beginner, m Manifest) (err error) {
+	return check(ctx, db, m, nil)
+}
+
+// Job is what the migration job checks with CheckCatalog beyond the catalog of the manifest.
+type Job struct {
+	// RuntimeRole is the role that the service runs as. CheckCatalog checks the search path that a new session of
+	// the role gets as Check checks the path of its session, and refuses each setting of search_path or
+	// session_replication_role of the role or of the database that the role gets (review of PR #305, M2,
+	// orchestrator under the owner's delegation, 2026-11-14). Empty checks no role.
+	RuntimeRole string
+	// BeforeBackfill is set for the check before the backfills: an optional constraint of a table, such as the
+	// completeness CHECK of an open rename of this release, may then be NOT VALID in its exact form when Open names
+	// it. Else, as at the end of the job and at the start of a pod, it must be validated (review of PR #305, M1,
+	// orchestrator under the owner's delegation, 2026-11-14).
+	BeforeBackfill bool
+	// Open are the completeness CHECKs of the schema changes whose backfill the job runs.
+	Open []Open
+}
+
+// Open is the completeness CHECK Check of an open schema change on the table Schema.Table.
+type Open struct {
+	Schema, Table, Check string
+}
+
+// CheckCatalog is Check with no check of the session that it runs in: the migration job runs it on its own
+// connection, as the owner role with its own fixed search path, before its backfills and at its end (decision on
+// finding F10 of the schema-change research, owner, 2026-11-13; review of PR #305, M1). In place of the session, it
+// checks the search path and the settings of the runtime role of job.
+func CheckCatalog(ctx context.Context, db Beginner, m Manifest, job Job) error {
+	return check(ctx, db, m, &job)
+}
+
+// check is Check when job is nil, with the checks of its session, and CheckCatalog for job when it is not.
+func check(ctx context.Context, db Beginner, m Manifest, job *Job) (err error) {
 	if db == nil {
 		return errors.New("manifest: Check needs a database")
 	}
@@ -496,22 +627,56 @@ func Check(ctx context.Context, db *sql.DB, m Manifest) (err error) {
 		return fmt.Errorf("manifest: read the catalog: %w", err)
 	}
 	var faults []string
-	found, err := checkSearchPath(ctx, tx, m, strings.Split(path, "\x1f"), role)
-	if err != nil {
-		return fmt.Errorf("manifest: read the catalog of the search path: %w", err)
+	if job != nil && job.RuntimeRole != "" {
+		found, err := checkRoleSettings(ctx, tx, m, job.RuntimeRole)
+		if err != nil {
+			return fmt.Errorf("manifest: read the settings of the role %s: %w", job.RuntimeRole, err)
+		}
+		faults = append(faults, found...)
 	}
-	faults = append(faults, found...)
-	// session_replication_role replica or local skips each ordinary trigger, so the triggers of the manifest
-	// would not run in this session or in the sessions of its role.
-	var replication string
-	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('session_replication_role')").Scan(&replication); err != nil {
-		return fmt.Errorf("manifest: read the catalog: %w", err)
+	if job == nil {
+		found, err := checkSearchPath(ctx, tx, m, strings.Split(path, "\x1f"), role)
+		if err != nil {
+			return fmt.Errorf("manifest: read the catalog of the search path: %w", err)
+		}
+		faults = append(faults, found...)
+		// session_replication_role replica or local skips each ordinary trigger, so the triggers of the manifest
+		// would not run in this session or in the sessions of its role.
+		var replication string
+		if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('session_replication_role')").Scan(&replication); err != nil {
+			return fmt.Errorf("manifest: read the catalog: %w", err)
+		}
+		if replication != "origin" {
+			faults = append(faults, "the session runs with session_replication_role "+replication+", which skips the triggers")
+		}
 	}
-	if replication != "origin" {
-		faults = append(faults, "the session runs with session_replication_role "+replication+", which skips the triggers")
+	tables, entities, shared := map[uint32]bool{}, map[uint32]bool{}, map[uint32]bool{}
+	for _, t := range m.Tables {
+		var oid sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.to_regclass(pg_catalog.quote_ident($1) || '.' || pg_catalog.quote_ident($2))::pg_catalog.oid`,
+			t.Schema, t.Name).Scan(&oid); err != nil {
+			return fmt.Errorf("manifest: read the catalog of the table %s.%s: %w", t.Schema, t.Name, err)
+		}
+		if oid.Valid {
+			tables[uint32(oid.Int64)] = true
+			entities[uint32(oid.Int64)] = t.Entity
+			shared[uint32(oid.Int64)] = t.Entity && !t.RowSecurity
+		}
+	}
+	steps := &stepState{owner: m.Owner, entities: entities, shared: shared, accepted: map[uint32]bool{}}
+	if job != nil && job.BeforeBackfill {
+		steps.open = map[string]bool{}
+		for _, o := range job.Open {
+			steps.open[o.Schema+"."+o.Table+"\x1f"+o.Check] = true
+		}
+	}
+	for _, sc := range m.Schemas {
+		if sc.Steps {
+			steps.schema = sc.Name
+		}
 	}
 	for _, t := range m.Tables {
-		found, err := checkTable(ctx, tx, t, m.Owner)
+		found, err := checkTable(ctx, tx, t, m.Owner, steps)
 		if err != nil {
 			return fmt.Errorf("manifest: read the catalog of the table %s.%s: %w", t.Schema, t.Name, err)
 		}
@@ -529,28 +694,17 @@ func Check(ctx context.Context, db *sql.DB, m Manifest) (err error) {
 		return fmt.Errorf("manifest: read the catalog of the functions: %w", err)
 	}
 	for _, sc := range m.Schemas {
-		found, err := checkSchema(ctx, tx, sc, m.Owner, named)
+		found, err := checkSchema(ctx, tx, sc, m.Owner, named, steps.accepted)
 		if err != nil {
 			return fmt.Errorf("manifest: read the catalog of the schema %s: %w", sc.Name, err)
 		}
 		faults = append(faults, found...)
 	}
-	found, err = checkNames(ctx, tx, m, named)
+	found, err := checkNames(ctx, tx, m, named)
 	if err != nil {
 		return fmt.Errorf("manifest: read the catalog of the functions: %w", err)
 	}
 	faults = append(faults, found...)
-	tables := map[uint32]bool{}
-	for _, t := range m.Tables {
-		var oid sql.NullInt64
-		if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.to_regclass(pg_catalog.quote_ident($1) || '.' || pg_catalog.quote_ident($2))::pg_catalog.oid`,
-			t.Schema, t.Name).Scan(&oid); err != nil {
-			return fmt.Errorf("manifest: read the catalog of the table %s.%s: %w", t.Schema, t.Name, err)
-		}
-		if oid.Valid {
-			tables[uint32(oid.Int64)] = true
-		}
-	}
 	for _, role := range m.Confined {
 		found, err := checkConfined(ctx, tx, role, m.Owner, named, tables)
 		if err != nil {
@@ -573,14 +727,23 @@ func namedFunctions(ctx context.Context, tx *sql.Tx, m Manifest) (map[uint32]str
 		signatures[f.Name+"("+f.Args+")"] = f.Owner
 	}
 	for _, t := range m.Tables {
-		for _, tr := range slices.Concat(t.Triggers, t.PartitionTriggers) {
+		for _, tr := range slices.Concat(t.Triggers, t.PartitionTriggers, t.OptionalTriggers) {
 			signatures[tr.Function.Name+"()"] = tr.Function.Owner
 		}
 	}
 	named := map[uint32]string{}
 	for signature, owner := range signatures {
 		var oid sql.NullInt64
-		if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.to_regprocedure($1)::pg_catalog.oid`, signature).Scan(&oid); err != nil {
+		// A function of no argument is found by its schema and name in the catalog, which needs no USAGE on its
+		// schema, as a trigger function in the held schema of the sync functions has none.
+		query, args := `SELECT pg_catalog.to_regprocedure($1)::pg_catalog.oid`, []any{signature}
+		if function, ok := strings.CutSuffix(signature, "()"); ok {
+			schema, fn, _ := strings.Cut(function, ".")
+			query = `SELECT (SELECT p.oid FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = $1 AND p.proname = $2 AND p.pronargs = 0)`
+			args = []any{schema, fn}
+		}
+		if err := tx.QueryRowContext(ctx, query, args...).Scan(&oid); err != nil {
 			return nil, err
 		}
 		if oid.Valid {
@@ -656,6 +819,116 @@ func checkSearchPath(ctx context.Context, tx *sql.Tx, m Manifest, path []string,
 	return faults, nil
 }
 
+// roleSettingSources are the sources of a setting that a new session of a role gets from pg_db_role_setting, from
+// the one that wins to the one that loses: the role in this database, the role, the database, and every role.
+// own tells that the setting is the role's own.
+var roleSettingSources = []struct {
+	name, where string
+	own         bool
+}{
+	{"of the role in the database", "s.setrole = r.oid AND s.setdatabase = d.oid", true},
+	{"of the role", "s.setrole = r.oid AND s.setdatabase = 0", true},
+	{"of the database", "s.setrole = 0 AND s.setdatabase = d.oid", false},
+	{"of every role", "s.setrole = 0 AND s.setdatabase = 0", false},
+}
+
+// rolePath is the search path that the role migration of the service sets for each of its login roles
+// (internal/generator/tenancy): public, pg_temp, with pg_catalog first.
+var rolePath = []string{"pg_catalog", "public", "pg_temp"}
+
+// checkRoleSettings gives a fault for each setting of search_path or session_replication_role in pg_db_role_setting
+// that a new session of role in this database gets, but the role's own search_path public, pg_temp that the role
+// migration of the service sets (rolePath), and the faults of checkSearchPath for the search path that such a session
+// gets: the value of the setting that wins, or "$user", public. A session of the role then finds a name with
+// no schema as the start check finds it (review of PR #305, M2, orchestrator under the owner's delegation,
+// 2026-11-14). A role that the catalog does not hold has no setting.
+func checkRoleSettings(ctx context.Context, tx *sql.Tx, m Manifest, role string) ([]string, error) {
+	var faults []string
+	path := `"$user", public`
+	pathSet := false
+	for _, source := range roleSettingSources {
+		rows, err := tx.QueryContext(ctx, `SELECT c FROM pg_catalog.pg_db_role_setting s, pg_catalog.pg_roles r, pg_catalog.pg_database d,
+  pg_catalog.unnest(s.setconfig) AS c WHERE r.rolname = $1 AND d.datname = pg_catalog.current_database() AND `+source.where+` ORDER BY 1`, role)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var setting string
+			if err := rows.Scan(&setting); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			name, value, _ := strings.Cut(setting, "=")
+			switch strings.ToLower(name) {
+			case "search_path":
+				if !source.own || !slices.Equal(searchPath(value, role), rolePath) {
+					faults = append(faults, "the role "+role+" gets search_path from a setting "+source.name+", which the manifest does not allow")
+				}
+				if !pathSet {
+					path, pathSet = value, true
+				}
+			case "session_replication_role":
+				faults = append(faults, "the role "+role+" gets session_replication_role from a setting "+source.name+", which skips the triggers")
+			}
+		}
+		if err := closed(rows); err != nil {
+			return nil, err
+		}
+	}
+	found, err := checkSearchPath(ctx, tx, m, searchPath(path, role), role)
+	if err != nil {
+		return nil, err
+	}
+	return append(faults, found...), nil
+}
+
+// searchPath gives the schemas of the search path setting value of a session of role, as current_schemas(true)
+// gives them: pg_catalog first unless the path names it, then each schema in turn, "$user" as role, a quoted name as
+// it is and a name with no quotes in lower case.
+func searchPath(value, role string) []string {
+	var names []string
+	var b strings.Builder
+	quoted, inQuotes := false, false
+	end := func() {
+		n := b.String()
+		if !quoted {
+			n = strings.ToLower(strings.TrimSpace(n))
+		}
+		if n == "$user" {
+			n = role
+		}
+		if n != "" {
+			names = append(names, n)
+		}
+		b.Reset()
+		quoted = false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case inQuotes && c == '"' && i+1 < len(value) && value[i+1] == '"':
+			b.WriteByte('"')
+			i++
+		case inQuotes && c == '"':
+			inQuotes = false
+		case inQuotes:
+			b.WriteByte(c)
+		case c == ',':
+			end()
+		case c == '"':
+			b.Reset()
+			inQuotes, quoted = true, true
+		case !quoted:
+			b.WriteByte(c)
+		}
+	}
+	end()
+	if !slices.Contains(names, "pg_catalog") {
+		names = append([]string{"pg_catalog"}, names...)
+	}
+	return names
+}
+
 // checkNames gives a fault for each function that has the schema and the name of a function of the manifest and that
 // is not one of the manifest, such as an overload with other argument types, which a call with untyped arguments
 // could run in its place. A function in a held schema is the fault of that schema.
@@ -678,7 +951,7 @@ func checkNames(ctx context.Context, tx *sql.Tx, m Manifest, named map[uint32]st
 		add(f.Name)
 	}
 	for _, t := range m.Tables {
-		for _, tr := range slices.Concat(t.Triggers, t.PartitionTriggers) {
+		for _, tr := range slices.Concat(t.Triggers, t.PartitionTriggers, t.OptionalTriggers) {
 			add(tr.Function.Name)
 		}
 	}
@@ -712,11 +985,15 @@ func checkNames(ctx context.Context, tx *sql.Tx, m Manifest, named map[uint32]st
 // checkSchema gives the faults of one schema that the runtime holds whole: missing, of another owner, a privilege
 // of a role other than its owner that the manifest does not give, PUBLIC included, one with the grant option, a
 // USAGE of the manifest that it does not give, and each function in it that the manifest does not name.
-func checkSchema(ctx context.Context, tx *sql.Tx, sc Schema, wantOwner string, named map[uint32]string) ([]string, error) {
+func checkSchema(ctx context.Context, tx *sql.Tx, sc Schema, wantOwner string, named map[uint32]string, accepted map[uint32]bool) ([]string, error) {
 	var oid uint32
 	var owner string
 	err := tx.QueryRowContext(ctx, `SELECT oid, pg_catalog.pg_get_userbyid(nspowner) FROM pg_catalog.pg_namespace WHERE nspname = $1`, sc.Name).Scan(&oid, &owner)
 	if errors.Is(err, sql.ErrNoRows) {
+		if sc.Steps {
+			// The held schema of the sync functions is made by the first step that needs it.
+			return nil, nil
+		}
 		return []string{"schema " + sc.Name + " is missing"}, nil
 	}
 	if err != nil {
@@ -805,7 +1082,7 @@ func checkSchema(ctx context.Context, tx *sql.Tx, sc Schema, wantOwner string, n
 			rows.Close()
 			return nil, err
 		}
-		if _, ok := named[fn]; !ok {
+		if _, ok := named[fn]; !ok && !(sc.Steps && accepted[fn]) {
 			fault("function %s is a function that the manifest does not name", signature)
 		}
 	}
@@ -943,15 +1220,27 @@ func checkConfined(ctx context.Context, tx *sql.Tx, role, owner string, named ma
 	return faults, closed(rows)
 }
 
-// checkDefaults gives the faults of the defaults of the columns of the table oid against columns: a default of a
-// column that the manifest states none for, listed or not, a generated column, and a default that is not the one of
-// the manifest. Two literal defaults are the same when their values are; any other default must have the text of
-// the manifest. The value of a default is read only when both are literals (literalDefault), so no function of the
-// database runs.
-func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column) ([]string, error) {
+// checkDefaults gives the faults of the defaults of the columns of the table oid against columns: a generated
+// column; a default of a column that the manifest states none for, listed or not, but for the case of entity below; a
+// default that is not the one of the manifest; and a default that the manifest states and the column lacks. A default
+// is the one of the manifest when its text is the same, or when both are literals of built-in types (literal) and the column's
+// type is one of builtinType and the two values are the same as the column's type. Check reads the two values only in
+// that case, with the literals as parameters, so the comparison runs only built-in input and cast functions.
+//
+// On the table of a declared entity (entity), a default of a column that the manifest does not list is accepted when
+// it is a literal (literalDefault) whose type is one of builtinType, on a column whose type is one of builtinType, such
+// as the constant default that a later add step gives its new column (decision on ST-GEN-Q15 (a)); Check does not read
+// its value. A literal is stored as a constant, so an INSERT that leaves the column out runs no function of the
+// database for it but the built-in length coercion of a type with a length, such as character varying(255); and
+// checkTable refuses an unlisted column of any table whose type is no built-in base type of pg_catalog, such as a
+// domain with a CHECK that calls a function (decision of the orchestrator under the owner's delegation, 2026-11-13).
+// A listed column keeps the default of the manifest.
+func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column, entity bool, relaxed map[string]string) ([]string, error) {
 	want := map[string]string{}
+	listed := map[string]bool{}
 	for _, c := range columns {
 		want[c.Name] = c.Default
+		listed[c.Name] = true
 	}
 	type stored struct{ name, expr, typ, generated string }
 	var defaults []stored
@@ -981,6 +1270,20 @@ func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column
 		switch {
 		case d.generated != "":
 			faults = append(faults, "column "+d.name+" is a generated column, which the manifest does not state")
+		case expected == "" && listed[d.name] && relaxed[d.name] != "":
+			// The default that the relax step of a later release gave the column, in the exact form of its marker
+			// (ST-SUP-RP15-LC04), compared as a stated default.
+			same, err := sameLiteral(ctx, tx, d.expr, relaxed[d.name], d.typ)
+			if err != nil {
+				return nil, err
+			}
+			if !same {
+				faults = append(faults, "column "+d.name+" has another default than the relax step of the column states")
+			}
+		case expected == "" && entity && !listed[d.name]:
+			if _, _, ok := literal(d.expr); !ok || !builtinType.MatchString(d.typ) {
+				faults = append(faults, "column "+d.name+" has a default that the manifest does not state, and that is not a constant of a built-in type")
+			}
 		case expected == "":
 			faults = append(faults, "column "+d.name+" has a default that the manifest does not state")
 		case d.expr == expected:
@@ -1221,7 +1524,7 @@ func checkFunction(ctx context.Context, tx *sql.Tx, f Function, wantOwner string
 }
 
 // checkTable gives the faults of one table.
-func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]string, error) {
+func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, steps *stepState) ([]string, error) {
 	id := t.Schema + "." + t.Name
 	var (
 		oid                    uint32
@@ -1265,16 +1568,39 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 	if wantOwner != "" && ownerName != wantOwner {
 		fault("the table belongs to the role %s, and the manifest needs %s", ownerName, wantOwner)
 	}
+	// The step rules hold only on a plain table that is no partition, inherits from no table and that no table
+	// inherits from (ST-SUP-RP15-LC02 rule 1).
+	plainTable := kind == "r" && !partition && !child && !parent
+	var stepCols map[string]tableColumn
+	// relaxed holds the columns that the relax step of a later release marked (ST-SUP-RP15-LC04).
+	var relaxed *relaxState
+	if t.Entity && plainTable {
+		if stepCols, err = stepColumns(ctx, tx, oid); err != nil {
+			return nil, err
+		}
+		marked, err := relaxedColumns(ctx, tx, oid)
+		if err != nil {
+			return nil, err
+		}
+		if len(marked) > 0 {
+			relaxed = &relaxState{table: t.Name, columns: marked, named: map[string]Constraint{}}
+			for _, c := range t.Constraints {
+				relaxed.named[c.Name] = c
+			}
+		}
+	}
 
 	type column struct {
 		typ, collation string
 		notNull        bool
 		plainCollation bool
+		builtin        bool
 	}
 	columns := map[string]column{}
 	rows, err := tx.QueryContext(ctx, `SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull,
-  a.attcollation IN (0, 100, 950), COALESCE(cn.nspname || '.' || co.collname, '')
-  FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation
+  a.attcollation IN (0, 100, 950), COALESCE(cn.nspname || '.' || co.collname, ''), `+builtinTypeSQL+`
+  FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type ty ON ty.oid = a.atttypid
+  LEFT JOIN pg_catalog.pg_collation co ON co.oid = a.attcollation
   LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = co.collnamespace
   WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped`, oid)
 	if err != nil {
@@ -1283,7 +1609,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 	for rows.Next() {
 		var n string
 		var c column
-		if err := rows.Scan(&n, &c.typ, &c.notNull, &c.plainCollation, &c.collation); err != nil {
+		if err := rows.Scan(&n, &c.typ, &c.notNull, &c.plainCollation, &c.collation, &c.builtin); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1297,15 +1623,35 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 		switch {
 		case !ok:
 			fault("column %s is missing", want.Name)
-		case got.typ != want.Type:
+		case got.typ != want.Type && !relaxed.acceptType(want, got.typ):
 			fault("column %s has the type %s, and the manifest needs %s", want.Name, got.typ, want.Type)
-		case want.NotNull && !got.notNull:
+		case want.NotNull && !got.notNull && !relaxed.acceptNullable(want.Name):
 			fault("column %s is nullable, and the manifest needs NOT NULL", want.Name)
 		case !got.plainCollation:
 			fault("column %s has the collation %s, and the manifest needs the default or the C collation", want.Name, got.collation)
 		}
 	}
-	found, err := checkDefaults(ctx, tx, oid, t.Columns)
+	// A column that the manifest does not list is of a built-in base type of pg_catalog: a domain, an enum, a range or
+	// a type of another schema can run a function of the database on each INSERT that leaves the column out, such as
+	// the CHECK of a domain (decisions of the orchestrator under the owner's delegation, 2026-11-13: an entity table
+	// refuses an unlisted column of a non-built-in type, and so does each other table of the manifest).
+	{
+		listed := map[string]bool{}
+		for _, c := range t.Columns {
+			listed[c.Name] = true
+		}
+		var unlisted []string
+		for n, c := range columns {
+			if !listed[n] && !c.builtin {
+				unlisted = append(unlisted, n)
+			}
+		}
+		slices.Sort(unlisted)
+		for _, n := range unlisted {
+			fault("column %s is not in the manifest and has the type %s, which is no built-in base type of pg_catalog", n, columns[n].typ)
+		}
+	}
+	found, err := checkDefaults(ctx, tx, oid, t.Columns, t.Entity, relaxed.defaults())
 	if err != nil {
 		return nil, err
 	}
@@ -1320,10 +1666,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 		fault("%s", f)
 	}
 
-	type constraint struct {
-		kind, definition string
-		validated        bool
-	}
+	type constraint = constraintRow
 	constraints := map[string]constraint{}
 	rows, err = tx.QueryContext(ctx, `SELECT c.conname, c.contype::text, pg_catalog.pg_get_constraintdef(c.oid), c.convalidated
   FROM pg_catalog.pg_constraint c WHERE c.conrelid = $1`, oid)
@@ -1342,23 +1685,61 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 	if err := closed(rows); err != nil {
 		return nil, err
 	}
+	// completes are the CHECKs that the manifest does not name and that are not the CHECK of a later add step, by
+	// name with their definitions; each is a fault unless it is the completeness CHECK of the accepted sync trigger.
+	completes := map[string]string{}
 	if t.RowSecurity || t.CheckGrants {
 		// A referential action runs with the rights of the table owner and passes row-level security and the
-		// grants, so on a table with row-level security or that checks its grants each foreign key is the
-		// manifest's.
+		// grants, and a check or exclusion constraint runs its expression or operators as the role that writes the
+		// row, so on a table with row-level security or that checks its grants each one is the manifest's.
 		namedConstraints := map[string]bool{}
-		for _, want := range t.Constraints {
+		for _, want := range slices.Concat(t.Constraints, t.OptionalConstraints) {
 			namedConstraints[want.Name] = true
 		}
 		var extra []string
 		for n, c := range constraints {
-			if c.kind == KindForeignKey && !namedConstraints[n] {
+			if !namedConstraints[n] && (c.kind == KindForeignKey || c.kind == KindCheck || c.kind == kindExclusion) {
 				extra = append(extra, n)
 			}
 		}
 		slices.Sort(extra)
 		for _, n := range extra {
-			fault("constraint %s is a foreign key that the manifest does not name", n)
+			kind := constraints[n].kind
+			// The CHECK of a relax of a marked column (ST-SUP-RP15-LC04).
+			if relaxed.acceptRelax(n, constraints[n]) {
+				continue
+			}
+			// On the table of a declared entity, the foreign key and the CHECK of a later add step are accepted in
+			// their exact forms (ST-SUP-RP15-LC03, ST-SUP-RP15-LC01).
+			if t.Entity && plainTable && kind != kindExclusion {
+				accept := acceptForeignKey
+				if kind == KindCheck {
+					accept = func(ctx context.Context, tx *sql.Tx, t Table, rel uint32, n string, _ *stepState, columns map[string]tableColumn) (bool, error) {
+						return acceptCheck(ctx, tx, t, rel, n, columns)
+					}
+				}
+				ok, err := accept(ctx, tx, t, oid, n, steps, stepCols)
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					continue
+				}
+				// The completeness CHECK of a later step at expand is accepted only with the sync trigger of that
+				// step, which the triggers below find (ST-SUP-RP15-LC02 rule 8).
+				if kind == KindCheck {
+					completes[n] = constraints[n].definition
+					continue
+				}
+			}
+			switch kind {
+			case KindForeignKey:
+				fault("constraint %s is a foreign key that the manifest does not name", n)
+			case KindCheck:
+				fault("constraint %s is a check constraint that the manifest does not name", n)
+			default:
+				fault("constraint %s is an exclusion constraint that the manifest does not name", n)
+			}
 		}
 	}
 	// A foreign key of another table that refers to this one with an action that writes deletes or changes its rows
@@ -1383,6 +1764,9 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 	}
 	for _, want := range t.Constraints {
 		got, ok := constraints[want.Name]
+		if relaxed.acceptNamed(want, got, ok, constraints) {
+			continue
+		}
 		switch {
 		case !ok:
 			fault("constraint %s is missing", want.Name)
@@ -1392,15 +1776,25 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 			fault("constraint %s is not validated", want.Name)
 		}
 	}
+	for _, want := range t.OptionalConstraints {
+		got, ok := constraints[want.Name]
+		switch {
+		case !ok:
+		case got.kind != want.Kind || strings.TrimSuffix(got.definition, " NOT VALID") != want.Definition:
+			fault("constraint %s is not the constraint of the manifest", want.Name)
+		case !got.validated && !want.NotValid && !steps.openCheck(t, want.Name):
+			fault("constraint %s is not validated", want.Name)
+		}
+	}
 
 	type index struct {
 		columns                                   []string
 		predicate                                 string
 		unique, valid, ready, immediate, distinct bool
-		expressions, plainKeys                    bool
+		expressions, plainKeys, primary           bool
 	}
 	indexes := map[string]*index{}
-	rows, err = tx.QueryContext(ctx, `SELECT ic.relname, i.indisunique, i.indisvalid, i.indisready, i.indimmediate,
+	rows, err = tx.QueryContext(ctx, `SELECT ic.relname, i.indisunique, i.indisvalid, i.indisready, i.indimmediate, i.indisprimary,
   NOT i.indnullsnotdistinct, i.indexprs IS NOT NULL, COALESCE(pg_catalog.pg_get_expr(i.indpred, i.indrelid), ''),
   NOT EXISTS (SELECT 1 FROM pg_catalog.unnest(i.indclass::pg_catalog.oid[]) WITH ORDINALITY AS k(opclass, o)
     JOIN pg_catalog.pg_opclass oc ON oc.oid = k.opclass WHERE k.o <= i.indnkeyatts AND NOT oc.opcdefault)
@@ -1413,7 +1807,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 	for rows.Next() {
 		var n string
 		i := &index{}
-		if err := rows.Scan(&n, &i.unique, &i.valid, &i.ready, &i.immediate, &i.distinct, &i.expressions, &i.predicate, &i.plainKeys); err != nil {
+		if err := rows.Scan(&n, &i.unique, &i.valid, &i.ready, &i.immediate, &i.primary, &i.distinct, &i.expressions, &i.predicate, &i.plainKeys); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -1449,8 +1843,10 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 		switch {
 		case !ok:
 			fault("index %s is missing", want.Name)
-		case !got.unique:
+		case !got.unique && !want.Lookup:
 			fault("index %s is not unique", want.Name)
+		case got.unique && want.Lookup:
+			fault("index %s is unique, and the manifest needs a lookup index", want.Name)
 		case got.expressions || !slices.Equal(got.columns, want.Columns):
 			fault("index %s does not have the columns (%s) of the manifest", want.Name, strings.Join(want.Columns, ", "))
 		case got.predicate != want.Predicate:
@@ -1463,6 +1859,47 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 			fault("index %s treats nulls as not distinct", want.Name)
 		case !got.plainKeys:
 			fault("index %s has an operator class or a collation that is not the default", want.Name)
+		}
+	}
+
+	if t.RowSecurity || t.CheckGrants {
+		// An expression or a predicate of an index is computed on each INSERT or UPDATE as the role that writes the
+		// row, with the functions that it calls, so on a table with row-level security or that checks its grants each
+		// such index is one of the manifest. An index on plain columns runs only the built-in functions of its
+		// operator class, which only a superuser can make. A unique index checks its key over the rows of every
+		// tenant, past row-level security, so a write that fails on it with 23505 tells the writer that a row it
+		// cannot read holds the value: each unique index is one of the manifest too (review of PR #270). On the table
+		// of a declared entity, the unique index of a later add step is accepted in its exact form (acceptUnique).
+		namedIndexes := map[string]bool{}
+		for _, want := range t.Indexes {
+			namedIndexes[want.Name] = true
+		}
+		var primary []string
+		for _, i := range indexes {
+			if i.primary {
+				primary = i.columns
+			}
+		}
+		var extra, unique []string
+		for n, i := range indexes {
+			switch {
+			case namedIndexes[n]:
+			case i.expressions || i.predicate != "":
+				extra = append(extra, n)
+			case i.unique:
+				if t.Entity && plainTable && !i.primary && i.immediate && i.distinct && i.plainKeys && acceptUnique(t, n, i.columns, primary, stepCols) {
+					continue
+				}
+				unique = append(unique, n)
+			}
+		}
+		slices.Sort(extra)
+		for _, n := range extra {
+			fault("index %s has an expression or a predicate, and the manifest does not name it", n)
+		}
+		slices.Sort(unique)
+		for _, n := range unique {
+			fault("index %s is a unique index that the manifest does not name", n)
 		}
 	}
 
@@ -1511,18 +1948,23 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 			fault("policy %s applies to other roles than the manifest names", want.Name)
 		}
 	}
-	if t.RowSecurity {
-		// A permissive policy widens what a role sees, so with row-level security each one is the manifest's. A
-		// restrictive policy only narrows it, and is allowed.
+	if t.RowSecurity || t.CheckGrants {
+		// A permissive policy widens what a role sees, and the expression of each policy, restrictive too, runs as the
+		// role that reads or writes a row, with the functions that it calls, so on a table with row-level security or
+		// that checks its grants each policy is the manifest's.
 		var extra []string
-		for n, p := range policies {
-			if p.permissive && !named[n] {
+		for n := range policies {
+			if !named[n] {
 				extra = append(extra, n)
 			}
 		}
 		slices.Sort(extra)
 		for _, n := range extra {
-			fault("policy %s is a permissive policy that the manifest does not name", n)
+			if policies[n].permissive {
+				fault("policy %s is a permissive policy that the manifest does not name", n)
+				continue
+			}
+			fault("policy %s is a restrictive policy that the manifest does not name", n)
 		}
 	}
 
@@ -1542,6 +1984,32 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 	}
 	namedTriggers := map[string]bool{}
 	namedRows := map[uint32]string{}
+	// An optional trigger may be missing; when the table has a trigger of its name, it is the trigger of the manifest.
+	// The columns that a present optional sync trigger moves are in no other sync trigger (ST-SUP-RP15-LC02 rule 2).
+	used := map[string]bool{}
+	for _, want := range t.OptionalTriggers {
+		namedTriggers[want.Name] = true
+		got, ok := triggers[want.Name]
+		if !ok {
+			continue
+		}
+		if f := triggerFault(want, got); f != "" {
+			fault("trigger %s %s", want.Name, f)
+		}
+		if stepCols != nil {
+			var pairs [][2]string
+			for k := range stepCols {
+				for u := range stepCols {
+					if k != u {
+						pairs = append(pairs, [2]string{k, u})
+					}
+				}
+			}
+			if match, ok := syncPair(got.source, steps.owner, pairs, stepCols); ok {
+				used[match.k], used[match.u] = true, true
+			}
+		}
+	}
 	for _, want := range t.Triggers {
 		namedTriggers[want.Name] = true
 		got, ok := triggers[want.Name]
@@ -1567,9 +2035,60 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 			}
 		}
 		slices.Sort(extra)
+		// On the table of a declared entity, one sync trigger of a later step is accepted in its strict template form
+		// (ST-SUP-RP15-LC02); two or more are each refused.
+		accepted := map[string]uint32{}
+		matches := map[string]syncMatch{}
+		if t.Entity && plainTable {
+			var keys []stepKey
+			for n, i := range indexes {
+				if i.unique || i.primary {
+					keys = append(keys, stepKey{name: n, columns: i.columns, primary: i.primary,
+						exact: i.valid && i.ready && i.immediate && i.distinct && !i.expressions && i.predicate == "" && i.plainKeys})
+				}
+			}
+			for _, n := range extra {
+				function, match, ok, err := acceptSync(ctx, tx, t, oid, n, steps, stepCols, keys, used)
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					accepted[n] = function
+					matches[n] = match
+				}
+			}
+		}
+		// The completeness CHECK of the accepted sync trigger, of template version 2 or later, is accepted in its exact
+		// form, NOT VALID as the step adds it or validated as the backfill leaves it (ST-SUP-RP15-LC02 rule 8; decision
+		// on ST-SUP-Q120 (c), orchestrator under the owner's delegation, 2026-11-14).
+		if len(accepted) == 1 {
+			for _, match := range matches {
+				n := CompleteName(t.Name, match.u)
+				if definition, ok := completes[n]; ok && match.version >= 2 &&
+					strings.TrimSuffix(definition, " NOT VALID") == CompleteDefinition(match.k, match.u, match.conversion, match.hasFill) {
+					delete(completes, n)
+				}
+			}
+		}
 		for _, n := range extra {
+			if function, ok := accepted[n]; ok && len(accepted) == 1 {
+				steps.accepted[function] = true
+				continue
+			}
+			if _, ok := accepted[n]; ok {
+				fault("trigger %s is one of more than one sync trigger that the manifest does not name", n)
+				continue
+			}
 			fault("trigger %s is a trigger that the manifest does not name", n)
 		}
+	}
+	var unnamed []string
+	for n := range completes {
+		unnamed = append(unnamed, n)
+	}
+	slices.Sort(unnamed)
+	for _, n := range unnamed {
+		fault("constraint %s is a check constraint that the manifest does not name", n)
 	}
 
 	// A rule rewrites each statement on the table, and can copy or drop its rows, so a table of the manifest has none.
@@ -1589,7 +2108,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string) ([]s
 		return nil, err
 	}
 	if t.Partitioned {
-		found, err := checkPartitions(ctx, tx, t, oid, ownerName, namedRows)
+		found, err := checkPartitions(ctx, tx, t, oid, ownerName, namedRows, t.RowSecurity || t.CheckGrants)
 		if err != nil {
 			return nil, err
 		}
@@ -1661,9 +2180,10 @@ func triggerFault(want Trigger, got catalogTrigger) string {
 // triggers are the clones of the row triggers of the manifest on the table, each enabled, and the triggers that
 // Table.PartitionTriggers names for each partition; it grants no privilege, on it or on a column, to another role
 // than its owner, since a partition has no row-level security of its own; and it has a clone of each row trigger of
-// the manifest.
+// the manifest. With strict, it has no check, exclusion or foreign key constraint of its own, and no unique index or
+// index with an expression or a predicate that is not a partition of an index of the table.
 // namedRows are the row triggers of the manifest on the table, by oid.
-func checkPartitions(ctx context.Context, tx *sql.Tx, t Table, parent uint32, owner string, namedRows map[uint32]string) ([]string, error) {
+func checkPartitions(ctx context.Context, tx *sql.Tx, t Table, parent uint32, owner string, namedRows map[uint32]string, strict bool) ([]string, error) {
 	type partition struct {
 		oid, relowner         uint32
 		name, kind, ownerName string
@@ -1713,6 +2233,35 @@ func checkPartitions(ctx context.Context, tx *sql.Tx, t Table, parent uint32, ow
 		}
 		if rules > 0 {
 			fault("the partition has a rule")
+		}
+		// A row that the table routes to the partition meets the check, exclusion and foreign key constraints and the
+		// indexes of the partition, and a foreign key and a unique index check their key past row-level security, so
+		// with strict (row-level security or checked grants) the partition holds no such constraint of its own, and no
+		// unique index or index with an expression or a predicate that is not a partition of an index of the table.
+		if strict {
+			var own []string
+			rows, err := tx.QueryContext(ctx, `SELECT c.conname FROM pg_catalog.pg_constraint c
+  WHERE c.conrelid = $1 AND c.contype IN ('c', 'x', 'f') AND c.conislocal
+  UNION ALL SELECT ic.relname FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+  WHERE i.indrelid = $1 AND (i.indexprs IS NOT NULL OR i.indpred IS NOT NULL OR i.indisunique)
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhrelid = i.indexrelid) ORDER BY 1`, p.oid)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var n string
+				if err := rows.Scan(&n); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				own = append(own, n)
+			}
+			if err := closed(rows); err != nil {
+				return nil, err
+			}
+			for _, n := range own {
+				fault("%s is a check, exclusion or foreign key constraint, a unique index or an index with an expression or a predicate of the partition alone", n)
+			}
 		}
 		triggers, err := readTriggers(ctx, tx, p.oid, p.relowner)
 		if err != nil {

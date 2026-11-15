@@ -28,13 +28,16 @@ const LeasesTable = `CREATE TABLE IF NOT EXISTS public.leases (
 )`
 
 // acquireStatement is the statement of Acquire in ST-SUP-RP09-LC02: it gives the lease to
-// the holder when the holder already has it or the lease has expired, and it increments the token each time.
-const acquireStatement = `UPDATE public.leases SET holder=$1, expires_at=now()+make_interval(secs => $3), token=token+1 WHERE name=$2 AND (holder=$1 OR expires_at<now()) RETURNING token`
+// the holder when the holder already has it or the lease has expired, and it increments the token each time. Its
+// functions and operators are those of pg_catalog by name, so no function or operator of another schema earlier on
+// the search path runs in it.
+const acquireStatement = `UPDATE public.leases SET holder=$1, expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) pg_catalog.make_interval(secs => $3), token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND (holder OPERATOR(pg_catalog.=) $1 OR expires_at OPERATOR(pg_catalog.<) pg_catalog.now()) RETURNING token`
 
 // renewStatement is the statement of Renew in ST-SUP-RP09-LC02: it extends the lease and increments the token only
 // while the row still names the holder with the token it holds and the lease has not expired, so a renew after the
-// lease expired, was taken over or was released takes nothing and leaves the row as it is.
-const renewStatement = `UPDATE public.leases SET expires_at=now()+make_interval(secs => $4), token=token+1 WHERE name=$2 AND holder=$1 AND token=$3 AND expires_at>=now() RETURNING token`
+// lease expired, was taken over or was released takes nothing and leaves the row as it is. Its functions and
+// operators are those of pg_catalog by name, as in acquireStatement.
+const renewStatement = `UPDATE public.leases SET expires_at=pg_catalog.now() OPERATOR(pg_catalog.+) pg_catalog.make_interval(secs => $4), token=token OPERATOR(pg_catalog.+) 1 WHERE name OPERATOR(pg_catalog.=) $2 AND holder OPERATOR(pg_catalog.=) $1 AND token OPERATOR(pg_catalog.=) $3 AND expires_at OPERATOR(pg_catalog.>=) pg_catalog.now() RETURNING token`
 
 // releaseStatement makes the lease expire now, but only while the row still names the holder with its token. It
 // keeps the holder and the token, so the next acquire increments the token past every write of this holder.
@@ -46,6 +49,21 @@ const declareStatement = `INSERT INTO public.leases (name) VALUES ($1) ON CONFLI
 // fenceStatement locks the lease row against a change of holder or token until the caller's transaction ends, and
 // reads its token and holder (ST-SUP-RP09-LC03, ST-SUP-RP10-LC20).
 const fenceStatement = `SELECT token, holder FROM public.leases WHERE name=$1 FOR SHARE`
+
+// stallStatement sets the idle-in-transaction timeout of the caller's transaction only. It is the bound of the
+// database on the lease row lock of Fence: the process clock of the holder ends the transaction when the lease can
+// expire, but a holder whose process stops, such as a frozen container or a paused virtual machine, runs no timer,
+// and its transaction would keep the lease row locked FOR SHARE, so no other holder could take the lease after it
+// expires (ST-SUP-RP09-LC04). With the timeout, the server ends the session of a holder that waits in the
+// transaction for longer than the lease has left, and the lock goes with it. The idle timeout counts only the time
+// that the session waits for its client, so a holder that runs a statement and then stops keeps the lock for the
+// time of that statement too; on PostgreSQL 17 and later the statement also sets transaction_timeout of the
+// transaction to the same time, which ends the session whether it is idle or runs a statement (review of PR #309,
+// L1, orchestrator under the owner's delegation, 2026-11-14). An older server has no transaction_timeout, and the
+// CASE does not set it there.
+const stallStatement = `SELECT pg_catalog.set_config('idle_in_transaction_session_timeout', $1, true),
+	CASE WHEN pg_catalog.current_setting('server_version_num')::integer >= 170000
+		THEN pg_catalog.set_config('transaction_timeout', $1, true) END`
 
 var (
 	// ErrTaken is the error of Acquire when another holder has an unexpired lease.
@@ -300,10 +318,24 @@ func (h *Held) Release(ctx context.Context) error {
 // Fence locks the lease row in the caller's transaction until the transaction ends, so that no other holder can
 // take the lease while it runs, and returns the holder's token for the caller's writes to carry. When the row
 // holds another holder or token, the holder stops and Fence returns ErrFenced (ST-SUP-RP09-LC03). A renew of this
-// holder that committed but has not returned yet gives the row the next token; Fence takes that token.
+// holder that committed but has not returned yet gives the row the next token; Fence takes that token. Before the
+// lock, Fence sets the idle-in-transaction timeout of tx, and on PostgreSQL 17 and later its transaction timeout, to
+// the time the lease has left, so the server ends a transaction whose process stopped and cannot end it, also in the
+// middle of a statement (ST-SUP-RP09-LC04). Every lock of the lease row in a
+// transaction goes through Fence: the fenced checkpoint function of the backfill runs in the transaction of
+// Backfill.inTx after it, and Acquire, Renew and Release are single statements.
 func (h *Held) Fence(ctx context.Context, tx *sql.Tx) (int64, error) {
 	if err := h.active(); err != nil {
 		return 0, err
+	}
+	// The timeout is the time left in whole milliseconds, rounded down, so it is never longer than the lease has
+	// left; a lease with less than one millisecond left takes no lock, as a timeout of 0 turns the bound off.
+	left := h.Expires().Sub(h.client.clock.Now()).Milliseconds()
+	if left < 1 {
+		return 0, fmt.Errorf("lease %s: fence: the lease has no time left on the process clock", h.client.name)
+	}
+	if _, err := tx.ExecContext(ctx, stallStatement, fmt.Sprintf("%dms", left)); err != nil {
+		return 0, fmt.Errorf("lease %s: fence: %w", h.client.name, err)
 	}
 	var token int64
 	var holder string

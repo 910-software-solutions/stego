@@ -215,7 +215,7 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 		return gen.File{}, fmt.Errorf("the migration job needs a service with routes or background tasks")
 	}
 	if fallible {
-		buf.WriteString("func main() {\n")
+		buf.WriteString("func main() {\n\tstegoRefuseEnvironment()\n")
 		writeMigrationJob(&buf, migration, migrationStage)
 		buf.WriteString("\tif err := run(); err != nil {\n\t\tstegoReportFailure(os.Stderr, err)\n\t\tos.Exit(1)\n\t}\n}\n\nfunc run() (stegoErr error) {\n\tstegoStage := \"startup\"\n")
 		buf.WriteString("\tdefer func() { if stegoErr != nil { stegoErr = &stegoServiceFailure{stage: stegoStage, cause: stegoErr")
@@ -224,7 +224,7 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 		}
 		buf.WriteString("} } }()\n")
 	} else {
-		buf.WriteString("func main() {\n")
+		buf.WriteString("func main() {\n\tstegoRefuseEnvironment()\n")
 	}
 
 	if hasRoutes || hasTasks {
@@ -269,6 +269,8 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 		buf.WriteString("\treturn nil\n")
 	}
 	buf.WriteString("}\n")
+	// The guard against variables that a library reads and the service does not take (gen.EnvironmentGuardSource).
+	buf.WriteString(gen.EnvironmentGuardSource)
 	if hasDB {
 		buf.WriteString(databaseConfigSource)
 	}
@@ -372,10 +374,9 @@ func writeMainImports(buf *bytes.Buffer, input AssemblerInput, hasRoutes, hasDB,
 			stdlibNeeded[pkg] = true
 		}
 	}
-	// os is used in writeDBSetup (DATABASE_URL) and writeServerStart (PORT).
-	if hasDB || hasRoutes || hasTasks {
-		stdlibNeeded["os"] = true
-	}
+	// os is used by the environment guard that main calls first, by writeDBSetup (DATABASE_URL) and by
+	// writeServerStart (PORT).
+	stdlibNeeded["os"] = true
 	// Add component-requested stdlib imports.
 	for pkg := range extraStdlib {
 		stdlibNeeded[pkg] = true
@@ -1778,10 +1779,8 @@ func stdlibAliases(hasRoutes, hasTasks, hasDB bool, extraStdlib map[string]bool)
 	if hasDB {
 		names = append(names, "sql")
 	}
-	// os is used by writeDBSetup (DATABASE_URL) and writeServerStart (PORT).
-	if hasDB || hasRoutes || hasTasks || extraStdlib["os"] {
-		names = append(names, "os")
-	}
+	// os is used by the environment guard, writeDBSetup (DATABASE_URL) and writeServerStart (PORT).
+	names = append(names, "os")
 	if hasRoutes {
 		for _, pkg := range httpLifecycleImports {
 			names = append(names, path.Base(pkg))

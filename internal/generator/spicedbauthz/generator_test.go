@@ -44,7 +44,21 @@ definition project {
 	permission view = owner
 	permission edit = owner
 }
+
+definition service {
+	relation operator: user
+	relation creator: user
+	permission provision = operator
+	permission retire = operator
+	permission create = creator
+}
 `
+
+// provisioning is the tenant provisioning of the RC29 test records: the service-level resource type service, on
+// which Provision, Retire and the create of an entity with no parent are decided (ST-SUP-RC29-OC01).
+func provisioning() *types.TenantProvisioning {
+	return &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire"}
+}
 
 // component reads the spicedb-authz component of the registry.
 func component(t *testing.T) *registry.Component {
@@ -75,9 +89,10 @@ func permissions(read, list, create, update, delete string) map[types.Operation]
 	return map[types.Operation]string{types.OpRead: read, types.OpList: list, types.OpCreate: create, types.OpUpdate: update, types.OpDelete: delete}
 }
 
-// documentContext is the declaration of the RC29 test records: a rest-crud service with pooled tenancy and the
-// spicedb-authz component, the schema authz/schema.zed, and the owned entity Document with the resource type
-// document, the permissions read: view, list: view, create: edit, update: edit and delete: edit, and the
+// documentContext is the declaration of the RC29 test records: a rest-crud service with pooled tenancy, the tenant
+// provisioning on the resource type service and the spicedb-authz component, the schema authz/schema.zed, and the
+// owned entity Document with the resource type document, the permissions read: view, list: view, create: create
+// (on service, since Document has no parent), update: edit and delete: edit, and the
 // relationship owner from the field owner_id with the subject type user. Project is a second protected entity with
 // a resource type of its own, and Note is an entity that no collection reads, so it is not protected.
 func documentContext(t *testing.T) gen.Context {
@@ -87,7 +102,7 @@ func documentContext(t *testing.T) gen.Context {
 		OutputNamespace: "internal/authz",
 		ServiceName:     "documents",
 		ComponentConfig: componentConfig(t),
-		Tenancy:         &gen.Tenancy{Key: "tenant_id"},
+		Tenancy:         &gen.Tenancy{Key: "tenant_id", Provisioning: provisioning()},
 		Authorization:   &types.Authorization{Provider: "spicedb", SchemaPath: "authz/schema.zed", SubjectFromIdentity: "user"},
 		Inputs:          map[string][]byte{"authz/schema.zed": []byte(documentSchema)},
 		Entities: []types.Entity{
@@ -95,12 +110,12 @@ func documentContext(t *testing.T) gen.Context {
 				{Name: "title", Type: types.FieldTypeString},
 				{Name: "owner_id", Type: types.FieldTypeString}},
 				EntityAuthorization: types.EntityAuthorization{ResourceType: "document",
-					Permissions: permissions("view", "view", "edit", "edit", "edit"),
+					Permissions: permissions("view", "view", "create", "edit", "edit"),
 					Relationships: []types.Relationship{{Relation: "owner", SubjectSource: types.SubjectSourceField,
 						SubjectField: "owner_id", SubjectType: "user"}}}},
 			{Name: "Project", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}},
 				EntityAuthorization: types.EntityAuthorization{ResourceType: "project",
-					Permissions: permissions("view", "view", "edit", "edit", "edit")}},
+					Permissions: permissions("view", "view", "create", "edit", "edit")}},
 			{Name: "Note", Fields: []types.Field{{Name: "text", Type: types.FieldTypeString}}},
 		},
 		Collections: []types.Collection{
@@ -189,14 +204,15 @@ func operationEntries(t *testing.T, source string) []map[string]string {
 func TestOperations(t *testing.T) {
 	t.Run("ST-SUP-RC29-OC01-T01 Each declared operation maps to one permission of the resource type", func(t *testing.T) {
 		entries := operationEntries(t, emitted(t, generate(t, documentContext(t)), "authz.go"))
-		want := map[string]string{"read": "view", "list": "view", "create": "edit", "update": "edit", "delete": "edit"}
+		want := map[string]string{"read": "view", "list": "view", "create": "create", "update": "edit", "delete": "edit"}
 		got := map[string]string{}
 		projects := 0
 		for _, e := range entries {
 			switch e["Collection"] {
 			case "documents":
-				if e["ResourceType"] != "document" {
-					t.Errorf("the entry %v is not on the resource type document", e)
+				// Document has no parent, so its create is decided on the service-level resource (ST-SUP-RC29-OC01).
+				if on := map[bool]string{true: "service", false: "document"}[e["Operation"] == "create"]; e["ResourceType"] != on {
+					t.Errorf("the entry %v is not on the resource type %s", e, on)
 				}
 				if _, twice := got[e["Operation"]]; twice {
 					t.Errorf("the operation %s has two entries", e["Operation"])
@@ -204,8 +220,8 @@ func TestOperations(t *testing.T) {
 				got[e["Operation"]] = e["Permission"]
 			case "projects":
 				projects++
-				if e["ResourceType"] != "project" {
-					t.Errorf("the entry %v is not on the resource type project", e)
+				if on := map[bool]string{true: "service", false: "project"}[e["Operation"] == "create"]; e["ResourceType"] != on {
+					t.Errorf("the entry %v is not on the resource type %s", e, on)
 				}
 			}
 		}
@@ -226,6 +242,65 @@ func TestOperations(t *testing.T) {
 		ctx := documentContext(t)
 		ctx.Entities[0].Permissions[types.OpUpdate] = "rename"
 		refused(t, ctx, "Document", "update", "rename")
+	})
+}
+
+func TestTopLevelCreate(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC01-T03 The create of an entity with no parent is decided on the service-level resource", func(t *testing.T) {
+		// create: create, a permission that only the service-level resource type declares, is accepted.
+		ctx := documentContext(t)
+		ctx.Entities[0].Permissions[types.OpCreate] = "create"
+		found := false
+		for _, e := range operationEntries(t, emitted(t, generate(t, ctx), "authz.go")) {
+			if e["Collection"] == "documents" && e["Operation"] == "create" {
+				found = true
+				if e["ResourceType"] != "service" || e["Permission"] != "create" {
+					t.Errorf("the create of documents is %v, want create on the resource type service", e)
+				}
+			}
+		}
+		if !found {
+			t.Error("the table has no entry of the create of documents")
+		}
+		// edit, a permission of document that the service-level resource type lacks, is refused for the create.
+		ctx = documentContext(t)
+		ctx.Entities[0].Permissions[types.OpCreate] = "edit"
+		refused(t, ctx, "Document", "create", `"edit"`, "service")
+		// With no tenant provisioning there is no service-level resource, so only a public create is accepted.
+		ctx = documentContext(t)
+		ctx.Tenancy.Provisioning = nil
+		refused(t, ctx, "Document", "create", "tenancy.provisioning")
+		// A create under a parent is looked up on the entity's own resource type.
+		ctx = documentContext(t)
+		ctx.Entities[0].Permissions[types.OpCreate] = "edit"
+		ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "project_id", Type: types.FieldTypeRef, To: "Project"})
+		ctx.Entities[0].References = map[string]types.Reference{"project_id": {Relation: "project", Permission: "edit"}}
+		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(documentSchema, "relation viewer: user\n", "relation viewer: user\n\trelation project: project\n", 1))}
+		ctx.Collections[0].Scope = map[string]string{"project_id": "Project"}
+		for _, e := range operationEntries(t, emitted(t, generate(t, ctx), "authz.go")) {
+			if e["Collection"] == "documents" && e["Operation"] == "create" && (e["ResourceType"] != "document" || e["Permission"] != "edit") {
+				t.Errorf("the create of documents under a project is %v, want edit on the resource type document", e)
+			}
+		}
+	})
+}
+
+func TestTopLevelCreatePermission(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC01-T05 A top-level create that names the provision or retire permission is refused at checking", func(t *testing.T) {
+		for _, permission := range []string{"provision", "retire"} {
+			ctx := documentContext(t)
+			ctx.Entities[0].Permissions[types.OpCreate] = permission
+			refused(t, ctx, "Document", `"`+permission+`"`, "tenancy.provisioning."+permission, "permission of its own")
+		}
+		// The rule follows the declared names, not the words provision and retire.
+		ctx := documentContext(t)
+		ctx.Tenancy.Provisioning = &types.TenantProvisioning{ResourceType: "service", Provision: "create", Retire: "retire"}
+		ctx.Entities[0].Permissions[types.OpCreate] = "create"
+		refused(t, ctx, "Document", `"create"`, "tenancy.provisioning.provision")
+		ctx = documentContext(t)
+		ctx.Tenancy.Provisioning = &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "create"}
+		ctx.Entities[0].Permissions[types.OpCreate] = "create"
+		refused(t, ctx, "Document", `"create"`, "tenancy.provisioning.retire")
 	})
 }
 
@@ -290,6 +365,14 @@ definition audit_event {
 	permission view = reader
 	permission write = reader
 }
+
+definition service {
+	relation operator: user
+	permission provision = operator
+	permission retire = operator
+	permission manage = operator
+	permission write = operator
+}
 `
 	all := map[types.Operation]string{}
 	for _, op := range []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate, types.OpDelete, types.OpList, types.OpUpsert, types.OpPatch} {
@@ -302,7 +385,7 @@ definition audit_event {
 		OutputNamespace: "internal/authz",
 		ServiceName:     "user-management",
 		ComponentConfig: componentConfig(t),
-		Tenancy:         &gen.Tenancy{Key: "tenant_id"},
+		Tenancy:         &gen.Tenancy{Key: "tenant_id", Provisioning: provisioning()},
 		Authorization:   &types.Authorization{Provider: "spicedb", SchemaPath: "authz/schema.zed", SubjectFromIdentity: "user"},
 		Inputs:          map[string][]byte{"authz/schema.zed": []byte(schema)},
 		Entities: []types.Entity{
@@ -438,6 +521,36 @@ func TestMigration(t *testing.T) {
 	})
 }
 
+func TestTokenStatements(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC06-T07 The migration quotes the table name as an identifier, and as a string literal in the regclass name", func(t *testing.T) {
+		// Review of PR #292, L1: the name was put raw into a quoted identifier and a string literal.
+		column, grant, err := tokenStatements(`a"b'c`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public."a""b''c"'::regclass AND attname = 'authz_token' AND NOT attisdropped) THEN ALTER TABLE public."a""b'c" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096); END IF; END $authz$;` + "\n"
+		if column != want {
+			t.Errorf("the statement of the column is\n%s\nwant\n%s", column, want)
+		}
+		if want := `GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public."a""b'c" TO `; grant != want {
+			t.Errorf("the grant is %q, want %q", grant, want)
+		}
+		// A plain name gives the text of the golden wiring.
+		if column, _, _ := tokenStatements("documents"); !strings.Contains(column, `attrelid = 'public."documents"'::regclass`) || !strings.Contains(column, `ALTER TABLE public."documents" ADD`) {
+			t.Errorf("the statement of a plain name is %s", column)
+		}
+	})
+	t.Run("ST-SUP-RC29-OC06-T08 The migration refuses a table name that holds a dollar sign", func(t *testing.T) {
+		// Review of PR #306, info: a name that holds $authz$ would end the dollar quote of the column statement.
+		for _, table := range []string{"a$authz$b", "$authz$", "a$"} {
+			column, grant, err := tokenStatements(table)
+			if err == nil || !strings.Contains(err.Error(), table) || column != "" || grant != "" {
+				t.Errorf("tokenStatements(%q) gives %q, %q, %v; want a refusal that names the table and no statement", table, column, grant, err)
+			}
+		}
+	})
+}
+
 func TestTenancy(t *testing.T) {
 	t.Run("ST-SUP-RC29-OC06-T05 A service without pooled tenancy on tenant_id is refused", func(t *testing.T) {
 		ctx := documentContext(t)
@@ -553,7 +666,7 @@ func (s *service) run(id string) {
 		s.t.Fatalf("go test -run %s: %v\n%s", pattern, err, out)
 	}
 	text := string(out)
-	passed := regexp.MustCompile(`--- PASS: Test[A-Za-z]+/` + id + `_`).MatchString(text)
+	passed := ownPass(text, `Test[A-Za-z]+`, id)
 	skipped := regexp.MustCompile(`--- SKIP: Test[A-Za-z]+/` + id + `_`).MatchString(text)
 	switch {
 	case passed:
@@ -584,8 +697,8 @@ func TestGeneratedAuthzWiring(t *testing.T) {
 		s.env = append(s.env, "STEGO_TEST_SPICEDB_ENDPOINT="+startSpiceDB(t))
 	}
 	for _, id := range []string{
-		"ST-SUP-RC29-OC05-T01", "ST-SUP-RC29-OC05-T02", "ST-SUP-RC29-OC05-T03", "ST-SUP-RC29-OC05-T04",
-		"ST-SUP-RC29-OC06-T01", "ST-SUP-RC29-OC06-T02", "ST-SUP-RC29-OC06-T03",
+		"ST-SUP-RC29-OC05-T04",
+		"ST-SUP-RC29-OC06-T01", "ST-SUP-RC29-OC06-T02", "ST-SUP-RC29-OC06-T03", "ST-SUP-RC29-OC06-T06",
 		"ST-SUP-RC29-OC07-T01", "ST-SUP-RC29-OC07-T02", "ST-SUP-RC29-OC07-T03", "ST-SUP-RC29-OC07-T04",
 		"ST-SUP-RC29-OC07-T05", "ST-SUP-RC29-OC07-T06", "ST-SUP-RC29-OC23-T01",
 	} {
@@ -594,4 +707,77 @@ func TestGeneratedAuthzWiring(t *testing.T) {
 			s.run(id)
 		})
 	}
+}
+
+// ownPass tells whether output, the text of go test -v, holds the pass line of the subtest of id itself, directly
+// under a test whose name matches parent, a regular expression. A subtest one level down has the same name prefix,
+// but go test indents its line four more spaces, so its pass never counts as the pass of its parent
+// (ST-STD-CODE-R07).
+func ownPass(output, parent, id string) bool {
+	return regexp.MustCompile(`(?m)^    --- PASS: ` + parent + `/` + regexp.QuoteMeta(id) + `_`).MatchString(output)
+}
+
+func TestOwnPass(t *testing.T) {
+	t.Run("ST-STD-CODE-R07-T03 In the spicedbauthz wrapper, a pass of a subtest under the subtest of a record is not its pass", func(t *testing.T) {
+		output := "=== RUN   TestAuthz/ST-X-T01_a\n        --- PASS: TestAuthz/ST-X-T01_a/child (0.00s)\n    --- FAIL: TestAuthz/ST-X-T01_a (0.00s)\n" +
+			"    --- PASS: TestAuthz/ST-X-T02_b (0.00s)\n        --- FAIL: TestAuthz/ST-X-T02_b/child (0.00s)\n    --- PASS: TestAuthz/ST-X-T03_c/d (0.00s)\n"
+		if ownPass(output, "Test[A-Za-z]+", "ST-X-T01") {
+			t.Fatal("a failed subtest counts as passed because a subtest under it passed")
+		}
+		if !ownPass(output, "Test[A-Za-z]+", "ST-X-T02") || !ownPass(output, "Test[A-Za-z]+", "ST-X-T03") {
+			t.Fatal("a passed subtest, also one whose title holds a slash, does not count as passed")
+		}
+	})
+}
+
+func TestAlertSettings(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC24-T01 The generator refuses an alert bound above 10m and a watch interval below 100ms or above the alert bound", func(t *testing.T) {
+		with := func(bound, interval string) gen.Context {
+			ctx := documentContext(t)
+			config := map[string]any{}
+			for k, v := range ctx.ComponentConfig {
+				config[k] = v
+			}
+			config["alert_bound"], config["watch_interval"] = bound, interval
+			ctx.ComponentConfig = config
+			return ctx
+		}
+		for _, c := range [][2]string{{"5s", "1s"}, {"10m", "100ms"}, {"10m", "10m"}, {"1s", "1s"}} {
+			if _, _, err := new(Generator).Generate(with(c[0], c[1])); err != nil {
+				t.Errorf("alert_bound %s and watch_interval %s: refused: %v", c[0], c[1], err)
+			}
+		}
+		for _, bound := range []string{"10m0.001s", "11m", "87600h"} {
+			refused(t, with(bound, "1s"), "alert_bound", "more than 10m")
+		}
+		for _, c := range [][2]string{{"5s", "99ms"}, {"5s", "1ms"}, {"5s", "6s"}, {"10m", "1h"}} {
+			refused(t, with(c[0], c[1]), "watch_interval", "100ms", "alert_bound")
+		}
+	})
+}
+
+func TestWaitSettings(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC19-T04 The generator refuses a wait cap that is not above zero or is above the write timeout of the server", func(t *testing.T) {
+		with := func(cap string) gen.Context {
+			ctx := documentContext(t)
+			config := map[string]any{}
+			for k, v := range ctx.ComponentConfig {
+				config[k] = v
+			}
+			config["wait_cap"] = cap
+			ctx.ComponentConfig = config
+			return ctx
+		}
+		for _, cap := range []string{"1s", "10s", "25s"} {
+			if !strings.Contains(emitted(t, generate(t, with(cap)), "authz.go"), "wait_cap: "+cap) {
+				t.Errorf("the wait cap %s is not in the emitted settings", cap)
+			}
+		}
+		for _, cap := range []string{"25.001s", "30s", "31s", "87600h", "2562047h"} {
+			refused(t, with(cap), "wait_cap", "more than 25s", "write timeout")
+		}
+		for _, cap := range []string{"0s", "-1s", "ten"} {
+			refused(t, with(cap), "wait_cap", "not a positive duration")
+		}
+	})
 }

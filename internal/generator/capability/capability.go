@@ -65,6 +65,10 @@ type Field struct {
 	Read        string
 	Type        types.FieldType
 	Sensitivity string
+	// Pointer tells that the Go type is a pointer to the type that Read gives, nil for a NULL column. Only the
+	// views of the rest-api handlers set it, for an optional field, and no fill reads them (ST-SUP-Q128 (B)); the
+	// values that fills read keep the zero value for NULL.
+	Pointer bool
 }
 
 // Value is the read-only value type of one entity on the runtime data path: its Go type, its table and the columns
@@ -91,7 +95,7 @@ func ValueOf(entity types.Entity) (Value, error) {
 		"updated_time": true}
 	goNames := map[string]bool{"ID": true, "CreatedTime": true, "UpdatedTime": true}
 	for _, f := range entity.Fields {
-		if !plainColumn.MatchString(f.Name) || reserved[f.Name] {
+		if !plainColumn.MatchString(f.Name) || reserved[f.Name] || !plainColumn.MatchString(f.ColumnName()) || reserved[f.ColumnName()] {
 			return Value{}, fmt.Errorf("the entity %s has the field %q, which is not a plain lower-case column name or is a column that the runtime keeps", entity.Name, f.Name)
 		}
 		if f.Sensitivity == "secret" {
@@ -106,7 +110,7 @@ func ValueOf(entity types.Entity) (Value, error) {
 			return Value{}, fmt.Errorf("the entity %s has two fields with the Go name %s", entity.Name, name)
 		}
 		goNames[name] = true
-		v.Fields = append(v.Fields, Field{Column: f.Name, GoName: name, GoType: goType, Read: read, Type: f.Type,
+		v.Fields = append(v.Fields, Field{Column: f.ColumnName(), GoName: name, GoType: goType, Read: read, Type: f.Type,
 			Sensitivity: f.Sensitivity})
 	}
 	v.Fields = append(v.Fields,
@@ -116,7 +120,8 @@ func ValueOf(entity types.Entity) (Value, error) {
 }
 
 // goTypeOf gives the Go type of a declared field and its read kind. A NULL column reads as the zero value, so no
-// field is a pointer.
+// field of the values that fills read is a pointer; the views of the rest-api handlers make an optional field one
+// (Field.Pointer).
 func goTypeOf(f types.Field) (string, string, error) {
 	switch f.Type {
 	case types.FieldTypeString, types.FieldTypeEnum, types.FieldTypeRef:

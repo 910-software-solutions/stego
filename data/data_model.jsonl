@@ -32,6 +32,7 @@
 {"id":"ST-DECL-EN21-DM","title":"types.SchemaChange","entity_id":"ST-DECL-EN21","file":"internal/types/schema_change.go"}
 {"id":"ST-DECL-EN22-DM","title":"types.SchemaStep","entity_id":"ST-DECL-EN22","file":"internal/types/schema_change.go"}
 {"id":"ST-DECL-EN25-DM","title":"types.Worker","entity_id":"ST-DECL-EN25","file":"internal/types/worker.go"}
+{"id":"ST-DECL-EN27-DM","title":"types.TenantProvisioning","entity_id":"ST-DECL-EN27","file":"internal/types/tenancy.go"}
 {"id":"ST-DIS-EN06-DM","title":"lifecycle.Lifecycle","entity_id":"ST-DIS-EN06","file":"internal/lifecycle/types.go"}
 {"id":"ST-DIS-EN07-DM","title":"lifecycle.Supersession","entity_id":"ST-DIS-EN07","file":"internal/lifecycle/types.go"}
 {"id":"ST-DIS-EN08-DM","title":"lifecycle.Withdrawal","entity_id":"ST-DIS-EN08","file":"internal/lifecycle/types.go"}
@@ -42,10 +43,11 @@
 {"id":"ST-DLV-EN01-DM","title":"delivery.Requirements","entity_id":"ST-DLV-EN01","file":"internal/delivery/requirements.go"}
 {"id":"ST-DLV-EN02-DM","title":"delivery.Requirement","entity_id":"ST-DLV-EN02","file":"internal/delivery/requirements.go"}
 {"id":"ST-DLV-EN03-DM","title":"delivery.Pipeline","entity_id":"ST-DLV-EN03","file":"internal/delivery/pipeline.go"}
-{"id":"ST-DLV-EN04-DM","title":"kubernetesservice.Base","entity_id":"ST-DLV-EN04","file":"internal/generator/kubernetesservice/kustomize.go"}
+{"id":"ST-DLV-EN04-DM","title":"delivery.Base","entity_id":"ST-DLV-EN04","file":"internal/delivery/base.go"}
 {"id":"ST-DLV-EN05-DM","title":"delivery.Application","entity_id":"ST-DLV-EN05","file":"internal/delivery/argocd.go"}
 {"id":"ST-DLV-EN06-DM","title":"delivery.Candidate","entity_id":"ST-DLV-EN06","file":"internal/delivery/check.go"}
 {"id":"ST-DLV-EN07-DM","title":"delivery.CheckResult","entity_id":"ST-DLV-EN07","file":"internal/delivery/check.go"}
+{"id":"ST-DLV-EN08-DM","title":"delivery.AcceptedVariable","entity_id":"ST-DLV-EN08","file":"internal/delivery/variables.go"}
 {"id":"ST-EXT-EN01-DM","title":"fill.Fill","entity_id":"ST-EXT-EN01","file":"internal/fill/fill.go"}
 {"id":"ST-EXT-EN02-DM","title":"fill.FillEvidence","entity_id":"ST-EXT-EN02","file":"internal/fill/fill_evidence.go"}
 {"id":"ST-EXT-EN03-DM","title":"fill.FillSignOff","entity_id":"ST-EXT-EN03","file":"internal/fill/fill_signoff.go"}
@@ -67,3 +69,4 @@
 {"id":"ST-SUP-EN10-DM","title":"registry.RegistrySource","entity_id":"ST-SUP-EN10","file":"internal/registry/component.go"}
 {"id":"ST-SUP-EN11-DM","title":"registry.QualityEvidence","entity_id":"ST-SUP-EN11","file":"internal/registry/quality.go"}
 {"id":"ST-SUP-EN12-DM","title":"registry.ComparedPromise","entity_id":"ST-SUP-EN12","file":"internal/registry/quality.go"}
+{"id":"ST-SUP-EN14-DM","title":"registry.EnvironmentVariable","entity_id":"ST-SUP-EN14","file":"internal/registry/environment.go"}

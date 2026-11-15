@@ -45,7 +45,7 @@ const smallServiceDeclaration = `kind: service
 name: notes
 archetype: rest-crud
 language: go
-tenancy: {kind: pooled, key: tenant_id, claim: tenant}
+tenancy: {kind: pooled, key: tenant_id, claim: tenant, provisioning: {resource_type: service, provision: provision, retire: retire}}
 authorization: {provider: spicedb, schema_path: authz/schema.zed, subject_from_identity: user}
 audit: {level: change}
 overrides:
@@ -59,7 +59,6 @@ entities:
 collections:
   notes: {entity: Note, operations: [create, read, list]}
 `
-
 
 // secondEntityDeclaration adds a second entity, Tag, with its collection.
 var secondEntityDeclaration = strings.Replace(smallServiceDeclaration, "collections:\n", "  - name: Tag\n    resource_type: tag\n    permissions: {create: public, read: view, list: view}\n    public_reasons: {create: a new tag has no resource to decide on before it exists}\n    fields: [{name: label, type: string}]\ncollections:\n  tags: {entity: Tag, operations: [create, read]}\n", 1)
@@ -359,4 +358,24 @@ func TestServiceRecordIsCommittedWithItsCode(t *testing.T) {
 			}
 		}
 	})
+}
+
+// unreleased makes the default branch main of the service's repository a commit that holds only the fixture's
+// service.yaml, so with no record, and keeps the service's commit on the branch work. Plan and apply then check the
+// declaration against a base where no release has run, which accepts any stored shape (ST-GEN-UC14-R02). A test
+// that is not about schema changes uses it to change the declaration freely after the fixture's commit.
+func (s *smallService) unreleased(t *testing.T) {
+	t.Helper()
+	git(t, s.service, "branch", "-m", "work")
+	blob := git(t, s.service, "rev-parse", "HEAD:service.yaml")
+	command := exec.Command("git", "mktree")
+	command.Dir = s.service
+	command.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	command.Stdin = strings.NewReader("100644 blob " + blob + "\tservice.yaml\n")
+	tree, err := command.Output()
+	if err != nil {
+		t.Fatalf("git mktree: %v", err)
+	}
+	base := git(t, s.service, "commit-tree", strings.TrimSpace(string(tree)), "-m", "a base with the declaration and no record")
+	git(t, s.service, "branch", "main", base)
 }

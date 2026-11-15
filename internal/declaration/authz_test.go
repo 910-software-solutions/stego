@@ -63,6 +63,17 @@ func compileTD03(t *testing.T, schema string) *AuthzSchema {
 	return compiled
 }
 
+// compileUnbounded compiles a fixture schema with no shape bound (ST-DECL-INV88), for the tests that show that the
+// checks after the compiler stay linear on a schema far beyond the bounds.
+func compileUnbounded(t *testing.T, schema string) *AuthzSchema {
+	t.Helper()
+	compiled, err := compileSchema("authz/schema.zed", []byte(schema))
+	if err != nil {
+		t.Fatalf("the fixture schema does not compile: %v", err)
+	}
+	return compiled
+}
+
 // expectOneFault expects exactly one fault of the rule, and that it names each text in its found value, path or
 // message.
 func expectOneFault(t *testing.T, faults []ValidationError, rule string, texts ...string) ValidationError {
@@ -146,6 +157,18 @@ func TestSchemaNames(t *testing.T) {
 	})
 }
 
+func TestIdentitySubject(t *testing.T) {
+	service, schema := td03Files(t)
+	t.Run("ST-DECL-INV24-T The subject type service_account for a request's identity is refused", func(t *testing.T) {
+		changed := change(t, service, "subject_from_identity: user", "subject_from_identity: service_account")
+		fault := expectOneFault(t, checkTD03(t, changed, schema), "no-bypass", "service_account")
+		if fault.Path != "authorization.subject_from_identity" {
+			t.Errorf("want the fault at authorization.subject_from_identity, got %+v", fault)
+		}
+		expectAccepted(t, checkTD03(t, service, schema))
+	})
+}
+
 func TestWrittenRelations(t *testing.T) {
 	service, schema := td03Files(t)
 	binding := func(written string) string {
@@ -178,20 +201,29 @@ func TestWrittenRelations(t *testing.T) {
 	})
 }
 
+// td03Permissions are the public reason and the permissions of Todo in ST-DECL-TD03, and td03Relationships its
+// relationships: the runtime data path form, a public create and an owner that the caller is (ST-SUP-Q118).
+const (
+	td03Permissions   = "    public_reasons: {create: a new todo has no resource to decide on before it exists}\n    permissions: {create: public, read: view, update: edit, delete: edit, list: view}\n"
+	td03Relationships = "    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\n"
+)
+
 func TestAuthorizationCoverage(t *testing.T) {
 	service, schema := td03Files(t)
 	publicList := func(reason string) string {
 		changed := change(t, service, "list: view}", "list: public}")
 		if reason != "" {
-			changed = change(t, changed, "    relationships:\n", "    public_reasons: {list: "+reason+"}\n    relationships:\n")
+			changed = change(t, changed, "before it exists}\n", "before it exists, list: "+reason+"}\n")
 		}
 		return changed
 	}
-	td02 := change(t, change(t, change(t, change(t, service,
+	// TD02 states no tenancy: a pooled tenancy needs the tenant provisioning, which needs authorization (ST-DECL-INV78).
+	td02 := change(t, change(t, change(t, change(t, change(t, service,
+		"tenancy:\n  kind: pooled\n  key: tenant_id\n  claim: tenant\n  provisioning: {resource_type: service, provision: provision, retire: retire}\n", ""),
 		"authorization:\n  provider: spicedb\n  schema_path: authz/schema.zed\n  subject_from_identity: user\n", ""),
 		"    resource_type: document\n", ""),
-		"    permissions: {create: edit, read: view, update: edit, delete: edit, list: view}\n", ""),
-		"    relationships:\n      - {relation: owner, subject_source: field, subject_field: owner_id, subject_type: user}\n", "")
+		td03Permissions, ""),
+		td03Relationships, "")
 
 	t.Run("ST-DECL-INV31-T With authorization bound, an entity with no resource type and an operation with no permission are refused, each named", func(t *testing.T) {
 		coverage := func(t *testing.T, changed string) []ValidationError {
@@ -205,7 +237,7 @@ func TestAuthorizationCoverage(t *testing.T) {
 			return faults
 		}
 		t.Run("Todo with no resource type", func(t *testing.T) {
-			noType := change(t, change(t, service, "    resource_type: document\n", ""), "    relationships:\n      - {relation: owner, subject_source: field, subject_field: owner_id, subject_type: user}\n", "")
+			noType := change(t, change(t, service, "    resource_type: document\n", ""), td03Relationships, "")
 			expectOneFault(t, coverage(t, noType), "authorization-coverage", "Todo")
 		})
 		t.Run("Tag with no resource type", func(t *testing.T) {
@@ -258,7 +290,7 @@ func TestAuthorizationTenancy(t *testing.T) {
 	t.Run("ST-DECL-INV84-T A declaration that binds authorization without pooled tenancy is refused", func(t *testing.T) {
 		service, schema := td03Files(t)
 		expectAccepted(t, checkTD03(t, service, schema))
-		block := "tenancy:\n  kind: pooled\n  key: tenant_id\n  claim: tenant\n"
+		block := "tenancy:\n  kind: pooled\n  key: tenant_id\n  claim: tenant\n  provisioning: {resource_type: service, provision: provision, retire: retire}\n"
 		omitted := change(t, service, block, "")
 		expectOneFault(t, checkTD03(t, omitted, schema), "authorization-tenancy", "tenancy", "tenant-qualified", "pooled")
 		single := change(t, service, block, "tenancy:\n  kind: single\n  reason: one customer per deployment\n")

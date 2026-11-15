@@ -3,6 +3,7 @@ package compiler
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/jsell-rh/stego/internal/buildidentity"
+	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/slot"
@@ -68,6 +70,10 @@ type Plan struct {
 	// ReplaceHandEdits states that the author lets this apply replace the
 	// hand-edited files (stego apply --replace-hand-edits).
 	ReplaceHandEdits bool
+
+	// Notes are the lines that the plan states besides its files, such as that the run writes no delivery object
+	// because the declaration has no delivery stanza (ST-DLV-UC07-R05).
+	Notes []string
 
 	// saved is the saved plan that apply carries out, when it is given one.
 	saved *SavedPlan
@@ -144,9 +150,54 @@ type ReconcilerInput struct {
 	// each fault it gives. cmd/stego gives fill.QualificationFaults.
 	QualifyFills FillQualifier
 
+	// WriteRequirements writes the platform requirements from the needs of the active set; cmd/stego gives
+	// delivery.WriteRequirements. Without it a run writes no platform requirements.
+	WriteRequirements RequirementsWriter
+
+	// WriteDeployment writes the Kubernetes base from the platform requirements of the run and the probes of the
+	// active set; cmd/stego gives delivery.WriteDeployment. Without it, or without platform requirements, a run
+	// writes no Kubernetes base.
+	WriteDeployment DeploymentWriter
+
 	// CheckOnly marks a plan that stego validate makes only to read the pins it uses. Such a plan is never
 	// written, so Reconcile does not refuse it for a part of the declaration that no component can generate yet.
 	CheckOnly bool
+}
+
+// boundMixins gives the mixins that a declaration binds, with each alias replaced by the mixins it names, each once
+// and in the order of the declaration (ST-SUP-INV17). The registry holds no alias of an alias. It refuses a mixin
+// that the registry does not hold, and a bound mixin whose required mixin is not bound too (ST-SUP-INV16).
+func boundMixins(reg *registry.Registry, declared []string) ([]string, error) {
+	var mixins []string
+	add := func(name string) {
+		if !slices.Contains(mixins, name) {
+			mixins = append(mixins, name)
+		}
+	}
+	for _, name := range declared {
+		mixin := reg.Mixin(name)
+		if mixin == nil {
+			return nil, fmt.Errorf("mixin %q not found in registry", name)
+		}
+		if len(mixin.AliasOf) == 0 {
+			add(name)
+			continue
+		}
+		for _, target := range mixin.AliasOf {
+			if resolved := reg.Mixin(target); resolved == nil || len(resolved.AliasOf) > 0 {
+				return nil, fmt.Errorf("mixin %q is an alias of %q, which is no mixin of the registry", name, target)
+			}
+			add(target)
+		}
+	}
+	for _, name := range mixins {
+		for _, required := range reg.Mixin(name).RequiresMixins {
+			if !slices.Contains(mixins, required) {
+				return nil, fmt.Errorf("mixin %q requires the mixin %q, which the declaration does not bind", name, required)
+			}
+		}
+	}
+	return mixins, nil
 }
 
 // FillSlot is one slot of the active component set, or of a mixin of the
@@ -278,6 +329,13 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 			return nil, err
 		}
 		if err := selectedComponentMissing(source.Service, source.Registry); err != nil {
+			return nil, err
+		}
+		if err := unbuiltSchemaChanges(source.Service); err != nil {
+			return nil, err
+		}
+		// Checking accepts a declared invariant; generation refuses it until a generator emits it.
+		if err := unemittedInvariants(source.Service.Invariants); err != nil {
 			return nil, err
 		}
 	}
@@ -438,6 +496,43 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	allFiles = append(allFiles, sharedFiles...)
 
+	// The platform requirements and the architecture model are the files of the run out of the generated output; no
+	// generator may take their paths (ST-DLV-UC01-R05, ST-GEN-UC08).
+	for _, file := range allFiles {
+		if isProjectGeneratedFile(file.Path) {
+			return nil, fmt.Errorf("the generated file %s takes a path that apply keeps for its own project files", file.Path)
+		}
+	}
+	var requirements []byte
+	if input.WriteRequirements != nil {
+		files, err := requirementsFiles(input.WriteRequirements, svcDecl, componentNames, components, input.Generators, resolved.Contexts)
+		if err != nil {
+			return nil, err
+		}
+		requirements = files[0].Content
+		allFiles = append(allFiles, files...)
+	}
+	var notes []string
+	if input.WriteDeployment != nil && requirements != nil {
+		var pipelines map[string]registry.PipelinePins
+		if component := reg.Component(registry.PipelineComponent); component != nil {
+			pipelines = component.Pipelines
+		}
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines)
+		if err != nil {
+			return nil, err
+		}
+		allFiles = append(allFiles, files...)
+		notes = written
+	}
+	// The architecture model comes from the declaration, the registry parts and the wiring of this run alone, and
+	// a component or slot that does not state its place stops the run before any file is written (ST-GEN-UC08-R05).
+	architecture, err := architectureFiles(input, svcDecl, reg, archetype, componentNames, components, wirings, requirements)
+	if err != nil {
+		return nil, err
+	}
+	allFiles = append(allFiles, architecture...)
+
 	// Validate no duplicate file paths across all sources (generators, slots,
 	// assembler). A duplicate means one generator's output would silently
 	// overwrite another's.
@@ -463,6 +558,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	plan.inputManifestSHA = manifest.SHA256
 	plan.registry = reg
+	plan.Notes = notes
 	if err := plan.verifyRegistry(); err != nil {
 		return nil, err
 	}
@@ -577,6 +673,210 @@ func isProjectRootFile(filePath string) bool {
 	return filePath == "go.mod" || filePath == "go.sum"
 }
 
+// RequirementsFile is the path, in the project folder, of the platform requirements that apply writes: the path of
+// delivery.RequirementsFile (ST-DLV-EN01-TB), which Generating may not import.
+const RequirementsFile = "deploy/platform-requirements.yaml"
+
+// isProjectGeneratedFile tells if a generated file is placed at its path in the project folder, out of the
+// generated output, and owned by STEGO whole: the record keeps its digest under project_files, so that apply refuses
+// a hand edit of it and drift names one (ST-DLV-UC01-R05).
+func isProjectGeneratedFile(filePath string) bool {
+	return filePath == RequirementsFile || filePath == ReferenceFile || filePath == ArchitectureFile || filePath == ArchitectureViewFile ||
+		slices.Contains(BaseFiles, filePath) || filePath == DeliveryObjectFile || isPipelineFile(filePath)
+}
+
+// isPipelineFile tells if a path is the CI file of a provider: .github/workflows/stego.yml, or
+// .tekton/<service>-push.yaml (ST-DLV-EN03-TB, the paths of delivery.PipelineFile).
+func isPipelineFile(filePath string) bool {
+	name, tekton := strings.CutPrefix(filePath, ".tekton/")
+	return filePath == ".github/workflows/stego.yml" || (tekton && strings.HasSuffix(name, "-push.yaml") && !strings.Contains(name, "/"))
+}
+
+// DeliveryObjectFile is the path, in the project folder, of the Argo CD ApplicationSet: the path of
+// delivery.ApplicationSetFile (ST-DLV-EN05-TB).
+const DeliveryObjectFile = "deploy/argocd/applicationset.yaml"
+
+// BaseFiles are the paths, in the project folder, of every file that the Kubernetes base may hold: the paths of
+// delivery.BaseFiles (ST-DLV-EN04-TB), which Generating may not import. A run writes the files that the platform
+// requirements need, and apply removes a file of the base that a run no longer writes.
+var BaseFiles = []string{"deploy/base/kustomization.yaml", "deploy/base/service-account.yaml", "deploy/base/deployment.yaml",
+	"deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml"}
+
+// DeploymentWriter writes the Kubernetes base of the service from the platform requirements of the run and the
+// probes of the active set, and then the delivery object or the plan line that says why the run writes none
+// (ST-DLV-CMD03, ST-DLV-PO04). The compiler owns this port and Delivering's delivery package implements it,
+// because Generating may not import Delivering (ST-STD-CODE-R03).
+type DeploymentWriter func(DeploymentInput) (DeploymentFiles, error)
+
+// DeploymentInput is what the Kubernetes base is written from: the service name, the platform requirements file
+// of the run, and the probes of the component of the active set that serves them, if one does.
+type DeploymentInput struct {
+	Service      string
+	Requirements []byte
+	Probes       *gen.Probes
+	// Delivery is the delivery stanza of the declaration, or nil (ST-DLV-Q12 (A)).
+	Delivery *types.Delivery
+	// Pipelines are the pins of each CI provider that the registry's ci-pipeline component states, or nil
+	// (ST-DLV-INV04).
+	Pipelines map[string]registry.PipelinePins
+}
+
+// DeploymentFiles are the files of the Kubernetes base and of the delivery object, and the lines of the plan.
+type DeploymentFiles struct {
+	Files []gen.File
+	Notes []string
+}
+
+// deploymentFiles writes the Kubernetes base of the run from its platform requirements and the probes that a
+// component of the active set serves, in the order of the active set (ST-DLV-INV08). It refuses a file out of the
+// paths of the base.
+func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, names []string, generators map[string]gen.Generator,
+	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins) ([]gen.File, []string, error) {
+	var probes *gen.Probes
+	for _, name := range names {
+		declarer, ok := generators[name].(gen.ProbeDeclarer)
+		if !ok {
+			continue
+		}
+		served, err := declarer.Probes(contexts[name])
+		if err != nil {
+			return nil, nil, fmt.Errorf("reading the probes that %s serves: %w", name, err)
+		}
+		if probes != nil {
+			return nil, nil, fmt.Errorf("two components of the active set serve the probes of the Kubernetes base; %s is the second", name)
+		}
+		probes = &served
+	}
+	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery, Pipelines: pipelines})
+	if err != nil {
+		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
+	}
+	for _, file := range written.Files {
+		if !slices.Contains(BaseFiles, file.Path) && file.Path != DeliveryObjectFile && !isPipelineFile(file.Path) {
+			return nil, nil, fmt.Errorf("the Kubernetes base writes %s, which is not a file of the base or the delivery object", file.Path)
+		}
+	}
+	return written.Files, written.Notes, nil
+}
+
+// ReferenceFile is the path, in the project folder, of the environment variable reference that apply writes: the
+// path of delivery.ReferenceFile (ST-DLV-UC01-R07).
+const ReferenceFile = "deploy/environment-variables.md"
+
+// architectureFiles derives the architecture model of the run and renders its view (ST-GEN-CMD05): from the declaration, the registry
+// parts of the active set and the bound mixins, the wiring, the platform requirements of the run and the declared
+// authorization schema.
+func architectureFiles(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, archetype *registry.Archetype,
+	names []string, components map[string]*registry.Component, wirings []ComponentWiring, requirements []byte) ([]gen.File, error) {
+	mixinNames, err := boundMixins(reg, svcDecl.Mixins)
+	if err != nil {
+		return nil, err
+	}
+	mixins := make([]*registry.Mixin, 0, len(mixinNames))
+	for _, name := range mixinNames {
+		mixins = append(mixins, reg.Mixin(name))
+	}
+	schema, err := declaration.ReadAuthzSchema(svcDecl, os.DirFS(input.ProjectDir))
+	if err != nil {
+		return nil, fmt.Errorf("reading the authorization schema for the architecture model: %w", err)
+	}
+	return WriteArchitecture(ArchitectureInput{Service: svcDecl, Archetype: archetype, Components: components, Names: names, Mixins: mixins,
+		Wirings: wirings, Requirements: requirements, Schema: schema})
+}
+
+// RequirementsWriter writes the platform requirements of the service from the needs and the environment variables
+// that its components state, with the environment variable reference rendered from the same list (ST-DLV-CMD01).
+// The compiler owns this port and Delivering's delivery package implements it, because Generating may not import
+// Delivering (ST-STD-CODE-R03).
+type RequirementsWriter func(service string, components []ComponentNeeds) (RequirementsFiles, error)
+
+// RequirementsFiles are the bytes of the platform requirements and of the environment variable reference.
+type RequirementsFiles struct {
+	Requirements []byte
+	Reference    []byte
+}
+
+// ComponentNeeds is one component of the active set with the needs and the environment variables it states, the
+// variables that the declaration gives it, and its settings as the declaration and the registry give them. A
+// setting marked secret is left out, so that no output can carry its value (ST-SUP-INV23).
+type ComponentNeeds struct {
+	Component string
+	Needs     []registry.Need
+	Variables []registry.EnvironmentVariable
+	Declared  []gen.DeclaredVariables
+	Settings  map[string]any
+}
+
+// requirementsFiles writes the platform requirements and the environment variable reference of the active set, in
+// the order of the active set (ST-DLV-DS01). The derivation reads the declaration and the registry alone, never the
+// generated code or a fill. A component whose generator gives variables from its declaration entries, such as
+// runtime-configuration, gives them through gen.VariableDeclarer.
+func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclaration, names []string, components map[string]*registry.Component,
+	generators map[string]gen.Generator, contexts map[string]gen.Context) ([]gen.File, error) {
+	needs := make([]ComponentNeeds, 0, len(names))
+	for _, name := range names {
+		component := components[name]
+		settings := resolveComponentConfig(component, svcDecl)
+		for key, field := range component.Config {
+			if field.Secret {
+				delete(settings, key)
+			}
+		}
+		if err := checkSettingDefaults(component, settings); err != nil {
+			return nil, err
+		}
+		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: component.Variables(), Settings: settings}
+		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
+			declared, err := declarer.DeclaredVariables(contexts[name])
+			if err != nil {
+				return nil, fmt.Errorf("reading the environment variables that the declaration gives %s: %w", name, err)
+			}
+			stated.Declared = declared
+		}
+		needs = append(needs, stated)
+	}
+	data, err := write(svcDecl.Name, needs)
+	if err != nil {
+		return nil, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
+	}
+	return []gen.File{{Path: RequirementsFile, Content: data.Requirements}, {Path: ReferenceFile, Content: data.Reference}}, nil
+}
+
+// checkSettingDefaults holds each default of a variable that is {settings.<key>} to the variable's type and allowed
+// values, with the value that the declaration gives the setting (ST-SUP-INV24). The message never holds the value.
+func checkSettingDefaults(component *registry.Component, settings map[string]any) error {
+	for _, variable := range component.Variables() {
+		if variable.Default == nil {
+			continue
+		}
+		key, ok := strings.CutPrefix(*variable.Default, "{settings.")
+		if !ok || !strings.HasSuffix(key, "}") {
+			continue
+		}
+		key = strings.TrimSuffix(key, "}")
+		value, given := settings[key]
+		if !given {
+			continue
+		}
+		var text string
+		switch value := value.(type) {
+		case string:
+			text = value
+		case int, int64, uint64, float64, bool:
+			text = fmt.Sprint(value)
+		default:
+			return fmt.Errorf("component %s: environment variable %s: default: the setting %s is not one value", component.Name, variable.Name, key)
+		}
+		if text == "" {
+			continue
+		}
+		if err := registry.CheckVariableValue(registry.VariableType(variable.Type), variable.Allowed, text); err != nil {
+			return fmt.Errorf("component %s: environment variable %s: default: the value of the setting %s: %w", component.Name, variable.Name, key, err)
+		}
+	}
+	return nil
+}
+
 // collectComponentNames assembles the ordered list of component names from the
 // archetype, default_auth, and any mixin-added components.
 func collectComponentNames(archetype *registry.Archetype, svcDecl *types.ServiceDeclaration, reg *registry.Registry) ([]string, error) {
@@ -602,19 +902,24 @@ func collectComponentNames(archetype *registry.Archetype, svcDecl *types.Service
 	// Validate declared mixins against archetype's compatible_mixins constraint.
 	// Distinguish nil (no field declared — any mixin accepted) from empty
 	// (compatible_mixins: [] — no mixins are compatible).
-	if archetype.CompatibleMixins != nil && len(svcDecl.Mixins) > 0 {
+	// An alias is expanded first, so each mixin it names must be compatible with the archetype too.
+	mixins, err := boundMixins(reg, svcDecl.Mixins)
+	if err != nil {
+		return nil, err
+	}
+	if archetype.CompatibleMixins != nil && len(mixins) > 0 {
 		compatible := make(map[string]bool, len(archetype.CompatibleMixins))
 		for _, m := range archetype.CompatibleMixins {
 			compatible[m] = true
 		}
-		for _, mixinName := range svcDecl.Mixins {
+		for _, mixinName := range mixins {
 			if !compatible[mixinName] {
 				return nil, fmt.Errorf("mixin %q is not compatible with archetype %q (compatible mixins: %v)", mixinName, archetype.Name, archetype.CompatibleMixins)
 			}
 		}
 	}
 
-	for _, mixinName := range svcDecl.Mixins {
+	for _, mixinName := range mixins {
 		mixin := reg.Mixin(mixinName)
 		if mixin == nil {
 			return nil, fmt.Errorf("mixin %q not found in registry", mixinName)
@@ -682,7 +987,8 @@ func generateSlotFiles(slotsPackage string, components map[string]*registry.Comp
 			slotNames[sd.Name] = true
 		}
 	}
-	for _, mixinName := range svcDecl.Mixins {
+	mixins, _ := boundMixins(reg, svcDecl.Mixins)
+	for _, mixinName := range mixins {
 		if mixin := reg.Mixin(mixinName); mixin != nil {
 			for _, sd := range mixin.AddsSlots {
 				slotNames[sd.Name] = true
@@ -709,7 +1015,7 @@ func generateSlotFiles(slotsPackage string, components map[string]*registry.Comp
 		}
 	}
 	// Also search mixin adds_slots for slot definitions not found in components.
-	for _, mixinName := range svcDecl.Mixins {
+	for _, mixinName := range mixins {
 		mixin := reg.Mixin(mixinName)
 		if mixin == nil {
 			continue
@@ -886,9 +1192,15 @@ func computePlan(
 	if existingState.LastApplied != nil && existingState.LastApplied.Files != nil {
 		existingHashes = existingState.LastApplied.Files
 	}
+	existingProject := make(map[string]string)
+	if existingState.LastApplied != nil && existingState.LastApplied.ProjectFiles != nil {
+		existingProject = existingState.LastApplied.ProjectFiles
+	}
 
 	var planned []PlannedFile
 	newFileHashes := make(map[string]string)
+	var newProjectHashes map[string]string
+	var handEdited []string
 
 	for _, f := range generatedFiles {
 		content := f.Bytes()
@@ -897,7 +1209,12 @@ func computePlan(
 		}
 		hash := HashBytes(content)
 		// The application owns go.mod. Go tools can update it after apply.
-		if !isProjectRootFile(f.Path) {
+		if isProjectGeneratedFile(f.Path) {
+			if newProjectHashes == nil {
+				newProjectHashes = make(map[string]string)
+			}
+			newProjectHashes[f.Path] = hash
+		} else if !isProjectRootFile(f.Path) {
 			newFileHashes[f.Path] = hash
 		}
 
@@ -907,6 +1224,10 @@ func computePlan(
 			return nil, err
 		}
 		snapshots[name] = snapshot
+		if _, tracked := existingProject[f.Path]; isProjectGeneratedFile(f.Path) && !tracked && snapshot.Exists && snapshot.Hash != hash {
+			// A file that the record does not track yet is the author's: apply does not replace it unasked.
+			handEdited = append(handEdited, f.Path)
+		}
 		action := ActionUpdate
 		if !snapshot.Exists {
 			action = ActionGenerate
@@ -942,9 +1263,21 @@ func computePlan(
 			planned = append(planned, PlannedFile{Path: path, Action: ActionDelete})
 		}
 	}
+	for path := range existingProject {
+		if _, stillGenerated := newProjectHashes[path]; !stillGenerated {
+			_, snapshot, err := readSnapshot(root, path, maxTrackedFileBytes, false)
+			if err != nil {
+				return nil, err
+			}
+			snapshots[path] = snapshot
+			planned = append(planned, PlannedFile{Path: path, Action: ActionDelete})
+		}
+	}
 
-	var handEdited []string
-	for path, recorded := range existingHashes {
+	tracked := make(map[string]string, len(existingHashes)+len(existingProject))
+	maps.Copy(tracked, existingHashes)
+	maps.Copy(tracked, existingProject)
+	for path, recorded := range tracked {
 		if isProjectRootFile(path) {
 			continue
 		}
@@ -1000,6 +1333,7 @@ func computePlan(
 			Components:            pins,
 			Entities:              entitySnapshot,
 			Files:                 newFileHashes,
+			ProjectFiles:          newProjectHashes,
 		},
 	}
 
@@ -1191,6 +1525,9 @@ func FormatPlan(plan *Plan) string {
 
 	result.WriteString("Plan:\n")
 	result.WriteString(sb.String())
+	for _, note := range plan.Notes {
+		fmt.Fprintf(&result, "  note:     %s\n", note)
+	}
 	if plan.StateChanged {
 		result.WriteString("  update:   compiler state\n")
 	}

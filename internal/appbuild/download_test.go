@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -166,7 +167,7 @@ func fixtureTrust(t *testing.T, version string) runtimeTrust {
 }
 
 func TestRuntimeFolderSuppliesOnlyTheMatchingPin(t *testing.T) {
-	const version = "v0.99.0"
+	const version = "v0.112.0"
 	pin := &moduleVersion{RuntimeModule, version}
 	trust := fixtureTrust(t, version)
 	t.Run("ST-BLD-UC02-R05-T05 A runtime folder that hashes to the pin is staged in the proxy layout, and no folder or no pin stages nothing", func(t *testing.T) {
@@ -215,6 +216,79 @@ func TestRuntimeFolderSuppliesOnlyTheMatchingPin(t *testing.T) {
 		served, err := stageRuntimeFolder(context.Background(), folder, pin, map[moduleVersion]string{}, map[moduleVersion]string{*pin: modSum}, filepath.Join(t.TempDir(), "proxy"), t.TempDir(), trust)
 		if err == nil || served != nil || !strings.Contains(err.Error(), "states no hash") {
 			t.Fatalf("a pin that go.sum states no hash for was served %v: %v", served, err)
+		}
+	})
+	t.Run("ST-BLD-UC02-R05-T13 A file of the runtime folder that is changed or swapped for a link during the stage is never staged in place of the pin", func(t *testing.T) {
+		outside := t.TempDir()
+		for name, swap := range map[string]func(t *testing.T, file string){
+			"a changed file": func(t *testing.T, file string) {
+				if err := os.WriteFile(file, []byte("package probe\n\nconst Changed = true\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"a link to other text": func(t *testing.T, file string) {
+				other := filepath.Join(outside, "other.go")
+				put(t, outside, "other.go", "package probe\n\nconst Other = true\n")
+				if err := os.Remove(file); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(other, file); err != nil {
+					t.Fatal(err)
+				}
+			},
+			"a link to the same text": func(t *testing.T, file string) {
+				data, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				same := filepath.Join(outside, "same.go")
+				if err := os.WriteFile(same, data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(file); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(same, file); err != nil {
+					t.Fatal(err)
+				}
+			},
+		} {
+			folder := filepath.Join(t.TempDir(), "runtime")
+			sum, modSum := runtimeFixture(t, folder, version)
+			var file string
+			if err := filepath.WalkDir(folder, func(path string, d os.DirEntry, err error) error {
+				if err == nil && file == "" && strings.HasSuffix(path, ".go") {
+					file = path
+				}
+				return err
+			}); err != nil || file == "" {
+				t.Fatalf("the fixture has no Go file: %v", err)
+			}
+			swapped := false
+			afterPlainCheck = func(string) { swap(t, file); swapped = true }
+			proxy := filepath.Join(t.TempDir(), "proxy")
+			served, err := stageRuntimeFolder(context.Background(), folder, pin, map[moduleVersion]string{*pin: sum}, map[moduleVersion]string{*pin: modSum}, proxy, t.TempDir(), trust)
+			afterPlainCheck = nil
+			if !swapped {
+				t.Fatalf("%s: the hook did not run", name)
+			}
+			// Either the stage refuses the folder and leaves no proxy, or what it staged is the pin, byte for byte.
+			if err != nil {
+				if served != nil {
+					t.Fatalf("%s: a refused stage served %v", name, served)
+				}
+				if _, statErr := os.Lstat(proxy); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("%s: a refused stage left the proxy folder", name)
+				}
+				continue
+			}
+			found, hashErr := dirhash.HashZip(filepath.Join(proxy, "github.com", "jsell-rh", "stego", "registry", "runtime", "@v", version+".zip"), dirhash.Hash1)
+			if hashErr != nil || found != sum {
+				t.Fatalf("%s: the stage served a zip that hashes to %s, not the pin %s: %v", name, found, sum, hashErr)
+			}
+			if name != "a link to the same text" {
+				t.Fatalf("%s: the stage served the folder", name)
+			}
 		}
 	})
 	t.Run("ST-BLD-UC02-R05-T06 A runtime folder that holds a link, or is a link, is refused by name", func(t *testing.T) {
@@ -614,6 +688,58 @@ func TestRuntimeFolderSuppliesOnlyTheMatchingPin(t *testing.T) {
 		if entries, err := os.ReadDir(shared); err != nil || len(entries) != 0 {
 			t.Errorf("the cache root that its group may write holds %v (%v), want nothing", entries, err)
 		}
+		// A cache root that is the user's own link, such as an XDG_CACHE_HOME that links to another disk, is followed
+		// (#259). A cache root that is a link of another user is refused: with fs.protected_symlinks=0 the kernel
+		// follows a link that another user put in a shared folder.
+		target := filepath.Join(parent, "target")
+		if err := os.Mkdir(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(parent, "cache")); err != nil {
+			t.Fatal(err)
+		}
+		if linked, err := openKeptTree(context.Background(), filepath.Join(parent, "cache", "stego", "sumdb"), verifier); err != nil {
+			t.Errorf("a kept tree under a cache root that is the user's own link gave %v, want it used", err)
+		} else {
+			linked.close()
+		}
+		if _, err := os.Stat(filepath.Join(target, "stego", "sumdb")); err != nil {
+			t.Errorf("the kept tree under the user's own link is not in the folder it links to: %v", err)
+		}
+		// A cache root that is a link of another user is refused. The test cannot make a link of another user, so the
+		// Lstat of the cache root gives the user's own link with another owner.
+		cache := filepath.Join(parent, "cache")
+		lstatRoot = func(name string) (os.FileInfo, error) {
+			info, err := os.Lstat(name)
+			if err != nil || name != cache {
+				return info, err
+			}
+			foreign := *info.Sys().(*syscall.Stat_t)
+			foreign.Uid = uint32(os.Getuid() + 1)
+			return statInfo{info, &foreign}, nil
+		}
+		t.Cleanup(func() { lstatRoot = os.Lstat })
+		if opened, err := openKeptTree(context.Background(), filepath.Join(cache, "stego", "sumdb"), verifier); err == nil || !strings.Contains(err.Error(), "a link of another user") {
+			if err == nil {
+				opened.close()
+			}
+			t.Errorf("a kept tree under a cache root that is a link of another user gave %v, want the refusal", err)
+		}
+		// A cache root that is a folder when it is read, and a link when it is opened, is refused: another user could
+		// swap a link in after the Lstat. The Lstat gives the folder that the link names.
+		lstatRoot = func(name string) (os.FileInfo, error) {
+			if name == cache {
+				return os.Lstat(target)
+			}
+			return os.Lstat(name)
+		}
+		if opened, err := openKeptTree(context.Background(), filepath.Join(cache, "stego", "sumdb"), verifier); err == nil || !strings.Contains(err.Error(), "it became a link or no folder after it was read") {
+			if err == nil {
+				opened.close()
+			}
+			t.Errorf("a kept tree under a cache root that became a link after it was read gave %v, want the refusal", err)
+		}
+		lstatRoot = os.Lstat
 		// A wait for a lock that another run holds ends with its context, and leaves no goroutine behind.
 		held, err := openKeptTree(context.Background(), moved, verifier)
 		if err != nil {
@@ -747,3 +873,11 @@ func privateTemp(t *testing.T) string {
 	}
 	return dir
 }
+
+// statInfo is a file's information with another owner, for a check of the owner that a test cannot set up.
+type statInfo struct {
+	os.FileInfo
+	stat *syscall.Stat_t
+}
+
+func (s statInfo) Sys() any { return s.stat }

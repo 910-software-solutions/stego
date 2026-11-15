@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 )
@@ -116,11 +117,22 @@ func (s *state) evaluate(ctx context.Context, handle *authz.Handle, action, reso
 	return result.Allowed, nil
 }
 
+// decisionLog holds back the warning of a failed decision to one line for each cause in each authz.LogEvery (security
+// review of PR #354, L3).
+var decisionLog = authz.NewCauseLog(nil)
+
 // decisionError maps an error of the authorization handle: a database error or a cancel is a statement failure of
 // the transaction, and any other error, such as a provider error, fails the call only.
 func (s *state) decisionError(ctx context.Context, step string, err error) error {
 	if sqlState(err) != "" || ctx.Err() != nil {
 		return s.fail(ctx, step, err)
+	}
+	// The log names the fixed cause of the failed decision and no text of the provider (ST-SUP-RP06-LC20), so a
+	// failed command is never an error that no log explains (walkthrough 3, G4; ST-SUP-Q140).
+	cause := authz.Cause(err)
+	if ok, held := decisionLog.Allow(cause); ok {
+		slog.WarnContext(ctx, "command: the authorization provider could not decide", "step", step, "cause", cause,
+			"transient", authz.Transient(err), "held_back", held)
 	}
 	return fmt.Errorf("command: %s: %w", step, err)
 }

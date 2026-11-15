@@ -201,6 +201,25 @@ func anchorRegistration(t *testing.T, source string) (int64, bool) {
 	return seconds, registered
 }
 
+func TestAnchorPeriodBound(t *testing.T) {
+	t.Run("ST-SUP-RC28-OC08-T03 An anchor period of more than 24h is refused at generation", func(t *testing.T) {
+		for _, c := range []struct {
+			setting string
+			ok      bool
+		}{{"1s", true}, {"24h", true}, {"86401s", false}, {"25h", false}, {"8760h", false}} {
+			ctx := customerContext(t, nil)
+			ctx.ComponentConfig["anchor_period"] = c.setting
+			_, _, err := new(Generator).Generate(ctx)
+			switch {
+			case c.ok && err != nil:
+				t.Errorf("%s: refused: %v", c.setting, err)
+			case !c.ok && (err == nil || !strings.Contains(err.Error(), "24h") || !strings.Contains(err.Error(), c.setting)):
+				t.Errorf("%s: %v, want a refusal that names the value and the bound", c.setting, err)
+			}
+		}
+	})
+}
+
 func TestRetention(t *testing.T) {
 	t.Run("ST-SUP-RC28-OC06-T05 A retention of more than 1200 months is refused at generation", func(t *testing.T) {
 		for _, c := range []struct {
@@ -356,7 +375,7 @@ func (s *service) run(id string) {
 		s.t.Fatalf("go test -run %s: %v\n%s", pattern, err, out)
 	}
 	text := string(out)
-	passed := regexp.MustCompile(`--- PASS: Test[A-Za-z]+/` + id + `_`).MatchString(text)
+	passed := ownPass(text, `Test[A-Za-z]+`, id)
 	skipped := regexp.MustCompile(`--- SKIP: Test[A-Za-z]+/` + id + `_`).MatchString(text)
 	switch {
 	case passed:
@@ -385,4 +404,25 @@ func TestGeneratedAuditWiring(t *testing.T) {
 			s.run(id)
 		})
 	}
+}
+
+// ownPass tells whether output, the text of go test -v, holds the pass line of the subtest of id itself, directly
+// under a test whose name matches parent, a regular expression. A subtest one level down has the same name prefix,
+// but go test indents its line four more spaces, so its pass never counts as the pass of its parent
+// (ST-STD-CODE-R07).
+func ownPass(output, parent, id string) bool {
+	return regexp.MustCompile(`(?m)^    --- PASS: ` + parent + `/` + regexp.QuoteMeta(id) + `_`).MatchString(output)
+}
+
+func TestOwnPass(t *testing.T) {
+	t.Run("ST-STD-CODE-R07-T04 In the auditlog wrapper, a pass of a subtest under the subtest of a record is not its pass", func(t *testing.T) {
+		output := "=== RUN   TestAudit/ST-X-T01_a\n        --- PASS: TestAudit/ST-X-T01_a/child (0.00s)\n    --- FAIL: TestAudit/ST-X-T01_a (0.00s)\n" +
+			"    --- PASS: TestAudit/ST-X-T02_b (0.00s)\n        --- FAIL: TestAudit/ST-X-T02_b/child (0.00s)\n    --- PASS: TestAudit/ST-X-T03_c/d (0.00s)\n"
+		if ownPass(output, "Test[A-Za-z]+", "ST-X-T01") {
+			t.Fatal("a failed subtest counts as passed because a subtest under it passed")
+		}
+		if !ownPass(output, "Test[A-Za-z]+", "ST-X-T02") || !ownPass(output, "Test[A-Za-z]+", "ST-X-T03") {
+			t.Fatal("a passed subtest, also one whose title holds a slash, does not count as passed")
+		}
+	})
 }

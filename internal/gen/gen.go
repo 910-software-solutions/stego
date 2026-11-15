@@ -3,9 +3,14 @@
 package gen
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/types"
@@ -63,6 +68,51 @@ type RuntimeAuthProvider interface {
 	RuntimeAuth(ctx Context) (RuntimeAuth, error)
 }
 
+// DeclaredVariable is one environment variable that a declaration gives a
+// component, such as one configuration field of runtime-configuration
+// (ST-SUP-RC22-OC09). Its name and its default are fixed text.
+type DeclaredVariable struct {
+	Name        string
+	Type        string
+	Required    bool
+	Default     *string
+	Description string
+	Secret      bool
+	// Allowed are the allowed values as one text, such as "1 to 10".
+	Allowed string
+}
+
+// DeclaredVariables are the environment variables of one group of a
+// declaration.
+type DeclaredVariables struct {
+	Group     string
+	Variables []DeclaredVariable
+}
+
+// VariableDeclarer gives the environment variables that the declaration gives
+// a component whose variable names come from its declaration entries, so that
+// the platform requirements list them (ST-DLV-INV11). It must check the
+// context as Generate does.
+type VariableDeclarer interface {
+	DeclaredVariables(ctx Context) ([]DeclaredVariables, error)
+}
+
+// Probes are the HTTP paths of the liveness and readiness probes that a
+// component serves, and the environment variable whose default is the port
+// they are served on.
+type Probes struct {
+	Liveness     string
+	Readiness    string
+	PortVariable string
+}
+
+// ProbeDeclarer gives the probes that a component serves, so that the
+// Kubernetes base carries them (ST-DLV-UC07-R03). It must check the context
+// as Generate does.
+type ProbeDeclarer interface {
+	Probes(ctx Context) (Probes, error)
+}
+
 // InputProvider declares source files before generation. The compiler reads
 // each file once and checks its snapshot again before it applies output.
 type InputProvider interface {
@@ -82,6 +132,12 @@ type Context struct {
 
 	// Collections from the service declaration.
 	Collections []types.Collection
+
+	// SchemaChanges and SchemaHistory are the declaration's changes to the stored shape of its entities after the
+	// first release, and the ordered steps that move them (ST-DECL-EN21, ST-DECL-EN22). Entities is the shape after
+	// every step; the shape of the first release is Entities with every step undone.
+	SchemaChanges []types.SchemaChange
+	SchemaHistory []types.SchemaStep
 
 	// SlotBindings from the service declaration, in declaration order.
 	// The ordering is significant: generators and the assembler must iterate
@@ -192,6 +248,10 @@ type Context struct {
 	// them.
 	Queries []types.Query
 
+	// Workers are the declared workers of the service (ST-DECL-EN25), in declaration order, each with the slot that
+	// its fill implements. Generators must not change them.
+	Workers []Worker
+
 	// FillSlots gives, for each fill that a command, a query or a worker names and that the project holds, the slot
 	// it implements as component.slot, as its fill.yaml states (ST-DECL-INV45). A fill that the project does not hold
 	// has no entry.
@@ -208,6 +268,307 @@ type Context struct {
 	QueryStreams map[string]bool
 }
 
+// AtSchemaStep gives a copy of the context with the stored shape after the first steps steps of the schema
+// history: each schema change whose first step is at the position steps or after it is undone, the change whose
+// step is last first. AtSchemaStep(0) is the baseline, the shape of the first release, and AtSchemaStep with the
+// length of the schema history is the context itself. An add of an entity is undone with the entity and each
+// collection over it, an add of a field with the field, a rename by giving the field the column From, with its
+// API name kept (StoredNames), and a relax by giving the field what it was before the change
+// (types.SchemaChange.RelaxedFrom). Generation carries out no other kind of schema change yet, so AtSchemaStep
+// refuses one, and a change with no step.
+func (c Context) AtSchemaStep(steps int) (Context, error) {
+	first := map[string]int{}
+	for i, step := range c.SchemaHistory {
+		if _, seen := first[step.Change]; !seen {
+			first[step.Change] = i
+		}
+	}
+	var undo []types.SchemaChange
+	for _, change := range c.SchemaChanges {
+		at, stepped := first[change.ID]
+		if !stepped {
+			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
+		}
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" {
+			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
+		}
+		if at >= steps {
+			undo = append(undo, change)
+		}
+	}
+	if len(undo) == 0 {
+		return c, nil
+	}
+	shaped := c
+	shaped.Entities = make([]types.Entity, len(c.Entities))
+	for i, entity := range c.Entities {
+		entity.Fields = append([]types.Field(nil), entity.Fields...)
+		shaped.Entities[i] = entity
+	}
+	shaped.Collections = append([]types.Collection(nil), c.Collections...)
+	sort.SliceStable(undo, func(i, j int) bool { return first[undo[i].ID] > first[undo[j].ID] })
+	for _, change := range undo {
+		at := -1
+		for j, entity := range shaped.Entities {
+			if entity.Name == change.Entity {
+				at = j
+			}
+		}
+		if at < 0 {
+			return Context{}, fmt.Errorf("schema change %q adds to the entity %s, which the declaration does not have", change.ID, change.Entity)
+		}
+		if change.Kind == "relax" {
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.ColumnName() == change.Field })
+			if found < 0 {
+				return Context{}, fmt.Errorf("schema change %q relaxes the column %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+			}
+			before, reason := change.RelaxedFrom(fields[found])
+			if reason != "" {
+				return Context{}, fmt.Errorf("schema change %q: %s", change.ID, reason)
+			}
+			fields[found] = before
+			continue
+		}
+		if change.Kind == "rename" {
+			// A rename is undone by giving the field its column before the change; its API name stays.
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.ColumnName() == change.Field })
+			if found < 0 {
+				return Context{}, fmt.Errorf("schema change %q renames the column %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+			}
+			fields[found].Column = change.From
+			if fields[found].Column == fields[found].Name {
+				fields[found].Column = ""
+			}
+			continue
+		}
+		if change.Kind == "retype" {
+			// A retype is undone by giving the field its type and constraints before the change, in the column before
+			// it: the column of the retype before it on the field, or the field's name (StoredNames).
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == change.Field })
+			if found < 0 {
+				return Context{}, fmt.Errorf("schema change %q retypes the field %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+			}
+			before := RetypeField(change)
+			before.Name, before.Optional, before.Sensitivity = fields[found].Name, fields[found].Optional, fields[found].Sensitivity
+			if change.Definition == "" {
+				before.Default = nil
+			}
+			before.Column = ""
+			for _, earlier := range c.SchemaChanges {
+				if earlier.Kind == "retype" && earlier.Entity == change.Entity && earlier.Field == change.Field && first[earlier.ID] < first[change.ID] {
+					before.Column = RetypeColumn(change.Field, types.FieldType(change.From))
+				}
+			}
+			fields[found] = before
+			continue
+		}
+		if change.Field == "" {
+			shaped.Entities = append(shaped.Entities[:at:at], shaped.Entities[at+1:]...)
+			var kept []types.Collection
+			for _, collection := range shaped.Collections {
+				if collection.Entity != change.Entity {
+					kept = append(kept, collection)
+				}
+			}
+			shaped.Collections = kept
+			continue
+		}
+		fields := shaped.Entities[at].Fields
+		found := -1
+		for j, field := range fields {
+			if field.Name == change.Field {
+				found = j
+			}
+		}
+		if found < 0 {
+			return Context{}, fmt.Errorf("schema change %q adds the field %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+		}
+		shaped.Entities[at].Fields = append(fields[:found:found], fields[found+1:]...)
+	}
+	return shaped, nil
+}
+
+// StoredNames gives a copy of the entities in which each field that a schema change of kind rename names has the
+// API name of the field before its first rename and the column of its declared name (ST-GEN-UC12-R04): a rename
+// does not rename the field in the API, so every generator of an API, a client or a fill reads Name, and the
+// generators of the tables and the statements read ColumnName. A chain of renames on one entity, From of one being
+// Field of an earlier one, gives the first From. It refuses a rename of a field that something other than the field
+// names, by the declared name, because those names are not mapped yet: a reference field, a unique_composite, an
+// invariant, the scope, implicit fields, upsert key or patchable fields of a collection, the context fields or the
+// generation fields of the entity.
+func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, collections []types.Collection, changes []types.SchemaChange) ([]types.Entity, error) {
+	renamed := map[[2]string]string{}
+	for _, change := range changes {
+		if change.Kind == "rename" {
+			renamed[[2]string{change.Entity, change.Field}] = change.From
+		}
+	}
+	retyped := map[[2]string]bool{}
+	for _, change := range changes {
+		if change.Kind == "retype" {
+			retyped[[2]string{change.Entity, change.Field}] = true
+		}
+	}
+	if len(renamed) == 0 && len(retyped) == 0 {
+		return entities, nil
+	}
+	out := make([]types.Entity, len(entities))
+	for i, entity := range entities {
+		entity.Fields = append([]types.Field(nil), entity.Fields...)
+		for j, field := range entity.Fields {
+			from, ok := renamed[[2]string{entity.Name, field.Name}]
+			if retyped[[2]string{entity.Name, field.Name}] {
+				// A retyped field keeps its API name and is stored in the column <field>_<type> of its type after its
+				// last retype (decision on ST-GEN-Q23 (a), orchestrator under the owner's delegation, 2026-11-14).
+				if ok {
+					return nil, fmt.Errorf("the entity %s: generation does not rename and retype the field %s both yet", entity.Name, field.Name)
+				}
+				if reason := namedElsewhere(entity, field.Name, invariants, collections); reason != "" {
+					return nil, fmt.Errorf("the entity %s: generation does not retype the field %s yet, because %s names it by its declared name; STEGO does not map that name to the column yet", entity.Name, field.Name, reason)
+				}
+				column := RetypeColumn(field.Name, field.Type)
+				if slices.ContainsFunc(entities[i].Fields, func(f types.Field) bool { return f.Name == column || f.Column == column }) {
+					return nil, fmt.Errorf("the entity %s declares a field %s, which is the column of the retyped field %s; give the field another name", entity.Name, column, field.Name)
+				}
+				entity.Fields[j].Column = column
+				continue
+			}
+			if !ok {
+				continue
+			}
+			for steps := 0; steps <= len(changes); steps++ {
+				earlier, again := renamed[[2]string{entity.Name, from}]
+				if !again {
+					break
+				}
+				from = earlier
+			}
+			if reason := namedElsewhere(entity, field.Name, invariants, collections); reason != "" {
+				return nil, fmt.Errorf("the entity %s: generation does not rename the field %s yet, because %s names it by its declared name; STEGO does not map that name to the column yet", entity.Name, field.Name, reason)
+			}
+			if slices.ContainsFunc(entities[i].Fields, func(f types.Field) bool { return f.Name == from }) {
+				return nil, fmt.Errorf("the entity %s declares a field %s, which is the API name of the renamed field %s; give the new field another name", entity.Name, from, field.Name)
+			}
+			entity.Fields[j].Name, entity.Fields[j].Column = from, field.Name
+		}
+		out[i] = entity
+	}
+	return out, nil
+}
+
+// DefinitionField reads the Definition of a dropped field, as [name:] type[, constraint value]..., such as
+// legacy: string, max_length 64, into a field. It gives a reason when the Definition cannot be read.
+func DefinitionField(definition string) (types.Field, string) {
+	parts := strings.Split(definition, ",")
+	head := strings.TrimSpace(parts[0])
+	if _, typ, named := strings.Cut(head, ":"); named {
+		head = strings.TrimSpace(typ)
+	}
+	field := types.Field{Type: types.FieldType(head)}
+	if !types.ValidFieldTypes[field.Type] {
+		return field, fmt.Sprintf("the type %q is not a field type", head)
+	}
+	for i, part := range parts[1:] {
+		key, value, _ := strings.Cut(strings.TrimSpace(part), " ")
+		if key == "pattern" {
+			// A pattern can hold a comma, as in {1,9}, so it is the last constraint and takes the rest of the text.
+			_, rest, _ := strings.Cut(strings.Join(parts[i+1:], ","), "pattern")
+			field.Pattern = strings.TrimSpace(rest)
+			break
+		}
+		value = strings.TrimSpace(value)
+		number, err := strconv.ParseFloat(value, 64)
+		switch key {
+		case "min_length", "max_length":
+			length, err := strconv.Atoi(value)
+			if err != nil {
+				return field, fmt.Sprintf("the constraint %s %q is not a whole number", key, value)
+			}
+			if key == "min_length" {
+				field.MinLength = &length
+			} else {
+				field.MaxLength = &length
+			}
+		case "min", "max":
+			if err != nil {
+				return field, fmt.Sprintf("the constraint %s %q is not a number", key, value)
+			}
+			if key == "min" {
+				field.Min = &number
+			} else {
+				field.Max = &number
+			}
+		case "pattern":
+			field.Pattern = value
+		case "default", "optional", "unique":
+		default:
+			return field, fmt.Sprintf("the constraint %q is not one a field has", key)
+		}
+	}
+	return field, ""
+}
+
+// RetypeColumn gives the column of a field after a retype to the type typ: <field>_<type>, cut as the other
+// generated names are cut, to its first 46 bytes and 16 hexadecimal digits of the sha256 digest of the whole name
+// when it is longer than 63 bytes (decision on ST-GEN-Q23 (a), orchestrator under the owner's delegation, 2026-11-14).
+func RetypeColumn(field string, typ types.FieldType) string {
+	name := field + "_" + string(typ)
+	if len(name) <= 63 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return name[:46] + "_" + hex.EncodeToString(sum[:8])
+}
+
+// RetypeField gives the field before a retype: the field of its Definition when it has one, else a field of the type
+// From with no constraint (decision on ST-GEN-Q07 (a), orchestrator under the owner's delegation, 2026-11-13).
+func RetypeField(change types.SchemaChange) types.Field {
+	if change.Definition != "" {
+		if field, reason := DefinitionField(change.Definition); reason == "" {
+			field.Name = change.Field
+			return field
+		}
+	}
+	return types.Field{Name: change.Field, Type: types.FieldType(change.From)}
+}
+
+// namedElsewhere tells what, other than the field itself, names the field of the entity, or empty.
+func namedElsewhere(entity types.Entity, field string, invariants []types.DeclaredInvariant, collections []types.Collection) string {
+	if _, ok := entity.References[field]; ok {
+		return "a reference"
+	}
+	for _, f := range entity.Fields {
+		if f.Type == types.FieldTypeRef && f.Name == field {
+			return "a reference"
+		}
+		if slices.Contains(f.UniqueComposite, field) || (f.Name == field && len(f.UniqueComposite) > 0) {
+			return "a unique_composite"
+		}
+	}
+	if slices.Contains(entity.ContextFields, field) || slices.Contains(entity.GenerationFields, field) {
+		return "a context or generation field of the entity"
+	}
+	for _, invariant := range invariants {
+		if invariant.On == entity.Name && (slices.Contains(invariant.By, field) || strings.Contains(invariant.Where, field)) {
+			return "the invariant " + invariant.Name
+		}
+	}
+	for _, collection := range collections {
+		if collection.Entity != entity.Name {
+			continue
+		}
+		_, scope := collection.Scope[field]
+		_, implicit := collection.Implicit[field]
+		if scope || implicit || slices.Contains(collection.UpsertKey, field) || slices.Contains(collection.Patchable, field) {
+			return "the collection " + collection.Name
+		}
+	}
+	return ""
+}
+
 // Destination is one outbox destination that a component declares in its setting destinations: its name, the
 // component, and whether its messages must land and whether the destination is idempotent, nil when the setting
 // leaves the property out (ST-SUP-RC32-OC12).
@@ -221,6 +582,14 @@ type Command struct {
 	types.Command
 	// FillSlot is the slot that the command's one fill implements, as component.slot, as its fill.yaml names it,
 	// or empty when the project holds no such fill.
+	FillSlot string
+}
+
+// Worker is one declared worker with what the compiler read of its fill.
+type Worker struct {
+	types.Worker
+	// FillSlot is the slot that the worker's one fill implements, as component.slot, as its fill.yaml names it, or
+	// empty when the project holds no such fill.
 	FillSlot string
 }
 
@@ -249,6 +618,8 @@ type Emitter struct {
 type Tenancy struct {
 	// Key is the name of the tenant column of each owned table: tenancy.key, or tenant_id when it is omitted.
 	Key string
+	// Provisioning is the declared tenant provisioning (ST-DECL-EN27), or nil when the declaration states none.
+	Provisioning *types.TenantProvisioning
 }
 
 // TenancyComponent is the name of the tenancy component (ST-SUP-RC27).

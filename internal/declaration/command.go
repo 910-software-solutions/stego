@@ -142,6 +142,45 @@ func validateOperationRoutes(service *types.ServiceDeclaration) []ValidationErro
 	return faults
 }
 
+// ownPath is the path under the base path that the generated service keeps for its own routes, such as the tenant
+// provisioning (ST-SUP-RC27-OC09).
+const ownPath = "/stego"
+
+// underOwnPath reports whether a declared path after the base path is under ownPath.
+func underOwnPath(routePath string) bool {
+	return routePath == ownPath || strings.HasPrefix(routePath, ownPath+"/")
+}
+
+// validateOwnRoutes refuses each declared route under <base path>/stego/, which the generated service keeps for its
+// own routes, such as Provision and Retire: the route of a command or a query, and the path_prefix of a collection,
+// which the REST API serves its routes under (ST-SUP-RC27-OC09, ST-SUP-RC27-OC11). A route there would match a
+// request of the tenant provisioning, or one near it, with a handler that the tenant check does not expect.
+func validateOwnRoutes(service *types.ServiceDeclaration) []ValidationError {
+	var faults []ValidationError
+	message := func(what, found string) string {
+		return fmt.Sprintf("%s %q is under %s/, which the generated service keeps for its own routes, such as the tenant provisioning; give it another path", what, found, ownPath)
+	}
+	for i, command := range service.Commands {
+		if _, routePath, _ := strings.Cut(command.Route, " "); underOwnPath(routePath) {
+			faults = append(faults, ValidationError{Category: "command", Rule: "own-route", Path: commandPath(i) + ".route", Found: command.Route,
+				Message: message(fmt.Sprintf("the route of command %q,", command.Name), command.Route)})
+		}
+	}
+	for i, query := range service.Queries {
+		if _, routePath, _ := strings.Cut(query.Route, " "); underOwnPath(routePath) {
+			faults = append(faults, ValidationError{Category: "query", Rule: "own-route", Path: queryPath(i) + ".route", Found: query.Route,
+				Message: message(fmt.Sprintf("the route of query %q,", query.Name), query.Route)})
+		}
+	}
+	for _, collection := range service.Collections {
+		if underOwnPath(collection.PathPrefix) {
+			faults = append(faults, ValidationError{Category: "collection", Rule: "own-route", Path: "collections." + collection.Name + ".path_prefix",
+				Found: collection.PathPrefix, Message: message(fmt.Sprintf("the path_prefix of collection %q,", collection.Name), collection.PathPrefix)})
+		}
+	}
+	return faults
+}
+
 // OperationPattern gives the pattern that serves a command or query route under the service's base path, as the
 // HTTP multiplexer reads it.
 func OperationPattern(basePath, route string) string {

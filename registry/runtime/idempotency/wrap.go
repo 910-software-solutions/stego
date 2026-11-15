@@ -142,6 +142,7 @@ RETURNING key`
 FROM {schema}.idempotency_keys
 WHERE tenant_id = $1 AND principal_id = $2 AND key = $3
 FOR UPDATE NOWAIT`
+	heldSQL     = `SELECT EXISTS (SELECT 1 FROM {schema}.idempotency_keys WHERE tenant_id = $1 AND principal_id = $2 AND key = $3)`
 	completeSQL = `UPDATE {schema}.idempotency_keys
 SET status = 'completed', response_code = $4, response_headers = $5, response_body = $6, expires_at = $7
 WHERE tenant_id = $1 AND principal_id = $2 AND key = $3 AND status = 'in_progress'`
@@ -214,6 +215,37 @@ func Wrap(ctx context.Context, tx Tx, req Request, handler Handler) (Result, err
 		return Result{}, &StatementError{Step: "complete", Err: fmt.Errorf("%d rows changed, not 1 (%v)", n, err)}
 	}
 	return Result{Response: resp, Commit: true}, nil
+}
+
+// Replay answers a request again from its key row, with no handler and no new key row, inside the caller's
+// transaction tx: it takes the key's transaction-scoped advisory lock with no wait and reads the row as Wrap reads a
+// key that exists. It gives found false when the table holds no row of the key. Otherwise the result is the stored
+// response, byte for byte with Idempotent-Replayed: true, for a completed row of the same fingerprint; 422
+// ProblemReused for another fingerprint; and 409 ProblemInProgress for a row in progress, a row or a lock that it
+// cannot take. A change that finds its work done already, such as a Provision whose tenant the tenant list holds,
+// calls it, so a client that sends its request again gets the answer of the first (ST-SUP-RP07-LC03).
+func Replay(ctx context.Context, tx Tx, req Request) (result Result, found bool, err error) {
+	if err := req.check(); err != nil {
+		return Result{}, false, err
+	}
+	var locked bool
+	if err := tx.QueryRowContext(ctx, req.statement(lockSQL), req.lockID()).Scan(&locked); err != nil {
+		result, err := failure(ctx, "lock", err)
+		return result, err == nil, err
+	}
+	if !locked {
+		return inProgress(), true, nil
+	}
+	var held bool
+	if err := tx.QueryRowContext(ctx, req.statement(heldSQL), req.Tenant, req.Principal, req.Key).Scan(&held); err != nil {
+		result, err := failure(ctx, "select", err)
+		return result, err == nil, err
+	}
+	if !held {
+		return Result{}, false, nil
+	}
+	result, err = existing(ctx, tx, req)
+	return result, err == nil, err
 }
 
 // existing answers a request whose key row exists already.

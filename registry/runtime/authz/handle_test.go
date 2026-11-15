@@ -912,7 +912,7 @@ func TestHandleEvaluation(t *testing.T) {
 		allowed := mustPerson(t, "u-1").Subject()
 		fake := &recorder{allow: func(r EvaluationRequest) bool { return r.Subject == allowed }}
 		rt := newUnitRuntime(t, fake)
-		platform := Resource{Type: "platform", ID: qualify("t1", "main")}
+		platform := Resource{Type: "platform", ID: "main"}
 		decision, ok, err := bindUnit(t, rt, nil, mustPerson(t, "u-1")).DecideTenant(ctx, tenant.ProvisionAction, "ta", platform, nil)
 		if err != nil || !ok || decision == nil {
 			t.Fatalf("the allow gave %v, %t, %v", decision, ok, err)
@@ -949,7 +949,7 @@ func TestHandleEvaluation(t *testing.T) {
 	t.Run("ST-SUP-RP06-LC17-T02 DecideTenant decides the permission of the action it is given and binds the mark to it", func(t *testing.T) {
 		fake := &recorder{allow: func(r EvaluationRequest) bool { return r.Action.Name == "provision" }}
 		handle := bindUnit(t, newUnitRuntime(t, fake), nil, mustPerson(t, "u-1"))
-		platform := Resource{Type: "platform", ID: qualify("t1", "main")}
+		platform := Resource{Type: "platform", ID: "main"}
 		provision, ok, err := handle.DecideTenant(ctx, tenant.ProvisionAction, "ta", platform, nil)
 		if err != nil || !ok {
 			t.Fatalf("the provision gave %v, %t, %v", provision, ok, err)
@@ -976,6 +976,19 @@ func TestHandleEvaluation(t *testing.T) {
 		}
 		if _, action, _ := seal.DecisionOf(allowed); action != "retire" {
 			t.Fatalf("the mark of the retire holds the action %q, want retire", action)
+		}
+		// The permission is the declared one, which need not be the name of the action (ST-DECL-EN27); the mark holds
+		// the action.
+		named := &recorder{allow: func(r EvaluationRequest) bool { return r.Action.Name == "add_tenant" }}
+		declared, ok, err := bindUnit(t, newUnitRuntime(t, named), nil, mustPerson(t, "u-1")).DecideTenantPermission(ctx, tenant.ProvisionAction, "add_tenant", "ta", platform, nil)
+		if err != nil || !ok || len(named.evaluations) != 1 || named.evaluations[0].Action.Name != "add_tenant" {
+			t.Fatalf("the declared permission add_tenant gave %t, %v and the evaluations %+v", ok, err, named.evaluations)
+		}
+		if _, action, _ := seal.DecisionOf(declared); action != "provision" {
+			t.Fatalf("the mark of the provision decided on add_tenant holds the action %q, want provision", action)
+		}
+		if _, _, err := permissive.DecideTenantPermission(ctx, tenant.ProvisionAction, "", "ta", platform, nil); err == nil {
+			t.Fatal("a provision with no permission is decided")
 		}
 	})
 }
@@ -1644,6 +1657,38 @@ func TestHandleWrites(t *testing.T) {
 		}
 		if after := shape(); after != before || before != "1/3/1/2" {
 			t.Errorf("floor rows, policies, triggers and relay functions are %s after two more runs and %s before, want 1/3/1/2 both: one floor row, the two revocation policies and the policy of the test table, the tuple check trigger and the two relay functions", after, before)
+		}
+	})
+}
+
+func TestWaitPoll(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC24-T04 A long wait reads with a time that doubles from the poll time up to one second", func(t *testing.T) {
+		for poll, want := range map[time.Duration]time.Duration{50 * time.Millisecond: 100 * time.Millisecond,
+			600 * time.Millisecond: MaxPoll, MaxPoll: MaxPoll, 2 * time.Second: 2 * time.Second} {
+			if got := nextPoll(poll); got != want {
+				t.Fatalf("the read after a poll of %s comes after %s, want %s", poll, got, want)
+			}
+		}
+		env := newPG(t)
+		rt, err := New(Config{Provider: &recorder{}, DB: env.runtime, Schema: env.schema, Outbox: env.queue,
+			Poll: 50 * time.Millisecond, WaitCap: 5 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, handle := env.begin(t, rt, "t1", mustPerson(t, "alice"), rel("document#viewer"))
+		revocation, err := handle.Relate(context.Background(), Tuple{Resource: doc("1"), Relation: "viewer", Subject: user("bob")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.commit(t, tx, "t1")
+		// No relay runs, so the revocation stays pending for the whole wait of 3 s. Reads at 0, 0.05, 0.15, 0.35,
+		// 0.75, 1.55 and 2.55 s are 7; a fixed poll of 50 ms reads 60 times.
+		status, allowed, err := rt.WaitFor(context.Background(), mustTenant(t, "t1"), mustPerson(t, "alice"), revocation.ID(), 3*time.Second)
+		if err != nil || status.State != RevocationPending || allowed != 3*time.Second {
+			t.Fatalf("the wait answered %v, %s, %v, want pending after 3 s", status, allowed, err)
+		}
+		if reads := rt.waitReads.Load(); reads < 5 || reads > 9 {
+			t.Fatalf("a wait of 3 s read the status %d times, want 5 to 9", reads)
 		}
 	})
 }

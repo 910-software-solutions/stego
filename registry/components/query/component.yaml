@@ -12,3 +12,22 @@ provides:
   - queries
 
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: handler
+  flow: "Runs the declared query for the caller and gives back its rows."
+  ports:
+    queries: inbound
+
+environment:
+  - name: STEGO_QUERY_CURSOR_KEY_FILE
+    type: path
+    required: true
+    description: "The file of the key of the list cursors, at least 32 bytes, the same in each replica. The service does not start when it has no value."
+    secret: false
+    example: "/etc/stego/query/cursor-key"
+# The platform needs (ST-SUP-EN09): the key of the list cursors, the same in each replica.
+needs:
+  - {kind: secret, name: "{service}-query-cursor", keys: [key]}

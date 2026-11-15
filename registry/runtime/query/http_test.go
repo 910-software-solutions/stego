@@ -6,10 +6,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -106,6 +109,7 @@ func listOrders(t *testing.T, rt *Runtime, q *Query, orders *Entity[Order], fill
 type served struct {
 	status      int
 	cache       string
+	retryAfter  string
 	contentType string
 	body        string
 	IDs         []string `json:"ids"`
@@ -121,7 +125,7 @@ func get(t *testing.T, h http.Handler, path, tenantID, subject string) served {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	body, _ := io.ReadAll(w.Result().Body)
-	s := served{status: w.Code, cache: w.Header().Get("Cache-Control"), contentType: w.Header().Get("Content-Type"), body: string(body)}
+	s := served{status: w.Code, cache: w.Header().Get("Cache-Control"), retryAfter: w.Header().Get("Retry-After"), contentType: w.Header().Get("Content-Type"), body: string(body)}
 	if w.Code == http.StatusOK {
 		if err := json.Unmarshal(body, &s); err != nil {
 			t.Fatalf("the body %q does not decode: %v", body, err)
@@ -327,7 +331,25 @@ func TestServe(t *testing.T) {
 		decision.mu.Lock()
 		decision.down = true
 		decision.mu.Unlock()
-		wantProblem(t, get(t, list, "/orders", "t1", "user:u-7"), http.StatusServiceUnavailable, "the provider is down")
+		undecided := get(t, list, "/orders", "t1", "user:u-7")
+		wantProblem(t, undecided, http.StatusServiceUnavailable, "the provider is down")
+		if !slices.Contains([]string{"1", "2", "3"}, undecided.retryAfter) {
+			t.Errorf("the 503 of an undecided list has Retry-After %q, want 1 to 3 s (ST-SUP-Q140)", undecided.retryAfter)
+		}
+		// A provider that refuses the call, such as for a bad key, is no retry case: 500 with no Retry-After.
+		decision.mu.Lock()
+		decision.fault = providerError(status.Error(codes.PermissionDenied, "bad key"))
+		decision.mu.Unlock()
+		refused := get(t, list, "/orders", "t1", "user:u-7")
+		if refused.status != http.StatusInternalServerError || refused.retryAfter != "" || strings.Contains(refused.body, "bad key") {
+			t.Errorf("a refused provider answered %d with Retry-After %q: %s, want 500 with none and no provider text", refused.status, refused.retryAfter, refused.body)
+		}
+		decision.mu.Lock()
+		decision.fault = nil
+		decision.mu.Unlock()
+		if page.retryAfter != "" {
+			t.Errorf("the 200 of the list has Retry-After %q", page.retryAfter)
+		}
 		decision.mu.Lock()
 		decision.down = false
 		decision.mu.Unlock()

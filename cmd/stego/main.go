@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -18,6 +20,7 @@ import (
 	"github.com/jsell-rh/stego/internal/buildidentity"
 	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/declaration"
+	"github.com/jsell-rh/stego/internal/delivery"
 	"github.com/jsell-rh/stego/internal/fill"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/auditlog"
@@ -50,6 +53,7 @@ import (
 	"github.com/jsell-rh/stego/internal/generator/spicedbauthz"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/generator/typescriptsdk"
+	workergen "github.com/jsell-rh/stego/internal/generator/worker"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/slot"
 	"gopkg.in/yaml.v3"
@@ -95,6 +99,10 @@ func main() {
 		err = runValidate(os.Args[2:])
 	case "drift":
 		err = runDrift(os.Args[2:])
+	case "compat":
+		err = runCompat(os.Args[2:], os.Stdout)
+	case "architecture":
+		err = runArchitecture(os.Args[2:], os.Stdout)
 	case "test":
 		err = runTest(os.Args[2:])
 	case "fill":
@@ -105,6 +113,8 @@ func main() {
 		err = runLifecycle(os.Args[2:])
 	case "fleet":
 		err = runFleet(os.Args[2:])
+	case "env":
+		err = runEnv(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		printUsage()
@@ -116,6 +126,10 @@ func main() {
 			return
 		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		var status exitStatus
+		if errors.As(err, &status) {
+			os.Exit(status.code)
+		}
 		os.Exit(1)
 	}
 }
@@ -137,8 +151,13 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  deps            Resolve and check project dependencies")
 	fmt.Fprintln(os.Stderr, "  drift           Detect hand-edits to generated files")
 	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Architecture:")
+	fmt.Fprintln(os.Stderr, "  architecture export  Print the architecture as Structurizr DSL or Mermaid text")
+	fmt.Fprintln(os.Stderr, "  architecture facts   Print the facts of a topic, such as personal data, with their sources")
+	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Validation:")
 	fmt.Fprintln(os.Stderr, "  validate        Check service.yaml against registry")
+	fmt.Fprintln(os.Stderr, "  compat          Check service.yaml against the version that runs now")
 	fmt.Fprintln(os.Stderr, "  test            Run all fill tests and record their evidence")
 	fmt.Fprintln(os.Stderr, "  fill sign       Sign a fill's evidence with your key")
 	fmt.Fprintln(os.Stderr, "  fill status     Show the qualification of each bound fill")
@@ -151,6 +170,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  lifecycle withdraw  Record that a digest must not be used, with its fail date")
 	fmt.Fprintln(os.Stderr, "  fleet               Name every service that pins a component digest")
 	fmt.Fprintln(os.Stderr, "  fleet vex           Print an OpenVEX statement per service and advisory")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Delivery:")
+	fmt.Fprintln(os.Stderr, "  env check       Check an environment file against the platform requirements")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Other:")
 	fmt.Fprintln(os.Stderr, "  version         Print version")
@@ -184,6 +206,9 @@ func runInit(args []string) error {
 	for _, path := range result.Created {
 		fmt.Printf("  %s\n", path)
 	}
+	// Plan and apply check each release against the record of the default branch, and a repository with no
+	// commit holds none (decision on finding G1 of the walkthrough re-run, 2026-11-14).
+	fmt.Println("Commit the service folder to Git before its first release: plan and apply check each release against the default branch.")
 	return nil
 }
 
@@ -370,11 +395,30 @@ func runFillCreate(args []string) error {
 func runPlan(args []string) error {
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
 	show := fs.Bool("show", false, "print the saved plan and whether it still applies, and save no plan")
+	baseRef := fs.String("base", "", "the commit or branch of the version that runs now; the default branch when left out")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("plan takes no arguments")
+	}
+	var gate baseGate
+	if !*show {
+		var err error
+		gate, err = checkBaseBeforePlan(*baseRef, os.Stdout)
+		if err != nil {
+			return err
+		}
+		if len(gate.steps) > 0 {
+			// Plan saves no plan here, so it does not reconcile; it runs the checks of stego validate instead, so it
+			// never exits 0 on a declaration that validate refuses (ST-DECL-UC03-R03; N2 of the walkthrough re-run).
+			if err := checkBeforeSteps(os.Stdout); err != nil {
+				return err
+			}
+			printSchemaSteps(os.Stdout, "Apply writes the", gate.steps)
+			fmt.Println("\nThe declaration needs these add steps, so plan saved no plan; run stego apply, which writes them in service.yaml.")
+			return nil
+		}
 	}
 
 	input, err := buildReconcilerInput()
@@ -404,7 +448,7 @@ func runPlan(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkPinStanding(input, plan); err != nil {
+	if err := checkPinStanding(input, plan, os.Stdout); err != nil {
 		return err
 	}
 	if err := compiler.SavePlan(plan, input.ProjectDir); err != nil {
@@ -412,7 +456,26 @@ func runPlan(args []string) error {
 	}
 
 	fmt.Print(compiler.FormatPlan(plan))
+	printNewSchemaSteps(os.Stdout, gate, plan)
 	fmt.Println("\nSaved the plan in .stego/plan.yaml; stego apply --saved-plan carries it out.")
+	return nil
+}
+
+// checkBeforeSteps runs the checks of stego validate on the declaration in the working folder, and prints the faults
+// and refuses when it has one.
+func checkBeforeSteps(stdout io.Writer) error {
+	input, err := buildReconcilerInput()
+	if err != nil {
+		return err
+	}
+	result, err := compiler.Validate(input)
+	if err != nil {
+		return err
+	}
+	if result.HasErrors() {
+		fmt.Fprint(stdout, declaration.NewFaultsReader(result).Prose())
+		return fmt.Errorf("validation failed with %d error(s), so plan saved no plan", len(result.Errors))
+	}
 	return nil
 }
 
@@ -421,52 +484,134 @@ func runApply(args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ContinueOnError)
 	replaceHandEdits := fs.Bool("replace-hand-edits", false, "let this apply replace generated files that were edited by hand")
 	savedPlan := fs.Bool("saved-plan", false, "carry out the plan that stego plan saved, or refuse it when it is stale")
+	baseRef := fs.String("base", "", "the commit or branch of the version that runs now; the default branch when left out")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return fmt.Errorf("apply takes no arguments")
 	}
-
-	input, err := buildReconcilerInput()
+	gate, err := checkBaseBeforePlan(*baseRef, os.Stdout)
 	if err != nil {
 		return err
+	}
+	if len(gate.steps) > 0 {
+		if *savedPlan {
+			return fmt.Errorf("the declaration needs add steps that the saved plan does not hold; run stego apply without --saved-plan")
+		}
+		restore, err := writeSchemaSteps(gate.data)
+		if err != nil {
+			return err
+		}
+		// Check the declaration as written, against the same base: it needs no more steps and has no fault.
+		again, err := checkBaseBeforePlan(gate.ref, io.Discard)
+		if err == nil && len(again.steps) > 0 {
+			err = fmt.Errorf("service.yaml still lacks %d add step(s) after apply wrote them", len(again.steps))
+		}
+		if err != nil {
+			restore()
+			return fmt.Errorf("the declaration that apply wrote does not pass the base check, so apply wrote the old one back: %w", err)
+		}
+		printSchemaSteps(os.Stdout, "Wrote the", gate.steps)
+		if started, err := applyPlanned(*replaceHandEdits, *savedPlan); err != nil {
+			// Once Apply starts, its journal names the new declaration, and stego recover completes it.
+			if !started {
+				restore()
+			}
+			return err
+		}
+		return nil
+	}
+	_, err = applyPlanned(*replaceHandEdits, *savedPlan)
+	return err
+}
+
+// writeSchemaSteps writes the declaration with its new add steps over service.yaml, with the file's mode, and
+// gives the function that writes the old bytes back when apply then fails. Each write goes to a new file beside
+// service.yaml, which then replaces it, so a crash leaves the old or the new declaration whole.
+func writeSchemaSteps(data []byte) (func(), error) {
+	info, err := os.Stat("service.yaml")
+	if err != nil {
+		return nil, err
+	}
+	old, err := os.ReadFile("service.yaml")
+	if err != nil {
+		return nil, err
+	}
+	if err := replaceDeclaration(data, info.Mode().Perm()); err != nil {
+		return nil, err
+	}
+	return func() { _ = replaceDeclaration(old, info.Mode().Perm()) }, nil
+}
+
+// replaceDeclaration writes service.yaml through a new file in the same folder and a rename.
+func replaceDeclaration(data []byte, mode os.FileMode) error {
+	file, err := os.CreateTemp(".", ".service.yaml.*")
+	if err != nil {
+		return err
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Chmod(mode); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, "service.yaml")
+}
+
+// applyPlanned plans from the files on disk and carries the plan out. started tells whether Apply ran, after which
+// its journal, not the old declaration, is what stego recover completes.
+func applyPlanned(replaceHandEdits, savedPlan bool) (started bool, err error) {
+	input, err := buildReconcilerInput()
+	if err != nil {
+		return false, err
 	}
 
 	plan, err := compiler.Reconcile(input)
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	if err := checkPinStanding(input, plan); err != nil {
-		return err
+	if err := checkPinStanding(input, plan, os.Stdout); err != nil {
+		return false, err
 	}
-	if *savedPlan {
+	if savedPlan {
 		saved, err := compiler.LoadPlan(input.ProjectDir)
 		if err != nil {
-			return err
+			return false, err
 		}
 		plan.UseSavedPlan(saved)
 	} else if !plan.HasChanges() {
 		fmt.Println("No changes. Infrastructure is up-to-date.")
-		return nil
+		return false, nil
 	}
 
-	plan.ReplaceHandEdits = *replaceHandEdits
+	plan.ReplaceHandEdits = replaceHandEdits
 	_, statErr := os.Stat(filepath.Join(input.ProjectDir, "go.mod"))
 	firstGeneration := errors.Is(statErr, os.ErrNotExist)
 	if err := compiler.Apply(plan, input.ProjectDir, input.OutDir); err != nil {
-		return err
+		return true, err
 	}
 
 	fmt.Print(compiler.FormatPlan(plan))
 	if firstGeneration {
 		if err := recheckFills(); err != nil {
-			return err
+			return true, err
 		}
 	}
 	fmt.Println("\nApply complete!")
-	return nil
+	return true, nil
 }
 
 // runValidate implements `stego validate`.
@@ -490,25 +635,49 @@ func runValidate(args []string) error {
 		return err
 	}
 
-	faults := declaration.NewFaultsReader(result)
-	if *structured {
-		document, err := faults.JSON()
+	if !*structured {
+		fmt.Print(declaration.NewFaultsReader(result).Prose())
+		if result.HasErrors() {
+			return fmt.Errorf("validation failed with %d error(s)", len(result.Errors))
+		}
+		input.CheckOnly = true
+		plan, err := compiler.Reconcile(input)
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(document))
-	} else {
-		fmt.Print(faults.Prose())
+		return checkPinStanding(input, plan, os.Stdout)
+	}
+	// With --json, standard output holds only the one JSON document (ST-DECL-CLI02), so the pin standing goes to
+	// standard error. The document is printed after the pin standing is read, and a pin that does not stand is a
+	// fault in it, so the document never says accepted when validate fails.
+	var standingErr error
+	if !result.HasErrors() {
+		input.CheckOnly = true
+		plan, err := compiler.Reconcile(input)
+		if err != nil {
+			standingErr = err
+			result.Errors = append(result.Errors, declaration.ValidationError{Rule: "plan", Path: "service.yaml", Message: err.Error()})
+		} else {
+			report := readPinStanding(input, plan, time.Now())
+			report.write(os.Stderr)
+			if faults := report.faults(); len(faults) > 0 {
+				result.Errors = append(result.Errors, faults...)
+				standingErr = fmt.Errorf("a pin does not stand: %s", strings.Join(report.problems(), "; "))
+			}
+		}
+	}
+	document, err := declaration.NewFaultsReader(result).JSON()
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(document))
+	if standingErr != nil {
+		return standingErr
 	}
 	if result.HasErrors() {
 		return fmt.Errorf("validation failed with %d error(s)", len(result.Errors))
 	}
-	input.CheckOnly = true
-	plan, err := compiler.Reconcile(input)
-	if err != nil {
-		return err
-	}
-	return checkPinStanding(input, plan)
+	return nil
 }
 
 // runDrift implements `stego drift`.
@@ -922,7 +1091,88 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 		ReadFill:     fill.ReadCollection,
 		ReadFillSlot: fill.ReadImplements,
 		QualifyFills: fill.QualificationFaults,
+
+		WriteRequirements: writeRequirements,
+		WriteDeployment:   writeDeployment,
 	}, nil
+}
+
+// writeDeployment gives the compiler's port for the Kubernetes base and the delivery object to Delivering
+// (delivery.WriteDeployment, ST-DLV-CMD03, ST-DLV-PO04): the platform requirements of the run and the probes of the
+// active set. It gives the files in path order.
+func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, error) {
+	var probes *delivery.ProbeSource
+	if input.Probes != nil {
+		probes = &delivery.ProbeSource{Liveness: input.Probes.Liveness, Readiness: input.Probes.Readiness, PortVariable: input.Probes.PortVariable}
+	}
+	var stanza *delivery.ArgoCDStanza
+	if input.Delivery != nil && input.Delivery.ArgoCD != nil {
+		argo := input.Delivery.ArgoCD
+		stanza = &delivery.ArgoCDStanza{Project: argo.Project, SourceRepo: argo.Source.Repo, SourcePath: argo.Source.Path,
+			EnvironmentRepo: argo.Environments.Repo, EnvironmentRevision: argo.Environments.Revision, EnvironmentPath: argo.Environments.Path}
+	}
+	provider := ""
+	if input.Delivery != nil {
+		provider = input.Delivery.CI
+	}
+	pins := map[string]delivery.PipelinePins{}
+	for name, stated := range input.Pipelines {
+		pins[name] = delivery.PipelinePins{Pipeline: stated.Pipeline, Checks: stated.Checks, Signer: stated.Signer}
+	}
+	written, err := delivery.WriteDelivery(input.Service, input.Requirements, probes, stanza, provider, pins)
+	if err != nil {
+		return compiler.DeploymentFiles{}, err
+	}
+	files := make([]gen.File, 0, len(written.Files))
+	for _, name := range slices.Sorted(maps.Keys(written.Files)) {
+		files = append(files, gen.File{Path: name, Content: written.Files[name]})
+	}
+	return compiler.DeploymentFiles{Files: files, Notes: written.Notes}, nil
+}
+
+// writeRequirements gives the compiler's port for the platform requirements to Delivering
+// (delivery.WriteRequirements, ST-DLV-CMD01): the needs, the environment variables that each component declares,
+// and those that the declaration gives it. A setting that is not one scalar value gives no value to a need name.
+func writeRequirements(service string, components []compiler.ComponentNeeds) (compiler.RequirementsFiles, error) {
+	stated := make([]delivery.ComponentNeeds, 0, len(components))
+	for _, component := range components {
+		needs := make([]delivery.Need, 0, len(component.Needs))
+		for _, need := range component.Needs {
+			needs = append(needs, delivery.Need{Kind: need.Kind, Name: need.Name, Keys: need.Keys, Engine: need.Engine, Port: need.Port,
+				APIGroup: need.APIGroup, Resource: need.Resource, Verbs: need.Verbs, ResourceNames: need.ResourceNames, Level: need.Level})
+		}
+		settings := map[string]string{}
+		for key, value := range component.Settings {
+			switch value := value.(type) {
+			case string:
+				settings[key] = value
+			case int, int64, uint64, float64, bool:
+				settings[key] = fmt.Sprint(value)
+			}
+		}
+		variables := make([]delivery.Variable, 0, len(component.Variables))
+		for _, variable := range component.Variables {
+			variables = append(variables, delivery.Variable{Name: variable.Name, Type: variable.Type, Required: variable.IsRequired(),
+				Default: variable.Default, Description: variable.Description, Secret: variable.IsSecret(), Example: variable.Example,
+				Allowed: variable.Allowed.Text()})
+		}
+		declared := make([]delivery.DeclaredVariables, 0, len(component.Declared))
+		for _, group := range component.Declared {
+			list := make([]delivery.Variable, 0, len(group.Variables))
+			for _, variable := range group.Variables {
+				list = append(list, delivery.Variable{Name: variable.Name, Type: variable.Type, Required: variable.Required, Default: variable.Default,
+					Description: variable.Description, Secret: variable.Secret, Allowed: variable.Allowed})
+			}
+			declared = append(declared, delivery.DeclaredVariables{Group: group.Group, Variables: list})
+		}
+		stated = append(stated, delivery.ComponentNeeds{Component: component.Component, Needs: needs, Settings: settings,
+			Variables: variables, Declared: declared})
+	}
+	files, err := delivery.WriteRequirements(service, stated)
+	if err != nil {
+		return compiler.RequirementsFiles{}, err
+	}
+	return compiler.RequirementsFiles{Requirements: files.Requirements, Reference: files.Reference}, nil
 }
 
 func defaultGenerators() map[string]gen.Generator {
@@ -958,6 +1208,7 @@ func defaultGenerators() map[string]gen.Generator {
 		"query":                 &querygen.Generator{},
 		"spicedb-authz":         &spicedbauthz.Generator{},
 		"command":               &command.Generator{},
+		"worker":                &workergen.Generator{},
 	}
 }
 

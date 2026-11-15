@@ -75,7 +75,7 @@ func runtimeService(t *testing.T) (compiler.ReconcilerInput, registry.RuntimePin
 	}
 	files := map[string]string{
 		filepath.Join(common, "archetypes/svc-arch/archetype.yaml"): "kind: archetype\nname: svc-arch\nlanguage: go\nversion: 1.0.0\nruntime:\n  module: " + pin.Module + "\n  version: " + pin.Version + "\n  sum: " + pin.Sum + "\ncomponents: [hello]\nconventions:\n  layout: flat\n",
-		filepath.Join(common, "components/hello/component.yaml"):    "kind: component\nname: hello\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/hello\nrequires: []\nprovides: []\nslots: []\n",
+		filepath.Join(common, "components/hello/component.yaml"):    "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: hello\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/hello\nrequires: []\nprovides: []\nslots: []\n",
 		filepath.Join(project, "service.yaml"):                      "kind: service\nname: svc\narchetype: svc-arch\nlanguage: go\n",
 	}
 	for name, data := range files {

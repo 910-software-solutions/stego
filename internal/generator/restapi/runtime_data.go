@@ -68,11 +68,40 @@ type runtimeCollection struct {
 	// scope is the field of the parent of a scoped collection, whose value is the path parameter of the same name,
 	// and empty for a collection with no parent (ST-SUP-RC20-OC24).
 	scope string
+	// chain are the ancestors of a scoped collection, the parent first: each one is a row that the path names, which
+	// must exist in the tenant, be readable by the caller and be of the next ancestor of the path (ST-SUP-RC20-OC24).
+	chain []ancestorLevel
 	// implicit are the implicit fields of the collection and their values, by field name (ST-SUP-RC20-OC23).
 	implicit [][2]string
 	// refs are the ref fields of the entity whose target has a resource type: a write that sets one loads the row it
 	// names, on which the command runtime decides the reference (ST-SUP-RP10-LC05).
 	refs []types.Field
+}
+
+// ancestorLevel is one ancestor of the parent chain of a scoped collection: the entity of the row that the path
+// parameter param names, and link, the field of that row that names the next ancestor, or empty for the top
+// ancestor.
+type ancestorLevel struct {
+	entity, param, link string
+}
+
+// parentChain gives the ancestors of the collection c, the parent first. Each ancestor follows the first collection
+// of its entity, as the path does (collectionBasePath): its scope field links it to the ancestor above it.
+func parentChain(c types.Collection, collectionMap map[string]types.Collection) []ancestorLevel {
+	var chain []ancestorLevel
+	seen := map[string]bool{c.Entity: true}
+	param, entity := c.ScopeField(), c.ParentEntity()
+	for entity != "" && !seen[entity] {
+		seen[entity] = true
+		level := ancestorLevel{entity: entity, param: param}
+		next := ""
+		if parent, ok := collectionMap[entity]; ok && len(parent.Scope) > 0 {
+			level.link, next = parent.ScopeField(), parent.ParentEntity()
+		}
+		chain = append(chain, level)
+		param, entity = level.link, next
+	}
+	return chain
 }
 
 // permission gives the permission that the operation decides, and empty for a public operation.
@@ -90,6 +119,10 @@ func (c *runtimeCollection) hrefExpr(v string) string {
 	base := c.hrefBase
 	if c.scope != "" {
 		base = strings.Replace(base, "{"+c.scope+"}", "\"+"+v+"."+toPascalCase(c.scope)+"+\"", 1)
+	}
+	// An ancestor above the parent is not a field of v: the path named it, and the parent chain check holds it.
+	for i := 1; i < len(c.chain); i++ {
+		base = strings.Replace(base, "{"+c.chain[i].param+"}", fmt.Sprintf("\"+chain[%d]+\"", i), 1)
 	}
 	return fmt.Sprintf("\"%s\" + \"/\" + %s.ID", base, v)
 }
@@ -188,11 +221,26 @@ func validateRuntimeData(ctx gen.Context, entities map[string]types.Entity) erro
 					return fmt.Errorf("rest-api: collection %s declares %s with the permission %q; on the runtime data path a write of a row decides a permission of %s on it", c.Name, op, p, e.ResourceType)
 				}
 			case types.OpCreate:
-				// A top-level create is decided on the service-level resource of the tenant provisioning
-				// (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09), whose resource type the declaration does not name until the
-				// tenant provisioning is built (ST-DECL-UC10); until then it must be public.
+				// A create of an entity with no parent, in a collection with no scope, is decided on the service-level
+				// resource of the tenant provisioning (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09). A create under a parent is
+				// decided on the parent through its reference, so it declares no permission of its own.
 				if e.Permissions[op] != types.PermissionPublic {
-					return fmt.Errorf("rest-api: collection %s declares create with the permission %q; on the runtime data path a create of a top-level entity is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration cannot name yet (ST-DECL-UC10), so it must be public with a reason", c.Name, e.Permissions[op])
+					if len(c.Scope) > 0 {
+						return fmt.Errorf("rest-api: collection %s declares create with the permission %q; on the runtime data path a create under the parent %s is decided on the parent through its reference, so it must be public with a reason", c.Name, e.Permissions[op], c.ParentEntity())
+					}
+					if ctx.Tenancy == nil || ctx.Tenancy.Provisioning == nil || ctx.Tenancy.Provisioning.ResourceType == "" {
+						return fmt.Errorf("rest-api: collection %s declares create with the permission %q; a create of an entity with no parent is decided on the service-level resource of the tenant provisioning (ST-SUP-RC29-OC01), which the declaration does not declare", c.Name, e.Permissions[op])
+					}
+					// A create that decides its permission may write a field-sourced relationship, as a declared
+					// command with a permission may (ST-SUP-Q118).
+					continue
+				}
+				// A command that declares no permission may not write a field-sourced relationship: the client would
+				// choose the subject (ST-SUP-Q118).
+				for _, r := range e.Relationships {
+					if r.SubjectSource == types.SubjectSourceField {
+						return fmt.Errorf("rest-api: collection %s declares a public create of %s, whose relationship %s takes its subject from the field %s; a command that declares no permission may not write a field-sourced relationship, since the client would choose the subject (ST-SUP-Q118): take the subject from the caller, or write the relationship in a declared command with a permission", c.Name, e.Name, r.Relation, r.SubjectField)
+					}
 				}
 			}
 		}
@@ -209,9 +257,10 @@ func validateRuntimeData(ctx gen.Context, entities map[string]types.Entity) erro
 }
 
 // validateRuntimeScope refuses the forms of a scoped collection, of implicit fields and of a path prefix that the
-// handlers on the runtime data path do not serve: a scope of more than one field or more than one level, a scope
-// field that is not a required ref to the parent or that a patch may change, an implicit field that is not a text
-// or enum field, and a path parameter that is not the scope field (ST-SUP-RC20-OC23, ST-SUP-RC20-OC24).
+// handlers on the runtime data path do not serve: a scope of more than one field, a scope field that is not a
+// required ref to the parent or that a patch may change, an implicit field that is not a text or enum field, and a
+// path parameter that is not a scope field of the parent chain, or the scope fields of the chain out of order
+// (ST-SUP-RC20-OC23, ST-SUP-RC20-OC24).
 func validateRuntimeScope(ctx gen.Context, c types.Collection, e types.Entity, entities map[string]types.Entity) error {
 	field := func(name string) (types.Field, bool) {
 		for _, f := range e.Fields {
@@ -251,17 +300,26 @@ func validateRuntimeScope(ctx gen.Context, c types.Collection, e types.Entity, e
 			collectionMap[other.Entity] = other
 		}
 	}
-	if parent, ok := collectionMap[c.ParentEntity()]; ok && scope != "" && len(parent.Scope) > 0 {
-		return fmt.Errorf("rest-api: collection %s is scoped under the scoped collection %s, and the runtime data path serves one level of scope", c.Name, parent.Name)
-	}
+	// A collection under a scoped collection is served at each level: the path names every ancestor, and the
+	// handler checks the chain of them (ST-SUP-RC20-OC24).
 	base, err := collectionBasePath(c, collectionMap)
 	if err != nil {
 		return err
 	}
-	for _, param := range extractPathParams(base) {
-		if param != scope {
-			return fmt.Errorf("rest-api: collection %s has the path parameter %s, which is not its scope field; the runtime data path checks only the scope field", c.Name, param)
+	chain := parentChain(c, collectionMap)
+	var want []string
+	for i := len(chain) - 1; i >= 0; i-- {
+		want = append(want, chain[i].param)
+	}
+	// A parameter named twice or named id is refused with the route patterns (validateHTTPRoutePatterns).
+	params := extractPathParams(base)
+	if !slices.Equal(params, want) {
+		for _, param := range params {
+			if !slices.Contains(want, param) {
+				return fmt.Errorf("rest-api: collection %s has the path parameter %s, which is not a scope field of its parent chain; the runtime data path checks only the scope fields of the chain", c.Name, param)
+			}
 		}
+		return fmt.Errorf("rest-api: collection %s has the path parameters %s, and its parent chain needs %s in that order", c.Name, strings.Join(params, ", "), strings.Join(want, ", "))
 	}
 	return nil
 }
@@ -365,6 +423,7 @@ func runtimeCollections(ctx gen.Context, entities map[string]types.Entity, colle
 			rc.ops[op] = true
 		}
 		rc.scope = c.ScopeField()
+		rc.chain = parentChain(c, collectionMap)
 		for _, name := range slices.Sorted(maps.Keys(c.Implicit)) {
 			rc.implicit = append(rc.implicit, [2]string{name, c.Implicit[name]})
 		}
@@ -398,7 +457,11 @@ func generateRuntimeHandlers(ctx gen.Context, collections []*runtimeCollection, 
 			}
 		}
 	}
-	entityFile, err := command.EntityFile(dataFolder, names, ctx.Entities, ctx.Tenancy.Key)
+	relations, err := command.SchemaRelations(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("rest-api: %w", err)
+	}
+	entityFile, err := command.EntityFile(dataFolder, names, ctx.Entities, ctx.Tenancy.Key, relations)
 	if err != nil {
 		return nil, fmt.Errorf("rest-api: %w", err)
 	}
@@ -791,7 +854,8 @@ func (rt *Runtime) boundQuery(ctx context.Context, b command.Bound, q *query.Que
 
 // answerWrite answers an error of Run and writes the audit row of the denied or failed write in its own short
 // transaction (ST-SUP-RC28-OC03): a slot refusal is the slot's status and outcome denied, a deny is 404, the same
-// answer as a missing row, a conflict 409 and every other error 500. A row that is not there is 404 and outcome
+// answer as a missing row, a refused field value 400 naming the field (ST-SUP-Q118), a conflict 409 and every other
+// error 500. A row that is not there is 404 and outcome
 // denied for an operation that decides a permission, as a deny is, so the answer never tells that a row exists or
 // once existed (ST-SUP-RC20-OC37, ST-SUP-RP10-LC31), and 404 not_found otherwise. No error text reaches the answer or
 // the audit row.
@@ -817,23 +881,40 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 		return
 	case errors.Is(err, command.ErrNotFound) && decided:
 		_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, command.Outcome{Status: http.StatusNotFound, Code: "denied", Audit: audit.OutcomeDenied})
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 		return
 	case errors.Is(err, command.ErrNotFound):
 		_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, command.Outcome{Status: http.StatusNotFound, Code: "not_found", Audit: audit.OutcomeFailed})
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 		return
 	}
 	o := command.OutcomeOf(err)
 	_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, o)
 	switch o.Status {
+	case http.StatusBadRequest:
+		// The runtime refused a field's value (command.ErrInvalid): the answer names the field and the fixed reason.
+		handleError(w, r, Validation([]ValidationError{{Field: o.Field, Message: o.Reason}}))
 	case http.StatusNotFound:
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 	case http.StatusConflict:
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
+	case http.StatusServiceUnavailable:
+		answerUndecided(w, r)
 	default:
 		handleError(w, r, InternalError("internal error"))
 	}
+}
+
+// missing is the 404 of a write: of the row that the request names, or, for a write that names no row, such as a
+// create, of the write, whose parent or referenced row is not there or may not be used, or which the caller may not
+// make. It never gives an empty ID (walkthrough re-run, 2026-11-14).
+func missing(kind string, req command.Request) *ServiceError {
+	if req.Resource != "" {
+		return NotFound(kind, req.Resource)
+	}
+	problem := NotFound(kind, "")
+	problem.Detail = "the " + kind + " was not written: the caller may not write it, or its parent or a resource that it refers to is not there"
+	return problem
 }
 
 // answerKey answers a result of the idempotency wrapper that did not call the fill: a key in progress is 409 and a
@@ -847,9 +928,14 @@ func answerKey(w http.ResponseWriter, r *http.Request, result command.Result) {
 	handleError(w, r, problem)
 }
 
-// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one.
-func keyMissing(w http.ResponseWriter, r *http.Request) {
-	problem := BadRequest("the Idempotency-Key header is absent or malformed")
+// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one; the
+// detail of a malformed key tells that the key is an RFC 9651 string in double quotes.
+func keyMissing(w http.ResponseWriter, r *http.Request, err error) {
+	detail := "the Idempotency-Key header is absent"
+	if errors.Is(err, idempotency.ErrKeyMalformed) {
+		detail = "the Idempotency-Key header is not one RFC 9651 string of 1 to 255 characters: put the key in double quotes, such as \"k-1\""
+	}
+	problem := BadRequest(detail)
 	problem.Type = keyMissingType
 	handleError(w, r, problem)
 }
@@ -863,14 +949,27 @@ func canonicalID(id string) string {
 	return id
 }
 
-// answerRead answers an error of a read: a row that is not there or that the caller may not read is 404, and every
-// other error 500 (ST-SUP-RP11-LC06).
+// answerRead answers an error of a read: a row that is not there or that the caller may not read is 404, a read
+// that the authorization provider could not decide now is 503 with Retry-After, and every other error, a refusal of
+// the provider included, 500 (ST-SUP-RP11-LC06, ST-SUP-Q140).
 func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err error) {
 	if errors.Is(err, query.ErrNotFound) {
 		handleError(w, r, NotFound(kind, id))
 		return
 	}
+	if query.Transient(err) {
+		answerUndecided(w, r)
+		return
+	}
 	handleError(w, r, InternalError("internal error"))
+}
+
+// answerUndecided answers a request whose permission the authorization provider could not decide now, such as for
+// some seconds after a schema write: 503 with Retry-After of 1 to 3 s, never a bare 500. The runtime logs the fixed cause
+// (walkthrough 3, G4; ST-SUP-Q140).
+func answerUndecided(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", query.RetryAfter())
+	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
 }
 
 // writeResult writes the response that Run gives: the fill's response or the stored one of a replay.
@@ -900,6 +999,15 @@ func callerName(ctx context.Context) string {
 
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
+
+// float32Of gives the API value of an optional float field of a view: nil for NULL.
+func float32Of(v *float64) *float32 {
+	if v == nil {
+		return nil
+	}
+	f := float32(*v)
+	return &f
+}
 
 // remoteIP is the host part of a remote address.
 func remoteIP(addr string) string {
@@ -995,7 +1103,7 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	}
 	needUUID := w.envelope && (c.ops[types.OpCreate] || c.ops[types.OpUpsert])
 	w.f("package %s\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n", path.Base(ctx.OutputNamespace))
-	if c.ops[types.OpList] {
+	if c.ops[types.OpList] || c.ops[types.OpRead] {
 		w.f("\t\"errors\"\n")
 	}
 	if needFmt {
@@ -1007,6 +1115,9 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	w.f("\t\"net/http\"\n")
 	if c.ops[types.OpList] {
 		w.f("\t\"strconv\"\n")
+	}
+	if w.decodesClientTime() {
+		w.f("\t\"strings\"\n")
 	}
 	if needTime {
 		w.f("\t\"time\"\n")
@@ -1100,14 +1211,20 @@ func (w *runtimeHandlerWriter) declarations() {
 	for _, op := range c.decl.Operations {
 		switch op {
 		case types.OpRead:
-			w.f("// %s is the query of a read of %s (ST-SUP-RP11).\nvar %s = mustQuery(query.NewQuery(%q, data.Entity%sView()))\n\n", w.commandVar(op), c.decl.Name, w.commandVar(op), string(op), e.Name)
+			w.f("// %s is the query of a read of %s (ST-SUP-RP11).\nvar %s = mustQuery(query.NewQuery(%q, data.Entity%sView()%s))\n\n", w.commandVar(op), c.decl.Name, w.commandVar(op), string(op), e.Name, w.ancestorViews())
 		case types.OpList:
-			w.f("// %s is the query of a list of %s, on the list permission of %s (ST-SUP-RP11-LC07).\nvar %s = mustQuery(query.NewListQuery(%q, data.Entity%sView(), %q))\n\n", w.commandVar(op), c.decl.Name, e.Name, w.commandVar(op), string(op), e.Name, e.Permissions[types.OpList])
+			w.f("// %s is the query of a list of %s, on the list permission of %s (ST-SUP-RP11-LC07).\nvar %s = mustQuery(query.NewListQuery(%q, data.Entity%sView(), %q%s))\n\n", w.commandVar(op), c.decl.Name, e.Name, w.commandVar(op), string(op), e.Name, e.Permissions[types.OpList], w.ancestorViews())
 		default:
 			w.f("// %s is the generated command of a %s of %s (ST-SUP-RC20-OC37).\n", w.commandVar(op), op, c.decl.Name)
 			writes := []string{"data." + e.Name + "Entity"}
 			for _, f := range c.refs {
 				if name := "data." + f.To + "Entity"; op != types.OpDelete && !slices.Contains(writes, name) {
+					writes = append(writes, name)
+				}
+			}
+			// The fill reads each ancestor of the path through the handle (ST-SUP-RC20-OC24).
+			for _, level := range c.chain {
+				if name := "data." + level.entity + "Entity"; !slices.Contains(writes, name) {
 					writes = append(writes, name)
 				}
 			}
@@ -1124,8 +1241,13 @@ func (w *runtimeHandlerWriter) declarations() {
 			if len(destinations) > 0 {
 				w.f("\tDestinations: []command.Destination{%s},\n", strings.Join(destinations, ", "))
 			}
-			// A create and an upsert have no row to decide on before the fill: an upsert decides its permission on
-			// the stored row in the fill.
+			// A create of an entity with no parent names no row: Run decides its permission on the service-level
+			// resource <resource type>:<service name> of the tenant provisioning (ST-SUP-RC29-OC01, ST-SUP-RP10-LC31).
+			if p := c.permission(op); p != "" && op == types.OpCreate && c.scope == "" {
+				w.f("\tPermission: %q,\n\tResource: &command.Resource{Type: %q, Service: %q},\n", p, w.ctx.Tenancy.Provisioning.ResourceType, w.ctx.ServiceName)
+			}
+			// An upsert has no row to decide on before the fill: it decides its permission on the stored row in the
+			// fill.
 			if p := c.permission(op); p != "" && op != types.OpCreate && op != types.OpUpsert {
 				// The table is named with its schema, so no relation of the same name earlier on the search path
 				// stands in for it.
@@ -1158,6 +1280,16 @@ func (w *runtimeHandlerWriter) declarations() {
 	if fields := w.fingerprintFields(types.OpPatch); c.ops[types.OpPatch] {
 		w.f("// %sPatchFields are the body fields that the fingerprint of a patch covers (ST-SUP-RC30-OC03).\nvar %sPatchFields = []string{%s}\n\n", c.camel, c.camel, quoteAll(fields))
 	}
+}
+
+// ancestorViews gives the views of the ancestors of the path, which a query of the collection reads too
+// (ST-SUP-RC20-OC24), each after a comma.
+func (w *runtimeHandlerWriter) ancestorViews() string {
+	var views string
+	for _, level := range w.c.chain {
+		views += ", data.Entity" + level.entity + "View()"
+	}
+	return views
 }
 
 // fingerprintFields are the body fields that the client gives for an operation: for patch the patchable fields, and
@@ -1205,10 +1337,14 @@ func (w *runtimeHandlerWriter) helpers() {
 		if f.Type == types.FieldTypeFloat {
 			expr = "float32(" + expr + ")"
 		}
+		// The view holds an optional field as a pointer, nil for NULL, except a jsonb or bytes field, which is
+		// nil for NULL as it is (ST-SUP-Q128 (B)).
 		switch {
 		case f.Optional && f.Type == types.FieldTypeJsonb:
 			expr = c.camel + "JSON(" + expr + ")"
-		case f.Optional:
+		case f.Optional && f.Type == types.FieldTypeFloat:
+			expr = "float32Of(v." + name + ")"
+		case f.Optional && f.Type == types.FieldTypeBytes:
 			expr = "ptrOf(" + expr + ")"
 		}
 		w.f(", %s: %s", name, expr)
@@ -1216,7 +1352,22 @@ func (w *runtimeHandlerWriter) helpers() {
 	w.f("}\n}\n\n")
 	w.converters()
 	w.f("// %sPresented gives the response value of one %s: its secret fields are cleared, so no response and no stored\n// response holds them.\n", c.camel, e.Name)
-	w.f("func %sPresented(v %s) any {\n", c.camel, e.Name)
+	if len(c.chain) > 1 {
+		w.f("func %sPresented(v %s, chain [%d]string) any {\n", c.camel, e.Name, len(c.chain))
+	} else {
+		w.f("func %sPresented(v %s) any {\n", c.camel, e.Name)
+	}
+	// A timestamp is answered in UTC, whatever offset the database driver gave it.
+	for _, f := range e.Fields {
+		if f.Type != types.FieldTypeTimestamp || f.Sensitivity == "secret" {
+			continue
+		}
+		if name := toPascalCase(f.Name); f.Optional {
+			w.f("\tif v.%s != nil {\n\t\tutc := v.%s.UTC()\n\t\tv.%s = &utc\n\t}\n", name, name, name)
+		} else {
+			w.f("\tv.%s = v.%s.UTC()\n", name, name)
+		}
+	}
 	for _, f := range e.Fields {
 		if f.Sensitivity != "secret" {
 			continue
@@ -1237,7 +1388,9 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("func decode%s(bodyBytes []byte) (%s, error) {\n", c.pascal, e.Name)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", e.Name)
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, e.Name, e.Name)
+		w.clientTimeText(e.Name+"{}", e.Fields)
 		w.f("\tvar %s %s\n\tif err := json.Unmarshal(bodyBytes, &%s); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body does not decode into %s\")}\n\t}\n", c.lower, e.Name, c.lower, e.Name, e.Name)
+		w.clientTimeValue(c.lower, e.Name+"{}", e.Fields, false)
 		w.f("\t%s.ID = \"\"\n", c.lower)
 		emitClearServerManagedFields(&w.Buffer, c.lower, e)
 		w.canonicalRefs(c.lower, e.Fields, false)
@@ -1253,9 +1406,69 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("func decode%sPatch(bodyBytes []byte) (%sPatchRequest, error) {\n", c.pascal, c.pascal)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", c.pascal)
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, c.pascal, e.Name)
+		w.clientTimeText(c.pascal+"PatchRequest{}", c.patchFields())
 		w.f("\tvar patch %sPatchRequest\n\tif err := json.Unmarshal(bodyBytes, &patch); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body does not decode into the patch of %s\")}\n\t}\n", c.pascal, c.pascal, e.Name)
+		w.clientTimeValue("patch", c.pascal+"PatchRequest{}", c.patchFields(), true)
 		w.canonicalRefs("patch", c.patchFields(), true)
 		w.f("\treturn patch, nil\n}\n\n")
+	}
+}
+
+// clientTimeExample is the example of an RFC 3339 time in the problem of a client-set timestamp.
+const clientTimeExample = "2026-11-14T09:30:00Z"
+
+// decodesClientTime tells whether a decode of the collection reads a timestamp that the client sets (ST-DECL-Q16):
+// the body of a create, an update or an upsert reads every field, and a patch body its patchable fields.
+func (w *runtimeHandlerWriter) decodesClientTime() bool {
+	c := w.c
+	fields := c.patchFields()
+	if c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpUpsert] {
+		fields = c.entity.Fields
+	}
+	for _, f := range fields {
+		if f.ClientSetTime() && (c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpUpsert] || c.ops[types.OpPatch]) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientTimeText writes, in the decode of a body before the body is decoded, the check of each client-set timestamp
+// of fields (ST-DECL-Q16): a member that is not null must be a JSON string that holds an RFC 3339 time, else the
+// request is refused with a 400 problem that names the field. A time whose offset moves its UTC year outside 1 to
+// 9999, such as 9999-12-31T23:59:59-14:00, is refused the same way, as the answer in UTC cannot encode it. The JSON decoder matches a member name to a field
+// with no regard to case, so each member whose name is the field's name in any case is checked.
+func (w *runtimeHandlerWriter) clientTimeText(zero string, fields []types.Field) {
+	for _, f := range fields {
+		if !f.ClientSetTime() {
+			continue
+		}
+		invalid := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time, such as "+clientTimeExample)
+		w.f("\tfor member, raw := range rawMap {\n\t\tif !strings.EqualFold(member, %q) || string(raw) == \"null\" {\n\t\t\tcontinue\n\t\t}\n", f.Name)
+		w.f("\t\tvar text string\n\t\tif err := json.Unmarshal(raw, &text); err != nil {\n\t\t\treturn %s, %s\n\t\t}\n", zero, invalid)
+		w.f("\t\tparsed, err := time.Parse(time.RFC3339, text)\n\t\tif err != nil {\n\t\t\treturn %s, %s\n\t\t}\n", zero, invalid)
+		year := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time whose UTC year is from 1 to 9999, such as "+clientTimeExample)
+		w.f("\t\tif utcYear := parsed.UTC().Year(); utcYear < 1 || utcYear > 9999 {\n\t\t\treturn %s, %s\n\t\t}\n\t}\n", zero, year)
+	}
+}
+
+// clientTimeValue writes, after the decode of a body, the check of each client-set timestamp of the decoded value v
+// (ST-DECL-Q16): the zero time is refused, as an answer cannot tell it from no value, and a required field that the
+// body leaves out or sends as null is refused, except in a patch, where an absent member changes nothing. The column
+// keeps the instant, and each answer gives it in UTC (the Presented function), whatever offset the client sent.
+func (w *runtimeHandlerWriter) clientTimeValue(v, zero string, fields []types.Field, pointers bool) {
+	for _, f := range fields {
+		if !f.ClientSetTime() {
+			continue
+		}
+		name := v + "." + toPascalCase(f.Name)
+		if f.Optional || pointers {
+			invalid := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time after the zero time, such as "+clientTimeExample)
+			w.f("\tif %s != nil && %s.IsZero() {\n\t\treturn %s, %s\n\t}\n", name, name, zero, invalid)
+			continue
+		}
+		required := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" is required: an RFC 3339 time after the zero time, such as "+clientTimeExample)
+		w.f("\tif %s.IsZero() {\n\t\treturn %s, %s\n\t}\n", name, zero, required)
 	}
 }
 
@@ -1417,7 +1630,7 @@ func (w *runtimeHandlerWriter) populateCreate() {
 		switch {
 		case f.Name == "created_by" || f.Name == "updated_by":
 			w.setField(f, "callerName(r.Context())")
-		case f.Type == types.FieldTypeTimestamp:
+		case f.Type == types.FieldTypeTimestamp && !f.ClientSetTime():
 			w.setField(f, "time.Now().UTC()")
 		case f.Name == "generation" && f.Default != nil:
 			// ValidateContext refused a default that has no Go literal (generationDefaults).
@@ -1634,7 +1847,7 @@ func (w *runtimeHandlerWriter) deliverAfter() bool {
 // and the request's own key when the client sends none (ST-SUP-RC30-OC01).
 func (w *runtimeHandlerWriter) key(op types.Operation) {
 	required := w.keys != nil && w.keys.required[op]
-	w.f("\tkey, err := idempotency.KeyFrom(r.Header, %t)\n\tif err != nil {\n\t\tkeyMissing(w, r)\n\t\treturn\n\t}\n", required)
+	w.f("\tkey, err := idempotency.KeyFrom(r.Header, %t)\n\tif err != nil {\n\t\tkeyMissing(w, r, err)\n\t\treturn\n\t}\n", required)
 	w.f("\trequestID := command.NewID()\n\tif key == \"\" {\n\t\tkey = requestKey(requestID)\n\t}\n")
 }
 
@@ -1644,15 +1857,68 @@ func (w *runtimeHandlerWriter) start(body bool) {
 	if w.c.scope != "" {
 		// The parent of a scoped collection is the path parameter of its scope field (ST-SUP-RC20-OC24).
 		w.f("\tscope := canonicalID(r.PathValue(%q))\n\tif !command.ValidUUID(scope) {\n\t\thandleError(w, r, NotFound(%q, scope))\n\t\treturn\n\t}\n", w.c.scope, w.c.decl.ParentEntity())
+		// Each ancestor above the parent is a path parameter too, the parent first in chain (ST-SUP-RC20-OC24).
+		w.f("\tchain := [%d]string{scope", len(w.c.chain))
+		for _, level := range w.c.chain[1:] {
+			w.f(", canonicalID(r.PathValue(%q))", level.param)
+		}
+		w.f("}\n")
+		for i, level := range w.c.chain[1:] {
+			w.f("\tif !command.ValidUUID(chain[%d]) {\n\t\thandleError(w, r, NotFound(%q, chain[%d]))\n\t\treturn\n\t}\n", i+1, level.entity, i+1)
+		}
 	}
 	if body {
 		w.f("\tbody, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body cannot be read\"))\n\t\treturn\n\t}\n")
 	}
 }
 
+// ancestors writes the parent chain check at the start of a fill: each ancestor that the path names is read in the
+// tenant, which decides the read permission that its entity declares, and must name the next ancestor of the path.
+// A missing, denied or wrong ancestor is not found, so a caller learns nothing of a row of another parent or tenant
+// (ST-SUP-RC20-OC24). The check reads the top ancestor first and goes down the path, so it compares the link of a row
+// only when the caller may read every ancestor above that row: a caller who may read a row but not its parent cannot
+// learn from the work of the check whether a parent ID that it sends is the row's (review of PR #333, L1). In a query (inQuery) the rows are read through the query handle qh, and in a command through
+// the command handle ch; zero is the zero value that the fill returns with an error.
+func (w *runtimeHandlerWriter) ancestors(inQuery bool, zero string) {
+	if len(w.c.chain) == 0 {
+		return
+	}
+	notFound := "command.ErrNotFound"
+	if inQuery {
+		notFound = "query.ErrNotFound"
+	}
+	w.f("\t\t// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller\n\t\t// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).\n")
+	for i := len(w.c.chain) - 1; i >= 0; i-- {
+		level := w.c.chain[i]
+		w.f("\t\t{\n")
+		if inQuery {
+			w.f("\t\t\tancestors, err := query.Repo(qh, data.Entity%sView())\n", level.entity)
+		} else {
+			w.f("\t\t\tancestors, err := data.%sRepository(ch)\n", level.entity)
+		}
+		w.f("\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", zero)
+		w.f("\t\t\tancestor, err := ancestors.Get(ctx, chain[%d])\n\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", i, zero)
+		if level.link != "" {
+			w.f("\t\t\tif ancestor.Value().%s != chain[%d] {\n\t\t\t\treturn %s, %s\n\t\t\t}\n", toPascalCase(level.link), i+1, zero, notFound)
+		} else {
+			w.f("\t\t\t_ = ancestor\n")
+		}
+		w.f("\t\t}\n")
+	}
+}
+
+// presentedArgs gives the arguments of the call of Presented on the value v: v, and the chain of a collection whose
+// href names an ancestor above the parent.
+func (w *runtimeHandlerWriter) presentedArgs(v string) string {
+	if len(w.c.chain) > 1 {
+		return v + ", chain"
+	}
+	return v
+}
+
 // respond writes the response of a fill.
 func (w *runtimeHandlerWriter) respond(status, value string) {
-	w.f("\t\tresponse, err := json.Marshal(%sPresented(%s))\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.c.camel, value)
+	w.f("\t\tresponse, err := json.Marshal(%sPresented(%s))\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.c.camel, w.presentedArgs(value))
 	w.f("\t\treturn jsonResponse(%s, response), nil\n", status)
 }
 
@@ -1674,6 +1940,7 @@ func (w *runtimeHandlerWriter) create() {
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, \"\")\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpCreate), c.pascal, c.lower, e.Name)
+	w.ancestors(false, "idempotency.Response{}")
 	if w.envelope {
 		w.f("\t\tid, err := uuid.NewV7()\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n\t\t%s.ID = id.String()\n", c.lower)
 	} else {
@@ -1704,6 +1971,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpdate), c.pascal, c.lower, e.Name)
+	w.ancestors(false, "idempotency.Response{}")
 	w.lockRow()
 	w.f("\t\t%s.ID = id\n", c.lower)
 	w.populateUpdate()
@@ -1729,6 +1997,19 @@ func (w *runtimeHandlerWriter) storedValue(name string) string {
 		}
 	}
 	return "stored." + toPascalCase(name)
+}
+
+// viewDiffers gives the condition that the implicit field name of the loaded view does not hold value. The view
+// holds an optional field as a pointer, nil for a NULL column (ST-SUP-Q128 (B)), and a NULL is another value: the
+// row is not found in the collection.
+func (w *runtimeHandlerWriter) viewDiffers(name, value string) string {
+	field := "view." + toPascalCase(name)
+	for _, f := range w.c.entity.Fields {
+		if f.Name == name && f.Optional {
+			return fmt.Sprintf("(%s == nil || *%s != %q)", field, field, value)
+		}
+	}
+	return fmt.Sprintf("%s != %q", field, value)
 }
 
 // forceScope writes the server values of the scope field and the implicit fields of a written value: the scope
@@ -1797,6 +2078,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	}
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpsert), c.pascal, c.lower, e.Name)
+	w.ancestors(false, "idempotency.Response{}")
 	// The before slots decide the requested value before the lookup, on both branches (ST-SUP-RC20-OC13). They see
 	// no server-managed field: the branch is not known yet, so a create-time value would be wrong on the update
 	// branch, and a client value is never taken (ST-SUP-RC20-OC17).
@@ -1902,6 +2184,7 @@ func (w *runtimeHandlerWriter) patch() {
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%sPatch, func(ctx context.Context, patch %sPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpPatch), c.pascal, c.pascal)
+	w.ancestors(false, "idempotency.Response{}")
 	w.lockRow()
 	w.f("\t\t%s := stored\n", c.lower)
 	w.before(types.OpPatch, fields)
@@ -1941,6 +2224,7 @@ func (w *runtimeHandlerWriter) remove() {
 	w.f("\trequestID := command.NewID()\n\tfingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, nil)\n\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)\n")
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpDelete))
+	w.ancestors(false, "idempotency.Response{}")
 	w.lockRow()
 	w.before(types.OpDelete, nil)
 	w.f("\t\tif err := repo.Delete(ctx, from); err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n")
@@ -1958,24 +2242,34 @@ func (w *runtimeHandlerWriter) read() {
 	w.start(false)
 	w.f("\tif !command.ValidUUID(id) {\n\t\thandleError(w, r, NotFound(%q, id))\n\t\treturn\n\t}\n", e.Name)
 	q := w.commandVar(types.OpRead)
+	// A read that names the caller's own write in Authz-Revocation-After waits for that write's revocation before it
+	// opens its transaction, as a list does, so a read right after a share sees it (ST-SUP-RC20-OC42, ST-SUP-Q119).
+	w.awaitWrite()
 	w.f("\tvalue, err := query.Run(r.Context(), h.rt.Queries, %s, h.rt.boundQuery(r.Context(), b, %s), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (%s, error) {\n", q, q, e.Name)
+	w.ancestors(true, e.Name+"{}")
 	w.f("\t\trepo, err := query.Repo(qh, data.Entity%sView())\n\t\tif err != nil {\n\t\t\treturn %s{}, err\n\t\t}\n", e.Name, e.Name)
 	w.f("\t\tloaded, err := repo.Get(ctx, id)\n\t\tif err != nil {\n\t\t\treturn %s{}, err\n\t\t}\n", e.Name)
 	// A row of another parent, or with other implicit values, is not found in this collection (ST-SUP-RC20-OC23,
 	// ST-SUP-RC20-OC24).
 	var checks []string
 	if c.scope != "" {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != scope", toPascalCase(c.scope)))
+		checks = append(checks, fmt.Sprintf("view.%s != scope", toPascalCase(c.scope)))
 	}
 	for _, kv := range c.implicit {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != %q", toPascalCase(kv[0]), kv[1]))
+		checks = append(checks, w.viewDiffers(kv[0], kv[1]))
 	}
 	if len(checks) > 0 {
-		w.f("\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
+		w.f("\t\tview := loaded.Value()\n\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
 	}
 	w.f("\t\treturn %sFromView(loaded.Value()), nil\n\t})\n", c.camel)
 	w.f("\tif err != nil {\n\t\tanswerRead(w, r, %q, id, err)\n\t\treturn\n\t}\n", e.Name)
-	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t_ = json.NewEncoder(w).Encode(%sPresented(value))\n}\n\n", c.camel)
+	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t_ = json.NewEncoder(w).Encode(%sPresented(%s))\n}\n\n", c.camel, w.presentedArgs("value"))
+}
+
+// awaitWrite emits the call of AwaitWrite of a read or a list (ST-SUP-RP11-LC21): a value that is not the identity
+// of a revocation is 400, and any other failure is 500.
+func (w *runtimeHandlerWriter) awaitWrite() {
+	w.f("\tif err := h.rt.Queries.AwaitWrite(w, r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, query.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 }
 
 func (w *runtimeHandlerWriter) list() {
@@ -2007,6 +2301,17 @@ func (w *runtimeHandlerWriter) list() {
 		own++
 	}
 	w.f("\twhere, err := query.ParseSearch(r.URL.Query().Get(\"search\"), %sSearchFields, query.MaxFilter-%d)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the search is not valid\"))\n\t\treturn\n\t}\n", c.camel, own)
+	// A renamed field is named in the API by its first name and stored in the column of its declared name
+	// (ST-GEN-UC12-R04): the order and the search name it by the API name, and the query runtime reads columns.
+	var renamed []string
+	for _, f := range e.Fields {
+		if f.Column != "" {
+			renamed = append(renamed, fmt.Sprintf("%q: %q", f.Name, f.Column))
+		}
+	}
+	if len(renamed) > 0 {
+		w.f("\tcolumns := map[string]string{%s}\n\tfor i := range order {\n\t\tif column, ok := columns[order[i].Field]; ok {\n\t\t\torder[i].Field = column\n\t\t}\n\t}\n\tfor i := range where {\n\t\tif column, ok := columns[where[i].Field]; ok {\n\t\t\twhere[i].Field = column\n\t\t}\n\t}\n", strings.Join(renamed, ", "))
+	}
 	if c.scope != "" {
 		w.f("\twhere = append(where, query.Equal{Field: %q, Value: scope})\n", c.scope)
 	}
@@ -2014,14 +2319,24 @@ func (w *runtimeHandlerWriter) list() {
 		w.f("\twhere = append(where, query.Equal{Field: %q, Value: %q})\n", kv[0], kv[1])
 	}
 	w.f("\tvar after query.Cursor\n\tif text := r.URL.Query().Get(\"cursor\"); text != \"\" {\n\t\tif after, err = h.rt.Queries.ParseCursor(%s, b.Tenant, b.Principal, text); err != nil {\n\t\t\thandleError(w, r, BadRequest(\"the cursor is not valid\"))\n\t\t\treturn\n\t\t}\n\t}\n", q)
+	// A list that names the caller's own write in Authz-Revocation-After waits for that write's revocation before it
+	// opens its transaction, so it shows the write (ST-SUP-RC20-OC41, ST-SUP-RP11-LC21, ST-SUP-Q119).
+	w.awaitWrite()
 	w.f("\tpage, err := query.Run(r.Context(), h.rt.Queries, %s, h.rt.boundQuery(r.Context(), b, %s), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (%sPage, error) {\n", q, q, c.camel)
+	w.ancestors(true, c.camel+"Page{}")
 	w.f("\t\trepo, err := query.Repo(qh, data.Entity%sView())\n\t\tif err != nil {\n\t\t\treturn %sPage{}, err\n\t\t}\n", e.Name, c.camel)
 	w.f("\t\tresult, err := repo.List(ctx, request)\n\t\tif err != nil {\n\t\t\treturn %sPage{}, err\n\t\t}\n", c.camel)
 	w.f("\t\tpage := %sPage{next: result.Next, more: result.More}\n\t\tfor _, item := range result.Items {\n\t\t\tpage.items = append(page.items, %sFromView(item.Value()))\n\t\t}\n\t\treturn page, nil\n\t})\n", c.camel, c.camel)
 	w.f("\tif isBadCursor(err) {\n\t\thandleError(w, r, BadRequest(\"the cursor is not valid\"))\n\t\treturn\n\t}\n")
+	if len(c.chain) > 0 {
+		// A parent chain that the check refuses is 404 with the parent of the path, the same for an ancestor that is
+		// not there, that the caller may not read and that is of another ancestor (ST-SUP-RC20-OC24).
+		w.f("\tif errors.Is(err, query.ErrNotFound) {\n\t\thandleError(w, r, NotFound(%q, scope))\n\t\treturn\n\t}\n", c.decl.ParentEntity())
+	}
 	w.f("\tif errors.Is(err, query.ErrBadRequest) {\n\t\thandleError(w, r, BadRequest(\"the list request is not valid\"))\n\t\treturn\n\t}\n")
+	w.f("\tif query.Transient(err) {\n\t\tanswerUndecided(w, r)\n\t\treturn\n\t}\n")
 	w.f("\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
-	w.f("\titems := make([]any, 0, len(page.items))\n\tfor _, item := range page.items {\n\t\titems = append(items, selectFields(%sPresented(item), fields))\n\t}\n", c.camel)
+	w.f("\titems := make([]any, 0, len(page.items))\n\tfor _, item := range page.items {\n\t\titems = append(items, selectFields(%sPresented(%s), fields))\n\t}\n", c.camel, w.presentedArgs("item"))
 	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")
 	if w.envelope {
 		w.f("\tresult := map[string]any{\"kind\": %q, \"size\": len(items), \"items\": items}\n", e.Name+"List")

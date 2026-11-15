@@ -21,6 +21,7 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	stegoauthz "github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/service"
@@ -38,7 +39,7 @@ const (
 	// Service is the name of the service, which its audit rows and its telemetry carry.
 	Service = "user-management"
 	// DeclarationVersion is the SHA-256 of the declaration, which each audit row carries.
-	DeclarationVersion = "57f491b2bcbc66d8735ede7923556203fb6bc4c387029904e670fcfce15fadbd"
+	DeclarationVersion = "bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b"
 	// subjectType is the subject type of the schema that a verified identity maps to.
 	subjectType = "user"
 	// tenantClaim is the dotted path of the claim that names the caller's tenant.
@@ -137,6 +138,8 @@ func StartStage(err error) string { return service.StartStage(err) }
 func parts(afterSlots *api.AfterSlots) service.Parts {
 	return service.Parts{
 		Service: Service, DeclarationVersion: DeclarationVersion, SubjectType: subjectType, TenantClaim: tenantClaim,
+		// The open changes with a sync trigger, which the writer marker of each write names (ST-SUP-RC01-OC23).
+		SchemaSteps: svcstorage.SchemaSteps, Release: svcstorage.SchemaRelease,
 		ProblemType: problemType, ProblemCode: problemCode, TenantConfig: svcstorage.TenantConfig,
 		NewQueue:   func(db *sql.DB) (*outbox.Queue, error) { return svcoutbox.NewQueue(db, nil) },
 		AuditQueue: func(q *outbox.Queue) (audit.Enqueuer, error) { return svcoutbox.AuditQueue(q) },
@@ -153,8 +156,10 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 				if err != nil {
 					return nil, err
 				}
+				// An after slot runs only for an active tenant: the message of a retired tenant is parked before its
+				// fill (ST-SUP-RC27-OC12).
 				if err := w.Register(outbox.Destination{Name: api.AfterSlotsDestination, Idempotent: true, MustLand: true,
-					Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
+					ActiveTenants: true, Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
 					return nil, err
 				}
 				return w, nil
@@ -162,8 +167,24 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 			NewRelay: svcauthz.NewRelay, WatchInterval: svcauthz.WatchInterval,
 			AuditJobs: svcaudit.Jobs, AnchorPeriod: svcaudit.AnchorPeriod, RetentionMonths: svcaudit.RetentionMonths, TenantSchema: tenantSchema,
 		},
-		Collections: api.Entities(),
+		Collections:  api.Entities(),
+		Provisioning: provisioning(),
 	}
+}
+
+// provisioning gives the declared tenant provisioning from the entries of Provision and Retire in the
+// operation-to-permission table (ST-SUP-RC27-OC09, ST-SUP-RC29-OC15).
+func provisioning() *service.Provisioning {
+	p := &service.Provisioning{}
+	for _, o := range svcauthz.Operations {
+		switch o.Tenant {
+		case "provision":
+			p.ResourceType, p.Provision, p.ProvisionRoute = o.ResourceType, o.Permission, o.Route
+		case "retire":
+			p.Retire, p.RetireRoute = o.Permission, o.Route
+		}
+	}
+	return p
 }
 
 // NewService builds the runtime of the service through the service runtime, from the settings of the deployment and
@@ -193,6 +214,24 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 			rt = nil
 		}
 	}()
+	// The revocation status route, which answers the state of a write's revocation to its writer alone, comes from
+	// its entry of the operation-to-permission table only (ST-SUP-RC29-OC17, ST-SUP-RC29-OC18).
+	for _, o := range svcauthz.Operations {
+		if o.Writer {
+			rt.routes.Handle(o.Route, command.ServeRevocationStatus(svc.Collections(), subjectType))
+		}
+	}
+	// Provision and Retire, which the service serves itself, come from their entries of the operation-to-permission
+	// table only (ST-SUP-RC27-OC09, ST-SUP-RC29-OC15).
+	provision, retire := svc.TenantRoutes()
+	for _, o := range svcauthz.Operations {
+		switch o.Tenant {
+		case "provision":
+			rt.routes.Handle(o.Route, provision)
+		case "retire":
+			rt.routes.Handle(o.Route, retire)
+		}
+	}
 	return rt, nil
 }
 
@@ -200,16 +239,18 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 // default.
 const retention = 0
 
-// Middleware verifies the bearer token of each request before next; a request whose token the verifier refuses is
-// answered 401 and reaches no handler. A process that does not run the api mode serves no request of the service:
-// each is answered 503, and only the probes answer (ST-SUP-RP09-LC01).
-func (rt *Runtime) Middleware(next http.Handler) http.Handler {
+// Middleware verifies the bearer token of each request before next, which ends in router, the main router of
+// main.go; a request whose token the verifier refuses is answered 401 and reaches no handler. For a service that
+// declares its provisioning, the tenant check exempts a request only when router matches it to the pattern of
+// Provision or of Retire (ST-SUP-RC27-OC11). A process that does not run the api mode serves no request of the
+// service: each is answered 503, and only the probes answer (ST-SUP-RP09-LC01).
+func (rt *Runtime) Middleware(router *http.ServeMux, next http.Handler) http.Handler {
 	if !rt.selection.Has(modes.API) {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "this process does not run the api mode", http.StatusServiceUnavailable)
 		})
 	}
-	return rt.svc.Middleware(next)
+	return rt.svc.RoutedMiddleware(router, next)
 }
 
 // ShutdownBound bounds the shutdown of the workers after the process is told to stop.
@@ -286,7 +327,7 @@ func (rt *Runtime) Readiness() http.Handler {
 // (ST-SUP-RP04-LC07).
 const tenantSchema = "public"
 
-// Routes serves the declared commands and queries, each at its route.
+// Routes serves the declared commands and queries, each at its route, and the revocation status route.
 func (rt *Runtime) Routes() http.Handler { return rt.routes }
 
 // Service gives the runtime library objects of the running service, on which the gRPC application serves the
@@ -313,7 +354,8 @@ func (rt *Runtime) Close() error { return rt.svc.Close() }
 // Migrate is the migration job of the service (tenant.MigrationJob), which the service runtime runs in its fixed
 // order on one connection (ST-SUP-RP14-LC03): the ledger check and the ledger of the PostgreSQL adapter with the
 // tenant list of the tenant runtime, the schema of the authorization component, the outbox, audit, idempotency and authorization migrations of the runtime library,
-// the grants of the runtime role and the audit partitions.
+// the grants of the runtime role, the audit partitions, the check of the schema manifest of the declared parts, which
+// a start only alerts, and the backfills.
 func Migrate(ctx context.Context) error {
 	settings, err := service.ReadMigrationSettings()
 	if err != nil {
@@ -331,13 +373,23 @@ func Migrate(ctx context.Context) error {
 	if err != nil {
 		return &service.StepError{Step: service.StepSettings, Err: err}
 	}
+	// The backfill of each open rename, which the job runs last, before the rollout (ST-GEN-UC13).
+	backfills, err := service.CopyBackfills(svcstorage.BackfillCopies, tenantSchema)
+	if err != nil {
+		return &service.StepError{Step: service.StepSettings, Err: err}
+	}
+	// The job refuses at its end a database that does not hold the schema manifest of the parts that New checks
+	// (decision on finding F10 of the schema-change research, owner, 2026-11-13).
+	declaredParts := parts(nil)
 	return service.Migrate(ctx, settings, service.Migration{
 		OwnerRole: OwnerRole, RuntimeRole: RuntimeRole, WorkerRole: WorkerRole, PurgeRole: PurgeRole, OutboxRelayRole: OutboxRelayRole, TenantConfig: svcstorage.TenantConfig,
 		LedgerCheck: func(ctx context.Context, conn *sql.Conn) error { return svcstorage.CheckLedger(ctx, conn) },
 		Ledger:      func(ctx context.Context, conn *sql.Conn) error { return svcstorage.Migrate(ctx, conn) },
 		Outbox:      queueText, Audit: auditText, Authorization: authzText,
 		WriteSchema: func(ctx context.Context, conn grpc.ClientConnInterface) error { return svcauthz.WriteSchema(ctx, conn) },
+		Definitions: svcauthz.Definitions,
 		Grants:      grants, TenantSchema: tenantSchema,
+		Service: Service, Backfills: backfills, Parts: &declaredParts,
 	})
 }
 

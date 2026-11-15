@@ -258,7 +258,8 @@ func (rt *Runtime) boundQuery(ctx context.Context, b command.Bound, q *query.Que
 
 // answerWrite answers an error of Run and writes the audit row of the denied or failed write in its own short
 // transaction (ST-SUP-RC28-OC03): a slot refusal is the slot's status and outcome denied, a deny is 404, the same
-// answer as a missing row, a conflict 409 and every other error 500. A row that is not there is 404 and outcome
+// answer as a missing row, a refused field value 400 naming the field (ST-SUP-Q118), a conflict 409 and every other
+// error 500. A row that is not there is 404 and outcome
 // denied for an operation that decides a permission, as a deny is, so the answer never tells that a row exists or
 // once existed (ST-SUP-RC20-OC37, ST-SUP-RP10-LC31), and 404 not_found otherwise. No error text reaches the answer or
 // the audit row.
@@ -284,23 +285,40 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 		return
 	case errors.Is(err, command.ErrNotFound) && decided:
 		_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, command.Outcome{Status: http.StatusNotFound, Code: "denied", Audit: audit.OutcomeDenied})
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 		return
 	case errors.Is(err, command.ErrNotFound):
 		_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, command.Outcome{Status: http.StatusNotFound, Code: "not_found", Audit: audit.OutcomeFailed})
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 		return
 	}
 	o := command.OutcomeOf(err)
 	_ = rt.Commands.RecordFailure(r.Context(), req, action, resourceType, o)
 	switch o.Status {
+	case http.StatusBadRequest:
+		// The runtime refused a field's value (command.ErrInvalid): the answer names the field and the fixed reason.
+		handleError(w, r, Validation([]ValidationError{{Field: o.Field, Message: o.Reason}}))
 	case http.StatusNotFound:
-		handleError(w, r, NotFound(kind, req.Resource))
+		handleError(w, r, missing(kind, req))
 	case http.StatusConflict:
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
+	case http.StatusServiceUnavailable:
+		answerUndecided(w, r)
 	default:
 		handleError(w, r, InternalError("internal error"))
 	}
+}
+
+// missing is the 404 of a write: of the row that the request names, or, for a write that names no row, such as a
+// create, of the write, whose parent or referenced row is not there or may not be used, or which the caller may not
+// make. It never gives an empty ID (walkthrough re-run, 2026-11-14).
+func missing(kind string, req command.Request) *ServiceError {
+	if req.Resource != "" {
+		return NotFound(kind, req.Resource)
+	}
+	problem := NotFound(kind, "")
+	problem.Detail = "the " + kind + " was not written: the caller may not write it, or its parent or a resource that it refers to is not there"
+	return problem
 }
 
 // answerKey answers a result of the idempotency wrapper that did not call the fill: a key in progress is 409 and a
@@ -314,9 +332,14 @@ func answerKey(w http.ResponseWriter, r *http.Request, result command.Result) {
 	handleError(w, r, problem)
 }
 
-// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one.
-func keyMissing(w http.ResponseWriter, r *http.Request) {
-	problem := BadRequest("the Idempotency-Key header is absent or malformed")
+// keyMissing answers a create or a patch that needs the Idempotency-Key header and has none, or a malformed one; the
+// detail of a malformed key tells that the key is an RFC 9651 string in double quotes.
+func keyMissing(w http.ResponseWriter, r *http.Request, err error) {
+	detail := "the Idempotency-Key header is absent"
+	if errors.Is(err, idempotency.ErrKeyMalformed) {
+		detail = "the Idempotency-Key header is not one RFC 9651 string of 1 to 255 characters: put the key in double quotes, such as \"k-1\""
+	}
+	problem := BadRequest(detail)
 	problem.Type = keyMissingType
 	handleError(w, r, problem)
 }
@@ -330,14 +353,27 @@ func canonicalID(id string) string {
 	return id
 }
 
-// answerRead answers an error of a read: a row that is not there or that the caller may not read is 404, and every
-// other error 500 (ST-SUP-RP11-LC06).
+// answerRead answers an error of a read: a row that is not there or that the caller may not read is 404, a read
+// that the authorization provider could not decide now is 503 with Retry-After, and every other error, a refusal of
+// the provider included, 500 (ST-SUP-RP11-LC06, ST-SUP-Q140).
 func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err error) {
 	if errors.Is(err, query.ErrNotFound) {
 		handleError(w, r, NotFound(kind, id))
 		return
 	}
+	if query.Transient(err) {
+		answerUndecided(w, r)
+		return
+	}
 	handleError(w, r, InternalError("internal error"))
+}
+
+// answerUndecided answers a request whose permission the authorization provider could not decide now, such as for
+// some seconds after a schema write: 503 with Retry-After of 1 to 3 s, never a bare 500. The runtime logs the fixed cause
+// (walkthrough 3, G4; ST-SUP-Q140).
+func answerUndecided(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", query.RetryAfter())
+	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
 }
 
 // writeResult writes the response that Run gives: the fill's response or the stored one of a replay.
@@ -367,6 +403,15 @@ func callerName(ctx context.Context) string {
 
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
+
+// float32Of gives the API value of an optional float field of a view: nil for NULL.
+func float32Of(v *float64) *float32 {
+	if v == nil {
+		return nil
+	}
+	f := float32(*v)
+	return &f
+}
 
 // remoteIP is the host part of a remote address.
 func remoteIP(addr string) string {

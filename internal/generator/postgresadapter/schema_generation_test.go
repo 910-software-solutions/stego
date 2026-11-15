@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,6 +18,12 @@ import (
 
 //go:embed testdata/schema_generation_test.go
 var schemaGenerationTests []byte
+
+// schemaEvolutionTests are the tests of the migration ledger of schema steps (ST-SUP-RC01-OC27 to OC29), which run in
+// the generated package ledger.
+//
+//go:embed testdata/schema_evolution_test.go
+var schemaEvolutionTests []byte
 
 // schemaContext gives a service with entities on the runtime data path in namespace ns, with the given settings.
 func schemaContext(ns string, config map[string]any) gen.Context {
@@ -142,7 +149,7 @@ func backupObjects(wiring *gen.Wiring) []gen.DatabaseObject {
 
 func TestGeneratedSchemaGeneration(t *testing.T) {
 	project := t.TempDir()
-	for _, packageName := range []string{"storage", "future", "changed"} {
+	for _, packageName := range []string{"storage", "future", "changed", "ledger"} {
 		c := schemaContext(packageName, map[string]any{"schema_generation": "fresh-v1", "migrations": "external"})
 		if packageName == "future" {
 			c.ComponentConfig["schema_generation"] = "fresh-v2"
@@ -176,7 +183,7 @@ go 1.26.11
 require (
  github.com/google/uuid v1.6.0
  github.com/jackc/pgx/v5 v5.11.0
- github.com/jsell-rh/stego/registry/runtime v0.80.0
+ github.com/jsell-rh/stego/registry/runtime v0.112.0
 )
 
 replace github.com/jsell-rh/stego/registry/runtime => ` + runtimeDir + "\n"
@@ -184,6 +191,9 @@ replace github.com/jsell-rh/stego/registry/runtime => ` + runtimeDir + "\n"
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(project, "storage/schema_generation_test.go"), schemaGenerationTests, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "ledger/schema_evolution_test.go"), schemaEvolutionTests, 0644); err != nil {
 		t.Fatal(err)
 	}
 	for _, args := range [][]string{{"mod", "tidy"}, {"test", "-race", "-mod=readonly", "-count=1", "-timeout=90s", "-v", "./..."}} {
@@ -233,4 +243,70 @@ func TestFunctionMigrationDigestCoversBody(t *testing.T) {
 	if !strings.Contains(migrate, `RegisterSQL("001_initial", InitialTables)`) || strings.Contains(migrate, "Digest(name)") || strings.Contains(migrate, "Digest(row.Name)") {
 		t.Fatal("the initial migration is not sealed by its body", migrate)
 	}
+}
+
+// runtimeText gives the text between the first backquotes after head in the Go file of the runtime library at path.
+func runtimeText(t *testing.T, path, head string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "registry", "runtime", path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rest, ok := strings.Cut(string(data), head)
+	if !ok {
+		t.Fatalf("%s holds no %q", path, head)
+	}
+	text, _, ok := strings.Cut(rest, "`")
+	if !ok {
+		t.Fatalf("%s: the text after %q has no end", path, head)
+	}
+	return text
+}
+
+// TestSyncTemplateCopy proves that the copies that the generator writes into the migration of a rename are the
+// runtime library's texts byte for byte: version 2 of the sync template, which the release before accepts only by
+// its text (ST-SUP-RP15-LC02), and the table and the functions of the backfill checkpoints (ST-SUP-RC01-OC25).
+func TestSyncTemplateCopy(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC23-T03 The generator's copy of sync template version 2 and of the backfill table and functions is the runtime library's text", func(t *testing.T) {
+		for _, c := range []struct{ name, path, head, copy string }{
+			{"sync template version 2", "manifest/sync.go", "`, 2: `", syncTemplate},
+			{"backfill table", "lease/backfill.go", "const BackfillsTable = `", backfillsTable},
+			{"backfill functions", "lease/backfill.go", "const BackfillFunctions = `", backfillFunctions},
+			{"release reports", "lease/release.go", "const releasesText = `", releasesText},
+		} {
+			if got := runtimeText(t, c.path, c.head); got != c.copy {
+				t.Errorf("the generator's copy of the %s differs from registry/runtime/%s", c.name, c.path)
+			}
+		}
+		// The conversion list of the sync template: the generator's copy has the runtime's text with its own names.
+		block := func(path, head string) string {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, rest, ok := strings.Cut(string(data), head)
+			text, _, end := strings.Cut(rest, "return list")
+			if !ok || !end {
+				t.Fatalf("%s holds no conversion list", path)
+			}
+			return text
+		}
+		runtimeList := block(filepath.Join("..", "..", "..", "registry", "runtime", "manifest", "sync.go"), "list := []Conversion{")
+		for _, name := range []string{"Name", "From", "To", "Forward", "Back", "Guard", "Deparsed"} {
+			runtimeList = strings.ReplaceAll(runtimeList, name+": ", strings.ToLower(name)+": ")
+		}
+		runtimeList = strings.ReplaceAll(runtimeList, "Conversion{", "syncConversion{")
+		if copied := block("schema_steps.go", "list := []syncConversion{"); copied != runtimeList {
+			t.Errorf("the generator's copy of the conversion list differs from registry/runtime/manifest/sync.go:\n%s\nwant:\n%s", copied, runtimeList)
+		}
+		// The contract check of the ledger takes a report as current for the runtime's window of intervals.
+		source, err := os.ReadFile(filepath.Join("..", "..", "..", "registry", "runtime", "lease", "release.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		window := regexp.MustCompile(`ReleaseWindow = ([0-9]+)`).FindSubmatch(source)
+		if window == nil || !strings.Contains(migrationLedger, "const releaseWindow = "+string(window[1])+"\n") {
+			t.Errorf("the ledger's release window is not the runtime's ReleaseWindow %s", window)
+		}
+	})
 }

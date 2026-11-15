@@ -1,0 +1,22 @@
+kind: component
+name: ci-pipeline
+version: 0.1.0
+stage: alpha
+sunset: 2027-06-30
+
+# The ci-pipeline component emits no code into a service. It states the pinned references and the one trusted
+# signer of each CI provider (ST-SUP-EN09 field Pipeline pins), and stego apply writes the service's CI file from
+# them (delivery.WritePipeline, ST-DLV-CMD02-H). It states no provider until the Product owner gives the real values
+# (ST-DLV-Q13 (C)), so apply writes no CI file and says so in the plan.
+config: {}
+requires: []
+provides: []
+slots: []
+architecture:
+  layer: outside call
+  flow: "Runs the CI of the service, out of the process: it is no part of a request."
+  ports: {}
+
+pipelines: {}
+
+environment: []

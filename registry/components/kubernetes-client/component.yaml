@@ -8,3 +8,14 @@ requires:
 provides:
   - kubernetes-resources
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: outside call
+  flow: "Reads and writes Kubernetes resources for the service."
+  ports:
+    application-http: outbound
+    kubernetes-resources: inbound
+
+environment: []

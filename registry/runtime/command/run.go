@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"maps"
 	"math/rand/v2"
 	"net/http"
 	"regexp"
@@ -22,6 +21,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/jsell-rh/stego/registry/runtime/manifest"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
@@ -95,16 +95,35 @@ type Config struct {
 	Logger otellog.LoggerProvider
 	// Service, ServiceVersion and DeclarationVersion name the service in its audit rows.
 	Service, ServiceVersion, DeclarationVersion string
+	// SchemaSteps are the IDs of the schema changes of this release whose last step is expand and that have a sync
+	// trigger: each transaction that writes sets the writer marker stego.schema_step to them with SET LOCAL, so the
+	// sync trigger of each copies the new column into the old one (ST-SUP-RC01-OC23, decision on finding F3,
+	// orchestrator under the owner's delegation, 2026-11-13).
+	SchemaSteps []string
+	// Tenants, when it is not nil, tells whether a tenant is an active tenant of the tenant list, such as the tenant
+	// gate of a service that declares its provisioning. RunConsumer refuses a message of a tenant that it does not
+	// hold as active with a permanent refusal before the fill, so the outbox parks it (ST-SUP-RC27-OC12). Nil checks
+	// no tenant: a service with no provisioning may have an empty list.
+	Tenants TenantList
+}
+
+// TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
+type TenantList interface {
+	Active(ctx context.Context, t tenant.Tenant) (bool, error)
 }
 
 // Runtime is the command runtime of one service.
 type Runtime struct {
 	cfg    Config
 	logger otellog.Logger
+	// schemaStep is the value of the writer marker, or empty for a release with no open sync trigger.
+	schemaStep string
 	// slots is set only by New: a Runtime that New did not make, such as new(Runtime), gives a slot key that
 	// FromRequest refuses (ST-SUP-RP10-LC32).
 	slots           *slotSeal
 	outcomeFailures atomic.Int64
+	// unlistedOutcomes counts the provisioning outcomes of callers whose tenant is not active, which write no row.
+	unlistedOutcomes atomic.Int64
 	// recorder and beforeCommit are set only by the tests of the package: the statement recorder, and a step just
 	// before COMMIT.
 	recorder     func(query string, args []any)
@@ -146,6 +165,11 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 		cfg.AuditSettings.Level = audit.LevelChange
 	}
 	rt := &Runtime{cfg: cfg, slots: &slotSeal{entities: map[Declared]bool{}}}
+	step, err := manifest.SchemaStepValue(cfg.SchemaSteps)
+	if err != nil {
+		return nil, fmt.Errorf("command: %w", err)
+	}
+	rt.schemaStep = step
 	for _, e := range cfg.Entities {
 		if e == nil {
 			return nil, errors.New("command: the runtime declares a nil entity")
@@ -179,6 +203,19 @@ func (rt *Runtime) span(ctx context.Context, name string) (context.Context, otel
 		return ctx, func(otel.Outcome, bool, bool) {}
 	}
 	spanCtx, finish, err := rt.cfg.Telemetry.StartOperation(ctx, otel.Child, name)
+	if err != nil {
+		return ctx, func(otel.Outcome, bool, bool) {}
+	}
+	return spanCtx, finish
+}
+
+// workerSpan starts the operation span name of one run of the worker worker, with the attribute stego.worker
+// (ST-SUP-RC35-OC09).
+func (rt *Runtime) workerSpan(ctx context.Context, name, worker string) (context.Context, otel.Finish) {
+	if rt.cfg.Telemetry == nil {
+		return ctx, func(otel.Outcome, bool, bool) {}
+	}
+	spanCtx, finish, err := rt.cfg.Telemetry.StartWorkerOperation(ctx, otel.Child, name, worker)
 	if err != nil {
 		return ctx, func(otel.Outcome, bool, bool) {}
 	}
@@ -261,14 +298,27 @@ func NewCommand[P any](spec CommandSpec[P]) (*Command[P], error) {
 }
 
 // boundRelations gives the relations of an authorization handle: the declared ones, which the fill may write, and
-// those that the runtime writes for the references of the written entities, which only the runtime writes.
+// those that the runtime writes for the references of the written entities, which only the runtime writes. A
+// declared relation that is the relation of a declared relationship or of a parent reference of a written entity is
+// bound but is not the fill's own, as defence in depth behind the generators (ST-SUP-Q118).
 func boundRelations(declared []authz.Relation, writes []Declared) ([]authz.Relation, map[authz.Relation]bool) {
+	runtimeOnly := map[authz.Relation]bool{}
+	for _, e := range writes {
+		for _, r := range e.runtimeRelations() {
+			runtimeOnly[r] = true
+		}
+	}
 	own := make(map[authz.Relation]bool, len(declared))
 	bound := slices.Clone(declared)
 	for _, r := range declared {
-		own[r] = true
+		if !runtimeOnly[r] {
+			own[r] = true
+		}
 	}
-	seen := maps.Clone(own)
+	seen := make(map[authz.Relation]bool, len(declared))
+	for _, r := range declared {
+		seen[r] = true
+	}
 	for _, e := range writes {
 		for _, r := range e.relations() {
 			if !seen[r] {
@@ -458,6 +508,13 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 		}
 		return Result{}, internalf("the transaction did not begin"), false
 	}
+	if err := rt.markStep(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		if isConflict(ctx, err) {
+			return Result{}, &conflictError{text: "the transaction did not begin before the deadline"}, true
+		}
+		return Result{}, internalf("the transaction did not begin"), false
+	}
 	committed := false
 	defer func() {
 		if !committed {
@@ -513,7 +570,10 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 		if err != nil {
 			return idempotency.Response{}, err
 		}
-		return response, nil
+		if transient(response) {
+			return response, nil
+		}
+		return answerRevocation(ctx, s, response)
 	}
 	var wrapped idempotency.Result
 	if req.Key == "" {
@@ -546,6 +606,29 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return Result{Response: wrapped.Response}, nil, false
+}
+
+// answerRevocation sets the revocation headers of a response that commits (ST-SUP-RP10-LC35, ST-SUP-RC29-OC16):
+// when the transaction enqueued a tuple, Authz-Revocation: pending and Authz-Revocation-Location with the path of the
+// revocation's status; otherwise neither header, also when the fill set one. It runs before the idempotency wrapper
+// stores the response, so a replay gives the same headers byte for byte.
+func answerRevocation(ctx context.Context, s *state, response idempotency.Response) (idempotency.Response, error) {
+	header := response.Header.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+	header.Del(authz.RevocationHeader)
+	header.Del(authz.RevocationLocationHeader)
+	revocation, ok, err := s.az.Current(ctx)
+	if err != nil {
+		return idempotency.Response{}, &fillFailure{err: internalf("the revocation of the transaction was not read")}
+	}
+	if ok {
+		header.Set(authz.RevocationHeader, string(authz.RevocationPending))
+		header.Set(authz.RevocationLocationHeader, authz.RevocationPath+revocation.ID().String())
+	}
+	response.Header = header
+	return response, nil
 }
 
 // decideCommand decides the command's declared permission on the resource id with the attempt's authorization
@@ -586,6 +669,10 @@ func (s *state) decideCommand(ctx context.Context, permission string, r *Resourc
 		return ErrDenied
 	case errors.Is(err, ErrConflict) || errors.Is(err, ErrInternal):
 		return err
+	case authz.Transient(err):
+		// The provider could not decide now, such as for some seconds after a schema write: 503 with Retry-After
+		// (ST-SUP-Q140).
+		return ErrUndecided
 	case err != nil:
 		return internalf("the permission of the command was not decided")
 	}
@@ -773,3 +860,16 @@ func (r errRow) Scan(...any) error { return r.err }
 
 // statusOK is the status of a consumed message's stored response.
 const statusOK = http.StatusOK
+
+// markStepStatement sets the writer marker of the transaction only, with the function named with its schema.
+const markStepStatement = "SELECT pg_catalog.set_config('" + manifest.SchemaStepSetting + "', $1, true)"
+
+// markStep sets the writer marker stego.schema_step in the transaction tx, before its first write, when the release
+// has an open change with a sync trigger (ST-SUP-RC01-OC23).
+func (rt *Runtime) markStep(ctx context.Context, tx *sql.Tx) error {
+	if rt.schemaStep == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, markStepStatement, rt.schemaStep)
+	return err
+}

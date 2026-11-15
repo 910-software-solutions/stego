@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,6 +22,12 @@ import (
 
 //go:embed testdata/tables_test.go
 var tablesTests []byte
+
+//go:embed testdata/table_steps_test.go
+var tableStepsTests []byte
+
+//go:embed testdata/relax_steps_test.go
+var relaxStepsTests []byte
 
 const tablesModule = "example.com/tables-check"
 
@@ -178,7 +185,16 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	for _, service := range []struct {
 		ctx    gen.Context
 		access string
-	}{{orderService("storage"), "access.json"}, {orderService("previous"), ""}, {widgetService(widgetEntities()), "widgets_access.json"}, {boundsService(), "bounds_access.json"}} {
+	}{{orderService("storage"), "access.json"}, {orderService("previous"), ""}, {widgetService(widgetEntities()), "widgets_access.json"}, {boundsService(), "bounds_access.json"},
+		{boardBase("boardsbase", "boardsbasetenancy"), "boardsbase_access.json"}, {boardSteps("boards", "boardtenancy"), "boards_access.json"},
+		{boardNoDefault("boardsnote", "boardsnotetenancy"), "boardsnote_access.json"}, {boardSlug("boardsslug", "boardsslugtenancy"), "boardsslug_access.json"},
+		{boardRenameBase("boardsrnbase", "boardsrnbasetenancy"), "boardsrnbase_access.json"}, {boardRename("boardsrn", "boardsrntenancy"), "boardsrn_access.json"},
+		{boardRenameContract("boardsrnc", "boardsrnctenancy"), "boardsrnc_access.json"},
+		{boardRetypeBase("boardsrtbase", "boardsrtbasetenancy"), "boardsrtbase_access.json"}, {boardRetype("boardsrt", "boardsrttenancy"), "boardsrt_access.json"},
+		{boardRetypeContract("boardsrtc", "boardsrtctenancy"), "boardsrtc_access.json"},
+		{relaxBase("boardsrxbase", "boardsrxbasetenancy"), "boardsrxbase_access.json"}, {relaxHead("boardsrx", "boardsrxtenancy"), "boardsrx_access.json"}} {
+		// The adapter names the roles of the tenancy component in the migration of a step.
+		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
 		files, wiring, err := new(postgresadapter.Generator).Generate(service.ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -202,20 +218,32 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.80.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
+	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.112.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(project, "check", "tables_test.go"), tablesTests, 0o644); err != nil {
-		t.Fatal(err)
+	for name, body := range map[string][]byte{"tables_test.go": tablesTests, "table_steps_test.go": tableStepsTests, "relax_steps_test.go": relaxStepsTests} {
+		if err := os.WriteFile(filepath.Join(project, "check", name), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Dir, tidy.Env = project, append(os.Environ(), "GOWORK=off")
 	if output, err := tidy.CombinedOutput(); err != nil {
 		t.Fatalf("go mod tidy: %v\n%s", err, output)
 	}
-	run := exec.Command("go", "test", "-json", "-mod=readonly", "-count=1", "-timeout=120s", "./check")
-	run.Dir, run.Env = project, append(os.Environ(), "GOWORK=off")
+	// The marker digest that a release before ST-SUP-RC01-OC42 wrote for the boards service, which the generated
+	// test writes into a database to stand for one that such a release made.
+	boardsMarker, err := os.ReadFile(filepath.Join(project, "boards", "schema_generation.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := regexp.MustCompile(`const schemaDefinitionBefore = "([0-9a-f]{64})"`).FindSubmatch(boardsMarker)
+	if before == nil {
+		t.Fatal("the boards service has no marker digest of a release before")
+	}
+	run := exec.Command("go", "test", "-json", "-mod=readonly", "-count=1", "-timeout=240s", "./check")
+	run.Dir, run.Env = project, append(os.Environ(), "GOWORK=off", "STEGO_TEST_MARKER_BEFORE="+string(before[1]))
 	output, _ := run.CombinedOutput()
 	passed := map[string]bool{}
 	var log strings.Builder
@@ -235,11 +263,18 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	return passed, log.String()
 }
 
-// passedThere fails the test when the generated subtest of id did not pass.
+// passedThere fails the test when the generated subtest of id under TestTables did not pass: the subtest itself, not
+// only one of its own subtests, whose names have the same prefix.
 func passedThere(t *testing.T, passed map[string]bool, log, id string) {
 	t.Helper()
+	passedIn(t, passed, log, "TestTables", id)
+}
+
+// passedIn fails the test when the generated subtest of id under the generated test top did not pass.
+func passedIn(t *testing.T, passed map[string]bool, log, top, id string) {
+	t.Helper()
 	for name := range passed {
-		if strings.HasPrefix(name, "TestTables/"+id+"_") {
+		if rest, ok := strings.CutPrefix(name, top+"/"+id+"_"); ok && !strings.Contains(rest, "/") {
 			return
 		}
 	}
@@ -284,6 +319,27 @@ func TestTables(t *testing.T) {
 			t.Skip("PostgreSQL fixture is not configured")
 		}
 		passedThere(t, passed, log, id)
+	}
+	// The cases of testdata/table_steps_test.go run in the same generated module, under TestTableSteps.
+	onSteps := func(t *testing.T, id string) {
+		t.Helper()
+		if !database {
+			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
+				t.Fatal("PostgreSQL fixture is required")
+			}
+			t.Skip("PostgreSQL fixture is not configured")
+		}
+		passedIn(t, passed, log, "TestTableSteps", id)
+	}
+	onRelax := func(t *testing.T, id string) {
+		t.Helper()
+		if !database {
+			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
+				t.Fatal("PostgreSQL fixture is required")
+			}
+			t.Skip("PostgreSQL fixture is not configured")
+		}
+		passedIn(t, passed, log, "TestRelaxSteps", id)
 	}
 
 	t.Run("ST-SUP-RC01-OC41-T01 The tables are SQL from the declaration, with no store", func(t *testing.T) {
@@ -365,6 +421,139 @@ func TestTables(t *testing.T) {
 		onPostgres(t, "ST-SUP-RC01-OC12-T09")
 	})
 
+	t.Run("ST-SUP-RC01-OC12-T10 The schema manifest names each search index as a lookup index, and a database without one does not satisfy it", func(t *testing.T) {
+		files, _, err := new(postgresadapter.Generator).Generate(boardNoDefault("boardsnote", "boardsnotetenancy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Decision on ST-SUP-Q123 (b): a plain lookup index is part of the manifest.
+		source := generated(t, files, "boardsnote/schema_manifest.go")
+		if want := `{Name: "boards_note_search", Columns: []string{"tenant_id", "note"}, Lookup: true}`; !strings.Contains(source, want) {
+			t.Errorf("the schema manifest does not hold %s:\n%s", want, source)
+		}
+		onPostgres(t, "ST-SUP-RC01-OC12-T10")
+	})
+
+	t.Run("ST-SUP-RC01-OC42-T02 The marker check accepts the digest of the stored shape and the one a release before wrote, and no other", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC42-T02")
+	})
+
+	t.Run("ST-SUP-RC01-OC42-T03 The migration job rewrites the marker digest of a release before to the digest of the stored shape once", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC42-T03")
+	})
+
+	t.Run("ST-GEN-UC12-R02-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R02-T02") })
+	t.Run("ST-SUP-RC01-OC23-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T01") })
+	t.Run("ST-SUP-RC01-OC25-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC25-T01") })
+	t.Run("ST-SUP-RC01-OC23-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T05") })
+	t.Run("ST-GEN-UC12-R03-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R03-T02") })
+	t.Run("ST-SUP-RC01-OC23-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T02") })
+	t.Run("ST-SUP-RC01-OC33-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC33-T01") })
+	t.Run("ST-SUP-RC01-OC33-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC33-T02") })
+	t.Run("ST-SUP-RC01-OC36-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC36-T02") })
+	t.Run("ST-SUP-RC01-OC37-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC37-T02") })
+	t.Run("ST-SUP-RC01-OC39-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T04") })
+	t.Run("ST-SUP-RC01-OC24-T09 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T09") })
+	t.Run("ST-GEN-UC12-R03-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R03-T03") })
+
+	t.Run("ST-SUP-RC01-OC22-T03 An add step takes a database with rows to the schema of a new database, and the release before still runs on it", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC22-T03")
+	})
+
+	t.Run("ST-SUP-RC01-OC22-T04 A step waits for a lock only within its lock timeout and runs again, and a reader keeps getting its row", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC22-T04")
+	})
+
+	t.Run("ST-SUP-RC01-OC22-T05 An add step on a table with rows scans no row under its strong lock, and the release before restarts after each phase", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC22-T05")
+	})
+
+	t.Run("ST-SUP-RC01-OC22-T09 The validate migration of an add step checks each row of an owned table for a new foreign key, past row-level security", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC22-T09")
+	})
+
+	t.Run("ST-SUP-RC01-OC38-T02 An index of an add step is built concurrently, and a failed build drops its invalid index at once", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC38-T02")
+	})
+
+	t.Run("ST-SUP-RC01-OC38-T03 An index build waits for an older transaction with no lock timeout, and is built once", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC38-T03")
+	})
+
+	t.Run("ST-SUP-RC01-OC38-T04 A failed drop of the invalid index after a failed build runs again, and when it still fails the job fails and names the index", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC38-T04")
+	})
+
+	t.Run("ST-SUP-RC01-OC38-T05 An index build fails when a relation of its name is there and is not the index of the step", func(t *testing.T) {
+		onPostgres(t, "ST-SUP-RC01-OC38-T05")
+	})
+
+	t.Run("ST-SUP-RC01-OC22-T08 A step waits behind a long reader, and each reader still gets its rows", func(t *testing.T) {
+		onSteps(t, "ST-SUP-RC01-OC22-T08")
+	})
+	t.Run("ST-SUP-RC01-OC22-T07 A retry after a lock timeout commits each statement once and applies no step twice", func(t *testing.T) {
+		onSteps(t, "ST-SUP-RC01-OC22-T07")
+	})
+	t.Run("ST-SUP-RC01-OC38-T06 An index build succeeds while an older transaction is open, and both indexes are valid", func(t *testing.T) {
+		onSteps(t, "ST-SUP-RC01-OC38-T06")
+	})
+	t.Run("ST-SUP-RC01-OC38-T07 A unique build that a concurrent duplicate fails leaves no index and no ledger row, and a rerun builds it", func(t *testing.T) {
+		onSteps(t, "ST-SUP-RC01-OC38-T07")
+	})
+	t.Run("ST-SUP-RC01-OC38-T08 Each relation that takes the name of a step index fails the step with no ledger row", func(t *testing.T) {
+		onSteps(t, "ST-SUP-RC01-OC38-T08")
+	})
+	t.Run("ST-SUP-RC01-OC24-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T01") })
+	t.Run("ST-SUP-RC01-OC44-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T01") })
+	// The cases of testdata/relax_steps_test.go run in the same generated module, under TestRelaxSteps.
+	t.Run("ST-SUP-RC01-OC45-T03 Each relax migration scans no row under its strong lock, and the release before starts and works after each one", func(t *testing.T) {
+		onRelax(t, "ST-SUP-RC01-OC45-T03")
+	})
+	t.Run("ST-SUP-RC01-OC45-T04 The migration job takes a database with rows through the relax steps to the schema of a new database, and the release before migrates again on it", func(t *testing.T) {
+		onRelax(t, "ST-SUP-RC01-OC45-T04")
+	})
+	t.Run("ST-SUP-RC01-OC44-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T02") })
+	t.Run("ST-SUP-RC01-OC39-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T01") })
+	t.Run("ST-SUP-RC01-OC24-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T03") })
+	t.Run("ST-SUP-RC01-OC24-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T04") })
+	t.Run("ST-SUP-RC01-OC24-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T05") })
+	t.Run("ST-SUP-RC01-OC24-T06 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T06") })
+	t.Run("ST-SUP-RC01-OC24-T07 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T07") })
+	t.Run("ST-SUP-RC01-OC24-T10 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T10") })
+	t.Run("ST-SUP-RC01-OC40-T04 The schema manifest names the tenant key of each owned table, which holds on PostgreSQL with row-level security", func(t *testing.T) {
+		files, _, err := new(postgresadapter.Generator).Generate(widgetService(widgetEntities()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := generated(t, files, "widgets/schema_manifest.go")
+		for _, want := range []string{
+			`{Name: "widgets_tenant_id_fkey", Kind: manifest.KindForeignKey, Definition: "FOREIGN KEY (tenant_id) REFERENCES public.stego_tenants(tenant_id)"}`,
+			`TenantKey: &manifest.TenantKey{Name: "widgets_tenant_id_fkey", Column: "tenant_id"}`,
+			`TenantKey: &manifest.TenantKey{Name: "orders_tenant_id_fkey", Column: "tenant_id"}`,
+		} {
+			// gofmt aligns the values of the fields of a table.
+			if !strings.Contains(strings.ReplaceAll(source, "TenantKey:   &", "TenantKey: &"), want) {
+				t.Errorf("the schema manifest does not hold %s:\n%s", want, source)
+			}
+		}
+		if n := strings.Count(strings.ReplaceAll(source, "TenantKey:   &", "TenantKey: &"), "TenantKey: &manifest.TenantKey{"); n != 2 {
+			t.Errorf("the schema manifest names %d tenant keys, want one for each owned table and none for the shared catalogs", n)
+		}
+		// pg_get_constraintdef quotes a tenant column that is a keyword, so the manifest does too.
+		keyword := orderService("storage")
+		keyword.Tenancy = &gen.Tenancy{Key: "user"}
+		if files, _, err = new(postgresadapter.Generator).Generate(keyword); err != nil {
+			t.Fatal(err)
+		}
+		if source := generated(t, files, "storage/schema_manifest.go"); !strings.Contains(source, `Definition: "FOREIGN KEY (\"user\") REFERENCES public.stego_tenants(tenant_id)"`) {
+			t.Errorf("the tenant key of the tenant column user is not quoted:\n%s", source)
+		}
+		onPostgres(t, "ST-SUP-RC01-OC40-T04")
+	})
+	t.Run("ST-SUP-RC01-OC39-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T03") })
+	t.Run("ST-SUP-RP15-LC01-T15 The release before accepts each emitted step form, NOT VALID and validated, and the release of the step refuses NOT VALID", func(t *testing.T) {
+		onSteps(t, "ST-SUP-RP15-LC01-T15")
+	})
 	t.Run("ST-SUP-RC01-OC41-T03 A service that needs the store is refused on the runtime data path", func(t *testing.T) {
 		refused := map[string]func(*gen.Context){
 			"schema_generation": func(ctx *gen.Context) {

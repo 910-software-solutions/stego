@@ -5,13 +5,17 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -56,7 +60,8 @@ func crudContext() gen.Context {
 			{Name: "contact", Type: types.FieldTypeJsonb, Sensitivity: "pii", Optional: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "customer", Permissions: permissions(types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 		{Name: "Todo", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "done", Type: types.FieldTypeBool, Optional: true},
-			{Name: "meta", Type: types.FieldTypeJsonb, Optional: true}},
+			{Name: "meta", Type: types.FieldTypeJsonb, Optional: true}, {Name: "due_at", Type: types.FieldTypeTimestamp, Optional: true}, {Name: "seen_at", Type: types.FieldTypeTimestamp},
+			{Name: "note", Type: types.FieldTypeString, Optional: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "todo", Permissions: permissions(types.OpPatch, types.OpUpdate, types.OpDelete), PublicReasons: reasons}},
 	}
 	// Folder and Book give a scoped collection: each book is of one folder, and its create is decided on edit of the
@@ -80,8 +85,29 @@ func crudContext() gen.Context {
 			{Name: "generation", Type: types.FieldTypeInt64, Default: 1}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "quota", Permissions: map[types.Operation]string{types.OpRead: "view", types.OpList: "view", types.OpUpsert: "edit"},
 				References: map[string]types.Reference{"folder_id": {Relation: "folder", Permission: "edit"}}}},
+		// Meeting gives timestamps that the client sets (ST-DECL-Q16): starts_at is required, ends_at optional, and
+		// noted_at stays server-managed (ST-SUP-RC20-OC17).
+		types.Entity{Name: "Meeting", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString},
+			{Name: "starts_at", Type: types.FieldTypeTimestamp, ClientSet: true}, {Name: "ends_at", Type: types.FieldTypeTimestamp, Optional: true, ClientSet: true},
+			{Name: "noted_at", Type: types.FieldTypeTimestamp}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "meeting", Permissions: permissions(types.OpUpdate, types.OpPatch), PublicReasons: reasons}},
+		// Label gives an optional implicit field with a read: the view holds it as a pointer, and a row whose
+		// implicit column is NULL is not found in the collection (ST-SUP-RC20-OC23, ST-SUP-Q128 (B)).
+		types.Entity{Name: "Label", Fields: []types.Field{{Name: "source", Type: types.FieldTypeString, Optional: true}, {Name: "name", Type: types.FieldTypeString}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "label", Permissions: permissions(), PublicReasons: reasons}},
+		// Rack, Card and Mark give a parent chain of three levels: a mark is of a card, which is of a rack, which is
+		// of a folder (ST-SUP-RC20-OC24).
+		types.Entity{Name: "Rack", Fields: []types.Field{{Name: "folder_id", Type: types.FieldTypeRef, To: "Folder"}, {Name: "name", Type: types.FieldTypeString}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "rack", Permissions: permissions(), PublicReasons: reasons,
+				References: map[string]types.Reference{"folder_id": {Relation: "parent", Permission: "edit"}}}},
+		types.Entity{Name: "Card", Fields: []types.Field{{Name: "rack_id", Type: types.FieldTypeRef, To: "Rack"}, {Name: "title", Type: types.FieldTypeString}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "card", Permissions: permissions(), PublicReasons: reasons,
+				References: map[string]types.Reference{"rack_id": {Relation: "parent", Permission: "edit"}}}},
+		types.Entity{Name: "Mark", Fields: []types.Field{{Name: "card_id", Type: types.FieldTypeRef, To: "Card"}, {Name: "label", Type: types.FieldTypeString}, {Name: "note", Type: types.FieldTypeString}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "mark", Permissions: permissions(types.OpUpdate, types.OpPatch, types.OpDelete, types.OpUpsert), PublicReasons: reasons,
+				References: map[string]types.Reference{"card_id": {Relation: "parent", Permission: "edit"}}}},
 	)
-	return gen.Context{
+	return withSchema(gen.Context{
 		ModuleName:      crudModule,
 		OutDirName:      "out",
 		OutputNamespace: "api",
@@ -92,7 +118,7 @@ func crudContext() gen.Context {
 		Collections: []types.Collection{
 			{Name: "orders", Entity: "Order", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpPatch, types.OpDelete}, Patchable: []string{"qty"}},
 			{Name: "customers", Entity: "Customer", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpDelete}},
-			{Name: "todos", Entity: "Todo", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpPatch, types.OpUpdate, types.OpDelete}, Patchable: []string{"title", "done", "meta"}},
+			{Name: "todos", Entity: "Todo", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpPatch, types.OpUpdate, types.OpDelete}, Patchable: []string{"title", "done", "meta", "note"}},
 			{Name: "folders", Entity: "Folder", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpDelete}},
 			{Name: "folder-books", Entity: "Book", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpPatch, types.OpDelete}, Patchable: []string{"title"}},
 			{Name: "folder-settings", Entity: "Setting", Scope: map[string]string{"folder_id": "Folder"}, Implicit: map[string]string{"source": "setting"}, Operations: []types.Operation{types.OpList, types.OpUpsert}, UpsertKey: []string{"name"}},
@@ -101,6 +127,13 @@ func crudContext() gen.Context {
 			{Name: "books", Entity: "Book", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate}},
 			{Name: "folder-flags", Entity: "Setting", Scope: map[string]string{"folder_id": "Folder"}, Implicit: map[string]string{"source": "flag"}, PathPrefix: "/folders/{folder_id}/flags", Operations: []types.Operation{types.OpUpsert}, UpsertKey: []string{"name"}},
 			{Name: "folder-quotas", Entity: "Quota", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpList, types.OpUpsert}, UpsertKey: []string{"name"}, Concurrency: types.ConcurrencyOptimistic},
+			{Name: "meetings", Entity: "Meeting", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate, types.OpPatch}, Patchable: []string{"starts_at", "ends_at"}},
+			{Name: "green-labels", Entity: "Label", PathPrefix: "/green-labels", Implicit: map[string]string{"source": "green"}, Operations: []types.Operation{types.OpCreate, types.OpRead}},
+			// /folders/{folder_id}/racks, /folders/{folder_id}/racks/{rack_id}/cards and
+			// /folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks.
+			{Name: "folder-racks", Entity: "Rack", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}},
+			{Name: "rack-cards", Entity: "Card", Scope: map[string]string{"rack_id": "Rack"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}},
+			{Name: "card-marks", Entity: "Mark", Scope: map[string]string{"card_id": "Card"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList, types.OpUpdate, types.OpPatch, types.OpDelete, types.OpUpsert}, Patchable: []string{"note"}, UpsertKey: []string{"label"}},
 		},
 		SlotBindings: []types.SlotDeclaration{
 			{Slot: "before_create", Collection: "orders", Chain: []string{"order-gate"}, ShortCircuit: true},
@@ -115,7 +148,7 @@ func crudContext() gen.Context {
 		Tenancy:        &gen.Tenancy{Key: "tenant_id"},
 		Idempotency:    &types.Idempotency{RequiredOn: []types.Operation{types.OpCreate, types.OpPatch}, Retention: "24h", Fingerprint: "body"},
 		PeerNamespaces: map[string]string{"idempotency": "idempotency", "postgres-adapter": "storage", gen.TenancyComponent: "tenancy", "command": "commands", "query": "queries"},
-	}
+	})
 }
 
 // crudFiles generates the rest-api files of ctx, by path.
@@ -313,7 +346,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.80.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.112.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -338,7 +371,7 @@ func (run *crudRun) passed(t *testing.T, p *crudProject, endpoint, key, id strin
 		run.output, run.err = p.goCommand([]string{"STEGO_TEST_SPICEDB=" + endpoint, "STEGO_TEST_SPICEDB_KEY=" + key},
 			"test", "-count=1", "-timeout=300s", "-v", "-run", "^TestCrud$", "./check")
 	})
-	if !strings.Contains(run.output, "--- PASS: TestCrud/"+id+"_") {
+	if !ownPass(run.output, "TestCrud", id) {
 		t.Fatalf("the check %s of the generated service did not run and pass (go test: %v):\n%s", id, run.err, run.output)
 	}
 }
@@ -511,6 +544,144 @@ func TestCrudService(t *testing.T) {
 	}
 }
 
+func TestTopLevelCreate(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC01-T04 The create command of an entity with no parent decides its permission on the service-level resource", func(t *testing.T) {
+		decided := func() gen.Context {
+			c := crudContext()
+			c.Tenancy = &gen.Tenancy{Key: "tenant_id", Provisioning: &types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire"}}
+			c.Entities[3].Permissions[types.OpCreate] = "create"
+			return c
+		}
+		files := crudFiles(t, decided())
+		folders := string(files["api/folders_handler.go"])
+		want := regexp.MustCompile(`\tPermission: +"create",\n\tResource: +&command\.Resource\{Type: "service", Service: "crud"\},\n\}\)\)$`)
+		start := strings.Index(folders, "var foldersCreateCommand = ")
+		if start < 0 {
+			t.Fatal("the handler of folders declares no create command")
+		}
+		end := strings.Index(folders[start:], "}))")
+		if spec := folders[start : start+end+3]; !want.MatchString(spec) {
+			t.Errorf("the create command of folders is\n%s\nwant it to decide create on service:crud", spec)
+		}
+		// A create under a parent stays decided on the parent through its reference, and a public create decides
+		// nothing of its own.
+		books := string(files["api/folder_books_handler.go"])
+		if strings.Contains(books, "Service:") {
+			t.Error("the create of folder-books, a collection under a parent, is decided on the service-level resource")
+		}
+		if orders := string(files["api/orders_handler.go"]); strings.Contains(orders, "Service:") {
+			t.Error("the public create of orders decides a permission")
+		}
+		for name, change := range map[string]func(*gen.Context){
+			"a create under a parent that is not public": func(c *gen.Context) { c.Entities[4].Permissions[types.OpCreate] = "edit" },
+			"no tenant provisioning":                     func(c *gen.Context) { c.Tenancy.Provisioning = nil },
+		} {
+			c := decided()
+			change(&c)
+			if files, _, err := new(Generator).Generate(c); err == nil || files != nil {
+				t.Errorf("%s: generation gave %d files and %v, want a refusal", name, len(files), err)
+			}
+		}
+	})
+}
+
+func TestNestedScope(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC24-T11 A collection under a scoped collection is generated with the route and the OpenAPI parameters of each ancestor, and a chain that names a parameter twice or out of order is refused", func(t *testing.T) {
+		marks := "/api/v1/folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks"
+		files, wiring, err := new(Generator).Generate(crudContext())
+		if err != nil {
+			t.Fatalf("a collection three levels under its top ancestor is refused: %v", err)
+		}
+		routes := strings.Join(wiring.Routes, "\n")
+		for _, route := range []string{"POST " + marks, "GET " + marks, "PUT " + marks, "GET " + marks + "/{id}", "PUT " + marks + "/{id}",
+			"PATCH " + marks + "/{id}", "DELETE " + marks + "/{id}", "POST /api/v1/folders/{folder_id}/racks/{rack_id}/cards"} {
+			if !strings.Contains(routes, fmt.Sprintf("%q", route)) {
+				t.Errorf("the wiring has no route %s:\n%s", route, routes)
+			}
+		}
+		var doc struct {
+			Paths map[string]map[string]struct {
+				Parameters []struct{ Name, In string } `json:"parameters"`
+			} `json:"paths"`
+		}
+		for _, f := range files {
+			if strings.HasSuffix(f.Path, "openapi.json") {
+				if err := json.Unmarshal(f.Content, &doc); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		for path, want := range map[string][]string{marks: {"folder_id", "rack_id", "card_id"}, marks + "/{id}": {"folder_id", "rack_id", "card_id", "id"}} {
+			operations, ok := doc.Paths[path]
+			if !ok {
+				t.Fatalf("the OpenAPI document has no path %s", path)
+			}
+			for method, op := range operations {
+				var got []string
+				for _, p := range op.Parameters {
+					if p.In == "path" {
+						got = append(got, p.Name)
+					}
+				}
+				if !slices.Equal(got, want) {
+					t.Errorf("%s %s has the path parameters %v, want %v", method, path, got, want)
+				}
+			}
+		}
+		// A leaf path prefix keeps the chain of its ancestors.
+		c := crudContext()
+		c.Collections[len(c.Collections)-1].PathPrefix = "/notes"
+		_, wiring, err = new(Generator).Generate(c)
+		if err != nil || !strings.Contains(strings.Join(wiring.Routes, "\n"), "\"GET /api/v1/folders/{folder_id}/racks/{rack_id}/cards/{card_id}/notes/{id}\"") {
+			t.Errorf("a leaf path prefix under the chain gave %v, want the route under each ancestor", err)
+		}
+		for name, change := range map[string]func(*gen.Context){
+			"a scope field of the same name at two levels": func(c *gen.Context) {
+				mark := &c.Entities[len(c.Entities)-1]
+				mark.Fields[0].Name = "rack_id"
+				mark.References = map[string]types.Reference{"rack_id": {Relation: "parent", Permission: "edit"}}
+				c.Collections[len(c.Collections)-1].Scope = map[string]string{"rack_id": "Card"}
+			},
+			"a full path that names a parameter of no ancestor": func(c *gen.Context) {
+				c.Collections[len(c.Collections)-1].PathPrefix = "/folders/{folder_id}/boxes/{box_id}/cards/{card_id}/marks"
+			},
+			"a full path that names the ancestors out of order": func(c *gen.Context) {
+				c.Collections[len(c.Collections)-1].PathPrefix = "/racks/{rack_id}/folders/{folder_id}/cards/{card_id}/marks"
+			},
+		} {
+			c := crudContext()
+			change(&c)
+			if files, wiring, err := new(Generator).Generate(c); err == nil || files != nil || wiring != nil {
+				t.Errorf("%s: generation gave %d files and %v, want a refusal", name, len(files), err)
+			}
+		}
+	})
+}
+
+func TestFieldRelationship(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC05-T06 A public create of an entity with a field-sourced relationship is refused, and a refused field value is 400 naming the field", func(t *testing.T) {
+		c := crudContext()
+		c.Entities[0].Fields = append(c.Entities[0].Fields, types.Field{Name: "owner_id", Type: types.FieldTypeString})
+		c.Entities[0].Relationships = []types.Relationship{{Relation: "owner", SubjectSource: types.SubjectSourceField, SubjectField: "owner_id", SubjectType: "user"}}
+		files, wiring, err := new(Generator).Generate(c)
+		if err == nil || files != nil || wiring != nil || !strings.Contains(err.Error(), "public create of Order") || !strings.Contains(err.Error(), "owner_id") {
+			t.Fatalf("a public create with a field relationship gave %d files and %v, want a refusal naming the entity and the field", len(files), err)
+		}
+		// A caller-sourced relationship is the caller's own: the public create is not refused for it.
+		c = crudContext()
+		c.Entities[0].Relationships = []types.Relationship{{Relation: "creator", SubjectSource: types.SubjectSourceCaller, SubjectType: "user"}}
+		if _, _, err := new(Generator).Generate(c); err != nil {
+			t.Fatalf("a public create with a caller relationship is refused: %v", err)
+		}
+		// The runtime is the guard of a field subject on every interface; the handlers answer its refusal with 400 and
+		// one validation entry that names the field.
+		answer := extractMethodBody(string(crudFiles(t, c)["api/runtime.go"]), "func (rt *Runtime) answerWrite(")
+		if !strings.Contains(answer, "case http.StatusBadRequest:") || !strings.Contains(answer, "Validation([]ValidationError{{Field: o.Field, Message: o.Reason}})") {
+			t.Fatalf("answerWrite does not answer a refused field value with 400 naming the field:\n%s", answer)
+		}
+	})
+}
+
 // crudCheckIDs are the checks of the generated service that this test runs, each with the ID of the test record it
 // proves.
 var crudCheckIDs = []string{
@@ -533,6 +704,10 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC28-OC01-T03 A secret field reaches neither before, after nor the stored row",
 	"ST-SUP-RC20-OC38-T01 A list on the runtime data path pages by cursor in the requested order, with no total",
 	"ST-SUP-RC20-OC37-T08 A jsonb field is written, read and patched as JSON on the runtime data path",
+	"ST-SUP-RC20-OC37-T11 A denied create answers 404 with no empty ID, and a bad Idempotency-Key names its fault",
+	"ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause",
+	"ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC",
+	"ST-SUP-RC20-OC37-T12 An optional field that is NULL is absent from the answer, and an empty or false value is answered",
 	"ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response",
 	"ST-SUP-RC28-OC01-T07 A pii jsonb field is the redaction marker in the before, the after and the patch",
 	"ST-SUP-RC20-OC24-T05 A scoped collection on the runtime data path checks each row against the parent of the path",
@@ -543,9 +718,15 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC13-T04 An upsert finds its row only under its own parent and implicit value",
 	"ST-SUP-RC20-OC13-T05 An upsert calls its validate gate before both branches and on_entity_changed after both",
 	"ST-SUP-RC20-OC23-T05 A write of a row of another implicit value is not found and changes nothing, and a patch keeps the implicit value",
+	"ST-SUP-RC20-OC23-T07 A read of a row whose optional implicit field is NULL is not found",
 	"ST-SUP-RC20-OC24-T06 A list cursor of one parent is refused for another",
 	"ST-SUP-RC20-OC24-T07 An upper-case UUID in a path or a ref names the same row as its lower-case form",
+	"ST-SUP-RC20-OC24-T09 A collection three levels under its top ancestor checks every ancestor of the path, and a wrong, foreign or smuggled ancestor is 404",
+	"ST-SUP-RC20-OC24-T10 A caller that may not read one ancestor of the path gets 404, the same as for a missing ancestor",
+	"ST-SUP-RC20-OC24-T12 A write by a caller that may edit the row but not read one ancestor of the path gets 404 and changes nothing",
+	"ST-SUP-RC20-OC24-T13 The parent chain check reads the ancestors from the top down, so a caller learns nothing of a row below an ancestor it may not read",
 	"ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders",
+	"ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time",
 	"ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages",
 }
 
@@ -583,6 +764,233 @@ func TestBodyLimit(t *testing.T) {
 }
 `
 
+// everyFieldCheck is a test of the generated validation.go: a body with two bad members gets one entry for each.
+const everyFieldCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func TestEveryField(t *testing.T) {
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("an invalid body reached the handler")
+	}))
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader("{\"title\":7,\"done\":\"no\"}"))
+	r.Header.Set("Content-Type", "application/json")
+	answer := httptest.NewRecorder()
+	handler.ServeHTTP(answer, r)
+	var problem struct {
+		Errors []struct {
+			Field string \x60json:"field"\x60
+		} \x60json:"validation_errors"\x60
+	}
+	if err := json.Unmarshal(answer.Body.Bytes(), &problem); answer.Code != http.StatusBadRequest || err != nil {
+		t.Fatalf("got %d (%v): %s", answer.Code, err, answer.Body)
+	}
+	var fields []string
+	for _, e := range problem.Errors {
+		fields = append(fields, e.Field)
+	}
+	slices.Sort(fields)
+	if !slices.Equal(fields, []string{"done", "title"}) {
+		t.Fatalf("the problem lists %v, want one entry for done and one for title: %s", fields, answer.Body)
+	}
+}
+`
+
+// requiredMemberCheck is a test of the generated validation.go: a create or a PUT whose body leaves out the required
+// member title gets a 400 validation problem that names title, before any decode of the handler; a body that holds
+// title reaches the handler.
+const requiredMemberCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestRequiredMember(t *testing.T) {
+	reached := false
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		reached = false
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		answer := httptest.NewRecorder()
+		handler.ServeHTTP(answer, r)
+		return answer
+	}
+	const path = "/api/v1/todos/0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69"
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/v1/todos", "{\"done\":true}"},
+		{http.MethodPost, "/api/v1/todos", "{}"},
+		{http.MethodPut, path, "{\"done\":true}"},
+		{http.MethodPut, path, "{}"},
+	} {
+		answer := send(c.method, c.path, c.body)
+		var problem struct {
+			Errors []struct {
+				Field   string \x60json:"field"\x60
+				Message string \x60json:"message"\x60
+			} \x60json:"validation_errors"\x60
+		}
+		if err := json.Unmarshal(answer.Body.Bytes(), &problem); answer.Code != http.StatusBadRequest || err != nil || reached {
+			t.Fatalf("%s %s %s got %d (%v), handler reached %v: %s", c.method, c.path, c.body, answer.Code, err, reached, answer.Body)
+		}
+		if len(problem.Errors) != 1 || problem.Errors[0].Field != "title" || !strings.Contains(problem.Errors[0].Message, "title") {
+			t.Fatalf("%s %s %s: the problem lists %+v, want one entry that names title", c.method, c.path, c.body, problem.Errors)
+		}
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut} {
+		target := "/api/v1/todos"
+		if method == http.MethodPut {
+			target = path
+		}
+		if answer := send(method, target, "{\"title\":\"t\"}"); answer.Code != http.StatusNoContent || !reached {
+			t.Fatalf("%s %s with title got %d, handler reached %v: %s", method, target, answer.Code, reached, answer.Body)
+		}
+	}
+}
+`
+
+func TestValidationEveryField(t *testing.T) {
+	ctx := crudContext()
+	ctx.Conventions.RequestValidation = "openapi-schema"
+	p := newCrudProject(t, ctx, crudFiles(t, ctx))
+	p.write("out/api/every_field_test.go", []byte(strings.ReplaceAll(everyFieldCheck, "\\x60", "`")))
+	p.write("out/api/required_member_test.go", []byte(strings.ReplaceAll(requiredMemberCheck, "\\x60", "`")))
+	t.Run("ST-SUP-RC20-OC05-T04 A body with two bad members gets a validation problem with one entry for each", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestEveryField$", "./out/api"); err != nil {
+			t.Fatalf("the check of every field failed: %v\n%s", err, output)
+		}
+	})
+	t.Run("ST-SUP-RC20-OC05-T07 A create or a PUT that leaves out a required member gets a validation problem that names it", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestRequiredMember$", "./out/api"); err != nil {
+			t.Fatalf("the check of a missing required member failed: %v\n%s", err, output)
+		}
+	})
+}
+
+// validationCapCheck is a test of the generated validation.go: a failure of many members lists at most
+// MaxValidationErrors of them, and then one entry that counts the rest.
+const validationCapCheck = `package api
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
+)
+
+func TestValidationCap(t *testing.T) {
+	for _, failures := range []int{MaxValidationErrors, MaxValidationErrors + 1, 120} {
+		var multi openapi3.MultiError
+		for i := 0; i < failures; i++ {
+			multi = append(multi, &openapi3.SchemaError{Reason: "value must be a string"})
+		}
+		// A nested MultiError counts against the same cap.
+		got := parseValidationErrors(openapi3.MultiError{multi[:failures/2], multi[failures/2:]})
+		want := failures
+		if failures > MaxValidationErrors {
+			want = MaxValidationErrors + 1
+		}
+		if len(got) != want {
+			t.Fatalf("%d failures give %d entries, want %d", failures, len(got), want)
+		}
+		last := got[len(got)-1].Message
+		if failures > MaxValidationErrors && last != fmt.Sprintf("%d more failures not listed", failures-MaxValidationErrors) {
+			t.Fatalf("%d failures end with %q, want the count of the failures not listed", failures, last)
+		}
+		if failures <= MaxValidationErrors && last != "value must be a string" {
+			t.Fatalf("%d failures end with %q, want no count entry", failures, last)
+		}
+	}
+	if MaxValidationErrors != 50 {
+		t.Fatalf("MaxValidationErrors is %d, want 50", MaxValidationErrors)
+	}
+}
+`
+
+// markedValueCheck is a test of the generated validation.go: no validation entry quotes a value of the request.
+const markedValueCheck = `package api
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/getkin/kin-openapi/openapi3filter"
+)
+
+func TestNoMarkedValue(t *testing.T) {
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("an invalid body reached the handler")
+	}))
+	for _, body := range []string{
+		"{\"title\":7,\"done\":\"MARKED-VALUE-1\"}",
+		"{\"title\":{\"k\":\"MARKED-VALUE-2\"},\"done\":true}",
+		"{\"title\":[\"MARKED-VALUE-3\"]}",
+		"{\"title\":\"MARKED-VALUE-4",
+		"{\"title\": MARKED-VALUE-5}",
+		"MARKED-VALUE-6",
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		answer := httptest.NewRecorder()
+		handler.ServeHTTP(answer, r)
+		if answer.Code != http.StatusBadRequest {
+			t.Fatalf("the body %s got %d: %s", body, answer.Code, answer.Body)
+		}
+		if strings.Contains(answer.Body.String(), "MARKED-VALUE") {
+			t.Fatalf("the problem for the body %s quotes the value: %s", body, answer.Body)
+		}
+	}
+	// The error forms that quote a value in their own text: a schema error with no reason and a parse error.
+	for _, err := range []error{
+		&openapi3.SchemaError{Value: "MARKED-VALUE-7"},
+		&openapi3filter.ParseError{Value: "MARKED-VALUE-8", Reason: "cannot decode the body"},
+		&openapi3filter.ParseError{Value: "MARKED-VALUE-9"},
+		&openapi3filter.RequestError{Err: &openapi3filter.ParseError{Value: "MARKED-VALUE-10"}},
+	} {
+		for _, entry := range parseValidationErrors(err) {
+			if strings.Contains(entry.Field+entry.Message, "MARKED-VALUE") {
+				t.Fatalf("the entry %+v quotes the value of %T", entry, err)
+			}
+		}
+	}
+}
+`
+
+func TestValidationBounds(t *testing.T) {
+	ctx := crudContext()
+	ctx.Conventions.RequestValidation = "openapi-schema"
+	p := newCrudProject(t, ctx, crudFiles(t, ctx))
+	p.write("out/api/cap_test.go", []byte(validationCapCheck))
+	p.write("out/api/marked_test.go", []byte(markedValueCheck))
+	t.Run("ST-SUP-RC20-OC05-T05 A validation problem lists at most 50 failed members and one entry that counts the rest", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestValidationCap$", "./out/api"); err != nil {
+			t.Fatalf("the check of the cap failed: %v\n%s", err, output)
+		}
+	})
+	t.Run("ST-SUP-RC20-OC05-T06 No validation entry quotes a value of the request", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestNoMarkedValue$", "./out/api"); err != nil {
+			t.Fatalf("the check of the marked values failed: %v\n%s", err, output)
+		}
+	})
+}
+
 func TestValidationBodyLimit(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC21-T04 The emitted middleware reads at most MaxRequestBody bytes and answers a larger body with 413", func(t *testing.T) {
 		ctx := crudContext()
@@ -598,6 +1006,109 @@ func TestValidationBodyLimit(t *testing.T) {
 		}
 	})
 }
+
+func TestValidationTokenLimit(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC21-T05 A body with more JSON values than MaxBodyTokens is refused before the schema check builds its failures", func(t *testing.T) {
+		ctx := crudContext()
+		ctx.Conventions.RequestValidation = "openapi-schema"
+		files := crudFiles(t, ctx)
+		p := newCrudProject(t, ctx, files)
+		p.write("out/api/token_limit_test.go", []byte(tokenLimitCheck))
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestTokenLimit$", "./out/api"); err != nil {
+			t.Fatalf("the token limit check failed: %v\n%s", err, output)
+		}
+	})
+}
+
+// tokenLimitCheck is a test of the generated validation.go: a body of more than MaxBodyTokens values gets one
+// validation entry and no schema failures, and the schema check is not run for it.
+const tokenLimitCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func post(t *testing.T, body string) (*httptest.ResponseRecorder, bool) {
+	t.Helper()
+	called := false
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/todos", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	answer := httptest.NewRecorder()
+	handler.ServeHTTP(answer, request)
+	return answer, called
+}
+
+func entries(t *testing.T, answer *httptest.ResponseRecorder) []map[string]any {
+	t.Helper()
+	var problem struct {
+		Errors []map[string]any ` + "`json:\"validation_errors\"`" + `
+	}
+	if err := json.Unmarshal(answer.Body.Bytes(), &problem); err != nil {
+		t.Fatalf("the answer is not a problem: %v: %s", err, answer.Body)
+	}
+	return problem.Errors
+}
+
+func TestTokenLimit(t *testing.T) {
+	// A request schema with an array of integers whose items each fail, so the schema check would make one failure
+	// for each item of a body that the limit lets through.
+	openAPISpec = []byte(` + "`" + `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/api/v1/todos":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"tags":{"type":"array","items":{"type":"integer","maximum":0}},"name":{"type":"string","maxLength":5}}}}}},"responses":{"200":{"description":"ok"}}}}}}` + "`" + `)
+	items := func(n int) string { return strings.Repeat("1,", n-1) + "1" }
+	// One MiB of items: about 524000 values.
+	many := (MaxRequestBody - 64) / 2
+	for name, body := range map[string]string{
+		"a one MiB array":                 "{\"tags\":[" + items(many) + "]}",
+		"1e400 first":                     "{\"tags\":[1e400," + items(many-1) + "]}",
+		"-1e400 first":                    "{\"tags\":[-1e400," + items(many-1) + "]}",
+		"1e400 last":                      "{\"tags\":[" + items(many-1) + ",1e400]}",
+		"1e400 in a member before":        "{\"name\":1e400,\"tags\":[" + items(many-1) + "]}",
+		"one token more than the limit":   "{\"tags\":[" + items(MaxBodyTokens-2) + "]}",
+	} {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		answer, called := post(t, body)
+		runtime.ReadMemStats(&after)
+		if answer.Code != http.StatusBadRequest || called {
+			t.Fatalf("%s got %d and called the handler %v", name, answer.Code, called)
+		}
+		list := entries(t, answer)
+		if len(list) != 1 || !strings.Contains(list[0]["message"].(string), "more than 10000 JSON values") {
+			t.Fatalf("%s got %d entries %.200v, want one entry that names the limit", name, len(list), list)
+		}
+		if grown := after.TotalAlloc - before.TotalAlloc; grown > 32<<20 {
+			t.Fatalf("%s allocated %d bytes", name, grown)
+		}
+	}
+	// At the limit, the schema check runs and lists its failures, at most 50 and one entry that counts the rest.
+	answer, called := post(t, "{\"tags\":["+items(MaxBodyTokens-3)+"]}")
+	if answer.Code != http.StatusBadRequest || called {
+		t.Fatalf("a bad body at the token limit got %d and called the handler %v", answer.Code, called)
+	}
+	if list := entries(t, answer); len(list) != 51 {
+		t.Fatalf("a body at the token limit got %d entries, want 50 failures and one count", len(list))
+	}
+	// A body that is not JSON is refused, also when it is cut after a value.
+	for _, body := range []string{"{", "{\"tags\":[1,", "{\"tags\" 1}", "1e400 x"} {
+		// The limit refuses it itself: an error of the count never lets a body pass to the schema check.
+		if answer, called := post(t, body); answer.Code != http.StatusBadRequest || called || !strings.Contains(answer.Body.String(), "not valid JSON") {
+			t.Fatalf("the body %q got %d and called the handler %v: %s", body, answer.Code, called, answer.Body)
+		}
+	}
+	if answer, called := post(t, "{\"tags\":[0],\"name\":\"ok\"}"); answer.Code != http.StatusNoContent || !called {
+		t.Fatalf("a valid body got %d and called the handler %v", answer.Code, called)
+	}
+}
+`
 
 // corsCheck is a test of the generated cors.go alone, in a module of its own.
 const corsCheck = `package api
@@ -813,6 +1324,27 @@ func TestChangeEvents(t *testing.T) {
 			if files, _, err := new(Generator).Generate(c); err == nil || files != nil || !strings.Contains(err.Error(), "ST-SUP-RC20-OC40") {
 				t.Errorf("%s: generation gave %d files and %v, want a refusal that names ST-SUP-RC20-OC40", name, len(files), err)
 			}
+		}
+	})
+}
+
+// ownPass tells whether output, the text of go test -v, holds the pass line of the subtest of id itself, directly
+// under a test whose name matches parent, a regular expression. A subtest one level down has the same name prefix,
+// but go test indents its line four more spaces, so its pass never counts as the pass of its parent
+// (ST-STD-CODE-R07).
+func ownPass(output, parent, id string) bool {
+	return regexp.MustCompile(`(?m)^    --- PASS: ` + parent + `/` + regexp.QuoteMeta(id) + `_`).MatchString(output)
+}
+
+func TestOwnPass(t *testing.T) {
+	t.Run("ST-STD-CODE-R07-T02 In the restapi wrapper, a pass of a subtest under the subtest of a record is not its pass", func(t *testing.T) {
+		output := "=== RUN   TestCrud/ST-X-T01_a\n        --- PASS: TestCrud/ST-X-T01_a/child (0.00s)\n    --- FAIL: TestCrud/ST-X-T01_a (0.00s)\n" +
+			"    --- PASS: TestCrud/ST-X-T02_b (0.00s)\n        --- FAIL: TestCrud/ST-X-T02_b/child (0.00s)\n    --- PASS: TestCrud/ST-X-T03_c/d (0.00s)\n"
+		if ownPass(output, "TestCrud", "ST-X-T01") {
+			t.Fatal("a failed subtest counts as passed because a subtest under it passed")
+		}
+		if !ownPass(output, "TestCrud", "ST-X-T02") || !ownPass(output, "TestCrud", "ST-X-T03") {
+			t.Fatal("a passed subtest, also one whose title holds a slash, does not count as passed")
 		}
 	})
 }

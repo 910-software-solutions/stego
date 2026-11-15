@@ -1,0 +1,44 @@
+# The environment file of the service orders in the environment dev (ST-DLV-TD02). It meets each platform
+# requirement of platform-requirements.yaml. Each secret value is the canary text.
+version: 1
+service: orders
+environment: dev
+image: quay.io/example/orders@sha256:3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a
+destination:
+  cluster: https://api.dev.example.com:6443
+  namespace: orders-dev
+  overlay_path: overlays/dev
+secrets:
+  orders-database:
+    url: CANARY-SECRET-VALUE
+    password: CANARY-SECRET-VALUE
+configuration:
+  LOG_LEVEL: info
+  STEGO_QUERY_CURSOR_KEY_FILE: /etc/orders/cursor/key
+  STEGO_SPICEDB_ENDPOINT: spicedb.dev.example.com:50051
+  STEGO_SPICEDB_KEY_FILE: /etc/orders/spicedb/key
+backing_stores:
+  orders-db:
+    engine: postgres
+topics:
+  order-events:
+    topic: dev.orders.order-events
+identity_issuers:
+  sso:
+    issuer: https://sso.dev.example.com/auth/realms/dev
+ingresses:
+  http:
+    port: 8080
+    host: orders.dev.example.com
+egresses:
+  payments:
+    address: payments.dev.example.com
+    port: 443
+cluster_permissions:
+  read-config-maps:
+    api_group: ""
+    resource: configmaps
+    verbs: [get, list]
+pod_security:
+  pod-security:
+    level: restricted

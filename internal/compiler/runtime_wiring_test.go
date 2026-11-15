@@ -78,6 +78,18 @@ const storeArchetype = "components:\n  - rest-api\n  - postgres-adapter\n  - ten
 // component of the test staged as ga, and the project files of the fixture into a new folder.
 func newWiringProject(t *testing.T, binary, components string) *wiringProject {
 	t.Helper()
+	p := newRegistryProject(t, binary, components)
+	if err := os.CopyFS(p.dir, os.DirFS(filepath.Join(wiringFixture, "project"))); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// newRegistryProject copies the registry of this repository with the components of the archetype given, each alpha
+// component of the test staged as ga, into a new folder, with a go.mod of the module wiringModule and no project
+// files.
+func newRegistryProject(t *testing.T, binary, components string) *wiringProject {
+	t.Helper()
 	p := &wiringProject{t: t, dir: t.TempDir(), binary: binary}
 	if err := os.CopyFS(filepath.Join(p.dir, "registry"), os.DirFS(filepath.Join("..", "..", "registry"))); err != nil {
 		t.Fatal(err)
@@ -92,9 +104,6 @@ func newWiringProject(t *testing.T, binary, components string) *wiringProject {
 		}
 		p.write(filepath.Join("registry", "components", name, "component.yaml"),
 			sunset.ReplaceAllString(strings.Replace(string(data), "stage: alpha\n", "stage: ga\n", 1), ""))
-	}
-	if err := os.CopyFS(p.dir, os.DirFS(filepath.Join(wiringFixture, "project"))); err != nil {
-		t.Fatal(err)
 	}
 	p.write("go.mod", "module "+wiringModule+"\n\ngo 1.26.11\n")
 	return p
@@ -275,8 +284,8 @@ func TestRuntimeDataPath(t *testing.T) {
 		}
 		fresh.stego("apply")
 		record := fresh.read(".stego/state.yaml")
-		if !strings.Contains(record, "format_version: 5") || strings.Contains(record, "data_path") {
-			t.Errorf("the record is not of format version 5 without a data path:\n%s", record)
+		if !strings.Contains(record, "format_version: 6") || strings.Contains(record, "data_path") {
+			t.Errorf("the record is not of format version 6 without a data path:\n%s", record)
 		}
 
 		// The same declaration without the command or the query generator: no component serves its data, so the
@@ -345,8 +354,8 @@ func TestRuntimeDataPath(t *testing.T) {
 			if !strings.Contains(string(output), "Summary: 0 to generate, 0 to update, 0 to delete") {
 				t.Errorf("the plan of the example %s changes its generated output:\n%s", example, output)
 			}
-			if record := p.read(".stego/state.yaml"); !strings.Contains(record, "format_version: 5") || strings.Contains(record, "data_path") {
-				t.Errorf("the record of the example %s is not of format version 5 without a data path", example)
+			if record := p.read(".stego/state.yaml"); !strings.Contains(record, "format_version: 6") || strings.Contains(record, "data_path") {
+				t.Errorf("the record of the example %s is not of format version 6 without a data path", example)
 			}
 			if _, err := os.Stat(filepath.Join(p.dir, "out", "internal", "storage", "store.go")); err == nil {
 				t.Errorf("the example %s holds the GORM store", example)
@@ -402,6 +411,14 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC01-OC41-T04 The runtime pool is opened through tenant.Open with the adapter's verified TLS configuration",
 	"ST-SUP-RC01-OC41-T07 The generated migration job runs again on its own database and refuses a database with tables it did not make",
 	"ST-SUP-RC29-OC23-T02 The generated migration job writes the schema to SpiceDB before the service starts",
+	"ST-SUP-RC27-OC11-T02 The provisioning routes pass the tenant check on an empty service",
+	"ST-SUP-RC27-OC09-T01 A caller without the provision permission cannot provision a tenant",
+	"ST-SUP-RC27-OC09-T03 A grant on the service-level resource of one tenant provisions and retires no tenant",
+	"ST-SUP-RC27-OC10-T01 A provision and a retire each leave one audit row in their transaction",
+	"ST-SUP-RC35-OC02-T02 A generated service runs one runner for each declared worker in the worker mode",
+	"ST-SUP-RC35-OC06-T04 A consuming worker that writes commits as the worker role, which may write nothing it did not declare",
+	"ST-SUP-RC27-OC12-T05 A retired tenant gets no worker run from the next tick, and its rows stay",
+	"ST-SUP-RC27-OC11-T01 A request for an unknown or retired tenant is refused before any handler",
 	"ST-SUP-RC20-OC37-T07 A collection create and read reach the generated handlers through the generated main.go",
 	"ST-SUP-RC32-OC02-T03 A declared command reaches its fill through the generated main.go",
 	"ST-SUP-RC33-OC02-T04 A declared query reaches its fill through the generated main.go",
@@ -412,6 +429,15 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC20-OC40-T03 A replay of a write with its idempotency key stages no second event",
 	"ST-SUP-RC20-OC40-T04 A write that rolls back after it staged its event leaves no outbox message and no record",
 }
+
+// The checks of the generated service that prove the UC requirements of the tenant provisioning (ST-DECL-UC10),
+// which TestRuntimeWiring runs after those of wiringCheckIDs.
+const (
+	provisionFirstCheck = "ST-DECL-UC10-R04-T02 An operator provisions the first tenant of an empty service"
+	provisionDecided    = "ST-DECL-UC10-R01-T01 A caller without the provision permission cannot provision a tenant"
+	provisionAudited    = "ST-DECL-UC10-R02-T01 A provision and a retire each leave one audit row in their transaction"
+	provisionGated      = "ST-DECL-UC10-R04-T01 A request for an unknown or retired tenant is refused before any handler"
+)
 
 // TestRuntimeWiring generates the test service with stego apply, builds it with the pinned Go, and runs the check of
 // testdata/runtime_wiring/check in its module once: the check runs the migration job and the service binary against
@@ -472,12 +498,18 @@ func TestRuntimeWiring(t *testing.T) {
 	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_WIRING_BINARY="+binary,
 		"STEGO_WIRING_NEXT_BINARY="+nextBinary)
 	output, runErr := cmd.CombinedOutput()
-	for _, id := range wiringCheckIDs {
-		t.Run(id, func(t *testing.T) {
-			name := strings.ReplaceAll(id, " ", "_")
-			if !strings.Contains(string(output), "--- PASS: TestWiring/"+name+" ") {
-				t.Fatalf("the check %s of the generated service did not run and pass (go test: %v):\n%s", strings.SplitN(id, " ", 2)[0], runErr, output)
-			}
-		})
+	passed := func(t *testing.T, id string) {
+		t.Helper()
+		name := strings.ReplaceAll(id, " ", "_")
+		if !strings.Contains(string(output), "--- PASS: TestWiring/"+name+" ") {
+			t.Fatalf("the check %s of the generated service did not run and pass (go test: %v):\n%s", strings.SplitN(id, " ", 2)[0], runErr, output)
+		}
 	}
+	for _, id := range wiringCheckIDs {
+		t.Run(id, func(t *testing.T) { passed(t, id) })
+	}
+	t.Run(provisionFirstCheck, func(t *testing.T) { passed(t, provisionFirstCheck) })
+	t.Run(provisionDecided, func(t *testing.T) { passed(t, provisionDecided) })
+	t.Run(provisionAudited, func(t *testing.T) { passed(t, provisionAudited) })
+	t.Run(provisionGated, func(t *testing.T) { passed(t, provisionGated) })
 }

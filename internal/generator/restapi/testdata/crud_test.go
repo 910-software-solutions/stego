@@ -30,8 +30,11 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
@@ -73,6 +76,13 @@ definition customer {
 	permission edit = owner
 }
 
+definition meeting {
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer
+	permission edit = owner
+}
+
 definition todo {
 	relation owner: user
 	relation viewer: user
@@ -108,7 +118,37 @@ definition quota {
 	permission edit = owner + folder->edit
 }
 
+definition rack {
+	relation parent: folder
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer + parent->edit
+	permission edit = owner + parent->edit
+}
+
+definition card {
+	relation parent: rack
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer + parent->edit
+	permission edit = owner + parent->edit
+}
+
+definition mark {
+	relation parent: card
+	relation owner: user
+	relation viewer: user
+	permission view = owner + viewer + parent->edit
+	permission edit = owner + parent->edit
+}
+
 definition event {
+	relation owner: user
+	permission view = owner
+	permission edit = owner
+}
+
+definition label {
 	relation owner: user
 	permission view = owner
 	permission edit = owner
@@ -116,7 +156,7 @@ definition event {
 `
 )
 
-var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas"}
+var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "meetings", "labels", "racks", "cards", "marks"}
 
 // env is the running service: its database with the runtime role, its runtimes and its HTTP server.
 type env struct {
@@ -127,6 +167,8 @@ type env struct {
 	verifier *authn.Verifier
 	key      *authntest.Key
 	spice    *grpc.ClientConn
+	// decision is the decision provider of the runtimes: SpiceDB, or a SpiceDB that fails while a test sets a fault.
+	decision *faultyDecision
 	// orderGate and customerGate are the decisions of the gate fills of orders.before_create and
 	// customers.validate: nil, or a nil result, accepts.
 	mu           sync.Mutex
@@ -215,6 +257,62 @@ func service(t *testing.T) *env {
 	shared = e
 	return e
 }
+
+// faultyDecision decides through the SpiceDB provider live, and while a test sets a fault, through a SpiceDB provider
+// whose every call fails with that error of SpiceDB, so the test sees how the emitted handlers answer a decision that
+// the provider cannot make now.
+type faultyDecision struct {
+	live  authz.Decision
+	mu    sync.Mutex
+	fault authz.Decision
+}
+
+// failingConn is a SpiceDB connection whose every call fails with err.
+type failingConn struct{ err error }
+
+func (c failingConn) Invoke(context.Context, string, any, any, ...grpc.CallOption) error {
+	return c.err
+}
+
+func (c failingConn) NewStream(context.Context, *grpc.StreamDesc, string, ...grpc.CallOption) (grpc.ClientStream, error) {
+	return nil, c.err
+}
+
+// fail makes each decision fail with cause, an error of SpiceDB, until fail(nil).
+func (d *faultyDecision) fail(t *testing.T, cause error) {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.fault = nil
+	if cause != nil {
+		failing, err := authz.NewSpiceDB(failingConn{err: cause})
+		must(t, err)
+		d.fault = failing
+	}
+}
+
+func (d *faultyDecision) now() authz.Decision {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.fault != nil {
+		return d.fault
+	}
+	return d.live
+}
+
+func (d *faultyDecision) Evaluate(ctx context.Context, r authz.EvaluationRequest) (authz.EvaluationResult, error) {
+	return d.now().Evaluate(ctx, r)
+}
+
+func (d *faultyDecision) EvaluateBatch(ctx context.Context, r authz.BatchRequest) ([]authz.EvaluationResult, error) {
+	return d.now().EvaluateBatch(ctx, r)
+}
+
+func (d *faultyDecision) Search(ctx context.Context, r authz.SearchRequest) (authz.SearchResult, error) {
+	return d.now().Search(ctx, r)
+}
+
+func (d *faultyDecision) Searches() bool { return d.live.Searches() }
 
 func must(t testing.TB, err error) {
 	t.Helper()
@@ -309,7 +407,8 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	must(t, err)
 	provider, err := authz.NewSpiceDB(conn)
 	must(t, err)
-	az, err := authz.New(authz.Config{Provider: provider, DB: pool, Schema: "authz", Outbox: queue})
+	e.decision = &faultyDecision{live: provider}
+	az, err := authz.New(authz.Config{Provider: e.decision, DB: pool, Schema: "authz", Outbox: queue})
 	must(t, err)
 
 	settings := audit.Settings{Level: audit.LevelChange}
@@ -353,12 +452,30 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	orders := api.NewOrdersHandler(rt, slots.NewBeforeCreateChain(true, orderGate{e}), slots.NewAfterCreateGate(orderAfter{e}))
 	customers := api.NewCustomersHandler(rt, slots.NewValidateGate(customerGate{e}))
 	todos := api.NewTodosHandler(rt)
+	meetings := api.NewMeetingsHandler(rt)
 	folders, books, allBooks := api.NewFoldersHandler(rt), api.NewFolderBooksHandler(rt), api.NewBooksHandler(rt)
 	redEvents, blueEvents := api.NewRedEventsHandler(rt), api.NewBlueEventsHandler(rt)
 	folderSettings := api.NewFolderSettingsHandler(rt, slots.NewValidateGate(settingGate{e}), slots.NewOnEntityChangedGate(settingChanged{e}))
 	folderFlags := api.NewFolderFlagsHandler(rt)
 	folderQuotas := api.NewFolderQuotasHandler(rt)
+	greenLabels := api.NewGreenLabelsHandler(rt)
+	folderRacks, rackCards, cardMarks := api.NewFolderRacksHandler(rt), api.NewRackCardsHandler(rt), api.NewCardMarksHandler(rt)
 	mux := http.NewServeMux()
+	// The routes of the parent chain of three levels, as the wiring of the generator gives them (ST-SUP-RC20-OC24).
+	mux.HandleFunc("POST /api/v1/folders/{folder_id}/racks", folderRacks.Create)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{id}", folderRacks.Read)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks", folderRacks.List)
+	mux.HandleFunc("POST /api/v1/folders/{folder_id}/racks/{rack_id}/cards", rackCards.Create)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{rack_id}/cards/{id}", rackCards.Read)
+	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{rack_id}/cards", rackCards.List)
+	marks := "/api/v1/folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks"
+	mux.HandleFunc("POST "+marks, cardMarks.Create)
+	mux.HandleFunc("GET "+marks+"/{id}", cardMarks.Read)
+	mux.HandleFunc("GET "+marks, cardMarks.List)
+	mux.HandleFunc("PUT "+marks+"/{id}", cardMarks.Update)
+	mux.HandleFunc("PATCH "+marks+"/{id}", cardMarks.Patch)
+	mux.HandleFunc("DELETE "+marks+"/{id}", cardMarks.Delete)
+	mux.HandleFunc("PUT "+marks, cardMarks.Upsert)
 	mux.HandleFunc("POST /api/v1/folders", folders.Create)
 	mux.HandleFunc("GET /api/v1/folders/{id}", folders.Read)
 	mux.HandleFunc("GET /api/v1/folders", folders.List)
@@ -385,6 +502,8 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	mux.HandleFunc("DELETE /api/v1/red-events/{id}", redEvents.Delete)
 	mux.HandleFunc("POST /api/v1/blue-events", blueEvents.Create)
 	mux.HandleFunc("GET /api/v1/blue-events", blueEvents.List)
+	mux.HandleFunc("POST /api/v1/green-labels", greenLabels.Create)
+	mux.HandleFunc("GET /api/v1/green-labels/{id}", greenLabels.Read)
 	mux.HandleFunc("POST /api/v1/orders", orders.Create)
 	mux.HandleFunc("GET /api/v1/orders/{id}", orders.Read)
 	mux.HandleFunc("GET /api/v1/orders", orders.List)
@@ -401,6 +520,10 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	mux.HandleFunc("PATCH /api/v1/todos/{id}", todos.Patch)
 	mux.HandleFunc("PUT /api/v1/todos/{id}", todos.Update)
 	mux.HandleFunc("DELETE /api/v1/todos/{id}", todos.Delete)
+	mux.HandleFunc("POST /api/v1/meetings", meetings.Create)
+	mux.HandleFunc("GET /api/v1/meetings/{id}", meetings.Read)
+	mux.HandleFunc("PUT /api/v1/meetings/{id}", meetings.Update)
+	mux.HandleFunc("PATCH /api/v1/meetings/{id}", meetings.Patch)
 	e.server = httptest.NewServer(e.verifier.Middleware(mux))
 }
 
@@ -650,6 +773,62 @@ func (e *env) create(c caller, collection, resourceType, body string) string {
 	return id
 }
 
+// createUnder creates one resource of resourceType under the path below /api/v1 with a new key and gives its ID; it
+// writes no relation of the caller, so the caller reaches it through its parent. The relay of the check does not
+// run, so createUnder relays the parent relation of the row (relayParent).
+func (e *env) createUnder(c caller, path, resourceType, parentType, parentID, body string) string {
+	t := e.t
+	t.Helper()
+	created := e.send(c, http.MethodPost, "/api/v1"+path, "k-"+uuid.NewString(), body)
+	if created.status != http.StatusCreated {
+		t.Fatalf("the create under %s answered %d %s, want 201", path, created.status, created.body)
+	}
+	id := created.member(t, "id")
+	e.relayParent(c, resourceType, id, parentType, parentID)
+	return id
+}
+
+// relayParent finds the one tuple <resourceType>:<id>#parent that the write of the row enqueued for the relay, checks
+// that its subject is the parent parentType:parentID of the caller's tenant, and writes it to SpiceDB, as the relay
+// does (ST-SUP-RP10-LC05).
+func (e *env) relayParent(c caller, resourceType, id, parentType, parentID string) {
+	t := e.t
+	t.Helper()
+	resourceID, err := authz.ResourceID(c.tenant, id)
+	must(t, err)
+	parent, err := authz.ResourceID(c.tenant, parentID)
+	must(t, err)
+	rows, err := e.admin.QueryContext(e.ctx, `SELECT convert_from(payload, 'UTF8') FROM stego_outbox.messages WHERE destination = 'authz'
+AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,resource_type}' = $1 AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,resource_id}' = $2
+AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,relation}' = 'parent'`, resourceType, resourceID)
+	must(t, err)
+	defer rows.Close()
+	type relayed struct {
+		Op    string `json:"op"`
+		Tuple struct {
+			SubjectType string `json:"subject_type"`
+			SubjectID   string `json:"subject_id"`
+		} `json:"tuple"`
+	}
+	var tuples []relayed
+	for rows.Next() {
+		var text string
+		var tuple relayed
+		must(t, rows.Scan(&text))
+		must(t, json.Unmarshal([]byte(text), &tuple))
+		tuples = append(tuples, tuple)
+	}
+	must(t, rows.Err())
+	if len(tuples) != 1 || tuples[0].Op != "touch" || tuples[0].Tuple.SubjectType != parentType || tuples[0].Tuple.SubjectID != parent {
+		t.Fatalf("the write of %s:%s enqueued the parent tuples %+v, want one touch of the subject %s:%s", resourceType, id, tuples, parentType, parent)
+	}
+	_, err = v1.NewPermissionsServiceClient(e.spice).WriteRelationships(e.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Relation: "parent",
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: parentType, ObjectId: parent}}}}}})
+	must(t, err)
+}
+
 func (e *env) count(query string, args ...any) int {
 	e.t.Helper()
 	var n int
@@ -658,6 +837,12 @@ func (e *env) count(query string, args ...any) int {
 	}
 	return n
 }
+
+// checkZone is the local time zone of the checks, 5 hours west of UTC, so a time that the database driver gives in
+// the local zone is not in UTC (ST-SUP-RC20-OC37-T10). It is set before any check starts a goroutine.
+var checkZone = time.FixedZone("check-zone", -5*60*60)
+
+func init() { time.Local = checkZone }
 
 func TestCrud(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC37-T01 A collection create runs as a command", func(t *testing.T) {
@@ -1232,6 +1417,104 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC37-T11 A denied create answers 404 with no empty ID, and a bad Idempotency-Key names its fault", func(t *testing.T) {
+		e := service(t)
+		tenantID := newTenant()
+		owner, other := e.as("owner", tenantID), e.as("other", tenantID)
+		folder := e.create(owner, "folders", "folder", `{"name":"own"}`)
+		e.relate(other, "viewer", "folder", folder)
+		// The other caller may view the folder but not edit it, so the create of a book in it is denied on the parent.
+		denied := e.send(other, http.MethodPost, "/api/v1/folders/"+folder+"/books", "k-"+uuid.NewString(), `{"title":"t"}`)
+		detail, _ := denied.object(t)["detail"].(string)
+		if denied.status != http.StatusNotFound || strings.Contains(detail, "''") || !strings.Contains(detail, "Book was not written") {
+			t.Errorf("the denied create answered %d %s, want 404 that names the Book that was not written and no empty ID", denied.status, denied.body)
+		}
+		for _, c := range []struct{ header, want string }{
+			{"", "the Idempotency-Key header is absent"},
+			{"k-unquoted", "put the key in double quotes"},
+		} {
+			headers := map[string]string{}
+			if c.header != "" {
+				headers["Idempotency-Key"] = c.header
+			}
+			r := e.sendWith(owner, http.MethodPost, "/api/v1/orders", "", `{"sku":"s","qty":1}`, headers)
+			problem := r.object(t)
+			if detail, _ := problem["detail"].(string); r.status != http.StatusBadRequest || !strings.Contains(detail, c.want) || !strings.HasSuffix(problem["type"].(string), "idempotency-key-missing") {
+				t.Errorf("a create with the Idempotency-Key %q answered %d %s, want 400 of the missing type that says %q", c.header, r.status, r.body, c.want)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		id := e.create(a, "orders", "order", `{"sku":"s-503","qty":1}`)
+		notServed, err := status.New(codes.FailedPrecondition, "object definition `order` not found").WithDetails(
+			&errdetails.ErrorInfo{Reason: v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION.String(), Domain: "authzed.com"})
+		must(t, err)
+		for _, fault := range []struct {
+			name  string
+			err   error
+			cause string
+		}{
+			{"a definition that SpiceDB does not serve yet", notServed.Err(), authz.CauseSchemaNotServed},
+			{"a SpiceDB that does not answer", status.Error(codes.Unavailable, "connection refused"), authz.CauseUnavailable},
+		} {
+			e.decision.fail(t, fault.err)
+			before := len(e.logs.String())
+			for _, call := range []struct{ method, path, body string }{
+				{http.MethodGet, "/api/v1/orders", ""},
+				{http.MethodGet, "/api/v1/orders/" + id, ""},
+				{http.MethodPatch, "/api/v1/orders/" + id, `{"qty":2}`},
+			} {
+				key := ""
+				if call.method != http.MethodGet {
+					key = "k-" + uuid.NewString()
+				}
+				r := e.send(a, call.method, call.path, key, call.body)
+				problem := r.object(t)
+				if r.status != http.StatusServiceUnavailable || !slices.Contains([]string{"1", "2", "3"}, r.header.Get("Retry-After")) || problem["status"] != float64(http.StatusServiceUnavailable) ||
+					!strings.HasSuffix(fmt.Sprint(problem["code"]), "-INT-001") {
+					t.Errorf("%s: %s %s answered %d with Retry-After %q: %s, want 503 with Retry-After 1 to 3 and an INT code", fault.name, call.method, call.path, r.status, r.header.Get("Retry-After"), r.body)
+				}
+			}
+			logged := e.logs.String()[before:]
+			// The query and the command runtime each log a cause once in each interval.
+			if strings.Count(logged, `"cause":"`+fault.cause+`"`) < 1 {
+				t.Errorf("%s: the log does not name the cause %s: %s", fault.name, fault.cause, logged)
+			}
+			if strings.Contains(logged, "not found\"") || strings.Contains(logged, "connection refused") || strings.Contains(logged, id) {
+				t.Errorf("%s: the log holds provider text or the row key: %s", fault.name, logged)
+			}
+		}
+		// A refusal of the provider, such as for a bad key, is no retry case: 500 with no Retry-After.
+		e.decision.fail(t, status.Error(codes.PermissionDenied, "bad key"))
+		for _, call := range []struct{ method, path, body string }{
+			{http.MethodGet, "/api/v1/orders", ""},
+			{http.MethodGet, "/api/v1/orders/" + id, ""},
+			{http.MethodPatch, "/api/v1/orders/" + id, `{"qty":3}`},
+		} {
+			key := ""
+			if call.method != http.MethodGet {
+				key = "k-" + uuid.NewString()
+			}
+			if r := e.send(a, call.method, call.path, key, call.body); r.status != http.StatusInternalServerError || r.header.Get("Retry-After") != "" || strings.Contains(string(r.body), "bad key") {
+				t.Errorf("a refused provider: %s %s answered %d with Retry-After %q: %s, want 500 with none", call.method, call.path, r.status, r.header.Get("Retry-After"), r.body)
+			}
+		}
+		e.decision.fail(t, nil)
+		if r := e.send(a, http.MethodGet, "/api/v1/orders/"+id, "", ""); r.status != http.StatusOK || r.header.Get("Retry-After") != "" {
+			t.Errorf("after the fault the read answered %d with Retry-After %q, want 200 with none", r.status, r.header.Get("Retry-After"))
+		}
+		var qty float64
+		if r := e.send(a, http.MethodGet, "/api/v1/orders/"+id, "", ""); r.status == http.StatusOK {
+			qty, _ = r.object(t)["qty"].(float64)
+		}
+		if qty != 1 {
+			t.Errorf("the 503 patch changed the order: qty %v, want 1", qty)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T08 A jsonb field is written, read and patched as JSON on the runtime data path", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
@@ -1270,6 +1553,203 @@ func TestCrud(t *testing.T) {
 		if list.status != http.StatusOK || !strings.Contains(string(list.body), `"meta":[1,2]`) {
 			t.Errorf("the list answered %d %s, want 200 with the jsonb value of the row", list.status, list.body)
 		}
+	})
+
+	t.Run("ST-SUP-RC20-OC37-T12 An optional field that is NULL is absent from the answer, and an empty or false value is answered", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		absent := func(what string, r reply, fields ...string) {
+			t.Helper()
+			if r.status != http.StatusOK && r.status != http.StatusCreated {
+				t.Fatalf("%s answered %d %s, want 200 or 201", what, r.status, r.body)
+			}
+			for _, field := range fields {
+				if value, ok := r.object(t)[field]; ok {
+					t.Errorf("%s answered %s %v in %s, want no %s member", what, field, value, r.body, field)
+				}
+			}
+		}
+		// A create that sends no note and no done stores NULL, and each answer leaves both out (ST-SUP-Q128 (B)).
+		created := e.send(a, http.MethodPost, "/api/v1/todos", "k-"+uuid.NewString(), `{"title":"unset"}`)
+		absent("the create", created, "note", "done")
+		id := created.member(t, "id")
+		e.own(a, "todo", id)
+		absent("the read", e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", ""), "note", "done")
+		if n := e.count(`SELECT count(*) FROM todos WHERE id = $1::uuid AND note IS NULL AND done IS NULL`, id); n != 1 {
+			t.Errorf("%d rows with a NULL note and done, want 1", n)
+		}
+		// A create that sends "" and false answers them: the client tells an unset field from its zero value.
+		set := e.send(a, http.MethodPost, "/api/v1/todos", "k-"+uuid.NewString(), `{"title":"zero","note":"","done":false}`)
+		if set.status != http.StatusCreated {
+			t.Fatalf("the create with an empty note answered %d %s, want 201", set.status, set.body)
+		}
+		setID := set.member(t, "id")
+		e.own(a, "todo", setID)
+		for what, r := range map[string]reply{"the create": set, "the read": e.send(a, http.MethodGet, "/api/v1/todos/"+setID, "", "")} {
+			note, hasNote := r.object(t)["note"]
+			done, hasDone := r.object(t)["done"]
+			if !hasNote || note != "" || !hasDone || done != false {
+				t.Errorf("%s of a Todo with an empty note and done false answered %s, want note \"\" and done false", what, r.body)
+			}
+		}
+		// A PUT that leaves out the note stores NULL and answers no note; a patch then sets it.
+		absent("the update", e.send(a, http.MethodPut, "/api/v1/todos/"+setID, "", `{"title":"put"}`), "note", "done")
+		if n := e.count(`SELECT count(*) FROM todos WHERE id = $1::uuid AND note IS NULL`, setID); n != 1 {
+			t.Errorf("%d rows with a NULL note after the PUT, want 1", n)
+		}
+		patched := e.send(a, http.MethodPatch, "/api/v1/todos/"+setID, "k-"+uuid.NewString(), `{"note":"n"}`)
+		if note, _ := patched.object(t)["note"].(string); note != "n" {
+			t.Errorf("the patch answered %s, want note n", patched.body)
+		}
+		// The list leaves out the NULL fields of the first row and answers the note of the second.
+		list := e.send(a, http.MethodGet, "/api/v1/todos", "", "")
+		if list.status != http.StatusOK || strings.Count(string(list.body), `"note"`) != 1 || strings.Contains(string(list.body), `"done"`) {
+			t.Errorf("the list answered %d %s, want one note member and no done member", list.status, list.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		if time.Now().Location() != checkZone {
+			t.Fatal("the checks do not run in the zone west of UTC")
+		}
+		utc := func(what string, r reply) {
+			t.Helper()
+			for _, field := range []string{"due_at", "seen_at"} {
+				value, _ := r.object(t)[field].(string)
+				at, err := time.Parse(time.RFC3339Nano, value)
+				if err != nil || !strings.HasSuffix(value, "Z") || time.Since(at) > time.Hour || time.Since(at) < -time.Minute {
+					t.Errorf("%s answered %s %q in %s, want the time of the create in UTC", what, field, value, r.body)
+				}
+			}
+		}
+		// A timestamp is server-managed (ST-SUP-RC20-OC17): the create sets it, and each answer gives it in UTC.
+		created := e.send(a, http.MethodPost, "/api/v1/todos", "k-"+uuid.NewString(), `{"title":"due"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "todo", id)
+		utc("the create", created)
+		utc("the read", e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", ""))
+		utc("the update", e.send(a, http.MethodPut, "/api/v1/todos/"+id, "", `{"title":"due again"}`))
+		utc("the patch", e.send(a, http.MethodPatch, "/api/v1/todos/"+id, "k-"+uuid.NewString(), `{"title":"due patched"}`))
+		// A row of an earlier release holds NULL: the read and the list answer no due_at member, and not the zero time.
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE todos SET due_at = NULL WHERE id = $1::uuid`, id); err != nil {
+			t.Fatal(err)
+		}
+		read := e.send(a, http.MethodGet, "/api/v1/todos/"+id, "", "")
+		if _, ok := read.object(t)["due_at"]; ok || read.status != http.StatusOK {
+			t.Errorf("the read of a Todo with a NULL due_at answered %d %s, want 200 with no due_at member", read.status, read.body)
+		}
+		list := e.send(a, http.MethodGet, "/api/v1/todos", "", "")
+		if list.status != http.StatusOK || strings.Contains(string(list.body), "0001-01-01") || strings.Contains(string(list.body), `"due_at"`) {
+			t.Errorf("the list answered %d %s, want 200 with no due_at member", list.status, list.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		answered := func(what string, r reply, want map[string]string) {
+			t.Helper()
+			object := r.object(t)
+			for field, value := range want {
+				if got, _ := object[field].(string); got != value {
+					t.Errorf("%s answered %s %q in %s, want %q", what, field, got, r.body, value)
+				}
+			}
+		}
+		// The create keeps the client's times in UTC, and noted_at, which is not client_set, is the server's time.
+		key := "k-" + uuid.NewString()
+		body := `{"title":"plan","starts_at":"2026-12-01T10:00:00+02:00","ends_at":"2026-12-01T11:30:00.5+02:00","noted_at":"2000-01-01T00:00:00Z"}`
+		created := e.send(a, http.MethodPost, "/api/v1/meetings", key, body)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "meeting", id)
+		answered("the create", created, map[string]string{"starts_at": "2026-12-01T08:00:00Z", "ends_at": "2026-12-01T09:30:00.5Z"})
+		noted, _ := created.object(t)["noted_at"].(string)
+		if at, err := time.Parse(time.RFC3339Nano, noted); err != nil || time.Since(at) > time.Hour {
+			t.Errorf("the create answered noted_at %q, want the server's time of the create, not the client's", noted)
+		}
+		if n := e.count(`SELECT count(*) FROM meetings WHERE id = $1::uuid AND starts_at = '2026-12-01T08:00:00Z' AND ends_at = '2026-12-01T09:30:00.5Z' AND noted_at > now() - interval '1 hour'`, id); n != 1 {
+			t.Errorf("%d meeting rows with the client's times and the server's noted_at, want 1", n)
+		}
+		// The same key with another time is another request (the fingerprint holds the client-set field): 422. The
+		// decoder matches a member name to a field under case folding, so STARTS_AT with another time is also 422,
+		// and STARTS_AT with the same time is the same request, which replays the first answer (ST-SUP-RP07-LC10).
+		reused := func(what, key, body string) {
+			t.Helper()
+			r := e.send(a, http.MethodPost, "/api/v1/meetings", key, body)
+			if problem, _ := r.object(t)["type"].(string); r.status != http.StatusUnprocessableEntity || !strings.HasSuffix(problem, "idempotency-key-reused") {
+				t.Errorf("the same key with %s answered %d %s, want 422 idempotency-key-reused", what, r.status, r.body)
+			}
+		}
+		folded := strings.Replace(body, `"starts_at"`, `"STARTS_AT"`, 1)
+		reused("another starts_at", key, strings.Replace(body, "10:00:00", "10:05:00", 1))
+		reused("STARTS_AT holding another time", key, strings.Replace(folded, "10:00:00", "10:05:00", 1))
+		// A first request that names the field as STARTS_AT: the same key with STARTS_AT holding another time is
+		// 422, not the replay of the first answer.
+		other := "k-" + uuid.NewString()
+		first := e.send(a, http.MethodPost, "/api/v1/meetings", other, folded)
+		if first.status != http.StatusCreated || first.member(t, "starts_at") != "2026-12-01T08:00:00Z" {
+			t.Fatalf("the create with STARTS_AT answered %d %s, want 201 with the client's starts_at", first.status, first.body)
+		}
+		e.own(a, "meeting", first.member(t, "id"))
+		reused("STARTS_AT holding another time after a first STARTS_AT", other, strings.Replace(folded, "10:00:00", "10:05:00", 1))
+		if r := e.send(a, http.MethodPost, "/api/v1/meetings", key, strings.Replace(body, `"starts_at"`, `"STARTS_AT"`, 1)); r.status != http.StatusCreated || r.member(t, "id") != id {
+			t.Errorf("the same key with STARTS_AT holding the same time answered %d %s, want the replay of the first answer", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 2 {
+			t.Errorf("%d meeting rows after the reused keys, want 2", n)
+		}
+		answered("the read", e.send(a, http.MethodGet, "/api/v1/meetings/"+id, "", ""), map[string]string{"starts_at": "2026-12-01T08:00:00Z"})
+		// A value that is not an RFC 3339 time, the zero time, and a required time left out or null are refused with
+		// a 400 problem that names the field, and write no row.
+		for _, c := range []struct{ body, field string }{
+			{`{"title":"bad","starts_at":"tomorrow"}`, "starts_at"},
+			{`{"title":"bad","starts_at":"2026-12-01 10:00:00"}`, "starts_at"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00"}`, "starts_at"},
+			{`{"title":"bad","starts_at":1764583200}`, "starts_at"},
+			{`{"title":"bad","Starts_At":"tomorrow"}`, "starts_at"},
+			{`{"title":"bad","starts_at":"0001-01-01T00:00:00Z"}`, "starts_at"},
+			// An offset that moves the UTC year outside 1 to 9999: the answer in UTC cannot encode it.
+			{`{"title":"bad","starts_at":"9999-12-31T23:59:59-14:00"}`, "starts_at must be an RFC 3339 time whose UTC year is from 1 to 9999"},
+			{`{"title":"bad","starts_at":"0000-01-01T00:00:00+01:00"}`, "starts_at must be an RFC 3339 time whose UTC year is from 1 to 9999"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00Z","ends_at":"9999-12-31T23:00:00-01:30"}`, "ends_at must be an RFC 3339 time whose UTC year is from 1 to 9999"},
+			{`{"title":"bad"}`, "starts_at is required"},
+			{`{"title":"bad","starts_at":null}`, "starts_at is required"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00Z","ends_at":"soon"}`, "ends_at"},
+			{`{"title":"bad","starts_at":"2026-12-01T10:00:00Z","ends_at":"0001-01-01T00:00:00Z"}`, "ends_at"},
+		} {
+			r := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), c.body)
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), c.field) || !strings.Contains(string(r.body), "RFC 3339") {
+				t.Errorf("the create %s answered %d %s, want 400 naming %s and RFC 3339", c.body, r.status, r.body, c.field)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM meetings WHERE tenant_id = $1`, a.tenant.ID()); n != 2 {
+			t.Errorf("%d meeting rows after the refused creates, want 2", n)
+		}
+		// An update sets the client's time and keeps the server's noted_at; a patch changes one time.
+		updated := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", `{"title":"plan","starts_at":"2026-12-02T09:00:00-05:00"}`)
+		answered("the update", updated, map[string]string{"starts_at": "2026-12-02T14:00:00Z", "noted_at": noted})
+		if _, ok := updated.object(t)["ends_at"]; ok {
+			t.Errorf("the update with no ends_at answered %s, want no ends_at member", updated.body)
+		}
+		if r := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", `{"title":"plan"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), "starts_at is required") {
+			t.Errorf("the update with no starts_at answered %d %s, want 400", r.status, r.body)
+		}
+		patched := e.send(a, http.MethodPatch, "/api/v1/meetings/"+id, "k-"+uuid.NewString(), `{"ends_at":"2026-12-02T16:00:00+01:00"}`)
+		answered("the patch", patched, map[string]string{"starts_at": "2026-12-02T14:00:00Z", "ends_at": "2026-12-02T15:00:00Z"})
+		for _, bad := range []string{`{"starts_at":"later"}`, `{"ends_at":"0001-01-01T00:00:00Z"}`, `{"ends_at":"9999-12-31T23:59:59-14:00"}`} {
+			if r := e.send(a, http.MethodPatch, "/api/v1/meetings/"+id, "k-"+uuid.NewString(), bad); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), "RFC 3339") {
+				t.Errorf("the patch %s answered %d %s, want 400", bad, r.status, r.body)
+			}
+		}
+		answered("the read after the refused patches", e.send(a, http.MethodGet, "/api/v1/meetings/"+id, "", ""), map[string]string{"starts_at": "2026-12-02T14:00:00Z", "ends_at": "2026-12-02T15:00:00Z"})
 	})
 
 	t.Run("ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response", func(t *testing.T) {
@@ -1426,6 +1906,291 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC24-T09 A collection three levels under its top ancestor checks every ancestor of the path, and a wrong, foreign or smuggled ancestor is 404", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		// The caller owns the folders only: each rack, card and mark is reached through the parent relation that the
+		// runtime writes from its reference, so a read of a mark proves the relations along the chain.
+		f1 := e.create(a, "folders", "folder", `{"name":"one"}`)
+		f2 := e.create(a, "folders", "folder", `{"name":"two"}`)
+		racks := func(f string) string { return "/folders/" + f + "/racks" }
+		cards := func(f, r string) string { return racks(f) + "/" + r + "/cards" }
+		marks := func(f, r, c string) string { return cards(f, r) + "/" + c + "/marks" }
+		rack := func(f, name string) string {
+			return e.createUnder(a, racks(f), "rack", "folder", f, `{"name":"`+name+`"}`)
+		}
+		r1, r2, r3 := rack(f1, "r1"), rack(f2, "r2"), rack(f2, "r3")
+		card := func(f, r, title string) string {
+			return e.createUnder(a, cards(f, r), "card", "rack", r, `{"title":"`+title+`"}`)
+		}
+		c1, c2, c3 := card(f1, r1, "c1"), card(f2, r2, "c2"), card(f2, r2, "c3")
+		e.createUnder(a, marks(f1, r1, c1), "mark", "card", c1, `{"label":"l1","note":"n1"}`)
+		created := e.send(a, http.MethodPost, "/api/v1"+marks(f2, r2, c2), "k-"+uuid.NewString(), `{"label":"l2","note":"n2","card_id":"`+c1+`"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create of a mark answered %d %s, want 201", created.status, created.body)
+		}
+		m2 := created.member(t, "id")
+		// The parent of the mark is the card of the path, also when the body names another card.
+		e.relayParent(a, "mark", m2, "card", c2)
+		if href := created.member(t, "href"); href != "/api/v1"+marks(f2, r2, c2)+"/"+m2 {
+			t.Errorf("the href is %q, want the path of the mark under each of its ancestors", href)
+		}
+		if n := e.count(`SELECT count(*) FROM marks WHERE id = $1::uuid AND card_id = $2::uuid`, m2, c2); n != 1 {
+			t.Errorf("%d mark rows on the card of the path, want 1", n)
+		}
+		if r := e.send(a, http.MethodGet, "/api/v1"+marks(f2, r2, c2)+"/"+m2, "", ""); r.status != http.StatusOK || r.member(t, "href") != "/api/v1"+marks(f2, r2, c2)+"/"+m2 {
+			t.Fatalf("the read under its ancestors answered %d %s, want 200 with its href", r.status, r.body)
+		}
+		// The foreign keys of the chain hold the tenant: a card of another tenant cannot name a rack of this one.
+		for _, fk := range []struct{ table, to string }{{"racks", "folders"}, {"cards", "racks"}, {"marks", "cards"}} {
+			if n := e.count(`SELECT count(*) FROM pg_catalog.pg_constraint WHERE contype = 'f' AND conrelid = ('public.' || $1)::regclass AND confrelid = ('public.' || $2)::regclass AND array_length(conkey, 1) = 2`, fk.table, fk.to); n != 1 {
+				t.Errorf("%d foreign keys from %s to %s with the tenant column, want 1", n, fk.table, fk.to)
+			}
+		}
+		other := e.as("u-1", newTenant())
+		fx := e.create(other, "folders", "folder", `{"name":"x"}`)
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO cards (tenant_id, id, rack_id, title) VALUES ($1, $2::uuid, $3::uuid, 'x')`, other.tenant.ID(), uuid.NewString(), r2); err == nil || !strings.Contains(err.Error(), "cards_rack_id_fkey") {
+			t.Errorf("a card of another tenant under a rack of this tenant gave %v, want the refusal of the foreign key cards_rack_id_fkey", err)
+		}
+		rx := e.createUnder(other, racks(fx), "rack", "folder", fx, `{"name":"rx"}`)
+		cx := e.createUnder(other, cards(fx, rx), "card", "rack", rx, `{"title":"cx"}`)
+		beforeMarks := e.count(`SELECT count(*) FROM marks`)
+		item := func(base string) string { return "/api/v1" + base + "/" + m2 }
+		// Each case is a path to the mark m2 that a check refuses; chain tells that the chain itself is wrong, so the
+		// collection operations under it are refused too.
+		for _, c := range []struct {
+			name  string
+			who   caller
+			base  string
+			chain bool
+		}{
+			{"a rack of another folder", a, marks(f1, r2, c2), true},
+			{"a card of another rack", a, marks(f2, r3, c2), true},
+			{"a mark of another card", a, marks(f2, r2, c3), false},
+			{"the mark smuggled under another chain", a, marks(f1, r1, c1), false},
+			{"a folder that is not an ID", a, marks("x", r2, c2), true},
+			{"a rack that is not an ID", a, marks(f2, "x", c2), true},
+			{"a card that is not an ID", a, marks(f2, r2, "x"), true},
+			{"a missing folder", a, marks(uuid.NewString(), r2, c2), true},
+			{"the chain from another tenant", other, marks(f2, r2, c2), true},
+			{"a card of another tenant smuggled under the caller's rack", other, marks(fx, rx, c2), true},
+			{"the caller's card under a rack of another tenant", a, marks(f2, r2, cx), true},
+		} {
+			for _, op := range []struct{ method, key, body string }{
+				{http.MethodGet, "", ""},
+				{http.MethodPut, "", `{"label":"l2","note":"moved"}`},
+				{http.MethodPatch, "k-" + uuid.NewString(), `{"note":"moved"}`},
+				{http.MethodDelete, "", ""},
+			} {
+				if r := e.send(c.who, op.method, item(c.base), op.key, op.body); r.status != http.StatusNotFound {
+					t.Errorf("%s: %s of the mark answered %d %s, want 404", c.name, op.method, r.status, r.body)
+				}
+			}
+			if !c.chain {
+				continue
+			}
+			for _, op := range []struct{ method, key, body string }{
+				{http.MethodGet, "", ""},
+				{http.MethodPost, "k-" + uuid.NewString(), `{"label":"new","note":"no"}`},
+				{http.MethodPut, "", `{"label":"l2","note":"moved"}`},
+			} {
+				if r := e.send(c.who, op.method, "/api/v1"+c.base, op.key, op.body); r.status != http.StatusNotFound {
+					t.Errorf("%s: %s of the collection answered %d %s, want 404", c.name, op.method, r.status, r.body)
+				}
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM marks`); n != beforeMarks {
+			t.Errorf("%d mark rows after the refused requests, want %d", n, beforeMarks)
+		}
+		if n := e.count(`SELECT count(*) FROM marks WHERE id = $1::uuid AND card_id = $2::uuid AND note = 'n2'`, m2, c2); n != 1 {
+			t.Errorf("%d mark rows as created after the refused writes, want 1", n)
+		}
+		// Under its own ancestors each operation runs: the list holds the marks of the card of the path only.
+		list := e.send(a, http.MethodGet, "/api/v1"+marks(f2, r2, c2), "", "")
+		var page struct {
+			Items []map[string]any `json:"items"`
+		}
+		must(t, json.Unmarshal(list.body, &page))
+		if list.status != http.StatusOK || len(page.Items) != 1 || page.Items[0]["id"] != m2 {
+			t.Errorf("the list of the card answered %d %s, want its one mark", list.status, list.body)
+		}
+		if r := e.send(a, http.MethodPut, "/api/v1"+marks(f2, r2, c2), "", `{"label":"l2","note":"upserted"}`); r.status != http.StatusOK {
+			t.Errorf("the upsert of the stored mark answered %d %s, want 200", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodPatch, item(marks(f2, r2, c2)), "k-"+uuid.NewString(), `{"note":"patched"}`); r.status != http.StatusOK {
+			t.Errorf("the patch under its ancestors answered %d %s, want 200", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodDelete, item(marks(f2, r2, c2)), "", ""); r.status != http.StatusNoContent {
+			t.Errorf("the delete under its ancestors answered %d %s, want 204", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC24-T10 A caller that may not read one ancestor of the path gets 404, the same as for a missing ancestor", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		f := e.create(a, "folders", "folder", `{"name":"f"}`)
+		r := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"r"}`)
+		c := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards", "card", "rack", r, `{"title":"c"}`)
+		base := "/api/v1/folders/" + f + "/racks/" + r + "/cards/" + c + "/marks"
+		m := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards/"+c+"/marks", "mark", "card", c, `{"label":"l","note":"n"}`)
+		// viewer gives view on one resource only: in this schema no viewer of a parent may view its children, so
+		// each ancestor is decided apart.
+		ids := map[string]string{"folder": f, "rack": r, "card": c, "mark": m}
+		reader := func(subject string, without string) caller {
+			b := e.as(subject, tn)
+			for _, resourceType := range []string{"folder", "rack", "card", "mark"} {
+				if resourceType != without {
+					e.relate(b, "viewer", resourceType, ids[resourceType])
+				}
+			}
+			return b
+		}
+		if got := e.send(reader("u-all", ""), http.MethodGet, base+"/"+m, "", ""); got.status != http.StatusOK {
+			t.Fatalf("a viewer of every ancestor and of the mark read it with %d %s, want 200", got.status, got.body)
+		}
+		missingRead := e.send(a, http.MethodGet, "/api/v1/folders/"+f+"/racks/"+r+"/cards/"+uuid.NewString()+"/marks/"+m, "", "")
+		if missingRead.status != http.StatusNotFound {
+			t.Fatalf("a read under a missing card answered %d %s, want 404", missingRead.status, missingRead.body)
+		}
+		missingList := e.send(a, http.MethodGet, "/api/v1/folders/"+uuid.NewString()+"/racks/"+r+"/cards/"+c+"/marks", "", "")
+		if missingList.status != http.StatusNotFound {
+			t.Fatalf("a list under a missing folder answered %d %s, want 404", missingList.status, missingList.body)
+		}
+		for _, without := range []string{"folder", "rack", "card"} {
+			b := reader("u-no-"+without, without)
+			got := e.send(b, http.MethodGet, base+"/"+m, "", "")
+			if got.status != http.StatusNotFound || got.member(t, "detail") != missingRead.member(t, "detail") {
+				t.Errorf("a caller that may not read the %s read the mark with %d %s, want 404 with the detail %q of a missing ancestor", without, got.status, got.body, missingRead.member(t, "detail"))
+			}
+			list := e.send(b, http.MethodGet, base, "", "")
+			if list.status != http.StatusNotFound || list.member(t, "title") != missingList.member(t, "title") || strings.Contains(string(list.body), m) {
+				t.Errorf("a caller that may not read the %s listed the marks with %d %s, want 404 with no mark", without, list.status, list.body)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC24-T12 A write by a caller that may edit the row but not read one ancestor of the path gets 404 and changes nothing", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		f := e.create(a, "folders", "folder", `{"name":"f"}`)
+		r := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"r"}`)
+		c := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards", "card", "rack", r, `{"title":"c"}`)
+		base := "/api/v1/folders/" + f + "/racks/" + r + "/cards/" + c + "/marks"
+		m := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards/"+c+"/marks", "mark", "card", c, `{"label":"l","note":"n"}`)
+		missing := e.send(a, http.MethodGet, "/api/v1/folders/"+f+"/racks/"+r+"/cards/"+uuid.NewString()+"/marks/"+m, "", "")
+		if missing.status != http.StatusNotFound {
+			t.Fatalf("a read under a missing card answered %d %s, want 404", missing.status, missing.body)
+		}
+		ids := map[string]string{"folder": f, "rack": r, "card": c}
+		for _, without := range []string{"folder", "rack", "card"} {
+			// The caller may edit the mark: as the owner of the card, which gives edit on its marks and the create of
+			// one, or as the owner of the mark when the card is the ancestor it may not read. It may read every
+			// other ancestor.
+			b := e.as("u-edit-no-"+without, tn)
+			for _, resourceType := range []string{"folder", "rack"} {
+				if resourceType != without {
+					e.relate(b, "viewer", resourceType, ids[resourceType])
+				}
+			}
+			writes := []struct{ name, method, path, key, body string }{
+				{"update", http.MethodPut, base + "/" + m, "", `{"label":"l","note":"updated"}`},
+				{"patch", http.MethodPatch, base + "/" + m, "k-" + uuid.NewString(), `{"note":"patched"}`},
+				{"upsert", http.MethodPut, base, "", `{"label":"l","note":"upserted"}`},
+				{"delete", http.MethodDelete, base + "/" + m, "", ""},
+			}
+			if without == "card" {
+				// The create of a mark decides edit on the card, which gives read on it too, so only the writes of
+				// the stored mark can hold edit with no read of the card.
+				e.own(b, "mark", m)
+			} else {
+				e.own(b, "card", c)
+				writes = append(writes, struct{ name, method, path, key, body string }{"create", http.MethodPost, base, "k-" + uuid.NewString(), `{"label":"new","note":"created"}`})
+			}
+			for _, w := range writes {
+				got := e.send(b, w.method, w.path, w.key, w.body)
+				if got.status != http.StatusNotFound || got.member(t, "title") != missing.member(t, "title") {
+					t.Errorf("the %s by a caller that may not read the %s answered %d %s, want 404 as for a missing ancestor", w.name, without, got.status, got.body)
+				}
+			}
+			if n := e.count(`SELECT count(*) FROM marks WHERE tenant_id = $1`, tn); n != 1 {
+				t.Errorf("%d marks in the tenant after the refused writes by a caller that may not read the %s, want 1", n, without)
+			}
+			if n := e.count(`SELECT count(*) FROM marks WHERE id = $1::uuid AND note = 'n'`, m); n != 1 {
+				t.Errorf("the mark changed after the refused writes by a caller that may not read the %s", without)
+			}
+			// The refusals come from the ancestor: with read on it, the same caller patches the mark.
+			e.relate(b, "viewer", without, ids[without])
+			if got := e.send(b, http.MethodPatch, base+"/"+m, "k-"+uuid.NewString(), `{"note":"n"}`); got.status != http.StatusOK {
+				t.Errorf("the patch by the caller with read on the %s too answered %d %s, want 200", without, got.status, got.body)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC24-T13 The parent chain check reads the ancestors from the top down, so a caller learns nothing of a row below an ancestor it may not read", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a := e.as("u-1", tn)
+		f := e.create(a, "folders", "folder", `{"name":"f"}`)
+		r := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"r"}`)
+		other := e.createUnder(a, "/folders/"+f+"/racks", "rack", "folder", f, `{"name":"other"}`)
+		c := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards", "card", "rack", r, `{"title":"c"}`)
+		m := e.createUnder(a, "/folders/"+f+"/racks/"+r+"/cards/"+c+"/marks", "mark", "card", c, `{"label":"l","note":"n"}`)
+		under := func(rack string) string { return "/api/v1/folders/" + f + "/racks/" + rack + "/cards/" + c + "/marks" }
+		missing := e.send(a, http.MethodGet, "/api/v1/folders/"+f+"/racks/"+r+"/cards/"+uuid.NewString()+"/marks/"+m, "", "")
+		if missing.status != http.StatusNotFound {
+			t.Fatalf("a read under a missing card answered %d %s, want 404", missing.status, missing.body)
+		}
+		ids := map[string]string{"folder": f, "rack": r, "card": c, "mark": m}
+		// poison makes each read of a row of the tenant in the tables fail, with no change to the rows of other
+		// tenants: a check that reads such a row answers 500, and not 404.
+		poison := func(tables ...string) func() {
+			for _, table := range tables {
+				_, err := e.admin.ExecContext(e.ctx, "CREATE POLICY t13_poison ON "+table+" AS RESTRICTIVE USING (CASE WHEN tenant_id = '"+tn+"' THEN 1 / (length(tenant_id) - length(tenant_id)) = 1 ELSE true END)")
+				must(t, err)
+			}
+			return func() {
+				for _, table := range tables {
+					_, err := e.admin.ExecContext(e.ctx, "DROP POLICY IF EXISTS t13_poison ON "+table)
+					must(t, err)
+				}
+			}
+		}
+		for _, c := range []struct {
+			without string
+			below   []string
+		}{{"folder", []string{"racks", "cards"}}, {"rack", []string{"cards"}}} {
+			b := e.as("u-no-"+c.without, tn)
+			for _, resourceType := range []string{"folder", "rack", "card", "mark"} {
+				if resourceType != c.without {
+					e.relate(b, "viewer", resourceType, ids[resourceType])
+				}
+			}
+			cure := poison(c.below...)
+			// The poison holds: the owner, who may read the whole chain, reads a poisoned row and gets 500.
+			if got := e.send(a, http.MethodGet, under(r)+"/"+m, "", ""); got.status != http.StatusInternalServerError {
+				t.Errorf("with the rows below the %s poisoned, the owner's read answered %d %s, want 500", c.without, got.status, got.body)
+			}
+			// The caller may read the card and the mark but not the ancestor c.without: the check stops at it, so no
+			// row below it is read, with the rack of the card or with another rack in the path.
+			for _, rack := range []string{r, other} {
+				got := e.send(b, http.MethodGet, under(rack)+"/"+m, "", "")
+				if got.status != http.StatusNotFound || got.member(t, "detail") != missing.member(t, "detail") {
+					t.Errorf("a caller that may not read the %s read the mark under the rack %s with %d %s, want 404 with the detail %q and no read below the %s", c.without, rack, got.status, got.body, missing.member(t, "detail"), c.without)
+				}
+				if list := e.send(b, http.MethodGet, under(rack), "", ""); list.status != http.StatusNotFound {
+					t.Errorf("a caller that may not read the %s listed the marks under the rack %s with %d %s, want 404 and no read below the %s", c.without, rack, list.status, list.body, c.without)
+				}
+			}
+			cure()
+		}
+		if got := e.send(a, http.MethodGet, under(r)+"/"+m, "", ""); got.status != http.StatusOK {
+			t.Errorf("after the poison, the owner's read answered %d %s, want 200", got.status, got.body)
+		}
+	})
+
 	t.Run("ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
@@ -1521,6 +2286,28 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		if r := e.send(a, http.MethodGet, "/api/v1/red-events/"+redID, "", ""); r.status != http.StatusOK {
 			t.Errorf("the read of a red event answered %d %s, want 200", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC23-T07 A read of a row whose optional implicit field is NULL is not found", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		created := e.send(a, http.MethodPost, "/api/v1/green-labels", "k-"+uuid.NewString(), `{"name":"l1"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "label", id)
+		if r := e.send(a, http.MethodGet, "/api/v1/green-labels/"+id, "", ""); r.status != http.StatusOK || r.member(t, "source") != "green" {
+			t.Fatalf("the read of a green label answered %d %s, want 200 with source green", r.status, r.body)
+		}
+		// The view holds the optional implicit field as a pointer, nil for NULL: a NULL is not the value of the
+		// collection, so the row is not found, and its fields are not answered (ST-SUP-Q128 (B)).
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE labels SET source = NULL WHERE id = $1::uuid`, id); err != nil {
+			t.Fatal(err)
+		}
+		if r := e.send(a, http.MethodGet, "/api/v1/green-labels/"+id, "", ""); r.status != http.StatusNotFound || strings.Contains(string(r.body), "l1") {
+			t.Errorf("the read of a label with a NULL source answered %d %s, want 404", r.status, r.body)
 		}
 	})
 
@@ -1916,7 +2703,7 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 	t.Run("ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
-		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO todos (tenant_id, id, title) SELECT $1, gen_random_uuid(), 't-' || g FROM generate_series(1, 20000) g`, a.tenant.ID()); err != nil {
+		if _, err := e.admin.ExecContext(e.ctx, `INSERT INTO todos (tenant_id, id, title, seen_at) SELECT $1, gen_random_uuid(), 't-' || g, now() FROM generate_series(1, 20000) g`, a.tenant.ID()); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := e.admin.ExecContext(e.ctx, `ANALYZE todos`); err != nil {

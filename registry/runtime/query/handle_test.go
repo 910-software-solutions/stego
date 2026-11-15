@@ -18,6 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
@@ -92,20 +95,52 @@ type fakeDecision struct {
 	decide  func(authz.EvaluationRequest) bool
 	delay   time.Duration // each evaluation waits this long
 	down    bool          // each evaluation fails, as a provider that is down
-	search  func(authz.SearchRequest) authz.SearchResult
-	asked   []authz.SearchRequest
+	// fault is the error of a provider that is down: nil is the error of a SpiceDB that does not answer.
+	fault  error
+	search func(authz.SearchRequest) authz.SearchResult
+	asked  []authz.SearchRequest
 }
 
 func allowAll(authz.EvaluationRequest) bool { return true }
 
+// failingConn is a SpiceDB connection whose every call fails with err.
+type failingConn struct{ err error }
+
+func (c failingConn) Invoke(context.Context, string, any, any, ...grpc.CallOption) error {
+	return c.err
+}
+
+func (c failingConn) NewStream(context.Context, *grpc.StreamDesc, string, ...grpc.CallOption) (grpc.ClientStream, error) {
+	return nil, c.err
+}
+
+// providerError gives the error of the SpiceDB provider for a call that fails with the gRPC error cause.
+func providerError(cause error) error {
+	provider, err := authz.NewSpiceDB(failingConn{err: cause})
+	if err != nil {
+		panic(err)
+	}
+	_, err = provider.Evaluate(context.Background(), authz.EvaluationRequest{Subject: authz.Subject{Type: "user", ID: "u"},
+		Action: authz.Action{Name: "view"}, Resource: authz.Resource{Type: "order", ID: "t/o"}, Consistency: authz.Fresh()})
+	return err
+}
+
+// downError is the error of the fake when it is down.
+func (f *fakeDecision) downError() error {
+	if f.fault != nil {
+		return f.fault
+	}
+	return providerError(status.Error(codes.Unavailable, "the provider is down"))
+}
+
 func (f *fakeDecision) Evaluate(_ context.Context, r authz.EvaluationRequest) (authz.EvaluationResult, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, r)
-	decide, delay, down := f.decide, f.delay, f.down
+	decide, delay, down, fault := f.decide, f.delay, f.down, f.downError()
 	f.mu.Unlock()
 	time.Sleep(delay)
 	if down {
-		return authz.EvaluationResult{}, errors.New("the provider is down")
+		return authz.EvaluationResult{}, fault
 	}
 	return authz.EvaluationResult{Allowed: decide(r)}, nil
 }
@@ -114,11 +149,11 @@ func (f *fakeDecision) EvaluateBatch(_ context.Context, b authz.BatchRequest) ([
 	f.mu.Lock()
 	f.batches = append(f.batches, append([]authz.EvaluationRequest(nil), b.Evaluations...))
 	f.calls = append(f.calls, b.Evaluations...)
-	decide, delay, down := f.decide, f.delay, f.down
+	decide, delay, down, fault := f.decide, f.delay, f.down, f.downError()
 	f.mu.Unlock()
 	time.Sleep(delay)
 	if down {
-		return nil, errors.New("the provider is down")
+		return nil, fault
 	}
 	results := make([]authz.EvaluationResult, len(b.Evaluations))
 	for i, r := range b.Evaluations {

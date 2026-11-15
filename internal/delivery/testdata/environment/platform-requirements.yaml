@@ -1,0 +1,1095 @@
+# The platform requirements of the service: what its environment must supply, and every environment variable
+# that it accepts. stego apply writes this file from the declaration and the needs and environment variables of its
+# components. Do not edit it: change the declaration or the registry.
+version: 2
+service: orders
+requirements:
+  - kind: secret
+    name: orders-database
+    keys:
+      - password
+      - url
+    components:
+      - postgres-adapter
+  - kind: configuration
+    name: LOG_LEVEL
+    components:
+      - health-check
+  - kind: configuration
+    name: STEGO_QUERY_CURSOR_KEY_FILE
+    components:
+      - query
+  - kind: configuration
+    name: STEGO_SPICEDB_ENDPOINT
+    components:
+      - spicedb-authz
+  - kind: configuration
+    name: STEGO_SPICEDB_KEY_FILE
+    components:
+      - spicedb-authz
+  - kind: backing store
+    name: orders-db
+    engine: postgres
+    components:
+      - postgres-adapter
+  - kind: topic
+    name: order-events
+    components:
+      - kafka-producer
+  - kind: identity issuer
+    name: sso
+    components:
+      - rh-sso-auth
+  - kind: ingress
+    name: http
+    port: 8080
+    components:
+      - health-check
+  - kind: egress
+    name: payments
+    port: 443
+    components:
+      - rh-sso-auth
+  - kind: cluster permission
+    name: read-config-maps
+    resource: configmaps
+    verbs:
+      - get
+    components:
+      - health-check
+  - kind: pod security
+    name: pod-security
+    level: restricted
+    components:
+      - health-check
+environment:
+  - name: AUTH_ENABLED
+    read_by:
+      - rh-sso-auth
+    type: boolean
+    required: false
+    default: "true"
+    description: Tells that SSO authentication is on, and the service refuses each value other than true. When it has no value, authentication is on.
+    secret: false
+    allowed: "true"
+  - name: CORS_ALLOWED_HEADERS
+    read_by:
+      - rest-api
+    type: list
+    required: false
+    default: Content-Type,Authorization
+    description: The request headers that cross-origin requests may send. When it has no value, the API allows Content-Type and Authorization.
+    secret: false
+  - name: CORS_ALLOWED_METHODS
+    read_by:
+      - rest-api
+    type: list
+    required: false
+    default: GET,POST,PATCH,PUT,DELETE,OPTIONS
+    description: The HTTP methods that cross-origin requests may use. When it has no value, the API allows GET, POST, PATCH, PUT, DELETE and OPTIONS.
+    secret: false
+  - name: CORS_ALLOWED_ORIGINS
+    read_by:
+      - rest-api
+    type: list
+    required: false
+    description: The origins that may send cross-origin requests. When it has no value, the API sets no CORS header.
+    secret: false
+  - name: DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two.
+    secret: false
+  - name: GODEBUG
+    read_by:
+      - command
+    type: string
+    required: false
+    description: 'Read by the Go runtime and standard library: settings that change their behavior. The service does not start when it holds a tls or x509 setting, because that can turn off a TLS check.'
+    secret: false
+  - name: GOGC
+    read_by:
+      - command
+    type: string
+    required: false
+    default: "100"
+    description: 'Read by the Go runtime: the garbage collection target as a percent, or off. When it has no value, it is 100.'
+    secret: false
+  - name: GOMAXPROCS
+    read_by:
+      - command
+    type: integer
+    required: false
+    description: 'Read by the Go runtime: the most operating system threads that run Go code at one time. When it has no value, the runtime uses the CPU limit.'
+    secret: false
+    allowed: 1 to 1024
+  - name: GOMEMLIMIT
+    read_by:
+      - command
+    type: string
+    required: false
+    description: 'Read by the Go runtime: the soft memory limit of the process, such as 512MiB. When it has no value, there is no limit.'
+    secret: false
+  - name: GOTRACEBACK
+    read_by:
+      - command
+    type: string
+    required: false
+    default: single
+    description: 'Read by the Go runtime: how much a crash report shows. When it has no value, it shows the goroutine that failed.'
+    secret: false
+    allowed: none, single, all, system, crash
+  - name: GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_BINARY_LOG_FILTER
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_ENABLE_TXT_SERVICE_CONFIG
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_ENFORCE_ALPN_ENABLED
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_SNI
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GCP_OBSERVABILITY_CONFIG
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GCP_OBSERVABILITY_CONFIG_FILE
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_IGNORE_TXT_ERRORS
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_GO_LOG_FORMATTER
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: 'Read by the gRPC library: the format of its log messages. When it has no value, it writes plain text.'
+    secret: false
+    allowed: json
+  - name: GRPC_GO_LOG_SEVERITY_LEVEL
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: error
+    description: 'Read by the gRPC library: the lowest level of its log messages. When it has no value, it logs errors only.'
+    secret: false
+    allowed: error, ERROR, warning, WARNING, info, INFO
+  - name: GRPC_GO_LOG_VERBOSITY_LEVEL
+    read_by:
+      - otel-tracing
+    type: integer
+    required: false
+    default: "0"
+    description: 'Read by the gRPC library: how much detail its info messages give. When it has no value, it is 0.'
+    secret: false
+    allowed: 0 to 99
+  - name: GRPC_GO_SERVER_GOROUTINE_LABELS
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_RING_HASH_CAP
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_XDS_BOOTSTRAP
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_XDS_BOOTSTRAP_CONFIG
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
+    secret: false
+  - name: JWK_CA_FILE
+    read_by:
+      - rh-sso-auth
+    type: path
+    required: false
+    description: A PEM file of certificate authorities for the key set URL. When it has no value, the verifier uses the jwk_ca_file setting.
+    secret: false
+  - name: JWK_CERT_FILE
+    read_by:
+      - rh-sso-auth
+    type: path
+    required: false
+    description: The file of the key set of Red Hat SSO. When it has no value, the verifier uses the jwk_cert_file setting.
+    secret: false
+  - name: JWK_CERT_URL
+    read_by:
+      - rh-sso-auth
+    type: url
+    required: false
+    default: https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/certs
+    description: The HTTPS URL of the key set of Red Hat SSO. When it has no value, the verifier uses the jwk_cert_url setting.
+    secret: false
+  - name: LOG_LEVEL
+    read_by:
+      - health-check
+    type: string
+    required: true
+    description: The level of the log of the service.
+    secret: false
+    allowed: debug, info, warn, error
+  - name: OTEL_EXPORTER_OTLP_CERTIFICATE
+    read_by:
+      - otel-tracing
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that verify the collector. When it has no value, the export uses the system roots.
+    secret: false
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    read_by:
+      - otel-tracing
+    type: url
+    required: false
+    description: The HTTPS origin of the OpenTelemetry collector. When it has no value, the service exports no telemetry.
+    secret: false
+  - name: OTEL_EXPORTER_OTLP_PROTOCOL
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: grpc
+    description: The OTLP protocol of the export, which can only be grpc. When it has no value, the export uses grpc.
+    secret: false
+    allowed: grpc
+  - name: OTEL_LOGS_EXPORTER
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: otlp
+    description: Set to none to stop the export of logs. When it has no value, the service exports logs with OTLP.
+    secret: false
+    allowed: otlp, none
+  - name: OTEL_METRICS_EXPORTER
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    default: otlp
+    description: Set to none to stop the export of metrics. When it has no value, the service exports metrics with OTLP.
+    secret: false
+    allowed: otlp, none
+  - name: OTEL_METRIC_EXPORT_INTERVAL
+    read_by:
+      - otel-tracing
+    type: integer
+    required: false
+    default: "10000"
+    description: The time between two exports of metrics, in milliseconds. When it has no value, the time is 10000 milliseconds.
+    secret: false
+    allowed: 1000 to 60000 milliseconds
+  - name: OTEL_SERVICE_NAME
+    read_by:
+      - otel-tracing
+    type: string
+    required: false
+    description: The service name in the telemetry. When it has no value, the telemetry uses the declared service name.
+    secret: false
+  - name: OTEL_TRACES_SAMPLER_ARG
+    read_by:
+      - otel-tracing
+    type: number
+    required: false
+    default: "0.1"
+    description: The ratio of traces that the service samples. When it has no value, the ratio is 0.1.
+    secret: false
+    allowed: 0 to 1
+  - name: PGAPPNAME
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGCHANNELBINDING
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGCONNECT_TIMEOUT
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGDATABASE
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGHOST
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGMAXPROTOCOLVERSION
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGMINPROTOCOLVERSION
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGOPTIONS
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGPASSFILE
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGPASSWORD
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: true
+  - name: PGPORT
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGREQUIREAUTH
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSERVICE
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSERVICEFILE
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSSLCERT
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSSLKEY
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSSLMODE
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSSLNEGOTIATION
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSSLPASSWORD
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: true
+  - name: PGSSLROOTCERT
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGSSLSNI
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGTARGETSESSIONATTRS
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGTZ
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PGUSER
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
+    secret: false
+  - name: PORT
+    read_by:
+      - health-check
+    type: integer
+    required: false
+    default: "8080"
+    description: The TCP port where the HTTP server listens. When it has no value, the server listens on port 8080.
+    secret: false
+  - name: SSL_CERT_DIR
+    read_by:
+      - command
+    type: string
+    required: false
+    description: 'Read by the Go TLS library for folders of system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection.'
+    secret: false
+  - name: SSL_CERT_FILE
+    read_by:
+      - command
+    type: path
+    required: false
+    description: 'Read by the Go TLS library for the system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection.'
+    secret: false
+  - name: STEGO_AUDIT_SINK_AUTH_HEADER
+    read_by:
+      - audit-log
+    type: string
+    required: false
+    description: The header that carries the token of STEGO_AUDIT_SINK_TOKEN_FILE as the file holds it. When it has no value, the token goes in the Authorization header as a bearer token.
+    secret: false
+  - name: STEGO_AUDIT_SINK_CA_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that the audit sink adds to the system roots. When it has no value, the sink uses the system roots.
+    secret: false
+  - name: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: The file of the PEM client certificate of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_KEY_FILE.
+    secret: false
+  - name: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: The file of the PEM client key of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_CERT_FILE.
+    secret: false
+  - name: STEGO_AUDIT_SINK_TOKEN_FILE
+    read_by:
+      - audit-log
+    type: path
+    required: false
+    description: The file of the token for the audit sink at STEGO_AUDIT_SINK_URL. When it has no value, the sink must use a client certificate.
+    secret: false
+  - name: STEGO_AUDIT_SINK_URL
+    read_by:
+      - audit-log
+    type: url
+    required: false
+    description: The HTTPS URL of the OTLP/HTTP logs endpoint that gets the audit records. When it has no value, the audit records go to a table in the service database.
+    secret: false
+  - name: STEGO_AUTHN_AUDIENCE
+    read_by:
+      - rh-sso-auth
+    type: string
+    required: false
+    default: orders
+    description: The audience that each bearer token must name, which must be equal to the audience setting. When it has no value, the verifier uses the audience setting.
+    secret: false
+  - name: STEGO_AUTHN_CA_FILE
+    read_by:
+      - rh-sso-auth
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that the verifier adds to the system roots, unless the component states a CA file. When it has no value, the verifier uses the system roots.
+    secret: false
+  - name: STEGO_AUTHN_ISSUER
+    read_by:
+      - rh-sso-auth
+    type: url
+    required: false
+    default: https://sso.example.com/auth/realms/example
+    description: The issuer that each bearer token must name, which must be equal to the issuer setting. When it has no value, the verifier uses the issuer setting.
+    secret: false
+  - name: STEGO_AUTHN_KEYS_FILE
+    read_by:
+      - rh-sso-auth
+    type: path
+    required: false
+    description: The file of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_URL when the component states no key file and no discovery.
+    secret: false
+  - name: STEGO_AUTHN_KEYS_URL
+    read_by:
+      - rh-sso-auth
+    type: url
+    required: false
+    description: The HTTPS URL of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_FILE when the component states no key file and no discovery.
+    secret: false
+  - name: STEGO_AUTH_AUDIENCE
+    read_by:
+      - rh-sso-auth
+    type: string
+    required: false
+    default: orders
+    description: The audience that each token must name. When it has no value, the verifier uses the audience setting.
+    secret: false
+  - name: STEGO_AUTH_ISSUER
+    read_by:
+      - rh-sso-auth
+    type: url
+    required: false
+    default: https://sso.example.com/auth/realms/example
+    description: The issuer that each token must name. When it has no value, the verifier uses the issuer setting.
+    secret: false
+  - name: STEGO_AUTH_PUBLIC_KEY_FILE
+    read_by:
+      - rh-sso-auth
+    type: path
+    required: false
+    description: The file of the RSA public key of the shared JWT verifier. This component sets no default, so the shared verifier does not start when it has no value.
+    secret: false
+  - name: STEGO_AUTH_ROLES_CLAIM
+    read_by:
+      - rh-sso-auth
+    type: string
+    required: false
+    description: The claim of the token that holds the roles of the caller, for the shared JWT verifier. When it has no value, the verifier reads no roles claim.
+    secret: false
+  - name: STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK
+    read_by:
+      - postgres-adapter
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to let a loopback database connection go without TLS, for a local test only. When it has no value, each connection needs TLS.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME
+    read_by:
+      - postgres-adapter
+    type: duration
+    required: false
+    default: 5m
+    description: The longest time that the pool keeps an idle database connection. When it has no value, the limit is 5 minutes.
+    secret: false
+    allowed: 1s to 24h
+  - name: STEGO_DATABASE_CONNECTION_MAX_LIFETIME
+    read_by:
+      - postgres-adapter
+    type: duration
+    required: false
+    default: 30m
+    description: The longest time that the pool keeps one database connection. When it has no value, the limit is 30 minutes.
+    secret: false
+    allowed: 1s to 24h
+  - name: STEGO_DATABASE_MAX_IDLE_CONNECTIONS
+    read_by:
+      - postgres-adapter
+    type: integer
+    required: false
+    description: The largest number of idle connections in the database pool, at most the open limit. When it has no value, the limit is 4, or the open limit when it is less.
+    secret: false
+    allowed: 0 to 1024
+  - name: STEGO_DATABASE_MAX_OPEN_CONNECTIONS
+    read_by:
+      - postgres-adapter
+    type: integer
+    required: false
+    default: "16"
+    description: The largest number of open connections in the database pool. When it has no value, the pool opens at most 16 connections.
+    secret: false
+    allowed: 1 to 1024
+  - name: STEGO_HTTP_REQUIRE_TLS
+    read_by:
+      - health-check
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to make the HTTP server use TLS. When it has no value, the server uses TLS only when it has a certificate and a key.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_HTTP_TLS_CERT
+    read_by:
+      - health-check
+    type: path
+    required: false
+    description: The file of the PEM TLS certificate of the HTTP server. When it and STEGO_HTTP_TLS_KEY have no value, the server uses plain HTTP.
+    secret: false
+  - name: STEGO_HTTP_TLS_KEY
+    read_by:
+      - health-check
+    type: path
+    required: false
+    description: The file of the PEM TLS private key of the HTTP server. When it and STEGO_HTTP_TLS_CERT have no value, the server uses plain HTTP.
+    secret: false
+  - name: STEGO_KAFKA_BROKERS
+    read_by:
+      - kafka-producer
+    type: list
+    required: false
+    description: The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value.
+    secret: false
+  - name: STEGO_KAFKA_BROKERS_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two.
+    secret: false
+  - name: STEGO_KAFKA_BROKER_HOSTS
+    read_by:
+      - kafka-producer
+    type: list
+    required: false
+    description: The hosts that the worker may dial, at most 64, or STEGO_KAFKA_BROKER_HOSTS_FILE in its place. When the two have no value, the worker dials each broker that a broker names.
+    secret: false
+  - name: STEGO_KAFKA_BROKER_HOSTS_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the list of the hosts that the worker may dial. Give it or STEGO_KAFKA_BROKER_HOSTS, not the two.
+    secret: false
+  - name: STEGO_KAFKA_CA_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots.
+    secret: false
+  - name: STEGO_KAFKA_CLIENT_CERT_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the PEM client certificate of mutual TLS. Give it with STEGO_KAFKA_CLIENT_KEY_FILE.
+    secret: false
+  - name: STEGO_KAFKA_CLIENT_KEY_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the PEM client key of mutual TLS. Give it with STEGO_KAFKA_CLIENT_CERT_FILE.
+    secret: false
+  - name: STEGO_KAFKA_INSECURE_LOOPBACK
+    read_by:
+      - kafka-producer
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to let loopback brokers go without TLS, for a local test only. When it has no value, each broker needs TLS.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_KAFKA_PASSWORD_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it.
+    secret: false
+  - name: STEGO_KAFKA_SASL_MECHANISM
+    read_by:
+      - kafka-producer
+    type: string
+    required: false
+    description: The SASL mechanism. When it has no value, the worker uses no SASL and needs a client certificate.
+    secret: false
+    allowed: SCRAM-SHA-512, OAUTHBEARER
+  - name: STEGO_KAFKA_TOKEN_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file of the OAUTHBEARER token. The mechanism OAUTHBEARER needs it.
+    secret: false
+  - name: STEGO_KAFKA_TOPIC
+    read_by:
+      - kafka-producer
+    type: string
+    required: false
+    description: The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place. When the two have no value, each message goes to the topic of its event type.
+    secret: false
+  - name: STEGO_KAFKA_TOPIC_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the topic of every message. Give it or STEGO_KAFKA_TOPIC, not the two.
+    secret: false
+  - name: STEGO_KAFKA_USERNAME
+    read_by:
+      - kafka-producer
+    type: string
+    required: false
+    description: The SCRAM user name. Give it or STEGO_KAFKA_USERNAME_FILE when the mechanism is SCRAM-SHA-512.
+    secret: false
+  - name: STEGO_KAFKA_USERNAME_FILE
+    read_by:
+      - kafka-producer
+    type: path
+    required: false
+    description: The file that holds the SCRAM user name. Give it or STEGO_KAFKA_USERNAME, not the two.
+    secret: false
+  - name: STEGO_MIGRATION_DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: STEGO_MIGRATION_DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two.
+    secret: false
+  - name: STEGO_MODE
+    read_by:
+      - command
+    type: list
+    required: false
+    default: all
+    description: The modes that the process runs when no --mode option is given. When it has no value, the process runs all modes.
+    secret: false
+    allowed: api, worker, controller, all
+  - name: STEGO_OTEL_TOKEN_FILE
+    read_by:
+      - otel-tracing
+    type: path
+    required: false
+    description: The file of the bearer token for the collector at OTEL_EXPORTER_OTLP_ENDPOINT. When it has no value, the export sends no token.
+    secret: false
+  - name: STEGO_PROBE_CONSOLE
+    read_by:
+      - domain-probe
+    type: string
+    required: false
+    default: "off"
+    description: The format of the domain probe values on standard output. When it has no value, the probes write nothing to standard output.
+    secret: false
+    allowed: json, logfmt, off
+  - name: STEGO_QUERY_CURSOR_KEY_FILE
+    read_by:
+      - query
+    type: path
+    required: true
+    description: The file of the key of the list cursors, at least 32 bytes, the same in each replica. The service does not start when it has no value.
+    secret: false
+  - name: STEGO_RELAY_DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: STEGO_RELAY_DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two.
+    secret: false
+  - name: STEGO_SERVICE_VERSION
+    read_by:
+      - command
+    type: string
+    required: false
+    description: The version of the release, which each audit row and the controller lease carry. When it has no value, they carry an empty version.
+    secret: false
+  - name: STEGO_SPICEDB_ENDPOINT
+    read_by:
+      - spicedb-authz
+    type: address
+    required: true
+    description: The host and port of SpiceDB. The service does not start when it has no value.
+    secret: false
+  - name: STEGO_SPICEDB_INSECURE_LOOPBACK
+    read_by:
+      - spicedb-authz
+    type: boolean
+    required: false
+    default: "0"
+    description: Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS.
+    secret: false
+    allowed: 0, 1
+  - name: STEGO_SPICEDB_KEY_FILE
+    read_by:
+      - spicedb-authz
+    type: path
+    required: true
+    description: The file of the preshared key of SpiceDB. The service does not start when it has no value.
+    secret: false
+  - name: STEGO_WORKER_DATABASE_URL
+    read_by:
+      - postgres-adapter
+    type: string
+    required: false
+    description: The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
+    secret: true
+  - name: STEGO_WORKER_DATABASE_URL_FILE
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two.
+    secret: false
+  - name: TZ
+    read_by:
+      - command
+    type: string
+    required: false
+    description: 'Read by the Go time library: the local time zone of the process. When it has no value, it uses the system time zone.'
+    secret: false

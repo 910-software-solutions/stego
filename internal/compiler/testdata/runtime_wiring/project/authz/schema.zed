@@ -1,10 +1,27 @@
 definition user {}
 
+definition service_account {}
+
+// Each worker has its own relation on the tenant, whose tuple provisioning writes (ST-SUP-RC35-OC13).
+definition tenant {
+	relation worker_sync_partner_orders: service_account
+	relation worker_apply_note_replies: service_account
+}
+
+definition service {
+	relation operator: user
+	permission provision = operator
+	permission retire = operator
+}
+
 definition order {
 	relation owner: user
 	relation viewer: user
+	// The workers sync-partner-orders and apply-note-replies sync an order on which the check grants them.
+	relation syncer: service_account
 	permission view = owner + viewer
 	permission edit = owner
+	permission sync = syncer
 }
 
 definition note {

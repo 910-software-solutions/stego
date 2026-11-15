@@ -5,7 +5,9 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
@@ -133,13 +135,28 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 		return nil, err
 	}
 	resolved := &resolvedCompilation{Components: components, Names: componentNames, Contexts: map[string]gen.Context{}, InputSnapshots: map[string]fileSnapshot{}, OutDir: outDir, OutDirName: outDirName, SlotsPackage: slotsPackage, HoldsFills: fills, RuntimeData: runtimeData, QueryStreams: declaration.QueryStreams(svcDecl, facts)}
+	// A check (stego validate) reconciles a declaration whose schema changes generation does not carry out yet, and
+	// writes nothing, so its generators get the stored shape with no schema step: the reconciler refuses such a
+	// declaration in every run that writes (unbuiltSchemaChanges).
+	schemaChanges, schemaHistory := svcDecl.SchemaChanges, svcDecl.SchemaHistory
+	if input.CheckOnly && unbuiltSchemaChanges(svcDecl) != nil {
+		schemaChanges, schemaHistory = nil, nil
+	}
+	// A renamed field keeps its API name, the name before its first rename, and is stored in the column of its
+	// declared name (ST-GEN-UC12-R04).
+	entities, err := gen.StoredNames(svcDecl.Entities, svcDecl.Invariants, svcDecl.Collections, schemaChanges)
+	if err != nil {
+		return nil, err
+	}
 	for _, compName := range componentNames {
 		comp := components[compName]
 		generator := input.Generators[compName]
 		ctx := gen.Context{
 			Conventions:     conventions,
-			Entities:        svcDecl.Entities,
+			Entities:        entities,
 			Collections:     svcDecl.Collections,
+			SchemaChanges:   schemaChanges,
+			SchemaHistory:   schemaHistory,
 			SlotBindings:    svcDecl.Slots,
 			Observations:    svcDecl.Observations,
 			Emitters:        declaredEmitters(svcDecl),
@@ -163,23 +180,26 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			Queries:         svcDecl.Queries,
 			FillSlots:       maps.Clone(facts.FillSlots),
 			Commands:        declaredCommands(svcDecl, facts.FillSlots),
+			Workers:         declaredWorkers(svcDecl, facts.FillSlots),
 			Destinations:    declaredDestinations(svcDecl, componentNames),
 			QueryStreams:    declaration.QueryStreams(svcDecl, facts),
 		}
-		if compName == authorizationComponent && svcDecl.Authorization != nil && svcDecl.Authorization.SchemaPath != "" {
-			// The authorization component reads the schema that the declaration names (ST-SUP-RC29).
-			ctx.Inputs, err = captureGeneratorInputs(input.ProjectDir, outDirName,
-				[]gen.InputFile{{Path: svcDecl.Authorization.SchemaPath, MaxBytes: declaration.MaxSchemaBytes}}, resolved.InputSnapshots)
-			if err != nil {
-				return nil, fmt.Errorf("generator %q inputs: %w", compName, err)
-			}
+		var inputs []gen.InputFile
+		if schemaReader[compName] && svcDecl.Authorization != nil && svcDecl.Authorization.SchemaPath != "" {
+			// The authorization component reads the schema that the declaration names (ST-SUP-RC29), and the command
+			// and rest-api components read the relations of each resource type from it, which a delete of a row
+			// clears (ST-SUP-Q118).
+			inputs = append(inputs, gen.InputFile{Path: svcDecl.Authorization.SchemaPath, MaxBytes: declaration.MaxSchemaBytes})
 		}
 		if provider, ok := generator.(gen.InputProvider); ok {
 			names, err := provider.InputFiles(ctx.ComponentConfig)
 			if err != nil {
 				return nil, fmt.Errorf("generator %q inputs: %w", compName, err)
 			}
-			ctx.Inputs, err = captureGeneratorInputs(input.ProjectDir, outDirName, names, resolved.InputSnapshots)
+			inputs = append(inputs, names...)
+		}
+		if len(inputs) > 0 {
+			ctx.Inputs, err = captureGeneratorInputs(input.ProjectDir, outDirName, inputs, resolved.InputSnapshots)
 			if err != nil {
 				return nil, fmt.Errorf("generator %q inputs: %w", compName, err)
 			}
@@ -246,6 +266,22 @@ func declaredCommands(svcDecl *types.ServiceDeclaration, fillSlots map[string]st
 	return commands
 }
 
+// declaredWorkers gives the declared workers, each with the slot that its fill implements as the project's fill.yaml
+// names it (ST-SUP-RC35-OC02).
+func declaredWorkers(svcDecl *types.ServiceDeclaration, fillSlots map[string]string) []gen.Worker {
+	if len(svcDecl.Workers) == 0 {
+		return nil
+	}
+	workers := make([]gen.Worker, len(svcDecl.Workers))
+	for i, worker := range svcDecl.Workers {
+		workers[i] = gen.Worker{Worker: worker}
+		if len(worker.Fill) == 1 {
+			workers[i].FillSlot = fillSlots[worker.Fill[0]]
+		}
+	}
+	return workers
+}
+
 // declaredEmitters lists the commands, queries, workers and slot bindings of the declaration, in this order and in
 // declaration order, with the names that an observation's Emitted by uses: a slot binding as collection.slot
 // (ST-DECL-INV54, ST-SUP-RC34-OC03).
@@ -282,16 +318,20 @@ func pooledTenancy(service *types.ServiceDeclaration, componentNames []string) *
 	if !present {
 		return nil
 	}
-	key := "tenant_id"
+	pooled := &gen.Tenancy{Key: "tenant_id"}
 	if tenancy := service.Tenancy; tenancy != nil {
 		if tenancy.Kind != "" && tenancy.Kind != "pooled" {
 			return nil
 		}
 		if tenancy.Key != "" {
-			key = tenancy.Key
+			pooled.Key = tenancy.Key
+		}
+		if p := tenancy.Provisioning; p != nil {
+			provisioning := *p
+			pooled.Provisioning = &provisioning
 		}
 	}
-	return &gen.Tenancy{Key: key}
+	return pooled
 }
 
 // declaredDestinations gives the outbox destinations that the components of the service declare in their setting
@@ -320,5 +360,30 @@ func declaredDestinations(svcDecl *types.ServiceDeclaration, componentNames []st
 			}
 		}
 	}
+	// The destination that a worker consumes is the service's own: its one handler is the worker, which the outbox
+	// gives each message until it lands, and which runs a message once (ST-SUP-RC35-OC06).
+	if slices.Contains(componentNames, workerComponent) {
+		landing := true
+		for _, worker := range svcDecl.Workers {
+			if destination, ok := strings.CutPrefix(worker.Trigger, "consumes "); ok {
+				out = append(out, gen.Destination{Name: destination, Component: workerComponent, MustLand: &landing, Idempotent: &landing})
+			}
+		}
+	}
 	return out
+}
+
+// unemittedInvariants refuses, for generation, each declared invariant (ST-DECL-EN17): no generator emits one yet as the constraint of
+// the store that ST-STD-TXN-R17 names, so a generation that went on would give a service that does not enforce a
+// rule that checking accepted. The error names each invariant, its kind and its entity, and no file is written.
+func unemittedInvariants(invariants []types.DeclaredInvariant) error {
+	if len(invariants) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(invariants))
+	for _, invariant := range invariants {
+		names = append(names, fmt.Sprintf("%s (%s on %s)", invariant.Name, invariant.Kind, invariant.On))
+	}
+	return fmt.Errorf("no generator emits a declared invariant yet, so the service would not enforce %s; remove the invariants until a component emits them (ST-STD-TXN-R17)",
+		strings.Join(names, ", "))
 }

@@ -95,7 +95,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	if peer := ctx.PeerNamespaces["otel-tracing"]; peer != "" {
 		tracing = path.Join(ctx.ModuleName, ctx.OutDirName, peer)
 	}
-	for _, entry := range []struct{ name, source string }{{"runtime.go", source}, {"keyed.go", keyedSource}, {"watch_keyed.go", watchKeyedSource}, {"sweep.go", sweepSource}, {"scan.go", scanSource}, {"sequence.go", sequenceSource}, {"stream.go", streamSource}, {"observation.go", observationSource}, {"metrics.go", metricsSource}, {"monitor.go", monitorSource}, {"process.go", processSource}, {"checkpoint.go", checkpointSource}, {"state_protection.go", stateProtectionSource}, {"state_journal.go", stateJournalSource}, {"cycle.go", cycleSource}, {"cycle_parallel.go", cycleParallelSource}, {"telemetry.go", telemetrySource}} {
+	for _, entry := range []struct{ name, source string }{{"runtime.go", source}, {"keyed.go", keyedSource}, {"watch_keyed.go", watchKeyedSource}, {"sweep.go", sweepSource}, {"scan.go", scanSource}, {"sequence.go", sequenceSource}, {"stream.go", streamSource}, {"observation.go", observationSource}, {"metrics.go", metricsSource}, {"monitor.go", monitorSource}, {"process.go", processSource + gen.EnvironmentGuardSource}, {"checkpoint.go", checkpointSource}, {"state_protection.go", stateProtectionSource}, {"state_journal.go", stateJournalSource}, {"cycle.go", cycleSource}, {"cycle_parallel.go", cycleParallelSource}, {"telemetry.go", telemetrySource}} {
 		tmpl, err := template.New(entry.name).Parse(entry.source)
 		if err != nil {
 			return nil, nil, err

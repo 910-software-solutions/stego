@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	authzschema "github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/types"
 )
@@ -112,18 +113,23 @@ type model struct {
 	handlersImport string
 	probeImport    string // the domain probes package, or empty when the service has none
 	tenantKey      string
-	subjectType    string
-	basePath       string
-	messages       *messages
-	entities       []*entity // the entities that a command writes, in declaration order
-	commands       []*command
-	names          map[string]string
+	// relations are the schema relations of each resource type (SchemaRelations).
+	relations   map[string][]string
+	subjectType string
+	basePath    string
+	messages    *messages
+	entities    []*entity // the entities that a command writes, in declaration order
+	commands    []*command
+	names       map[string]string
 	// destinations are the declared outbox destinations by name, with their delivery (ST-SUP-RC32-OC12).
 	destinations map[string]delivery
 }
 
+// ConsumedComponent is the component of a destination that a declared worker consumes (ST-SUP-RC35-OC06).
+const ConsumedComponent = "worker"
+
 // delivery is the declared delivery of one outbox destination.
-type delivery struct{ mustLand, idempotent bool }
+type delivery struct{ mustLand, idempotent, consumed bool }
 
 // declaredDeliveries reads the destinations that the components declare, and refuses one that leaves must_land or
 // idempotent out, naming the destination and the property (ST-SUP-RC32-OC12).
@@ -135,7 +141,9 @@ func declaredDeliveries(destinations []gen.Destination) (map[string]delivery, er
 				return nil, fmt.Errorf("command: the destination %s of the component %s does not declare %s; the setting destinations declares must_land and idempotent for each destination (ST-SUP-RC32-OC12)", d.Name, d.Component, property)
 			}
 		}
-		out[d.Name] = delivery{mustLand: *d.MustLand, idempotent: *d.Idempotent}
+		// A destination that a worker consumes stores the staging principal and the stager of each message
+		// (ST-SUP-RP10-LC16).
+		out[d.Name] = delivery{mustLand: *d.MustLand, idempotent: *d.Idempotent, consumed: d.Component == ConsumedComponent}
 	}
 	return out, nil
 }
@@ -154,12 +162,22 @@ type command struct {
 	creates   bool
 	pattern   string
 	relations []string
-	effects   []string
+	// helpers are the typed relation helpers of the declared relations (ST-SUP-RC32-OC13).
+	helpers []relationHelper
+	effects []string
 	// effectNames are the declared effect names of each effect destination, which Stage holds the fill to
 	// (ST-SUP-RP10-LC07).
 	effectNames map[string][]string
 	retry       int
 	lock        string // a Go duration expression, or empty for the default
+}
+
+// relationHelper is the pair of typed helpers of one relation that a command declares in relationships_written: the
+// relation, and the written entity whose rows are the relation's resources.
+type relationHelper struct {
+	resourceType, relation string
+	entity                 *entity
+	relate, unrelate       string
 }
 
 // resource is the resource of a command's permission: its type and the table of the entity that has it.
@@ -229,6 +247,9 @@ func plan(ctx gen.Context) (*model, error) {
 		return nil, err
 	}
 	m.messages = msgs
+	if m.relations, err = SchemaRelations(ctx); err != nil {
+		return nil, err
+	}
 	byName := map[string]types.Entity{}
 	for _, e := range ctx.Entities {
 		byName[e.Name] = e
@@ -285,7 +306,7 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 		p := planned[name]
 		if p == nil {
 			var err error
-			if p, err = planEntity(e, byName, m.tenantKey); err != nil {
+			if p, err = planEntity(e, byName, m.tenantKey, m.relations); err != nil {
 				return nil, fmt.Errorf("command: the command %s writes %s: %w", decl.Name, name, err)
 			}
 			planned[name] = p
@@ -309,6 +330,27 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 			return nil, fmt.Errorf("command: the command %s writes the relation %q, which is not resource_type#relation", decl.Name, text)
 		}
 		cmd.relations = append(cmd.relations, text)
+		resourceType, relation, _ := strings.Cut(text, "#")
+		h := relationHelper{resourceType: resourceType, relation: relation,
+			relate: cmd.goName + "Relate" + mixedCase(relation), unrelate: cmd.goName + "Unrelate" + mixedCase(relation)}
+		for _, e := range cmd.writes {
+			if e.resourceType == resourceType {
+				h.entity = e
+				break
+			}
+		}
+		if h.entity == nil {
+			return nil, fmt.Errorf("command: the command %s writes the relation %s, but it writes no entity of the resource type %s, whose rows the relation's resources are", decl.Name, text, resourceType)
+		}
+		// The relation of a declared relationship or of a reference is the runtime's own: a helper for it would let a
+		// fill move an owner after create, or relate a row to a parent with no permission on the parent
+		// (ST-SUP-RC32-OC13, ST-SUP-Q118).
+		for _, e := range cmd.writes {
+			if why, ok := authzschema.RuntimeRelations(e.decl)[relation]; ok && e.resourceType == resourceType {
+				return nil, fmt.Errorf("command: the command %s writes the relation %s, which is %s; the runtime writes it alone, so a command may not relate or unrelate it", decl.Name, text, why)
+			}
+		}
+		cmd.helpers = append(cmd.helpers, h)
 	}
 	seen, named := map[string]bool{}, map[string]bool{}
 	for _, effect := range decl.Effects {
@@ -452,6 +494,11 @@ func (m *model) takeNames() error {
 		}
 		for _, r := range c.refusals {
 			if err := take("the refusal "+r.name+" of "+c.decl.Name, r.goName); err != nil {
+				return err
+			}
+		}
+		for _, h := range c.helpers {
+			if err := take("the relation "+h.resourceType+"#"+h.relation+" of "+c.decl.Name, h.relate, h.unrelate); err != nil {
 				return err
 			}
 		}

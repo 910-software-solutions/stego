@@ -32,9 +32,9 @@ func TestComponentPastItsSunset(t *testing.T) {
 
 func TestExperimentOwnsOnlyItsOwnPort(t *testing.T) {
 	t.Run("ST-SUP-INV03-T A component below ga that provides the port of a ga component is refused", func(t *testing.T) {
-		storeA := "kind: component\nname: store-a\nversion: 1.0.0\nstage: ga\nrequires: []\nprovides: [store-port]\nslots: []\n"
+		storeA := "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    store-port: inbound\nname: store-a\nversion: 1.0.0\nstage: ga\nrequires: []\nprovides: [store-port]\nslots: []\n"
 		betaStore := func(stage, port string) string {
-			return "kind: component\nname: beta-store\nversion: 0.1.0\nstage: " + stage + "\nsunset: " + time.Now().AddDate(0, 0, 30).Format(time.DateOnly) + "\nrequires: []\nprovides: [" + port + "]\nslots: []\n"
+			return "kind: component\nenvironment: []\nname: beta-store\nversion: 0.1.0\nstage: " + stage + "\nsunset: " + time.Now().AddDate(0, 0, 30).Format(time.DateOnly) + "\nrequires: []\nprovides: [" + port + "]\nslots: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    " + port + ": inbound\n"
 		}
 		for _, stage := range []string{"beta", "alpha"} {
 			folder := writeRegistryFolder(t, map[string]string{

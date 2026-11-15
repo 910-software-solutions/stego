@@ -40,8 +40,8 @@ func TestRestCrudArchetypeParsesFromLiveRegistry(t *testing.T) {
 	if a.Language != "go" {
 		t.Errorf("Language = %q, want %q", a.Language, "go")
 	}
-	if a.Version != "3.84.0" {
-		t.Errorf("Version = %q, want %q", a.Version, "3.84.0")
+	if a.Version != "3.123.2" {
+		t.Errorf("Version = %q, want %q", a.Version, "3.123.2")
 	}
 	if a.DefaultAuth != "jwt-auth" {
 		t.Errorf("DefaultAuth = %q, want %q", a.DefaultAuth, "jwt-auth")
@@ -73,7 +73,7 @@ func TestRestCrudArchetypeParsesFromLiveRegistry(t *testing.T) {
 		t.Errorf("Conventions.CORS = %q, want %q", a.Conventions.CORS, "enabled")
 	}
 
-	wantMixins := []string{"event-publisher", "async-worker"}
+	wantMixins := []string{"event-publisher", "durable-events", "kafka-events", "async-worker"}
 	if len(a.CompatibleMixins) != len(wantMixins) {
 		t.Fatalf("CompatibleMixins count = %d, want %d", len(a.CompatibleMixins), len(wantMixins))
 	}
@@ -117,16 +117,16 @@ func TestLiveRegistryLoadsAllArchetypeComponents(t *testing.T) {
 	if restAPI == nil {
 		t.Fatal("Component(rest-api) returned nil")
 	}
-	if restAPI.Version != "4.2.0" {
-		t.Errorf("rest-api Version = %q, want %q", restAPI.Version, "4.2.0")
+	if restAPI.Version != "4.5.0" {
+		t.Errorf("rest-api Version = %q, want %q", restAPI.Version, "4.5.0")
 	}
 
 	pg := reg.Component("postgres-adapter")
 	if pg == nil {
 		t.Fatal("Component(postgres-adapter) returned nil")
 	}
-	if pg.Version != "6.0.1" {
-		t.Errorf("postgres-adapter Version = %q, want %q", pg.Version, "6.0.1")
+	if pg.Version != "6.6.0" {
+		t.Errorf("postgres-adapter Version = %q, want %q", pg.Version, "6.6.0")
 	}
 
 	otel := reg.Component("otel-tracing")
@@ -185,8 +185,8 @@ func TestShippedGoldenPathsHoldOnlyGAComponents(t *testing.T) {
 
 		fixture := t.TempDir()
 		for name, data := range map[string]string{
-			"components/store-a/component.yaml":  "kind: component\nname: store-a\nversion: 1.0.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n",
-			"components/beta-x/component.yaml":   "kind: component\nname: beta-x\nversion: 0.2.0\nstage: beta\nsunset: 2099-01-01\nrequires: []\nprovides: []\nslots: []\n",
+			"components/store-a/component.yaml":  "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: store-a\nversion: 1.0.0\nstage: ga\nrequires: []\nprovides: []\nslots: []\n",
+			"components/beta-x/component.yaml":   "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports: {}\nname: beta-x\nversion: 0.2.0\nstage: beta\nsunset: 2099-01-01\nrequires: []\nprovides: []\nslots: []\n",
 			"archetypes/svc-arch/archetype.yaml": "kind: archetype\nruntime: {module: github.com/jsell-rh/stego/registry/runtime, version: v0.1.0, sum: 'h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='}\nname: svc-arch\nlanguage: go\nversion: 1.0.0\ncomponents: [store-a, beta-x]\n",
 		} {
 			target := filepath.Join(fixture, filepath.FromSlash(name))

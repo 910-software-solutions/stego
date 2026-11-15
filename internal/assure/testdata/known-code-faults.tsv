@@ -12,7 +12,6 @@
 # the rule tests are skipped. When you fix a fault, remove its line in the same commit. Do not add a fault: fix it.
 # One fault per line, sorted, each fault once: the rule, the key, the file or package, and the reason, with a tab
 # between them.
-ST-STD-CODE-R01	internal/generator/kubernetesservice	internal/generator/kubernetesservice	the package holds files that the records of more than one domain name: ST-DLV, ST-SUP
 ST-STD-CODE-R02	ST-BLD-EN01-DM	internal/appbuild/dependencies.go	ST-BLD-EN01-DM names appbuild.moduleFiles, which the file does not declare
 ST-STD-CODE-R02	ST-BLD-EN01-TB	internal/appbuild/dependencies.go	ST-BLD-EN01-TB is titled "go.mod", which is not an identifier of package appbuild
 ST-STD-CODE-R02	ST-BLD-EN02-TB	internal/appbuild/download.go	ST-BLD-EN02-TB is titled "module-cache.json", which is not an identifier of package appbuild
@@ -33,10 +32,6 @@ ST-STD-CODE-R02	ST-SUP-EN09-TB	internal/registry/registry.go	ST-SUP-EN09-TB is t
 ST-STD-CODE-R02	ST-SUP-REPO02	internal/registry/registry.go	ST-SUP-REPO02 is titled "Registry.Archetype", which is not an identifier of package registry
 ST-STD-CODE-R02	ST-SUP-REPO04	internal/registry/registry.go	ST-SUP-REPO04 is titled "Registry.checkSlots", which is not an identifier of package registry
 ST-STD-CODE-R03	internal/generator/browserbackend imports internal/compiler	internal/generator/browserbackend	the package imports internal/compiler against the domain order: Supplying (ST-SUP) may not import Generating (ST-GEN)
-ST-STD-CODE-R03	internal/generator/browserbackend imports internal/generator/kubernetesservice	internal/generator/browserbackend	the package imports internal/generator/kubernetesservice against the domain order: Supplying (ST-SUP) may not import Delivering (ST-DLV)
-ST-STD-CODE-R03	internal/generator/kubernetesservice imports internal/generator/httpapplication	internal/generator/kubernetesservice	the package imports internal/generator/httpapplication against the domain order: Delivering (ST-DLV) may not import Supplying (ST-SUP)
-ST-STD-CODE-R03	internal/generator/kubernetesservice imports internal/generator/kubernetesclient	internal/generator/kubernetesservice	the package imports internal/generator/kubernetesclient against the domain order: Delivering (ST-DLV) may not import Supplying (ST-SUP)
-ST-STD-CODE-R03	internal/generator/kubernetesservice imports internal/types	internal/generator/kubernetesservice	the package reaches internal/types through internal/browserapplication, of no domain, against the domain order: Delivering (ST-DLV) may not import Declaring (ST-DECL)
 ST-STD-CODE-R04	cmd/stego/allocation_test.go	cmd/stego/allocation_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	cmd/stego/assets_test.go	cmd/stego/assets_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	cmd/stego/base_path_test.go	cmd/stego/base_path_test.go	the test file names no test record's ID in a test or subtest name
@@ -185,11 +180,9 @@ ST-STD-CODE-R04	internal/generator/oteltracing/testdata/startup_test.go	internal
 ST-STD-CODE-R04	internal/generator/postgresadapter/database_test.go	internal/generator/postgresadapter/database_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/generator/postgresadapter/generator_test.go	internal/generator/postgresadapter/generator_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/generator/postgresadapter/go_models_test.go	internal/generator/postgresadapter/go_models_test.go	the test file names no test record's ID in a test or subtest name
-ST-STD-CODE-R04	internal/generator/postgresadapter/schema_generation_test.go	internal/generator/postgresadapter/schema_generation_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/generator/postgresadapter/testdata/database_test.go	internal/generator/postgresadapter/testdata/database_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/generator/postgresclient/generator_test.go	internal/generator/postgresclient/generator_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/generator/rhssoauth/runtime_test.go	internal/generator/rhssoauth/runtime_test.go	the test file names no test record's ID in a test or subtest name
-ST-STD-CODE-R04	internal/generator/runtimeconfig/generator_test.go	internal/generator/runtimeconfig/generator_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/generator/typescriptsdk/generator_test.go	internal/generator/typescriptsdk/generator_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/openapicontract/enums_test.go	internal/openapicontract/enums_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/openapicontract/go_test.go	internal/openapicontract/go_test.go	the test file names no test record's ID in a test or subtest name

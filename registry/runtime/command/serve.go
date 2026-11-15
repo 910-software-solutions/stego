@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -112,11 +114,23 @@ type Outcome struct {
 	Status int
 	Code   string
 	Audit  audit.Outcome
+	// Field and Reason are, for ErrInvalid, the declared field that the refusal names and its fixed reason; they hold
+	// no value of the request.
+	Field, Reason string
 }
+
+// ErrUndecided is the error of a command whose permission the decision port could not decide now, such as for some
+// seconds after a schema write; OutcomeOf answers it 503 undecided, with Retry-After (ST-SUP-Q140).
+var ErrUndecided = errors.New("command: the permission of the command could not be decided now")
+
+// ErrorCodeInvalid is the fixed code of a command that ErrInvalid refused.
+const ErrorCodeInvalid = "invalid"
 
 // OutcomeOf maps an error of Run to its answer (ST-SUP-RP10-LC33, ST-SUP-RP10-LC34): a declared refusal among
 // refusals is its status and code; ErrDenied is 404 denied, the same answer as a missing row of a read
-// (ST-SUP-RP11-LC06); a conflict after the last attempt is 409 conflict; a COMMIT whose outcome is not known and
+// (ST-SUP-RP11-LC06); ErrInvalid is 400 invalid with the field it names (ST-SUP-Q118); a conflict after the last
+// attempt is 409 conflict; a decision that the provider could not make now (authz.Transient) is 503 undecided, which
+// the handler answers with Retry-After (ST-SUP-Q140); a COMMIT whose outcome is not known and
 // every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal that is not
 // one of refusals is an other error. No error text reaches the answer, the audit row or the log. Serve uses it, and
 // so does a handler that decodes its own body, such as the handlers of generated CRUD.
@@ -132,9 +146,19 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 	if errors.Is(err, ErrDenied) {
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
 	}
+	var invalid *invalidError
+	if errors.As(err, &invalid) {
+		return Outcome{Status: http.StatusBadRequest, Code: ErrorCodeInvalid, Audit: audit.OutcomeFailed,
+			Field: invalid.field, Reason: invalid.reason}
+	}
 	code := ErrorCode(err)
 	if code == audit.ErrorCodeConflict {
 		return Outcome{Status: http.StatusConflict, Code: code, Audit: audit.OutcomeFailed}
+	}
+	if code == ErrorCodeInternal && (errors.Is(err, ErrUndecided) || authz.Transient(err)) {
+		// A decision that the provider could not make now, such as for some seconds after a schema write, is 503
+		// with Retry-After, never a bare 500 (walkthrough 3, G4; ST-SUP-Q140).
+		return Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: code, Audit: audit.OutcomeFailed}
 }
@@ -273,7 +297,7 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		result, failed := serveRun(r.Context(), rt, s, req, decode)
 		switch {
 		case failed != nil:
-			writeProblem(w, failed.Status, "", failed.AnswerCode())
+			writeFieldProblem(w, failed.Status, "", failed.AnswerCode(), failed.Field)
 		case result.Problem != "":
 			writeProblem(w, result.Response.Status, result.Problem, "")
 		default:
@@ -346,6 +370,63 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 	}, nil
 }
 
+// ServeRevocationStatus gives the handler of the revocation status route, GET /authz/revocations/{id}
+// (ST-SUP-RP10-LC35, ST-SUP-RC29-OC17, ST-SUP-RC29-OC19). It binds the verified tenant and principal of subjectType
+// and answers 401 when it cannot. It reads the revocation only for that tenant and principal, with no decision call,
+// and answers 404, the same answer, to an identity that is not a revocation of theirs or is not an identity
+// (ST-SUP-RC29-OC18). It honors Prefer: wait=N through authz WaitFor, which holds no transaction and no pooled
+// connection while it waits, and sends Preference-Applied with the seconds it allowed. It answers 200 with the
+// identity and the state, and no token, with Cache-Control: no-store.
+func ServeRevocationStatus(rt *Runtime, subjectType string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeProblem(w, http.StatusMethodNotAllowed, "", "")
+			return
+		}
+		b, err := BindIdentity(r.Context(), subjectType)
+		if err != nil {
+			writeProblem(w, http.StatusUnauthorized, "", "")
+			return
+		}
+		text := r.PathValue("id")
+		if text == "" {
+			text = strings.TrimPrefix(r.URL.Path, authz.RevocationPath)
+		}
+		id, err := uuid.Parse(text)
+		if err != nil || id.String() != text {
+			writeProblem(w, http.StatusNotFound, "", ErrorCodeDenied)
+			return
+		}
+		wait, _ := authz.PreferWait(r.Header)
+		status, allowed, err := rt.cfg.Authz.WaitFor(r.Context(), b.Tenant, b.Principal, id, wait)
+		switch {
+		case errors.Is(err, authz.ErrRevocationNotFound):
+			writeProblem(w, http.StatusNotFound, "", ErrorCodeDenied)
+			return
+		case err != nil:
+			writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
+			return
+		}
+		if allowed > 0 {
+			w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(int(allowed/time.Second)))
+		}
+		// The body holds no token of the provider: a token tells the write count of the provider's datastore, which
+		// all tenants share, and a client sends only the identity of its revocation (ST-SUP-Q119).
+		body := map[string]string{"id": status.ID.String(), "state": string(status.State)}
+		data, err := json.Marshal(body)
+		if err != nil {
+			writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(authz.RevocationHeader, string(status.State))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+	})
+}
+
 // RPCCode is the gRPC status code of an HTTP status of a command answer.
 func RPCCode(httpStatus int) codes.Code {
 	switch httpStatus {
@@ -391,6 +472,15 @@ var titles = map[int]string{
 // writeProblem writes a problem response (RFC 9457) with a fixed title, the status, and the problem type and the
 // fixed code when they are given. It holds no error text and no value of a row.
 func writeProblem(w http.ResponseWriter, httpStatus int, problemType, code string) {
+	writeFieldProblem(w, httpStatus, problemType, code, "")
+}
+
+// writeFieldProblem is writeProblem with the declared field that an ErrInvalid names, when field is not empty.
+func writeFieldProblem(w http.ResponseWriter, httpStatus int, problemType, code, field string) {
+	if httpStatus == http.StatusServiceUnavailable {
+		// A 503 is a decision that the provider could not make now; the client may try again (ST-SUP-Q140).
+		w.Header().Set("Retry-After", authz.RetryAfter())
+	}
 	if problemType == "" {
 		problemType = "about:blank"
 	}
@@ -402,6 +492,9 @@ func writeProblem(w http.ResponseWriter, httpStatus int, problemType, code strin
 	b.WriteString("{\"type\":" + strconv.Quote(problemType) + ",\"title\":" + strconv.Quote(title) + ",\"status\":" + strconv.Itoa(httpStatus))
 	if code != "" {
 		b.WriteString(",\"code\":" + strconv.Quote(code))
+	}
+	if field != "" {
+		b.WriteString(",\"field\":" + strconv.Quote(field))
 	}
 	b.WriteString("}")
 	w.Header().Set("Content-Type", "application/problem+json")

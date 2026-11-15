@@ -25,6 +25,7 @@ import (
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
+	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -43,6 +44,14 @@ const TenantColumn = "tenant_id"
 // (ST-SUP-RC29-OC06).
 const TokenColumn = "authz_token"
 
+// RevocationRoute is the route of the revocation status, which the operation-to-permission table holds with its own
+// decision and from which alone the router registers it (ST-SUP-RC29-OC18). Its path is the RevocationPath of the
+// authorization runtime with the identity, as the Authz-Revocation-Location of a write gives it (ST-SUP-RP10-LC35).
+const RevocationRoute = "GET /authz/revocations/{id}"
+
+// RevocationOperation is the name of the revocation status operation in the operation-to-permission table.
+const RevocationOperation = "revocation-status"
+
 // databaseSchema is the SQL schema of the protected tables and of the authorization tables.
 const databaseSchema = "public"
 
@@ -54,15 +63,23 @@ func (*Generator) MinimumGoVersion() string { return "1.26.11" }
 
 // plan is what the emitted code holds, read from the context.
 type plan struct {
-	Package       string
-	SchemaPath    string
-	Schema        string
+	Package    string
+	SchemaPath string
+	Schema     string
+	// Definitions are the definitions of Schema, with the floor marker definition, sorted.
+	Definitions   []string
 	RelayName     string
 	AlertBound    time.Duration
 	WatchInterval time.Duration
+	// WaitCap, Waiters and TenantWaiters are the bounds of a wait for a revocation (ST-SUP-RC29-OC19).
+	WaitCap       time.Duration
+	Waiters       int
+	TenantWaiters int
 	Operations    []operationPlan
-	Entities      []entityPlan
-	Bindings      []bindingPlan
+	// Tenants are the operations of the declared tenant provisioning, Provision and then Retire, or none.
+	Tenants  []tenantPlan
+	Entities []entityPlan
+	Bindings []bindingPlan
 }
 
 // operationPlan is the decision of one operation of one collection.
@@ -71,15 +88,17 @@ type operationPlan struct {
 	Public                                                  bool
 }
 
-// entityPlan is one protected entity: its resource type, its table and its relationships.
-type entityPlan struct {
-	Name, ResourceType, Table string
-	Relationships             []relationshipPlan
+// tenantPlan is the decision of Provision or Retire: the permission of the service-level resource type, the route
+// and the action of the tenant runtime, provision or retire.
+type tenantPlan struct {
+	Operation, ResourceType, Permission, Route, Tenant string
 }
 
-// relationshipPlan is one relationship of an entity, with the Go name of its subject in the subjects struct.
-type relationshipPlan struct {
-	Relation, Source, Field, SubjectType, GoName string
+// entityPlan is one protected entity: its resource type and its table.
+type entityPlan struct {
+	Name, ResourceType, Table string
+	// Column and Grant are the statements of the migration for the table (tokenStatements).
+	Column, Grant string
 }
 
 // bindingPlan is one slot binding that names the relations its fills may write.
@@ -145,12 +164,37 @@ func read(ctx gen.Context) (plan, error) {
 	}
 	p := plan{Package: path.Base(ctx.OutputNamespace), SchemaPath: setting.SchemaPath, Schema: withMarker(string(source)),
 		RelayName: ctx.ServiceName + "-authz-relay"}
-	var err error
+	compiled, err := declaration.CompileAuthzSchema(setting.SchemaPath, []byte(p.Schema))
+	if err != nil {
+		return plan{}, fmt.Errorf("spicedb-authz: the schema with the floor marker definition does not compile: %w", err)
+	}
+	p.Definitions = compiled.TypeNames()
 	if p.AlertBound, err = duration(ctx.ComponentConfig, "alert_bound"); err != nil {
 		return plan{}, err
 	}
 	if p.WatchInterval, err = duration(ctx.ComponentConfig, "watch_interval"); err != nil {
 		return plan{}, err
+	}
+	if p.AlertBound > MaxAlertBound {
+		return plan{}, fmt.Errorf("spicedb-authz: the component setting alert_bound %s is more than %s; a revocation that is not at the provider within it must raise an alert while it still matters", p.AlertBound, MaxAlertBound)
+	}
+	if p.WatchInterval < MinWatchInterval || p.WatchInterval > p.AlertBound {
+		return plan{}, fmt.Errorf("spicedb-authz: the component setting watch_interval %s is not from %s to the alert_bound %s; each read of the watch is a query of the database, and a watch that reads less often than the alert bound alerts late", p.WatchInterval, MinWatchInterval, p.AlertBound)
+	}
+	if p.WaitCap, err = duration(ctx.ComponentConfig, "wait_cap"); err != nil {
+		return plan{}, err
+	}
+	if p.WaitCap > MaxWaitCap {
+		return plan{}, fmt.Errorf("spicedb-authz: the component setting wait_cap %s is more than %s; a wait must end in time to answer before the server's write timeout of 30s ends the response, or it holds a waiter place for an answer that cannot be written", p.WaitCap, MaxWaitCap)
+	}
+	if p.Waiters, err = count(ctx.ComponentConfig, "waiter_limit"); err != nil {
+		return plan{}, err
+	}
+	if p.TenantWaiters, err = count(ctx.ComponentConfig, "tenant_waiter_limit"); err != nil {
+		return plan{}, err
+	}
+	if p.TenantWaiters > p.Waiters {
+		return plan{}, fmt.Errorf("spicedb-authz: the component setting tenant_waiter_limit %d is more than waiter_limit %d; the limit of a tenant is inside the limit of all", p.TenantWaiters, p.Waiters)
 	}
 	entities := map[string]types.Entity{}
 	owners := map[string]string{}
@@ -167,16 +211,11 @@ func read(ctx gen.Context) (plan, error) {
 		}
 		owners[entity.ResourceType] = entity.Name
 		e := entityPlan{Name: entity.Name, ResourceType: entity.ResourceType, Table: postgresadapter.TableName(entity.Name)}
-		seen := map[string]bool{}
-		for _, relationship := range entity.Relationships {
-			r := relationshipPlan{Relation: relationship.Relation, Source: relationship.SubjectSource,
-				Field: relationship.SubjectField, SubjectType: relationship.SubjectType, GoName: pascal(relationship.Relation)}
-			if r.GoName == "" || !token.IsIdentifier(r.GoName) || seen[r.GoName] {
-				return plan{}, fmt.Errorf("spicedb-authz: the relationship %s of the entity %s gives no Go name of its own", relationship.Relation, entity.Name)
-			}
-			seen[r.GoName] = true
-			e.Relationships = append(e.Relationships, r)
+		column, grant, err := tokenStatements(e.Table)
+		if err != nil {
+			return plan{}, err
 		}
+		e.Column, e.Grant = column, grant
 		p.Entities = append(p.Entities, e)
 	}
 	for _, collection := range ctx.Collections {
@@ -187,15 +226,35 @@ func read(ctx gen.Context) (plan, error) {
 		for _, op := range collection.Operations {
 			permission := entity.Permissions[op]
 			o := operationPlan{Collection: collection.Name, Operation: string(op), ResourceType: entity.ResourceType, Permission: permission}
-			if permission == types.PermissionPublic {
+			switch {
+			case permission == types.PermissionPublic:
 				o.Public, o.Permission, o.Reason = true, "", entity.PublicReasons[op]
+			case op == types.OpCreate && len(collection.Scope) == 0 && ctx.Tenancy.Provisioning != nil:
+				// A create of an entity with no parent is decided on the service-level resource of the tenant
+				// provisioning (ST-SUP-RC29-OC01); checking refuses it when the declaration has no provisioning.
+				o.ResourceType = ctx.Tenancy.Provisioning.ResourceType
 			}
 			p.Operations = append(p.Operations, o)
 		}
 	}
+	if provisioning := ctx.Tenancy.Provisioning; provisioning != nil {
+		// The routes and the operations of Provision and Retire are the tenancy component's (ST-SUP-RC27-OC09).
+		provisionRoute, retireRoute := tenancy.ProvisioningRoutes(ctx.BasePath)
+		for _, t := range []struct{ operation, permission, route, action string }{
+			{tenancy.ProvisionOperation, provisioning.Provision, provisionRoute, "provision"},
+			{tenancy.RetireOperation, provisioning.Retire, retireRoute, "retire"},
+		} {
+			// Provision and Retire are never public (ST-SUP-RC27-OC09, ST-DECL-INV78).
+			if provisioning.ResourceType == "" || t.permission == "" || t.permission == types.PermissionPublic {
+				return plan{}, fmt.Errorf("spicedb-authz: the tenant provisioning needs a resource type and a permission of %s that is not public", t.operation)
+			}
+			p.Tenants = append(p.Tenants, tenantPlan{Operation: t.operation, ResourceType: provisioning.ResourceType,
+				Permission: t.permission, Route: t.route, Tenant: t.action})
+		}
+	}
 	names := map[string]string{}
 	for _, e := range p.Entities {
-		for _, name := range []string{e.Name + "Resource", e.Name + "Relations", e.Name + "Subjects", e.Name + "Tuples", "Write" + e.Name + "Relationships"} {
+		for _, name := range []string{e.Name + "Resource"} {
 			names[name] = "the entity " + e.Name
 		}
 	}
@@ -223,7 +282,8 @@ func read(ctx gen.Context) (plan, error) {
 // ST-SUP-RC29-OC13). The generator refuses what checking refuses, naming each fault, before any file is written.
 func checkDeclaration(ctx gen.Context, source []byte) error {
 	service := &types.ServiceDeclaration{Name: ctx.ServiceName, Authorization: ctx.Authorization, Entities: ctx.Entities,
-		Collections: ctx.Collections, Slots: ctx.SlotBindings, Tenancy: &types.Tenancy{Kind: "pooled", Key: ctx.Tenancy.Key}}
+		Collections: ctx.Collections, Slots: ctx.SlotBindings, Tenancy: &types.Tenancy{Kind: "pooled", Key: ctx.Tenancy.Key,
+			Provisioning: ctx.Tenancy.Provisioning}}
 	faults := declaration.CheckAuthorization(service, fstest.MapFS{ctx.Authorization.SchemaPath: &fstest.MapFile{Data: source}})
 	if len(faults) == 0 {
 		return nil
@@ -244,6 +304,19 @@ func withMarker(schema string) string {
 	return schema + "\n" + MarkerDefinition
 }
 
+// MaxAlertBound is the largest alert_bound, 10 minutes: the relay raises the late-revocation alert when the oldest
+// authz outbox message is older than the bound, so a longer bound leaves a revoked access unseen too long
+// (ST-SUP-RC29-OC24).
+const MaxAlertBound = 10 * time.Minute
+
+// MinWatchInterval is the smallest watch_interval, 100 ms: each read of the watch is a query of the database. The
+// largest is the alert_bound, so the watch reads at least once within the bound (ST-SUP-RC29-OC24).
+const MinWatchInterval = 100 * time.Millisecond
+
+// MaxWaitCap is the largest wait_cap, 25 s: below the write timeout of the generated HTTP server, 30 s, so a full
+// wait leaves time to write its answer (ST-SUP-RC29-OC19).
+const MaxWaitCap = 25 * time.Second
+
 // duration reads a component setting that is a positive Go duration, such as 5s.
 func duration(config map[string]any, name string) (time.Duration, error) {
 	text, _ := config[name].(string)
@@ -252,6 +325,28 @@ func duration(config map[string]any, name string) (time.Duration, error) {
 		return 0, fmt.Errorf("spicedb-authz: the component setting %s %q is not a positive duration such as 5s", name, text)
 	}
 	return d, nil
+}
+
+// maxCount is the largest count setting: a waiter limit above it holds more waits than a process serves.
+const maxCount = 100000
+
+// count reads a component setting that is a whole number of 1 to maxCount.
+func count(config map[string]any, name string) (int, error) {
+	n := 0
+	switch v := config[name].(type) {
+	case int:
+		n = v
+	case int64:
+		n = int(v)
+	case float64:
+		if v == float64(int(v)) {
+			n = int(v)
+		}
+	}
+	if n < 1 || n > maxCount {
+		return 0, fmt.Errorf("spicedb-authz: the component setting %s %v is not a whole number of 1 to %d", name, config[name], maxCount)
+	}
+	return n, nil
 }
 
 // pascal turns a declared name such as org-users, before_update or owner into a Go name part such as OrgUsers,
@@ -283,6 +378,38 @@ func goText(text string) string {
 }
 
 // render writes the source of the authorization wiring package.
+// tokenStatements gives the statements of the migration for the protected table table in databaseSchema: the one
+// that adds authz_token when the catalog does not hold it, and the start of the grant of the worker role, which the
+// emitted code ends with the quoted role. The table name is a quoted identifier (sqlIdentifier), and in the regclass
+// literal a string literal of it (sqlString), so no name can end either (review of PR #292, L1). The column is added
+// only when the catalog does not hold it: ADD COLUMN IF NOT EXISTS takes ACCESS EXCLUSIVE on the table even when the
+// column is there, so a run again of the job would wait behind each long transaction of the running release, and
+// each read and write of the table would queue behind it. The catalog read and the regclass name take no lock on the
+// table. The table name is the snake case of an exported Go name, so it holds no $ that could end the dollar quote;
+// tokenStatements still refuses a name with a $, so the body of the dollar quote $authz$ cannot end in the name
+// (review of PR #306, info, defense in depth).
+func tokenStatements(table string) (column, grant string, err error) {
+	if strings.Contains(table, "$") {
+		return "", "", fmt.Errorf("spicedb-authz: the table name %q holds a $, which could end the dollar quote $authz$ of the migration", table)
+	}
+	name := databaseSchema + "." + sqlIdentifier(table)
+	column = "DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = " + sqlString(name) +
+		"::regclass AND attname = " + sqlString(TokenColumn) + " AND NOT attisdropped) THEN ALTER TABLE " + name +
+		" ADD COLUMN IF NOT EXISTS " + TokenColumn + " text NOT NULL DEFAULT '' CHECK (octet_length(" + TokenColumn + ") <= 4096); END IF; END $authz$;\n"
+	grant = "GRANT SELECT (" + TenantColumn + ", id), UPDATE (" + TokenColumn + ") ON " + name + " TO "
+	return column, grant, nil
+}
+
+// sqlIdentifier quotes a name as a PostgreSQL identifier.
+func sqlIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// sqlString quotes a value as a PostgreSQL string literal.
+func sqlString(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
 func render(p plan) []byte {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "// Package %s is the authorization wiring of the service on the authorization runtime\n// github.com/jsell-rh/stego/registry/runtime/authz (ST-SUP-RC29).\n", p.Package)
@@ -298,6 +425,15 @@ func render(p plan) []byte {
 	fmt.Fprintf(&b, "// Schema is the service's schema %s with the floor marker definition %s added, which the relay\n", p.SchemaPath, types.FloorMarkerType)
 	b.WriteString("// touches to raise the revocation floor (ST-SUP-RP06-LC13); schema.zed holds the same text. The migration\n// job writes it to the provider with WriteSchema (ST-SUP-RC29-OC23); generation never does (ST-SUP-RC29-OC13).\n")
 	fmt.Fprintf(&b, "const Schema = %s\n\n", goText(p.Schema))
+	b.WriteString("// Definitions are the definitions of Schema. After the migration job writes Schema, it waits until SpiceDB\n// serves each of them, so the release does not start while a read of a new resource type fails (ST-SUP-Q140).\n")
+	b.WriteString("var Definitions = []string{")
+	for i, definition := range p.Definitions {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q", definition)
+	}
+	b.WriteString("}\n\n")
 	b.WriteString("// DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.\n")
 	fmt.Fprintf(&b, "const DatabaseSchema = %q\n\n", databaseSchema)
 	b.WriteString("// RelayName is the name of the relay's service account, service_account:<RelayName> (ST-SUP-RP06-LC07).\n")
@@ -306,10 +442,14 @@ func render(p plan) []byte {
 	fmt.Fprintf(&b, "const AlertBound = time.Duration(%d)\n\n", int64(p.AlertBound))
 	fmt.Fprintf(&b, "// WatchInterval is the time between two reads of the oldest age of the authz outbox messages, the component\n// setting watch_interval: %s (ST-SUP-RP06-LC14).\n", p.WatchInterval)
 	fmt.Fprintf(&b, "const WatchInterval = time.Duration(%d)\n\n", int64(p.WatchInterval))
+	fmt.Fprintf(&b, "// WaitCap is the longest wait for a revocation, the component setting wait_cap: %s (ST-SUP-RC29-OC19).\n", p.WaitCap)
+	fmt.Fprintf(&b, "const WaitCap = time.Duration(%d)\n\n", int64(p.WaitCap))
+	fmt.Fprintf(&b, "// Waiters is the most waits for a revocation at one time, the component setting waiter_limit: %d; TenantWaiters\n// is the most of one tenant, inside it, the component setting tenant_waiter_limit: %d (ST-SUP-RC29-OC19).\n", p.Waiters, p.TenantWaiters)
+	fmt.Fprintf(&b, "const (\n\tWaiters       = %d\n\tTenantWaiters = %d\n)\n\n", p.Waiters, p.TenantWaiters)
 
-	b.WriteString("// Operation is the decision of one operation of one collection: the permission of the resource type that it\n// checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01).\n")
-	b.WriteString("type Operation struct {\n\tCollection   string\n\tOperation    string\n\tResourceType string\n\tPermission   string\n\tPublic       bool\n\tReason       string\n}\n\n")
-	b.WriteString("// Operations are the decisions of the operations of the collections, in declaration order.\n")
+	b.WriteString("// Operation is the decision of one operation: of an operation of a collection, the permission of the resource type\n// that it checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01); of the\n// revocation status route, its route and the decision Writer, which allows only the principal and tenant that made\n// the write and calls no provider (ST-SUP-RC29-OC18); of Provision and Retire, the permission of the service-level\n// resource type, the route and Tenant, the action of the tenant runtime, provision or retire (ST-SUP-RC27-OC09).\n")
+	b.WriteString("type Operation struct {\n\tCollection   string\n\tOperation    string\n\tResourceType string\n\tPermission   string\n\tPublic       bool\n\tReason       string\n\tRoute        string\n\tWriter       bool\n\tTenant       string\n}\n\n")
+	b.WriteString("// Operations are the decisions of the operations of the collections, in declaration order, then of Provision and\n// Retire, and then of the revocation status route, from which alone the router registers those routes.\n")
 	b.WriteString("var Operations = []Operation{\n")
 	for _, o := range p.Operations {
 		if o.Public {
@@ -318,6 +458,10 @@ func render(p plan) []byte {
 		}
 		fmt.Fprintf(&b, "\t{Collection: %q, Operation: %q, ResourceType: %q, Permission: %q},\n", o.Collection, o.Operation, o.ResourceType, o.Permission)
 	}
+	for _, t := range p.Tenants {
+		fmt.Fprintf(&b, "\t{Operation: %q, ResourceType: %q, Permission: %q, Route: %q, Tenant: %q},\n", t.Operation, t.ResourceType, t.Permission, t.Route, t.Tenant)
+	}
+	fmt.Fprintf(&b, "\t{Operation: %q, Route: %q, Writer: true},\n", RevocationOperation, RevocationRoute)
 	b.WriteString("}\n\n")
 
 	b.WriteString("// Owners maps each protected resource type to the table of its rows, whose authz_token holds the token of the\n// row's last tuple write; the relay stores it there (ST-SUP-RC29-OC06).\n")
@@ -358,9 +502,8 @@ func Migration(runtimeRole, relayRole, outboxRelayRole, workerRole string) (stri
 	var statements strings.Builder
 `)
 	for _, e := range p.Entities {
-		table := databaseSchema + `.\"` + e.Table + `\"`
-		fmt.Fprintf(&b, "\tstatements.WriteString(\"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s text NOT NULL DEFAULT '' CHECK (octet_length(%s) <= 4096);\\n\")\n", table, TokenColumn, TokenColumn)
-		fmt.Fprintf(&b, "\tstatements.WriteString(\"GRANT SELECT (%s, id), UPDATE (%s) ON %s TO \" + worker + \";\\n\")\n", TenantColumn, TokenColumn, table)
+		fmt.Fprintf(&b, "\tstatements.WriteString(%s)\n", strconv.Quote(e.Column))
+		fmt.Fprintf(&b, "\tstatements.WriteString(%s + worker + \";\\n\")\n", strconv.Quote(e.Grant))
 	}
 	b.WriteString(`	return text + statements.String(), nil
 }
@@ -379,9 +522,11 @@ func WriteSchema(ctx context.Context, conn grpc.ClientConnInterface) error {
 
 // NewRuntime returns the authorization runtime of the service, which binds the handles of its transactions and
 // reads the revocation statuses. db is the runtime role's pool, provider the decision provider, and queue the
-// outbox queue in which a handle enqueues the relay's tuple writes.
+// outbox queue in which a handle enqueues the relay's tuple writes. A wait for a revocation is bounded by WaitCap,
+// Waiters and TenantWaiters (ST-SUP-RC29-OC19).
 func NewRuntime(db *sql.DB, provider stegoauthz.Decision, queue *outbox.Queue, meter metric.MeterProvider) (*stegoauthz.Runtime, error) {
-	return stegoauthz.New(stegoauthz.Config{Provider: provider, DB: db, Schema: DatabaseSchema, Outbox: queue, Meter: meter})
+	return stegoauthz.New(stegoauthz.Config{Provider: provider, DB: db, Schema: DatabaseSchema, Outbox: queue, Meter: meter,
+		WaitCap: WaitCap, Waiters: Waiters, TenantWaiters: TenantWaiters})
 }
 
 // NewRelay builds the relay of the service, the outbox destination authz, with the owning table of each protected
@@ -415,55 +560,11 @@ func Watch(ctx context.Context, relay *stegoauthz.Relay, oldest stegoauthz.Oldes
 	return b.Bytes()
 }
 
-// renderEntity writes the resource function of a protected entity and, when it has relationships, its relations,
-// its subjects, its tuples and its tuple writes.
+// renderEntity writes the resource function of a protected entity. The runtime writes the declared relationships
+// of a row as it writes its references (ST-SUP-RP10-LC05, ST-SUP-Q118), from the Relationships list that the command
+// generator gives the entity, so no relationship mapper is emitted here.
 func renderEntity(b *bytes.Buffer, e entityPlan) {
 	fmt.Fprintf(b, "// %sResource gives the resource %s of the %s row of key in tenant t, with the tenant-qualified ID of the\n", e.Name, e.ResourceType, e.Name)
 	b.WriteString("// runtime (ST-SUP-RC29-OC22, ST-SUP-RP06-LC22).\n")
 	fmt.Fprintf(b, "func %sResource(t tenant.Tenant, key string) (stegoauthz.Resource, error) {\n\treturn stegoauthz.NewResource(t, %q, key)\n}\n\n", e.Name, e.ResourceType)
-	if len(e.Relationships) == 0 {
-		return
-	}
-	fmt.Fprintf(b, "// %sRelations are the relations that the relationships of %s write, for the handle that its writes bind.\n", e.Name, e.Name)
-	fmt.Fprintf(b, "var %sRelations = []stegoauthz.Relation{", e.Name)
-	for i, r := range e.Relationships {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(b, "{ResourceType: %q, Name: %q}", e.ResourceType, r.Relation)
-	}
-	b.WriteString("}\n\n")
-	fmt.Fprintf(b, "// %sSubjects are the subject IDs of the relationships of one %s row. An empty ID writes no tuple.\n", e.Name, e.Name)
-	fmt.Fprintf(b, "type %sSubjects struct {\n", e.Name)
-	for _, r := range e.Relationships {
-		from := "the caller"
-		if r.Source == types.SubjectSourceField {
-			from = "the field " + r.Field
-		}
-		fmt.Fprintf(b, "\t// %s is the %s that holds %s#%s, from %s.\n\t%s string\n", r.GoName, r.SubjectType, e.ResourceType, r.Relation, from, r.GoName)
-	}
-	b.WriteString("}\n\n")
-	fmt.Fprintf(b, "// %sTuples gives the declared tuples of the %s row of key in tenant t (ST-SUP-RC29-OC05).\n", e.Name, e.Name)
-	fmt.Fprintf(b, "func %sTuples(t tenant.Tenant, key string, s %sSubjects) ([]stegoauthz.Tuple, error) {\n", e.Name, e.Name)
-	fmt.Fprintf(b, "\tresource, err := %sResource(t, key)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\tvar tuples []stegoauthz.Tuple\n", e.Name)
-	for _, r := range e.Relationships {
-		fmt.Fprintf(b, "\tif s.%s != \"\" {\n\t\ttuples = append(tuples, stegoauthz.Tuple{Resource: resource, Relation: %q, Subject: stegoauthz.Subject{Type: %q, ID: s.%s}})\n\t}\n", r.GoName, r.Relation, r.SubjectType, r.GoName)
-	}
-	b.WriteString("\treturn tuples, nil\n}\n\n")
-	fmt.Fprintf(b, "// Write%sRelationships enqueues through h, in the transaction of the %s row of key, the tuple changes of\n", e.Name, e.Name)
-	b.WriteString("// the row from before to after: before is nil on create and after is nil on delete. Each relationship whose\n")
-	b.WriteString("// subject changes deletes its old tuple and then touches its new one, and every tuple joins the transaction's\n")
-	b.WriteString("// revocation (ST-SUP-RC29-OC05, ST-SUP-RP06-LC12). It writes nothing to the provider; the relay does. It gives\n")
-	b.WriteString("// the revocation and whether it enqueued a tuple.\n")
-	fmt.Fprintf(b, "func Write%sRelationships(ctx context.Context, h *stegoauthz.Handle, t tenant.Tenant, key string, before, after *%sSubjects) (stegoauthz.Revocation, bool, error) {\n", e.Name, e.Name)
-	fmt.Fprintf(b, "\tvar revocation stegoauthz.Revocation\n\twrote := false\n\tresource, err := %sResource(t, key)\n\tif err != nil {\n\t\treturn revocation, false, err\n\t}\n", e.Name)
-	b.WriteString("\tvar was, is string\n")
-	for _, r := range e.Relationships {
-		fmt.Fprintf(b, "\twas, is = \"\", \"\"\n\tif before != nil {\n\t\twas = before.%s\n\t}\n\tif after != nil {\n\t\tis = after.%s\n\t}\n", r.GoName, r.GoName)
-		b.WriteString("\tif was != is {\n")
-		fmt.Fprintf(b, "\t\tif was != \"\" {\n\t\t\tif revocation, err = h.Unrelate(ctx, stegoauthz.Tuple{Resource: resource, Relation: %q, Subject: stegoauthz.Subject{Type: %q, ID: was}}); err != nil {\n\t\t\t\treturn revocation, wrote, err\n\t\t\t}\n\t\t\twrote = true\n\t\t}\n", r.Relation, r.SubjectType)
-		fmt.Fprintf(b, "\t\tif is != \"\" {\n\t\t\tif revocation, err = h.Relate(ctx, stegoauthz.Tuple{Resource: resource, Relation: %q, Subject: stegoauthz.Subject{Type: %q, ID: is}}); err != nil {\n\t\t\t\treturn revocation, wrote, err\n\t\t\t}\n\t\t\twrote = true\n\t\t}\n", r.Relation, r.SubjectType)
-		b.WriteString("\t}\n")
-	}
-	b.WriteString("\treturn revocation, wrote, nil\n}\n\n")
 }

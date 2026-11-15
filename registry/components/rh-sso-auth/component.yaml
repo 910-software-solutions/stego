@@ -30,3 +30,103 @@ provides:
   - auth-provider
 
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: authentication
+  flow: "Checks the Red Hat SSO token of the request and puts the caller's identity on it."
+  ports:
+    auth-provider: inbound
+
+environment:
+  - name: AUTH_ENABLED
+    type: boolean
+    required: false
+    default: "true"
+    description: "Tells that SSO authentication is on, and the service refuses each value other than true. When it has no value, authentication is on."
+    secret: false
+    allowed: {values: ["true"]}
+  - name: JWK_CERT_URL
+    type: url
+    required: false
+    default: "{settings.jwk_cert_url}"
+    description: "The HTTPS URL of the key set of Red Hat SSO. When it has no value, the verifier uses the jwk_cert_url setting."
+    secret: false
+    example: "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/certs"
+  - name: JWK_CERT_FILE
+    type: path
+    required: false
+    default: "{settings.jwk_cert_file}"
+    description: "The file of the key set of Red Hat SSO. When it has no value, the verifier uses the jwk_cert_file setting."
+    secret: false
+    example: "/etc/stego/auth/jwks.json"
+  - name: JWK_CA_FILE
+    type: path
+    required: false
+    default: "{settings.jwk_ca_file}"
+    description: "A PEM file of certificate authorities for the key set URL. When it has no value, the verifier uses the jwk_ca_file setting."
+    secret: false
+    example: "/etc/stego/auth/ca.crt"
+  - name: STEGO_AUTH_PUBLIC_KEY_FILE
+    type: path
+    required: false
+    description: "The file of the RSA public key of the shared JWT verifier. This component sets no default, so the shared verifier does not start when it has no value."
+    secret: false
+    example: "/etc/stego/auth/public.pem"
+  - name: STEGO_AUTH_ISSUER
+    type: url
+    required: false
+    default: "{settings.issuer}"
+    description: "The issuer that each token must name. When it has no value, the verifier uses the issuer setting."
+    secret: false
+    example: "https://sso.redhat.com/auth/realms/redhat-external"
+  - name: STEGO_AUTH_AUDIENCE
+    type: string
+    required: false
+    default: "{settings.audience}"
+    description: "The audience that each token must name. When it has no value, the verifier uses the audience setting."
+    secret: false
+    example: "my-service"
+  - name: STEGO_AUTH_ROLES_CLAIM
+    type: string
+    required: false
+    description: "The claim of the token that holds the roles of the caller, for the shared JWT verifier. When it has no value, the verifier reads no roles claim."
+    secret: false
+    example: "realm_access.roles"
+  - name: STEGO_AUTHN_ISSUER
+    type: url
+    required: false
+    default: "{settings.issuer}"
+    description: "The issuer that each bearer token must name, which must be equal to the issuer setting. When it has no value, the verifier uses the issuer setting."
+    secret: false
+    example: "https://sso.example.com/realms/main"
+  - name: STEGO_AUTHN_AUDIENCE
+    type: string
+    required: false
+    default: "{settings.audience}"
+    description: "The audience that each bearer token must name, which must be equal to the audience setting. When it has no value, the verifier uses the audience setting."
+    secret: false
+    example: "my-service"
+  - name: STEGO_AUTHN_KEYS_URL
+    type: url
+    required: false
+    description: "The HTTPS URL of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_FILE when the component states no key file and no discovery."
+    secret: false
+    example: "https://sso.example.com/realms/main/certs"
+  - name: STEGO_AUTHN_KEYS_FILE
+    type: path
+    required: false
+    description: "The file of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_URL when the component states no key file and no discovery."
+    secret: false
+    example: "/etc/stego/authn/keys.json"
+  - name: STEGO_AUTHN_CA_FILE
+    type: path
+    required: false
+    description: "A PEM file of certificate authorities that the verifier adds to the system roots, unless the component states a CA file. When it has no value, the verifier uses the system roots."
+    secret: false
+    example: "/etc/stego/authn/ca.crt"
+# The platform needs (ST-SUP-EN09): the Red Hat SSO issuer of the tokens and the network path to its key set.
+needs:
+  - {kind: identity issuer, name: "{service}-issuer"}
+  - {kind: egress, name: "{service}-issuer-keys", port: 443}

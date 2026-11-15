@@ -28,7 +28,7 @@ const generatingDeclaration = `kind: service
 name: generating
 archetype: rest-crud
 language: go
-tenancy: {kind: pooled, key: tenant_id, claim: tenant}
+tenancy: {kind: pooled, key: tenant_id, claim: tenant, provisioning: {resource_type: service, provision: provision, retire: retire}}
 authorization: {provider: spicedb, schema_path: authz/schema.zed, subject_from_identity: user}
 audit: {level: change}
 overrides:
@@ -48,7 +48,6 @@ collections:
   todos: {entity: Todo, operations: [create, read, list]}
   notes: {entity: Note, operations: [create, read]}
 `
-
 
 // shippedRegistry gives the folder of the shipped registry, whose archetypes are on the runtime data path, the only
 // data path (ST-SUP-RC20-OC39).
@@ -203,12 +202,12 @@ func TestNoOutputWithoutRecord(t *testing.T) {
 }
 
 func TestRecordFormatIsVersioned(t *testing.T) {
-	t.Run("ST-GEN-UC01-R04-T01 The record carries format version 5 and exactly the fields documented for it", func(t *testing.T) {
+	t.Run("ST-GEN-UC01-R04-T01 The record carries format version 6 and exactly the fields documented for it", func(t *testing.T) {
 		generatingProject(t, generatingDeclaration)
 		mustRun(t, runApply)
 		record := plainRecord(t)
-		if record["format_version"] != 5 {
-			t.Fatalf("format version is %v, not 5", record["format_version"])
+		if record["format_version"] != 6 {
+			t.Fatalf("format version is %v, not 6", record["format_version"])
 		}
 		// A change to these fields is a change to the documented format, and
 		// must come with a new format version. True marks a field that apply
@@ -217,13 +216,14 @@ func TestRecordFormatIsVersioned(t *testing.T) {
 		// its component digest, where version 1 held the registry reference.
 		// Version 3 adds archetype, with the archetype's runtime library pin.
 		// Version 4 added data_path, the data path of the run, and version 5
-		// removes it: the runtime data path is the only data path.
+		// removes it: the runtime data path is the only data path. Version 6
+		// adds project_files, the generated files of the project folder.
 		documented := map[string]bool{
 			"format_version": true, "last_applied": true,
 			"last_applied.compiler_build": true, "last_applied.components": true, "last_applied.entities": true,
 			"last_applied.files": true, "last_applied.inputs": true, "last_applied.registry_content_sha256": true,
 			"last_applied.service_hash": true, "last_applied.service_name": true, "last_applied.registry_sha": false,
-			"last_applied.archetype": true,
+			"last_applied.archetype": true, "last_applied.project_files": true,
 		}
 		found := map[string]bool{}
 		for name, value := range record {
@@ -236,26 +236,26 @@ func TestRecordFormatIsVersioned(t *testing.T) {
 		}
 		for name := range found {
 			if _, ok := documented[name]; !ok {
-				t.Errorf("the record has %s, which format version 5 does not document", name)
+				t.Errorf("the record has %s, which format version 6 does not document", name)
 			}
 		}
 		for name, always := range documented {
 			if always && !found[name] {
-				t.Errorf("the record lacks %s, which format version 5 documents", name)
+				t.Errorf("the record lacks %s, which format version 6 documents", name)
 			}
 		}
 
-		// A record of format version 4 held the data path; the next apply reads it and writes version 5 without it.
+		// A record of format version 4 held the data path; the next apply reads it and writes version 6 without it.
 		data, err := os.ReadFile(".stego/state.yaml")
 		if err != nil {
 			t.Fatal(err)
 		}
-		legacy := strings.Replace(string(data), "format_version: 5\n", "format_version: 4\n", 1)
+		legacy := strings.Replace(string(data), "format_version: 6\n", "format_version: 4\n", 1)
 		legacy = strings.Replace(legacy, "last_applied:\n", "last_applied:\n    data_path: runtime\n", 1)
 		writeProjectFile(t, ".stego/state.yaml", legacy)
 		mustRun(t, runApply)
-		if upgraded := plainRecord(t); upgraded["format_version"] != 5 || upgraded["last_applied"].(map[string]any)["data_path"] != nil {
-			t.Fatalf("apply on a record of format version 4 did not write version 5 without the data path: %v", upgraded["format_version"])
+		if upgraded := plainRecord(t); upgraded["format_version"] != 6 || upgraded["last_applied"].(map[string]any)["data_path"] != nil {
+			t.Fatalf("apply on a record of format version 4 did not write version 6 without the data path: %v", upgraded["format_version"])
 		}
 	})
 }
@@ -458,7 +458,6 @@ func TestPlanNamesEveryChange(t *testing.T) {
 	})
 }
 
-
 // The declarations of these tests prove behaviour of the compiler that does not depend on the data path. Since the
 // runtime data path is the only data path (ST-SUP-RC20-OC39), a rest-crud declaration with entities needs pooled
 // tenancy, which authorization asks to be stated, the audit log, stated so that it selects its component, SpiceDB
@@ -468,7 +467,7 @@ func TestPlanNamesEveryChange(t *testing.T) {
 
 // runtimeHeader is what onRuntimePath adds after the language of the declaration, each line only when the
 // declaration has no such key.
-const runtimeHeader = `tenancy: {kind: pooled, key: tenant_id, claim: tenant}
+const runtimeHeader = `tenancy: {kind: pooled, key: tenant_id, claim: tenant, provisioning: {resource_type: service, provision: provision, retire: retire}}
 authorization: {provider: spicedb, schema_path: authz/schema.zed, subject_from_identity: user}
 audit: {level: change}
 `
@@ -559,14 +558,24 @@ func onRuntimePath(declaration string) string {
 // runtimeSchema gives the SpiceDB schema of the resource types that the declaration names, each with the
 // permissions view and edit.
 func runtimeSchema(declaration string) string {
-	schema := "definition user {}\n"
-	seen := map[string]bool{"user": true}
+	// The service-level resource of the tenant provisioning of runtimeHeader (ST-DECL-INV78).
+	schema := "definition user {}\n\ndefinition service {\n\trelation operator: user\n\tpermission provision = operator\n\tpermission retire = operator\n}\n"
+	seen := map[string]bool{"user": true, "service": true}
 	for _, match := range regexp.MustCompile(`resource_type: *([a-z][a-z0-9_]*)`).FindAllStringSubmatch(declaration, -1) {
 		if seen[match[1]] {
 			continue
 		}
 		seen[match[1]] = true
 		schema += fmt.Sprintf("\ndefinition %s {\n\trelation owner: user\n\tpermission view = owner\n\tpermission edit = owner\n}\n", match[1])
+	}
+	// Each declared worker has its own relation on the type tenant, of the subject type service_account
+	// (ST-SUP-RC35-OC13).
+	if workers := regexp.MustCompile(`(?m)^  - name: ([a-z][a-z0-9-]*)\n    trigger:`).FindAllStringSubmatch(declaration, -1); len(workers) > 0 {
+		schema += "\ndefinition service_account {}\n\ndefinition tenant {\n"
+		for _, w := range workers {
+			schema += "\trelation worker_" + strings.ReplaceAll(w[1], "-", "_") + ": service_account\n"
+		}
+		schema += "}\n"
 	}
 	return schema
 }

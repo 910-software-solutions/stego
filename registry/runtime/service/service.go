@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"google.golang.org/grpc"
@@ -20,6 +21,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -37,6 +39,14 @@ type Parts struct {
 	// Service is the name of the service, and DeclarationVersion the SHA-256 of its declaration, which each audit row
 	// carries.
 	Service, DeclarationVersion string
+	// SchemaSteps are the IDs of the schema changes of this release whose last step is expand and that have a sync
+	// trigger; the command runtime sets the writer marker to them in each transaction that writes
+	// (ST-SUP-RC01-OC23).
+	SchemaSteps []string
+	// Release is the name of the last migration that the adapter of this release registers. New reports each process
+	// of the release under it in the database until Close, so that the contract step of a schema change refuses
+	// while a release that does not know the change runs (lease.StartBeat, ST-SUP-RP09-LC14). Empty reports nothing.
+	Release string
 	// SubjectType is the subject type of the schema that a verified identity maps to, and TenantClaim the dotted path
 	// of the claim that names the caller's tenant.
 	SubjectType, TenantClaim string
@@ -57,6 +67,11 @@ type Parts struct {
 	// commands: each set that is not empty gets a command runtime of its own, since an entity registers with one
 	// runtime only.
 	Commands, Collections []command.Declared
+	// WorkerEntities are the entities that the declared workers write, which get a command runtime of their own,
+	// and WorkerNames the names of the declared workers, the values of the field worker of the built-in worker
+	// observations (ST-SUP-RP12-LC21).
+	WorkerEntities []command.Declared
+	WorkerNames    []string
 	// Workers are the parts of the worker and controller modes, which Start runs (ST-SUP-RP14-LC04).
 	Workers WorkerParts
 	// OwnerRole is the owner role of the service, which the migration job runs as and which must own each table of
@@ -75,6 +90,11 @@ type Parts struct {
 	// (ST-SUP-RC01-OC12). New adds the manifest of the audit record to it, for the anchor period of Workers
 	// (ST-SUP-RP14-LC06).
 	Schema manifest.Manifest
+	// Provisioning is the declared tenant provisioning of a pooled service, or nil for a service that declares none
+	// (ST-DECL-EN27). With it, New serves Provision and Retire (TenantRoutes), and Middleware and Authenticate refuse
+	// a request of a tenant that the tenant list in Workers.TenantSchema does not hold as active (ST-SUP-RC27-OC09,
+	// ST-SUP-RC27-OC11).
+	Provisioning *Provisioning
 }
 
 func (p Parts) check() error {
@@ -108,11 +128,15 @@ type Service struct {
 	writer        *audit.Writer
 	commands      *command.Runtime
 	collections   *command.Runtime
+	workers       *command.Runtime
 	queries       *query.Runtime
+	beat          *lease.Beat
+	tenants       *tenantProvisioning
 }
 
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
-// main pool of the runtime role through tenant.Open with the adapter's connection configuration, refuses a database
+// main pool of the runtime role through tenant.Open with the adapter's connection configuration, reports the
+// process under its release (Parts.Release) until Close, refuses a database
 // that does not hold the schema manifest (ST-SUP-RP14-LC06), opens the audit pool,
 // connects to SpiceDB with the preshared key and checks that it answers, starts the telemetry and the probes, and
 // gives the verifier, the authorization runtime, the audit writer, the outbox queue and the command and query
@@ -135,7 +159,15 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if svc.pool, err = tenant.Open(ctx, pools); err != nil {
 		return nil, err
 	}
-	if err := checkSchema(ctx, svc.pool, p); err != nil {
+	// The process reports its release before the schema check, so a contract step sees it even while the check
+	// alerts (decision on finding F8, owner, 2026-11-13).
+	if p.Release != "" {
+		if svc.beat, err = lease.StartBeat(ctx, svc.pool, p.Release, s.ServiceVersion); err != nil {
+			return nil, err
+		}
+	}
+	classes, err := checkSchema(ctx, svc.pool, p)
+	if err != nil {
 		return nil, err
 	}
 	if svc.auditDB, err = tenant.Open(ctx, pools); err != nil {
@@ -166,8 +198,16 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if svc.telemetry, err = otel.New(p.Service, probe.SpanNames()...); err != nil {
 		return nil, err
 	}
-	if svc.probes, err = probe.Start(svc.telemetry, nil); err != nil {
+	builtins, err := probe.NewBuiltins(p.WorkerNames, nil)
+	if err != nil {
 		return nil, err
+	}
+	if svc.probes, err = probe.Start(svc.telemetry, builtins); err != nil {
+		return nil, err
+	}
+	// A database that does not satisfy the schema manifest is an alert, not a refusal (F10, owner, 2026-11-13).
+	for _, class := range classes {
+		svc.probes.SchemaMismatch(ctx, class)
 	}
 	source := authn.KeySource{URL: s.KeysURL, File: s.KeysFile, CAFile: s.CAFile}
 	switch {
@@ -185,9 +225,20 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		Keys: svc.keys}); err != nil {
 		return nil, err
 	}
-	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer,
+	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
 		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion}
+	var gate *tenant.Gate
+	if p.Provisioning != nil {
+		if p.Workers.TenantSchema == "" {
+			return nil, errors.New("service: the tenant provisioning needs the schema of the tenant list")
+		}
+		if gate, err = tenant.NewGate(svc.pool, p.Workers.TenantSchema, tenant.MaxGateAge); err != nil {
+			return nil, err
+		}
+		// A consumer of the service runs no fill for a message of a tenant that is not active (ST-SUP-RC27-OC12).
+		config.Tenants = gate
+	}
 	if len(p.Commands) > 0 {
 		config.Entities = p.Commands
 		if svc.commands, err = command.New(ctx, config); err != nil {
@@ -200,6 +251,27 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 			return nil, err
 		}
 	}
+	if len(p.WorkerEntities) > 0 {
+		// The worker runs and the consumed messages run on the runtime of the workers' entities; a consumer runs no
+		// fill for a message of a tenant that is not active (ST-SUP-RC27-OC12).
+		config.Entities = p.WorkerEntities
+		if svc.workers, err = command.New(ctx, config); err != nil {
+			return nil, err
+		}
+	}
+	if p.Provisioning != nil {
+		// Provision and Retire are commands of their own, on a command runtime with no entity (ST-SUP-RC27-OC09),
+		// which logs the outcomes that write no audit row (ST-SUP-RC27-OC10).
+		config.Entities = nil
+		config.Logger = svc.telemetry.LoggerProvider()
+		provisioning, err := command.New(ctx, config)
+		if err != nil {
+			return nil, err
+		}
+		if svc.tenants, err = newProvisioning(svc, provisioning, p.Provisioning, p.Workers.TenantSchema, gate); err != nil {
+			return nil, err
+		}
+	}
 	if svc.queries, err = query.New(query.Config{DB: svc.pool, AuditDB: svc.auditDB, Audit: svc.writer,
 		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, CursorKey: s.CursorKey,
 		Meter: svc.telemetry.MeterProvider()}); err != nil {
@@ -208,49 +280,102 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	return svc, nil
 }
 
-// checkSchema refuses a database that does not hold the schema manifest of the service, of the audit record, of the outbox, of the authorization runtime and of the key table
-// (ST-SUP-RP14-LC06): it reads the catalog as the runtime role before New opens anything else, so a refused start
-// writes nothing and serves no request. The failure record of the process holds no error text, so it logs the
-// faults, which name only objects of the catalog. The audit triggers' functions are those that the audit DDL makes
-// for the declared anchor period (Parts.Workers.AnchorPeriod), and audit_maintain is the one of the declared retention
+// MaxLoggedFaults is the most faults of the schema manifest check that the start of a service logs, each on its own
+// line.
+const MaxLoggedFaults = 50
+
+// checkSchema checks the database against the schema manifest of the service, of the audit record, of the outbox, of
+// the authorization runtime and of the key table (ST-SUP-RP14-LC06): it reads the catalog as the runtime role before
+// New opens anything else. A database that does not satisfy the manifest is an alert and not a refusal (decision on
+// finding F10 of the schema-change research, owner, 2026-11-13): checkSchema logs each fault, up to MaxLoggedFaults, on a line of its own at
+// the level error, with its class (manifest.FaultClass), which names only objects of the catalog and no row value,
+// and gives the classes of the faults, each once, so that New emits the probe observation schema.manifest.mismatch
+// for each class and starts; the migration job refuses the same database. Any other failure of the check,
+// and parts that give no manifest, it refuses. The audit triggers' functions are those that the audit DDL makes for
+// the declared anchor period (Parts.Workers.AnchorPeriod), and audit_maintain is the one of the declared retention
 // (Parts.Workers.RetentionMonths).
-func checkSchema(ctx context.Context, db *sql.DB, p Parts) error {
+func checkSchema(ctx context.Context, db *sql.DB, p Parts) ([]string, error) {
 	// The check runs as the runtime role, which alone may run audit_maintain.
 	var runtimeRole string
 	if err := db.QueryRowContext(ctx, "SELECT current_user").Scan(&runtimeRole); err != nil {
-		return fmt.Errorf("service: read the runtime role: %w", err)
+		return nil, fmt.Errorf("service: read the runtime role: %w", err)
 	}
+	want, err := joinedManifest(p, runtimeRole)
+	if err != nil {
+		return nil, err
+	}
+	err = manifest.Check(ctx, db, want)
+	var mismatch *manifest.Mismatch
+	if errors.As(err, &mismatch) {
+		var classes []string
+		for i, fault := range mismatch.Faults {
+			class := manifest.FaultClass(fault)
+			// At most MaxLoggedFaults lines, and one line with the count of the rest, as a role that can make
+			// catalog objects can make thousands of faults (review of PR #305, L2). Each fault still gives its class.
+			if i < MaxLoggedFaults {
+				slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; the service starts, and the migration job refuses it",
+					"class", class, "fault", fault)
+			}
+			if !slices.Contains(classes, class) {
+				classes = append(classes, class)
+			}
+		}
+		if rest := len(mismatch.Faults) - MaxLoggedFaults; rest > 0 {
+			slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; more faults are not logged", "faults", rest)
+		}
+		return classes, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("service: %w", err)
+	}
+	return nil, nil
+}
+
+// joinedManifest is the schema manifest that New checks at the start and the migration job checks at its end: the
+// manifest of the declared parts (Parts.Schema) joined with the manifests of the audit record, the outbox, the
+// authorization runtime and the key table for the runtime role runtimeRole, owned by the owner role of the parts.
+func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 	record, err := audit.Manifest(audit.Config{AnchorPeriod: p.Workers.AnchorPeriod, RetentionMonths: p.Workers.RetentionMonths, RuntimeRole: runtimeRole})
 	if err != nil {
-		return fmt.Errorf("service: the manifest of the audit record: %w", err)
+		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the audit record: %w", err)
 	}
 	queue, err := outbox.Manifest(p.OutboxRelayRole, runtimeRole, p.WorkerRole)
 	if err != nil {
-		return fmt.Errorf("service: the manifest of the outbox: %w", err)
+		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the outbox: %w", err)
 	}
 	// The outbox relay role owns the state hook functions of the authorization runtime too, so its manifest is in
 	// the check, or the confined relay role would own functions that the manifest does not name.
 	revocations, err := authz.Manifest(p.AuthzSchema, runtimeRole, p.RelayRole, p.OutboxRelayRole, p.WorkerRole)
 	if err != nil {
-		return fmt.Errorf("service: the manifest of the authorization runtime: %w", err)
+		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the authorization runtime: %w", err)
 	}
 	// The migration job makes the key table in idempotency.KeySchema, where Wrap and Purge name it.
-	keys, err := idempotency.Manifest(idempotency.KeySchema, p.PurgeRole, runtimeRole)
+	keys, err := idempotency.ManifestWithConsumers(idempotency.KeySchema, p.PurgeRole, runtimeRole, consumerRoles(&p, p.WorkerRole))
 	if err != nil {
-		return fmt.Errorf("service: the manifest of the key table: %w", err)
+		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the key table: %w", err)
 	}
 	want := manifest.Join(p.Schema, record, queue, revocations, keys)
 	want.Owner = p.OwnerRole
-	err = manifest.Check(ctx, db, want)
-	var mismatch *manifest.Mismatch
-	if errors.As(err, &mismatch) {
-		slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest, and the service does not start",
-			"faults", mismatch.Faults)
+	// The grants of a consuming worker on a table whose grants the manifest checks; the key table names its
+	// consumer roles itself (ST-SUP-Q136).
+	for _, g := range consumerGrants(&p) {
+		for i := range want.Tables {
+			t := &want.Tables[i]
+			if t.CheckGrants && t.Schema == g.schema && t.Name == g.table && t.Name != "idempotency_keys" {
+				t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: g.privileges})
+			}
+		}
 	}
-	if err != nil {
-		return fmt.Errorf("service: %w", err)
+	return want, nil
+}
+
+// consumerRoles are the roles that run a consuming worker's fill: the worker role, whose outbox worker runs it in
+// the transaction of the claimed message, when the service has a consuming worker (ST-SUP-RC35-OC06, ST-SUP-Q136).
+func consumerRoles(p *Parts, workerRole string) []string {
+	if p == nil || p.Workers.Consumers == nil {
+		return nil
 	}
-	return nil
+	return []string{workerRole}
 }
 
 // reach checks that SpiceDB answers its health check within ReachTimeout, so a service whose SpiceDB cannot be
@@ -314,11 +439,30 @@ func StartStage(err error) string {
 func (svc *Service) Verifier() *authn.Verifier { return svc.verifier }
 
 // Middleware verifies the bearer token of each request before next; a request whose token the verifier refuses is
-// answered 401 and reaches no handler.
-func (svc *Service) Middleware(next http.Handler) http.Handler { return svc.verifier.Middleware(next) }
+// answered 401 and reaches no handler. For a service that declares its provisioning, a request whose verified tenant
+// is not an active tenant of the tenant list is answered 403 with the code tenant.not_provisioned and reaches no
+// handler (ST-SUP-RC27-OC11). Middleware knows no router, so it exempts no route: a service that serves the two
+// provisioning routes wraps its main router with RoutedMiddleware.
+func (svc *Service) Middleware(next http.Handler) http.Handler {
+	return svc.RoutedMiddleware(nil, next)
+}
+
+// RoutedMiddleware is Middleware for the main router of the service, router, which next ends in. The tenant check
+// lets a request of a tenant that is not active through only when router matches it to the pattern of Provision or
+// of Retire, so a route of another handler under <base path>/stego/ is never exempt (ST-SUP-RC27-OC11). With no
+// router, no request is exempt.
+func (svc *Service) RoutedMiddleware(router *http.ServeMux, next http.Handler) http.Handler {
+	if svc.tenants != nil {
+		next = svc.tenants.gated(router, next)
+	}
+	return svc.verifier.Middleware(next)
+}
 
 // Commands is the command runtime of the declared commands, and nil when the service declares none.
 func (svc *Service) Commands() *command.Runtime { return svc.commands }
+
+// WorkerCommands is the command runtime of the declared workers, and nil when the service declares none.
+func (svc *Service) WorkerCommands() *command.Runtime { return svc.workers }
 
 // Collections is the command runtime of the generated collection commands, and nil when the service has none.
 func (svc *Service) Collections() *command.Runtime { return svc.collections }
@@ -335,7 +479,7 @@ func (svc *Service) Writer() *audit.Writer    { return svc.writer }
 func (svc *Service) Queue() *outbox.Queue     { return svc.queue }
 func (svc *Service) Telemetry() *otel.Runtime { return svc.telemetry }
 
-// Close releases what New opened.
+// Close releases what New opened, and deletes the report of the process.
 func (svc *Service) Close() error {
 	var errs []error
 	if svc.probes != nil {
@@ -351,6 +495,9 @@ func (svc *Service) Close() error {
 	}
 	if svc.spice != nil {
 		errs = append(errs, svc.spice.Close())
+	}
+	if svc.beat != nil {
+		errs = append(errs, svc.beat.Stop(context.Background()))
 	}
 	for _, db := range []*sql.DB{svc.auditDB, svc.pool} {
 		if db != nil {

@@ -34,6 +34,7 @@ import (
 )
 
 func main() {
+	stegoRefuseEnvironment()
 	if len(os.Args) == 2 && os.Args[1] == "migrate" {
 		if err := stegoruntime.Migrate(context.Background()); err != nil {
 			stegoReportFailure(os.Stderr, &stegoServiceFailure{stage: stegoruntime.MigrationStage(err), cause: err})
@@ -117,6 +118,9 @@ func run() (stegoErr error) {
 	mux.HandleFunc("GET /api/user-mgmt/v1/users", allUsersHandler.List)
 	mux.HandleFunc("GET /api/user-mgmt/v1/organizations/{org_id}/orgsettings", orgSettingsHandler.List)
 	mux.HandleFunc("PUT /api/user-mgmt/v1/organizations/{org_id}/orgsettings", orgSettingsHandler.Upsert)
+	mux.Handle("POST /api/user-mgmt/v1/stego/tenants", service.Routes())
+	mux.Handle("POST /api/user-mgmt/v1/stego/tenants/{tenantId}/retire", service.Routes())
+	mux.Handle("GET /authz/revocations/{id}", service.Routes())
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -130,7 +134,7 @@ func run() (stegoErr error) {
 	topMux.HandleFunc("GET /livez", monitor.Live)
 	topMux.HandleFunc("GET /readyz", monitor.Ready)
 	topMux.Handle("GET /readyz/modes", service.Readiness())
-	topMux.Handle("/", tracingRuntime.Handler(cORSMiddleware(service.Middleware(tracingRuntime.Route(validationMiddleware(mux))))))
+	topMux.Handle("/", tracingRuntime.Handler(cORSMiddleware(service.Middleware(mux, tracingRuntime.Route(validationMiddleware(mux))))))
 	stegoStage = "http.configure"
 	httpTLS, err := stegoHTTPTransport()
 	if err != nil {
@@ -154,6 +158,62 @@ func run() (stegoErr error) {
 		{name: "health-check[0]", run: monitor.Run},
 		{name: "stego-runtime[0]", run: service.Run},
 	})
+}
+
+// stegoRefuseEnvironment stops the process when the environment gives a value to a variable that a library would
+// read and that the service does not take. It names the variable, never its value.
+func stegoRefuseEnvironment() {
+	for _, entry := range os.Environ() {
+		name, value := entry, ""
+		for i := 0; i < len(entry); i++ {
+			if entry[i] == '=' {
+				name, value = entry[:i], entry[i+1:]
+				break
+			}
+		}
+		if value == "" || !stegoRefusedVariable(name) && !(name == "GODEBUG" && stegoWeakensTLS(value)) {
+			continue
+		}
+		for i := 0; i < len(name); i++ {
+			if c := name[i]; !(c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_') {
+				name = "with a name that is not plain"
+				break
+			}
+		}
+		os.Stderr.WriteString("the environment variable " + name + " is not taken by this service; give its setting through a declared variable\n")
+		os.Exit(2)
+	}
+}
+
+// stegoRefusedVariable tells whether a library reads the variable and the service does not take it.
+func stegoRefusedVariable(name string) bool {
+	switch name {
+	case "SSL_CERT_FILE", "SSL_CERT_DIR",
+		// The names that the pgx driver reads (pgconn), and no other name that starts with PG, such as PG_IMAGE.
+		"PGAPPNAME", "PGCHANNELBINDING", "PGCONNECT_TIMEOUT", "PGDATABASE", "PGHOST", "PGMAXPROTOCOLVERSION", "PGMINPROTOCOLVERSION", "PGOPTIONS", "PGPASSFILE", "PGPASSWORD", "PGPORT", "PGREQUIREAUTH", "PGSERVICE", "PGSERVICEFILE", "PGSSLCERT", "PGSSLKEY", "PGSSLMODE", "PGSSLNEGOTIATION", "PGSSLPASSWORD", "PGSSLROOTCERT", "PGSSLSNI", "PGTARGETSESSIONATTRS", "PGTZ", "PGUSER":
+		return true
+	case "GRPC_GO_LOG_SEVERITY_LEVEL", "GRPC_GO_LOG_VERBOSITY_LEVEL", "GRPC_GO_LOG_FORMATTER":
+		return false
+	}
+	return len(name) >= 5 && name[:5] == "GRPC_"
+}
+
+// stegoWeakensTLS tells whether a GODEBUG value holds a tls or an x509 setting.
+func stegoWeakensTLS(value string) bool {
+	start := 0
+	for i := 0; i <= len(value); i++ {
+		if i == len(value) || value[i] == ',' {
+			key := value[start:i]
+			for len(key) > 0 && key[0] == ' ' {
+				key = key[1:]
+			}
+			if len(key) >= 3 && key[:3] == "tls" || len(key) >= 4 && key[:4] == "x509" {
+				return true
+			}
+			start = i + 1
+		}
+	}
+	return false
 }
 
 type stegoServiceFailure struct {

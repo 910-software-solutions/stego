@@ -20,6 +20,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/audit/auditsink"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -113,6 +114,36 @@ type WorkerParts struct {
 	// TenantSchema is the schema of the tenant list stego_tenants, whose tenants the audit jobs visit
 	// (ST-SUP-RP04-LC07).
 	TenantSchema string
+	// Tickers gives the ticker of each declared worker with an every trigger on the command runtime of the workers
+	// (ST-SUP-RC35-OC04); the worker mode runs each and stops it at shutdown. Nil: the service has no such worker.
+	Tickers func(env TickerEnv) ([]*command.Ticker, error)
+	// Consumers registers on the outbox worker the one destination handler of each declared worker with a consumes
+	// trigger, which calls RunConsumer on the command runtime of the workers (ST-SUP-RC35-OC06). Nil: the service
+	// has no such worker.
+	Consumers func(rt *command.Runtime, worker *outbox.Worker, observe func(name string) command.WorkerObserver) error
+	// ConsumerTables are the tables in public of the entities that the workers with a consumes trigger write, which
+	// the migration job grants the worker role SELECT, INSERT and UPDATE on (decision on ST-SUP-Q141, orchestrator
+	// under the owner's delegation, 2026-11-15).
+	ConsumerTables []string
+}
+
+// WorkerLeasePrefix is the prefix of the name of the lease of a single worker: stego.worker.<worker name>
+// (ST-SUP-RC35-OC05). The migration job makes the row of each (Migration.WorkerLeases).
+const WorkerLeasePrefix = "stego.worker."
+
+// TickerEnv is what the tickers of the declared workers get from the worker mode.
+type TickerEnv struct {
+	// Runtime is the command runtime of the workers.
+	Runtime *command.Runtime
+	// Tenants reads the tenant list, which holds no retired tenant (ST-SUP-RP04-LC07, ST-SUP-RC27-OC12).
+	Tenants func(ctx context.Context) ([]tenant.Tenant, error)
+	// Lease gives the client of the lease of the single worker name, stego.worker.<name>, with the lease TTL and a
+	// renew interval of two thirds of it (ST-SUP-RC35-OC05).
+	Lease func(name string, ttl time.Duration) (*lease.Client, error)
+	// Observe gives the built-in worker observations of the worker name (ST-SUP-RP12-LC21).
+	Observe func(name string) command.WorkerObserver
+	// Clock is the clock of the ticks, which StartConfig gives.
+	Clock command.Clock
 }
 
 // StartConfig is how one process runs: the modes it runs, the HTTP server of the api mode, and the bounds of the
@@ -134,6 +165,9 @@ type StartConfig struct {
 	LeaseSettings lease.Settings
 	// WorkerConfig are the limits of the outbox worker; the zero value is outbox.DefaultWorkerConfig.
 	WorkerConfig *outbox.WorkerConfig
+	// Clock is the clock of the tickers of the declared workers and of their leases; nil is the system clock. A test
+	// of the service gives its own.
+	Clock command.Clock
 }
 
 // component is one started component and its state.
@@ -159,6 +193,7 @@ type Workers struct {
 	worker            *outbox.Worker
 	relay             *authz.Relay
 	periodic          *lease.Periodic
+	tickers           []*command.Ticker
 	anchorer          *audit.Anchorer
 	maintainer        *audit.Maintainer
 
@@ -225,7 +260,30 @@ func (svc *Service) Start(ctx context.Context, c StartConfig) (_ *Workers, err e
 	w.sequencer = &modes.Sequencer{Readiness: w.readiness,
 		API: &modes.APIShutdown{Server: c.Server, PropagationDelay: c.PropagationDelay}}
 	if w.worker != nil {
-		w.sequencer.Worker = &modes.WorkerShutdown{StopClaiming: w.worker.StopClaiming, Finish: w.worker.Finish, DrainBound: drain}
+		// The tickers start no run, and the running ones and the claimed messages finish within the drain bound;
+		// a run that is still running then rolls back (ST-SUP-RC35-OC10).
+		worker, tickers := w.worker, w.tickers
+		w.sequencer.Worker = &modes.WorkerShutdown{DrainBound: drain,
+			StopClaiming: func() {
+				worker.StopClaiming()
+				for _, t := range tickers {
+					t.Stop()
+				}
+			},
+			Finish: func(ctx context.Context) error {
+				var wg sync.WaitGroup
+				errs := make([]error, len(tickers)+1)
+				for i, t := range tickers {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						errs[i] = t.Finish(ctx)
+					}()
+				}
+				errs[len(tickers)] = worker.Finish(ctx)
+				wg.Wait()
+				return errors.Join(errs...)
+			}}
 	}
 	if w.controllerDone != nil {
 		w.sequencer.Controller = &modes.ControllerShutdown{Release: w.releaseController}
@@ -275,6 +333,11 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		config = *c.WorkerConfig
 	}
 	config.Meter, config.Logger = svc.telemetry.MeterProvider(), svc.telemetry.LoggerProvider()
+	if svc.tenants != nil {
+		// A destination registered with ActiveTenants, such as the after slots, gets no message of a tenant that is
+		// not active (ST-SUP-RC27-OC12).
+		config.Tenants = svc.tenants.gate
+	}
 	cfg, err := svc.parts.TenantConfig(c.Workers.WorkerDatabaseURL)
 	if err != nil {
 		return nil, err
@@ -299,7 +362,38 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 	if w.worker, err = p.NewWorker(queue, config, sink); err != nil {
 		return nil, err
 	}
+	if p.Consumers != nil {
+		if svc.workers == nil {
+			return nil, errors.New("service: the consuming workers need the command runtime of the workers")
+		}
+		if err := p.Consumers(svc.workers, w.worker, func(name string) command.WorkerObserver { return svc.probes.Worker(name) }); err != nil {
+			return nil, err
+		}
+	}
 	set := []modes.Component{{Name: OutboxWorkerName, Run: w.worker.Run}}
+	if p.Tickers != nil {
+		if svc.workers == nil || p.TenantSchema == "" {
+			return nil, errors.New("service: the workers need the command runtime of the workers and the schema of the tenant list")
+		}
+		holder := c.Holder
+		if holder == "" {
+			holder = defaultHolder()
+		}
+		schema, pool, clock := p.TenantSchema, svc.pool, c.Clock
+		env := TickerEnv{Runtime: svc.workers, Clock: clock,
+			Tenants: func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, pool, schema) },
+			Lease: func(name string, ttl time.Duration) (*lease.Client, error) {
+				return lease.New(pool, WorkerLeasePrefix+name, holder, lease.Settings{TTL: ttl, Renew: ttl * 2 / 3, Clock: clock})
+			},
+			Observe: func(name string) command.WorkerObserver { return svc.probes.Worker(name) },
+		}
+		if w.tickers, err = p.Tickers(env); err != nil {
+			return nil, err
+		}
+		for _, t := range w.tickers {
+			set = append(set, modes.Component{Name: "worker-" + t.Name(), Run: t.Run})
+		}
+	}
 	if p.NewRelay != nil {
 		if p.WatchInterval <= 0 {
 			return nil, errors.New("service: the relay's watch needs a positive interval")

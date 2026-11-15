@@ -8,3 +8,134 @@ provides:
   - postgres-reads
   - postgres-databases
 slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: store
+  flow: "Opens the PostgreSQL databases of the service and runs its reads."
+  ports:
+    postgres-reads: inbound
+    postgres-databases: inbound
+
+environment:
+  - name: PGAPPNAME
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGCHANNELBINDING
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGCONNECT_TIMEOUT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGDATABASE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGHOST
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGMAXPROTOCOLVERSION
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGMINPROTOCOLVERSION
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGOPTIONS
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGPASSFILE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGPASSWORD
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: true
+  - name: PGPORT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGREQUIREAUTH
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSERVICE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSERVICEFILE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSSLCERT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSSLKEY
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSSLMODE
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSSLNEGOTIATION
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSSLPASSWORD
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: true
+  - name: PGSSLROOTCERT
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGSSLSNI
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGTARGETSESSIONATTRS
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGTZ
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false
+  - name: PGUSER
+    type: string
+    required: false
+    description: "Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in the connection settings of the client."
+    secret: false

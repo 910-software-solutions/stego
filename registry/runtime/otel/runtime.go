@@ -930,22 +930,43 @@ const (
 	OutcomePending    Outcome = "pending"
 	OutcomeCommitted  Outcome = "committed"
 	OutcomeRolledBack Outcome = "rolled_back"
+	// OutcomeFenced and OutcomePanicked are the outcomes of a worker run that a lease fenced or whose fill panicked
+	// (ST-SUP-RC35-OC09).
+	OutcomeFenced   Outcome = "fenced"
+	OutcomePanicked Outcome = "panicked"
 )
 
 func (o Outcome) known() bool {
 	switch o {
-	case OutcomeSuccess, OutcomeFailure, OutcomeTimeout, OutcomeCanceled, OutcomePending, OutcomeCommitted, OutcomeRolledBack:
+	case OutcomeSuccess, OutcomeFailure, OutcomeTimeout, OutcomeCanceled, OutcomePending, OutcomeCommitted, OutcomeRolledBack,
+		OutcomeFenced, OutcomePanicked:
 		return true
 	}
 	return false
 }
 
-// The fixed attribute keys of an operation span: the span name, the outcome and the retry flag.
+// The fixed attribute keys of an operation span: the span name, the outcome, the retry flag and, on the span of a
+// worker run, the name of the declared worker (ST-SUP-RC35-OC09).
 const (
 	operationKey = "stego.operation"
 	outcomeKey   = "stego.outcome"
 	retryKey     = "stego.retry"
+	workerKey    = "stego.worker"
 )
+
+// workerName accepts the name of a declared worker: 1 to 63 bytes of lower-case letters, digits and hyphens that
+// start with a letter.
+func workerName(name string) bool {
+	if name == "" || len(name) > 63 || name[0] < 'a' || name[0] > 'z' {
+		return false
+	}
+	for _, c := range []byte(name) {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
 
 // Finish ends an operation span once: it sets the outcome and the retry flag and, when failed is true, an error
 // status with no message. A later call does nothing.
@@ -995,6 +1016,21 @@ func (r *Runtime) Registered(name string) bool { return r.operations[name] }
 // returns ctx with new IDs that do not record, and a Finish that does nothing. An
 // unregistered name is an error, and no span starts (ST-SUP-RP03-LC15).
 func (r *Runtime) StartOperation(ctx context.Context, parent Parent, name string) (context.Context, Finish, error) {
+	return r.startOperation(ctx, parent, name)
+}
+
+// StartWorkerOperation is StartOperation for one run of the declared worker worker: the span also carries the fixed
+// attribute stego.worker with the worker's name, and its outcome may be fenced or panicked (ST-SUP-RC35-OC09). A
+// worker name that is not 1 to 63 bytes of lower-case letters, digits and hyphens that start with a letter is an
+// error, and no span starts.
+func (r *Runtime) StartWorkerOperation(ctx context.Context, parent Parent, name, worker string) (context.Context, Finish, error) {
+	if !workerName(worker) {
+		return ctx, nil, errors.New("the worker name of an operation span is invalid")
+	}
+	return r.startOperation(ctx, parent, name, attribute.String(workerKey, worker))
+}
+
+func (r *Runtime) startOperation(ctx context.Context, parent Parent, name string, extra ...attribute.KeyValue) (context.Context, Finish, error) {
 	if ctx == nil || (parent != Root && parent != Child) {
 		return ctx, nil, errors.New("an operation span requires a context and a parent choice")
 	}
@@ -1005,13 +1041,14 @@ func (r *Runtime) StartOperation(ctx context.Context, parent Parent, name string
 		// No span records, but the IDs exist, so the logs of the operation carry them (ST-SUP-RP02-LC20).
 		return trace.ContextWithSpanContext(ctx, localSpanContext(ctx, parent)), func(Outcome, bool, bool) {}, nil
 	}
-	options := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attribute.String(operationKey, name)), trace.WithTimestamp(time.Now())}
+	attrs := append([]attribute.KeyValue{attribute.String(operationKey, name)}, extra...)
+	options := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindInternal), trace.WithAttributes(attrs...), trace.WithTimestamp(time.Now())}
 	if parent == Root {
 		options = append(options, trace.WithNewRoot())
 	}
 	ctx, span := r.opTracer.Start(ctx, name, options...)
 	record := &spanRecord{name: name}
-	record.set(attribute.String(operationKey, name))
+	record.set(attrs...)
 	if span.IsRecording() {
 		r.keep(span.SpanContext(), record)
 	}

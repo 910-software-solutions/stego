@@ -41,10 +41,22 @@ definition project {
 	permission edit = owner
 }
 
+definition service {
+	relation operator: user
+	relation creator: user
+	permission provision = operator
+	permission retire = operator
+	permission create = creator
+}
+
 definition stego_floor {
 	relation marker: stego_floor
 }
 `
+
+// Definitions are the definitions of Schema. After the migration job writes Schema, it waits until SpiceDB
+// serves each of them, so the release does not start while a read of a new resource type fails (ST-SUP-Q140).
+var Definitions = []string{"document", "project", "service", "service_account", "stego_floor", "user"}
 
 // DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.
 const DatabaseSchema = "public"
@@ -60,8 +72,21 @@ const AlertBound = time.Duration(5000000000)
 // setting watch_interval: 1s (ST-SUP-RP06-LC14).
 const WatchInterval = time.Duration(1000000000)
 
-// Operation is the decision of one operation of one collection: the permission of the resource type that it
-// checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01).
+// WaitCap is the longest wait for a revocation, the component setting wait_cap: 10s (ST-SUP-RC29-OC19).
+const WaitCap = time.Duration(10000000000)
+
+// Waiters is the most waits for a revocation at one time, the component setting waiter_limit: 100; TenantWaiters
+// is the most of one tenant, inside it, the component setting tenant_waiter_limit: 10 (ST-SUP-RC29-OC19).
+const (
+	Waiters       = 100
+	TenantWaiters = 10
+)
+
+// Operation is the decision of one operation: of an operation of a collection, the permission of the resource type
+// that it checks, or, for a public operation, the reason that the declaration gives (ST-SUP-RC29-OC01); of the
+// revocation status route, its route and the decision Writer, which allows only the principal and tenant that made
+// the write and calls no provider (ST-SUP-RC29-OC18); of Provision and Retire, the permission of the service-level
+// resource type, the route and Tenant, the action of the tenant runtime, provision or retire (ST-SUP-RC27-OC09).
 type Operation struct {
 	Collection   string
 	Operation    string
@@ -69,20 +94,27 @@ type Operation struct {
 	Permission   string
 	Public       bool
 	Reason       string
+	Route        string
+	Writer       bool
+	Tenant       string
 }
 
-// Operations are the decisions of the operations of the collections, in declaration order.
+// Operations are the decisions of the operations of the collections, in declaration order, then of Provision and
+// Retire, and then of the revocation status route, from which alone the router registers those routes.
 var Operations = []Operation{
-	{Collection: "documents", Operation: "create", ResourceType: "document", Permission: "edit"},
+	{Collection: "documents", Operation: "create", ResourceType: "service", Permission: "create"},
 	{Collection: "documents", Operation: "read", ResourceType: "document", Permission: "view"},
 	{Collection: "documents", Operation: "update", ResourceType: "document", Permission: "edit"},
 	{Collection: "documents", Operation: "delete", ResourceType: "document", Permission: "edit"},
 	{Collection: "documents", Operation: "list", ResourceType: "document", Permission: "view"},
-	{Collection: "projects", Operation: "create", ResourceType: "project", Permission: "edit"},
+	{Collection: "projects", Operation: "create", ResourceType: "service", Permission: "create"},
 	{Collection: "projects", Operation: "read", ResourceType: "project", Permission: "view"},
 	{Collection: "projects", Operation: "update", ResourceType: "project", Permission: "edit"},
 	{Collection: "projects", Operation: "delete", ResourceType: "project", Permission: "edit"},
 	{Collection: "projects", Operation: "list", ResourceType: "project", Permission: "view"},
+	{Operation: "provision-tenant", ResourceType: "service", Permission: "provision", Route: "POST /stego/tenants", Tenant: "provision"},
+	{Operation: "retire-tenant", ResourceType: "service", Permission: "retire", Route: "POST /stego/tenants/{tenantId}/retire", Tenant: "retire"},
+	{Operation: "revocation-status", Route: "GET /authz/revocations/{id}", Writer: true},
 }
 
 // Owners maps each protected resource type to the table of its rows, whose authz_token holds the token of the
@@ -96,65 +128,6 @@ var Owners = map[string]stegoauthz.Owner{
 // runtime (ST-SUP-RC29-OC22, ST-SUP-RP06-LC22).
 func DocumentResource(t tenant.Tenant, key string) (stegoauthz.Resource, error) {
 	return stegoauthz.NewResource(t, "document", key)
-}
-
-// DocumentRelations are the relations that the relationships of Document write, for the handle that its writes bind.
-var DocumentRelations = []stegoauthz.Relation{{ResourceType: "document", Name: "owner"}}
-
-// DocumentSubjects are the subject IDs of the relationships of one Document row. An empty ID writes no tuple.
-type DocumentSubjects struct {
-	// Owner is the user that holds document#owner, from the field owner_id.
-	Owner string
-}
-
-// DocumentTuples gives the declared tuples of the Document row of key in tenant t (ST-SUP-RC29-OC05).
-func DocumentTuples(t tenant.Tenant, key string, s DocumentSubjects) ([]stegoauthz.Tuple, error) {
-	resource, err := DocumentResource(t, key)
-	if err != nil {
-		return nil, err
-	}
-	var tuples []stegoauthz.Tuple
-	if s.Owner != "" {
-		tuples = append(tuples, stegoauthz.Tuple{Resource: resource, Relation: "owner", Subject: stegoauthz.Subject{Type: "user", ID: s.Owner}})
-	}
-	return tuples, nil
-}
-
-// WriteDocumentRelationships enqueues through h, in the transaction of the Document row of key, the tuple changes of
-// the row from before to after: before is nil on create and after is nil on delete. Each relationship whose
-// subject changes deletes its old tuple and then touches its new one, and every tuple joins the transaction's
-// revocation (ST-SUP-RC29-OC05, ST-SUP-RP06-LC12). It writes nothing to the provider; the relay does. It gives
-// the revocation and whether it enqueued a tuple.
-func WriteDocumentRelationships(ctx context.Context, h *stegoauthz.Handle, t tenant.Tenant, key string, before, after *DocumentSubjects) (stegoauthz.Revocation, bool, error) {
-	var revocation stegoauthz.Revocation
-	wrote := false
-	resource, err := DocumentResource(t, key)
-	if err != nil {
-		return revocation, false, err
-	}
-	var was, is string
-	was, is = "", ""
-	if before != nil {
-		was = before.Owner
-	}
-	if after != nil {
-		is = after.Owner
-	}
-	if was != is {
-		if was != "" {
-			if revocation, err = h.Unrelate(ctx, stegoauthz.Tuple{Resource: resource, Relation: "owner", Subject: stegoauthz.Subject{Type: "user", ID: was}}); err != nil {
-				return revocation, wrote, err
-			}
-			wrote = true
-		}
-		if is != "" {
-			if revocation, err = h.Relate(ctx, stegoauthz.Tuple{Resource: resource, Relation: "owner", Subject: stegoauthz.Subject{Type: "user", ID: is}}); err != nil {
-				return revocation, wrote, err
-			}
-			wrote = true
-		}
-	}
-	return revocation, wrote, nil
 }
 
 // ProjectResource gives the resource project of the Project row of key in tenant t, with the tenant-qualified ID of the
@@ -177,9 +150,9 @@ func Migration(runtimeRole, relayRole, outboxRelayRole, workerRole string) (stri
 	}
 	worker := "\"" + strings.ReplaceAll(workerRole, "\"", "\"\"") + "\""
 	var statements strings.Builder
-	statements.WriteString("ALTER TABLE public.\"documents\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096);\n")
+	statements.WriteString("DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.\"documents\"'::regclass AND attname = 'authz_token' AND NOT attisdropped) THEN ALTER TABLE public.\"documents\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096); END IF; END $authz$;\n")
 	statements.WriteString("GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.\"documents\" TO " + worker + ";\n")
-	statements.WriteString("ALTER TABLE public.\"projects\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096);\n")
+	statements.WriteString("DO $authz$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute WHERE attrelid = 'public.\"projects\"'::regclass AND attname = 'authz_token' AND NOT attisdropped) THEN ALTER TABLE public.\"projects\" ADD COLUMN IF NOT EXISTS authz_token text NOT NULL DEFAULT '' CHECK (octet_length(authz_token) <= 4096); END IF; END $authz$;\n")
 	statements.WriteString("GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.\"projects\" TO " + worker + ";\n")
 	return text + statements.String(), nil
 }
@@ -198,9 +171,11 @@ func WriteSchema(ctx context.Context, conn grpc.ClientConnInterface) error {
 
 // NewRuntime returns the authorization runtime of the service, which binds the handles of its transactions and
 // reads the revocation statuses. db is the runtime role's pool, provider the decision provider, and queue the
-// outbox queue in which a handle enqueues the relay's tuple writes.
+// outbox queue in which a handle enqueues the relay's tuple writes. A wait for a revocation is bounded by WaitCap,
+// Waiters and TenantWaiters (ST-SUP-RC29-OC19).
 func NewRuntime(db *sql.DB, provider stegoauthz.Decision, queue *outbox.Queue, meter metric.MeterProvider) (*stegoauthz.Runtime, error) {
-	return stegoauthz.New(stegoauthz.Config{Provider: provider, DB: db, Schema: DatabaseSchema, Outbox: queue, Meter: meter})
+	return stegoauthz.New(stegoauthz.Config{Provider: provider, DB: db, Schema: DatabaseSchema, Outbox: queue, Meter: meter,
+		WaitCap: WaitCap, Waiters: Waiters, TenantWaiters: TenantWaiters})
 }
 
 // NewRelay builds the relay of the service, the outbox destination authz, with the owning table of each protected

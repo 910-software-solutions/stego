@@ -9,7 +9,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"reflect"
@@ -352,6 +355,82 @@ func TestAuthz(t *testing.T) {
 		errs, _, _ = get(denied, missing)
 		if !errors.Is(errs[0], ErrUndecided) || errs[0] == nil || errs[1] == nil || errs[0].Error() != errs[1].Error() {
 			t.Errorf("with the provider down the denied and the missing row give %v and %v, want the same ErrUndecided", errs[0], errs[1])
+		}
+	})
+
+	t.Run("ST-SUP-RP11-LC06-T03 An undecided read and list log the entity and a fixed cause once for each cause in each interval, and only a transient cause is Transient", func(t *testing.T) {
+		e := newEnv(t)
+		const row = "0000000a-0000-7000-8000-000000000011"
+		e.insert(t, "INSERT INTO app.tickets (tenant_id, id) VALUES ('t1', $1)", row)
+		port := &fakeDecision{down: true, decide: allowAll}
+		rt := e.runtimeOf(t, port)
+		tickets := ticketEntity(t)
+		var logged bytes.Buffer
+		saved, savedLog := slog.Default(), undecidedLog
+		now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+		undecidedLog = authz.NewCauseLog(func() time.Time { return now })
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+		t.Cleanup(func() { slog.SetDefault(saved); undecidedLog = savedLog })
+		read := func() (getErr, listErr error) {
+			_, err := Run(context.Background(), rt, mustQuery(t, "ticket-detail", tickets), bound(t, "t1", "user:u-7", "ticket-detail"), struct{}{},
+				func(ctx context.Context, _ struct{}, h *Handle[noProbe]) (struct{}, error) {
+					repo, err := Repo(h, tickets)
+					if err != nil {
+						return struct{}{}, err
+					}
+					_, getErr = repo.Get(ctx, row)
+					_, listErr = repo.List(ctx, ListRequest{Limit: 10})
+					return struct{}{}, nil
+				})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return getErr, listErr
+		}
+		lines := func() []string {
+			var found []string
+			for _, line := range strings.Split(strings.TrimSpace(logged.String()), "\n") {
+				if strings.Contains(line, "query: the authorization provider could not decide the read") {
+					found = append(found, line)
+				}
+			}
+			return found
+		}
+		// A provider that does not answer: transient, so 503. The read logs; the list of the same cause is held back.
+		getErr, listErr := read()
+		if !errors.Is(getErr, ErrUndecided) || !errors.Is(listErr, ErrUndecided) || !Transient(getErr) || !Transient(listErr) {
+			t.Fatalf("with the provider down the read gives %v and the list %v, want a transient ErrUndecided", getErr, listErr)
+		}
+		if found := lines(); len(found) != 1 || !strings.Contains(found[0], "entity="+tickets.e.spec.Name) ||
+			!strings.Contains(found[0], "cause="+authz.CauseUnavailable) || !strings.Contains(found[0], "held_back=0") || !strings.Contains(found[0], "level=WARN") {
+			t.Fatalf("the log holds %q, want one WARN line with the entity, the cause %s and held_back=0", found, authz.CauseUnavailable)
+		}
+		// After the interval the next line counts the line held back.
+		now = now.Add(authz.LogEvery)
+		read()
+		if found := lines(); len(found) != 2 || !strings.Contains(found[1], "held_back=1") {
+			t.Fatalf("after the interval the log holds %q, want a second line with held_back=1", found)
+		}
+		// A provider that refuses the call, such as for a bad key, is undecided but not transient, so 500; its cause
+		// has a line of its own.
+		port.mu.Lock()
+		port.fault = providerError(status.Error(codes.PermissionDenied, "bad key"))
+		port.mu.Unlock()
+		getErr, listErr = read()
+		if !errors.Is(getErr, ErrUndecided) || Transient(getErr) || Transient(listErr) {
+			t.Fatalf("with the provider refused the read gives %v (transient %v), want ErrUndecided that is not transient", getErr, Transient(getErr))
+		}
+		if getErr.Error() != ErrUndecided.Error() {
+			t.Errorf("the undecided error has the text %q, want the text of ErrUndecided", getErr)
+		}
+		found := lines()
+		if len(found) != 3 || !strings.Contains(found[2], "cause="+authz.CauseProvider) || !strings.Contains(found[2], "transient=false") {
+			t.Fatalf("the log holds %q, want a third line with the cause %s", found, authz.CauseProvider)
+		}
+		for _, line := range found {
+			if strings.Contains(line, row) || strings.Contains(line, "bad key") || strings.Contains(line, "down") || strings.Contains(line, "u-7") {
+				t.Errorf("the line %q holds a row key, the subject or provider text", line)
+			}
 		}
 	})
 

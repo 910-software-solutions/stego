@@ -2,10 +2,18 @@
 # (ST-SUP-RC20-OC39): each collection operation is one generated command or query of the command and query
 # components, which a service with collections must therefore have. Version 4.0.0 removed the handlers of the store
 # path and their storage interface. Version 4.2.0 stages the change event of each write when the service has the
-# kafka-producer component (ST-SUP-RC20-OC40).
+# kafka-producer component (ST-SUP-RC20-OC40). Version 4.2.1 lists each failed member of a body in a 400 validation
+# problem, not only the first (ST-SUP-RC20-OC05). Version 4.2.2 lists at most 50 of them and one entry that counts
+# the rest, and no entry quotes a value of the request. Version 4.2.3 refuses a body of more than 10000 JSON values
+# and member names before the schema check (ST-SUP-RC20-OC21). Version 4.2.4 reads each number of the count as text
+# and refuses a body that is not JSON, so no error of the count lets a body pass. Version 4.3.0 makes a list that
+# names the caller's write in Authz-Revocation-After wait for it before it reads (ST-SUP-RC20-OC41). Version 4.4.0
+# makes a read wait the same way (ST-SUP-RC20-OC42), and its OpenAPI document describes the revocation headers and
+# the revocation status route (ST-SUP-RC20-OC43). Version 4.4.1 lists the state expired of a revocation in its OpenAPI
+# document (ST-SUP-RC20-OC43).
 kind: component
 name: rest-api
-version: 4.2.0
+version: 4.5.0
 stage: ga
 output_namespace: internal/api
 
@@ -48,31 +56,82 @@ provides:
 
 slots:
   - name: before_create
+    phase: before_store
+    operations: [create]
     proto: stego.components.rest_api.slots.BeforeCreate
     default: passthrough
   # before_upsert and after_upsert are declared, and a binding of them is refused: only the removed store path
   # called them (ST-SUP-RC20-OC39). An upsert calls validate and on_entity_changed.
   - name: before_upsert
+    phase: before_store
+    operations: [upsert]
     proto: stego.components.rest_api.slots.BeforeUpsert
     default: passthrough
   - name: before_patch
+    phase: before_store
+    operations: [patch]
     proto: stego.components.rest_api.slots.BeforePatch
     default: passthrough
   - name: before_delete
+    phase: before_store
+    operations: [delete]
     proto: stego.components.rest_api.slots.BeforeDelete
     default: passthrough
   - name: after_create
+    phase: after_store
+    operations: [create]
     proto: stego.components.rest_api.slots.AfterCreate
     default: passthrough
   - name: after_upsert
+    phase: after_store
+    operations: [upsert]
     proto: stego.components.rest_api.slots.AfterUpsert
     default: passthrough
   - name: after_patch
+    phase: after_store
+    operations: [patch]
     proto: stego.components.rest_api.slots.AfterPatch
     default: passthrough
   - name: after_delete
+    phase: after_store
+    operations: [delete]
     proto: stego.components.rest_api.slots.AfterDelete
     default: passthrough
   - name: validate
+    phase: before_store
+    operations: [create, update, upsert]
     proto: stego.components.rest_api.slots.Validate
     default: passthrough
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: handler
+  flow: "Decodes the request of a collection operation and calls its command or query."
+  ports:
+    auth-provider: outbound
+    storage-adapter: outbound
+    http-server: inbound
+    openapi-spec: inbound
+
+environment:
+  - name: CORS_ALLOWED_ORIGINS
+    type: list
+    required: false
+    description: "The origins that may send cross-origin requests. When it has no value, the API sets no CORS header."
+    secret: false
+    example: "https://app.example.com,https://admin.example.com"
+  - name: CORS_ALLOWED_METHODS
+    type: list
+    required: false
+    default: "GET,POST,PATCH,PUT,DELETE,OPTIONS"
+    description: "The HTTP methods that cross-origin requests may use. When it has no value, the API allows GET, POST, PATCH, PUT, DELETE and OPTIONS."
+    secret: false
+    example: "GET,POST"
+  - name: CORS_ALLOWED_HEADERS
+    type: list
+    required: false
+    default: "Content-Type,Authorization"
+    description: "The request headers that cross-origin requests may send. When it has no value, the API allows Content-Type and Authorization."
+    secret: false
+    example: "Content-Type,Authorization,X-Request-Id"

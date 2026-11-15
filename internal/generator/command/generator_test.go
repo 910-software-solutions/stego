@@ -46,8 +46,9 @@ message ReserveAndChargeResponse {
 `
 
 // serviceYAML is the service declaration of the RC32 test records: the owned entities Order (resource type order),
-// Reservation and Charge (amount_cents, card_last4 with sensitivity pii), the outbox destination billing, and the
-// command reserve-and-charge that writes Reservation and Charge, needs reserve on order, may write order#holder and
+// Hold (resource type hold, a reference to Order, the relationship creator from the caller and owner from the field
+// owner_id), Reservation and Charge (amount_cents, card_last4 with sensitivity pii), the outbox destination billing,
+// and the command reserve-and-charge that writes Reservation and Charge, needs reserve on order, may write order#holder and
 // may stage effects for billing, bound to the fill reserve-and-charge.
 const serviceYAML = `name: orders
 archetype: rest-crud
@@ -74,10 +75,20 @@ entities:
       read: view
     references:
       order_id: {relation: order, permission: reserve}
+    relationships:
+      - relation: creator
+        subject_source: caller
+        subject_type: user
+      - relation: owner
+        subject_source: field
+        subject_field: owner_id
+        subject_type: user
     fields:
       - name: order_id
         type: ref
         to: Order
+      - name: owner_id
+        type: string
   - name: Reservation
     fields:
       - name: order_id
@@ -157,9 +168,29 @@ func commandContext(t testing.TB, svc *types.ServiceDeclaration, slot string) ge
 		Observations:    svc.Observations,
 		PeerNamespaces:  map[string]string{"domain-probe": "probes", "command": "commands"},
 		ComponentConfig: map[string]any{"proto_files": []any{map[string]any{"path": "proto/orders.proto", "import_path": "orders/v1/orders.proto"}}},
-		Inputs:          map[string][]byte{"proto/orders.proto": []byte(ordersProto)},
+		Inputs:          map[string][]byte{"proto/orders.proto": []byte(ordersProto), "authz/schema.zed": []byte(schemaZed)},
 	}
 }
+
+// schemaZed is the schema of the test declaration, the one that the service check writes to SpiceDB.
+const schemaZed = `definition user {}
+
+definition order {
+	relation owner: user
+	relation viewer: user
+	relation holder: user
+	permission reserve = owner
+	permission view = owner + viewer
+}
+
+definition hold {
+	relation owner: user
+	relation creator: user
+	relation order: order
+	permission view = owner + creator
+	permission reserve = owner + creator
+}
+`
 
 // generated generates ctx and gives the files by path.
 func generated(t testing.TB, ctx gen.Context) map[string][]byte {
@@ -350,6 +381,52 @@ func TestContract(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC29-OC05-T05 Each declared relationship of an entity is in its Relationships list", func(t *testing.T) {
+		files := generated(t, commandContext(t, declaration(t), commandSlot))
+		contract := string(files["commands/commands.go"])
+		for _, want := range []string{
+			"\tRelationships: []command.Relationship[Hold]{\n",
+			"\tRelations: []string{\"creator\", \"order\", \"owner\"},\n",
+			`{Relation: "creator", SubjectType: "user"},`,
+			`{Relation: "owner", SubjectType: "user", Field: func(v Hold) string { return v.OwnerID }, FieldName: "owner_id"},`,
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("the entity Hold does not have %s in its Relationships list:\n%s", want, contract)
+			}
+		}
+		// A subject from an optional field reads its pointer, and a subject of a resource type of this service is
+		// marked as a resource, so the runtime qualifies its ID with the tenant.
+		svc := declaration(t)
+		for i := range svc.Entities {
+			if svc.Entities[i].Name == "Hold" {
+				svc.Entities[i].Fields = append(svc.Entities[i].Fields,
+					types.Field{Name: "backup_id", Type: types.FieldTypeString, Optional: true},
+					types.Field{Name: "linked_id", Type: types.FieldTypeRef, To: "Order"})
+				svc.Entities[i].Relationships = append(svc.Entities[i].Relationships,
+					types.Relationship{Relation: "backup", SubjectSource: types.SubjectSourceField, SubjectField: "backup_id", SubjectType: "user"},
+					types.Relationship{Relation: "linked", SubjectSource: types.SubjectSourceField, SubjectField: "linked_id", SubjectType: "order"})
+			}
+		}
+		contract = string(generated(t, commandContext(t, svc, commandSlot))["commands/commands.go"])
+		for _, want := range []string{
+			`{Relation: "backup", SubjectType: "user", Field: func(v Hold) string {`, "if v.BackupID == nil {", "return *v.BackupID", `}, FieldName: "backup_id"},`,
+			`{Relation: "linked", SubjectType: "order", Field: func(v Hold) string { return v.LinkedID }, FieldName: "linked_id", Resource: true},`,
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("the Relationships list of Hold does not hold %s:\n%s", want, contract)
+			}
+		}
+		// An entity without relationships gets no list, and a subject field that is not a string or ref is refused.
+		if strings.Contains(contract, "Relationship[Order]") {
+			t.Error("the entity Order, which declares no relationship, has a Relationships list")
+		}
+		svc.Entities[1].Relationships = append(svc.Entities[1].Relationships,
+			types.Relationship{Relation: "count", SubjectSource: types.SubjectSourceField, SubjectField: "missing_id", SubjectType: "user"})
+		if _, _, err := new(Generator).Generate(commandContext(t, svc, commandSlot)); err == nil || !strings.Contains(err.Error(), "missing_id") {
+			t.Errorf("a relationship whose subject field is not on the entity gave %v, want a refusal that names it", err)
+		}
+	})
+
 	t.Run("ST-SUP-RC32-OC02-T02 A command bound to a fill of another slot is refused", func(t *testing.T) {
 		files, wiring, err := new(Generator).Generate(commandContext(t, declaration(t), "rest-api.before_create"))
 		if err == nil || !strings.Contains(err.Error(), "reserve-and-charge") || !strings.Contains(err.Error(), "the fill reserve-and-charge") {
@@ -474,4 +551,41 @@ func newProject(t *testing.T, ctx gen.Context, extra map[string][]byte) *project
 		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
+}
+
+func TestRelationHelpers(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC13-T02 The contract gives typed helpers for each declared relation, and refuses a relation with no written entity of its type", func(t *testing.T) {
+		contract := string(generated(t, commandContext(t, declaration(t), commandSlot))["commands/commands.go"])
+		for _, want := range []string{
+			"func ReserveAndChargeRelateHolder(ctx context.Context, h *ReserveAndChargeHandle, on LoadedOrder, subjectType, subjectID string) error {",
+			"func ReserveAndChargeUnrelateHolder(ctx context.Context, h *ReserveAndChargeHandle, on LoadedOrder, subjectType, subjectID string) error {",
+			`authz.NewResource(h.Tenant(), "order", on.ID())`,
+			`h.Authz().Relate(ctx, on, authz.Tuple{Resource: resource, Relation: "holder",`,
+			`h.Authz().Unrelate(ctx, on, authz.Tuple{Resource: resource, Relation: "holder",`,
+			"\"github.com/jsell-rh/stego/registry/runtime/authz\"",
+		} {
+			if !strings.Contains(contract, want) {
+				t.Fatalf("the command contract does not hold %q", want)
+			}
+		}
+		svc := declaration(t)
+		svc.Commands[0].RelationshipsWritten = []string{"order#holder", "folder#viewer"}
+		if _, _, err := new(Generator).Generate(commandContext(t, svc, commandSlot)); err == nil || !strings.Contains(err.Error(), "folder#viewer") {
+			t.Fatalf("a relation of a resource type that the command writes no entity of gave %v, want a refusal that names it", err)
+		}
+		// The relation of a declared relationship, of the subject source field or caller, and of a reference is the
+		// runtime's own: no helper may relate or unrelate it (ST-SUP-Q118).
+		for relation, why := range map[string]string{
+			"hold#owner":   "the relationship owner of the entity Hold, with the subject source field",
+			"hold#creator": "the relationship creator of the entity Hold, with the subject source caller",
+			"hold#order":   "the relation of the reference order_id of the entity Hold",
+		} {
+			svc := declaration(t)
+			svc.Commands[0].RelationshipsWritten = []string{"order#holder", relation}
+			_, _, err := new(Generator).Generate(commandContext(t, svc, commandSlot))
+			if err == nil || !strings.Contains(err.Error(), relation) || !strings.Contains(err.Error(), why) || !strings.Contains(err.Error(), "runtime writes it alone") {
+				t.Errorf("the relation %s gave %v, want a refusal that names it and says the runtime writes it alone", relation, err)
+			}
+		}
+	})
 }

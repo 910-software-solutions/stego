@@ -3,10 +3,16 @@ package authz
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math/rand/v2"
 	"sort"
+	"strconv"
+	"sync"
+	"time"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -236,7 +242,9 @@ func (s *SpiceDB) Touch(ctx context.Context, tuples []Tuple, preconditions []Pre
 
 // Delete removes the relationships of the filters, which is idempotent on retry. Exact filters go in one
 // WriteRelationships request with OPERATION_DELETE; one filter that is not exact goes to DeleteRelationships, and
-// more than one is refused, because two calls would not be atomic.
+// more than one is refused, because two calls would not be atomic. A filter that is not exact must name exactly one
+// resource type, one resource ID and one relation, and no subject (Filter.OfRelation): one with an empty resource ID
+// or relation would delete the tuples of other resources, so it is refused (ST-SUP-Q118).
 func (s *SpiceDB) Delete(ctx context.Context, filters []Filter, preconditions []Precondition) (Token, error) {
 	if len(filters) == 0 {
 		return Token{}, errors.New("authz: Delete needs at least one filter")
@@ -265,6 +273,9 @@ func (s *SpiceDB) Delete(ctx context.Context, filters []Filter, preconditions []
 	}
 	if len(filters) > 1 {
 		return Token{}, Refused(errors.New("authz: Delete takes more than one filter only when each names one relationship"))
+	}
+	if !filters[0].OfRelation() {
+		return Token{}, Refused(errors.New("authz: a filter that does not name one relationship must name one resource type, one resource ID and one relation, and no subject"))
 	}
 	response, err := s.permissions.DeleteRelationships(ctx, &v1.DeleteRelationshipsRequest{
 		RelationshipFilter:    spiceFilter(filters[0]),
@@ -406,6 +417,9 @@ type providerError struct {
 	what  string
 	code  codes.Code
 	cause error
+	// notServed is true when SpiceDB does not serve yet a definition, a relation or a permission of the request:
+	// for some seconds after a schema write, a read at a quantized revision does not know the new definitions.
+	notServed bool
 }
 
 func (e *providerError) Error() string {
@@ -422,7 +436,7 @@ func (e *providerError) Unwrap() error { return e.cause }
 // a retry.
 func spiceError(what string, err error) error {
 	code := status.Code(err)
-	fixed := &providerError{what: what, code: code, cause: contextCause(err)}
+	fixed := &providerError{what: what, code: code, cause: contextCause(err), notServed: notServed(err)}
 	switch code {
 	case codes.Canceled:
 		fixed.cause = context.Canceled
@@ -445,3 +459,258 @@ func tokenOf(token *v1.ZedToken) (Token, error) {
 	}
 	return NewToken(token.GetToken())
 }
+
+// notServed reports whether a SpiceDB error says, by the reason of its error details, that the schema SpiceDB reads
+// at the revision of the request has no such definition, relation or permission. The reason is a fixed enum value,
+// so no message text is read.
+func notServed(err error) bool {
+	for _, detail := range status.Convert(err).Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if !ok {
+			continue
+		}
+		switch info.GetReason() {
+		case v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION.String(), v1.ErrorReason_ERROR_REASON_UNKNOWN_RELATION_OR_PERMISSION.String():
+			return true
+		}
+	}
+	return false
+}
+
+// The causes that Cause gives: fixed names that a log line may hold, because they hold no text of the provider.
+const (
+	// CauseSchemaNotServed is a provider that does not serve yet a definition, a relation or a permission of the
+	// request, such as SpiceDB for some seconds after a schema write.
+	CauseSchemaNotServed = "authz_schema_not_served"
+	// CauseUnavailable is a provider that does not answer, or that has no capacity for the call now.
+	CauseUnavailable = "authz_provider_unavailable"
+	// CauseDeadline is a provider call that ran out of time.
+	CauseDeadline = "authz_provider_deadline"
+	// CauseCanceled is a provider call whose context was canceled.
+	CauseCanceled = "authz_provider_canceled"
+	// CauseRefused is a provider that refuses the request, which a retry does not change.
+	CauseRefused = "authz_provider_refused"
+	// CauseConditional is a conditional permission whose caveat context is missing (ContextError).
+	CauseConditional = "authz_conditional_permission"
+	// CauseProvider is every other failure of a provider call.
+	CauseProvider = "authz_provider_failed"
+	// CauseOther is an error that no provider call gave.
+	CauseOther = "authz_failed"
+)
+
+// Cause gives the fixed name of the cause of an error of the decision port, for the log of an undecided read or
+// write: it never holds a provider message, a subject or a resource ID (ST-SUP-RP06-LC20).
+func Cause(err error) string {
+	var provider *providerError
+	var conditional *ContextError
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &provider):
+		switch {
+		case provider.notServed:
+			return CauseSchemaNotServed
+		case provider.code == codes.Unavailable || provider.code == codes.ResourceExhausted || provider.code == codes.Aborted:
+			return CauseUnavailable
+		case provider.code == codes.DeadlineExceeded:
+			return CauseDeadline
+		case provider.code == codes.Canceled:
+			return CauseCanceled
+		case IsRefused(err):
+			return CauseRefused
+		default:
+			return CauseProvider
+		}
+	case errors.As(err, &conditional):
+		return CauseConditional
+	case errors.Is(err, context.DeadlineExceeded):
+		return CauseDeadline
+	case errors.Is(err, context.Canceled):
+		return CauseCanceled
+	default:
+		return CauseOther
+	}
+}
+
+// Transient reports whether err is a failure of the provider that a retry of the same request may pass, so that the
+// request is answered as unavailable for now (HTTP 503 with Retry-After), not as an internal error: a provider that
+// does not serve yet a definition of the schema the release wrote, one that does not answer or has no capacity, and
+// a provider call that ran out of time.
+func Transient(err error) bool {
+	switch Cause(err) {
+	case CauseSchemaNotServed, CauseUnavailable, CauseDeadline:
+		return true
+	default:
+		return false
+	}
+}
+
+// The bound of AwaitSchema: at most SchemaPolls probe rounds, SchemaPause apart, each probe within probeTimeout, so
+// the wait ends after about 30 s when SpiceDB answers.
+// A check at least as fresh as a token older than a schema write reads at the revision that the quantization window
+// of SpiceDB (5 s by default) and its staleness allowance keep behind the head, so a new definition is served to it
+// after about 5 to 10 s.
+const (
+	SchemaPolls = 120
+	SchemaPause = 250 * time.Millisecond
+	// schemaRounds is the number of rounds in a row in which every definition must be served, so a SpiceDB of
+	// more than one node behind a balancer has shown the schema on more than one answer.
+	schemaRounds = 2
+)
+
+// ErrSchemaNotServed is the error of AwaitSchema when SpiceDB does not serve every definition of the written schema
+// within its bound: the migration job then fails, and the release does not start (ST-SUP-Q140).
+var ErrSchemaNotServed = errors.New("authz: SpiceDB does not serve every definition of the written schema to a check of an older floor within the bound")
+
+// probeTimeout is the deadline of one probe call of AwaitSchema; a test of the package shortens it.
+var probeTimeout = 2 * time.Second
+
+// schemaPause waits between two probe rounds of AwaitSchema; a test of the package replaces it to count the rounds.
+var schemaPause = func(ctx context.Context) error {
+	timer := time.NewTimer(SchemaPause)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// SchemaToken reads the token of the schema that SpiceDB holds now, for AwaitSchema; the migration job reads it
+// before it writes the schema. It is the zero Token when SpiceDB holds no schema yet: then no floor of the service is
+// older than the write.
+func SchemaToken(ctx context.Context, conn grpc.ClientConnInterface) (Token, error) {
+	if conn == nil {
+		return Token{}, errors.New("authz: SchemaToken needs the SpiceDB connection")
+	}
+	response, err := v1.NewSchemaServiceClient(conn).ReadSchema(ctx, &v1.ReadSchemaRequest{})
+	if status.Code(err) == codes.NotFound {
+		return Token{}, nil
+	}
+	if err != nil {
+		return Token{}, spiceError("read the schema", err)
+	}
+	return tokenOf(response.GetReadAt())
+}
+
+// AwaitSchema waits until SpiceDB serves each of definitions to a read at least as fresh as since, a token from
+// before the schema write (SchemaToken), for schemaRounds probe rounds in a row; with a zero since it probes fresh.
+// A check of the service at least as fresh as a floor older than the write reads at a revision no newer than the
+// probe's, so it does not know a new definition before the probe does. A probe is one ReadRelationships call with a
+// limit of 1 on the resource type; SpiceDB checks the type against the schema it reads at the revision of the call,
+// and answers ERROR_REASON_UNKNOWN_DEFINITION while that revision is older than the write. The migration job runs it
+// after it writes the schema, so the release does not start while a read of a new resource type would fail
+// (walkthrough 3, G4; ST-SUP-Q140). It fails closed: after SchemaPolls rounds it gives ErrSchemaNotServed, and a
+// refusal that is not about the schema, at once. Its errors hold no provider text.
+func AwaitSchema(ctx context.Context, conn grpc.ClientConnInterface, definitions []string, since Token) error {
+	if conn == nil || len(definitions) == 0 {
+		return errors.New("authz: AwaitSchema needs the SpiceDB connection and the definitions of the schema")
+	}
+	consistency := Fresh()
+	if !since.IsZero() {
+		consistency = AtLeast(since)
+	}
+	return awaitSchema(ctx, v1.NewPermissionsServiceClient(conn), definitions, consistency, SchemaPolls)
+}
+
+func awaitSchema(ctx context.Context, permissions v1.PermissionsServiceClient, definitions []string, consistency Consistency, polls int) error {
+	at, err := spiceConsistency(consistency)
+	if err != nil {
+		return err
+	}
+	served := 0
+	for poll := 1; ; poll++ {
+		all := true
+		for _, definition := range definitions {
+			ok, err := serves(ctx, permissions, definition, at)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				all = false
+				break
+			}
+		}
+		if all {
+			served++
+		} else {
+			served = 0
+		}
+		if served == schemaRounds {
+			return nil
+		}
+		if poll >= polls {
+			return ErrSchemaNotServed
+		}
+		if err := schemaPause(ctx); err != nil {
+			return fmt.Errorf("%w: %w", ErrSchemaNotServed, err)
+		}
+	}
+}
+
+// serves probes one definition at the consistency at: true when SpiceDB serves it, false when it does not yet, or
+// does not answer now. Any other error is a refusal that a wait does not change.
+func serves(parent context.Context, permissions v1.PermissionsServiceClient, definition string, at *v1.Consistency) (bool, error) {
+	// Each probe has its own deadline, so a call that hangs costs one round and the bound of the wait holds (security
+	// review of PR #354, I2).
+	ctx, cancel := context.WithTimeout(parent, probeTimeout)
+	defer cancel()
+	stream, err := permissions.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
+		Consistency:        at,
+		RelationshipFilter: &v1.RelationshipFilter{ResourceType: definition},
+		OptionalLimit:      1,
+	})
+	for err == nil {
+		_, err = stream.Recv()
+	}
+	if errors.Is(err, io.EOF) {
+		return true, nil
+	}
+	failure := spiceError("read the relationships of a definition", err)
+	if (Transient(failure) || errors.Is(ctx.Err(), context.DeadlineExceeded)) && parent.Err() == nil {
+		return false, nil
+	}
+	return false, failure
+}
+
+// LogEvery is the shortest time between two log lines of one cause of a CauseLog: a provider outage logs one line
+// for each cause in each LogEvery, with the count of the lines it held back (security review of PR #354, L3).
+const LogEvery = 10 * time.Second
+
+// CauseLog lets one log line of each cause through in each LogEvery and counts the others. Its zero value is ready;
+// it is safe for concurrent use.
+type CauseLog struct {
+	mu   sync.Mutex
+	now  func() time.Time
+	last map[string]time.Time
+	held map[string]int
+}
+
+// NewCauseLog gives a CauseLog that reads the time from now; nil is time.Now.
+func NewCauseLog(now func() time.Time) *CauseLog { return &CauseLog{now: now} }
+
+// Allow reports whether a line of cause may be logged now, and how many lines of cause it held back since the last
+// one it let through.
+func (l *CauseLog) Allow(cause string) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if l.now != nil {
+		now = l.now()
+	}
+	if l.last == nil {
+		l.last, l.held = map[string]time.Time{}, map[string]int{}
+	}
+	if last, ok := l.last[cause]; ok && now.Sub(last) < LogEvery {
+		l.held[cause]++
+		return false, 0
+	}
+	held := l.held[cause]
+	l.last[cause], l.held[cause] = now, 0
+	return true, held
+}
+
+// RetryAfter gives the Retry-After value of a 503 answer to a decision that the provider could not make now: a whole
+// number of seconds from 1 to 3, at random, so the clients of an outage do not retry in step (L3).
+func RetryAfter() string { return strconv.Itoa(1 + rand.IntN(3)) }
