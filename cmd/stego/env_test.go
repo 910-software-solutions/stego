@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
@@ -11,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jsell-rh/stego/internal/delivery"
 )
 
 // These tests prove stego env check (ST-DLV-UC02) on the files of ST-DLV-TD02: the platform requirements that
@@ -450,6 +453,42 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 			c.change(t, "dev.yaml", bad.old, bad.new)
 			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
 			expectFailed(t, stdout, stderr, passed, append([]string{"wrong type"}, strings.Split(bad.parts, "|")...)...)
+		}
+	})
+	t.Run("ST-DLV-UC02-R04-T05 The help and the documentation give the environment schema, each with an example that the check reads", func(t *testing.T) {
+		var stdout bytes.Buffer
+		if err := runEnvTo([]string{"check", "--help"}, &stdout); err != nil {
+			t.Fatalf("stego env check --help: %v", err)
+		}
+		doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "environment-file.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, helpExample, _ := strings.Cut(envUsage, "\nExample:\n")
+		_, docExample, _ := strings.Cut(string(doc), "```yaml\n")
+		docExample, _, _ = strings.Cut(docExample, "```")
+		requirements := delivery.Requirements{Version: delivery.RequirementsVersion, Service: "tasks", Requirements: []delivery.Requirement{}}
+		for name, example := range map[string]string{"the help": strings.ReplaceAll(helpExample, "\n  ", "\n")[2:], "docs/environment-file.md": docExample} {
+			for _, field := range []string{"version", "service", "environment", "image", "destination", "secrets", "configuration", "backing_stores", "egresses"} {
+				if !strings.Contains(example, field+":") {
+					t.Errorf("the example of %s has no field %s", name, field)
+				}
+			}
+			fit, err := delivery.CheckEnvironment(requirements, []byte(example))
+			if err != nil {
+				t.Errorf("the check does not read the example of %s: %v\n%s", name, err, example)
+			}
+			for _, row := range fit.Rows {
+				t.Errorf("the check does not read the example of %s as one of the right types: %s: %s", name, row.Requirement, row.Detail)
+			}
+		}
+		for _, section := range []string{"version", "destination", "secrets", "configuration", "backing_stores", "topics", "identity_issuers", "ingresses", "egresses", "cluster_permissions", "pod_security"} {
+			if !strings.Contains(envUsage, section) || !strings.Contains(string(doc), section) {
+				t.Errorf("the help or the documentation does not name %s", section)
+			}
+		}
+		if !strings.Contains(envUsage, "docs/environment-file.md") {
+			t.Error("the help does not name docs/environment-file.md")
 		}
 	})
 	t.Run("ST-DLV-UC02-R01-T05 An error of the check is printed escaped too", func(t *testing.T) {

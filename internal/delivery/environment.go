@@ -148,7 +148,7 @@ func readEnvironment(data []byte) (environment, error) {
 		return environment{}, err
 	}
 	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return environment{}, &EnvironmentError{Line: document.Line, Reason: "the file is not a map of the fields of the environment schema"}
+		return environment{}, &EnvironmentError{Line: document.Line, Reason: "the file is not a map of the fields of the environment schema; stego env check --help and docs/environment-file.md give the schema"}
 	}
 	top, err := fieldsOf(document.Content[0], "")
 	if err != nil {

@@ -429,6 +429,9 @@ hand; see [Specification checks](#specification-checks).
 | `stego test` | `stego test [--] [<test arguments>...]` |
 | `stego validate` | `stego validate [--json]` |
 | `stego version` | `stego version [--json]` |
+
+The environment file of `stego env check` has a schema that STEGO owns: see
+[docs/environment-file.md](docs/environment-file.md), with one example file.
 <!-- stego:end -->
 
 ## Concepts
