@@ -102,6 +102,36 @@ const NoBase = "no Kubernetes base is written: no component of the service serve
 // cannot carry its probes (ST-DLV-UC07-R03), so the run writes none.
 const noProbePort = "no Kubernetes base is written: the platform requirements give no default port for the probes in %s"
 
+// WriteDelivery writes the CI file of the provider that the delivery stanza names, with the pins of the registry's
+// ci-pipeline component (ST-DLV-CMD02), and then the Kubernetes base and the delivery object (WriteDeployment).
+// When the stanza names no provider, or the component states no pins for it (ST-DLV-Q13 (C)), the run writes no
+// CI file and says so in the plan.
+func WriteDelivery(service string, requirements []byte, probes *ProbeSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
+	if provider != "" && provider != GitHubActions && provider != Konflux {
+		return DeploymentFiles{}, &StanzaError{Path: "delivery.ci", Reason: fmt.Sprintf("the CI provider %q is not %s or %s", provider, GitHubActions, Konflux)}
+	}
+	written, err := WriteDeployment(service, requirements, probes, stanza)
+	if err != nil {
+		return DeploymentFiles{}, err
+	}
+	switch stated, ok := pins[provider]; {
+	case provider == "":
+		written.Notes = append(written.Notes, "no CI file is written: the declaration names no CI provider in its delivery stanza")
+	case !ok:
+		written.Notes = append(written.Notes, fmt.Sprintf("no CI file is written: the registry's ci-pipeline component states no pins for %s", provider))
+	default:
+		pipeline, err := WritePipeline(service, provider, stated)
+		if err != nil {
+			return DeploymentFiles{}, err
+		}
+		if written.Files == nil {
+			written.Files = map[string][]byte{}
+		}
+		written.Files[pipeline.Path] = pipeline.File
+	}
+	return written, nil
+}
+
 // WriteDeployment writes the Kubernetes base of the service from its platform requirements and its probes
 // (ST-DLV-CMD03), and then, as the base is written, the delivery object from the Argo CD part of the delivery
 // stanza, or none when the declaration has no such part (ST-DLV-PO04).

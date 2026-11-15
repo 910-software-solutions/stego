@@ -1110,7 +1110,15 @@ func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, 
 		stanza = &delivery.ArgoCDStanza{Project: argo.Project, SourceRepo: argo.Source.Repo, SourcePath: argo.Source.Path,
 			EnvironmentRepo: argo.Environments.Repo, EnvironmentRevision: argo.Environments.Revision, EnvironmentPath: argo.Environments.Path}
 	}
-	written, err := delivery.WriteDeployment(input.Service, input.Requirements, probes, stanza)
+	provider := ""
+	if input.Delivery != nil {
+		provider = input.Delivery.CI
+	}
+	pins := map[string]delivery.PipelinePins{}
+	for name, stated := range input.Pipelines {
+		pins[name] = delivery.PipelinePins{Pipeline: stated.Pipeline, Checks: stated.Checks, Signer: stated.Signer}
+	}
+	written, err := delivery.WriteDelivery(input.Service, input.Requirements, probes, stanza, provider, pins)
 	if err != nil {
 		return compiler.DeploymentFiles{}, err
 	}

@@ -66,6 +66,9 @@ func ParseComponentFromBytes(data []byte, path string) (*Component, error) {
 	if component.Kind != "component" {
 		return nil, &parser.ParseError{Path: path, Err: fmt.Errorf("expected kind %q, got %q", "component", component.Kind)}
 	}
+	if err := checkPipelines(&component); err != nil {
+		return nil, &parser.ParseError{Path: path, Err: err}
+	}
 	if err := checkNeeds(&component); err != nil {
 		return nil, err
 	}
