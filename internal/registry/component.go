@@ -64,6 +64,29 @@ type Component struct {
 	Provides        []Port                       `yaml:"provides"`
 	Slots           []SlotDefinition             `yaml:"slots"`
 	OutputNamespace string                       `yaml:"output_namespace,omitempty"`
+	// Conversions are the conversions of a retype that a database component carries out, each with the field types
+	// it converts and where it is total (ST-DECL-INV62, ST-DECL-INV63).
+	Conversions []Conversion `yaml:"conversions,omitempty"`
+}
+
+// Conversion is one conversion of a retype that a database component declares: its name, the field type it
+// converts from and the one it converts to, and its totality. A total conversion converts every value of From; a
+// partial one converts a value only under one of TotalWhen, the constraints of the field before the change under
+// which it is total, and else a retype needs a fill value (ST-DECL-INV63).
+type Conversion struct {
+	Name      string            `yaml:"name"`
+	From      types.FieldType   `yaml:"from"`
+	To        types.FieldType   `yaml:"to"`
+	Total     bool              `yaml:"total"`
+	TotalWhen []ConversionLimit `yaml:"total_when,omitempty"`
+}
+
+// ConversionLimit is one set of constraints of a field under which a partial conversion is total: a pattern that the
+// field's pattern must be byte for byte, or bounds that the field's min and max must lie within.
+type ConversionLimit struct {
+	Pattern string   `yaml:"pattern,omitempty"`
+	Min     *float64 `yaml:"min,omitempty"`
+	Max     *float64 `yaml:"max,omitempty"`
 }
 
 // Mixin adds components and slots to an archetype. A mixin with AliasOf is a deprecated alias: binding it binds

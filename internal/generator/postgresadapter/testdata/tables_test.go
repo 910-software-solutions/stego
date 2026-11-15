@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,9 @@ import (
 	"example.com/tables-check/boardsrn"
 	"example.com/tables-check/boardsrnbase"
 	"example.com/tables-check/boardsrnc"
+	"example.com/tables-check/boardsrt"
+	"example.com/tables-check/boardsrtbase"
+	"example.com/tables-check/boardsrtc"
 	"example.com/tables-check/boardsslug"
 	"example.com/tables-check/bounds"
 	"example.com/tables-check/previous"
@@ -2454,6 +2459,486 @@ CREATE EVENT TRIGGER fail_drop ON ddl_command_start WHEN TAG IN ('DROP INDEX') E
 		if err := mark.QueryRow(`SELECT definition FROM stego_schema.generation`).Scan(&definition); err != nil || definition != before {
 			t.Errorf("a job that fails its ledger check left the marker %q (error %v), want the digest of a release before", definition, err)
 		}
+	})
+
+	// retyped migrates the release before the retypes and the require, makes the tenant list with tenant-a as the
+	// owner role, as the migration job does, writes as that release a board and a tag for each of the values, the
+	// board's revision and the tag's level, each titled by its index, and migrates the three changes at expand.
+	retyped := func(t *testing.T, revisions []string, levels []int64) (*pgx.ConnConfig, *sql.DB) {
+		t.Helper()
+		upCfg, up := database(t, cfg, admin)
+		migrate(t, upCfg, up, func(ctx context.Context, conn *sql.Conn) error { return boardsrtbase.Migrate(ctx, conn) }, "boardsrtbase_access.json")
+		list, err := runtimetenant.Migration("public", tenancy.RuntimeRole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := up.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, statement := range []string{"SET LOCAL ROLE " + pgx.Identifier{tenancy.OwnerRole}.Sanitize(), list, "INSERT INTO public.stego_tenants (tenant_id) VALUES ('tenant-a')"} {
+			if _, err := tx.Exec(statement); err != nil {
+				_ = tx.Rollback()
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		for i, revision := range revisions {
+			if code := write(t, up, "tenant-a", `INSERT INTO public."boards" ("id", "title", "revision") VALUES (gen_random_uuid(), $1, $2)`, "old"+strconv.Itoa(i), revision); code != "" {
+				t.Fatalf("the release before writes no board %q: %s", revision, code)
+			}
+		}
+		for i, level := range levels {
+			if code := write(t, up, "tenant-a", `INSERT INTO public."tags" ("id", "title", "level") VALUES (gen_random_uuid(), $1, $2)`, "old"+strconv.Itoa(i), level); code != "" {
+				t.Fatalf("the release before writes no tag %d: %s", level, code)
+			}
+		}
+		migrate(t, upCfg, up, func(ctx context.Context, conn *sql.Conn) error { return boardsrt.Migrate(ctx, conn) }, "boardsrt_access.json")
+		return upCfg, up
+	}
+	// retypeCopy gives the generated copy of the backfill of the change.
+	retypeCopy := func(t *testing.T, change string) lease.Copy {
+		t.Helper()
+		for _, c := range boardsrt.BackfillCopies {
+			if c.Change == change {
+				c.Tenants = "public.stego_tenants"
+				return c
+			}
+		}
+		t.Fatalf("the release of the retypes has no backfill copy of %s", change)
+		return lease.Copy{}
+	}
+	// batches runs the batch statement of the copy c over every row as the owner role, as the backfill does, in one
+	// transaction, and gives the counts of rows moved and failed.
+	batches := func(t *testing.T, db *sql.DB, c lease.Copy) (int64, int64) {
+		t.Helper()
+		step, err := c.Step()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec("SET LOCAL ROLE " + pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		var moved, failed int64
+		var after *lease.Key
+		for {
+			batch, err := step(context.Background(), tx, after, 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if batch.Read == 0 {
+				break
+			}
+			moved, failed = moved+batch.Moved, failed+batch.Failed
+			key := batch.LastKey
+			after = &key
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		return moved, failed
+	}
+	// rowsOf reads the columns of every row of tenant-a of the table by its title, as text, with "<null>" for NULL.
+	rowsOf := func(t *testing.T, db *sql.DB, table string, columns ...string) map[string][]string {
+		t.Helper()
+		var list []string
+		for _, c := range columns {
+			list = append(list, "coalesce("+pgx.Identifier{c}.Sanitize()+"::text, '<null>')")
+		}
+		rows, err := db.Query(`SELECT "title", ` + strings.Join(list, ", ") + ` FROM public.` + pgx.Identifier{table}.Sanitize() + ` WHERE "tenant_id" = 'tenant-a'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := map[string][]string{}
+		for rows.Next() {
+			var title string
+			values := make([]string, len(columns))
+			targets := []any{&title}
+			for i := range values {
+				targets = append(targets, &values[i])
+			}
+			if err := rows.Scan(targets...); err != nil {
+				t.Fatal(err)
+			}
+			out[title] = values
+		}
+		return out
+	}
+	// marked is a write of the release of the retypes: its transactions set the writer marker to its open changes.
+	marked := func(t *testing.T, db *sql.DB, statement string, args ...any) string {
+		t.Helper()
+		return writeMarked(t, db, "tenant-a", strings.Join(boardsrt.SchemaSteps, ","), statement, args...)
+	}
+	before := func(t *testing.T, db *sql.DB, statement string, args ...any) string {
+		t.Helper()
+		return write(t, db, "tenant-a", statement, args...)
+	}
+
+	t.Run("ST-SUP-RC01-OC23-T02 The sync trigger of a retype and of a require converts and fills, and refuses only two changes that differ", func(t *testing.T) {
+		_, up := retyped(t, []string{"7"}, []int64{70})
+		if got := rowsOf(t, up, "boards", "revision", "revision_int64", "locale")["old0"]; !slices.Equal(got, []string{"7", "<null>", "en"}) {
+			t.Fatalf("before the backfill the board of the release before is %v", got)
+		}
+		if got := rowsOf(t, up, "tags", "level", "level_string")["old0"]; !slices.Equal(got, []string{"70", "<null>"}) {
+			t.Fatalf("before the backfill the tag of the release before is %v", got)
+		}
+		// The release before writes only the old columns; the trigger converts each into its new column, and the
+		// require's default gives the new field its fill value.
+		for _, statement := range []string{`INSERT INTO public."boards" ("id", "title", "revision") VALUES (gen_random_uuid(), 'old', '12')`,
+			`INSERT INTO public."tags" ("id", "title", "level") VALUES (gen_random_uuid(), 'old', -5)`} {
+			if code := before(t, up, statement); code != "" {
+				t.Fatalf("an insert of the release before: %s", code)
+			}
+		}
+		// The release of the retypes writes only the new columns; the trigger converts each back into its old column.
+		for _, statement := range []string{`INSERT INTO public."boards" ("id", "title", "revision_int64", "locale") VALUES (gen_random_uuid(), 'new', 31, 'fr')`,
+			`INSERT INTO public."tags" ("id", "title", "level_string") VALUES (gen_random_uuid(), 'new', '9007199254740993')`} {
+			if code := marked(t, up, statement); code != "" {
+				t.Fatalf("an insert of the release of the retypes: %s", code)
+			}
+		}
+		b, g := rowsOf(t, up, "boards", "revision", "revision_int64", "locale"), rowsOf(t, up, "tags", "level", "level_string")
+		if !slices.Equal(b["old"], []string{"12", "12", "en"}) || !slices.Equal(g["old"], []string{"-5", "-5"}) ||
+			!slices.Equal(b["new"], []string{"31", "31", "fr"}) || !slices.Equal(g["new"], []string{"9007199254740993", "9007199254740993"}) {
+			t.Errorf("the inserts give the boards %v and the tags %v", b, g)
+		}
+		// Updates of each side convert into the other.
+		for _, w := range []struct {
+			writer    func(*testing.T, *sql.DB, string, ...any) string
+			statement string
+		}{{before, `UPDATE public."boards" SET "revision" = '40' WHERE "title" = 'new'`}, {before, `UPDATE public."tags" SET "level" = 41 WHERE "title" = 'new'`},
+			{marked, `UPDATE public."boards" SET "revision_int64" = 50 WHERE "title" = 'old'`}, {marked, `UPDATE public."tags" SET "level_string" = '51' WHERE "title" = 'old'`}} {
+			if code := w.writer(t, up, w.statement); code != "" {
+				t.Fatalf("%.60s: %s", w.statement, code)
+			}
+		}
+		b, g = rowsOf(t, up, "boards", "revision", "revision_int64"), rowsOf(t, up, "tags", "level", "level_string")
+		if !slices.Equal(b["new"], []string{"40", "40"}) || !slices.Equal(g["new"], []string{"41", "41"}) || !slices.Equal(b["old"], []string{"50", "50"}) || !slices.Equal(g["old"], []string{"51", "51"}) {
+			t.Errorf("updates of each side give the boards %v and the tags %v", b, g)
+		}
+		// Both columns set to values that agree after the conversion are accepted; to values that differ, refused.
+		if code := before(t, up, `UPDATE public."boards" SET "revision" = '60', "revision_int64" = 60 WHERE "title" = 'old'`); code != "" {
+			t.Errorf("an update of both columns to values that agree: %s", code)
+		}
+		for name, writer := range map[string]func(*testing.T, *sql.DB, string, ...any) string{"before": before, "retype": marked} {
+			for _, statement := range []string{`UPDATE public."boards" SET "revision" = '61', "revision_int64" = 62 WHERE "title" = 'old'`,
+				`UPDATE public."tags" SET "level" = 1, "level_string" = '2' WHERE "title" = 'old'`} {
+				if code := writer(t, up, statement); code != "23514" {
+					t.Errorf("the release %s: %.70s gives %q, want 23514", name, statement, code)
+				}
+			}
+		}
+		if code := before(t, up, `INSERT INTO public."boards" ("id", "title", "revision", "revision_int64") VALUES (gen_random_uuid(), 'clash', '1', 2)`); code != "23514" {
+			t.Errorf("an insert of the release before that sets the new column to a value that differs gives %q, want 23514", code)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC33-T01 A value that does not convert gets the fill value and the old release's write is accepted", func(t *testing.T) {
+		_, up := retyped(t, nil, nil)
+		for _, value := range []string{"12", "abc"} {
+			if code := before(t, up, `INSERT INTO public."boards" ("id", "title", "revision") VALUES (gen_random_uuid(), $1, $1)`, value); code != "" {
+				t.Fatalf("the release before writes %s: %s", value, code)
+			}
+		}
+		got := rowsOf(t, up, "boards", "revision", "revision_int64")
+		if !slices.Equal(got["12"], []string{"12", "12"}) || !slices.Equal(got["abc"], []string{"abc", "0"}) {
+			t.Errorf("the writes of the release before give %v; want 12 and then the fill value 0", got)
+		}
+		if code := before(t, up, `UPDATE public."boards" SET "revision" = '9999999999999999999999' WHERE "title" = '12'`); code != "" {
+			t.Errorf("an update of the release before to a value out of range is refused: %s", code)
+		}
+		if got := rowsOf(t, up, "boards", "revision_int64")["12"]; !slices.Equal(got, []string{"0"}) {
+			t.Errorf("an update to a value out of range gives %v, want the fill value 0", got)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC36-T02 The batch of a retype converts the unset rows after the checkpoint, counts the rows that do not convert with no fill value, and fills them with one", func(t *testing.T) {
+		var revisions []string
+		var levels []int64
+		for i := 0; i < 20; i++ {
+			revision := strconv.Itoa(i)
+			if i%7 == 3 {
+				revision = "x" + revision
+			}
+			revisions, levels = append(revisions, revision), append(levels, int64(i)*1000003)
+		}
+		_, up := retyped(t, revisions, levels)
+		// The retype of revision with no fill value: the guard keeps the 3 rows that do not convert unset, and counts them.
+		noFill := retypeCopy(t, "board-revision-retype")
+		noFill.Convert = strings.Replace(noFill.Convert, "ELSE '0' END", "ELSE NULL END", 1)
+		noFill.Guard = "pg_catalog.pg_input_is_valid({K}, 'pg_catalog.int8')"
+		if moved, failed := batches(t, up, noFill); moved != 17 || failed != 3 {
+			t.Errorf("the batch with no fill value moves %d and counts %d failed, want 17 and 3", moved, failed)
+		}
+		if moved, failed := batches(t, up, noFill); moved != 0 || failed != 3 {
+			t.Errorf("a second batch over the same rows moves %d and counts %d failed, want 0 and 3", moved, failed)
+		}
+		// With the fill value, the same batch fills the 3 rows and changes no other.
+		was := rowsOf(t, up, "boards", "revision", "revision_int64")
+		if moved, failed := batches(t, up, retypeCopy(t, "board-revision-retype")); moved != 3 || failed != 0 {
+			t.Errorf("the batch with the fill value moves %d and counts %d failed, want 3 and 0", moved, failed)
+		}
+		for title, values := range rowsOf(t, up, "boards", "revision", "revision_int64") {
+			want := was[title]
+			if want[1] == "<null>" {
+				want = []string{want[0], "0"}
+			}
+			if !slices.Equal(values, want) {
+				t.Errorf("the board %s is %v after the fill, want %v", title, values, want)
+			}
+		}
+		// The total retype of level moves every row and counts none failed.
+		if moved, failed := batches(t, up, retypeCopy(t, "tag-level-retype")); moved != 20 || failed != 0 {
+			t.Errorf("the batch of the total retype moves %d and counts %d failed, want 20 and 0", moved, failed)
+		}
+		for _, c := range boardsrt.BackfillCopies {
+			if _, err := up.Exec(c.Validate()); err != nil {
+				t.Errorf("the completeness CHECK of %s does not validate after its batches: %v", c.Change, err)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC37-T02 The expand step of a require gives each row there and each insert of the release before the fill value at once, and rewrites no table", func(t *testing.T) {
+		upCfg, up := database(t, cfg, admin)
+		migrate(t, upCfg, up, func(ctx context.Context, conn *sql.Conn) error { return boardsrtbase.Migrate(ctx, conn) }, "boardsrtbase_access.json")
+		if code := before(t, up, `INSERT INTO public."boards" ("id", "title", "revision") SELECT gen_random_uuid(), 'b' || g, '1' FROM generate_series(1, 50) g`); code != "" {
+			t.Fatal(code)
+		}
+		node := func() uint32 {
+			var n uint32
+			if err := up.QueryRow(`SELECT relfilenode FROM pg_catalog.pg_class WHERE oid = 'public.boards'::regclass`).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		was := node()
+		migrate(t, upCfg, up, func(ctx context.Context, conn *sql.Conn) error { return boardsrt.Migrate(ctx, conn) }, "boardsrt_access.json")
+		if now := node(); now != was {
+			t.Errorf("the expand steps rewrote the table boards: relfilenode %d, then %d", was, now)
+		}
+		var unset int
+		if err := up.QueryRow(`SELECT count(*) FROM public."boards" WHERE "locale" IS DISTINCT FROM 'en'`).Scan(&unset); err != nil {
+			t.Fatal(err)
+		}
+		if unset != 0 {
+			t.Errorf("%d rows there do not read the fill value en", unset)
+		}
+		if code := before(t, up, `INSERT INTO public."boards" ("id", "title", "revision") VALUES (gen_random_uuid(), 'late', '2')`); code != "" {
+			t.Fatal(code)
+		}
+		if got := rowsOf(t, up, "boards", "locale")["late"]; !slices.Equal(got, []string{"en"}) {
+			t.Errorf("an insert of the release before reads %v, want the fill value en", got)
+		}
+		var backfill, triggers int
+		if err := up.QueryRow(`SELECT (SELECT count(*) FROM stego_schema.backfills WHERE change_id = 'board-locale-require'),
+  (SELECT count(*) FROM pg_catalog.pg_trigger WHERE tgrelid = 'public.boards'::regclass AND tgname LIKE '%locale%')`).Scan(&backfill, &triggers); err != nil {
+			t.Fatal(err)
+		}
+		if backfill != 0 || triggers != 0 {
+			t.Errorf("the require has %d backfill rows and %d triggers, want none", backfill, triggers)
+		}
+	})
+
+	t.Run("ST-GEN-UC12-R03-T03 Each release accepts the schema of a retype and a require at expand by its own manifest, and both refuse a changed sync function", func(t *testing.T) {
+		ctx := context.Background()
+		upCfg, up := retyped(t, []string{"5", "zz"}, []int64{5, 6})
+		runtime := reader(t, upCfg, up)
+		if err := boardsrtbase.CheckLedger(ctx, up); err != nil {
+			t.Errorf("the ledger check of the release before refuses the steps: %v", err)
+		}
+		if err := manifest.Check(ctx, runtime, owned(boardsrtbase.SchemaManifest)); err != nil {
+			t.Errorf("the schema manifest of the release before refuses the steps at expand: %v", err)
+		}
+		for _, c := range boardsrt.BackfillCopies {
+			batches(t, up, retypeCopy(t, c.Change))
+			if _, err := up.Exec(c.Validate()); err != nil {
+				t.Fatalf("the completeness CHECK of %s does not validate: %v", c.Change, err)
+			}
+		}
+		for name, m := range map[string]manifest.Manifest{"before": boardsrtbase.SchemaManifest, "retype": boardsrt.SchemaManifest} {
+			if err := manifest.Check(ctx, runtime, owned(m)); err != nil {
+				t.Errorf("the schema manifest of the release %s refuses the steps after the backfill: %v", name, err)
+			}
+		}
+		if _, err := up.Exec(`CREATE OR REPLACE FUNCTION stego_steps.boards_revision_sync() RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER VOLATILE SET search_path = pg_catalog, pg_temp AS $f$BEGIN RETURN NEW; END;$f$`); err != nil {
+			t.Fatal(err)
+		}
+		for name, m := range map[string]manifest.Manifest{"before": boardsrtbase.SchemaManifest, "retype": boardsrt.SchemaManifest} {
+			if err := manifest.Check(ctx, runtime, owned(m)); err == nil {
+				t.Errorf("the schema manifest of the release %s accepts a sync function that is not the template's", name)
+			}
+		}
+	})
+
+	// contractRetype runs the migration job of the release after the retypes and the require as the owner role, as
+	// migrate does, and gives its error.
+	contractRetype := func(t *testing.T, cfg *pgx.ConnConfig) error {
+		t.Helper()
+		ctx := context.Background()
+		job := stdlib.OpenDB(*cfg)
+		defer job.Close()
+		conn, err := job.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		return boardsrtc.Migrate(ctx, conn)
+	}
+	// completeRetypes runs the batches of each retype, validates its completeness CHECK and marks it complete, as the
+	// backfill does.
+	completeRetypes := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		for _, c := range boardsrt.BackfillCopies {
+			batches(t, db, retypeCopy(t, c.Change))
+			for _, statement := range []string{c.Validate(), "UPDATE stego_schema.backfills SET completed_at = now() WHERE change_id = '" + c.Change + "'"} {
+				if _, err := db.Exec(statement); err != nil {
+					t.Fatalf("%.60s: %v", statement, err)
+				}
+			}
+		}
+	}
+
+	t.Run("ST-SUP-RC01-OC39-T04 The contract of a retype drops the old column after its backfill, and the contract of a require makes its column required and keeps its default", func(t *testing.T) {
+		ctx := context.Background()
+		upCfg, up := retyped(t, []string{"5", "6"}, []int64{5, -6})
+		was := catalog(t, up)
+		var refused interface{ Refusal() string }
+		if err := contractRetype(t, upCfg); !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), "board-revision-retype") {
+			t.Fatalf("the contract before the backfill ends with %v, want the refusal of board-revision-retype", err)
+		}
+		if now := catalog(t, up); !slices.Equal(was, now) {
+			t.Errorf("the refused contract changed the catalog or the ledger:\n%s", strings.Join(now, "\n"))
+		}
+		completeRetypes(t, up)
+		// The release of the require accepts the NOT NULL CHECK that the contract step adds NOT VALID while it runs.
+		runtime := reader(t, upCfg, up)
+		if _, err := up.Exec(`ALTER TABLE public."boards" ADD CONSTRAINT "boards_locale_not_null" CHECK ("locale" IS NOT NULL) NOT VALID`); err != nil {
+			t.Fatal(err)
+		}
+		if err := manifest.Check(ctx, runtime, owned(boardsrt.SchemaManifest)); err != nil {
+			t.Errorf("the schema manifest of the release of the require refuses the NOT NULL CHECK of its contract step: %v", err)
+		}
+		if _, err := up.Exec(`ALTER TABLE public."boards" DROP CONSTRAINT "boards_locale_not_null"`); err != nil {
+			t.Fatal(err)
+		}
+		if err := contractRetype(t, upCfg); err != nil {
+			t.Fatalf("the contract after the backfill: %v", err)
+		}
+		want := map[string]column{
+			"revision_int64": {Name: "revision_int64", Type: "bigint", NotNull: true},
+			"locale":         {Name: "locale", Type: "character varying(10)", NotNull: true, Default: "'en'::character varying"},
+			"level_string":   {Name: "level_string", Type: "text", NotNull: true},
+		}
+		for _, table := range []string{"boards", "tags"} {
+			for _, c := range columns(t, up, table) {
+				if c.Name == "revision" || c.Name == "level" {
+					t.Errorf("the old column %s is still there after the contract", c.Name)
+				}
+				if w, ok := want[c.Name]; ok {
+					if c != w {
+						t.Errorf("the column %s is %+v after the contract, want %+v", c.Name, c, w)
+					}
+					delete(want, c.Name)
+				}
+			}
+		}
+		if len(want) > 0 {
+			t.Errorf("the columns %v are not there after the contract", want)
+		}
+		b, g := rowsOf(t, up, "boards", "revision_int64", "locale"), rowsOf(t, up, "tags", "level_string")
+		if !slices.Equal(b["old0"], []string{"5", "en"}) || !slices.Equal(b["old1"], []string{"6", "en"}) || !slices.Equal(g["old0"], []string{"5"}) || !slices.Equal(g["old1"], []string{"-6"}) {
+			t.Errorf("after the contract the boards are %v and the tags %v", b, g)
+		}
+		for name, m := range map[string]manifest.Manifest{"retype": boardsrt.SchemaManifest, "contract": boardsrtc.SchemaManifest} {
+			if err := manifest.Check(ctx, runtime, owned(m)); err != nil {
+				t.Errorf("the schema manifest of the release %s refuses the database after the contract: %v", name, err)
+			}
+		}
+		// A second run of the migration job changes nothing.
+		was = catalog(t, up)
+		if err := contractRetype(t, upCfg); err != nil {
+			t.Fatalf("a rerun of the contract: %v", err)
+		}
+		if now := catalog(t, up); !slices.Equal(was, now) {
+			t.Errorf("a rerun changed the catalog or the ledger")
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC33-T02 Red team: no value is lost or changed between the old and the new type, through each writer, the backfill and the contract", func(t *testing.T) {
+		// The edge values of each type, which the release before writes into the old columns before the expand step,
+		// so that the backfill converts them, and again after it, so that the trigger does.
+		levels := []int64{math.MinInt64, math.MinInt64 + 1, -9007199254740993, -1, 0, 1, 9007199254740993, math.MaxInt64 - 1, math.MaxInt64}
+		revisions := []string{"0", "042", "-0", "+7", " 8", "9223372036854775807", "-9223372036854775808", "9223372036854775808", "1e3", "", "abc"}
+		// converted is the value of each revision in the new column: its number as PostgreSQL reads an int8, or the
+		// fill value 0 for a text that is not one.
+		converted := map[string]string{"0": "0", "042": "42", "-0": "0", "+7": "7", " 8": "8", "9223372036854775807": "9223372036854775807",
+			"-9223372036854775808": "-9223372036854775808", "9223372036854775808": "0", "1e3": "0", "": "0", "abc": "0"}
+		upCfg, up := retyped(t, revisions, levels)
+		for i, revision := range revisions {
+			if code := before(t, up, `INSERT INTO public."boards" ("id", "title", "revision") VALUES (gen_random_uuid(), $1, $2)`, "late"+strconv.Itoa(i), revision); code != "" {
+				t.Fatal(code)
+			}
+		}
+		for i, level := range levels {
+			if code := before(t, up, `INSERT INTO public."tags" ("id", "title", "level") VALUES (gen_random_uuid(), $1, $2)`, "late"+strconv.Itoa(i), level); code != "" {
+				t.Fatal(code)
+			}
+			// The same values written by the release of the retypes into the new columns.
+			text := strconv.FormatInt(level, 10)
+			if code := marked(t, up, `INSERT INTO public."tags" ("id", "title", "level_string") VALUES (gen_random_uuid(), $1, $2)`, "new"+strconv.Itoa(i), text); code != "" {
+				t.Fatal(code)
+			}
+			if code := marked(t, up, `INSERT INTO public."boards" ("id", "title", "revision_int64", "locale") VALUES (gen_random_uuid(), $1, $2, 'de')`, "new"+strconv.Itoa(i), level); code != "" {
+				t.Fatal(code)
+			}
+		}
+		completeRetypes(t, up)
+		check := func(stage string, contracted bool) {
+			t.Helper()
+			oldRevision, oldLevel := "revision", "level"
+			if contracted {
+				oldRevision, oldLevel = "revision_int64", "level_string"
+			}
+			b, g := rowsOf(t, up, "boards", oldRevision, "revision_int64"), rowsOf(t, up, "tags", oldLevel, "level_string")
+			for i, level := range levels {
+				text := strconv.FormatInt(level, 10)
+				for _, title := range []string{"old", "late", "new"} {
+					row := g[title+strconv.Itoa(i)]
+					if row[1] != text || (!contracted && row[0] != text) {
+						t.Errorf("%s: the level %d written as %s reads %v", stage, level, title, row)
+					}
+				}
+				if row := b["new"+strconv.Itoa(i)]; row[1] != text || (!contracted && row[0] != text) {
+					t.Errorf("%s: the revision %d of the release of the retypes reads %v", stage, level, row)
+				}
+			}
+			for i, revision := range revisions {
+				for _, title := range []string{"old", "late"} {
+					row := b[title+strconv.Itoa(i)]
+					// The old column keeps the text that the release before wrote, byte for byte: the backfill passes
+					// the trigger, so it never writes the old column.
+					if row[1] != converted[revision] || (!contracted && row[0] != revision) {
+						t.Errorf("%s: the revision %q written as %s reads %v, want %q in the new column", stage, revision, title, row, converted[revision])
+					}
+				}
+			}
+		}
+		check("after the backfill", false)
+		if err := contractRetype(t, upCfg); err != nil {
+			t.Fatalf("the contract: %v", err)
+		}
+		check("after the contract", true)
 	})
 }
 

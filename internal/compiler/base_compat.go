@@ -384,8 +384,18 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 			position[step.Change] = i
 		}
 	}
+	// A rename with no step yet comes after each one with a step, in the order of the schema changes.
+	at := func(change types.SchemaChange) int {
+		if i, ok := position[change.ID]; ok {
+			return i
+		}
+		return len(service.SchemaHistory)
+	}
 	var renames []types.SchemaChange
 	added := map[string]bool{}
+	// first is the first retype of each field in the order of the schema history: the baseline has the field of its
+	// type From, so the search index of 001_initial follows that field, not the declared one (review of PR #314, L14).
+	first := map[string]types.SchemaChange{}
 	for _, change := range service.SchemaChanges {
 		if change.Entity != entity {
 			continue
@@ -393,18 +403,15 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 		switch change.Kind {
 		case "rename":
 			renames = append(renames, change)
-		case "add":
+		case "add", "require":
 			if change.Field != "" {
 				added[change.Field] = true
 			}
+		case "retype":
+			if earlier, seen := first[change.Field]; !seen || at(change) < at(earlier) {
+				first[change.Field] = change
+			}
 		}
-	}
-	// A rename with no step yet comes after each one with a step, in the order of the schema changes.
-	at := func(change types.SchemaChange) int {
-		if i, ok := position[change.ID]; ok {
-			return i
-		}
-		return len(service.SchemaHistory)
 	}
 	slices.SortStableFunc(renames, func(a, b types.SchemaChange) int { return at(a) - at(b) })
 	original := func(field string) string {
@@ -441,6 +448,11 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 	}
 	if declared, ok := findStoredEntity(service, entity); ok && listed {
 		for _, field := range declared.Fields {
+			if retype, ok := first[field.Name]; ok {
+				sensitivity := field.Sensitivity
+				field = gen.RetypeField(retype)
+				field.Sensitivity = sensitivity
+			}
 			if !added[field.Name] && postgresadapter.Searchable(field) {
 				filtered[original(field.Name)] = true
 			}

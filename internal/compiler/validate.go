@@ -116,6 +116,7 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 	if components != nil {
 		result.Errors = append(result.Errors, validateComponentConfig(svcDecl, components)...)
 		result.Errors = append(result.Errors, validateComponentNamespaces(components)...)
+		result.Errors = append(result.Errors, validateSchemaConversions(svcDecl, components)...)
 		for _, name := range sortedKeys(components) {
 			if !generatorAvailable(input.Generators[name]) {
 				result.Errors = append(result.Errors, ValidationError{
