@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -250,7 +251,7 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 		wantWrite := []string{
 			"role:doc#owner@user direct",
 			"role:folder#auditor@user arrow,intersection requires=folder#editor",
-			"role:folder#editor@user arrow,caveat,intersection caveat=ip_allowed requires=folder#auditor",
+			"role:folder#editor@user(ip_allowed) arrow,caveat,intersection caveat=ip_allowed requires=folder#auditor",
 		}
 		if !slices.Equal(write, wantWrite) {
 			t.Fatalf("the paths of doc#write are\n%s\nwant\n%s", strings.Join(write, "\n"), strings.Join(wantWrite, "\n"))
@@ -259,7 +260,7 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 		for _, r := range model.Access.Roles {
 			roles = append(roles, r.ID)
 		}
-		if !slices.Equal(roles, []string{"role:doc#owner@user", "role:folder#auditor@user", "role:folder#editor@user", "role:folder#viewer@user", "role:folder#viewer@user:*", "role:group#member@user"}) {
+		if !slices.Equal(roles, []string{"role:doc#owner@user", "role:folder#auditor@user", "role:folder#editor@user(ip_allowed)", "role:folder#viewer@user", "role:folder#viewer@user:*", "role:group#member@user"}) {
 			t.Fatalf("the roles are %v", roles)
 		}
 	})
@@ -463,7 +464,7 @@ func TestExampleArchitecture(t *testing.T) {
 }
 
 func TestReadArchitecture(t *testing.T) {
-	t.Run("ST-GEN-UC16-R06-T02 The reader of the model refuses a missing, changed or not valid model, naming the file and the cause", func(t *testing.T) {
+	t.Run("ST-GEN-UC16-R06-T02 The reader of the model refuses a missing, changed, linked, too large or not valid model, naming the file and the cause", func(t *testing.T) {
 		_, data := deriveFixture(t, archFixture(t))
 		project := t.TempDir()
 		write := func(model []byte, recorded []byte) {
@@ -491,10 +492,186 @@ func TestReadArchitecture(t *testing.T) {
 		if _, err := ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), "does not match the record") {
 			t.Fatalf("a changed model: %v", err)
 		}
+		model := filepath.Join(project, ArchitectureFile)
+		outside := filepath.Join(t.TempDir(), "elsewhere.json")
+		if err := os.WriteFile(outside, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(model); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, model); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("a model that is a symbolic link: %v", err)
+		}
+		if err := os.Remove(model); err != nil {
+			t.Fatal(err)
+		}
+		large := append(bytes.Repeat([]byte(" "), MaxArchitectureBytes), data...)
+		write(large, large)
+		if _, err := ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), "larger than") {
+			t.Fatalf("a model beyond the size bound: %v", err)
+		}
 		invalid := bytes.Replace(data, []byte(`"layer": "handler",`), nil, 1)
 		write(invalid, invalid)
 		if _, err := ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), ArchitectureFile) || !strings.Contains(err.Error(), "schema") {
 			t.Fatalf("a model that is not valid: %v", err)
+		}
+	})
+}
+
+// wideSchema gives a schema of seven types in a chain, each of whose permission p is the union of an arrow through
+// each of its width relations to the next type, which would cost width to the power of six nodes to expand whole.
+func wideSchema(width int, leaf string) string {
+	var b strings.Builder
+	b.WriteString("definition user {}\n\ndefinition node6 {\n\trelation owner: user\n\tpermission view = " + leaf + "\n}\n")
+	for i := 5; i >= 0; i-- {
+		fmt.Fprintf(&b, "\ndefinition node%d {\n", i)
+		var arrows []string
+		for r := 1; r <= width; r++ {
+			fmt.Fprintf(&b, "\trelation rel%d: node%d\n", r, i+1)
+			arrows = append(arrows, fmt.Sprintf("rel%d->view", r))
+		}
+		fmt.Fprintf(&b, "\tpermission view = %s\n}\n", strings.Join(arrows, " + "))
+	}
+	return b.String()
+}
+
+func TestArchitectureGrantWork(t *testing.T) {
+	t.Run("ST-GEN-UC08-R13-T02 The expansion of a wide and deep schema stops at a stated work limit, and the model says that its roles are not complete", func(t *testing.T) {
+		// With a leaf that grants nothing, no path is found, so only the work limit can stop the expansion.
+		empty, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(wideSchema(40, "nil")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		walk := &grantExpander{schema: empty, complete: true}
+		walk.expand("node0", "view", nil, pathState{})
+		if walk.steps > maxGrantSteps+1 || len(walk.paths) != 1 || !strings.Contains(walk.paths[0].stops, "work limit") || walk.complete {
+			t.Fatalf("the expansion of a schema that grants nothing took %d steps and gave %+v", walk.steps, walk.paths)
+		}
+		schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(wideSchema(40, "owner")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		e := &grantExpander{schema: schema, complete: true}
+		e.expand("node0", "view", nil, pathState{})
+		if e.steps > maxGrantSteps+1 {
+			t.Fatalf("the expansion took %d steps, more than the bound %d", e.steps, maxGrantSteps)
+		}
+		grants, _, complete := grantPaths(schema, "node0", "view")
+		last := grants[len(grants)-1]
+		if complete || !slices.Contains(last.Kinds, "work limit") || last.Role != "" || !strings.Contains(last.Stops, "limit") {
+			t.Fatalf("the cut expansion does not state its limit: complete %v, last path %+v", complete, last)
+		}
+		in := archFixture(t)
+		in.Schema = schema
+		in.Service.Commands = []types.Command{{Name: "walk", ResourceType: "node0", Permission: "view"}}
+		model, _ := deriveFixture(t, in)
+		if model.Access.RolesComplete {
+			t.Fatal("the role list does not say that it is not complete")
+		}
+		for _, p := range model.Access.Permissions {
+			if p.ID == "permission:node0#view" && p.Complete {
+				t.Fatal("the cut permission says that it is complete")
+			}
+		}
+		full, _ := deriveFixture(t, archFixture(t))
+		if !full.Access.RolesComplete {
+			t.Fatal("the role list of a small schema says that it is not complete")
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R13-T03 A caveat or an expiration on a relation, a userset or an arrow makes a conditional grant and its own role", func(t *testing.T) {
+		const source = `use expiration
+
+definition user {}
+
+caveat in_hours(hour int) {
+	hour < 18
+}
+
+definition team {
+	relation member: user
+}
+
+definition box {
+	relation team: team with in_hours
+	relation reader: user | user with expiration
+	relation viewer: team#member with in_hours
+	permission read = reader + viewer + team->member
+}
+`
+		schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		grants, roles, complete := grantPaths(schema, "box", "read")
+		var got []string
+		for _, g := range grants {
+			got = append(got, g.Role+" "+strings.Join(g.Kinds, ",")+" caveat="+g.Caveat)
+		}
+		want := []string{
+			"role:box#reader@user direct caveat=",
+			"role:box#reader@user(expiration) expiration caveat=",
+			"role:team#member@user arrow,caveat caveat=in_hours",
+			"role:team#member@user caveat,userset caveat=in_hours",
+		}
+		if !slices.Equal(got, want) || !complete {
+			t.Fatalf("the paths of box#read are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		for _, r := range roles {
+			if r.ID == "role:box#reader@user(expiration)" && !r.Expiration {
+				t.Fatalf("the role %s does not state its expiration", r.ID)
+			}
+		}
+	})
+}
+
+// complianceFact gives the fact of the model with the ID.
+func complianceFact(model *ArchitectureModel, id string) (ArchFact, bool) {
+	for _, topic := range model.Compliance {
+		for _, f := range topic.Facts {
+			if f.ID == id {
+				return f, true
+			}
+		}
+	}
+	return ArchFact{}, false
+}
+
+func TestArchitectureComplianceFacts(t *testing.T) {
+	t.Run("ST-GEN-UC16-R01-T02 The audit and tenancy facts follow the settings and the active set", func(t *testing.T) {
+		model, _ := deriveFixture(t, archFixture(t))
+		if f, ok := complianceFact(model, "fact:audit/entity:Doc/reads-audited"); !ok || f.Value != true || f.State != "default" {
+			t.Fatalf("with audit on, the reads of Doc, which has a pii field, are %+v", f)
+		}
+		off := false
+		in := archFixture(t)
+		in.Service.Audit = &types.Audit{Enabled: &off, Reason: "a test service"}
+		model, _ = deriveFixture(t, in)
+		if f, ok := complianceFact(model, "fact:audit/entity:Doc/reads-audited"); !ok || f.Value != false || f.State != "stated" || f.Source.Declaration != "audit.enabled" {
+			t.Fatalf("with audit off, the reads of Doc are %+v", f)
+		}
+		in = archFixture(t)
+		in.Service.Tenancy = &types.Tenancy{Kind: "pooled", Key: "org_id", Claim: "org"}
+		model, _ = deriveFixture(t, in)
+		if f, _ := complianceFact(model, "fact:tenant-isolation/entity:Doc/row-level-security-policy"); f.State != "unstated" {
+			t.Fatalf("with no tenancy component, the row-level security of Doc is %+v", f)
+		}
+		in = archFixture(t)
+		in.Service.Tenancy = &types.Tenancy{Kind: "pooled", Key: "org_id", Claim: "org"}
+		in.Components["tenancy"] = archComponent("tenancy", "authentication", nil, []string{"tenant-isolation"})
+		in.Names = append(in.Names, "tenancy")
+		model, _ = deriveFixture(t, in)
+		policy, _ := complianceFact(model, "fact:tenant-isolation/entity:Doc/row-level-security-policy")
+		key, _ := complianceFact(model, "fact:tenant-isolation/entity:Doc/tenant-key-column")
+		if policy.State != "stated" || policy.Source.Registry == nil || policy.Source.Registry.Name != "tenancy" {
+			t.Fatalf("with the tenancy component, the row-level security of Doc is %+v", policy)
+		}
+		if key.Value != "org_id" || key.State != "stated" || key.Source.Declaration != "tenancy.key" {
+			t.Fatalf("with a stated tenancy key, the tenant key column of Doc is %+v", key)
 		}
 	})
 }

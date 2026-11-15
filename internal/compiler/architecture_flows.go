@@ -193,7 +193,7 @@ func slotText(slot ArchSlot) string {
 // R13).
 func (d *deriver) access() {
 	svc, m := d.in.Service, d.model
-	m.Access = ArchAccess{Checks: []ArchCheck{}, Permissions: []ArchPermission{}, Roles: []ArchRole{}}
+	m.Access = ArchAccess{Checks: []ArchCheck{}, Permissions: []ArchPermission{}, Roles: []ArchRole{}, RolesComplete: true}
 	bound := svc.Authorization != nil
 	if bound {
 		m.Access.Schema = svc.Authorization.SchemaPath
@@ -253,10 +253,11 @@ func (d *deriver) access() {
 		}
 		permissions[check.Grants] = true
 		permission := ArchPermission{ID: check.Grants, ResourceType: check.ResourceType, Name: check.Permission, Paths: []ArchGrant{},
-			Source: ArchSource{Declaration: "authorization.schema_path"}}
+			Complete: d.in.Schema != nil, Source: ArchSource{Declaration: "authorization.schema_path"}}
 		if d.in.Schema != nil {
 			var granted []ArchRole
-			permission.Paths, granted = grantPaths(d.in.Schema, check.ResourceType, check.Permission)
+			permission.Paths, granted, permission.Complete = grantPaths(d.in.Schema, check.ResourceType, check.Permission)
+			m.Access.RolesComplete = m.Access.RolesComplete && permission.Complete
 			for _, role := range granted {
 				roles[role.ID] = role
 			}
@@ -448,7 +449,17 @@ func (d *deriver) compliance() {
 			} else {
 				put("personal-data", fact("personal-data", e.ID, "stored by", nil, "unstated", unstated))
 			}
-			put("audit", fact("audit", e.ID, "reads audited", true, "default", ArchSource{Default: "ST-DECL-UC05-R06"}))
+			// A read of an entity with a pii field is audited at every level, but only when audit is on (security
+			// review of #341, M2).
+			if enabled, ok := settings["audit.enabled"]; ok && enabled.Value == false {
+				state := "stated"
+				if enabled.Default {
+					state = "default"
+				}
+				put("audit", fact("audit", e.ID, "reads audited", false, state, enabled.Source))
+			} else {
+				put("audit", fact("audit", e.ID, "reads audited", true, "default", ArchSource{Default: "ST-DECL-UC05-R06"}))
+			}
 		}
 	}
 	put("personal-data", fact("personal-data", system, "fields marked pii or secret", marked, "stated", ArchSource{Rule: "ST-DECL-UC05-R06"}))
@@ -456,6 +467,12 @@ func (d *deriver) compliance() {
 		put("tenant-isolation", setting("tenant-isolation", "tenancy "+name, "tenancy."+name))
 	}
 	pooled := settings["tenancy.kind"].Value == "pooled"
+	// The tenancy component makes the tenant column and the row-level security policy of each owned table
+	// (ST-SUP-RC27-OC03, ST-SUP-RC01-OC40); without it the inputs state neither (security review of #341, L1).
+	var tenancy *registry.Component
+	if slices.Contains(d.in.Names, "tenancy") {
+		tenancy = d.in.Components["tenancy"]
+	}
 	for _, e := range m.Entities {
 		state, source := "stated", ArchSource{Declaration: e.Source.Declaration + ".tenant"}
 		if s, ok := settings[e.Source.Declaration+".tenant"]; ok && s.Default {
@@ -463,8 +480,16 @@ func (d *deriver) compliance() {
 		}
 		put("tenant-isolation", fact("tenant-isolation", e.ID, "tenant kind", e.TenantKind, state, source))
 		if pooled && e.TenantKind == "owned" {
-			put("tenant-isolation", fact("tenant-isolation", e.ID, "tenant key column", settings["tenancy.key"].Value, "default", ArchSource{Default: "ST-DECL-INV19"}))
-			put("tenant-isolation", fact("tenant-isolation", e.ID, "row-level security policy", true, "default", ArchSource{Default: "ST-SUP-INV15"}))
+			if tenancy == nil {
+				put("tenant-isolation", fact("tenant-isolation", e.ID, "tenant key column", nil, "unstated", unstated))
+				put("tenant-isolation", fact("tenant-isolation", e.ID, "row-level security policy", nil, "unstated", unstated))
+				continue
+			}
+			key, ok := settings["tenancy.key"]
+			keyFact := settingFact("tenant-isolation", e.ID, "tenant key column", key, ok)
+			keyFact.About, keyFact.ID = e.ID, "fact:tenant-isolation/"+e.ID+"/tenant-key-column"
+			put("tenant-isolation", keyFact)
+			put("tenant-isolation", fact("tenant-isolation", e.ID, "row-level security policy", true, "stated", componentSource(tenancy, "")))
 		}
 	}
 	if pooled && m.Access.Schema != "" {

@@ -19,7 +19,7 @@ func outputRelative(projectDir, outDir string) (string, error) {
 	}
 	first := strings.Split(filepath.ToSlash(relative), "/")[0]
 	switch strings.ToLower(first) {
-	case "fills", ".stego", ".git", "go.mod", "go.sum", "service.yaml", "deploy":
+	case "fills", ".stego", ".git", "go.mod", "go.sum", "service.yaml", "deploy", "architecture":
 		return "", fmt.Errorf("OutDir must not use reserved directory %q", first)
 	}
 	return relative, nil

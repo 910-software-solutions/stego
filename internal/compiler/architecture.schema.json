@@ -241,7 +241,8 @@
       "required": [
         "checks",
         "permissions",
-        "roles"
+        "roles",
+        "roles_complete"
       ],
       "properties": {
         "checks": {
@@ -261,6 +262,9 @@
           "items": {
             "$ref": "#/$defs/role"
           }
+        },
+        "roles_complete": {
+          "type": "boolean"
         },
         "schema": {
           "type": "string",
@@ -1291,7 +1295,9 @@
               "exclusion",
               "wildcard",
               "recursion",
-              "depth limit"
+              "depth limit",
+              "expiration",
+              "work limit"
             ]
           }
         },
@@ -1338,6 +1344,7 @@
         "resource_type",
         "name",
         "paths",
+        "complete",
         "source"
       ],
       "properties": {
@@ -1358,6 +1365,9 @@
             "$ref": "#/$defs/grant"
           }
         },
+        "complete": {
+          "type": "boolean"
+        },
         "source": {
           "$ref": "#/$defs/source"
         }
@@ -1372,6 +1382,7 @@
         "relation",
         "on",
         "wildcard",
+        "expiration",
         "source"
       ],
       "properties": {
@@ -1380,6 +1391,13 @@
         },
         "source": {
           "$ref": "#/$defs/source"
+        },
+        "caveat": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expiration": {
+          "type": "boolean"
         },
         "subject_type": {
           "type": "string",

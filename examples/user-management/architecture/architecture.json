@@ -5133,6 +5133,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5173,6 +5174,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5229,6 +5231,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5255,6 +5258,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5297,6 +5301,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5321,6 +5326,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5359,6 +5365,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5383,6 +5390,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5407,6 +5415,7 @@
             }
           }
         ],
+        "complete": true,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5419,6 +5428,7 @@
         "relation": "owner",
         "on": "activity_entry",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5429,6 +5439,7 @@
         "relation": "owner",
         "on": "member",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5439,6 +5450,7 @@
         "relation": "owner",
         "on": "organization",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5449,6 +5461,7 @@
         "relation": "viewer",
         "on": "organization",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
@@ -5459,11 +5472,13 @@
         "relation": "operator",
         "on": "service",
         "wildcard": false,
+        "expiration": false,
         "source": {
           "declaration": "authorization.schema_path"
         }
       }
-    ]
+    ],
+    "roles_complete": true
   },
   "compliance": [
     {
@@ -5899,9 +5914,13 @@
           "about": "entity:ActivityEntry",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -5909,9 +5928,9 @@
           "about": "entity:ActivityEntry",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {
@@ -5929,9 +5948,13 @@
           "about": "entity:OrgSetting",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -5939,9 +5962,9 @@
           "about": "entity:OrgSetting",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {
@@ -5959,9 +5982,13 @@
           "about": "entity:Organization",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -5969,9 +5996,9 @@
           "about": "entity:Organization",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {
@@ -5989,9 +6016,13 @@
           "about": "entity:User",
           "name": "row-level security policy",
           "value": true,
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-SUP-INV15"
+            "registry": {
+              "part": "component",
+              "name": "tenancy",
+              "version": "1.2.0"
+            }
           }
         },
         {
@@ -5999,9 +6030,9 @@
           "about": "entity:User",
           "name": "tenant key column",
           "value": "tenant_id",
-          "state": "default",
+          "state": "stated",
           "source": {
-            "default": "ST-DECL-INV19"
+            "declaration": "tenancy.key"
           }
         },
         {

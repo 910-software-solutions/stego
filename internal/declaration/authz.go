@@ -60,6 +60,8 @@ type schemaSubject struct {
 	wildcard  bool
 	// caveat is the caveat the relation requires of the subject, such as with ip_allowed, or "".
 	caveat string
+	// expiration tells whether the relation requires an expiration of the subject (with expiration).
+	expiration bool
 }
 
 // SchemaError is a .zed schema that does not compile: its path, the line where compiling stopped and why.
@@ -123,7 +125,7 @@ func compileSchema(schemaPath string, source []byte) (*AuthzSchema, error) {
 			var subjects []string
 			for _, allowed := range relation.GetTypeInformation().GetAllowedDirectRelations() {
 				subjects = append(subjects, allowed.GetNamespace())
-				entry.subjects[relation.GetName()] = append(entry.subjects[relation.GetName()], schemaSubject{namespace: allowed.GetNamespace(), relation: allowed.GetRelation(), wildcard: allowed.GetPublicWildcard() != nil, caveat: allowed.GetRequiredCaveat().GetCaveatName()})
+				entry.subjects[relation.GetName()] = append(entry.subjects[relation.GetName()], schemaSubject{namespace: allowed.GetNamespace(), relation: allowed.GetRelation(), wildcard: allowed.GetPublicWildcard() != nil, caveat: allowed.GetRequiredCaveat().GetCaveatName(), expiration: allowed.GetRequiredExpiration() != nil})
 			}
 			entry.relations[relation.GetName()] = subjects
 		}
@@ -218,12 +220,14 @@ func (d schemaDefinition) has(name string) bool {
 }
 
 // SchemaSubject is one subject that a relation of the schema admits: its type, the relation of a userset such as
-// group#member or "", the caveat that the relation requires of it or "", and whether it is the wildcard of the type.
+// group#member or "", the caveat that the relation requires of it or "", whether the relation requires an expiration
+// of it, and whether it is the wildcard of the type.
 type SchemaSubject struct {
-	Type     string
-	Relation string
-	Caveat   string
-	Wildcard bool
+	Type       string
+	Relation   string
+	Caveat     string
+	Expiration bool
+	Wildcard   bool
 }
 
 // RelationSubjects gives the subjects that a relation of the type admits, in the order of the schema, and false when
@@ -238,7 +242,7 @@ func (s *AuthzSchema) RelationSubjects(typeName, relation string) ([]SchemaSubje
 	}
 	subjects := make([]SchemaSubject, 0, len(definition.subjects[relation]))
 	for _, subject := range definition.subjects[relation] {
-		subjects = append(subjects, SchemaSubject{Type: subject.namespace, Relation: subject.relation, Caveat: subject.caveat, Wildcard: subject.wildcard})
+		subjects = append(subjects, SchemaSubject{Type: subject.namespace, Relation: subject.relation, Caveat: subject.caveat, Expiration: subject.expiration, Wildcard: subject.wildcard})
 	}
 	return subjects, true
 }
