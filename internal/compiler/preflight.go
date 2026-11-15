@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -179,6 +180,7 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			Queries:         svcDecl.Queries,
 			FillSlots:       maps.Clone(facts.FillSlots),
 			Commands:        declaredCommands(svcDecl, facts.FillSlots),
+			Workers:         declaredWorkers(svcDecl, facts.FillSlots),
 			Destinations:    declaredDestinations(svcDecl, componentNames),
 			QueryStreams:    declaration.QueryStreams(svcDecl, facts),
 		}
@@ -264,6 +266,22 @@ func declaredCommands(svcDecl *types.ServiceDeclaration, fillSlots map[string]st
 	return commands
 }
 
+// declaredWorkers gives the declared workers, each with the slot that its fill implements as the project's fill.yaml
+// names it (ST-SUP-RC35-OC02).
+func declaredWorkers(svcDecl *types.ServiceDeclaration, fillSlots map[string]string) []gen.Worker {
+	if len(svcDecl.Workers) == 0 {
+		return nil
+	}
+	workers := make([]gen.Worker, len(svcDecl.Workers))
+	for i, worker := range svcDecl.Workers {
+		workers[i] = gen.Worker{Worker: worker}
+		if len(worker.Fill) == 1 {
+			workers[i].FillSlot = fillSlots[worker.Fill[0]]
+		}
+	}
+	return workers
+}
+
 // declaredEmitters lists the commands, queries, workers and slot bindings of the declaration, in this order and in
 // declaration order, with the names that an observation's Emitted by uses: a slot binding as collection.slot
 // (ST-DECL-INV54, ST-SUP-RC34-OC03).
@@ -339,6 +357,16 @@ func declaredDestinations(svcDecl *types.ServiceDeclaration, componentNames []st
 			}
 			if d.Name != "" {
 				out = append(out, d)
+			}
+		}
+	}
+	// The destination that a worker consumes is the service's own: its one handler is the worker, which the outbox
+	// gives each message until it lands, and which runs a message once (ST-SUP-RC35-OC06).
+	if slices.Contains(componentNames, workerComponent) {
+		landing := true
+		for _, worker := range svcDecl.Workers {
+			if destination, ok := strings.CutPrefix(worker.Trigger, "consumes "); ok {
+				out = append(out, gen.Destination{Name: destination, Component: workerComponent, MustLand: &landing, Idempotent: &landing})
 			}
 		}
 	}

@@ -1,0 +1,33 @@
+# The worker capability (ST-SUP-RC35): for each declared worker, its slot contract and one runner bound to its one
+# fill. A declared worker selects it (ST-GEN-INV37); while it is not ga, the declaration carries an experimental
+# acceptance that names it.
+kind: component
+name: worker
+version: 0.1.0
+stage: alpha
+sunset: 2027-04-30
+output_namespace: workers
+
+config: {}
+
+requires: []
+
+provides:
+  - workers
+
+slots: []
+
+# The architecture role (ST-SUP-EN09 field Architecture role, ST-SUP-UC01-R05): the layer, the part in a request
+# flow, and the side of each port. The architecture model places the component from it alone.
+architecture:
+  layer: handler
+  flow: "Runs the fill of each declared worker at its trigger, in a transaction of each tenant."
+  ports:
+    workers: inbound
+
+# The worker reads no environment variable of its own: the worker mode reads the settings of the service runtime,
+# which their components declare.
+environment: []
+
+# The worker states no platform need of its own (ST-SUP-EN09 field Platform needs): it runs in the worker mode of the
+# service process, whose database, TLS and pod security needs the components of that process state.

@@ -248,6 +248,10 @@ type Context struct {
 	// them.
 	Queries []types.Query
 
+	// Workers are the declared workers of the service (ST-DECL-EN25), in declaration order, each with the slot that
+	// its fill implements. Generators must not change them.
+	Workers []Worker
+
 	// FillSlots gives, for each fill that a command, a query or a worker names and that the project holds, the slot
 	// it implements as component.slot, as its fill.yaml states (ST-DECL-INV45). A fill that the project does not hold
 	// has no entry.
@@ -578,6 +582,14 @@ type Command struct {
 	types.Command
 	// FillSlot is the slot that the command's one fill implements, as component.slot, as its fill.yaml names it,
 	// or empty when the project holds no such fill.
+	FillSlot string
+}
+
+// Worker is one declared worker with what the compiler read of its fill.
+type Worker struct {
+	types.Worker
+	// FillSlot is the slot that the worker's one fill implements, as component.slot, as its fill.yaml names it, or
+	// empty when the project holds no such fill.
 	FillSlot string
 }
 

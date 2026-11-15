@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -92,6 +93,9 @@ type Migration struct {
 	// TenantSchema is the schema of the tenant list stego_tenants, which the tables step makes with the migration
 	// text of the tenant runtime (ST-SUP-RP04-LC07); empty is public.
 	TenantSchema string
+	// WorkerLeases are the names of the declared single workers: the audit step makes the row of the lease
+	// stego.worker.<name> of each (ST-SUP-RC35-OC05). Each is a worker name in lower kebab case.
+	WorkerLeases []string
 	// Timeout is the longest time that the job runs; zero is MigrationTimeout.
 	Timeout time.Duration
 	// Backfills are the backfills of the schema changes of this release whose last step is expand, which the job
@@ -185,7 +189,16 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		m.WriteSchema == nil || m.Outbox == "" || m.Audit == "" || m.Authorization == "" || m.Parts == nil {
 		return failed(StepSettings, errors.New("the migration job needs its roles, the adapter, the ledger, the migration texts, the schema writer and the declared parts"))
 	}
-	keys, err := idempotency.Migration(m.PurgeRole, m.RuntimeRole)
+	for _, name := range m.WorkerLeases {
+		if !workerName.MatchString(name) {
+			return failed(StepSettings, fmt.Errorf("the worker lease %q is not a worker name in lower kebab case", name))
+		}
+	}
+	keys, err := idempotency.MigrationWithConsumers(m.PurgeRole, m.RuntimeRole, consumerRoles(m.Parts, m.WorkerRole))
+	if err != nil {
+		return failed(StepSettings, err)
+	}
+	workerText, floorText, err := workerGrants(m)
 	if err != nil {
 		return failed(StepSettings, err)
 	}
@@ -296,10 +309,14 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	}
 	texts := []struct{ name, text string }{
 		{StepOutboxQueue, m.Outbox},
-		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole)},
+		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole, m.WorkerLeases)},
 		{StepAuditSink, sinkTable},
 		{StepIdempotencyKeys, keys},
-		{StepAuthorizationTables, m.Authorization},
+		// The grants of the worker role are in the one transaction of the authorization tables: a table-level REVOKE
+		// also takes back the column grants on the token of each protected table, which the authorization text gives
+		// again, and the floor exists only after that text. So no committed state lacks a grant that the running
+		// release needs (security review of PR #337, M2).
+		{StepAuthorizationTables, workerText + m.Authorization + ";\n" + floorText},
 		{StepRuntimeGrants, granted(m.Grants, m.RuntimeRole)},
 	}
 	for _, t := range texts {
@@ -618,10 +635,17 @@ var betweenSequenceReads func()
 // controllerLease gives the statements of the lease table and the row of the controller lease, under which the audit
 // jobs run (ST-SUP-RP14-LC04), with SELECT and UPDATE on the table for the runtime role, the role of the lease
 // client; the table belongs to no tenant. Each statement runs again with no error on a database that it made.
-func controllerLease(runtimeRole string) string {
-	return lease.LeasesTable + ";\nINSERT INTO public.leases (name) VALUES ('" + ControllerLease + "') ON CONFLICT (name) DO NOTHING;\n" +
-		"GRANT SELECT, UPDATE ON TABLE public.leases TO " + quote(runtimeRole) + ";\n"
+func controllerLease(runtimeRole string, workers []string) string {
+	text := lease.LeasesTable + ";\nINSERT INTO public.leases (name) VALUES ('" + ControllerLease + "') ON CONFLICT (name) DO NOTHING;\n"
+	// The lease of each single worker (ST-SUP-RC35-OC05); Migrate checked each name against workerName.
+	for _, name := range workers {
+		text += "INSERT INTO public.leases (name) VALUES ('" + WorkerLeasePrefix + name + "') ON CONFLICT (name) DO NOTHING;\n"
+	}
+	return text + "GRANT SELECT, UPDATE ON TABLE public.leases TO " + quote(runtimeRole) + ";\n"
 }
+
+// workerName is the form of a declared worker name: lower kebab case, at most 63 characters (ST-DECL-INV65).
+var workerName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 // granted gives the statements of the grants to the runtime role.
 func granted(grants []string, role string) string {
@@ -631,6 +655,94 @@ func granted(grants []string, role string) string {
 	}
 	return text.String()
 }
+
+// grantObject is the object of a GRANT statement of the runtime role: TABLE or SEQUENCE and the quoted name.
+var grantObject = regexp.MustCompile(`^GRANT [A-Z, ]+ ON (TABLE|SEQUENCE) ("[^"]+"\."[^"]+")$`)
+
+// tableGrant is one grant of the worker role on a table: the schema, the table and the privileges.
+type tableGrant struct {
+	schema, table string
+	privileges    []string
+}
+
+// consumerGrants are the grants of the worker role that the fill of a consuming worker needs in the transaction of
+// the claimed message, which the outbox worker opens as the worker role (ST-SUP-RC35-OC06): SELECT, INSERT and
+// UPDATE on the table of each entity that a consuming worker writes (WorkerParts.ConsumerTables), and no DELETE,
+// since a worker declares no delete; INSERT on the audit events and SELECT, INSERT and UPDATE on the chain
+// heads, which the audit row of each write needs; SELECT, INSERT and UPDATE on the key table, which RunConsumer
+// writes the message identity to; and SELECT on the revocation floor, which each decision reads. Each table keeps
+// its row-level security and its tenant policy for every role. A service with no consuming worker gets none
+// (decision on ST-SUP-Q141, orchestrator under the owner's delegation, 2026-11-15).
+func consumerGrants(p *Parts) []tableGrant {
+	if p == nil || p.Workers.Consumers == nil {
+		return nil
+	}
+	var grants []tableGrant
+	for _, table := range p.Workers.ConsumerTables {
+		grants = append(grants, tableGrant{schema: "public", table: table, privileges: []string{"SELECT", "INSERT", "UPDATE"}})
+	}
+	grants = append(grants,
+		// The insert of an audit event returns no row, so it needs INSERT only (security review of PR #337, L4).
+		tableGrant{schema: audit.RecordSchema, table: audit.EventsTable, privileges: []string{"INSERT"}},
+		tableGrant{schema: audit.RecordSchema, table: audit.HeadsTable, privileges: []string{"SELECT", "INSERT", "UPDATE"}},
+		tableGrant{schema: idempotency.KeySchema, table: "idempotency_keys", privileges: []string{"SELECT", "INSERT", "UPDATE"}})
+	if p.AuthzSchema != "" {
+		grants = append(grants, tableGrant{schema: p.AuthzSchema, table: "authz_floor", privileges: []string{"SELECT"}})
+	}
+	return grants
+}
+
+// workerGrants gives the grants of the worker role, which the step authorization_tables runs in its one transaction:
+// tables before the authorization text, whose text gives the worker role its column grants on the token of each
+// protected table again, and floor after it, as that text makes the revocation floor. It first takes back from the worker role each privilege on
+// each table and sequence that the runtime role gets (Migration.Grants), on the audit events and chain heads, on the
+// key table and on the revocation floor, so a grant of an earlier release whose consuming worker the declaration no
+// longer has is gone; it then gives the worker role the grants of consumerGrants and nothing more. It refuses a
+// consumer table that is not a lower-case SQL name or that the runtime role gets no grant on: the worker role never
+// gets a table that the runtime role does not (decision on ST-SUP-Q141, orchestrator under the owner's delegation,
+// 2026-11-15).
+func workerGrants(m Migration) (tables, floor string, err error) {
+	role := quote(m.WorkerRole)
+	var text strings.Builder
+	runtimeTables := map[string]bool{}
+	for _, grant := range m.Grants {
+		match := grantObject.FindStringSubmatch(grant)
+		if match == nil {
+			continue
+		}
+		runtimeTables[match[2]] = true
+		text.WriteString("REVOKE ALL ON " + match[1] + " " + match[2] + " FROM " + role + ";\n")
+	}
+	if m.Parts == nil {
+		return text.String(), "", nil
+	}
+	fixed := []string{quote(audit.RecordSchema) + "." + quote(audit.EventsTable), quote(audit.RecordSchema) + "." + quote(audit.HeadsTable),
+		quote(idempotency.KeySchema) + "." + quote("idempotency_keys")}
+	for _, name := range fixed {
+		text.WriteString("REVOKE ALL ON TABLE " + name + " FROM " + role + ";\n")
+	}
+	var floorText strings.Builder
+	if m.Parts.AuthzSchema != "" {
+		floorText.WriteString("REVOKE ALL ON TABLE " + quote(m.Parts.AuthzSchema) + "." + quote("authz_floor") + " FROM " + role + ";\n")
+	}
+	for _, table := range m.Parts.Workers.ConsumerTables {
+		if !sqlName.MatchString(table) || !runtimeTables[quote("public")+"."+quote(table)] {
+			return "", "", fmt.Errorf("the consumer table %q is not a table that the runtime role gets a grant on", table)
+		}
+	}
+	for _, g := range consumerGrants(m.Parts) {
+		statement := "GRANT " + strings.Join(g.privileges, ", ") + " ON TABLE " + quote(g.schema) + "." + quote(g.table) + " TO " + role + ";\n"
+		if g.table == "authz_floor" {
+			floorText.WriteString(statement)
+			continue
+		}
+		text.WriteString(statement)
+	}
+	return text.String(), floorText.String(), nil
+}
+
+// sqlName is a lower-case SQL name of at most 63 characters, which needs no quotes.
+var sqlName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
 // ownerStep runs one step of the migration job in one transaction on conn, as the owner role from its start: a step
 // can reset the role, as the outbox migration does after it made the relay functions.

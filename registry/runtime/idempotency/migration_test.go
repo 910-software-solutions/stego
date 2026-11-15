@@ -311,6 +311,66 @@ func TestKeyTableTenancy(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP07-LC11-T05 A consumer role gets SELECT, INSERT and UPDATE only, and reads no key row of another tenant", func(t *testing.T) {
+		db, admin := testDB(t)
+		schema := schemaOf(t, db)
+		role, worker := loginRole(t, admin, schema, "idem_worker")
+		if _, err := admin.ExecContext(ctx, "GRANT USAGE ON SCHEMA "+schema+" TO "+role); err != nil {
+			t.Fatal(err)
+		}
+		// The migration of a service with a consuming worker names its worker role as a consumer role; it runs again
+		// on the database that it made.
+		text, err := MigrationWithConsumers(testPurgeRole, "idem_test_runtime", []string{role})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, text); err != nil {
+			t.Fatalf("apply Migration with a consumer role: %v", err)
+		}
+		for _, privilege := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
+			var held bool
+			if err := admin.QueryRowContext(ctx, "SELECT has_table_privilege($1, $2, $3)", role, schema+".idempotency_keys", privilege).Scan(&held); err != nil {
+				t.Fatal(err)
+			}
+			if want := privilege == "SELECT" || privilege == "INSERT" || privilege == "UPDATE"; held != want {
+				t.Errorf("the consumer role holds %s on the key table: %v, want %v", privilege, held, want)
+			}
+		}
+		for _, tenant := range []string{"t1", "t2"} {
+			if err := insertKey(ctx, db, tenant, "p1", "k1", "completed"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := countIn(t, worker, "t1", "SELECT count(*) FROM idempotency_keys"); n != 1 {
+			t.Fatalf("the consumer role in t1 sees %d key rows, want its own one", n)
+		}
+		if n := countIn(t, worker, "t1", "SELECT count(*) FROM idempotency_keys WHERE tenant_id = 't2'"); n != 0 {
+			t.Fatalf("the consumer role in t1 reads %d key rows of t2", n)
+		}
+		if n := countIn(t, worker, "", "SELECT count(*) FROM idempotency_keys"); n != 0 {
+			t.Fatalf("the consumer role with no tenant reads %d key rows", n)
+		}
+		now := time.Now()
+		if _, err := inTenant(ctx, worker, "t1", `INSERT INTO idempotency_keys (tenant_id, principal_id, key,
+			fingerprint, status, locked_at, expires_at) VALUES ('t2', 'p1', 'k2', 'f', 'in_progress', $1, $1)`, now); pgCode(err) != "42501" {
+			t.Fatalf("the consumer role in t1 wrote a key row of t2: %v", err)
+		}
+		if _, err := inTenant(ctx, worker, "t1", `INSERT INTO idempotency_keys (tenant_id, principal_id, key,
+			fingerprint, status, locked_at, expires_at) VALUES ('t1', 'p1', 'k2', 'f', 'in_progress', $1, $1)`, now); err != nil {
+			t.Fatalf("the consumer role in t1 cannot write a key row of t1: %v", err)
+		}
+		if _, err := inTenant(ctx, worker, "t1", `DELETE FROM idempotency_keys`); pgCode(err) != "42501" {
+			t.Fatalf("the consumer role deleted key rows: %v", err)
+		}
+		m, err := ManifestWithConsumers(schema, testPurgeRole, "idem_test_runtime", []string{role})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if grants := m.Tables[0].Grants; len(grants) != 3 || grants[2].Role != role || strings.Join(grants[2].Privileges, " ") != "SELECT INSERT UPDATE" {
+			t.Fatalf("the manifest holds the grants %+v, want SELECT, INSERT and UPDATE for the consumer role", grants)
+		}
+	})
+
 	t.Run("ST-SUP-RP07-LC11-T02 Only the purge function spans tenants", func(t *testing.T) {
 		db, admin := testDB(t)
 		schema := schemaOf(t, db)

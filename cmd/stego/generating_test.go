@@ -568,6 +568,15 @@ func runtimeSchema(declaration string) string {
 		seen[match[1]] = true
 		schema += fmt.Sprintf("\ndefinition %s {\n\trelation owner: user\n\tpermission view = owner\n\tpermission edit = owner\n}\n", match[1])
 	}
+	// Each declared worker has its own relation on the type tenant, of the subject type service_account
+	// (ST-SUP-RC35-OC13).
+	if workers := regexp.MustCompile(`(?m)^  - name: ([a-z][a-z0-9-]*)\n    trigger:`).FindAllStringSubmatch(declaration, -1); len(workers) > 0 {
+		schema += "\ndefinition service_account {}\n\ndefinition tenant {\n"
+		for _, w := range workers {
+			schema += "\trelation worker_" + strings.ReplaceAll(w[1], "-", "_") + ": service_account\n"
+		}
+		schema += "}\n"
+	}
 	return schema
 }
 
