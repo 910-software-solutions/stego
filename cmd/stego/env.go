@@ -18,7 +18,11 @@ import (
 // environment file, and prints every platform requirement that the environment does not meet (ST-DLV-UC02). The
 // check reads secret names and keys only and changes no file. A file that cannot be read is a failed check.
 func runEnv(args []string) error {
-	return runEnvTo(args, os.Stdout)
+	// An error can hold a key name of the environment file: it is escaped too (#344 security review L2).
+	if err := runEnvTo(args, os.Stdout); err != nil {
+		return errors.New(printable(err.Error()))
+	}
+	return nil
 }
 
 func runEnvTo(args []string, stdout io.Writer) error {

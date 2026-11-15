@@ -77,7 +77,7 @@ var (
 	sentenceStop = regexp.MustCompile(`\.( |$)`)
 )
 
-// maxVariableValue bounds a default and an allowed value text.
+// maxVariableValue bounds a default and an allowed value text, as the registry does.
 const maxVariableValue = 512
 
 // source names a source of a variable in a message: a component, or runtime-configuration with its group.
@@ -264,6 +264,8 @@ func checkDescription(text string) error {
 		return fmt.Errorf("the description does not end with a full stop")
 	case len(sentenceStop.FindAllStringIndex(text, -1)) > 2:
 		return fmt.Errorf("the description has more than two sentences")
+	case strings.Contains(text, "://") || strings.Contains(strings.ToLower(text), "www."):
+		return fmt.Errorf("the description holds a URL")
 	}
 	return nil
 }

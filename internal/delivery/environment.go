@@ -388,14 +388,19 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 	// A required environment variable that no requirement holds, a secret one, is met by a configuration value or a
 	// secret of its name; the check names one that the file gives no value (ST-DLV-UC02-R06). It reads the name of a
 	// secret variable only, never its value (ST-DLV-UC02-R03).
-	listed := map[string]bool{}
+	listed, secretVariables := map[string]bool{}, map[string]bool{}
 	for _, variable := range requirements.Environment {
 		listed[variable.Name] = true
+		secretVariables[variable.Name] = variable.Secret
 		if !variable.Required || named[string(Configuration)+" "+variable.Name] {
 			continue
 		}
 		given := false
-		for _, kind := range []RequirementKind{Configuration, Secret} {
+		kinds := []RequirementKind{Configuration, Secret}
+		if variable.Secret {
+			kinds = []RequirementKind{Secret}
+		}
+		for _, kind := range kinds {
 			if entry := env.lookup(kind, variable.Name); entry != nil && !(entry.kind == Configuration && entry.empty) && !(entry.kind == Secret && len(entry.keys) == 0) {
 				given = true
 			}
@@ -417,7 +422,13 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 			continue
 		}
 		if (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] {
-			// A value of a listed environment variable.
+			// A value of a listed environment variable. A secret variable given as a plain configuration value is
+			// of the wrong type: its value belongs in a secret (#344 security review L1).
+			if entry.kind == Configuration && secretVariables[entry.name] {
+				fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType,
+					Detail: fmt.Sprintf("the environment variable %s is secret; give it as a secret, not as a configuration value", entry.name)})
+				continue
+			}
 			if entry.fault != "" {
 				fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType, Detail: entry.fault})
 			}

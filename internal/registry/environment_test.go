@@ -67,7 +67,7 @@ func TestVariableDescription(t *testing.T) {
 				t.Errorf("the description %q is refused: %v", good, err)
 			}
 		}
-		for _, bad := range []string{"", " ", "The port", "One. Two. Three.", "The port.\nIt is a number.", strings.Repeat("a", 200) + ".", " The port.", "The\tport."} {
+		for _, bad := range []string{"", " ", "The port", "One. Two. Three.", "The port.\nIt is a number.", strings.Repeat("a", 200) + ".", " The port.", "The\tport.", "See https://example.com for it.", "See www.example.com for it."} {
 			if _, err := ParseVariableDescription(bad); err == nil {
 				t.Errorf("the description %q is accepted", bad)
 			}

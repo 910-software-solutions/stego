@@ -337,7 +337,7 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 			"  - name: DATABASE_URL\n    read_by:\n      - postgres-adapter\n    type: string\n    required: true\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
-		c.change(t, "dev.yaml", configBlock, configBlock+"  DATABASE_URL: CANARY-SECRET-VALUE\n")
+		c.change(t, "dev.yaml", "secrets:\n", "secrets:\n  DATABASE_URL:\n    value: CANARY-SECRET-VALUE\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectPassed(t, stdout, stderr, passed)
 		if strings.Contains(stdout+stderr, "CANARY") {
@@ -400,6 +400,24 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 			c.change(t, "dev.yaml", passwordLine, "    password:"+empty+"\n")
 			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
 			expectFailed(t, stdout, stderr, passed, "secret orders-database", "password")
+		}
+	})
+	t.Run("ST-DLV-UC02-R02-T04 A secret environment variable given as a plain configuration value is of the wrong type", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, configBlock+"  DATABASE_URL: CANARY-SECRET-VALUE\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "wrong type: configuration DATABASE_URL", "secret")
+		if strings.Contains(stdout+stderr, "CANARY") {
+			t.Fatalf("the check shows the value of the secret variable:\n%s\n%s", stdout, stderr)
+		}
+	})
+	t.Run("ST-DLV-UC02-R01-T05 An error of the check is printed escaped too", func(t *testing.T) {
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", passwordLine, passwordLine+"    \"X\u202eY\": a\n    \"X\u202eY\": b\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "environment file dev.yaml", `\u{202E}`)
+		if strings.ContainsRune(stdout+stderr, '\u202e') {
+			t.Fatalf("the check prints a bidirectional character as it is:\n%q", stderr)
 		}
 	})
 	t.Run("ST-DLV-UC02-R04-T04 A file that is not a regular file is a failed check", func(t *testing.T) {

@@ -724,6 +724,9 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 				delete(settings, key)
 			}
 		}
+		if err := checkSettingDefaults(component, settings); err != nil {
+			return nil, err
+		}
 		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: component.Variables(), Settings: settings}
 		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
 			declared, err := declarer.DeclaredVariables(contexts[name])
@@ -739,6 +742,41 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		return nil, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
 	}
 	return []gen.File{{Path: RequirementsFile, Content: data.Requirements}, {Path: ReferenceFile, Content: data.Reference}}, nil
+}
+
+// checkSettingDefaults holds each default of a variable that is {settings.<key>} to the variable's type and allowed
+// values, with the value that the declaration gives the setting (ST-SUP-INV24). The message never holds the value.
+func checkSettingDefaults(component *registry.Component, settings map[string]any) error {
+	for _, variable := range component.Variables() {
+		if variable.Default == nil {
+			continue
+		}
+		key, ok := strings.CutPrefix(*variable.Default, "{settings.")
+		if !ok || !strings.HasSuffix(key, "}") {
+			continue
+		}
+		key = strings.TrimSuffix(key, "}")
+		value, given := settings[key]
+		if !given {
+			continue
+		}
+		var text string
+		switch value := value.(type) {
+		case string:
+			text = value
+		case int, int64, uint64, float64, bool:
+			text = fmt.Sprint(value)
+		default:
+			return fmt.Errorf("component %s: environment variable %s: default: the setting %s is not one value", component.Name, variable.Name, key)
+		}
+		if text == "" {
+			continue
+		}
+		if err := registry.CheckVariableValue(registry.VariableType(variable.Type), variable.Allowed, text); err != nil {
+			return fmt.Errorf("component %s: environment variable %s: default: the value of the setting %s: %w", component.Name, variable.Name, key, err)
+		}
+	}
+	return nil
 }
 
 // collectComponentNames assembles the ordered list of component names from the

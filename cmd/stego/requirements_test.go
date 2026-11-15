@@ -881,7 +881,9 @@ func TestEnvironmentVariablesApply(t *testing.T) {
 		git(t, dir, "add", "-A")
 		git(t, dir, "commit", "-q", "-m", "the service orders")
 		before := folderDigests(t, dir)
-		stdout, stderr, err := runInProject(t, dir, requirementsEnv(registry), "apply")
+		// The process environment of apply holds the canary too, in a secret variable and a library variable.
+		processEnv := append(requirementsEnv(registry), "DATABASE_URL=postgres://orders:"+canary+"@db/orders", "PGPASSWORD="+canary, "STEGO_AUDIT_SINK_TOKEN_FILE=/"+canary)
+		stdout, stderr, err := runInProject(t, dir, processEnv, "apply")
 		if err != nil {
 			t.Fatalf("apply: %v\n%s\n%s", err, stdout, stderr)
 		}
@@ -915,6 +917,12 @@ func TestEnvironmentVariablesApply(t *testing.T) {
 			"postgres-adapter": func() {
 				setNeeds(t, registry, "postgres-adapter", requirementsNeeds["postgres-adapter"]+"  - {kind: topic, name: \"{settings.connection_string}\"}\n")
 			},
+			"health-check ": func() {
+				addVariables(t, registry, "health-check", "  - {name: HEALTH_TOKEN, type: string, required: false, secret: true, example: "+canary+", description: \"The token.\"}\n")
+			},
+			"postgres-adapter ": func() {
+				addVariables(t, registry, "postgres-adapter", "  - {name: STORE_URL, type: string, required: false, secret: false, default: \"{settings.connection_string}\", description: \"The store.\"}\n")
+			},
 		} {
 			fresh := requirementsRegistry(t)
 			registry = fresh
@@ -925,11 +933,59 @@ func TestEnvironmentVariablesApply(t *testing.T) {
 			if err == nil {
 				t.Errorf("%s: apply accepted a secret in a default or a name", component)
 			}
-			if strings.Contains(stdout+stderr, canary) || !strings.Contains(stderr, component) {
+			if strings.Contains(stdout+stderr, canary) || !strings.Contains(stderr, strings.TrimSpace(component)) {
 				t.Errorf("%s: the refusal shows the canary or does not name the component:\n%s", component, stderr)
 			}
 			if after := folderDigests(t, project); !maps.Equal(before, after) {
 				t.Errorf("%s: the refused apply changed the project folder", component)
+			}
+		}
+		// A secret field of runtime-configuration with a default of the canary is refused, with no canary shown.
+		fresh := requirementsRegistry(t)
+		archetype := filepath.Join(fresh, "archetypes", "rest-crud", "archetype.yaml")
+		raw, err := os.ReadFile(archetype)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(archetype, []byte(strings.Replace(string(raw), "components:\n", "components:\n  - runtime-configuration\n", 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		withField := filepath.Join(t.TempDir(), "orders")
+		writeRequirementsDeclaration(t, withField, strings.Replace(requirementsDeclaration, "overrides:\n", `overrides:
+  runtime-configuration:
+    groups:
+      - name: Worker
+        fields:
+          - {name: Token, env: WIDGET_TOKEN, type: string, min_length: 1, max_length: 64, required: false, secret: true, default: `+canary+`, description: "The token."}
+`, 1))
+		git(t, withField, "init", "-q")
+		git(t, withField, "add", "-A")
+		git(t, withField, "commit", "-q", "-m", "the service orders")
+		stdout, stderr, err = runInProject(t, withField, requirementsEnv(fresh), "apply")
+		if err == nil || strings.Contains(stdout+stderr, canary) {
+			t.Errorf("a secret field with a default is accepted, or the refusal shows it: %v\n%s", err, stderr)
+		}
+		// stego env check on the written requirements and an environment file whose secrets hold the canary shows
+		// no canary, whether it passes or fails.
+		envDir := t.TempDir()
+		written, err := os.ReadFile(filepath.Join(dir, compiler.RequirementsFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(envDir, "platform-requirements.yaml"), written, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		environment, err := os.ReadFile(filepath.Join(environmentFixtureDir, "dev.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range []string{string(environment), strings.Replace(string(environment), "secrets:\n", "secrets:\n  DATABASE_URL:\n    value: "+canary+"\n  PGPASSWORD:\n    value: "+canary+"\n", 1) + "  extra: " + canary + "\n"} {
+			if err := os.WriteFile(filepath.Join(envDir, "dev.yaml"), []byte(file), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			stdout, stderr, _ := runInProject(t, envDir, nil, "env", "check", "--requirements", "platform-requirements.yaml", "dev.yaml")
+			if strings.Contains(stdout+stderr, canary) {
+				t.Errorf("stego env check shows the canary:\n%s\n%s", stdout, stderr)
 			}
 		}
 	})
@@ -988,6 +1044,28 @@ func TestEnvironmentVariablesApply(t *testing.T) {
 		_, stderr, err := runInProject(t, dir, env, "apply")
 		if err == nil || !strings.Contains(stderr, "hand-edited") || !strings.Contains(stderr, compiler.ReferenceFile) {
 			t.Fatalf("apply accepted a hand edit of the reference, or the refusal does not name it: %v\n%s", err, stderr)
+		}
+	})
+}
+
+func TestEnvironmentSettingDefaults(t *testing.T) {
+	t.Run("ST-DLV-UC01-R06-T02 A default from a setting that breaks the variable's type or allowed values stops the apply", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		// The declaration gives schema_generation the text tables-v1, which is no integer.
+		addVariables(t, registry, "postgres-adapter", "  - {name: STORE_GENERATION, type: integer, required: false, secret: false, default: \"{settings.schema_generation}\", description: \"The generation.\"}\n")
+		dir := requirementsProject(t)
+		before := folderDigests(t, dir)
+		_, stderr, err := runInProject(t, dir, requirementsEnv(registry), "apply")
+		if err == nil {
+			t.Fatal("apply accepted a default that is not of the variable's type")
+		}
+		for _, part := range []string{"postgres-adapter", "STORE_GENERATION", "schema_generation", "not an integer"} {
+			if !strings.Contains(stderr, part) {
+				t.Errorf("the refusal does not name %s:\n%s", part, stderr)
+			}
+		}
+		if after := folderDigests(t, dir); !maps.Equal(before, after) {
+			t.Fatal("the refused apply changed the project folder")
 		}
 	})
 }

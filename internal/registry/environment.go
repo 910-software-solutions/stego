@@ -57,6 +57,9 @@ func ParseVariableDescription(text string) (VariableDescription, error) {
 		return "", fmt.Errorf("the description holds a line break; give it on one line")
 	case strings.TrimSpace(text) != text || !strings.HasSuffix(text, "."):
 		return "", fmt.Errorf("the description does not end with a full stop")
+	case strings.Contains(text, "://") || strings.Contains(strings.ToLower(text), "www."):
+		// A link in the generated reference could point a reader anywhere (#344 security review L4).
+		return "", fmt.Errorf("the description holds a URL; name the setting that gives the address instead")
 	}
 	if count := len(sentenceEnd.FindAllStringIndex(text, -1)); count > 2 {
 		return "", fmt.Errorf("the description has %d sentences; give one or two", count)
@@ -145,8 +148,8 @@ var (
 	rangeUnit = regexp.MustCompile(`^[a-z]+( [a-z]+)?$`)
 )
 
-// maxVariableValue bounds a default, an example and an allowed value.
-const maxVariableValue = 256
+// maxVariableValue bounds a default, an example and an allowed value. Delivering holds the same bound.
+const maxVariableValue = 512
 
 // declaresVariables is the rule of ST-SUP-INV22 that the registry holds: a component states its environment list,
 // and each variable in it states its name, its type, whether it is required, its description and whether it is
@@ -296,7 +299,8 @@ func settingOf(value string) (string, bool) {
 
 // factsAgree is the rule of ST-SUP-INV24: a required variable states no default, and a default or an example is of
 // the variable's type and inside its allowed values. A default that is {settings.<key>} names a setting of the
-// component that is not secret; its value is checked when apply resolves it.
+// component that is not secret; the compiler checks its value against the type and the allowed values when apply
+// resolves it (compiler.requirementsFiles, #344 security review L3).
 func factsAgree(component *Component) error {
 	for _, variable := range *component.Environment {
 		fault := func(fact, format string, args ...any) error {

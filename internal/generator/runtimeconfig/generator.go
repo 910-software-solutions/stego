@@ -181,7 +181,8 @@ func validFacts(f field) bool {
 	}
 	text := *f.Description
 	if strings.TrimSpace(text) != text || text == "" || utf8.RuneCountInString(text) > 200 || strings.ContainsAny(text, "\n\r\t\v\f\u2028\u2029") ||
-		!strings.HasSuffix(text, ".") || len(sentenceEnd.FindAllStringIndex(text, -1)) > 2 {
+		!strings.HasSuffix(text, ".") || len(sentenceEnd.FindAllStringIndex(text, -1)) > 2 ||
+		strings.Contains(text, "://") || strings.Contains(strings.ToLower(text), "www.") {
 		return false
 	}
 	if *f.Required == (f.Default != nil) {
