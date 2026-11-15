@@ -94,9 +94,13 @@ func newEvolution(t *testing.T) *evolution {
 	if err := os.WriteFile(filepath.Join(e.repo, "service.yaml"), []byte(strings.Replace(string(example), evolutionV1[0], evolutionV1[1], 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// No release of the example ran on the database of ST-GEN-TD04, so v1 is its first release, with no record.
-	if err := os.Remove(filepath.Join(e.repo, ".stego", "state.yaml")); err != nil {
-		t.Fatal(err)
+	// No release of the example ran on the database of ST-GEN-TD04, so v1 is its first release, with no record, and
+	// with no architecture model, which apply derives anew and would otherwise refuse as a file the record does not
+	// hold.
+	for _, file := range []string{filepath.Join(".stego", "state.yaml"), filepath.Join("architecture", "architecture.json")} {
+		if err := os.Remove(filepath.Join(e.repo, file)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	// The architecture model and view are project files of the removed record, so they go with it; else the
 	// first apply finds them as hand edits.
