@@ -381,7 +381,8 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return User{}, err
 		}
-		if loaded.Value().OrgID != scope {
+		view := loaded.Value()
+		if view.OrgID != scope {
 			return User{}, query.ErrNotFound
 		}
 		return orgUsersFromView(loaded.Value()), nil

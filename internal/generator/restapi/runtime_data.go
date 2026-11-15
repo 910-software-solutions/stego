@@ -985,6 +985,15 @@ func callerName(ctx context.Context) string {
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
 
+// float32Of gives the API value of an optional float field of a view: nil for NULL.
+func float32Of(v *float64) *float32 {
+	if v == nil {
+		return nil
+	}
+	f := float32(*v)
+	return &f
+}
+
 // remoteIP is the host part of a remote address.
 func remoteIP(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
@@ -1070,8 +1079,7 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	hasBody := c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpPatch] || c.ops[types.OpUpsert]
 	needTime, needFmt := false, false
 	for _, f := range e.Fields {
-		// An optional timestamp that a read can answer needs the conversion of its view value (viewTime).
-		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret" || f.Optional) {
+		if f.Type == types.FieldTypeTimestamp && (hasBody || f.Sensitivity == "secret") {
 			needTime = true
 		}
 	}
@@ -1311,18 +1319,19 @@ func (w *runtimeHandlerWriter) helpers() {
 		if f.Type == types.FieldTypeFloat {
 			expr = "float32(" + expr + ")"
 		}
+		// The view holds an optional field as a pointer, nil for NULL, except a jsonb or bytes field, which is
+		// nil for NULL as it is (ST-SUP-Q128 (B)).
 		switch {
 		case f.Optional && f.Type == types.FieldTypeJsonb:
 			expr = c.camel + "JSON(" + expr + ")"
-		case f.Optional && f.Type == types.FieldTypeTimestamp:
-			expr = c.camel + "Time(" + expr + ")"
-		case f.Optional:
+		case f.Optional && f.Type == types.FieldTypeFloat:
+			expr = "float32Of(v." + name + ")"
+		case f.Optional && f.Type == types.FieldTypeBytes:
 			expr = "ptrOf(" + expr + ")"
 		}
 		w.f(", %s: %s", name, expr)
 	}
 	w.f("}\n}\n\n")
-	w.viewTime()
 	w.converters()
 	w.f("// %sPresented gives the response value of one %s: its secret fields are cleared, so no response and no stored\n// response holds them.\n", c.camel, e.Name)
 	if len(c.chain) > 1 {
@@ -1431,19 +1440,6 @@ func (w *runtimeHandlerWriter) fromData(expr string) string {
 // converters writes, for an entity with a jsonb field, the field by field conversions between the API value and the
 // command runtime's row value. An optional jsonb field that is not set is nil in both, so it is NULL in its column
 // and absent from a response.
-// viewTime writes the conversion of the view value of an optional timestamp to its API value, when the entity has one
-// that a read answers: the view reads NULL as the zero time, which is answered as no value, so the field is absent
-// from the answer as the API schema allows, and not "0001-01-01T00:00:00Z" (finding G2 of the walkthrough re-run).
-func (w *runtimeHandlerWriter) viewTime() {
-	for _, f := range w.c.entity.Fields {
-		if f.Type == types.FieldTypeTimestamp && f.Optional && f.Sensitivity != "secret" {
-			w.f("// %sTime gives the API value of an optional timestamp of a read-only %s: nil when the column is NULL, which the\n// view reads as the zero time.\n", w.c.camel, w.c.entity.Name)
-			w.f("func %sTime(v time.Time) *time.Time {\n\tif v.IsZero() {\n\t\treturn nil\n\t}\n\treturn &v\n}\n\n", w.c.camel)
-			return
-		}
-	}
-}
-
 func (w *runtimeHandlerWriter) converters() {
 	if !w.hasJSON() {
 		return
@@ -1920,6 +1916,19 @@ func (w *runtimeHandlerWriter) storedValue(name string) string {
 	return "stored." + toPascalCase(name)
 }
 
+// viewDiffers gives the condition that the implicit field name of the loaded view does not hold value. The view
+// holds an optional field as a pointer, nil for a NULL column (ST-SUP-Q128 (B)), and a NULL is another value: the
+// row is not found in the collection.
+func (w *runtimeHandlerWriter) viewDiffers(name, value string) string {
+	field := "view." + toPascalCase(name)
+	for _, f := range w.c.entity.Fields {
+		if f.Name == name && f.Optional {
+			return fmt.Sprintf("(%s == nil || *%s != %q)", field, field, value)
+		}
+	}
+	return fmt.Sprintf("%s != %q", field, value)
+}
+
 // forceScope writes the server values of the scope field and the implicit fields of a written value: the scope
 // field from scope, and each implicit field from its declared value (ST-SUP-RC20-OC23, ST-SUP-RC20-OC24).
 func (w *runtimeHandlerWriter) forceScope(scope string) {
@@ -2161,13 +2170,13 @@ func (w *runtimeHandlerWriter) read() {
 	// ST-SUP-RC20-OC24).
 	var checks []string
 	if c.scope != "" {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != scope", toPascalCase(c.scope)))
+		checks = append(checks, fmt.Sprintf("view.%s != scope", toPascalCase(c.scope)))
 	}
 	for _, kv := range c.implicit {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != %q", toPascalCase(kv[0]), kv[1]))
+		checks = append(checks, w.viewDiffers(kv[0], kv[1]))
 	}
 	if len(checks) > 0 {
-		w.f("\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
+		w.f("\t\tview := loaded.Value()\n\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
 	}
 	w.f("\t\treturn %sFromView(loaded.Value()), nil\n\t})\n", c.camel)
 	w.f("\tif err != nil {\n\t\tanswerRead(w, r, %q, id, err)\n\t\treturn\n\t}\n", e.Name)
