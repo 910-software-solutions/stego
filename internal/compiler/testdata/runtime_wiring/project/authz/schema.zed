@@ -17,7 +17,7 @@ definition service {
 definition order {
 	relation owner: user
 	relation viewer: user
-	// The worker sync-partner-orders syncs an order on which the check grants it.
+	// The workers sync-partner-orders and apply-note-replies sync an order on which the check grants them.
 	relation syncer: service_account
 	permission view = owner + viewer
 	permission edit = owner

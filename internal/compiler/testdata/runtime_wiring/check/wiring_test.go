@@ -1182,7 +1182,9 @@ func TestWiring(t *testing.T) {
 		id := created.member(t, "id")
 		s.own(writer, id)
 		s.canEdit(t, writer, id)
-		// The worker may edit the order by the relation syncer, which edit admits.
+		// The decisions of the worker may see the grant below some time after it is written: the fill fails the
+		// message with the text consume until it may edit the order, so the outbox tries it again.
+		// The worker may sync the order, its declared permission, by the relation syncer.
 		resourceID, err := authz.ResourceID(writer.tenant, id)
 		must(t, err)
 		_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
@@ -1194,9 +1196,14 @@ func TestWiring(t *testing.T) {
 			t.Fatalf("the note answered %d %s, want 2xx", got.status, got.body)
 		}
 		// The consumer adds 1000 to the qty in the transaction of the outbox worker, a session of the worker role.
-		s.eventually(t, "the consumer writes the order of the message", func() bool {
-			return count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE tenant_id = $1 AND id = $2`, kept, id) == 1001
-		})
+		for deadline := time.Now().Add(60 * time.Second); count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE tenant_id = $1 AND id = $2`, kept, id) != 1001; time.Sleep(200 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				var states string
+				must(t, s.admin.QueryRow(`SELECT coalesce(string_agg(state || ' ' || attempts || ' ' || coalesce(failure_code, ''), '; '), '')
+ FROM stego_outbox.messages WHERE destination = 'note-replies' AND tenant_id = $1`, kept).Scan(&states))
+				t.Fatalf("after 60 s the consumer did not write the order (qty %d); the messages of note-replies: %s", count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE id = $1`, id), states)
+			}
+		}
 		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND resource_id = $2 AND actor_id = 'service_account:apply-note-replies'`, kept, id); n != 1 {
 			t.Errorf("%d audit rows of the consumer's write, want 1", n)
 		}

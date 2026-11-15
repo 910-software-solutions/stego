@@ -91,5 +91,5 @@ workers:
     trigger: consumes note-replies
     writes: [Order]
     resource_type: order
-    permission: edit
+    permission: sync
     fill: apply-note-replies

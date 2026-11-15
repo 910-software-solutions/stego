@@ -14,6 +14,7 @@ import (
 func New() workers.ApplyNoteRepliesFill {
 	return func(ctx context.Context, message json.RawMessage, effect string, h *workers.ApplyNoteRepliesHandle) error {
 		var note struct {
+			Text  string `json:"text"`
 			Order string `json:"order"`
 		}
 		if err := json.Unmarshal(message, &note); err != nil || note.Order == "" {
@@ -24,9 +25,13 @@ func New() workers.ApplyNoteRepliesFill {
 			return err
 		}
 		// An order that the worker may not edit is not found: the message is done with no change. Only the order
-		// that the check grants the worker on gets the write.
+		// that the check grants the worker on gets the write; its message, with the text consume, is tried again
+		// until the decision sees the grant.
 		order, err := orders.Get(ctx, note.Order)
 		if err != nil {
+			if note.Text == "consume" {
+				return err
+			}
 			return nil
 		}
 		value := order.Value()
