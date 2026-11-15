@@ -1104,7 +1104,13 @@ func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, 
 	if input.Probes != nil {
 		probes = &delivery.ProbeSource{Liveness: input.Probes.Liveness, Readiness: input.Probes.Readiness, PortVariable: input.Probes.PortVariable}
 	}
-	written, err := delivery.WriteDeployment(input.Service, input.Requirements, probes)
+	var stanza *delivery.ArgoCDStanza
+	if input.Delivery != nil && input.Delivery.ArgoCD != nil {
+		argo := input.Delivery.ArgoCD
+		stanza = &delivery.ArgoCDStanza{Project: argo.Project, SourceRepo: argo.Source.Repo, SourcePath: argo.Source.Path,
+			EnvironmentRepo: argo.Environments.Repo, EnvironmentRevision: argo.Environments.Revision, EnvironmentPath: argo.Environments.Path}
+	}
+	written, err := delivery.WriteDeployment(input.Service, input.Requirements, probes, stanza)
 	if err != nil {
 		return compiler.DeploymentFiles{}, err
 	}
