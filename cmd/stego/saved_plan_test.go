@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jsell-rh/stego/internal/compiler"
 )
 
 // These tests start from ST-GEN-TD03, save a plan with stego plan and carry it
@@ -65,7 +67,8 @@ func changedOutput(before, after map[string]string) map[string]string {
 func plannedOutput(files []savedPlanFile) map[string]string {
 	planned := map[string]string{}
 	for _, file := range files {
-		if file.Path == "go.mod" || file.Path == "go.sum" {
+		// The module files and the project files of STEGO, such as the architecture model, are not under out.
+		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile {
 			continue
 		}
 		planned[file.Path] = file.SHA256
