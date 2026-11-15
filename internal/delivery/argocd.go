@@ -113,10 +113,10 @@ func WriteApplication(written BaseWritten, stanza ArgoCDStanza) (Application, er
 				"spec": map[string]any{
 					"project": stanza.Project,
 					"sources": []any{
-						map[string]any{"repoURL": stanza.EnvironmentRepo, "targetRevision": stanza.EnvironmentRevision, "path": "{{.destination.overlay_path}}"},
+						map[string]any{"repoURL": stanza.EnvironmentRepo, "targetRevision": stanza.EnvironmentRevision, "path": overlayParameter},
 						map[string]any{"repoURL": stanza.SourceRepo, "targetRevision": "HEAD", "ref": "base"},
 					},
-					"destination": map[string]any{"name": "{{.destination.cluster}}", "namespace": "{{.destination.namespace}}"},
+					"destination": map[string]any{"server": clusterParameter, "namespace": namespaceParameter},
 				},
 			},
 		},
@@ -125,5 +125,83 @@ func WriteApplication(written BaseWritten, stanza ArgoCDStanza) (Application, er
 	if err != nil {
 		return Application{}, err
 	}
-	return Application{Service: written.Service, Project: stanza.Project, Base: stanza.SourcePath, File: data}, nil
+	application, err := LoadApplicationSet(data)
+	if err != nil {
+		return Application{}, fmt.Errorf("the ApplicationSet of %s does not read back: %w", written.Service, err)
+	}
+	return application, nil
+}
+
+// applicationSetDocument is the shape of the ApplicationSet that STEGO writes, and nothing more: a sync policy, a
+// literal destination or any other field is not in it, so the strict decoder refuses it.
+type applicationSetDocument struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name   string            `yaml:"name"`
+		Labels map[string]string `yaml:"labels"`
+	} `yaml:"metadata"`
+	Spec struct {
+		GoTemplate        bool     `yaml:"goTemplate"`
+		GoTemplateOptions []string `yaml:"goTemplateOptions"`
+		Generators        []struct {
+			Git struct {
+				RepoURL  string `yaml:"repoURL"`
+				Revision string `yaml:"revision"`
+				Files    []struct {
+					Path string `yaml:"path"`
+				} `yaml:"files"`
+			} `yaml:"git"`
+		} `yaml:"generators"`
+		Template struct {
+			Metadata struct {
+				Name        string            `yaml:"name"`
+				Labels      map[string]string `yaml:"labels"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"metadata"`
+			Spec struct {
+				Project string `yaml:"project"`
+				Sources []struct {
+					RepoURL        string `yaml:"repoURL"`
+					TargetRevision string `yaml:"targetRevision"`
+					Path           string `yaml:"path,omitempty"`
+					Ref            string `yaml:"ref,omitempty"`
+				} `yaml:"sources"`
+				Destination struct {
+					Server    string `yaml:"server"`
+					Namespace string `yaml:"namespace"`
+				} `yaml:"destination"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	} `yaml:"spec"`
+}
+
+// The parameters of the files generator that each environment file gives (ST-DLV-TM02).
+const (
+	clusterParameter   = "{{.destination.cluster}}"
+	namespaceParameter = "{{.destination.namespace}}"
+	overlayParameter   = "{{.destination.overlay_path}}"
+)
+
+// LoadApplicationSet reads the delivery object back through the strict decoder (ST-DLV-REPO04): one document of the
+// shape that STEGO writes, with one files generator, whose destination cluster, namespace and overlay path are the
+// parameters of that generator and never a literal value (ST-DLV-INV10).
+func LoadApplicationSet(data []byte) (Application, error) {
+	var document applicationSetDocument
+	if err := decodeStrict(data, MaxRequirementsBytes, &document); err != nil {
+		return Application{}, err
+	}
+	spec := document.Spec.Template.Spec
+	switch {
+	case document.APIVersion != "argoproj.io/v1alpha1" || document.Kind != "ApplicationSet":
+		return Application{}, fmt.Errorf("the file is not an Argo CD ApplicationSet")
+	case len(document.Spec.Generators) != 1 || len(document.Spec.Generators[0].Git.Files) != 1:
+		return Application{}, fmt.Errorf("the ApplicationSet has not exactly one files generator")
+	case spec.Destination.Server != clusterParameter || spec.Destination.Namespace != namespaceParameter:
+		return Application{}, fmt.Errorf("the destination is not the cluster and the namespace of the environment file")
+	case len(spec.Sources) != 2 || spec.Sources[0].Path != overlayParameter || spec.Sources[1].Ref != "base" || spec.Sources[1].Path != "":
+		return Application{}, fmt.Errorf("the sources are not the overlay of the environment file and the base")
+	}
+	base := strings.TrimPrefix(document.Spec.Template.Metadata.Annotations["stego.dev/base"], spec.Sources[1].RepoURL+"//")
+	return Application{Service: document.Metadata.Name, Project: spec.Project, Base: base, File: data}, nil
 }

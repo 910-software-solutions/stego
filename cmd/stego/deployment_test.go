@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"text/template"
 
 	"gopkg.in/yaml.v3"
 	"sigs.k8s.io/kustomize/api/krusty"
@@ -328,6 +329,166 @@ func TestKubernetesBaseApply(t *testing.T) {
 		}
 		if !strings.Contains(stdout+stderr, "modified: "+delivery.DeploymentFile) {
 			t.Fatalf("drift does not name %s:\n%s\n%s", delivery.DeploymentFile, stdout, stderr)
+		}
+	})
+}
+
+// deliveryStanza is the delivery stanza of ST-DLV-TD01: the hosted CI provider, the Argo CD project orders, the
+// service's repository with the path of its base, and the location of the platform's environment files.
+const deliveryStanza = `delivery:
+  argocd:
+    project: orders
+    source: {repo: https://git.example/orders.git, path: deploy/base}
+    environments: {repo: https://git.example/platform.git, revision: main, path: environments/orders/*.yaml}
+`
+
+// deliveryProject makes the project of ST-DLV-TD01 with the declaration and the delivery stanza.
+func deliveryProject(t *testing.T, stanza string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "orders")
+	writeRequirementsDeclaration(t, dir, requirementsDeclaration+stanza)
+	git(t, dir, "init", "-q")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "the service orders")
+	return dir
+}
+
+func TestDeliveryObjectApply(t *testing.T) {
+	registry := requirementsRegistry(t)
+	env := requirementsEnv(registry)
+	dir := deliveryProject(t, deliveryStanza)
+	printed := mustRunInProject(t, dir, env, "apply")
+	readSet := func(t *testing.T) (map[string]any, delivery.Application) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, delivery.ApplicationSetFile))
+		if err != nil {
+			t.Fatalf("apply writes no %s: %v", delivery.ApplicationSetFile, err)
+		}
+		application, err := delivery.LoadApplicationSet(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var object map[string]any
+		if err := yaml.Unmarshal(data, &object); err != nil {
+			t.Fatal(err)
+		}
+		return object, application
+	}
+
+	t.Run("ST-DLV-UC07-R04-T01 Applying the plan writes an ApplicationSet whose environment values come from the platform's environment files", func(t *testing.T) {
+		object, application := readSet(t)
+		if application.Service != "orders" || application.Project != "orders" || application.Base != delivery.BaseFolder {
+			t.Errorf("the ApplicationSet names the service %q, the project %q and the base %q", application.Service, application.Project, application.Base)
+		}
+		generators, _ := field(object, "spec", "generators").([]any)
+		files, _ := field(generators[0], "git", "files").([]any)
+		if field(generators[0], "git", "repoURL") != "https://git.example/platform.git" || len(files) != 1 || field(files[0], "path") != "environments/orders/*.yaml" {
+			t.Errorf("the files generator is %v, want the platform's environment files of the stanza", generators)
+		}
+		spec := field(object, "spec", "template", "spec")
+		if field(spec, "project") != "orders" {
+			t.Errorf("the template project is %v", field(spec, "project"))
+		}
+		for name, want := range map[string]string{"server": "{{.destination.cluster}}", "namespace": "{{.destination.namespace}}"} {
+			if got := field(spec, "destination", name); got != want {
+				t.Errorf("the destination %s is %v, want the parameter %s", name, got, want)
+			}
+		}
+		sources, _ := field(spec, "sources").([]any)
+		if len(sources) != 2 || field(sources[0], "path") != "{{.destination.overlay_path}}" || field(sources[1], "repoURL") != "https://git.example/orders.git" {
+			t.Errorf("the sources are %v, want the overlay parameter and the service's repository", sources)
+		}
+
+		// The contract fake of the Argo CD files generator: it reads the environment file of ST-DLV-TD02 as the
+		// parameters and renders the template with Go templates and missingkey=error, as Argo CD does with
+		// goTemplate. Each destination value comes from the environment file.
+		data, err := os.ReadFile(filepath.Join(environmentFixtureDir, "dev.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parameters map[string]any
+		if err := yaml.Unmarshal(data, &parameters); err != nil {
+			t.Fatal(err)
+		}
+		render := func(text any) string {
+			t.Helper()
+			parsed, err := template.New("field").Option("missingkey=error").Parse(text.(string))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out strings.Builder
+			if err := parsed.Execute(&out, parameters); err != nil {
+				t.Fatalf("the generator cannot render %v from the environment file: %v", text, err)
+			}
+			return out.String()
+		}
+		for value, want := range map[any]any{
+			field(spec, "destination", "server"):    field(parameters, "destination", "cluster"),
+			field(spec, "destination", "namespace"): field(parameters, "destination", "namespace"),
+			field(sources[0], "path"):               field(parameters, "destination", "overlay_path"),
+		} {
+			if got := render(value); got != want {
+				t.Errorf("the template field %v renders %q, want %v from the environment file", value, got, want)
+			}
+		}
+		if got := render(field(object, "spec", "template", "metadata", "name")); got != "orders-dev" {
+			t.Errorf("the Application of dev is named %q, want orders-dev", got)
+		}
+	})
+
+	t.Run("ST-DLV-UC07-FL-T Applying the plan writes the Kubernetes base and then the ApplicationSet from the delivery stanza", func(t *testing.T) {
+		for _, file := range []string{delivery.KustomizationFile, delivery.DeploymentFile, delivery.ApplicationSetFile} {
+			if !strings.Contains(printed, "generate: "+file) {
+				t.Errorf("the plan does not list %s:\n%s", file, printed)
+			}
+		}
+		buildBase(t, filepath.Join(dir, delivery.BaseFolder))
+		readSet(t)
+	})
+
+	t.Run("ST-DLV-PO04-T The run that writes the Kubernetes base also writes the delivery object, or says in the plan that it writes none", func(t *testing.T) {
+		state, err := compiler.LoadState(filepath.Join(dir, ".stego", "state.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, file := range []string{delivery.KustomizationFile, delivery.ApplicationSetFile} {
+			if state.LastApplied.ProjectFiles[file] == "" {
+				t.Errorf("the generation record does not list %s", file)
+			}
+		}
+		if strings.Contains(printed, delivery.NoDeliveryStanza) {
+			t.Errorf("the plan says no delivery object is written, but the stanza is there:\n%s", printed)
+		}
+		without := deliveryProject(t, "")
+		second := mustRunInProject(t, without, env, "apply")
+		if !strings.Contains(second, "generate: "+delivery.KustomizationFile) || !strings.Contains(second, delivery.NoDeliveryStanza) {
+			t.Errorf("the run with no stanza does not write the base and say that it writes no delivery object:\n%s", second)
+		}
+		if _, err := os.Stat(filepath.Join(without, delivery.ApplicationSetFile)); err == nil {
+			t.Error("the run with no stanza writes an ApplicationSet")
+		}
+	})
+
+	t.Run("ST-DLV-UC07-R04-T02 A delivery stanza that names a destination, a namespace or an overlay is refused, naming the path, and nothing is written", func(t *testing.T) {
+		for field, line := range map[string]string{
+			"delivery.argocd.destination": "    destination: {cluster: prod}\n",
+			"delivery.argocd.namespace":   "    namespace: orders-prod\n",
+			"delivery.argocd.overlay":     "    overlay: overlays/prod\n",
+		} {
+			stanza := strings.Replace(deliveryStanza, "    project: orders\n", "    project: orders\n"+line, 1)
+			project := deliveryProject(t, stanza)
+			before := folderDigests(t, project)
+			_, stderr, err := runInProject(t, project, env, "apply")
+			if err == nil {
+				t.Errorf("apply accepts a delivery stanza with %s", field)
+				continue
+			}
+			if !strings.Contains(stderr, field) {
+				t.Errorf("the refusal does not name %s:\n%s", field, stderr)
+			}
+			if after := folderDigests(t, project); !maps.Equal(before, after) {
+				t.Errorf("the refused apply with %s changed the project folder", field)
+			}
 		}
 	})
 }
