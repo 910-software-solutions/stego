@@ -123,6 +123,51 @@ func boardRenameContract(ns, tenancyNS string) gen.Context {
 	return ctx
 }
 
+// boardRetypeBase is the release before a retype on each of two tables and a require: the owned entity Board with
+// the title and the required field revision, a string, and the owned entity Tag with the title and the required field
+// level, an int64.
+func boardRetypeBase(ns, tenancyNS string) gen.Context {
+	entities := []types.Entity{{Name: "Board", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "revision", Type: types.FieldTypeString}}},
+		{Name: "Tag", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "level", Type: types.FieldTypeInt64}}}}
+	return runtimeService(ns, tenancyNS, entities, boardCollections(false))
+}
+
+// boardRetype is boardRetypeBase with three changes at expand: the retype board-revision-retype of Board.revision from
+// string to int64 with text_to_int64 and int64_to_text and the fill value 0, whose conversion can fail; the retype
+// tag-level-retype of Tag.level from int64 to string with the pattern ^-?[0-9]{1,18}$, with int64_to_text and
+// text_to_int64, which is total both ways; and the require board-locale-require of the new field Board.locale, a
+// string of at most 10, with the fill value en. The entities are as the compiler gives them (gen.StoredNames): each
+// retyped field keeps its API name, in the column <field>_<type>.
+func boardRetype(ns, tenancyNS string) gen.Context {
+	ten := 10
+	ctx := boardRetypeBase(ns, tenancyNS)
+	ctx.Entities[0].Fields[1].Type = types.FieldTypeInt64
+	ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "locale", Type: types.FieldTypeString, MaxLength: &ten})
+	ctx.Entities[1].Fields[1] = types.Field{Name: "level", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$"}
+	ctx.SchemaChanges = []types.SchemaChange{
+		{ID: "board-revision-retype", Kind: "retype", Entity: "Board", Field: "revision", From: "string", Conversion: "text_to_int64", InverseConversion: "int64_to_text", FillValue: 0},
+		{ID: "tag-level-retype", Kind: "retype", Entity: "Tag", Field: "level", From: "int64", Conversion: "int64_to_text", InverseConversion: "text_to_int64"},
+		{ID: "board-locale-require", Kind: "require", Entity: "Board", Field: "locale", FillValue: "en"},
+	}
+	ctx.SchemaHistory = []types.SchemaStep{{Change: "board-revision-retype", Phase: "expand"}, {Change: "tag-level-retype", Phase: "expand"},
+		{Change: "board-locale-require", Phase: "expand"}}
+	entities, err := gen.StoredNames(ctx.Entities, nil, ctx.Collections, ctx.SchemaChanges)
+	if err != nil {
+		panic(err)
+	}
+	ctx.Entities = entities
+	return ctx
+}
+
+// boardRetypeContract is boardRetype with the contract step of each of its three changes after the expand steps.
+func boardRetypeContract(ns, tenancyNS string) gen.Context {
+	ctx := boardRetype(ns, tenancyNS)
+	for _, change := range []string{"board-revision-retype", "tag-level-retype", "board-locale-require"} {
+		ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: change, Phase: "contract"})
+	}
+	return ctx
+}
+
 // tenancyFiles generates the tenancy component of the service ctx into its tenancy namespace.
 func tenancyFiles(t *testing.T, ctx gen.Context) []gen.File {
 	t.Helper()
@@ -313,12 +358,45 @@ func TestSchemaSteps(t *testing.T) {
 			t.Errorf("the contract of a rename of a field with a default gives %v, want a refusal", err)
 		}
 	})
+	t.Run("ST-SUP-RC01-OC23-T02 The completeness CHECK and the backfill of a retype with no fill value allow a value that does not convert", func(t *testing.T) {
+		ctx := boardRetype("boards", "boardtenancy")
+		ctx.SchemaChanges[0].FillValue = nil
+		files, _, err := new(postgresadapter.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest := generated(t, files, "boards/schema_manifest.go")
+		for _, want := range []string{`Definition: "CHECK (((revision_int64 IS NOT NULL) OR (revision IS NULL) OR (NOT pg_input_is_valid(revision, 'pg_catalog.int8'::text))))"`,
+			`Guard: "pg_catalog.pg_input_is_valid({K}, 'pg_catalog.int8')"`, `ELSE NULL END)"`} {
+			if !strings.Contains(manifest, want) {
+				t.Errorf("the manifest of a retype with no fill value does not hold %s:\n%s", want, manifest)
+			}
+		}
+		sync := generated(t, files, "boards/migrations/step_0001_board-revision-retype_expand_sync.sql")
+		if want := `CHECK ((revision_int64 IS NOT NULL) OR (revision IS NULL) OR (NOT pg_catalog.pg_input_is_valid(revision, 'pg_catalog.int8'))) NOT VALID`; !strings.Contains(sync, want) {
+			t.Errorf("the sync migration of a retype with no fill value does not hold %s:\n%s", want, sync)
+		}
+	})
 	t.Run("ST-SUP-RC01-OC22-T02 Generation refuses a step that is not the expand step of an add or a rename, or an add that the rows cannot take", func(t *testing.T) {
 		refused := map[string]func(*gen.Context){
-			"retype": func(ctx *gen.Context) {
-				ctx.Entities[0].Fields[2].Type = types.FieldTypeInt64
-				ctx.SchemaChanges = append(ctx.SchemaChanges, types.SchemaChange{ID: "board-rank-retype", Kind: "retype", Entity: "Board", Field: "rank", From: "int32", Conversion: "int32_to_int64", InverseConversion: "int64_to_int32"})
-				ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "board-rank-retype", Phase: "expand"})
+			"drop": func(ctx *gen.Context) {
+				ctx.Entities[0].Fields = ctx.Entities[0].Fields[:2]
+				ctx.SchemaChanges = append(ctx.SchemaChanges, types.SchemaChange{ID: "board-rank-drop", Kind: "drop", Entity: "Board", Field: "rank", Definition: "int32"})
+				ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "board-rank-drop", Phase: "expand"})
+			},
+			"unique after it": func(ctx *gen.Context) {
+				*ctx = boardRetype(ctx.OutputNamespace, ctx.PeerNamespaces[gen.TenancyComponent])
+				ctx.Entities[0].Fields[1].Unique = true
+			},
+			"is of a unique field": func(ctx *gen.Context) {
+				*ctx = boardRetype(ctx.OutputNamespace, ctx.PeerNamespaces[gen.TenancyComponent])
+				ctx.Entities[0].Fields[2].Unique = true
+			},
+			"one sync trigger on a table": func(ctx *gen.Context) {
+				*ctx = boardRetype(ctx.OutputNamespace, ctx.PeerNamespaces[gen.TenancyComponent])
+				ctx.Entities[1].Fields[1] = types.Field{Name: "level", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$"}
+				ctx.SchemaChanges[1].Entity, ctx.Entities[0].Fields = "Board", append(ctx.Entities[0].Fields, types.Field{Name: "level", Type: types.FieldTypeString, Column: "level_string"})
+				ctx.Entities[1].Fields = ctx.Entities[1].Fields[:1]
 			},
 			"is not built": func(ctx *gen.Context) {
 				ctx.SchemaHistory = append(ctx.SchemaHistory, types.SchemaStep{Change: "add-card", Phase: "contract"})

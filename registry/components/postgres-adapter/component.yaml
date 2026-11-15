@@ -1,6 +1,6 @@
 kind: component
 name: postgres-adapter
-version: 6.4.0
+version: 6.5.0
 stage: ga
 output_namespace: internal/storage
 
@@ -30,3 +30,15 @@ architecture:
   flow: "Reads and writes the rows of each entity in PostgreSQL in one transaction."
   ports:
     storage-adapter: inbound
+
+# The conversions of a retype (ST-DECL-INV62, ST-DECL-INV63). A partial conversion is total only under one of its
+# total_when limits on the field before the change; else the retype needs a fill value.
+conversions:
+  - {name: integer_to_int64, from: int32, to: int64, total: true}
+  - {name: int64_to_integer, from: int64, to: int32, total: false, total_when: [{min: -2147483648, max: 2147483647}]}
+  - {name: integer_to_text, from: int32, to: string, total: true}
+  - {name: int64_to_text, from: int64, to: string, total: true}
+  - {name: bool_to_text, from: bool, to: string, total: true}
+  - {name: text_to_integer, from: string, to: int32, total: false, total_when: [{pattern: "^[0-9]{1,9}$"}, {pattern: "^-?[0-9]{1,9}$"}]}
+  - {name: text_to_int64, from: string, to: int64, total: false, total_when: [{pattern: "^[0-9]{1,9}$"}, {pattern: "^-?[0-9]{1,9}$"}, {pattern: "^[0-9]{1,18}$"}, {pattern: "^-?[0-9]{1,18}$"}]}
+  - {name: text_to_bool, from: string, to: bool, total: false, total_when: [{pattern: "^(true|false)$"}]}

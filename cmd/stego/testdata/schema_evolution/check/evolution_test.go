@@ -227,9 +227,9 @@ func (j *job) running() bool {
 
 // api is one api replica of a release.
 type api struct {
-	base string
-	log  *buffer
-	stop func()
+	base, release string
+	log           *buffer
+	stop          func()
 }
 
 // freePort gives a free port of the loopback address.
@@ -246,7 +246,7 @@ func (d *database) serve(release string) *api {
 	port := freePort(t)
 	cursor := make([]byte, 32)
 	_, _ = rand.Read(cursor)
-	a := &api{base: "http://127.0.0.1:" + port, log: &buffer{}}
+	a := &api{base: "http://127.0.0.1:" + port, release: release, log: &buffer{}}
 	process := exec.Command(binary(release))
 	process.Env = append(append(os.Environ(), d.env...), "STEGO_MODE=api", "PORT="+port, "DATABASE_URL="+d.as(stegoruntime.RuntimeRole),
 		"STEGO_WORKER_DATABASE_URL="+d.as(stegoruntime.WorkerRole), "STEGO_RELAY_DATABASE_URL="+d.as(stegoruntime.RelayRole),
@@ -349,6 +349,20 @@ func (d *database) relate(c caller, resourceType, id, relation string) {
 	must(d.t, err)
 }
 
+// relateParent writes the relationship relation of the resource of the type and the ID in the tenant of the caller
+// to the subject of the subject type and ID in the same tenant, as the outbox relay writes it.
+func (d *database) relateParent(c caller, resourceType, id, relation, subjectType, subjectID string) {
+	resourceID, err := authz.ResourceID(c.tenant, id)
+	must(d.t, err)
+	subject, err := authz.ResourceID(c.tenant, subjectID)
+	must(d.t, err)
+	_, err = v1.NewPermissionsServiceClient(d.spice).WriteRelationships(context.Background(), &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Relation: relation,
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: subjectType, ObjectId: subject}}}}}})
+	must(d.t, err)
+}
+
 type reply struct {
 	status int
 	body   []byte
@@ -367,6 +381,12 @@ func (r reply) object(t *testing.T) map[string]any {
 func (d *database) send(a *api, c caller, method, path, body string) reply {
 	t := d.t
 	t.Helper()
+	// From v2 a user has the required field locale (user-locale-require), so a create or a change of a user through
+	// v2 or v3 that names none sends the fill value en, which v1 does not know.
+	if a.release != "v1" && (method == http.MethodPost || method == http.MethodPut) && strings.Contains(path, "/users") &&
+		strings.HasPrefix(body, "{") && !strings.Contains(body, `"locale"`) {
+		body = `{"locale":"en",` + strings.TrimPrefix(body, "{")
+	}
 	var reader io.Reader
 	if body != "" {
 		reader = strings.NewReader(body)
@@ -563,7 +583,8 @@ func until(t *testing.T, within time.Duration, what string, condition func() boo
 	}
 }
 
-// probeLines gives the JSON console lines of the output that name the observation.
+// probeLines gives the JSON console lines of the output that name the observation, of the change of the rename or of
+// no change.
 func probeLines(output, name string) []map[string]any {
 	var lines []map[string]any
 	for _, line := range strings.Split(output, "\n") {
@@ -571,9 +592,15 @@ func probeLines(output, name string) []map[string]any {
 			continue
 		}
 		var document map[string]any
-		if json.Unmarshal([]byte(line), &document) == nil {
-			lines = append(lines, document)
+		if json.Unmarshal([]byte(line), &document) != nil {
+			continue
 		}
+		// The tests of the backfill read the lines of the rename; the backfill of the retype of the same job reports
+		// under its own change.
+		if fields, _ := document["fields"].(map[string]any); fields != nil && fields["change"] != nil && fields["change"] != change {
+			continue
+		}
+		lines = append(lines, document)
 	}
 	return lines
 }
@@ -617,8 +644,8 @@ func TestEvolution(t *testing.T) {
 		if strings.Join(triggers, ",") != "users_contact_email_sync" {
 			t.Errorf("the users table has the triggers %v, want the one new trigger users_contact_email_sync", triggers)
 		}
-		if len(columnsAfter) != len(columnsBefore)+2 {
-			t.Errorf("the table has the columns %v after the step, want those of v1 with contact_email and nickname", columnsAfter)
+		if len(columnsAfter) != len(columnsBefore)+3 {
+			t.Errorf("the table has the columns %v after the step, want those of v1 with contact_email, nickname and locale", columnsAfter)
 		}
 	})
 
@@ -650,6 +677,94 @@ func TestEvolution(t *testing.T) {
 		read := d.send(v2api, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, "").object(t)
 		if read["email"] != "r04@acme.test" || read["contact_email"] != nil {
 			t.Fatalf("the read through v2 is %v, want email and no contact_email", read)
+		}
+	})
+
+	t.Run("ST-GEN-UC12-R03-T04 Each release reads what the other writes for a retype and a require at expand, and no value is lost", func(t *testing.T) {
+		d.t = t
+		if jobErr != nil {
+			t.Fatalf("the migration job of v2 failed: %v\n%s", jobErr, job.out)
+		}
+		// The migration job of v2 converted every OrgSetting row before the rollout, and the require's default gave
+		// every user there the fill value with no backfill (decision on ST-GEN-Q22 (a)).
+		if n := d.count(`SELECT count(*) FROM public.org_settings WHERE rank_string IS DISTINCT FROM rank::text`); n != 0 {
+			t.Errorf("%d OrgSetting rows have no rank_string equal to rank", n)
+		}
+		if n := d.count(`SELECT count(*) FROM stego_schema.backfills WHERE change_id = 'orgsetting-rank-retype' AND completed_at IS NOT NULL AND rows_moved = 100 AND failed_rows = 0`); n != 1 {
+			t.Errorf("the backfill of the retype is not complete with 100 rows moved and none failed")
+		}
+		if n := d.count(`SELECT count(*) FROM public.users WHERE locale IS DISTINCT FROM 'en'`); n != 0 {
+			t.Errorf("%d users do not read the fill value en of the require", n)
+		}
+		if n := d.count(`SELECT count(*) FROM stego_schema.backfills WHERE change_id = 'user-locale-require'`); n != 0 {
+			t.Errorf("the require has a backfill row")
+		}
+		// A new setting gets the relationship to its organization by hand, as the harness runs no outbox relay.
+		put := func(a *api, key, rank string) {
+			r := d.send(a, owner, http.MethodPut, "/organizations/"+org+"/orgsettings", `{"key":"`+key+`","value":{},"rank":`+rank+`}`)
+			if r.status != http.StatusOK && r.status != http.StatusCreated {
+				t.Fatalf("an upsert of %s through %s answered %d %s", key, a.release, r.status, r.body)
+			}
+			if r.status == http.StatusCreated {
+				id, _ := r.object(t)["id"].(string)
+				d.relateParent(owner, "org_setting", id, "organization", "organization", org)
+			}
+		}
+		stored := func(key string) (string, string) {
+			var old, now sql.NullString
+			must(t, d.admin.QueryRow(`SELECT rank::text, rank_string FROM public.org_settings WHERE tenant_id = 't-00' AND key = $1`, key).Scan(&old, &now))
+			return old.String, now.String
+		}
+		// Edge values of int64 through each writer, compared in the database, where no JSON number rounds them.
+		// The pattern of the new field takes at most 18 digits, so v2 writes the edges of that range and v1 the edges of
+		// int64 too, which v2 reads as a text of 19 digits.
+		for i, value := range []string{"-9223372036854775808", "-999999999999999999", "-9007199254740993", "0", "7", "9007199254740993", "999999999999999999", "9223372036854775807"} {
+			for _, a := range []*api{v1api, v2api} {
+				if a.release == "v2" && len(strings.TrimPrefix(value, "-")) > 18 {
+					continue
+				}
+				key := fmt.Sprintf("r03-%s-%d", a.release, i)
+				body := value
+				if a.release == "v2" {
+					body = `"` + value + `"`
+				}
+				put(a, key, body)
+				if old, now := stored(key); old != value || now != value {
+					t.Errorf("the rank %s written through %s is %q in the old column and %q in the new one", value, a.release, old, now)
+				}
+			}
+		}
+		// A change through each release of the row that the other wrote.
+		put(v2api, "r03-v1-4", `"8"`)
+		put(v1api, "r03-v2-4", "9")
+		if old, now := stored("r03-v1-4"); old != "8" || now != "8" {
+			t.Errorf("a change through v2 of the row of v1 gives %q, %q", old, now)
+		}
+		if old, now := stored("r03-v2-4"); old != "9" || now != "9" {
+			t.Errorf("a change through v1 of the row of v2 gives %q, %q", old, now)
+		}
+		list := func(a *api) string {
+			r := d.send(a, owner, http.MethodGet, "/organizations/"+org+"/orgsettings?limit=100", "")
+			if r.status != http.StatusOK {
+				t.Fatalf("a list through %s answered %d %s", a.release, r.status, r.body)
+			}
+			return string(r.body)
+		}
+		if body := list(v1api); !strings.Contains(body, `"rank":8`) {
+			t.Errorf("v1 does not read the rank 8 of v2 as a number:\n%s", body)
+		}
+		if body := list(v2api); !strings.Contains(body, `"rank":"9"`) {
+			t.Errorf("v2 does not read the rank 9 of v1 as a string:\n%s", body)
+		}
+		// A user that v1 creates, which knows no locale, reads the fill value through v2.
+		created := d.send(v1api, owner, http.MethodPost, "/organizations/"+org+"/users", `{"email":"r03@acme.test","display_name":"R","role":"viewer"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("a create through v1 answered %d %s", created.status, created.body)
+		}
+		id, _ := created.object(t)["id"].(string)
+		d.relate(owner, "member", id, "owner")
+		if read := d.send(v2api, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, "").object(t); read["locale"] != "en" {
+			t.Errorf("v2 reads the user of v1 as %v, want the locale en", read)
 		}
 	})
 
@@ -1022,6 +1137,19 @@ func TestContract(t *testing.T) {
 			!strings.Contains(unique["users_contact_email_key"], "(tenant_id, contact_email)") {
 			t.Fatalf("after the contract the users table has the columns %v, the unique indexes %v and the triggers %v; want no email, no trigger, contact_email NOT NULL with its unique index",
 				columns, unique, triggers)
+		}
+		// The contract of the retype drops the old column rank and makes rank_string NOT NULL; the
+		// contract of the require makes locale NOT NULL and keeps its default (decision on ST-GEN-Q22 (a)).
+		if n := d.count(`SELECT count(*) FROM pg_catalog.pg_attribute a WHERE a.attrelid = 'public.org_settings'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+  AND (a.attname = 'rank' OR (a.attname = 'rank_string' AND a.attnotnull))`); n != 1 {
+			t.Fatalf("after the contract the org_settings table has %d of the columns rank and rank_string NOT NULL, want only the second", n)
+		}
+		if n := d.count(`SELECT count(*) FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_attrdef f ON f.adrelid = a.attrelid AND f.adnum = a.attnum
+  WHERE a.attrelid = 'public.users'::regclass AND a.attname = 'locale' AND a.attnotnull AND pg_catalog.pg_get_expr(f.adbin, f.adrelid) LIKE '''en''%'`); n != 1 {
+			t.Fatalf("after the contract the users table has no locale NOT NULL with the default en")
+		}
+		if n := d.count(`SELECT count(*) FROM public.org_settings WHERE rank_string IS NULL`); n != 0 {
+			t.Fatalf("%d OrgSetting rows lost their rank in the contract", n)
 		}
 		v3api := d.serve("v3")
 		created := d.send(v3api, owner, http.MethodPost, "/organizations/"+org+"/users", `{"email":"r02@acme.test","display_name":"R","role":"viewer"}`)

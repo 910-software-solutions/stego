@@ -1,12 +1,16 @@
 package postgresadapter
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path"
 	"reflect"
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/types"
@@ -16,9 +20,11 @@ import (
 // first release, and each step of the schema history is one SQL migration after the component's own migrations,
 // named step_<position>_<change ID>_<phase>, from the declaration alone. A database that the migrations of each
 // release made in turn and a new one that the migrations of the last release made get the same schema
-// (ST-GEN-INV35). Generation carries out the add kind only: its step at expand creates the table of a new entity,
-// with its row-level security in a pooled service, or adds the column of a new field, and changes nothing that is
-// there (ST-GEN-UC12-R02).
+// (ST-GEN-INV35). Generation carries out the add, rename, retype and require kinds: an add at expand creates the table
+// of a new entity, with its row-level security in a pooled service, or adds the column of a new field, and changes
+// nothing that is there (ST-GEN-UC12-R02); a rename and a retype add a new column with a sync trigger and a backfill,
+// and a require adds its column with the fill value as its default (decision on ST-GEN-Q22 (a), orchestrator under the
+// owner's delegation, 2026-11-14); each but the add has a contract step (ST-GEN-UC15).
 
 // maxSchemaSteps is the most steps that the four digits of a step position name, so the byte order of the names
 // is the order of the steps.
@@ -150,12 +156,45 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 	for _, change := range ctx.SchemaChanges {
 		changes[change.ID] = change
 	}
-	at := func(steps int) ([]tableModel, error) {
+	var at func(steps int) ([]tableModel, error)
+	at = func(steps int) ([]tableModel, error) {
 		shaped, err := ctx.AtSchemaStep(steps)
 		if err != nil {
 			return nil, err
 		}
-		return tableModels(shaped)
+		models, err := tableModels(shaped)
+		if err != nil {
+			return nil, err
+		}
+		if models, err = requiredAt(ctx, models, steps); err != nil {
+			return nil, err
+		}
+		// The old column of a rename or a retype stays in the table from its expand step until its contract step, so
+		// the models after each step between keep it, with its CHECK and its indexes.
+		expand, contract := map[string]int{}, map[string]int{}
+		for i, step := range ctx.SchemaHistory {
+			if step.Phase == "expand" {
+				expand[step.Change] = i + 1
+			} else {
+				contract[step.Change] = i + 1
+			}
+		}
+		for _, change := range ctx.SchemaChanges {
+			e, c := expand[change.ID], contract[change.ID]
+			if (change.Kind != "rename" && change.Kind != "retype") || e == 0 || e > steps || (c != 0 && c <= steps) {
+				continue
+			}
+			pair, err := pairOf(ctx, change)
+			if err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+			earlier, err := at(e - 1)
+			if err != nil {
+				return nil, err
+			}
+			models = withColumnOf(models, earlier, change, pair.k)
+		}
+		return models, nil
 	}
 	before, err := at(0)
 	if err != nil {
@@ -172,8 +211,9 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema_history[%d] names the schema change %q, which schema_changes does not declare", i, step.Change)
 		}
-		if (change.Kind != "add" && change.Kind != "rename") || (step.Phase != "expand" && (step.Phase != "contract" || change.Kind != "rename")) {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add and the expand and contract steps of a rename", i, step.Phase, change.ID, change.Kind)
+		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || (change.Kind == "add" && step.Phase == "expand")
+		if !built || (step.Phase != "expand" && step.Phase != "contract") {
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add and the expand and contract steps of a rename, a retype and a require", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {
@@ -189,7 +229,12 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			if expand == "" {
 				return nil, fmt.Errorf("schema_history[%d]: the contract step of %s has no expand step before it", i, change.ID)
 			}
-			contract, err := contractSQL(ctx, before, after, change)
+			var contract *contractStep
+			if change.Kind == "require" {
+				contract, err = requireContractSQL(before, after, change)
+			} else {
+				contract, err = contractSQL(ctx, before, after, change)
+			}
 			if err != nil {
 				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
 			}
@@ -204,8 +249,28 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			before = after
 			continue
 		}
+		if change.Kind == "rename" || change.Kind == "retype" {
+			// The schema check of the release before accepts at most one sync trigger on a table (ST-SUP-RP15-LC02
+			// rule 1), so a second rename or retype on the table waits for the contract step of the first.
+			for j, earlier := range ctx.SchemaHistory[:i] {
+				other := changes[earlier.Change]
+				if earlier.Phase != "expand" || other.ID == change.ID || other.Entity != change.Entity || (other.Kind != "rename" && other.Kind != "retype") {
+					continue
+				}
+				if !slices.ContainsFunc(ctx.SchemaHistory[j+1:i], func(s types.SchemaStep) bool { return s.Change == other.ID && s.Phase == "contract" }) {
+					return nil, fmt.Errorf("schema change %s: the %s %s on the entity %s is still at expand; the schema check of the release before accepts one sync trigger on a table, so put the contract step of %s first", change.ID, other.Kind, other.ID, change.Entity, other.ID)
+				}
+			}
+		}
+		if change.Kind == "require" {
+			// Each row gets the fill value, so a unique index of the field could not be built on a table with two rows
+			// (security review of PR #335, L3, orchestrator under the owner's delegation, 2026-11-14).
+			if table, ok := findTable(after, tableName(change.Entity)); ok && slices.ContainsFunc(table.unique, func(columns []string) bool { return slices.Contains(columns, change.Field) }) {
+				return nil, fmt.Errorf("schema change %s: the require of %s.%s is of a unique field, whose rows would all get the fill value; it is not built", change.ID, change.Entity, change.Field)
+			}
+		}
 		var added *stepAddition
-		if change.Kind == "rename" {
+		if change.Kind == "rename" || change.Kind == "retype" {
 			added, err = renameSQL(ctx, before, after, change)
 		} else {
 			added, err = addedSQL(before, after, key, security != "")
@@ -229,10 +294,6 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		}
 		if len(added.validates) > 0 {
 			steps = append(steps, schemaStep{Name: ValidateMigrationName(name), Change: change, Phase: step.Phase, Body: validateBody(added.validates), Validate: true, Validations: added.validates})
-		}
-		if change.Kind == "rename" {
-			// The old column stays in the table until the contract step, so the model of the next step keeps it.
-			after = withColumnOf(after, before, change)
 		}
 		before = after
 	}
@@ -360,9 +421,10 @@ func SyncTriggerName(entity, column string) string { return sqlName(tableName(en
 func BackfillLease(change string) string { return "stego.backfill." + change }
 
 // StepTrigger and StepBackfill give the sync trigger and the backfill lease that the step of a change at expand
-// adds, or empty when the kind adds none: only a rename adds them yet (ST-GEN-UC12-R01).
+// adds, or empty when the kind adds none: a rename and a retype add them, and an add and a require add none
+// (ST-GEN-UC12-R01, decision on ST-GEN-Q22 (a), orchestrator under the owner's delegation, 2026-11-14).
 func StepTrigger(change types.SchemaChange, phase string) string {
-	if change.Kind == "rename" && phase == "expand" {
+	if (change.Kind == "rename" || change.Kind == "retype") && phase == "expand" {
 		return SyncTriggerName(change.Entity, change.Field)
 	}
 	return ""
@@ -370,7 +432,7 @@ func StepTrigger(change types.SchemaChange, phase string) string {
 
 // StepBackfill gives the backfill lease of the step, or empty.
 func StepBackfill(change types.SchemaChange, phase string) string {
-	if change.Kind == "rename" && phase == "expand" {
+	if (change.Kind == "rename" || change.Kind == "retype") && phase == "expand" {
 		return BackfillLease(change.ID)
 	}
 	return ""
@@ -503,7 +565,8 @@ GRANT EXECUTE ON FUNCTION stego_schema.release_beat(text, text, text, integer) T
 GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
 `
 
-// renameSQL gives the migrations of the expand step of a rename (ST-GEN-UC12-R02, ST-GEN-UC12-R03,
+// renameSQL gives the migrations of the expand step of a rename, and of a retype by the pair of pairOf with its
+// conversion (ST-GEN-UC12-R02, ST-GEN-UC12-R03,
 // ST-SUP-RC01-OC23, ST-SUP-RC01-OC25): its own migration adds the new column U nullable and with no default, and the
 // CHECK of its field after the change NOT VALID, which a later migration validates; it changes nothing that is
 // there, so the old column K keeps its type, NOT NULL, CHECK and indexes. It makes the schema StepSchema, the sync
@@ -518,39 +581,52 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	if err != nil {
 		return nil, err
 	}
+	pair, err := pairOf(ctx, change)
+	if err != nil {
+		return nil, err
+	}
 	name := tableName(change.Entity)
 	old, okOld := findTable(before, name)
 	next, okNext := findTable(after, name)
 	if !okOld || !okNext {
-		return nil, fmt.Errorf("the rename names the entity %s, whose table is not there", change.Entity)
+		return nil, fmt.Errorf("the %s names the entity %s, whose table is not there", change.Kind, change.Entity)
 	}
-	k, okK := findColumn(old, change.From)
-	u, okU := findColumn(next, change.Field)
+	k, okK := findColumn(old, pair.k)
+	u, okU := findColumn(next, pair.u)
 	if !okK || !okU {
-		return nil, fmt.Errorf("the rename of %s.%s to %s finds no column %s before the step or %s after it", change.Entity, change.From, change.Field, change.From, change.Field)
+		return nil, fmt.Errorf("the %s of %s.%s finds no column %s before the step or %s after it", change.Kind, change.Entity, change.Field, pair.k, pair.u)
 	}
-	if _, clash := findColumn(old, change.Field); clash {
-		return nil, fmt.Errorf("the table %s has a column %s already, so the rename cannot add it", name, change.Field)
+	if _, clash := findColumn(old, pair.u); clash {
+		return nil, fmt.Errorf("the table %s has a column %s already, so the %s cannot add it", name, pair.u, change.Kind)
 	}
 	// The schema check of the release before accepts the sync trigger for a column K in a unique key only when the
 	// key is K alone after the tenant column, and the step gives U the same unique key by CREATE UNIQUE INDEX
 	// CONCURRENTLY before the trigger (ST-SUP-RP15-LC02 rule 2, decision on ST-GEN-Q18 (a), orchestrator under the
-	// owner's delegation, 2026-11-13).
+	// owner's delegation, 2026-11-13). A retype of a field in a unique key is not built: two values of the old type
+	// that differ can convert to one value of the new type.
 	for _, columns := range old.unique {
-		if slices.Contains(columns, change.From) && len(columns) != 1 {
-			return nil, fmt.Errorf("the rename of %s.%s is of a field in a unique key of more than one field, whose sync trigger the schema check of the release before refuses (ST-SUP-RP15-LC02)", change.Entity, change.From)
+		if slices.Contains(columns, pair.k) && (len(columns) != 1 || change.Kind == "retype") {
+			return nil, fmt.Errorf("the %s of %s.%s is of a field in a unique key that its sync trigger cannot carry (ST-SUP-RP15-LC02); it is not built", change.Kind, change.Entity, change.Field)
+		}
+	}
+	// A retype that also makes its field unique has no unique change, and two old values can convert to one new value,
+	// so its unique index could not be built (security review of PR #335, L2, orchestrator under the owner's
+	// delegation, 2026-11-14).
+	for _, columns := range next.unique {
+		if change.Kind == "retype" && slices.Contains(columns, pair.u) {
+			return nil, fmt.Errorf("the retype of %s.%s is of a field that is unique after it, which a retype does not carry; it is not built", change.Entity, change.Field)
 		}
 	}
 	for _, fk := range old.foreign {
-		if slices.Contains(fk.from, change.From) {
-			return nil, fmt.Errorf("the rename of %s.%s is of a reference, whose foreign key a rename does not carry yet", change.Entity, change.From)
+		if slices.Contains(fk.from, pair.k) {
+			return nil, fmt.Errorf("the %s of %s.%s is of a reference, whose foreign key a %s does not carry yet", change.Kind, change.Entity, change.Field, change.Kind)
 		}
 	}
-	if k.typ != u.typ {
+	if change.Kind == "rename" && k.typ != u.typ {
 		return nil, fmt.Errorf("the rename of %s.%s changes the column type from %s to %s; a rename keeps the type, and a retype changes it", change.Entity, change.From, k.typ, u.typ)
 	}
 	trigger := SyncTriggerName(change.Entity, change.Field)
-	complete := CompleteCheckName(change.Entity, change.Field)
+	complete := CompleteCheckName(change.Entity, pair.u)
 	if !validTriggerName(trigger) || !validTriggerName(complete) {
 		return nil, fmt.Errorf("the sync trigger name %s is not a name the schema check accepts", trigger)
 	}
@@ -558,7 +634,7 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	out := &stepAddition{}
 	fmt.Fprintf(&out.body, "ALTER TABLE %s ADD COLUMN %s %s;\n", table, sqlIdentifier(u.name), u.typ)
 	for _, check := range next.checks {
-		if check.name == sqlName(name, change.Field, "check") {
+		if check.name == sqlName(name, pair.u, "check") {
 			fmt.Fprintf(&out.body, "ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s) NOT VALID;\n", table, sqlIdentifier(check.name), check.expression)
 			out.validates = append(out.validates, validation{table: table, name: check.name})
 		}
@@ -566,13 +642,13 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	// The sync function, its trigger and the backfill row come in a migration of their own after the indexes, so
 	// that U has its unique key, valid, before the trigger moves K into it (ST-SUP-RP15-LC02 rule 2).
 	fmt.Fprintf(&out.sync, "CREATE SCHEMA IF NOT EXISTS %s;\n", StepSchema)
-	out.sync.WriteString(syncFunction(trigger, syncSource(change.ID, owner, change.From, change.Field)) + ";\n")
+	out.sync.WriteString(syncFunction(trigger, syncSourceOf(change.ID, owner, pair)) + ";\n")
 	// The completeness CHECK comes NOT VALID in the transaction of the trigger, and before it, so that its ACCESS
 	// EXCLUSIVE lock is the first lock of the transaction on the table and no write of the release before lands
 	// between the two; it checks no row that is there, and each write after it meets it, which the trigger of
 	// version 2 fills. The backfill validates it before it marks the change complete (decision on ST-SUP-Q120 (c),
 	// orchestrator under the owner's delegation, 2026-11-14).
-	fmt.Fprintf(&out.sync, "ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s) NOT VALID;\n", table, sqlIdentifier(complete), completeExpression(change.From, change.Field))
+	fmt.Fprintf(&out.sync, "ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s) NOT VALID;\n", table, sqlIdentifier(complete), completeExpressionOf(pair))
 	fmt.Fprintf(&out.sync, "CREATE TRIGGER %s BEFORE INSERT OR UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION %s.%s();\n",
 		sqlIdentifier(trigger), table, StepSchema, sqlIdentifier(trigger))
 	// The functions revoke EXECUTE from PUBLIC and grant it to no role: only the owner role, which runs the backfill
@@ -582,12 +658,12 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	fmt.Fprintf(&out.sync, "INSERT INTO stego_schema.backfills (change_id) VALUES (%s) ON CONFLICT (change_id) DO NOTHING;\n", sqlString(change.ID))
 	// The table of the release reports, with EXECUTE on its two functions for the runtime role (ST-SUP-RP09-LC14).
 	fmt.Fprintf(&out.sync, releasesText, sqlIdentifier(runtime))
-	if slices.Contains(next.search, change.Field) {
-		out.indexes = append(out.indexes, stepIndex{name: "public." + sqlIdentifier(searchName(next.name, change.Field)),
-			statement: concurrently(searchIndexSQL(next, change.Field)), definition: searchIndexDefinition(next, change.Field)})
+	if slices.Contains(next.search, pair.u) {
+		out.indexes = append(out.indexes, stepIndex{name: "public." + sqlIdentifier(searchName(next.name, pair.u)),
+			statement: concurrently(searchIndexSQL(next, pair.u)), definition: searchIndexDefinition(next, pair.u)})
 	}
 	for _, columns := range next.unique {
-		if slices.Contains(columns, change.Field) {
+		if slices.Contains(columns, pair.u) {
 			out.indexes = append(out.indexes, stepIndex{name: "public." + sqlIdentifier(uniqueName(next.name, columns)),
 				statement: concurrently(uniqueIndexSQL(next, columns)), definition: uniqueIndexDefinition(next, columns)})
 		}
@@ -595,7 +671,7 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	return out, nil
 }
 
-// contractSQL gives the contract step of a rename (ST-GEN-UC15-R02, ST-SUP-RC01-OC24, ST-SUP-RC01-OC39): before is
+// contractSQL gives the contract step of a rename or a retype, by the pair of pairOf (ST-GEN-UC15-R02, ST-SUP-RC01-OC24, ST-SUP-RC01-OC39): before is
 // the tables of the expand step, with the old column K, and after the tables of the declaration after the step, with
 // the new column U alone. A required field makes U NOT NULL with a CHECK (U IS NOT NULL) NOT VALID, which a later
 // statement validates, then SET NOT NULL and the drop of the CHECK; then K becomes nullable, so a write of the
@@ -606,19 +682,23 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 // still has to run, so a rerun after a failure part way recovers. It refuses a field with a default, which the
 // manifest of the release of the rename does not give U.
 func contractSQL(ctx gen.Context, before, after []tableModel, change types.SchemaChange) (*contractStep, error) {
+	pair, err := pairOf(ctx, change)
+	if err != nil {
+		return nil, err
+	}
 	name := tableName(change.Entity)
 	old, okOld := findTable(before, name)
 	next, okNext := findTable(after, name)
 	if !okOld || !okNext {
 		return nil, fmt.Errorf("the rename names the entity %s, whose table is not there", change.Entity)
 	}
-	k, okK := findColumn(old, change.From)
-	u, okU := findColumn(next, change.Field)
+	k, okK := findColumn(old, pair.k)
+	u, okU := findColumn(next, pair.u)
 	if !okK || !okU {
 		return nil, fmt.Errorf("the contract of the rename of %s.%s to %s finds no column %s before the step or %s after it", change.Entity, change.From, change.Field, change.From, change.Field)
 	}
-	if _, kept := findColumn(next, change.From); kept {
-		return nil, fmt.Errorf("the table %s keeps the column %s after the contract of its rename", name, change.From)
+	if _, kept := findColumn(next, pair.k); kept {
+		return nil, fmt.Errorf("the table %s keeps the column %s after the contract of its %s", name, pair.k, change.Kind)
 	}
 	if u.defaultClause != "" {
 		return nil, fmt.Errorf("the contract of the rename of %s.%s to %s is of a field with a default, which the schema manifest of the release of the rename does not give the new column; it is not built", change.Entity, change.From, change.Field)
@@ -626,14 +706,14 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 	table := "public." + sqlIdentifier(name)
 	regclass := sqlString(table) + "::pg_catalog.regclass"
 	trigger := SyncTriggerName(change.Entity, change.Field)
-	complete := CompleteCheckName(change.Entity, change.Field)
-	notNull := NotNullCheckName(change.Entity, change.Field)
+	complete := CompleteCheckName(change.Entity, pair.u)
+	notNull := NotNullCheckName(change.Entity, pair.u)
 	attribute := func(column, test string) string {
 		return "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = " + regclass + " AND a.attname = " + sqlString(column) +
 			" AND a.attnum > 0 AND NOT a.attisdropped" + test + ")"
 	}
 	constraint := "SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = " + regclass + " AND c.conname = " + sqlString(notNull)
-	out := &contractStep{change: change.ID, table: table, check: complete, definition: completeDefinition(k.name, u.name), trigger: trigger,
+	out := &contractStep{change: change.ID, table: table, check: complete, definition: completeDefinitionOf(pair), trigger: trigger,
 		from: k.name, old: sqlIdentifier(k.name), new: sqlIdentifier(u.name)}
 	if old.owned {
 		out.tenant, out.tenants = sqlIdentifier(tenantColumn(ctx)), "public.stego_tenants"
@@ -686,7 +766,7 @@ func validTriggerName(name string) bool {
 
 // withColumnOf gives the tables after a rename with the old column of the change, its CHECK and its indexes from
 // the tables before, which stay in the database until the contract step.
-func withColumnOf(after, before []tableModel, change types.SchemaChange) []tableModel {
+func withColumnOf(after, before []tableModel, change types.SchemaChange, k string) []tableModel {
 	name := tableName(change.Entity)
 	old, _ := findTable(before, name)
 	out := slices.Clone(after)
@@ -696,19 +776,19 @@ func withColumnOf(after, before []tableModel, change types.SchemaChange) []table
 		}
 		t := out[i]
 		t.columns = slices.Clone(t.columns)
-		if k, ok := findColumn(old, change.From); ok {
+		if k, ok := findColumn(old, k); ok {
 			t.columns = append(t.columns, k)
 		}
 		for _, check := range old.checks {
-			if check.name == sqlName(name, change.From, "check") {
+			if check.name == sqlName(name, k, "check") {
 				t.checks = append(slices.Clone(t.checks), check)
 			}
 		}
-		if slices.Contains(old.search, change.From) {
-			t.search = append(slices.Clone(t.search), change.From)
+		if slices.Contains(old.search, k) {
+			t.search = append(slices.Clone(t.search), k)
 		}
 		for _, columns := range old.unique {
-			if slices.Contains(columns, change.From) {
+			if slices.Contains(columns, k) {
 				t.unique = append(slices.Clone(t.unique), columns)
 			}
 		}
@@ -753,4 +833,264 @@ func generateSteps(ns string, steps []schemaStep) []gen.File {
 		files = append(files, gen.File{Path: StepMigrationFile(ns, step.Name), Content: []byte(step.Body)})
 	}
 	return files
+}
+
+// syncConversion is one conversion of the sync template of the runtime library
+// (registry/runtime/manifest.SyncConversions): its name, the column types of K and U, each direction with %s for its
+// argument, and, for a conversion that can fail, its guard and the guard as pg_get_constraintdef writes it, with
+// %[1]s for the column. A copy, as the template is, which TestSyncTemplateCopy compares with the runtime's list.
+type syncConversion struct{ name, from, to, forward, back, guard, deparsed string }
+
+// syncConversions is the copy of registry/runtime/manifest.SyncConversions.
+var syncConversions = func() []syncConversion {
+	list := []syncConversion{
+		{name: "identity", forward: "%s", back: "%s"},
+		{name: "integer-bigint", from: "integer", to: "bigint", forward: "CAST(%s AS pg_catalog.int8)", back: "CAST(%s AS pg_catalog.int4)"},
+		{name: "bigint-integer", from: "bigint", to: "integer", forward: "CAST(%s AS pg_catalog.int4)", back: "CAST(%s AS pg_catalog.int8)",
+			guard: "%s BETWEEN -2147483648 AND 2147483647", deparsed: "((%[1]s >= '-2147483648'::integer) AND (%[1]s <= 2147483647))"},
+	}
+	for _, t := range []struct{ format, catalog string }{
+		{"integer", "int4"}, {"bigint", "int8"}, {"numeric", "numeric"}, {"boolean", "bool"}, {"uuid", "uuid"},
+	} {
+		list = append(list,
+			syncConversion{name: t.catalog + "-text", from: t.format, to: "text", forward: "CAST(%s AS pg_catalog.text)", back: "CAST(%s AS pg_catalog." + t.catalog + ")"},
+			syncConversion{name: "text-" + t.catalog, from: "text", to: t.format, forward: "CAST(%s AS pg_catalog." + t.catalog + ")", back: "CAST(%s AS pg_catalog.text)",
+				guard: "pg_catalog.pg_input_is_valid(%s, 'pg_catalog." + t.catalog + "')", deparsed: "pg_input_is_valid(%[1]s, 'pg_catalog." + t.catalog + "'::text)"})
+	}
+	return list
+}()
+
+// stepPair is what the sync trigger of a step moves: the old column K and the new column U, with the conversion of K
+// to U and back, and, for a conversion that can fail, the fill value of the change as the text of a constant, or
+// none (NULL).
+type stepPair struct {
+	k, u    string
+	conv    syncConversion
+	fill    string
+	hasFill bool
+}
+
+// retypeColumns gives the old and the new column of a retype: the column of the field before the change, which is
+// the column of the retype before it on the field or the field's name, and the column of the type after it, which is
+// the type From of the next retype on the field or the field's declared type (decision on ST-GEN-Q23 (a),
+// orchestrator under the owner's delegation, 2026-11-14), with the types before and after.
+func retypeColumns(ctx gen.Context, change types.SchemaChange) (k, u string, before, after types.FieldType, err error) {
+	position := map[string]int{}
+	for i, step := range ctx.SchemaHistory {
+		if _, seen := position[step.Change]; !seen {
+			position[step.Change] = i
+		}
+	}
+	k, before = change.Field, types.FieldType(change.From)
+	after = ""
+	for _, entity := range ctx.Entities {
+		if entity.Name == change.Entity {
+			for _, field := range entity.Fields {
+				if field.Name == change.Field {
+					after = field.Type
+				}
+			}
+		}
+	}
+	next := -1
+	for _, other := range ctx.SchemaChanges {
+		if other.ID == change.ID || other.Kind != "retype" || other.Entity != change.Entity || other.Field != change.Field {
+			continue
+		}
+		switch at := position[other.ID]; {
+		case at < position[change.ID]:
+			k = gen.RetypeColumn(change.Field, types.FieldType(change.From))
+		case next < 0 || at < next:
+			next, after = at, types.FieldType(other.From)
+		}
+	}
+	if after == "" {
+		return "", "", "", "", fmt.Errorf("the retype names the field %s.%s, which the declaration does not have", change.Entity, change.Field)
+	}
+	return k, gen.RetypeColumn(change.Field, after), before, after, nil
+}
+
+// pairOf gives the pair of a rename or a retype: for a rename, K is From and U the declared name, with the identity;
+// for a retype, the columns of retypeColumns and the conversion of the template from the column type of K to that of
+// U, with the change's fill value where the conversion can fail. It refuses a retype of a column type that the
+// template has no conversion for, such as a string with a max_length, and a fill value that the sync function cannot
+// hold as a constant.
+func pairOf(ctx gen.Context, change types.SchemaChange) (stepPair, error) {
+	if change.Kind == "rename" {
+		return stepPair{k: change.From, u: change.Field, conv: syncConversions[0]}, nil
+	}
+	if change.Field == "generation" {
+		// The field generation is the version counter that the server keeps (restapi), whose type stays an integer.
+		return stepPair{}, fmt.Errorf("the retype of %s.generation is of the version counter that the server keeps; it is not built", change.Entity)
+	}
+	k, u, beforeType, afterType, err := retypeColumns(ctx, change)
+	if err != nil {
+		return stepPair{}, err
+	}
+	before := gen.RetypeField(change)
+	before.Type = beforeType
+	kType, err := columnType(before)
+	if err != nil {
+		return stepPair{}, err
+	}
+	afterField := types.Field{Name: change.Field, Type: afterType}
+	for _, entity := range ctx.Entities {
+		for _, field := range entity.Fields {
+			if entity.Name == change.Entity && field.Name == change.Field && field.Type == afterType {
+				afterField = field
+			}
+		}
+	}
+	uType, err := columnType(afterField)
+	if err != nil {
+		return stepPair{}, err
+	}
+	i := slices.IndexFunc(syncConversions, func(c syncConversion) bool { return c.from == kType && c.to == uType })
+	if i < 0 {
+		return stepPair{}, fmt.Errorf("the retype of %s.%s from the column type %s to %s has no conversion in the sync template; it is not built", change.Entity, change.Field, kType, uType)
+	}
+	p := stepPair{k: k, u: u, conv: syncConversions[i]}
+	if p.conv.guard != "" && change.FillValue != nil {
+		p.fill, p.hasFill = fmt.Sprint(change.FillValue), true
+		if !utf8.ValidString(p.fill) || strings.ContainsAny(p.fill, "\\$") || strings.ContainsFunc(p.fill, unicode.IsControl) {
+			return stepPair{}, fmt.Errorf("the fill value of the retype %s holds a backslash, a dollar sign or a control character, which the sync function does not take", change.ID)
+		}
+	}
+	return p, nil
+}
+
+// forward gives the conversion of the value of K, written as arg, to the type of U, guarded with the fill value or
+// NULL where it can fail, as registry/runtime/manifest.SyncSource writes it.
+func (p stepPair) forward(arg string) string {
+	text := fmt.Sprintf(p.conv.forward, arg)
+	if p.conv.guard == "" {
+		return text
+	}
+	fill := "NULL"
+	if p.hasFill {
+		fill = sqlString(p.fill)
+	}
+	return "(CASE WHEN " + arg + " IS NULL THEN NULL WHEN " + fmt.Sprintf(p.conv.guard, arg) + " THEN " + text + " ELSE " + fill + " END)"
+}
+
+// failGuard gives the guard of a conversion that can fail with no fill value, with arg for K, or empty: a row whose
+// K fails it keeps U unset and counts as failed.
+func (p stepPair) failGuard(arg string) string {
+	if p.conv.guard == "" || p.hasFill {
+		return ""
+	}
+	return fmt.Sprintf(p.conv.guard, arg)
+}
+
+// syncSourceOf gives the source of the sync function of the pair, for the change and the backfill role owner, as
+// registry/runtime/manifest.SyncSource gives it for version 2.
+func syncSourceOf(change, owner string, p stepPair) string {
+	qk, qu := deparsedName(p.k), deparsedName(p.u)
+	return fmt.Sprintf(syncTemplate, qk, qu, p.forward("NEW."+qk), fmt.Sprintf(p.conv.back, "NEW."+qu), sqlString(change), sqlString(owner))
+}
+
+// completeExpressionOf and completeDefinitionOf give the completeness CHECK of the pair, as
+// registry/runtime/manifest.CompleteExpression and CompleteDefinition give it.
+func completeExpressionOf(p stepPair) string {
+	expression := "(" + deparsedName(p.u) + " IS NOT NULL) OR (" + deparsedName(p.k) + " IS NULL)"
+	if guard := p.failGuard(deparsedName(p.k)); guard != "" {
+		expression += " OR (NOT " + guard + ")"
+	}
+	return expression
+}
+
+func completeDefinitionOf(p stepPair) string {
+	definition := "(" + deparsedName(p.u) + " IS NOT NULL) OR (" + deparsedName(p.k) + " IS NULL)"
+	if p.failGuard("x") != "" {
+		definition += " OR (NOT " + fmt.Sprintf(p.conv.deparsed, deparsedName(p.k)) + ")"
+	}
+	return "CHECK ((" + definition + "))"
+}
+
+// fillDigest gives the digest of the fill value of the pair, which the backfill keeps in its checkpoint row, or empty.
+func (p stepPair) fillDigest() string {
+	if !p.hasFill {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(p.fill))
+	return hex.EncodeToString(sum[:])
+}
+
+// requiredAt gives the models of the tables after the first steps steps of the schema history with the column of each
+// require whose expand step is among them as the steps leave it (decision on ST-GEN-Q22 (a), orchestrator under the
+// owner's delegation, 2026-11-14): with the fill value as its constant DEFAULT, which the step adds with no rewrite of
+// the table, so each row there and each insert of the release before, which leaves the column out, reads it; and
+// nullable until the contract step of the require is among them, which keeps the default.
+func requiredAt(ctx gen.Context, models []tableModel, steps int) ([]tableModel, error) {
+	expand, contract := map[string]int{}, map[string]int{}
+	for i, step := range ctx.SchemaHistory {
+		if step.Phase == "expand" {
+			expand[step.Change] = i + 1
+		} else {
+			contract[step.Change] = i + 1
+		}
+	}
+	out := slices.Clone(models)
+	for _, change := range ctx.SchemaChanges {
+		if change.Kind != "require" || expand[change.ID] == 0 || expand[change.ID] > steps {
+			continue
+		}
+		for i := range out {
+			if out[i].name != tableName(change.Entity) {
+				continue
+			}
+			out[i].columns = slices.Clone(out[i].columns)
+			for j := range out[i].columns {
+				column := &out[i].columns[j]
+				if column.name != change.Field {
+					continue
+				}
+				clause, err := columnDefault(types.Field{Name: change.Field, Default: change.FillValue})
+				if err != nil {
+					return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+				}
+				column.defaultClause, column.manifestDefault = clause, literalDefault(change.FillValue, column.typ)
+				if at := contract[change.ID]; at == 0 || at > steps {
+					column.notNull = false
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// requireContractSQL gives the contract step of a require (ST-GEN-UC15-R02, ST-SUP-RC01-OC39): before is the tables
+// of the expand step, with the new column U nullable and with the fill value as its default, and after the tables
+// after the step, with U NOT NULL and the default kept. It adds CHECK (U IS NOT NULL) NOT VALID, validates it, runs
+// SET NOT NULL, which then scans no row, and drops the CHECK, each statement in its own short transaction and each
+// with a query that tells whether it still has to run. A require has no sync trigger and no backfill, so its check
+// has nothing to wait for: the default gave each row the fill value (decision on ST-GEN-Q22 (a), orchestrator under
+// the owner's delegation, 2026-11-14).
+func requireContractSQL(before, after []tableModel, change types.SchemaChange) (*contractStep, error) {
+	name := tableName(change.Entity)
+	old, okOld := findTable(before, name)
+	next, okNext := findTable(after, name)
+	if !okOld || !okNext {
+		return nil, fmt.Errorf("the require names the entity %s, whose table is not there", change.Entity)
+	}
+	was, okWas := findColumn(old, change.Field)
+	u, okU := findColumn(next, change.Field)
+	if !okWas || !okU || was.notNull || !u.notNull || was.defaultClause == "" || u.defaultClause != was.defaultClause {
+		return nil, fmt.Errorf("the contract of the require of %s.%s finds no nullable column %s with its fill value before the step, NOT NULL with it after", change.Entity, change.Field, change.Field)
+	}
+	table := "public." + sqlIdentifier(name)
+	regclass := sqlString(table) + "::pg_catalog.regclass"
+	notNull := NotNullCheckName(change.Entity, change.Field)
+	nullable := "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = " + regclass + " AND a.attname = " + sqlString(u.name) +
+		" AND a.attnum > 0 AND NOT a.attisdropped AND NOT a.attnotnull)"
+	constraint := "SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = " + regclass + " AND c.conname = " + sqlString(notNull)
+	out := &contractStep{change: change.ID, table: table}
+	out.statements = []contractStatement{
+		{sql: fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s IS NOT NULL) NOT VALID", table, sqlIdentifier(notNull), sqlIdentifier(u.name)),
+			when: nullable + " AND NOT EXISTS (" + constraint + ")"},
+		{sql: fmt.Sprintf("ALTER TABLE %s VALIDATE CONSTRAINT %s", table, sqlIdentifier(notNull)), when: "SELECT EXISTS (" + constraint + ")", long: true},
+		{sql: fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET NOT NULL", table, sqlIdentifier(u.name)), when: nullable},
+		{sql: fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(notNull))},
+	}
+	return out, nil
 }

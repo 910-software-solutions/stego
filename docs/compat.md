@@ -34,8 +34,9 @@ When the base ref has a record, the check refuses:
   new entity, a removed entity, or a new invariant of kind `unique`.
 - A schema history that does not start with the steps of the base, in the
   same order and unchanged.
-- A schema change of the base that the head removes or changes. Only a retype
-  at expand may get a fill value.
+- A schema change of the base that the head removes or changes, also by a
+  new fill value of a retype: its expand step holds the fill value
+  (ST-GEN-Q24).
 - A schema change that gets its expand step and its contract step in one
   release.
 - A change to `001_initial` or to the schema marker that no schema step

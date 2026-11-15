@@ -84,7 +84,7 @@ func MissingAddSteps(base BaseSource, head *types.ServiceDeclaration) ([]types.S
 // security, or the column of a new field (ST-SUP-RC01-OC22, ST-GEN-UC12-R02, ST-GEN-UC12-R06). A rename at expand
 // adds the new column, the sync trigger and the backfill of its change (ST-GEN-UC12-R02, ST-GEN-UC12-R03,
 // ST-GEN-UC13); its contract step waits for ST-GEN-UC15.
-var generatedSchemaKinds = map[string]bool{"add": true, "rename": true}
+var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "retype": true, "require": true}
 
 // unbuiltSchemaChanges refuses a declaration with a schema change of a kind that generation does not carry out
 // yet, naming the change and its kind. Checking still accepts it (stego validate), so the author can declare it.
