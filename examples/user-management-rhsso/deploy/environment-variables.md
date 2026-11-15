@@ -21,8 +21,16 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
+| `GODEBUG` | string | no | none | no | - | `panicnil=1` | Read by the Go runtime and standard library: settings that change their behavior. The service does not start when it holds a tls or x509 setting, because that can turn off a TLS check. |
+| `GOGC` | string | no | `100` | no | - | `200` | Read by the Go runtime: the garbage collection target as a percent, or off. When it has no value, it is 100. |
+| `GOMAXPROCS` | integer | no | none | no | 1 to 1024 | `2` | Read by the Go runtime: the most operating system threads that run Go code at one time. When it has no value, the runtime uses the CPU limit. |
+| `GOMEMLIMIT` | string | no | none | no | - | `512MiB` | Read by the Go runtime: the soft memory limit of the process, such as 512MiB. When it has no value, there is no limit. |
+| `GOTRACEBACK` | string | no | `single` | no | none, single, all, system, crash | - | Read by the Go runtime: how much a crash report shows. When it has no value, it shows the goroutine that failed. |
+| `SSL_CERT_DIR` | string | no | none | no | - | - | Read by the Go TLS library for folders of system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection. |
+| `SSL_CERT_FILE` | path | no | none | no | - | - | Read by the Go TLS library for the system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection. |
 | `STEGO_MODE` | list | no | `all` | no | api, worker, controller, all | `api,worker` | The modes that the process runs when no --mode option is given. When it has no value, the process runs all modes. |
 | `STEGO_SERVICE_VERSION` | string | no | none | no | - | `1.4.2` | The version of the release, which each audit row and the controller lease carry. When it has no value, they carry an empty version. |
+| `TZ` | string | no | none | no | - | `UTC` | Read by the Go time library: the local time zone of the process. When it has no value, it uses the system time zone. |
 
 ## domain-probe
 
@@ -63,6 +71,43 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
+| `GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_BINARY_LOG_FILTER` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_ENABLE_TXT_SERVICE_CONFIG` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_ENFORCE_ALPN_ENABLED` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_SNI` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GCP_OBSERVABILITY_CONFIG` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GCP_OBSERVABILITY_CONFIG_FILE` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_IGNORE_TXT_ERRORS` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_GO_LOG_FORMATTER` | string | no | none | no | json | - | Read by the gRPC library: the format of its log messages. When it has no value, it writes plain text. |
+| `GRPC_GO_LOG_SEVERITY_LEVEL` | string | no | `error` | no | error, ERROR, warning, WARNING, info, INFO | - | Read by the gRPC library: the lowest level of its log messages. When it has no value, it logs errors only. |
+| `GRPC_GO_LOG_VERBOSITY_LEVEL` | integer | no | `0` | no | 0 to 99 | - | Read by the gRPC library: how much detail its info messages give. When it has no value, it is 0. |
+| `GRPC_GO_SERVER_GOROUTINE_LABELS` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_RING_HASH_CAP` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_XDS_BOOTSTRAP` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_XDS_BOOTSTRAP_CONFIG` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
+| `GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT` | string | no | none | no | - | - | Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs. |
 | `OTEL_EXPORTER_OTLP_CERTIFICATE` | path | no | none | no | - | `/etc/stego/otel/ca.crt` | A PEM file of certificate authorities that verify the collector. When it has no value, the export uses the system roots. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | url | no | none | no | - | `https://collector.example.com:4317` | The HTTPS origin of the OpenTelemetry collector. When it has no value, the service exports no telemetry. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | string | no | `grpc` | no | grpc | - | The OTLP protocol of the export, which can only be grpc. When it has no value, the export uses grpc. |
@@ -79,6 +124,30 @@ shows its name only: give its value through a secret of the platform.
 |---|---|---|---|---|---|---|---|
 | `DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
 | `DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database/url` | The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two. |
+| `PGAPPNAME` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGCHANNELBINDING` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGCONNECT_TIMEOUT` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGDATABASE` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGHOST` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGMAXPROTOCOLVERSION` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGMINPROTOCOLVERSION` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGOPTIONS` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGPASSFILE` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGPASSWORD` | string | no | - | yes | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGPORT` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGREQUIREAUTH` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSERVICE` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSERVICEFILE` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSSLCERT` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSSLKEY` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSSLMODE` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSSLNEGOTIATION` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSSLPASSWORD` | string | no | - | yes | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSSLROOTCERT` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGSSLSNI` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGTARGETSESSIONATTRS` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGTZ` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
+| `PGUSER` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
 | `STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK` | boolean | no | `0` | no | 0, 1 | - | Set to 1 to let a loopback database connection go without TLS, for a local test only. When it has no value, each connection needs TLS. |
 | `STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME` | duration | no | `5m` | no | 1s to 24h | `10m` | The longest time that the pool keeps an idle database connection. When it has no value, the limit is 5 minutes. |
 | `STEGO_DATABASE_CONNECTION_MAX_LIFETIME` | duration | no | `30m` | no | 1s to 24h | `1h` | The longest time that the pool keeps one database connection. When it has no value, the limit is 30 minutes. |

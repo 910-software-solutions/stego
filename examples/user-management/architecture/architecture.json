@@ -4803,6 +4803,766 @@
       }
     },
     {
+      "id": "variable:GODEBUG",
+      "name": "GODEBUG",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GOGC",
+      "name": "GOGC",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "100",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GOMAXPROCS",
+      "name": "GOMAXPROCS",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "integer",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GOMEMLIMIT",
+      "name": "GOMEMLIMIT",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GOTRACEBACK",
+      "name": "GOTRACEBACK",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "single",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES",
+      "name": "GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_BINARY_LOG_FILTER",
+      "name": "GRPC_BINARY_LOG_FILTER",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_ENABLE_TXT_SERVICE_CONFIG",
+      "name": "GRPC_ENABLE_TXT_SERVICE_CONFIG",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_ENFORCE_ALPN_ENABLED",
+      "name": "GRPC_ENFORCE_ALPN_ENABLED",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS",
+      "name": "GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET",
+      "name": "GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE",
+      "name": "GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING",
+      "name": "GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY",
+      "name": "GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE",
+      "name": "GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS",
+      "name": "GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS",
+      "name": "GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT",
+      "name": "GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER",
+      "name": "GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT",
+      "name": "GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE",
+      "name": "GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION",
+      "name": "GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_SNI",
+      "name": "GRPC_EXPERIMENTAL_XDS_SNI",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS",
+      "name": "GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GCP_OBSERVABILITY_CONFIG",
+      "name": "GRPC_GCP_OBSERVABILITY_CONFIG",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GCP_OBSERVABILITY_CONFIG_FILE",
+      "name": "GRPC_GCP_OBSERVABILITY_CONFIG_FILE",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES",
+      "name": "GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT",
+      "name": "GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE",
+      "name": "GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION",
+      "name": "GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING",
+      "name": "GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY",
+      "name": "GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_IGNORE_TXT_ERRORS",
+      "name": "GRPC_GO_IGNORE_TXT_ERRORS",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_LOG_FORMATTER",
+      "name": "GRPC_GO_LOG_FORMATTER",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_LOG_SEVERITY_LEVEL",
+      "name": "GRPC_GO_LOG_SEVERITY_LEVEL",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "default": "error",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_LOG_VERBOSITY_LEVEL",
+      "name": "GRPC_GO_LOG_VERBOSITY_LEVEL",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "integer",
+      "required": false,
+      "default": "0",
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_GO_SERVER_GOROUTINE_LABELS",
+      "name": "GRPC_GO_SERVER_GOROUTINE_LABELS",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_RING_HASH_CAP",
+      "name": "GRPC_RING_HASH_CAP",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI",
+      "name": "GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_XDS_BOOTSTRAP",
+      "name": "GRPC_XDS_BOOTSTRAP",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_XDS_BOOTSTRAP_CONFIG",
+      "name": "GRPC_XDS_BOOTSTRAP_CONFIG",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT",
+      "name": "GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT",
+      "read_by": [
+        "component:otel-tracing"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "otel-tracing",
+          "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
       "id": "variable:OTEL_EXPORTER_OTLP_CERTIFICATE",
       "name": "OTEL_EXPORTER_OTLP_CERTIFICATE",
       "read_by": [
@@ -4952,6 +5712,438 @@
       }
     },
     {
+      "id": "variable:PGAPPNAME",
+      "name": "PGAPPNAME",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGCHANNELBINDING",
+      "name": "PGCHANNELBINDING",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGCONNECT_TIMEOUT",
+      "name": "PGCONNECT_TIMEOUT",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGDATABASE",
+      "name": "PGDATABASE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGHOST",
+      "name": "PGHOST",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGMAXPROTOCOLVERSION",
+      "name": "PGMAXPROTOCOLVERSION",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGMINPROTOCOLVERSION",
+      "name": "PGMINPROTOCOLVERSION",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGOPTIONS",
+      "name": "PGOPTIONS",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGPASSFILE",
+      "name": "PGPASSFILE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGPASSWORD",
+      "name": "PGPASSWORD",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGPORT",
+      "name": "PGPORT",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGREQUIREAUTH",
+      "name": "PGREQUIREAUTH",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSERVICE",
+      "name": "PGSERVICE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSERVICEFILE",
+      "name": "PGSERVICEFILE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSSLCERT",
+      "name": "PGSSLCERT",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSSLKEY",
+      "name": "PGSSLKEY",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSSLMODE",
+      "name": "PGSSLMODE",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSSLNEGOTIATION",
+      "name": "PGSSLNEGOTIATION",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSSLPASSWORD",
+      "name": "PGSSLPASSWORD",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": true,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSSLROOTCERT",
+      "name": "PGSSLROOTCERT",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGSSLSNI",
+      "name": "PGSSLSNI",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGTARGETSESSIONATTRS",
+      "name": "PGTARGETSESSIONATTRS",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGTZ",
+      "name": "PGTZ",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:PGUSER",
+      "name": "PGUSER",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
       "id": "variable:PORT",
       "name": "PORT",
       "read_by": [
@@ -4965,6 +6157,42 @@
         "registry": {
           "part": "component",
           "name": "health-check",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:SSL_CERT_DIR",
+      "name": "SSL_CERT_DIR",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:SSL_CERT_FILE",
+      "name": "SSL_CERT_FILE",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
           "version": "1.1.0",
           "field": "environment"
         }
@@ -5911,6 +7139,24 @@
           "part": "component",
           "name": "postgres-adapter",
           "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:TZ",
+      "name": "TZ",
+      "read_by": [
+        "component:command"
+      ],
+      "type": "string",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "command",
+          "version": "1.1.0",
           "field": "environment"
         }
       }
@@ -7590,6 +8836,1956 @@
           }
         },
         {
+          "id": "fact:configuration/variable:GODEBUG/read-by",
+          "about": "variable:GODEBUG",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GODEBUG/required",
+          "about": "variable:GODEBUG",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GODEBUG/secret",
+          "about": "variable:GODEBUG",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOGC/default",
+          "about": "variable:GOGC",
+          "name": "default",
+          "value": "100",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOGC/read-by",
+          "about": "variable:GOGC",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOGC/required",
+          "about": "variable:GOGC",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOGC/secret",
+          "about": "variable:GOGC",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOMAXPROCS/read-by",
+          "about": "variable:GOMAXPROCS",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOMAXPROCS/required",
+          "about": "variable:GOMAXPROCS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOMAXPROCS/secret",
+          "about": "variable:GOMAXPROCS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOMEMLIMIT/read-by",
+          "about": "variable:GOMEMLIMIT",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOMEMLIMIT/required",
+          "about": "variable:GOMEMLIMIT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOMEMLIMIT/secret",
+          "about": "variable:GOMEMLIMIT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOTRACEBACK/default",
+          "about": "variable:GOTRACEBACK",
+          "name": "default",
+          "value": "single",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOTRACEBACK/read-by",
+          "about": "variable:GOTRACEBACK",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOTRACEBACK/required",
+          "about": "variable:GOTRACEBACK",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GOTRACEBACK/secret",
+          "about": "variable:GOTRACEBACK",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES/read-by",
+          "about": "variable:GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES/required",
+          "about": "variable:GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES/secret",
+          "about": "variable:GRPC_ALTS_MAX_CONCURRENT_HANDSHAKES",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_BINARY_LOG_FILTER/read-by",
+          "about": "variable:GRPC_BINARY_LOG_FILTER",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_BINARY_LOG_FILTER/required",
+          "about": "variable:GRPC_BINARY_LOG_FILTER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_BINARY_LOG_FILTER/secret",
+          "about": "variable:GRPC_BINARY_LOG_FILTER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ENABLE_TXT_SERVICE_CONFIG/read-by",
+          "about": "variable:GRPC_ENABLE_TXT_SERVICE_CONFIG",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ENABLE_TXT_SERVICE_CONFIG/required",
+          "about": "variable:GRPC_ENABLE_TXT_SERVICE_CONFIG",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ENABLE_TXT_SERVICE_CONFIG/secret",
+          "about": "variable:GRPC_ENABLE_TXT_SERVICE_CONFIG",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ENFORCE_ALPN_ENABLED/read-by",
+          "about": "variable:GRPC_ENFORCE_ALPN_ENABLED",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ENFORCE_ALPN_ENABLED/required",
+          "about": "variable:GRPC_ENFORCE_ALPN_ENABLED",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_ENFORCE_ALPN_ENABLED/secret",
+          "about": "variable:GRPC_ENFORCE_ALPN_ENABLED",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS/required",
+          "about": "variable:GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET/required",
+          "about": "variable:GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE/required",
+          "about": "variable:GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING/required",
+          "about": "variable:GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY/required",
+          "about": "variable:GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_SNI/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_SNI",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_SNI/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_SNI",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_SNI/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_SNI",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS/read-by",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS/required",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS/secret",
+          "about": "variable:GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GCP_OBSERVABILITY_CONFIG/read-by",
+          "about": "variable:GRPC_GCP_OBSERVABILITY_CONFIG",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GCP_OBSERVABILITY_CONFIG/required",
+          "about": "variable:GRPC_GCP_OBSERVABILITY_CONFIG",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GCP_OBSERVABILITY_CONFIG/secret",
+          "about": "variable:GRPC_GCP_OBSERVABILITY_CONFIG",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GCP_OBSERVABILITY_CONFIG_FILE/read-by",
+          "about": "variable:GRPC_GCP_OBSERVABILITY_CONFIG_FILE",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GCP_OBSERVABILITY_CONFIG_FILE/required",
+          "about": "variable:GRPC_GCP_OBSERVABILITY_CONFIG_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GCP_OBSERVABILITY_CONFIG_FILE/secret",
+          "about": "variable:GRPC_GCP_OBSERVABILITY_CONFIG_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES/read-by",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES/required",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES/secret",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT/read-by",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT/required",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT/secret",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE/read-by",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE/required",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE/secret",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION/read-by",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION/required",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION/secret",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING/read-by",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING/required",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING/secret",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY/read-by",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY/required",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY/secret",
+          "about": "variable:GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_IGNORE_TXT_ERRORS/read-by",
+          "about": "variable:GRPC_GO_IGNORE_TXT_ERRORS",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_IGNORE_TXT_ERRORS/required",
+          "about": "variable:GRPC_GO_IGNORE_TXT_ERRORS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_IGNORE_TXT_ERRORS/secret",
+          "about": "variable:GRPC_GO_IGNORE_TXT_ERRORS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_FORMATTER/read-by",
+          "about": "variable:GRPC_GO_LOG_FORMATTER",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_FORMATTER/required",
+          "about": "variable:GRPC_GO_LOG_FORMATTER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_FORMATTER/secret",
+          "about": "variable:GRPC_GO_LOG_FORMATTER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_SEVERITY_LEVEL/default",
+          "about": "variable:GRPC_GO_LOG_SEVERITY_LEVEL",
+          "name": "default",
+          "value": "error",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_SEVERITY_LEVEL/read-by",
+          "about": "variable:GRPC_GO_LOG_SEVERITY_LEVEL",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_SEVERITY_LEVEL/required",
+          "about": "variable:GRPC_GO_LOG_SEVERITY_LEVEL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_SEVERITY_LEVEL/secret",
+          "about": "variable:GRPC_GO_LOG_SEVERITY_LEVEL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_VERBOSITY_LEVEL/default",
+          "about": "variable:GRPC_GO_LOG_VERBOSITY_LEVEL",
+          "name": "default",
+          "value": "0",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_VERBOSITY_LEVEL/read-by",
+          "about": "variable:GRPC_GO_LOG_VERBOSITY_LEVEL",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_VERBOSITY_LEVEL/required",
+          "about": "variable:GRPC_GO_LOG_VERBOSITY_LEVEL",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_LOG_VERBOSITY_LEVEL/secret",
+          "about": "variable:GRPC_GO_LOG_VERBOSITY_LEVEL",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_SERVER_GOROUTINE_LABELS/read-by",
+          "about": "variable:GRPC_GO_SERVER_GOROUTINE_LABELS",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_SERVER_GOROUTINE_LABELS/required",
+          "about": "variable:GRPC_GO_SERVER_GOROUTINE_LABELS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_GO_SERVER_GOROUTINE_LABELS/secret",
+          "about": "variable:GRPC_GO_SERVER_GOROUTINE_LABELS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_RING_HASH_CAP/read-by",
+          "about": "variable:GRPC_RING_HASH_CAP",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_RING_HASH_CAP/required",
+          "about": "variable:GRPC_RING_HASH_CAP",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_RING_HASH_CAP/secret",
+          "about": "variable:GRPC_RING_HASH_CAP",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI/read-by",
+          "about": "variable:GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI/required",
+          "about": "variable:GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI/secret",
+          "about": "variable:GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_BOOTSTRAP/read-by",
+          "about": "variable:GRPC_XDS_BOOTSTRAP",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_BOOTSTRAP/required",
+          "about": "variable:GRPC_XDS_BOOTSTRAP",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_BOOTSTRAP/secret",
+          "about": "variable:GRPC_XDS_BOOTSTRAP",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_BOOTSTRAP_CONFIG/read-by",
+          "about": "variable:GRPC_XDS_BOOTSTRAP_CONFIG",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_BOOTSTRAP_CONFIG/required",
+          "about": "variable:GRPC_XDS_BOOTSTRAP_CONFIG",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_BOOTSTRAP_CONFIG/secret",
+          "about": "variable:GRPC_XDS_BOOTSTRAP_CONFIG",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT/read-by",
+          "about": "variable:GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT",
+          "name": "read by",
+          "value": "component:otel-tracing",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT/required",
+          "about": "variable:GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT/secret",
+          "about": "variable:GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "otel-tracing",
+              "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
           "id": "fact:configuration/variable:OTEL_EXPORTER_OTLP_CERTIFICATE/read-by",
           "about": "variable:OTEL_EXPORTER_OTLP_CERTIFICATE",
           "name": "read by",
@@ -8025,6 +11221,1086 @@
           }
         },
         {
+          "id": "fact:configuration/variable:PGAPPNAME/read-by",
+          "about": "variable:PGAPPNAME",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGAPPNAME/required",
+          "about": "variable:PGAPPNAME",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGAPPNAME/secret",
+          "about": "variable:PGAPPNAME",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGCHANNELBINDING/read-by",
+          "about": "variable:PGCHANNELBINDING",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGCHANNELBINDING/required",
+          "about": "variable:PGCHANNELBINDING",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGCHANNELBINDING/secret",
+          "about": "variable:PGCHANNELBINDING",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGCONNECT_TIMEOUT/read-by",
+          "about": "variable:PGCONNECT_TIMEOUT",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGCONNECT_TIMEOUT/required",
+          "about": "variable:PGCONNECT_TIMEOUT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGCONNECT_TIMEOUT/secret",
+          "about": "variable:PGCONNECT_TIMEOUT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGDATABASE/read-by",
+          "about": "variable:PGDATABASE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGDATABASE/required",
+          "about": "variable:PGDATABASE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGDATABASE/secret",
+          "about": "variable:PGDATABASE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGHOST/read-by",
+          "about": "variable:PGHOST",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGHOST/required",
+          "about": "variable:PGHOST",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGHOST/secret",
+          "about": "variable:PGHOST",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGMAXPROTOCOLVERSION/read-by",
+          "about": "variable:PGMAXPROTOCOLVERSION",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGMAXPROTOCOLVERSION/required",
+          "about": "variable:PGMAXPROTOCOLVERSION",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGMAXPROTOCOLVERSION/secret",
+          "about": "variable:PGMAXPROTOCOLVERSION",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGMINPROTOCOLVERSION/read-by",
+          "about": "variable:PGMINPROTOCOLVERSION",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGMINPROTOCOLVERSION/required",
+          "about": "variable:PGMINPROTOCOLVERSION",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGMINPROTOCOLVERSION/secret",
+          "about": "variable:PGMINPROTOCOLVERSION",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGOPTIONS/read-by",
+          "about": "variable:PGOPTIONS",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGOPTIONS/required",
+          "about": "variable:PGOPTIONS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGOPTIONS/secret",
+          "about": "variable:PGOPTIONS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPASSFILE/read-by",
+          "about": "variable:PGPASSFILE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPASSFILE/required",
+          "about": "variable:PGPASSFILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPASSFILE/secret",
+          "about": "variable:PGPASSFILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPASSWORD/read-by",
+          "about": "variable:PGPASSWORD",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPASSWORD/required",
+          "about": "variable:PGPASSWORD",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPASSWORD/secret",
+          "about": "variable:PGPASSWORD",
+          "name": "secret",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPORT/read-by",
+          "about": "variable:PGPORT",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPORT/required",
+          "about": "variable:PGPORT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGPORT/secret",
+          "about": "variable:PGPORT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGREQUIREAUTH/read-by",
+          "about": "variable:PGREQUIREAUTH",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGREQUIREAUTH/required",
+          "about": "variable:PGREQUIREAUTH",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGREQUIREAUTH/secret",
+          "about": "variable:PGREQUIREAUTH",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSERVICE/read-by",
+          "about": "variable:PGSERVICE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSERVICE/required",
+          "about": "variable:PGSERVICE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSERVICE/secret",
+          "about": "variable:PGSERVICE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSERVICEFILE/read-by",
+          "about": "variable:PGSERVICEFILE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSERVICEFILE/required",
+          "about": "variable:PGSERVICEFILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSERVICEFILE/secret",
+          "about": "variable:PGSERVICEFILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLCERT/read-by",
+          "about": "variable:PGSSLCERT",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLCERT/required",
+          "about": "variable:PGSSLCERT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLCERT/secret",
+          "about": "variable:PGSSLCERT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLKEY/read-by",
+          "about": "variable:PGSSLKEY",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLKEY/required",
+          "about": "variable:PGSSLKEY",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLKEY/secret",
+          "about": "variable:PGSSLKEY",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLMODE/read-by",
+          "about": "variable:PGSSLMODE",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLMODE/required",
+          "about": "variable:PGSSLMODE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLMODE/secret",
+          "about": "variable:PGSSLMODE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLNEGOTIATION/read-by",
+          "about": "variable:PGSSLNEGOTIATION",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLNEGOTIATION/required",
+          "about": "variable:PGSSLNEGOTIATION",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLNEGOTIATION/secret",
+          "about": "variable:PGSSLNEGOTIATION",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLPASSWORD/read-by",
+          "about": "variable:PGSSLPASSWORD",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLPASSWORD/required",
+          "about": "variable:PGSSLPASSWORD",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLPASSWORD/secret",
+          "about": "variable:PGSSLPASSWORD",
+          "name": "secret",
+          "value": true,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLROOTCERT/read-by",
+          "about": "variable:PGSSLROOTCERT",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLROOTCERT/required",
+          "about": "variable:PGSSLROOTCERT",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLROOTCERT/secret",
+          "about": "variable:PGSSLROOTCERT",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLSNI/read-by",
+          "about": "variable:PGSSLSNI",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLSNI/required",
+          "about": "variable:PGSSLSNI",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGSSLSNI/secret",
+          "about": "variable:PGSSLSNI",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGTARGETSESSIONATTRS/read-by",
+          "about": "variable:PGTARGETSESSIONATTRS",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGTARGETSESSIONATTRS/required",
+          "about": "variable:PGTARGETSESSIONATTRS",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGTARGETSESSIONATTRS/secret",
+          "about": "variable:PGTARGETSESSIONATTRS",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGTZ/read-by",
+          "about": "variable:PGTZ",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGTZ/required",
+          "about": "variable:PGTZ",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGTZ/secret",
+          "about": "variable:PGTZ",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGUSER/read-by",
+          "about": "variable:PGUSER",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGUSER/required",
+          "about": "variable:PGUSER",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:PGUSER/secret",
+          "about": "variable:PGUSER",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
           "id": "fact:configuration/variable:PORT/default",
           "about": "variable:PORT",
           "name": "default",
@@ -8079,6 +12355,96 @@
             "registry": {
               "part": "component",
               "name": "health-check",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:SSL_CERT_DIR/read-by",
+          "about": "variable:SSL_CERT_DIR",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:SSL_CERT_DIR/required",
+          "about": "variable:SSL_CERT_DIR",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:SSL_CERT_DIR/secret",
+          "about": "variable:SSL_CERT_DIR",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:SSL_CERT_FILE/read-by",
+          "about": "variable:SSL_CERT_FILE",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:SSL_CERT_FILE/required",
+          "about": "variable:SSL_CERT_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:SSL_CERT_FILE/secret",
+          "about": "variable:SSL_CERT_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
               "version": "1.1.0",
               "field": "environment"
             }
@@ -10555,6 +14921,51 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:TZ/read-by",
+          "about": "variable:TZ",
+          "name": "read by",
+          "value": "component:command",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:TZ/required",
+          "about": "variable:TZ",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:TZ/secret",
+          "about": "variable:TZ",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "command",
+              "version": "1.1.0",
               "field": "environment"
             }
           }
