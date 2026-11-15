@@ -123,13 +123,15 @@ func scriptHash(text string) string {
 
 // viewPolicy gives the content security policy of the view (#342 F1): it loads nothing, and runs only the scripts
 // of the view, each named by the hash of its text, which Go computes when it renders the view. The style of the view
-// is inline in the file, so style-src admits inline style; the model download is a data: address.
+// is inline in the file, so style-src admits inline style; the model download is a data: address. The view writes
+// the page only through the DOM, never through a sink that parses a text as HTML or script, so it requires trusted
+// types for scripts: a browser that knows them refuses such a write (security review of PR #345).
 func viewPolicy(shell string) string {
 	var hashes []string
 	for _, text := range append(inlineScripts(shell), viewerScript()) {
 		hashes = append(hashes, scriptHash(text))
 	}
-	return "default-src 'none'; script-src " + strings.Join(hashes, " ") + "; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'"
+	return "default-src 'none'; script-src " + strings.Join(hashes, " ") + "; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; require-trusted-types-for 'script'"
 }
 
 // formWriter writes the text forms, escaping every text that comes from the model.
