@@ -411,6 +411,47 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 			t.Fatalf("the check shows the value of the secret variable:\n%s\n%s", stdout, stderr)
 		}
 	})
+	t.Run("ST-DLV-UC02-R02-T05 Each configuration value has the type, the allowed values and the range of its variable", func(t *testing.T) {
+		for _, bad := range []struct{ line, parts string }{
+			{"  GOMAXPROCS: eighty\n", "configuration GOMAXPROCS|the type integer|not an integer"},
+			{"  GOMAXPROCS: 2000\n", "configuration GOMAXPROCS|more than 1024"},
+			{"  GOMAXPROCS: 0\n", "configuration GOMAXPROCS|less than 1"},
+			{"  JWK_CERT_URL: ftp://keys.example.com/certs\n", "configuration JWK_CERT_URL|not an HTTPS URL"},
+			{"  JWK_CERT_URL: keys.example.com\n", "configuration JWK_CERT_URL|not an absolute URL"},
+		} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", configBlock, configBlock+bad.line)
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, append([]string{"wrong type"}, strings.Split(bad.parts, "|")...)...)
+		}
+		// A required variable that the platform requirements state as a configuration need has its type and its
+		// allowed values too.
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, "configuration:\n  LOG_LEVEL: loud\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "wrong type: configuration LOG_LEVEL", "not one of the allowed values debug, info, warn, error")
+		c = newEnvCase(t)
+		c.change(t, "dev.yaml", "  STEGO_SPICEDB_ENDPOINT: spicedb.dev.example.com:50051\n", "  STEGO_SPICEDB_ENDPOINT: https://spicedb.dev.example.com\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "wrong type: configuration STEGO_SPICEDB_ENDPOINT", "the type address")
+		// Values of the right type, inside the allowed values and the range, pass.
+		c = newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, "configuration:\n  LOG_LEVEL: warn\n  GOMAXPROCS: 4\n  JWK_CERT_URL: https://keys.example.com/certs\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+	})
+	t.Run("ST-DLV-UC02-R02-T06 Each entry has the shape of its requirement kind", func(t *testing.T) {
+		for _, bad := range []struct{ old, new, parts string }{
+			{"    address: payments.dev.example.com\n", "    address: https://payments.dev.example.com/pay\n", "egress payments|not a host name"},
+			{"    verbs: [get, list]\n", "    verbs: [get, list, destroy]\n", "cluster permission read-config-maps|the verb \"destroy\""},
+			{"    resource: configmaps\n", "    resource: Config Maps\n", "cluster permission read-config-maps|not a Kubernetes resource name"},
+		} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", bad.old, bad.new)
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, append([]string{"wrong type"}, strings.Split(bad.parts, "|")...)...)
+		}
+	})
 	t.Run("ST-DLV-UC02-R01-T05 An error of the check is printed escaped too", func(t *testing.T) {
 		c := newEnvCase(t)
 		c.change(t, "dev.yaml", passwordLine, passwordLine+"    \"X\u202eY\": a\n    \"X\u202eY\": b\n")

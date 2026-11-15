@@ -2,26 +2,24 @@ package registry
 
 import (
 	"fmt"
-	"net"
-	"net/url"
-	"path"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
+
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 // The environment variables of a component (ST-SUP-EN14, ST-SUP-UC01-R08 to R10, owner, 2026-11-14): each component
 // declares every environment variable that its emitted code or its runtime provider reads, with the facts that the
 // generated reference lists, so that no variable is read that the platform does not know of.
 
-// VariableType is the kind of value that an environment variable holds (ST-VO63).
-type VariableType string
+// VariableType is the kind of value that an environment variable holds (ST-VO63, types.VariableType).
+type VariableType = types.VariableType
 
 // VariableTypes are the known types of ST-VO63-C01.
-var VariableTypes = []VariableType{"string", "integer", "number", "duration", "boolean", "url", "path", "address", "list"}
+var VariableTypes = types.VariableTypes
 
 // ParseVariableType accepts a variable type only when it is one of the known types (ST-VO63-C01).
 func ParseVariableType(text string) (VariableType, error) {
@@ -390,106 +388,20 @@ func checkAllowed(kind VariableType, allowed *AllowedValues) error {
 	return nil
 }
 
-// CheckVariableValue tells whether a value is of the variable's type and inside its allowed values, and why not.
-// It never puts the value in its message, because the caller may hold a value that it must not show.
+// CheckVariableValue tells whether a value is of the variable's type and inside its allowed values, and why not
+// (types.CheckVariableValue). It never puts the value in its message.
 func CheckVariableValue(kind VariableType, allowed *AllowedValues, value string) error {
-	if len(value) > maxVariableValue || strings.ContainsAny(value, "\n\r") {
-		return fmt.Errorf("the value is not one line of at most %d characters", maxVariableValue)
-	}
-	if err := checkType(kind, value); err != nil {
-		return err
-	}
 	if allowed == nil {
-		return nil
+		return types.CheckVariableValue(kind, types.AllowedValues{}, value)
 	}
-	if len(allowed.Values) > 0 {
-		items := []string{value}
-		if kind == "list" {
-			items = strings.Split(value, ",")
-		}
-		for _, item := range items {
-			if !slices.Contains(allowed.Values, strings.TrimSpace(item)) {
-				return fmt.Errorf("the value is not one of the allowed values %s", allowed.Text())
-			}
-		}
-		return nil
-	}
-	number, _ := numeric(kind, value)
-	if allowed.Min != nil {
-		if minimum, _ := numeric(kind, *allowed.Min); number < minimum {
-			return fmt.Errorf("the value is less than %s", *allowed.Min)
-		}
-	}
-	if allowed.Max != nil {
-		if maximum, _ := numeric(kind, *allowed.Max); number > maximum {
-			return fmt.Errorf("the value is more than %s", *allowed.Max)
-		}
-	}
-	return nil
+	return types.CheckVariableValue(kind, types.AllowedValues{Values: allowed.Values, Min: allowed.Min, Max: allowed.Max}, value)
 }
 
-// numeric gives an integer, a number or a duration as a number, to compare it with a range.
 func numeric(kind VariableType, value string) (float64, error) {
-	switch kind {
-	case "integer":
-		n, err := strconv.ParseInt(value, 10, 64)
-		return float64(n), err
-	case "number":
-		return strconv.ParseFloat(value, 64)
-	case "duration":
-		d, err := time.ParseDuration(value)
-		return float64(d), err
-	}
-	return 0, fmt.Errorf("a %s has no range", kind)
+	return types.NumericValue(kind, value)
 }
 
-// checkType tells whether a value is of a variable type.
-func checkType(kind VariableType, value string) error {
-	switch kind {
-	case "string":
-		return nil
-	case "integer":
-		if _, err := strconv.ParseInt(value, 10, 64); err != nil {
-			return fmt.Errorf("the value is not an integer")
-		}
-	case "number":
-		if n, err := strconv.ParseFloat(value, 64); err != nil || n != n {
-			return fmt.Errorf("the value is not a number")
-		}
-	case "duration":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("the value is not a duration such as 30s or 5m")
-		}
-	case "boolean":
-		if !slices.Contains([]string{"true", "false", "0", "1"}, value) {
-			return fmt.Errorf("the value is not true, false, 0 or 1")
-		}
-	case "url":
-		u, err := url.Parse(value)
-		if err != nil || u.Scheme == "" || u.Host == "" {
-			return fmt.Errorf("the value is not an absolute URL")
-		}
-	case "path":
-		if !path.IsAbs(value) {
-			return fmt.Errorf("the value is not an absolute file path")
-		}
-	case "address":
-		host, port, err := net.SplitHostPort(value)
-		number, portErr := strconv.Atoi(port)
-		if err != nil || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " /") {
-			return fmt.Errorf("the value is not an address of a host and a port")
-		}
-	case "list":
-		for _, item := range strings.Split(value, ",") {
-			if strings.TrimSpace(item) == "" {
-				return fmt.Errorf("the value is not a list of comma-separated items")
-			}
-		}
-	default:
-		return fmt.Errorf("the type %q is not known", kind)
-	}
-	return nil
-}
+func checkType(kind VariableType, value string) error { return types.CheckVariableType(kind, value) }
 
 // checkEnvironment holds the environment list of a component to ST-SUP-INV22 to INV24 and refuses a configuration
 // need, which the platform requirements derive from the variables instead (ST-SUP-EN09 field Platform needs).
