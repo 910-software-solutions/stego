@@ -873,6 +873,11 @@ entities:
       - { name: ref_field, type: string, to: Widget }
       - { name: amount, type: float, min_length: 1 }
       - { name: score, type: double, max_length: 10 }
+      - { name: note, type: string, client_set: true }
+      - { name: created_at, type: timestamp, client_set: true }
+      - { name: updated_at, type: timestamp, client_set: true }
+      - { name: summed_at, type: timestamp, computed: true, filled_by: agg, client_set: true }
+      - { name: due_at, type: timestamp, client_set: true }
 collections:
   widgets:
     entity: Widget
@@ -906,6 +911,16 @@ collections:
 		assertHasError(t, result, "field-type", "constraint 'min_length' is only valid for string fields, not \"float\"")
 		// max_length on double
 		assertHasError(t, result, "field-type", "constraint 'max_length' is only valid for string fields, not \"double\"")
+		// client_set suits only a timestamp that the server does not own (ST-DECL-Q16).
+		assertHasError(t, result, "field-type", "field \"note\" has 'client_set: true', but client_set is only valid for timestamp fields, not \"string\"")
+		assertHasError(t, result, "field-type", "field \"created_at\" has 'client_set: true', but created_at is the time that the server sets")
+		assertHasError(t, result, "field-type", "field \"updated_at\" has 'client_set: true', but updated_at is the time that the server sets")
+		assertHasError(t, result, "field-type", "field \"summed_at\" has 'client_set: true', but a computed field is filled by its fill")
+		for _, e := range result.Errors {
+			if strings.Contains(e.Message, `"due_at"`) {
+				t.Errorf("the client-set timestamp due_at is refused: %s", e.Message)
+			}
+		}
 	})
 }
 

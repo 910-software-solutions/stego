@@ -1101,6 +1101,9 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	if c.ops[types.OpList] {
 		w.f("\t\"strconv\"\n")
 	}
+	if w.decodesClientTime() {
+		w.f("\t\"strings\"\n")
+	}
 	if needTime {
 		w.f("\t\"time\"\n")
 	}
@@ -1370,7 +1373,9 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("func decode%s(bodyBytes []byte) (%s, error) {\n", c.pascal, e.Name)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", e.Name)
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, e.Name, e.Name)
+		w.clientTimeText(e.Name+"{}", e.Fields)
 		w.f("\tvar %s %s\n\tif err := json.Unmarshal(bodyBytes, &%s); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body does not decode into %s\")}\n\t}\n", c.lower, e.Name, c.lower, e.Name, e.Name)
+		w.clientTimeValue(c.lower, e.Name+"{}", e.Fields, false)
 		w.f("\t%s.ID = \"\"\n", c.lower)
 		emitClearServerManagedFields(&w.Buffer, c.lower, e)
 		w.canonicalRefs(c.lower, e.Fields, false)
@@ -1386,9 +1391,69 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("func decode%sPatch(bodyBytes []byte) (%sPatchRequest, error) {\n", c.pascal, c.pascal)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", c.pascal)
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, c.pascal, e.Name)
+		w.clientTimeText(c.pascal+"PatchRequest{}", c.patchFields())
 		w.f("\tvar patch %sPatchRequest\n\tif err := json.Unmarshal(bodyBytes, &patch); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body does not decode into the patch of %s\")}\n\t}\n", c.pascal, c.pascal, e.Name)
+		w.clientTimeValue("patch", c.pascal+"PatchRequest{}", c.patchFields(), true)
 		w.canonicalRefs("patch", c.patchFields(), true)
 		w.f("\treturn patch, nil\n}\n\n")
+	}
+}
+
+// clientTimeExample is the example of an RFC 3339 time in the problem of a client-set timestamp.
+const clientTimeExample = "2026-11-14T09:30:00Z"
+
+// decodesClientTime tells whether a decode of the collection reads a timestamp that the client sets (ST-DECL-Q16):
+// the body of a create, an update or an upsert reads every field, and a patch body its patchable fields.
+func (w *runtimeHandlerWriter) decodesClientTime() bool {
+	c := w.c
+	fields := c.patchFields()
+	if c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpUpsert] {
+		fields = c.entity.Fields
+	}
+	for _, f := range fields {
+		if f.ClientSetTime() && (c.ops[types.OpCreate] || c.ops[types.OpUpdate] || c.ops[types.OpUpsert] || c.ops[types.OpPatch]) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientTimeText writes, in the decode of a body before the body is decoded, the check of each client-set timestamp
+// of fields (ST-DECL-Q16): a member that is not null must be a JSON string that holds an RFC 3339 time, else the
+// request is refused with a 400 problem that names the field. A time whose offset moves its UTC year outside 1 to
+// 9999, such as 9999-12-31T23:59:59-14:00, is refused the same way, as the answer in UTC cannot encode it. The JSON decoder matches a member name to a field
+// with no regard to case, so each member whose name is the field's name in any case is checked.
+func (w *runtimeHandlerWriter) clientTimeText(zero string, fields []types.Field) {
+	for _, f := range fields {
+		if !f.ClientSetTime() {
+			continue
+		}
+		invalid := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time, such as "+clientTimeExample)
+		w.f("\tfor member, raw := range rawMap {\n\t\tif !strings.EqualFold(member, %q) || string(raw) == \"null\" {\n\t\t\tcontinue\n\t\t}\n", f.Name)
+		w.f("\t\tvar text string\n\t\tif err := json.Unmarshal(raw, &text); err != nil {\n\t\t\treturn %s, %s\n\t\t}\n", zero, invalid)
+		w.f("\t\tparsed, err := time.Parse(time.RFC3339, text)\n\t\tif err != nil {\n\t\t\treturn %s, %s\n\t\t}\n", zero, invalid)
+		year := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time whose UTC year is from 1 to 9999, such as "+clientTimeExample)
+		w.f("\t\tif utcYear := parsed.UTC().Year(); utcYear < 1 || utcYear > 9999 {\n\t\t\treturn %s, %s\n\t\t}\n\t}\n", zero, year)
+	}
+}
+
+// clientTimeValue writes, after the decode of a body, the check of each client-set timestamp of the decoded value v
+// (ST-DECL-Q16): the zero time is refused, as an answer cannot tell it from no value, and a required field that the
+// body leaves out or sends as null is refused, except in a patch, where an absent member changes nothing. The column
+// keeps the instant, and each answer gives it in UTC (the Presented function), whatever offset the client sent.
+func (w *runtimeHandlerWriter) clientTimeValue(v, zero string, fields []types.Field, pointers bool) {
+	for _, f := range fields {
+		if !f.ClientSetTime() {
+			continue
+		}
+		name := v + "." + toPascalCase(f.Name)
+		if f.Optional || pointers {
+			invalid := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time after the zero time, such as "+clientTimeExample)
+			w.f("\tif %s != nil && %s.IsZero() {\n\t\treturn %s, %s\n\t}\n", name, name, zero, invalid)
+			continue
+		}
+		required := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" is required: an RFC 3339 time after the zero time, such as "+clientTimeExample)
+		w.f("\tif %s.IsZero() {\n\t\treturn %s, %s\n\t}\n", name, zero, required)
 	}
 }
 
@@ -1550,7 +1615,7 @@ func (w *runtimeHandlerWriter) populateCreate() {
 		switch {
 		case f.Name == "created_by" || f.Name == "updated_by":
 			w.setField(f, "callerName(r.Context())")
-		case f.Type == types.FieldTypeTimestamp:
+		case f.Type == types.FieldTypeTimestamp && !f.ClientSetTime():
 			w.setField(f, "time.Now().UTC()")
 		case f.Name == "generation" && f.Default != nil:
 			// ValidateContext refused a default that has no Go literal (generationDefaults).
