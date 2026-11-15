@@ -1606,6 +1606,37 @@ WHERE pronamespace = 'stego_schema'::regnamespace AND proname IN ('backfill_read
 		contracted(t, up)
 	})
 
+	t.Run("ST-SUP-RC01-OC24-T10 The check reads the step tables on the search path pg_catalog, pg_temp, so an operator in public does not run in its compares", func(t *testing.T) {
+		upCfg, up := contractBase(t)
+		finish(t, up)
+		// An operator * of integer and interval in public is a closer match than the one of pg_catalog for the
+		// window of runningReleases, r.every_ms * $2::integer * interval '1 millisecond', which pg_catalog has only for
+		// double precision, so on the search path of the session it would run (security review of PR #332, INFO-3).
+		// A release before the change that reported a day ago: the window is computed for its row, and the release
+		// does not run any more.
+		for _, statement := range []string{
+			`INSERT INTO stego_schema.releases (holder, release, version, every_ms, seen_at) VALUES (repeat('f', 32), '100_tenancy_row_security', 'v0', 10000, now() - interval '1 day')`,
+			`CREATE FUNCTION public.t10_trap(integer, interval) RETURNS interval LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'the operator * of public ran'; END$$`,
+			`CREATE OPERATOR public.* (LEFTARG = integer, RIGHTARG = interval, FUNCTION = public.t10_trap)`,
+		} {
+			if _, err := up.Exec(statement); err != nil {
+				t.Fatalf("%.60s: %v", statement, err)
+			}
+		}
+		defer func() {
+			_, _ = up.Exec(`DROP OPERATOR IF EXISTS public.* (integer, interval)`)
+			_, _ = up.Exec(`DROP FUNCTION IF EXISTS public.t10_trap(integer, interval)`)
+		}()
+		var shown string
+		if err := up.QueryRow(`SELECT (2 * interval '1 millisecond')::text`).Scan(&shown); err == nil || !strings.Contains(err.Error(), "the operator * of public ran") {
+			t.Fatalf("on the search path of the session the trap does not run: %q, %v", shown, err)
+		}
+		if err := contract(t, upCfg); err != nil {
+			t.Fatalf("the step with an operator * of integer and interval in public: %v", err)
+		}
+		contracted(t, up)
+	})
+
 	t.Run("ST-SUP-RC01-OC39-T03 A write of the release before after the drop of the sync trigger fails and loses no edit", func(t *testing.T) {
 		upCfg, up := contractBase(t)
 		finish(t, up)

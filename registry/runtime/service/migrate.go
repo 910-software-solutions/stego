@@ -545,12 +545,19 @@ func (c endedTxConn) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx,
 	return c.Conn.BeginTx(context.WithoutCancel(ctx), opts)
 }
 
+// backfillResetTimeout is the longest wait for the reset of a backfill session when it goes back to the pool.
+const backfillResetTimeout = 5 * time.Second
+
 // releaseBackfillSession gives the backfill session conn back to the pool as the login role, with its own search
 // path. Each transaction of the session ended on this goroutine before (endedTxConn), so no Close of database/sql
 // runs at the same time as the reset. A session whose reset fails can still run as the owner role, so it is closed
-// and does not go back to the pool (review of PR #327, low).
+// and does not go back to the pool (review of PR #327, low). The reset runs after the end of the job's context too,
+// but for at most backfillResetTimeout, so a server that does not answer cannot hold the release; a reset that
+// ends at the timeout fails, and the session is closed (review of PR #332, INFO-1).
 func releaseBackfillSession(ctx context.Context, conn endedTxConn) {
-	if _, err := conn.ExecContext(context.WithoutCancel(ctx), "RESET ROLE; RESET search_path"); err != nil {
+	reset, cancel := context.WithTimeout(context.WithoutCancel(ctx), backfillResetTimeout)
+	defer cancel()
+	if _, err := conn.ExecContext(reset, "RESET ROLE; RESET search_path"); err != nil {
 		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 	}
 	_ = conn.Close()

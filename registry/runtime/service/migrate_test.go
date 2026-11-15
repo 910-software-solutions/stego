@@ -922,13 +922,42 @@ func TestMigrateBackfillSessionRelease(t *testing.T) {
 			t.Fatalf("the release after a failed reset opened %d sessions in all and closed %d, want a new session", d.opened, d.closed)
 		}
 	})
+
+	t.Run("ST-SUP-RP14-LC03-T27 The reset of a backfill session runs after the end of the job's context, for at most its timeout", func(t *testing.T) {
+		d := &resetDriver{}
+		sql.Register("lc03t27", d)
+		db, err := sql.Open("lc03t27", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		conn, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The context of the job has ended when the session goes back: the reset still runs, and it has a deadline
+		// of at most backfillResetTimeout, so a server that does not answer cannot hold the release.
+		job, cancel := context.WithCancel(context.Background())
+		cancel()
+		before := time.Now()
+		releaseBackfillSession(job, endedTxConn{conn})
+		if d.resets != 1 || d.last == nil {
+			t.Fatalf("a release after the end of the job ran %d resets, want one", d.resets)
+		}
+		deadline, ok := d.last.Deadline()
+		if !ok || deadline.After(time.Now().Add(backfillResetTimeout)) || deadline.Before(before) {
+			t.Errorf("the reset had the deadline %v (set: %t), want one at most %v after the release", deadline, ok, backfillResetTimeout)
+		}
+	})
 }
 
 // resetDriver is a database/sql driver whose sessions run only the reset of a backfill session, which fails while
-// fail is set. It counts the sessions it opens and closes and the resets that pass.
+// fail is set. It counts the sessions it opens and closes and the resets that pass, and keeps the context of the
+// last reset.
 type resetDriver struct {
 	fail                   bool
 	opened, closed, resets int
+	last                   context.Context
 }
 
 func (d *resetDriver) Open(string) (driver.Conn, error) {
@@ -945,9 +974,14 @@ func (c resetConn) Close() error {
 	return nil
 }
 
-func (c resetConn) ExecContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
+func (c resetConn) ExecContext(ctx context.Context, query string, _ []driver.NamedValue) (driver.Result, error) {
 	if query != "RESET ROLE; RESET search_path" {
 		return nil, fmt.Errorf("unexpected statement %q", query)
+	}
+	c.d.last = ctx
+	// As the pgx driver does, a statement whose context has ended does not run.
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if c.d.fail {
 		return nil, errors.New("the reset failed")
