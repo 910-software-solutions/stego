@@ -106,15 +106,15 @@ func archFixture(t *testing.T) ArchitectureInput {
 
 func deriveFixture(t *testing.T, in ArchitectureInput) (*ArchitectureModel, []byte) {
 	t.Helper()
-	file, err := WriteArchitecture(in)
+	files, err := WriteArchitecture(in)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var model ArchitectureModel
-	if err := json.Unmarshal(file.Content, &model); err != nil {
+	if err := json.Unmarshal(files[0].Content, &model); err != nil {
 		t.Fatal(err)
 	}
-	return &model, file.Content
+	return &model, files[0].Content
 }
 
 func TestArchitectureDeterminism(t *testing.T) {

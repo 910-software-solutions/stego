@@ -102,6 +102,11 @@ func newEvolution(t *testing.T) *evolution {
 			t.Fatal(err)
 		}
 	}
+	// The architecture model and view are project files of the removed record, so they go with it; else the
+	// first apply finds them as hand edits.
+	if err := os.RemoveAll(filepath.Join(e.repo, "architecture")); err != nil {
+		t.Fatal(err)
+	}
 	if out, failed := e.stego(t, stego, "apply"); failed != "" {
 		t.Fatalf("stego apply of v1: %s\n%s", failed, out)
 	}
