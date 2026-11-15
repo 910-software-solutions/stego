@@ -842,9 +842,9 @@ type cdpMessage struct {
 func startBrowser(t *testing.T) *cdpBrowser {
 	t.Helper()
 	path := os.Getenv("STEGO_BROWSER")
-	ci := os.Getenv("GITHUB_ACTIONS") == "true"
-	if path == "" && ci {
-		// A CI runner has a browser: the proof run uses it, so the browser tests never skip there.
+	if path == "" && hostedRunner() {
+		// A GitHub-hosted runner has a browser: the proof run uses it, so the browser tests never skip there. A run
+		// that only sets GITHUB_ACTIONS, such as act on a workstation, does not look for one (#345 F5).
 		for _, name := range []string{"google-chrome", "chromium", "chromium-browser"} {
 			if found, err := exec.LookPath(name); err == nil {
 				path = found

@@ -59,7 +59,11 @@ type runtimeWiringInput struct {
 
 // runtimeWiringData is the data of the template of the runtime wiring package.
 type runtimeWiringData struct {
-	Audit, Authz, Outbox, Storage, Tenancy, Idempotency, API, Commands, Queries     string
+	Audit, Authz, Outbox, Storage, Tenancy, Idempotency, API, Commands, Queries string
+	// Workers is the runners package of the worker component for a service that declares workers (ST-SUP-RC35), and
+	// Tickers and Consumers tell whether a worker has an every trigger or a consumes trigger.
+	Workers                                                                         string
+	Tickers, Consumers                                                              bool
 	Service, DeclarationVersion, SubjectType, TenantClaim, ProblemType, ProblemCode string
 	Issuer, Audience, Header, KeyFile, RoleClaim                                    string
 	// Discovery, CAFile, SubjectClaim and Algorithms are the settings of an auth provider that the verifier serves
@@ -118,6 +122,16 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	}
 	if len(svc.Queries) > 0 {
 		data.Queries = pkg(queryComponent, "serve")
+	}
+	if len(svc.Workers) > 0 {
+		if data.Workers = pkg(workerComponent, "runners"); data.Workers == "" {
+			return nil, ComponentWiring{}, fmt.Errorf("the declared workers need the component %s, which generates their runners", workerComponent)
+		}
+		for _, w := range svc.Workers {
+			consumes := strings.HasPrefix(w.Trigger, "consumes ")
+			data.Consumers = data.Consumers || consumes
+			data.Tickers = data.Tickers || !consumes
+		}
 	}
 	if data.ProblemCode == "" {
 		return nil, ComponentWiring{}, fmt.Errorf("the service name %q gives no problem code prefix", svc.Name)

@@ -26,6 +26,7 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
@@ -923,7 +924,7 @@ func TestMigrateBackfillSessionRelease(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RP14-LC03-T27 The reset of a backfill session runs after the end of the job's context, for at most its timeout", func(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T29 The reset of a backfill session runs after the end of the job's context, for at most its timeout", func(t *testing.T) {
 		d := &resetDriver{}
 		sql.Register("lc03t27", d)
 		db, err := sql.Open("lc03t27", "")
@@ -1432,6 +1433,154 @@ func TestMigrateLocks(t *testing.T) {
 		}
 		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
 			t.Fatalf("the job after the column was made again gave %v", err)
+		}
+	})
+
+	t.Run("ST-SUP-RP14-LC03-T27 The job gives the worker role the least grants of a consuming worker's writes, and takes them back when no consumer is left", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		consuming := func(tables ...string) Migration {
+			m := f.migration(nil)
+			m.Parts.Workers.Consumers = func(*command.Runtime, *outbox.Worker, func(string) command.WorkerObserver) error { return nil }
+			m.Parts.Workers.ConsumerTables = tables
+			return m
+		}
+		privileges := func(table string) string {
+			var got []string
+			for _, privilege := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"} {
+				var has bool
+				if err := f.admin.QueryRow(`SELECT has_table_privilege($1, $2, $3)`, f.worker, table, privilege).Scan(&has); err != nil {
+					t.Fatal(err)
+				}
+				if has {
+					got = append(got, privilege)
+				}
+			}
+			return strings.Join(got, ",")
+		}
+		want := map[string]string{"public.orders": "SELECT,INSERT,UPDATE", "public.audit_event": "INSERT",
+			"public.audit_chain_heads": "SELECT,INSERT,UPDATE", "public.idempotency_keys": "SELECT,INSERT,UPDATE",
+			"public.authz_floor": "SELECT", "public.audit_anchor_boundaries": "", "public.audit_retention_checkpoints": "",
+			"public.authz_revocations": "", "public.stego_tenants": ""}
+		// The job with a consuming worker that writes orders passes its schema manifest check at its end, which holds
+		// the grant of the worker role on the revocation floor and on the key table.
+		if err := Migrate(context.Background(), settings, consuming("orders")); err != nil {
+			t.Fatal(err)
+		}
+		for table, wantPrivileges := range want {
+			if got := privileges(table); got != wantPrivileges {
+				t.Errorf("the worker role holds %q on %s, want %q", got, table, wantPrivileges)
+			}
+		}
+		// A write that the worker did not declare is refused: a worker declares no delete.
+		if _, err := f.admin.Exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('t1'); INSERT INTO public.orders (tenant_id, id, status) VALUES ('t1', 'o1', 'open')`); err != nil {
+			t.Fatal(err)
+		}
+		asWorker := func(statement string) error {
+			tx, err := f.admin.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			if _, err := tx.Exec(`SET LOCAL ROLE ` + f.worker + `; SELECT pg_catalog.set_config('app.tenant', 't1', true)`); err != nil {
+				t.Fatal(err)
+			}
+			_, err = tx.Exec(statement)
+			return err
+		}
+		if err := asWorker(`UPDATE public.orders SET status = 'synced' WHERE id = 'o1'`); err != nil {
+			t.Fatalf("the update of a declared write as the worker role gave %v, want it to pass", err)
+		}
+		var coded interface{ SQLState() string }
+		if err := asWorker(`DELETE FROM public.orders WHERE id = 'o1'`); !errors.As(err, &coded) || coded.SQLState() != "42501" {
+			t.Fatalf("the delete as the worker role gave %v, want SQLSTATE 42501", err)
+		}
+		// A consumer table that the runtime role gets no grant on is refused before the job opens the database.
+		if err := Migrate(context.Background(), settings, consuming("foreign_orders")); Stage(err) != "migrate."+StepSettings {
+			t.Fatalf("the job with the consumer table foreign_orders gave %v at the stage %q, want %s", err, Stage(err), StepSettings)
+		}
+		// With no consuming worker left, the job takes every grant back, and its manifest check passes.
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatalf("the job with no consumer gave %v", err)
+		}
+		for table := range want {
+			if got := privileges(table); got != "" {
+				t.Errorf("with no consumer the worker role holds %q on %s, want nothing", got, table)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP14-LC03-T28 No committed step of a run again of the job leaves the worker role without a grant that the running release needs", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		// The job of a release with a consuming worker that writes orders, whose authorization text gives the worker
+		// role the column grants on the token of the protected table orders, as the generated text does.
+		release := func(consumer bool) Migration {
+			m := f.migration(nil)
+			if consumer {
+				m.Parts.Workers.Consumers = func(*command.Runtime, *outbox.Worker, func(string) command.WorkerObserver) error { return nil }
+				m.Parts.Workers.ConsumerTables = []string{"orders"}
+			}
+			m.Authorization += ";\nGRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.orders TO " + f.worker
+			return m
+		}
+		consuming := func() Migration { return release(true) }
+		if err := Migrate(context.Background(), settings, consuming()); err != nil {
+			t.Fatal(err)
+		}
+		needs := []struct{ query, what string }{
+			{`SELECT has_column_privilege($1, 'public.orders', 'authz_token', 'UPDATE')`, "UPDATE of the token of orders"},
+			{`SELECT has_column_privilege($1, 'public.orders', 'tenant_id', 'SELECT')`, "SELECT of the tenant of orders"},
+			{`SELECT has_table_privilege($1, 'public.orders', 'UPDATE')`, "UPDATE on orders"},
+			{`SELECT has_table_privilege($1, 'public.idempotency_keys', 'INSERT')`, "INSERT on idempotency_keys"},
+			{`SELECT has_table_privilege($1, 'public.audit_event', 'INSERT')`, "INSERT on audit_event"},
+			{`SELECT has_table_privilege($1, 'public.authz_floor', 'SELECT')`, "SELECT on authz_floor"},
+		}
+		var lost []string
+		// The relay of a release with no consumer needs the column grants on the token only.
+		var checked = needs
+		check := func(after string) {
+			for _, n := range checked {
+				var has bool
+				if err := f.admin.QueryRow(n.query, f.worker).Scan(&has); err != nil {
+					t.Error(err)
+					return
+				}
+				if !has {
+					lost = append(lost, n.what+" before "+after)
+				}
+			}
+		}
+		// Each step runs in its own transaction, so before each step the database is in the state that the steps
+		// before it committed, as a job that fails there leaves it to the running release.
+		stepped = func(step string, _ *sql.Conn) { check(step) }
+		defer func() { stepped = nil }()
+		if err := Migrate(context.Background(), settings, consuming()); err != nil {
+			t.Fatal(err)
+		}
+		stepped = nil
+		check("the end")
+		if len(lost) > 0 {
+			t.Fatalf("a committed state of the job with a consumer lacks grants of the worker role: %v", lost)
+		}
+		// The job of a release with no consumer: orders is no consumer table, so only the authorization text gives
+		// the worker role its token grants back after the REVOKE.
+		checked = needs[:2]
+		stepped = func(step string, _ *sql.Conn) { check(step) }
+		if err := Migrate(context.Background(), settings, release(false)); err != nil {
+			t.Fatal(err)
+		}
+		stepped = nil
+		check("the end")
+		if len(lost) > 0 {
+			t.Fatalf("a committed state of the job with no consumer lacks the token grants of the worker role: %v", lost)
+		}
+		// The worker role reads no audit event: its insert returns no row.
+		var reads bool
+		if err := f.admin.QueryRow(`SELECT has_table_privilege($1, 'public.audit_event', 'SELECT')`, f.worker).Scan(&reads); err != nil || reads {
+			t.Fatalf("the worker role may read audit_event (%v), want no SELECT", err)
 		}
 	})
 

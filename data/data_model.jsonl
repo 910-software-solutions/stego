@@ -43,7 +43,7 @@
 {"id":"ST-DLV-EN01-DM","title":"delivery.Requirements","entity_id":"ST-DLV-EN01","file":"internal/delivery/requirements.go"}
 {"id":"ST-DLV-EN02-DM","title":"delivery.Requirement","entity_id":"ST-DLV-EN02","file":"internal/delivery/requirements.go"}
 {"id":"ST-DLV-EN03-DM","title":"delivery.Pipeline","entity_id":"ST-DLV-EN03","file":"internal/delivery/pipeline.go"}
-{"id":"ST-DLV-EN04-DM","title":"kubernetesservice.Base","entity_id":"ST-DLV-EN04","file":"internal/generator/kubernetesservice/kustomize.go"}
+{"id":"ST-DLV-EN04-DM","title":"delivery.Base","entity_id":"ST-DLV-EN04","file":"internal/delivery/base.go"}
 {"id":"ST-DLV-EN05-DM","title":"delivery.Application","entity_id":"ST-DLV-EN05","file":"internal/delivery/argocd.go"}
 {"id":"ST-DLV-EN06-DM","title":"delivery.Candidate","entity_id":"ST-DLV-EN06","file":"internal/delivery/check.go"}
 {"id":"ST-DLV-EN07-DM","title":"delivery.CheckResult","entity_id":"ST-DLV-EN07","file":"internal/delivery/check.go"}

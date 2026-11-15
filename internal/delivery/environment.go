@@ -2,10 +2,14 @@ package delivery
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -108,6 +112,9 @@ type environmentEntry struct {
 	fault string
 	// empty marks a configuration value that is null or empty: it gives no value.
 	empty bool
+	// value is the text of a configuration value, which is never secret: a secret variable given as a configuration
+	// value is of the wrong type, and the check names it without its value.
+	value string
 }
 
 // environment is the environment file as the check reads it.
@@ -142,7 +149,7 @@ func readEnvironment(data []byte) (environment, error) {
 		return environment{}, err
 	}
 	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
-		return environment{}, &EnvironmentError{Line: document.Line, Reason: "the file is not a map of the fields of the environment schema"}
+		return environment{}, &EnvironmentError{Line: document.Line, Reason: "the file is not a map of the fields of the environment schema; stego env check --help and docs/environment-file.md give the schema"}
 	}
 	top, err := fieldsOf(document.Content[0], "")
 	if err != nil {
@@ -292,6 +299,9 @@ func readEntry(section string, kind RequirementKind, known []string, name string
 			entry.fault = "a configuration value is one value, not a " + nodeKind(node)
 		}
 		entry.empty = emptyValue(node)
+		if node.Kind == yaml.ScalarNode && !entry.empty {
+			entry.value = node.Value
+		}
 		return entry, nil
 	}
 	if node.Kind != yaml.MappingNode {
@@ -322,8 +332,26 @@ func typeFault(given map[string]*yaml.Node) string {
 			return fmt.Sprintf("the %s is one text", strings.ReplaceAll(name, "_", " "))
 		}
 	}
-	if node := given["issuer"]; node != nil && !strings.HasPrefix(node.Value, "https://") {
-		return fmt.Sprintf("the issuer %s is not an https URL", node.Value)
+	for _, name := range []string{"engine", "topic", "issuer", "host", "address", "resource", "level"} {
+		if node := given[name]; node != nil && node.Value == "" {
+			return fmt.Sprintf("the %s is empty", name)
+		}
+	}
+	if node := given["issuer"]; node != nil {
+		if u, err := url.Parse(node.Value); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return fmt.Sprintf("the issuer %s is not an https URL with a host and no user, query or fragment", node.Value)
+		}
+	}
+	for _, name := range []string{"host", "address"} {
+		if node := given[name]; node != nil && node.Value != "" && (len(node.Value) > 253 || !hostName.MatchString(node.Value)) {
+			return fmt.Sprintf("the %s %s is not a host name or an IP address; give the port in the field port, and no scheme or path", name, node.Value)
+		}
+	}
+	if node := given["api_group"]; node != nil && (len(node.Value) > 253 || !apiGroup.MatchString(node.Value)) {
+		return fmt.Sprintf("the API group %q is not a Kubernetes API group", node.Value)
+	}
+	if node := given["resource"]; node != nil && node.Value != "" && (len(node.Value) > maxWord || !apiResource.MatchString(node.Value)) {
+		return fmt.Sprintf("the resource %q is not a Kubernetes resource name", node.Value)
 	}
 	if node := given["port"]; node != nil {
 		number, err := strconv.Atoi(node.Value)
@@ -339,6 +367,60 @@ func typeFault(given map[string]*yaml.Node) string {
 			if !isText(verb) {
 				return "the verbs are a list of verbs"
 			}
+			if !slices.Contains(clusterVerbs, verb.Value) {
+				return fmt.Sprintf("the verb %q is not one of %s", verb.Value, strings.Join(clusterVerbs, ", "))
+			}
+		}
+	}
+	return ""
+}
+
+// hostName is a host name, an IPv4 address or an IPv6 address in brackets: the shape of the host of an ingress and
+// the address of an egress destination, which give their port in a field of its own.
+var hostName = regexp.MustCompile(`^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*)$`)
+
+// rangeText is the text of a range of allowed values, as the platform requirements hold it: "1s to 30m", "at least
+// 1" or "at most 10", with a unit of one or two words after it.
+var rangeText = regexp.MustCompile(`^(?:(\S+) to (\S+)|at least (\S+)|at most (\S+))(?: [a-z]+(?: [a-z]+)?)?$`)
+
+// allowedOf reads the allowed values of a listed variable back from their text: a range for an integer, a number or
+// a duration, else a list of words.
+func allowedOf(kind variableType, text string) allowedValues {
+	if text == "" {
+		return allowedValues{}
+	}
+	if kind == "integer" || kind == "number" || kind == "duration" {
+		if parts := rangeText.FindStringSubmatch(text); parts != nil {
+			bound := func(i int) *string {
+				if parts[i] == "" {
+					return nil
+				}
+				return &parts[i]
+			}
+			switch {
+			case parts[1] != "":
+				return allowedValues{Min: bound(1), Max: bound(2)}
+			case parts[3] != "":
+				return allowedValues{Min: bound(3)}
+			default:
+				return allowedValues{Max: bound(4)}
+			}
+		}
+	}
+	return allowedValues{Values: strings.Split(text, ", ")}
+}
+
+// valueFault tells why a configuration value is not a value of the listed variable: its type (ST-VO63), its
+// allowed values or its range, and for a url an HTTPS URL with a host (ST-DLV-UC02-R02, ST-DLV-Q08); "" when it is
+// one. The message names the variable and its type, never the value.
+func valueFault(variable AcceptedVariable, value string) string {
+	kind := variableType(variable.Type)
+	if err := checkValue(kind, allowedOf(kind, variable.Allowed), value); err != nil {
+		return fmt.Sprintf("the environment variable %s is of the type %s: %s", variable.Name, variable.Type, err)
+	}
+	if kind == "url" {
+		if u, err := url.Parse(value); err != nil || u.Scheme != "https" {
+			return fmt.Sprintf("the environment variable %s is of the type url: the value is not an HTTPS URL", variable.Name)
 		}
 	}
 	return ""
@@ -374,10 +456,19 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 		fit.Rows = append(fit.Rows, FitRow{Requirement: "image", Status: WrongType,
 			Detail: fmt.Sprintf("the image %s is not named by a sha256 digest; the environment schema states repository@sha256:<digest>", env.image)})
 	}
+	variables := map[string]AcceptedVariable{}
+	for _, variable := range requirements.Environment {
+		variables[variable.Name] = variable
+	}
 	named := map[string]bool{}
 	for _, requirement := range requirements.Requirements {
 		named[string(requirement.Kind)+" "+requirement.Name] = true
 		status, detail := requirementMet(requirement, env)
+		if variable, listed := variables[requirement.Name]; status == Met && requirement.Kind == Configuration && listed {
+			if fault := valueFault(variable, env.lookup(Configuration, requirement.Name).value); fault != "" {
+				status, detail = WrongType, fault
+			}
+		}
 		fit.Rows = append(fit.Rows, FitRow{Requirement: string(requirement.Kind) + " " + requirement.Name, Status: status, Detail: detail})
 		if status == Met {
 			if notice := widerGrant(requirement, env); notice != "" {
@@ -431,6 +522,14 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 			}
 			if entry.fault != "" {
 				fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType, Detail: entry.fault})
+				continue
+			}
+			// Each configuration value of a listed variable has the variable's type, allowed values and range
+			// (ST-DLV-UC02-R02). An empty value gives no value, and the check of required variables names it.
+			if entry.kind == Configuration && !entry.empty {
+				if fault := valueFault(variables[entry.name], entry.value); fault != "" {
+					fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType, Detail: fault})
+				}
 			}
 			continue
 		}
@@ -603,4 +702,117 @@ func UnmetRequirements(reader *EnvironmentReader) []FitRow {
 		}
 	}
 	return unmet
+}
+
+// variableType is a type of ST-VO63, as the platform requirements state it. The check of an environment file holds a
+// value to its type with the same rules as the registry holds a default (registry.VariableType), which Delivering
+// may not import (ST-STD-CODE-R03).
+type variableType string
+
+// allowedValues are the allowed values of a listed variable: a list of words, or an inclusive range of an integer, a
+// number or a duration. The zero value allows each value of the type.
+type allowedValues struct {
+	Values   []string
+	Min, Max *string
+}
+
+// maxConfigurationValue bounds a configuration value, as the registry bounds a default.
+const maxConfigurationValue = 512
+
+// checkValue tells whether a value is of the variable's type and inside its allowed values, and why not.
+// It never puts the value in its message, because the caller may hold a value that it must not show.
+func checkValue(kind variableType, allowed allowedValues, value string) error {
+	if len(value) > maxConfigurationValue || strings.ContainsAny(value, "\n\r") {
+		return fmt.Errorf("the value is not one line of at most %d characters", maxConfigurationValue)
+	}
+	if err := checkVariableType(kind, value); err != nil {
+		return err
+	}
+	if len(allowed.Values) > 0 {
+		items := []string{value}
+		if kind == "list" {
+			items = strings.Split(value, ",")
+		}
+		for _, item := range items {
+			if !slices.Contains(allowed.Values, strings.TrimSpace(item)) {
+				return fmt.Errorf("the value is not one of the allowed values %s", strings.Join(allowed.Values, ", "))
+			}
+		}
+		return nil
+	}
+	number, _ := numericValue(kind, value)
+	if allowed.Min != nil {
+		if minimum, _ := numericValue(kind, *allowed.Min); number < minimum {
+			return fmt.Errorf("the value is less than %s", *allowed.Min)
+		}
+	}
+	if allowed.Max != nil {
+		if maximum, _ := numericValue(kind, *allowed.Max); number > maximum {
+			return fmt.Errorf("the value is more than %s", *allowed.Max)
+		}
+	}
+	return nil
+}
+
+// numericValue gives an integer, a number or a duration as a number, to compare it with a range.
+func numericValue(kind variableType, value string) (float64, error) {
+	switch kind {
+	case "integer":
+		n, err := strconv.ParseInt(value, 10, 64)
+		return float64(n), err
+	case "number":
+		return strconv.ParseFloat(value, 64)
+	case "duration":
+		d, err := time.ParseDuration(value)
+		return float64(d), err
+	}
+	return 0, fmt.Errorf("a %s has no range", kind)
+}
+
+// checkVariableType tells whether a value is of a variable type.
+func checkVariableType(kind variableType, value string) error {
+	switch kind {
+	case "string":
+		return nil
+	case "integer":
+		if _, err := strconv.ParseInt(value, 10, 64); err != nil {
+			return fmt.Errorf("the value is not an integer")
+		}
+	case "number":
+		if n, err := strconv.ParseFloat(value, 64); err != nil || n != n {
+			return fmt.Errorf("the value is not a number")
+		}
+	case "duration":
+		if _, err := time.ParseDuration(value); err != nil {
+			return fmt.Errorf("the value is not a duration such as 30s or 5m")
+		}
+	case "boolean":
+		if !slices.Contains([]string{"true", "false", "0", "1"}, value) {
+			return fmt.Errorf("the value is not true, false, 0 or 1")
+		}
+	case "url":
+		u, err := url.Parse(value)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return fmt.Errorf("the value is not an absolute URL")
+		}
+	case "path":
+		if !path.IsAbs(value) {
+			return fmt.Errorf("the value is not an absolute file path")
+		}
+	case "address":
+		host, port, err := net.SplitHostPort(value)
+		number, portErr := strconv.Atoi(port)
+		if err != nil || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " /") {
+			return fmt.Errorf("the value is not an address of a host and a port")
+		}
+	case "list":
+		for _, item := range strings.Split(value, ",") {
+			if strings.TrimSpace(item) == "" {
+				return fmt.Errorf("the value is not a list of comma-separated items")
+			}
+		}
+	default:
+		return fmt.Errorf("the type %q is not known", kind)
+	}
+	return nil
 }

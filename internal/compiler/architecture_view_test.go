@@ -359,6 +359,30 @@ func TestArchitectureView(t *testing.T) {
 		if !strings.Contains(textOf(p.byID("form-platform")), value) {
 			t.Fatal("the text forms do not show the hostile reason as text")
 		}
+		// Each role head of the turned access matrix shows the role name as text, with a break only between its parts.
+		var model ArchitectureModel
+		if err := json.Unmarshal(hostile, &model); err != nil {
+			t.Fatal(err)
+		}
+		if len(model.Access.Checks) <= len(model.Access.Roles) {
+			t.Fatal("the access matrix of the hostile model is not turned")
+		}
+		for _, r := range model.Access.Roles {
+			heads := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == r.ID })
+			if len(heads) != 1 || textOf(heads[0]) != roleName(r) {
+				t.Errorf("the head of the role %s is not its name %q as text", r.ID, roleName(r))
+				continue
+			}
+			breaks := 0
+			for c := heads[0].FirstChild; c != nil; c = c.NextSibling {
+				if c.Type == html.ElementNode && c.Data == "wbr" {
+					breaks++
+				}
+			}
+			if breaks != 2 {
+				t.Errorf("the head of the role %s has %d breaks, want one after the word as and one after the #", r.ID, breaks)
+			}
+		}
 	})
 
 	t.Run("ST-GEN-UC08-R08-T05 Every colour token keeps its contrast in both themes", func(t *testing.T) {
@@ -625,6 +649,9 @@ func hostileModel(t *testing.T) ([]byte, string) {
 		e["name"], e["id"] = hostileValue, kind+":"+hostileValue
 	}
 	m["fills"].([]any)[0].(map[string]any)["id"] = "__proto__"
+	// A role name with quotes, which the escape writes as entities, and the # and the word as, where the name may
+	// break (security review of PR #345, F3).
+	m["access"].(map[string]any)["roles"].([]any)[0].(map[string]any)["subject_type"] = `it's "x"`
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)

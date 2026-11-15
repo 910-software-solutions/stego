@@ -67,6 +67,11 @@ type Parts struct {
 	// commands: each set that is not empty gets a command runtime of its own, since an entity registers with one
 	// runtime only.
 	Commands, Collections []command.Declared
+	// WorkerEntities are the entities that the declared workers write, which get a command runtime of their own,
+	// and WorkerNames the names of the declared workers, the values of the field worker of the built-in worker
+	// observations (ST-SUP-RP12-LC21).
+	WorkerEntities []command.Declared
+	WorkerNames    []string
 	// Workers are the parts of the worker and controller modes, which Start runs (ST-SUP-RP14-LC04).
 	Workers WorkerParts
 	// OwnerRole is the owner role of the service, which the migration job runs as and which must own each table of
@@ -123,6 +128,7 @@ type Service struct {
 	writer        *audit.Writer
 	commands      *command.Runtime
 	collections   *command.Runtime
+	workers       *command.Runtime
 	queries       *query.Runtime
 	beat          *lease.Beat
 	tenants       *tenantProvisioning
@@ -192,7 +198,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if svc.telemetry, err = otel.New(p.Service, probe.SpanNames()...); err != nil {
 		return nil, err
 	}
-	if svc.probes, err = probe.Start(svc.telemetry, nil); err != nil {
+	builtins, err := probe.NewBuiltins(p.WorkerNames, nil)
+	if err != nil {
+		return nil, err
+	}
+	if svc.probes, err = probe.Start(svc.telemetry, builtins); err != nil {
 		return nil, err
 	}
 	// A database that does not satisfy the schema manifest is an alert, not a refusal (F10, owner, 2026-11-13).
@@ -238,6 +248,14 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if len(p.Collections) > 0 {
 		config.Entities = p.Collections
 		if svc.collections, err = command.New(ctx, config); err != nil {
+			return nil, err
+		}
+	}
+	if len(p.WorkerEntities) > 0 {
+		// The worker runs and the consumed messages run on the runtime of the workers' entities; a consumer runs no
+		// fill for a message of a tenant that is not active (ST-SUP-RC27-OC12).
+		config.Entities = p.WorkerEntities
+		if svc.workers, err = command.New(ctx, config); err != nil {
 			return nil, err
 		}
 	}
@@ -332,13 +350,32 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the authorization runtime: %w", err)
 	}
 	// The migration job makes the key table in idempotency.KeySchema, where Wrap and Purge name it.
-	keys, err := idempotency.Manifest(idempotency.KeySchema, p.PurgeRole, runtimeRole)
+	keys, err := idempotency.ManifestWithConsumers(idempotency.KeySchema, p.PurgeRole, runtimeRole, consumerRoles(&p, p.WorkerRole))
 	if err != nil {
 		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the key table: %w", err)
 	}
 	want := manifest.Join(p.Schema, record, queue, revocations, keys)
 	want.Owner = p.OwnerRole
+	// The grants of a consuming worker on a table whose grants the manifest checks; the key table names its
+	// consumer roles itself (ST-SUP-Q136).
+	for _, g := range consumerGrants(&p) {
+		for i := range want.Tables {
+			t := &want.Tables[i]
+			if t.CheckGrants && t.Schema == g.schema && t.Name == g.table && t.Name != "idempotency_keys" {
+				t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: g.privileges})
+			}
+		}
+	}
 	return want, nil
+}
+
+// consumerRoles are the roles that run a consuming worker's fill: the worker role, whose outbox worker runs it in
+// the transaction of the claimed message, when the service has a consuming worker (ST-SUP-RC35-OC06, ST-SUP-Q136).
+func consumerRoles(p *Parts, workerRole string) []string {
+	if p == nil || p.Workers.Consumers == nil {
+		return nil
+	}
+	return []string{workerRole}
 }
 
 // reach checks that SpiceDB answers its health check within ReachTimeout, so a service whose SpiceDB cannot be
@@ -423,6 +460,9 @@ func (svc *Service) RoutedMiddleware(router *http.ServeMux, next http.Handler) h
 
 // Commands is the command runtime of the declared commands, and nil when the service declares none.
 func (svc *Service) Commands() *command.Runtime { return svc.commands }
+
+// WorkerCommands is the command runtime of the declared workers, and nil when the service declares none.
+func (svc *Service) WorkerCommands() *command.Runtime { return svc.workers }
 
 // Collections is the command runtime of the generated collection commands, and nil when the service has none.
 func (svc *Service) Collections() *command.Runtime { return svc.collections }

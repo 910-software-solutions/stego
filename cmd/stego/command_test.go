@@ -167,7 +167,10 @@ func TestOperationRoutes(t *testing.T) {
 
 func TestWorkerFillFromProject(t *testing.T) {
 	t.Run("ST-DECL-INV68-T Checking reads the slot of a worker's fill from the project", func(t *testing.T) {
-		service := td02 + "workers:\n  - name: sync-todos\n    trigger: every 1m\n    writes: [Todo]\n    resource_type: todo\n    permission: edit\n    fill: sync-todos\n"
+		// A declared worker selects the worker component, which needs an experimental acceptance while it is not ga
+		// (ST-SUP-Q131).
+		service := td02 + acceptanceOf("worker", "the service runs a declared worker") +
+			"workers:\n  - name: sync-todos\n    trigger: every 1m\n    writes: [Todo]\n    resource_type: todo\n    permission: edit\n    fill: sync-todos\n"
 		project := td02Project(t, service)
 		putFile(t, project, filepath.Join("fills", "sync-todos", "fill.yaml"), "kind: fill\nname: sync-todos\nimplements: "+declaration.WorkerSlot+"\n")
 		if faults := checkInProcess(t, project); len(faults) != 0 {

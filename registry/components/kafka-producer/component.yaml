@@ -117,3 +117,8 @@ environment:
     description: "Set to 1 to let loopback brokers go without TLS, for a local test only. When it has no value, each broker needs TLS."
     secret: false
     allowed: {values: ["0", "1"]}
+# The platform needs (ST-SUP-EN09): the topic of the change events and the network path to the brokers on their TLS
+# port.
+needs:
+  - {kind: topic, name: "{service}-events"}
+  - {kind: egress, name: "{service}-kafka", port: 9093}

@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 )
@@ -89,7 +90,10 @@ func (d *deriver) context() {
 			Source: componentSource(c, "config.issuer")}
 		if settings, ok := d.in.Service.Overrides[name].(map[string]any); ok {
 			if issuer, ok := settings["issuer"].(string); ok && issuer != "" {
-				a.Name, a.Source = issuer, ArchSource{Declaration: "overrides." + name + ".issuer"}
+				a.Source = ArchSource{Declaration: "overrides." + name + ".issuer"}
+				if shown, ok := issuerName(issuer); ok {
+					a.Name = shown
+				}
 			}
 		}
 		relate(service, actor(a), "checks tokens", componentID(name), "sync", a.Source)
@@ -249,6 +253,19 @@ func checkContext(m *ArchitectureModel, refer func(owner string, refs ...string)
 }
 
 // actorKinds are the kinds of actor in the order of the overview, top to bottom.
+// issuerName gives the issuer URL that the model may show: its scheme, host and path, with no user info, query or
+// fragment, so a user name, a password or a token that a declaration put in the URL by mistake is not published
+// with the model (security review of PR #345, F1). It gives false for a value with no scheme and host, which the
+// model does not show.
+func issuerName(issuer string) (string, bool) {
+	u, err := url.Parse(issuer)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.Opaque != "" {
+		return "", false
+	}
+	u.User, u.RawQuery, u.ForceQuery, u.Fragment, u.RawFragment = nil, "", false, "", ""
+	return u.String(), true
+}
+
 var actorKinds = []string{actorCaller, actorTokenIssuer, actorAuthorization, actorStore, actorOutside}
 
 // actorOrder gives the place of an actor kind in the overview.

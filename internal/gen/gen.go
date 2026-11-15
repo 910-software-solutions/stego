@@ -97,6 +97,22 @@ type VariableDeclarer interface {
 	DeclaredVariables(ctx Context) ([]DeclaredVariables, error)
 }
 
+// Probes are the HTTP paths of the liveness and readiness probes that a
+// component serves, and the environment variable whose default is the port
+// they are served on.
+type Probes struct {
+	Liveness     string
+	Readiness    string
+	PortVariable string
+}
+
+// ProbeDeclarer gives the probes that a component serves, so that the
+// Kubernetes base carries them (ST-DLV-UC07-R03). It must check the context
+// as Generate does.
+type ProbeDeclarer interface {
+	Probes(ctx Context) (Probes, error)
+}
+
 // InputProvider declares source files before generation. The compiler reads
 // each file once and checks its snapshot again before it applies output.
 type InputProvider interface {
@@ -231,6 +247,10 @@ type Context struct {
 	// Queries are the queries of the declaration (ST-DECL-EN19), in declaration order. Generators must not change
 	// them.
 	Queries []types.Query
+
+	// Workers are the declared workers of the service (ST-DECL-EN25), in declaration order, each with the slot that
+	// its fill implements. Generators must not change them.
+	Workers []Worker
 
 	// FillSlots gives, for each fill that a command, a query or a worker names and that the project holds, the slot
 	// it implements as component.slot, as its fill.yaml states (ST-DECL-INV45). A fill that the project does not hold
@@ -562,6 +582,14 @@ type Command struct {
 	types.Command
 	// FillSlot is the slot that the command's one fill implements, as component.slot, as its fill.yaml names it,
 	// or empty when the project holds no such fill.
+	FillSlot string
+}
+
+// Worker is one declared worker with what the compiler read of its fill.
+type Worker struct {
+	types.Worker
+	// FillSlot is the slot that the worker's one fill implements, as component.slot, as its fill.yaml names it, or
+	// empty when the project holds no such fill.
 	FillSlot string
 }
 

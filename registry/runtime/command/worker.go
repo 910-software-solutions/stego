@@ -107,9 +107,8 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 	if interval <= 0 || due.UnixNano()%interval.Nanoseconds() != 0 {
 		return fmt.Errorf("command: the tick of %s is not due at a multiple of its interval", w.spec.Name)
 	}
-	ctx, finish := rt.span(ctx, WorkerSpanName)
-	outcome := otel.OutcomeRolledBack
-	defer func() { finish(outcome, false, err != nil) }()
+	ctx, finish := rt.workerSpan(ctx, WorkerSpanName, w.spec.Name)
+	defer func() { finish(spanOutcome(err), false, err != nil) }()
 
 	var notAfter time.Time
 	if held != nil {
@@ -124,6 +123,17 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		// The transaction's context ends at the deadline, and database/sql then rolls the transaction back.
 		ctx, cancel = context.WithDeadline(ctx, notAfter)
 		defer cancel()
+	}
+	// The tenant gate before the transaction: a tenant that was retired after the tick read the tenant list gets no
+	// run (security review of PR #337, L1).
+	if rt.cfg.Tenants != nil {
+		active, err := rt.cfg.Tenants.Active(ctx, t)
+		switch {
+		case err != nil:
+			return internalf("the tenant list was not read")
+		case !active:
+			return errTenantNotActive
+		}
 	}
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
@@ -184,9 +194,29 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		return deadlineOr(ctx, notAfter, err)
 	}
 	committed = true
-	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return nil
+}
+
+// workerOutcome is the fixed outcome of a worker run that did not commit (ST-SUP-RC35-OC09): fenced for a run that
+// its lease fenced, panicked for a fill that panicked, and rolled_back for any other error.
+func workerOutcome(err error) probe.WorkerOutcome {
+	switch {
+	case errors.Is(err, lease.ErrFenced):
+		return probe.WorkerFenced
+	case errors.Is(err, errPanic):
+		return probe.WorkerPanicked
+	}
+	return probe.WorkerRolledBack
+}
+
+// spanOutcome is the outcome of the span of a worker run: committed for a run that returned nil, and else the fixed
+// outcome of workerOutcome (ST-SUP-RC35-OC09).
+func spanOutcome(err error) otel.Outcome {
+	if err == nil {
+		return otel.OutcomeCommitted
+	}
+	return otel.Outcome(workerOutcome(err))
 }
 
 // workerBegin maps an error of tenant.Begin in a worker run.
@@ -262,9 +292,14 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	if rt == nil || w == nil || tx == nil || decode == nil || fill == nil || d.Tenant.IsZero() {
 		return errors.New("command: RunConsumer needs the runtime, the worker, the transaction, the decoder, the fill and a claimed message")
 	}
-	ctx, finish := rt.span(ctx, ConsumerSpanName)
+	ctx, finish := rt.workerSpan(ctx, ConsumerSpanName, w.spec.Name)
 	outcome := otel.OutcomeRolledBack
-	defer func() { finish(outcome, false, err != nil && !outbox.IsConflict(err)) }()
+	defer func() {
+		if outcome == otel.OutcomeRolledBack {
+			outcome = otel.Outcome(workerOutcome(err))
+		}
+		finish(outcome, false, err != nil && !outbox.IsConflict(err))
+	}()
 	if err := rt.activeTenant(ctx, d.Tenant); err != nil {
 		return err
 	}
@@ -327,6 +362,11 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		})
 	var failure *fillFailure
 	switch {
+	case s.notGranted || sqlState(err) == notGrantedState:
+		// The worker role lacks a privilege that the fill needs: a dispatch again fails the same way, so the message
+		// is parked and does not hold back its key without end (decision on ST-SUP-Q141, orchestrator under the
+		// owner's delegation, 2026-11-15).
+		return outbox.PermanentRefusal(&notGrantedError{worker: w.spec.Name})
 	case errors.As(err, &failure):
 		if failure.conflict && !uniqueConflict(failure.err) {
 			return outbox.Conflict(failure.err)
@@ -360,6 +400,29 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return nil
+}
+
+// ErrNotGranted matches the error of a consumer run whose statement failed with SQLSTATE 42501, as the worker role
+// lacks a privilege that the fill needs: RunConsumer parks the message (decision on ST-SUP-Q141).
+var ErrNotGranted = errors.New("command: the worker role lacks a privilege that the fill needs")
+
+// notGrantedError is the refusal of a consumer run that the database refused for a missing privilege. It names the
+// worker and no database text.
+type notGrantedError struct{ worker string }
+
+func (e *notGrantedError) Error() string {
+	return "command: " + e.worker + ": the worker role lacks a privilege that the fill needs (SQLSTATE 42501)"
+}
+func (e *notGrantedError) Is(target error) bool { return target == ErrNotGranted }
+
+// ObserveConsumer reports the error err of one RunConsumer of a consuming worker to its built-in observations and
+// returns it: a run that the database refused for a missing privilege is sent as worker.run.failed with the outcome
+// not_granted (decision on ST-SUP-Q141). The generated destination handler of a consuming worker calls it.
+func ObserveConsumer(ctx context.Context, observe WorkerObserver, err error) error {
+	if observe != nil && errors.Is(err, ErrNotGranted) {
+		observe.RunFailed(context.WithoutCancel(ctx), probe.WorkerNotGranted)
+	}
+	return err
 }
 
 // errDeclaredRefusal matches an error that Refusal marks.

@@ -32,8 +32,11 @@ var (
 	// schema-change research, owner, 2026-11-13).
 	schemaMismatch = builtin("schema.manifest.mismatch", Event, Error, serviceClass, "class")
 
-	workerRunFailed       = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome")
-	workerTickSkipped     = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
+	workerRunFailed   = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome")
+	workerTickSkipped = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
+	// workerTickFailed is a tick that did not read the tenant list, so it ran no tenant (security review of PR #337,
+	// L2; decision on ST-SUP-Q141).
+	workerTickFailed      = builtin("worker.tick.failed", Event, Error, workerClass, "worker")
 	workerTenantUnreached = builtin("worker.tenant.unreached", Counter, Warn, workerClass, "worker")
 
 	backfillRows       = builtin("schema.backfill.rows", Counter, Info, backfillClass, "change")
@@ -45,7 +48,7 @@ var (
 )
 
 // builtinObservations are the built-in observations, whose names no declared observation may take.
-var builtinObservations = []*Observation{telemetryStarted, telemetryStopped, serviceReady, serviceStopping, serviceFailed, httpDiagnostic, schemaMismatch, workerRunFailed, workerTickSkipped, workerTenantUnreached, backfillRows, backfillFailedRows, backfillDuplicates, backfillCompleted, backfillStalled, backfillThrottled}
+var builtinObservations = []*Observation{telemetryStarted, telemetryStopped, serviceReady, serviceStopping, serviceFailed, httpDiagnostic, schemaMismatch, workerRunFailed, workerTickFailed, workerTickSkipped, workerTenantUnreached, backfillRows, backfillFailedRows, backfillDuplicates, backfillCompleted, backfillStalled, backfillThrottled}
 
 // builtinName tells whether name is the name of a built-in observation.
 func builtinName(name string) bool {
@@ -110,6 +113,9 @@ const (
 	WorkerRolledBack WorkerOutcome = "rolled_back"
 	WorkerFenced     WorkerOutcome = "fenced"
 	WorkerPanicked   WorkerOutcome = "panicked"
+	// WorkerNotGranted is the outcome of a consumer run that the database refused for a privilege that the worker
+	// role lacks (SQLSTATE 42501), whose message is parked (decision on ST-SUP-Q141).
+	WorkerNotGranted WorkerOutcome = "not_granted"
 )
 
 // SchemaChange is one schema change of the declaration. Open is set when its last step is expand.
@@ -179,7 +185,7 @@ func (c *core) builtin(ctx context.Context, o *Observation, count int64, values 
 			ok = slices.Contains(SchemaFaultClasses, v)
 		case "outcome":
 			outcome := WorkerOutcome(v)
-			ok = outcome == WorkerRolledBack || outcome == WorkerFenced || outcome == WorkerPanicked
+			ok = outcome == WorkerRolledBack || outcome == WorkerFenced || outcome == WorkerPanicked || outcome == WorkerNotGranted
 		}
 		if !ok {
 			c.dropped.Add(1)
@@ -218,6 +224,9 @@ func (r *Recorder) Worker(name string) Worker { return Worker{core: r.core, name
 func (w Worker) RunFailed(ctx context.Context, outcome WorkerOutcome) {
 	w.core.builtin(ctx, workerRunFailed, 1, w.name, string(outcome))
 }
+
+// TickFailed sends worker.tick.failed for a tick that did not read the tenant list, with the worker name only.
+func (w Worker) TickFailed(ctx context.Context) { w.core.builtin(ctx, workerTickFailed, 1, w.name) }
 
 // TickSkipped adds one to worker.tick.skipped.
 func (w Worker) TickSkipped() { w.core.builtin(context.Background(), workerTickSkipped, 1, w.name) }

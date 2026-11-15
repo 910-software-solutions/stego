@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"io/fs"
@@ -11,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jsell-rh/stego/internal/delivery"
 )
 
 // These tests prove stego env check (ST-DLV-UC02) on the files of ST-DLV-TD02: the platform requirements that
@@ -409,6 +412,83 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		expectFailed(t, stdout, stderr, passed, "wrong type: configuration DATABASE_URL", "secret")
 		if strings.Contains(stdout+stderr, "CANARY") {
 			t.Fatalf("the check shows the value of the secret variable:\n%s\n%s", stdout, stderr)
+		}
+	})
+	t.Run("ST-DLV-UC02-R02-T05 Each configuration value has the type, the allowed values and the range of its variable", func(t *testing.T) {
+		for _, bad := range []struct{ line, parts string }{
+			{"  GOMAXPROCS: eighty\n", "configuration GOMAXPROCS|the type integer|not an integer"},
+			{"  GOMAXPROCS: 2000\n", "configuration GOMAXPROCS|more than 1024"},
+			{"  GOMAXPROCS: 0\n", "configuration GOMAXPROCS|less than 1"},
+			{"  JWK_CERT_URL: ftp://keys.example.com/certs\n", "configuration JWK_CERT_URL|not an HTTPS URL"},
+			{"  JWK_CERT_URL: keys.example.com\n", "configuration JWK_CERT_URL|not an absolute URL"},
+		} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", configBlock, configBlock+bad.line)
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, append([]string{"wrong type"}, strings.Split(bad.parts, "|")...)...)
+		}
+		// A required variable that the platform requirements state as a configuration need has its type and its
+		// allowed values too.
+		c := newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, "configuration:\n  LOG_LEVEL: loud\n")
+		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "wrong type: configuration LOG_LEVEL", "not one of the allowed values debug, info, warn, error")
+		c = newEnvCase(t)
+		c.change(t, "dev.yaml", "  STEGO_SPICEDB_ENDPOINT: spicedb.dev.example.com:50051\n", "  STEGO_SPICEDB_ENDPOINT: https://spicedb.dev.example.com\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "wrong type: configuration STEGO_SPICEDB_ENDPOINT", "the type address")
+		// Values of the right type, inside the allowed values and the range, pass.
+		c = newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, "configuration:\n  LOG_LEVEL: warn\n  GOMAXPROCS: 4\n  JWK_CERT_URL: https://keys.example.com/certs\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+	})
+	t.Run("ST-DLV-UC02-R02-T06 Each entry has the shape of its requirement kind", func(t *testing.T) {
+		for _, bad := range []struct{ old, new, parts string }{
+			{"    address: payments.dev.example.com\n", "    address: https://payments.dev.example.com/pay\n", "egress payments|not a host name"},
+			{"    verbs: [get, list]\n", "    verbs: [get, list, destroy]\n", "cluster permission read-config-maps|the verb \"destroy\""},
+			{"    resource: configmaps\n", "    resource: Config Maps\n", "cluster permission read-config-maps|not a Kubernetes resource name"},
+		} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", bad.old, bad.new)
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, append([]string{"wrong type"}, strings.Split(bad.parts, "|")...)...)
+		}
+	})
+	t.Run("ST-DLV-UC02-R04-T05 The help and the documentation give the environment schema, each with an example that the check reads", func(t *testing.T) {
+		var stdout bytes.Buffer
+		if err := runEnvTo([]string{"check", "--help"}, &stdout); err != nil {
+			t.Fatalf("stego env check --help: %v", err)
+		}
+		doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "environment-file.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, helpExample, _ := strings.Cut(envUsage, "\nExample:\n")
+		_, docExample, _ := strings.Cut(string(doc), "```yaml\n")
+		docExample, _, _ = strings.Cut(docExample, "```")
+		requirements := delivery.Requirements{Version: delivery.RequirementsVersion, Service: "tasks", Requirements: []delivery.Requirement{}}
+		for name, example := range map[string]string{"the help": strings.ReplaceAll(helpExample, "\n  ", "\n")[2:], "docs/environment-file.md": docExample} {
+			for _, field := range []string{"version", "service", "environment", "image", "destination", "secrets", "configuration", "backing_stores", "egresses"} {
+				if !strings.Contains(example, field+":") {
+					t.Errorf("the example of %s has no field %s", name, field)
+				}
+			}
+			fit, err := delivery.CheckEnvironment(requirements, []byte(example))
+			if err != nil {
+				t.Errorf("the check does not read the example of %s: %v\n%s", name, err, example)
+			}
+			for _, row := range fit.Rows {
+				t.Errorf("the check does not read the example of %s as one of the right types: %s: %s", name, row.Requirement, row.Detail)
+			}
+		}
+		for _, section := range []string{"version", "destination", "secrets", "configuration", "backing_stores", "topics", "identity_issuers", "ingresses", "egresses", "cluster_permissions", "pod_security"} {
+			if !strings.Contains(envUsage, section) || !strings.Contains(string(doc), section) {
+				t.Errorf("the help or the documentation does not name %s", section)
+			}
+		}
+		if !strings.Contains(envUsage, "docs/environment-file.md") {
+			t.Error("the help does not name docs/environment-file.md")
 		}
 	})
 	t.Run("ST-DLV-UC02-R01-T05 An error of the check is printed escaped too", func(t *testing.T) {
