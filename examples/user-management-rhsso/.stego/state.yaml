@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261114234511-177232e5f1cb
+        module_version: v0.0.0-20261115003934-f80d66d14159
         vcs: git
-        revision: 177232e5f1cbbdd63d464669a0efa4f3ddee3dac
+        revision: f80d66d141595da275002215204201422bc5320c
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -129,15 +129,15 @@ last_applied:
         internal/api/all_users_handler.go: 25aea7a042c9dc342c04e254a2ae270c99dfe5a67397cf9c666772eb7a1188c0
         internal/api/cors.go: 5b7863e6f7fa7f104ffbc0f97418542b07bc428766642a1856de26eac9e1fc2c
         internal/api/data/entities.go: 6c03153e4b9188b4fb93325bd9bc5f92fd291dcc4b12f05bc7e85122aa8c587c
-        internal/api/data/views.go: 6fa99423ecf57b851bce64c0bf60d636a5ad0622b678e605b13673b6306194d9
+        internal/api/data/views.go: 1e79f709bd7c7e500f7bff07286ed2646c26db9b85d919631bacd4d1b1020b61
         internal/api/discovery.go: 31cf4a80ece098d319dad61a8c861282481707c57deeaab8af29485c6ded4f85
         internal/api/errors.go: 8746d7f2437f9d6409c35b3ce25a67f3b71f5888ad3cdfe721b55663674f2ec7
         internal/api/openapi.json: 00a51de2e34cd16d85994f58e81d4cf4b6980e3d3dd2e0b2e6391177b8ffbbd2
         internal/api/org_settings_handler.go: caba01dc06ac42966e087a01c5a09d758cf389d31527b88a3bed137b4e20a08a
-        internal/api/org_users_handler.go: ab769cb810932107e6ecc35ebbfa094fddf567444c6eaade53bed3d81009ee34
-        internal/api/organizations_handler.go: 8ef9fe22bb1375b908eb3c40926a2f8da494ce7f96052f7a93a7b379467a9563
+        internal/api/org_users_handler.go: dc1917f62edefcd0efd793b00a092c665771c2384678764e3dd3fd6b7e8070cb
+        internal/api/organizations_handler.go: 848c1fee1917ac10fa4c87063b5977e9fd54f077e3a98b913e6c53ca9253aed6
         internal/api/router.go: 015fe23fa351aba15bb5cfa5f7e5b0ada71215d6d50e4db74a5f73f0b07fe826
-        internal/api/runtime.go: e204224f6e353d96df8bea2d5e77a84cbe5a44cd3cddf30b6c4ecfa5db086ab8
+        internal/api/runtime.go: 7d66bbf4478580d6266826a1144408402842b77360afd44cacc57ced37785b17
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: a18d0b5be27531bebccf58133dc6cb87198a44d7a7d694871557bfbf96d2f420
         internal/authz/authz.go: 018fe87e99f0f6c39637ee5884001d6b668d22558a8e09102bc1b0577aa68849
