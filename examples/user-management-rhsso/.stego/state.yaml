@@ -19,29 +19,29 @@ last_applied:
                 mode: 420
             go.mod:
                 exists: true
-                sha256: 9ea044b0b86b2df955ccaaad098966a3e2b77170015ab9524c296ae5e4e9d6c3
+                sha256: 81d2f01c93edc6cb6fb61513c88dd95026db7d00ef63f9c2de51b4f4dbec57d0
                 mode: 420
             go.sum:
                 exists: true
-                sha256: ffb5d85e98dc7d21768e26ffdecfd8c397ac70ccbcb6627500ae7ab394882ab8
+                sha256: a06b34c7800ff18fa1adf8091338135e0f2c7499f99de8fd2b0d5693b9da653a
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
                 mode: 420
-        sha256: 58a7018ef7169cb8704cb372cfb41ac3ad058616be6cd861329385ab6bce2ad6
+        sha256: 546dfaeceed7cdac393654364db3575ad69d6625cce4d3fa3918077c52fba86d
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115200943-3eeab280aca6
+        module_version: v0.0.0-20261115202722-50dfefbf66d6
         vcs: git
-        revision: 3eeab280aca694d95ecda73b129ebe86147cfd7d
+        revision: 50dfefbf66d6405ef3fc6c16ee4c89a0e784b1a1
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: ffe3a1b0ff4f4bfce6f4df6be060bc5bd59617096b2773fb6e27887b63788b8c
+    registry_content_sha256: 08e3f49d9a41fb3702ef92c6265af5142f38fcfc4d39a77293657fdcc15cf4c0
     components:
         audit-log:
             version: 1.1.1
@@ -145,7 +145,7 @@ last_applied:
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
         internal/stegoruntime/runtime.go: 2fdbbd25c7227d6e3290b0aa3fdf32d794db3eaec513dde2e6e4f24a0c8d39da
         internal/storage/database.go: 2969e645f09850b504ad2725978a15d1ccad3147efb4a450d7360be23ffef627
-        internal/storage/migrate.go: 4b0b7306a98d8e78eb7fab0bdfaa6e6910c9a58fb95c3cd7a97f54caf84fa6ae
+        internal/storage/migrate.go: 94591880466382c8cfdf856938d965d930b4d2f35e8aa5429e56d027b89f2fcf
         internal/storage/migrations/001_initial.sql: ab78775163028811859a9a67ca89769c43529c4a72451340e6551134668393f9
         internal/storage/runtime_access.go: a2cf0172d9113da261aff6cca3349d065ba2fe748a2af36cfd915cdfc3157fce
         internal/storage/schema_generation.go: eac0cae3fc272d0dfc546f23a7fbd19d5579a530dbc0331be3aa08f7969860c5
@@ -193,8 +193,8 @@ last_applied:
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
-        architecture/architecture.json: bf61d99bce25ae40c650b8a991326290f4ab0562f2c35c9c44b42ef7732acfa6
-        architecture/index.html: c16fbe46f288bc21f1d42b232a4fa820dcea7d4cab672a65e6eb8d5c88fbe5a0
+        architecture/architecture.json: 5ddd9382c8a67d6c5ff3ccc84bc66a8891fb72fa9e2d4a0252b91bde5274fad5
+        architecture/index.html: 3a4fecbff8104b0e58434c09dcd741f8f147bfbe5fca3d88e3989c107da394f6
         deploy/base/deployment.yaml: c70fcb432dc7f6d6d6c65ecbf8937cad8e56c71a47fb75c92b662a3235416420
         deploy/base/kustomization.yaml: b2db76dd596305ad0ef173ea7cf702fe9144cda5be1516c0a579f0e8f10e8ab0
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
@@ -203,9 +203,9 @@ last_applied:
         deploy/platform-requirements.yaml: 370bf5733578df49caf1428a0fabd223e0b368d783109a7dad69d5c6d71f55c7
     archetype:
         name: rest-crud
-        version: 3.117.5
+        version: 3.121.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
-            version: v0.109.0
-            sum: h1:RzbTTtCFiLsU2d5PN8d+o1+cDf3Ph9oJJ4dGw9MGWBk=
+            version: v0.111.0
+            sum: h1:euQ+zPCYjeqQSBoc/2aDvgTGhj5ymY1Dx2cDig0X6AQ=
         imports_runtime: true
