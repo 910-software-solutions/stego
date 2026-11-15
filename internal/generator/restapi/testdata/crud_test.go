@@ -113,10 +113,16 @@ definition event {
 	permission view = owner
 	permission edit = owner
 }
+
+definition label {
+	relation owner: user
+	permission view = owner
+	permission edit = owner
+}
 `
 )
 
-var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas"}
+var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "labels"}
 
 // env is the running service: its database with the runtime role, its runtimes and its HTTP server.
 type env struct {
@@ -358,6 +364,7 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	folderSettings := api.NewFolderSettingsHandler(rt, slots.NewValidateGate(settingGate{e}), slots.NewOnEntityChangedGate(settingChanged{e}))
 	folderFlags := api.NewFolderFlagsHandler(rt)
 	folderQuotas := api.NewFolderQuotasHandler(rt)
+	greenLabels := api.NewGreenLabelsHandler(rt)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/folders", folders.Create)
 	mux.HandleFunc("GET /api/v1/folders/{id}", folders.Read)
@@ -385,6 +392,8 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	mux.HandleFunc("DELETE /api/v1/red-events/{id}", redEvents.Delete)
 	mux.HandleFunc("POST /api/v1/blue-events", blueEvents.Create)
 	mux.HandleFunc("GET /api/v1/blue-events", blueEvents.List)
+	mux.HandleFunc("POST /api/v1/green-labels", greenLabels.Create)
+	mux.HandleFunc("GET /api/v1/green-labels/{id}", greenLabels.Read)
 	mux.HandleFunc("POST /api/v1/orders", orders.Create)
 	mux.HandleFunc("GET /api/v1/orders/{id}", orders.Read)
 	mux.HandleFunc("GET /api/v1/orders", orders.List)
@@ -1649,6 +1658,28 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		if r := e.send(a, http.MethodGet, "/api/v1/red-events/"+redID, "", ""); r.status != http.StatusOK {
 			t.Errorf("the read of a red event answered %d %s, want 200", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC23-T07 A read of a row whose optional implicit field is NULL is not found", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		created := e.send(a, http.MethodPost, "/api/v1/green-labels", "k-"+uuid.NewString(), `{"name":"l1"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "label", id)
+		if r := e.send(a, http.MethodGet, "/api/v1/green-labels/"+id, "", ""); r.status != http.StatusOK || r.member(t, "source") != "green" {
+			t.Fatalf("the read of a green label answered %d %s, want 200 with source green", r.status, r.body)
+		}
+		// The view holds the optional implicit field as a pointer, nil for NULL: a NULL is not the value of the
+		// collection, so the row is not found, and its fields are not answered (ST-SUP-Q128 (B)).
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE labels SET source = NULL WHERE id = $1::uuid`, id); err != nil {
+			t.Fatal(err)
+		}
+		if r := e.send(a, http.MethodGet, "/api/v1/green-labels/"+id, "", ""); r.status != http.StatusNotFound || strings.Contains(string(r.body), "l1") {
+			t.Errorf("the read of a label with a NULL source answered %d %s, want 404", r.status, r.body)
 		}
 	})
 

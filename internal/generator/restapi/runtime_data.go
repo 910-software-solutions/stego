@@ -1800,6 +1800,19 @@ func (w *runtimeHandlerWriter) storedValue(name string) string {
 	return "stored." + toPascalCase(name)
 }
 
+// viewDiffers gives the condition that the implicit field name of the loaded view does not hold value. The view
+// holds an optional field as a pointer, nil for a NULL column (ST-SUP-Q128 (B)), and a NULL is another value: the
+// row is not found in the collection.
+func (w *runtimeHandlerWriter) viewDiffers(name, value string) string {
+	field := "view." + toPascalCase(name)
+	for _, f := range w.c.entity.Fields {
+		if f.Name == name && f.Optional {
+			return fmt.Sprintf("(%s == nil || *%s != %q)", field, field, value)
+		}
+	}
+	return fmt.Sprintf("%s != %q", field, value)
+}
+
 // forceScope writes the server values of the scope field and the implicit fields of a written value: the scope
 // field from scope, and each implicit field from its declared value (ST-SUP-RC20-OC23, ST-SUP-RC20-OC24).
 func (w *runtimeHandlerWriter) forceScope(scope string) {
@@ -2037,13 +2050,13 @@ func (w *runtimeHandlerWriter) read() {
 	// ST-SUP-RC20-OC24).
 	var checks []string
 	if c.scope != "" {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != scope", toPascalCase(c.scope)))
+		checks = append(checks, fmt.Sprintf("view.%s != scope", toPascalCase(c.scope)))
 	}
 	for _, kv := range c.implicit {
-		checks = append(checks, fmt.Sprintf("loaded.Value().%s != %q", toPascalCase(kv[0]), kv[1]))
+		checks = append(checks, w.viewDiffers(kv[0], kv[1]))
 	}
 	if len(checks) > 0 {
-		w.f("\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
+		w.f("\t\tview := loaded.Value()\n\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
 	}
 	w.f("\t\treturn %sFromView(loaded.Value()), nil\n\t})\n", c.camel)
 	w.f("\tif err != nil {\n\t\tanswerRead(w, r, %q, id, err)\n\t\treturn\n\t}\n", e.Name)
