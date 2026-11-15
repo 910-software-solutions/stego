@@ -83,10 +83,17 @@ func (e *SchemaError) Error() string {
 // names the line, for a schema that does not compile. Before it compiles, it refuses a schema beyond the shape bounds
 // of checkSchemaShape with a *SchemaError that names the limit (ST-DECL-INV88).
 func CompileAuthzSchema(schemaPath string, source []byte) (*AuthzSchema, error) {
+	return shapedCompile(schemaPath, source, compileSchema)
+}
+
+// shapedCompile refuses a schema beyond the shape bounds of checkSchemaShape, and gives only a schema in the bounds to
+// compile. CompileAuthzSchema gives it compileSchema; a test gives it a compile that fails the test, to show that a
+// refused schema never reaches the compiler.
+func shapedCompile(schemaPath string, source []byte, compile func(string, []byte) (*AuthzSchema, error)) (*AuthzSchema, error) {
 	if err := checkSchemaShape(schemaPath, source); err != nil {
 		return nil, err
 	}
-	return compileSchema(schemaPath, source)
+	return compile(schemaPath, source)
 }
 
 // compileSchema compiles and reads the .zed schema as CompileAuthzSchema does, with no shape bound. Only
