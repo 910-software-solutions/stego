@@ -207,7 +207,7 @@ func syncRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarati
 
 // validateBaseSchema enforces ST-GEN-INV33 on a head declaration against the declaration of a base that has a
 // record: the head's schema steps start with the base's steps in the same order and unchanged, the base's schema
-// changes stay and change only by a fill value that a retype at expand gets, no change gets its expand and its
+// changes stay as they are, also the fill value of a retype (ST-GEN-Q24 (c)), no change gets its expand and its
 // contract step in one release, and the baseline of the head, its stored shape with every schema step undone, is
 // the baseline of the base. STEGO cannot count rows, so it takes each table of the base as a table with rows.
 func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
@@ -516,8 +516,7 @@ func baseStepFaults(base, head *types.ServiceDeclaration) []BaseFault {
 	return nil
 }
 
-// baseChangeFaults refuses a head that removes a schema change of the base or changes it other than by the fill
-// value of a retype at expand.
+// baseChangeFaults refuses a head that removes a schema change of the base or changes it in any way.
 func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 	var faults []BaseFault
 	for _, change := range base.SchemaChanges {
@@ -526,12 +525,10 @@ func baseChangeFaults(base, head *types.ServiceDeclaration) []BaseFault {
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head removes the schema change %s of the base; the declaration keeps every schema change, also a finished one, until a new baseline folds it (ST-GEN-UC15-R03)", change.ID)})
 			continue
 		}
-		now := head.SchemaChanges[index]
-		if change.Kind == "retype" && phaseOf(head, change.ID) == "expand" {
-			now.FillValue = change.FillValue
-		}
-		if !reflect.DeepEqual(now, change) {
-			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head changes the schema change %s of the base; a schema change that a release declared stays as it is, and only a retype at expand may get a fill value", change.ID)})
+		// A fill value of a retype is in the text of its expand step, which the ledger digest covers, so it does not
+		// change either (decision on ST-GEN-Q24 (c), orchestrator under the owner's delegation, 2026-11-14).
+		if now := head.SchemaChanges[index]; !reflect.DeepEqual(now, change) {
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the head changes the schema change %s of the base; a schema change that a release declared stays as it is, also its fill value, which its expand step holds", change.ID)})
 		}
 	}
 	return faults

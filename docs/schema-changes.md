@@ -140,7 +140,7 @@ contract step. The expand step adds the column, nullable, its CHECK
 `NOT VALID` and its indexes, and then the sync trigger, which converts each
 write of the release before into the new column and each write of the new
 release back into the old one. A value that does not convert gets the fill
-value, or stays unset and counts as a failed row. The migration job of the
+value. The migration job of the
 new release converts the rows there before the rollout, under the lease of
 the change, and the contract step waits for a backfill with no failed row.
 Only one rename or retype can be at expand on a table at one time. A retype
@@ -161,8 +161,10 @@ value at once. A require has no sync trigger and no backfill. Its contract
 step makes the column NOT NULL in short steps (a CHECK `NOT VALID`, its
 validation, `SET NOT NULL`, the drop of the CHECK) and keeps the default.
 
-A fill value that a later release adds to an open retype is not built yet
-(ST-GEN-Q24): declare the fill value with the expand step.
+A retype whose conversion is not total declares its fill value with its
+expand step. A later release cannot add or change it, because the expand
+step holds it and its ledger digest covers it: the check against the base
+refuses the change (ST-GEN-Q24).
 
 ## Restarts during a rolling deploy
 
