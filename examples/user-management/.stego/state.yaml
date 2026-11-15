@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115075919-f568062c895e
+        module_version: v0.0.0-20261115091635-92d8ef52ef22
         vcs: git
-        revision: f568062c895ecf00be0793e8340a5852559c2f38
+        revision: 92d8ef52ef229e9c3e78c9a25ce11fa2e4cc5175
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -210,6 +210,9 @@ last_applied:
     project_files:
         architecture/architecture.json: 96078fc2021c110706b911bc9bd8d408200d9449beffe1facde39f4d5d932238
         architecture/index.html: 9813a121b6b71b06d853d8341e615c92480f8e3de88282fe5ae7de6bc2a9cc96
+        deploy/base/deployment.yaml: d816af658be3ae2081a66e273347a286571f72f418901e704bab6de0b9ae9b28
+        deploy/base/kustomization.yaml: efa2d1c91d00586405479f7287595be3cdcf07e1a3381b751aa75490d4c406ee
+        deploy/base/service-account.yaml: 818c19e7ca21ce2c6134917188cc24ff621ef342e31ee1307a1bf386cae1f0ba
         deploy/environment-variables.md: 6e5f67a4f33f49fbb69e450d26c5b05351054b4628d10982b7577fd6d47779f4
         deploy/platform-requirements.yaml: bd1bf9eaf2d7c9f8435288abfef5872e23f1362febef969ee619ab4810373c07
     archetype:
