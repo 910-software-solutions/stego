@@ -108,6 +108,8 @@ func main() {
 		err = runLifecycle(os.Args[2:])
 	case "fleet":
 		err = runFleet(os.Args[2:])
+	case "env":
+		err = runEnv(os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		printUsage()
@@ -159,6 +161,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  lifecycle withdraw  Record that a digest must not be used, with its fail date")
 	fmt.Fprintln(os.Stderr, "  fleet               Name every service that pins a component digest")
 	fmt.Fprintln(os.Stderr, "  fleet vex           Print an OpenVEX statement per service and advisory")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Delivery:")
+	fmt.Fprintln(os.Stderr, "  env check       Check an environment file against the platform requirements")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Other:")
 	fmt.Fprintln(os.Stderr, "  version         Print version")
