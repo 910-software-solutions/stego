@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -67,12 +69,12 @@ func TestPipelineApply(t *testing.T) {
 		}
 		workflow := read(t, dir, delivery.GitHubActionsFile)
 		jobs, _ := workflow["jobs"].(map[string]any)
-		if len(jobs) != 1 {
-			t.Fatalf("the CI file has the jobs %v, want one", jobs)
+		if len(jobs) != 2 || jobs["check"] == nil || jobs["release"] == nil {
+			t.Fatalf("the CI file has the jobs %v, want the check job and the release job", jobs)
 		}
 		for _, job := range jobs {
 			for key := range job.(map[string]any) {
-				if key != "uses" && key != "with" && key != "permissions" {
+				if key != "uses" && key != "with" && key != "permissions" && key != "if" {
 					t.Errorf("the job has the field %s; it only calls the shared pipeline", key)
 				}
 			}
@@ -80,12 +82,74 @@ func TestPipelineApply(t *testing.T) {
 				t.Errorf("the job is %v, want a call of the pinned pipeline with the pinned checks and the signer of the registry", job)
 			}
 		}
+		// A signer that holds an expression of the provider, and a service name that is not a DNS label, are refused.
+		pins := delivery.PipelinePins{Pipeline: fixturePipeline, Checks: fixtureChecks, Signer: fixtureSigner}
+		for _, signer := range []string{"${{github.token}}", "$(params.x)", ""} {
+			bad := pins
+			bad.Signer = signer
+			if _, err := delivery.WritePipeline("orders", delivery.GitHubActions, bad); err == nil {
+				t.Errorf("WritePipeline accepts the signer %q", signer)
+			}
+		}
+		konflux := delivery.PipelinePins{Pipeline: fixtureBundle, Checks: fixtureChecksBundle, Signer: fixtureChainsKeyName}
+		if _, err := delivery.WritePipeline("orders", delivery.Konflux, konflux); err != nil {
+			t.Fatalf("WritePipeline refuses the Konflux pins of the fixture: %v", err)
+		}
+		if _, err := delivery.WritePipeline("-orders", delivery.Konflux, konflux); err == nil {
+			t.Error("WritePipeline accepts the service name -orders")
+		}
 		state, err := compiler.LoadState(filepath.Join(dir, ".stego", "state.yaml"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if state.LastApplied.ProjectFiles[delivery.GitHubActionsFile] == "" {
 			t.Errorf("the generation record does not list %s", delivery.GitHubActionsFile)
+		}
+	})
+
+	t.Run("ST-DLV-UC06-R01-T04 A pull request run of the CI file has no write permission, and a push on a feature branch signs nothing", func(t *testing.T) {
+		dir := deliveryProject(t, "delivery:\n  ci: github-actions\n")
+		mustRunInProject(t, dir, env, "apply")
+		workflow := read(t, dir, delivery.GitHubActionsFile)
+		jobs, _ := workflow["jobs"].(map[string]any)
+		// The contract fake of GitHub Actions: for each event it evaluates the if condition of each job, as the
+		// provider does, and gives the jobs that run with the permissions each gets. A job has no permission
+		// that its permissions block does not give.
+		for _, run := range []struct {
+			name, event, ref string
+			signs            bool
+		}{
+			{"a pull request", "pull_request", "refs/pull/7/merge", false},
+			{"a push on a feature branch", "push", "refs/heads/feature", false},
+			{"a push on the default branch", "push", "refs/heads/main", true},
+			{"a push of a tag", "push", "refs/tags/v1.0.0", true},
+		} {
+			context := map[string]string{"github.event_name": run.event, "github.ref": run.ref, "github.event.repository.default_branch": "main"}
+			signs := false
+			for name, job := range jobs {
+				condition, _ := field(job, "if").(string)
+				runs, err := evaluateCondition(condition, context)
+				if err != nil {
+					t.Fatalf("job %s: %v", name, err)
+				}
+				if !runs {
+					continue
+				}
+				permissions, _ := field(job, "permissions").(map[string]any)
+				for permission, level := range permissions {
+					if level == "write" {
+						if run.event == "pull_request" {
+							t.Errorf("%s runs the job %s with %s write", run.name, name, permission)
+						}
+						if permission == "id-token" {
+							signs = true
+						}
+					}
+				}
+			}
+			if signs != run.signs {
+				t.Errorf("%s: the run can sign is %v, want %v", run.name, signs, run.signs)
+			}
 		}
 	})
 
@@ -131,4 +195,105 @@ func TestPipelineApply(t *testing.T) {
 			t.Error("apply writes a CI file with no pins in the registry")
 		}
 	})
+}
+
+// evaluateCondition evaluates the if condition of a job of GitHub Actions in the context, for the expressions that
+// a CI file uses: a context value, a quoted text, format('…{0}', value), startsWith(value, text), ==, &&, || and
+// parentheses. It refuses any other expression, so a condition it cannot read fails the test.
+func evaluateCondition(condition string, context map[string]string) (bool, error) {
+	tokens := regexp.MustCompile(`'[^']*'|\(|\)|,|==|&&|\|\||[A-Za-z_][A-Za-z0-9_.-]*`).FindAllString(condition, -1)
+	if strings.Join(tokens, "") != strings.ReplaceAll(condition, " ", "") {
+		return false, fmt.Errorf("the condition %q holds an expression the fake does not read", condition)
+	}
+	position := 0
+	next := func() string {
+		if position < len(tokens) {
+			position++
+			return tokens[position-1]
+		}
+		return ""
+	}
+	peek := func() string {
+		if position < len(tokens) {
+			return tokens[position]
+		}
+		return ""
+	}
+	var value func() (any, error)
+	var or func() (any, error)
+	value = func() (any, error) {
+		token := next()
+		switch {
+		case token == "(":
+			inner, err := or()
+			if next() != ")" {
+				return nil, fmt.Errorf("a parenthesis is not closed")
+			}
+			return inner, err
+		case strings.HasPrefix(token, "'"):
+			return strings.Trim(token, "'"), nil
+		case token == "format" || token == "startsWith":
+			if next() != "(" {
+				return nil, fmt.Errorf("%s is not called", token)
+			}
+			first, err := value()
+			if err != nil || next() != "," {
+				return nil, fmt.Errorf("%s needs two arguments", token)
+			}
+			second, err := value()
+			if err != nil || next() != ")" {
+				return nil, fmt.Errorf("%s needs two arguments", token)
+			}
+			if token == "format" {
+				return strings.ReplaceAll(first.(string), "{0}", second.(string)), nil
+			}
+			return strings.HasPrefix(first.(string), second.(string)), nil
+		}
+		known, ok := context[token]
+		if !ok {
+			return nil, fmt.Errorf("the context has no value %s", token)
+		}
+		return known, nil
+	}
+	equal := func() (any, error) {
+		left, err := value()
+		if err != nil || peek() != "==" {
+			return left, err
+		}
+		next()
+		right, err := value()
+		return left == right, err
+	}
+	and := func() (any, error) {
+		left, err := equal()
+		for err == nil && peek() == "&&" {
+			next()
+			var right any
+			right, err = equal()
+			left = left == true && right == true
+		}
+		return left, err
+	}
+	or = func() (any, error) {
+		left, err := and()
+		for err == nil && peek() == "||" {
+			next()
+			var right any
+			right, err = and()
+			left = left == true || right == true
+		}
+		return left, err
+	}
+	result, err := or()
+	if err != nil {
+		return false, err
+	}
+	if position != len(tokens) {
+		return false, fmt.Errorf("the condition %q has more after its end", condition)
+	}
+	runs, ok := result.(bool)
+	if !ok {
+		return false, fmt.Errorf("the condition %q is not true or false", condition)
+	}
+	return runs, nil
 }

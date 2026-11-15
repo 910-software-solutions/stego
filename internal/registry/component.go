@@ -128,7 +128,8 @@ var (
 	// bundlePin is an OCI bundle at a sha256 digest.
 	bundlePin = regexp.MustCompile(`^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+@sha256:[0-9a-f]{64}$`)
 	// signerText is one line of a keyless identity or a key reference, with no control character.
-	signerText = regexp.MustCompile(`^[\x21-\x7e]{1,512}$`)
+	// It holds no '$', '{' or '}', so no expression of the CI provider (ST-DLV-Q16 (A)).
+	signerText = regexp.MustCompile(`^[\x21-\x23\x25-\x7a\x7c\x7e]{1,512}$`)
 )
 
 // checkPipelines refuses pipeline pins on a component other than ci-pipeline, a provider that is not one of

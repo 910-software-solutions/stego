@@ -38,7 +38,17 @@ type Pipeline struct {
 const pipelineHeader = "# The CI file of the service. stego apply writes this file from the delivery stanza of the declaration and the\n" +
 	"# pins of the registry's ci-pipeline component. It holds one pinned call and nothing more. Do not edit it.\n"
 
+// The conditions of the two jobs of the hosted CI file (ST-DLV-Q16 (A)): a pull request runs the check job, and only a
+// push to the default branch or a tag runs the release job, which pushes and signs.
+const (
+	checkCondition   = "github.event_name == 'pull_request'"
+	releaseCondition = "github.event_name == 'push' && (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/'))"
+)
+
 var (
+	// signerText is one line of a keyless identity or a key reference, with no space, no control character and
+	// no '$', '{' or '}', so that it holds no expression of the CI provider (ST-DLV-Q16 (A)).
+	signerText = regexp.MustCompile(`^[\x21-\x23\x25-\x7a\x7c\x7e]{1,512}$`)
 	// commitPin is a reference pinned by a full 40-character commit (ST-DLV-SP02).
 	commitPin = regexp.MustCompile(`@[0-9a-f]{40}$`)
 	// digestPin is a reference pinned by a sha256 OCI digest (ST-DLV-SP02).
@@ -64,30 +74,40 @@ func IsPinned(reference string) bool {
 // standard pipeline bundle by digest and passes the STEGO checks bundle and the signer. It holds no step, task or
 // script of its own (ST-DLV-INV03), and it refuses a reference that is not pinned.
 func WritePipeline(service, provider string, pins PipelinePins) (Pipeline, error) {
+	if !serviceLabel.MatchString(service) {
+		return Pipeline{}, fmt.Errorf("the service name %q is not a DNS label", service)
+	}
 	if !IsPinned(pins.Pipeline) || !IsPinned(pins.Checks) {
 		return Pipeline{}, fmt.Errorf("the ci-pipeline pins of %s are not each pinned by a full commit or a sha256 digest", provider)
+	}
+	if !signerText.MatchString(pins.Signer) {
+		return Pipeline{}, fmt.Errorf("the trusted signer of %s is not one line with no expression", provider)
 	}
 	var object map[string]any
 	switch provider {
 	case GitHubActions:
+		with := func(publish bool) map[string]any {
+			return map[string]any{"service": service, "stego-checks": pins.Checks, "trusted-signer": pins.Signer, "publish": publish}
+		}
 		object = map[string]any{
 			"name":        "stego",
 			"on":          map[string]any{"push": map[string]any{}, "pull_request": map[string]any{}},
 			"permissions": map[string]any{"contents": "read"},
-			"jobs": map[string]any{"stego": map[string]any{
-				"uses": pins.Pipeline,
-				// The shared pipeline builds in a job with read permission only and signs in a job of its own
-				// (ST-SUP-RC25-OC03); the call grants what its signing job needs and nothing more.
-				"permissions": map[string]any{"contents": "read", "id-token": "write", "packages": "write", "attestations": "write"},
-				"with":        map[string]any{"service": service, "stego-checks": pins.Checks, "trusted-signer": pins.Signer},
-			}},
+			"jobs": map[string]any{
+				// A pull request builds and tests with read permission only, and never pushes or signs.
+				"check": map[string]any{"if": checkCondition, "uses": pins.Pipeline, "permissions": map[string]any{"contents": "read"}, "with": with(false)},
+				// Only a push to the default branch or a tag pushes and signs (ST-DLV-Q16 (A)). The shared pipeline
+				// builds in a job with read permission only and signs in a job of its own (ST-SUP-RC25-OC03).
+				"release": map[string]any{"if": releaseCondition, "uses": pins.Pipeline,
+					"permissions": map[string]any{"contents": "read", "id-token": "write", "packages": "write", "attestations": "write"}, "with": with(true)},
+			},
 		}
 	case Konflux:
 		object = map[string]any{
 			"apiVersion": "tekton.dev/v1",
 			"kind":       "PipelineRun",
 			"metadata": map[string]any{"name": service + "-on-push", "labels": map[string]any{"app.kubernetes.io/name": service},
-				"annotations": map[string]any{"pipelinesascode.tekton.dev/on-event": "[push]"}},
+				"annotations": map[string]any{"pipelinesascode.tekton.dev/on-event": "[push]", "pipelinesascode.tekton.dev/on-target-branch": "[main]"}},
 			"spec": map[string]any{
 				"pipelineRef": map[string]any{"resolver": "bundles", "params": []any{
 					map[string]any{"name": "bundle", "value": pins.Pipeline},
@@ -119,18 +139,23 @@ func WritePipeline(service, provider string, pins PipelinePins) (Pipeline, error
 // githubWorkflow is the shape of the CI file that STEGO writes for the hosted CI provider, and nothing more: a
 // step, a runs-on or a second job is not in it, so the strict decoder refuses it.
 type githubWorkflow struct {
-	Name        string            `yaml:"name"`
-	On          map[string]any    `yaml:"on"`
+	Name        string               `yaml:"name"`
+	On          map[string]any       `yaml:"on"`
+	Permissions map[string]string    `yaml:"permissions"`
+	Jobs        map[string]githubJob `yaml:"jobs"`
+}
+
+// githubJob is one job of the hosted CI file: a call of the shared pipeline and nothing more.
+type githubJob struct {
+	If          string            `yaml:"if"`
+	Uses        string            `yaml:"uses"`
 	Permissions map[string]string `yaml:"permissions"`
-	Jobs        map[string]struct {
-		Uses        string            `yaml:"uses"`
-		Permissions map[string]string `yaml:"permissions"`
-		With        struct {
-			Service       string `yaml:"service"`
-			StegoChecks   string `yaml:"stego-checks"`
-			TrustedSigner string `yaml:"trusted-signer"`
-		} `yaml:"with"`
-	} `yaml:"jobs"`
+	With        struct {
+		Service       string `yaml:"service"`
+		StegoChecks   string `yaml:"stego-checks"`
+		TrustedSigner string `yaml:"trusted-signer"`
+		Publish       bool   `yaml:"publish"`
+	} `yaml:"with"`
 }
 
 // tektonParam is one parameter of a PipelineRun or of its bundle resolver.
@@ -178,18 +203,32 @@ func LoadPipeline(provider string, data []byte) (Pipeline, error) {
 		if err := decodeStrict(data, MaxRequirementsBytes, &workflow); err != nil {
 			return Pipeline{}, err
 		}
-		job, ok := workflow.Jobs["stego"]
-		if len(workflow.Jobs) != 1 || !ok || !IsPinned(job.Uses) || !IsPinned(job.With.StegoChecks) {
-			return Pipeline{}, fmt.Errorf("the workflow is not one job that calls a pinned pipeline with the pinned STEGO checks")
+		check, release := workflow.Jobs["check"], workflow.Jobs["release"]
+		switch {
+		case len(workflow.Jobs) != 2 || check.Uses == "" || release.Uses == "":
+			return Pipeline{}, fmt.Errorf("the workflow is not the check job and the release job")
+		case check.If != checkCondition || release.If != releaseCondition:
+			return Pipeline{}, fmt.Errorf("the jobs do not run on a pull request and on a push to the default branch or a tag")
+		case len(workflow.Permissions) != 1 || workflow.Permissions["contents"] != "read" || len(check.Permissions) != 1 || check.Permissions["contents"] != "read" || check.With.Publish:
+			return Pipeline{}, fmt.Errorf("a pull request run may only read the contents and never publish")
+		case !release.With.Publish:
+			return Pipeline{}, fmt.Errorf("the release job does not publish")
 		}
-		return Pipeline{Provider: provider, Pins: PipelinePins{Pipeline: job.Uses, Checks: job.With.StegoChecks, Signer: job.With.TrustedSigner}, File: data}, nil
+		for _, job := range []githubJob{check, release} {
+			if !IsPinned(job.Uses) || !IsPinned(job.With.StegoChecks) || job.Uses != release.Uses || job.With.StegoChecks != release.With.StegoChecks || !signerText.MatchString(job.With.TrustedSigner) {
+				return Pipeline{}, fmt.Errorf("each job does not call the one pinned pipeline with the pinned STEGO checks and a trusted signer")
+			}
+		}
+		return Pipeline{Provider: provider, Pins: PipelinePins{Pipeline: release.Uses, Checks: release.With.StegoChecks, Signer: release.With.TrustedSigner}, File: data}, nil
 	case Konflux:
 		var run pipelineRun
 		if err := decodeStrict(data, MaxRequirementsBytes, &run); err != nil {
 			return Pipeline{}, err
 		}
 		bundle, checks := paramValue(run.Spec.PipelineRef.Params, "bundle"), paramValue(run.Spec.Params, "stego-checks")
-		if run.APIVersion != "tekton.dev/v1" || run.Kind != "PipelineRun" || run.Spec.PipelineRef.Resolver != "bundles" || !digestPin.MatchString(bundle) || !digestPin.MatchString(checks) {
+		if run.APIVersion != "tekton.dev/v1" || run.Kind != "PipelineRun" || run.Spec.PipelineRef.Resolver != "bundles" || !digestPin.MatchString(bundle) || !digestPin.MatchString(checks) ||
+			!signerText.MatchString(paramValue(run.Spec.Params, "trusted-signer")) ||
+			run.Metadata.Annotations["pipelinesascode.tekton.dev/on-event"] != "[push]" || run.Metadata.Annotations["pipelinesascode.tekton.dev/on-target-branch"] == "" {
 			return Pipeline{}, fmt.Errorf("the PipelineRun does not only reference a bundle by digest with the STEGO checks by digest")
 		}
 		return Pipeline{Provider: provider, Pins: PipelinePins{Pipeline: bundle, Checks: checks, Signer: paramValue(run.Spec.Params, "trusted-signer")}, File: data}, nil
