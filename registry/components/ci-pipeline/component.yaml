@@ -12,11 +12,11 @@ config: {}
 requires: []
 provides: []
 slots: []
-environment: []
-
 architecture:
   layer: outside call
   flow: "Runs the CI of the service, out of the process: it is no part of a request."
   ports: {}
 
 pipelines: {}
+
+environment: []

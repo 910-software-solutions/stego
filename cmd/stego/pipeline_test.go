@@ -36,9 +36,10 @@ func pipelineRegistry(t *testing.T) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	component := "kind: component\nname: ci-pipeline\nversion: 0.1.0\nstage: alpha\nsunset: 2027-06-30\nconfig: {}\nrequires: []\nprovides: []\nslots: []\nenvironment: []\narchitecture: {layer: outside call, flow: \"Runs the CI of the service, out of the process.\", ports: {}}\n" +
+	component := "kind: component\nname: ci-pipeline\nversion: 0.1.0\nstage: alpha\nsunset: 2027-06-30\nconfig: {}\nrequires: []\nprovides: []\nslots: []\narchitecture: {layer: outside call, flow: \"Runs the CI of the service, out of the process.\", ports: {}}\n" +
 		"pipelines:\n  github-actions: {pipeline: " + fixturePipeline + ", checks: " + fixtureChecks + ", signer: \"" + fixtureSigner + "\"}\n" +
-		"  konflux: {pipeline: " + fixtureBundle + ", checks: " + fixtureChecksBundle + ", signer: \"" + fixtureChainsKeyName + "\"}\n"
+		"  konflux: {pipeline: " + fixtureBundle + ", checks: " + fixtureChecksBundle + ", signer: \"" + fixtureChainsKeyName + "\"}\n" +
+		"environment: []\n"
 	if err := os.WriteFile(filepath.Join(dir, "component.yaml"), []byte(component), 0o644); err != nil {
 		t.Fatal(err)
 	}
