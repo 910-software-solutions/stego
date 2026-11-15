@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -91,6 +92,9 @@ type Migration struct {
 	// TenantSchema is the schema of the tenant list stego_tenants, which the tables step makes with the migration
 	// text of the tenant runtime (ST-SUP-RP04-LC07); empty is public.
 	TenantSchema string
+	// WorkerLeases are the names of the declared single workers: the audit step makes the row of the lease
+	// stego.worker.<name> of each (ST-SUP-RC35-OC05). Each is a worker name in lower kebab case.
+	WorkerLeases []string
 	// Timeout is the longest time that the job runs; zero is MigrationTimeout.
 	Timeout time.Duration
 	// Backfills are the backfills of the schema changes of this release whose last step is expand, which the job
@@ -183,6 +187,11 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	if m.OwnerRole == "" || m.RuntimeRole == "" || m.WorkerRole == "" || m.PurgeRole == "" || m.OutboxRelayRole == "" || m.TenantConfig == nil || m.LedgerCheck == nil || m.Ledger == nil ||
 		m.WriteSchema == nil || m.Outbox == "" || m.Audit == "" || m.Authorization == "" || m.Parts == nil {
 		return failed(StepSettings, errors.New("the migration job needs its roles, the adapter, the ledger, the migration texts, the schema writer and the declared parts"))
+	}
+	for _, name := range m.WorkerLeases {
+		if !workerName.MatchString(name) {
+			return failed(StepSettings, fmt.Errorf("the worker lease %q is not a worker name in lower kebab case", name))
+		}
 	}
 	keys, err := idempotency.Migration(m.PurgeRole, m.RuntimeRole)
 	if err != nil {
@@ -295,7 +304,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	}
 	texts := []struct{ name, text string }{
 		{StepOutboxQueue, m.Outbox},
-		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole)},
+		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole, m.WorkerLeases)},
 		{StepAuditSink, sinkTable},
 		{StepIdempotencyKeys, keys},
 		{StepAuthorizationTables, m.Authorization},
@@ -611,10 +620,17 @@ var betweenSequenceReads func()
 // controllerLease gives the statements of the lease table and the row of the controller lease, under which the audit
 // jobs run (ST-SUP-RP14-LC04), with SELECT and UPDATE on the table for the runtime role, the role of the lease
 // client; the table belongs to no tenant. Each statement runs again with no error on a database that it made.
-func controllerLease(runtimeRole string) string {
-	return lease.LeasesTable + ";\nINSERT INTO public.leases (name) VALUES ('" + ControllerLease + "') ON CONFLICT (name) DO NOTHING;\n" +
-		"GRANT SELECT, UPDATE ON TABLE public.leases TO " + quote(runtimeRole) + ";\n"
+func controllerLease(runtimeRole string, workers []string) string {
+	text := lease.LeasesTable + ";\nINSERT INTO public.leases (name) VALUES ('" + ControllerLease + "') ON CONFLICT (name) DO NOTHING;\n"
+	// The lease of each single worker (ST-SUP-RC35-OC05); Migrate checked each name against workerName.
+	for _, name := range workers {
+		text += "INSERT INTO public.leases (name) VALUES ('" + WorkerLeasePrefix + name + "') ON CONFLICT (name) DO NOTHING;\n"
+	}
+	return text + "GRANT SELECT, UPDATE ON TABLE public.leases TO " + quote(runtimeRole) + ";\n"
 }
+
+// workerName is the form of a declared worker name: lower kebab case, at most 63 characters (ST-DECL-INV65).
+var workerName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 
 // granted gives the statements of the grants to the runtime role.
 func granted(grants []string, role string) string {

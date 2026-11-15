@@ -125,8 +125,11 @@ type model struct {
 	destinations map[string]delivery
 }
 
+// ConsumedComponent is the component of a destination that a declared worker consumes (ST-SUP-RC35-OC06).
+const ConsumedComponent = "worker"
+
 // delivery is the declared delivery of one outbox destination.
-type delivery struct{ mustLand, idempotent bool }
+type delivery struct{ mustLand, idempotent, consumed bool }
 
 // declaredDeliveries reads the destinations that the components declare, and refuses one that leaves must_land or
 // idempotent out, naming the destination and the property (ST-SUP-RC32-OC12).
@@ -138,7 +141,9 @@ func declaredDeliveries(destinations []gen.Destination) (map[string]delivery, er
 				return nil, fmt.Errorf("command: the destination %s of the component %s does not declare %s; the setting destinations declares must_land and idempotent for each destination (ST-SUP-RC32-OC12)", d.Name, d.Component, property)
 			}
 		}
-		out[d.Name] = delivery{mustLand: *d.MustLand, idempotent: *d.Idempotent}
+		// A destination that a worker consumes stores the staging principal and the stager of each message
+		// (ST-SUP-RP10-LC16).
+		out[d.Name] = delivery{mustLand: *d.MustLand, idempotent: *d.Idempotent, consumed: d.Component == ConsumedComponent}
 	}
 	return out, nil
 }

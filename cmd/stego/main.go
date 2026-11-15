@@ -50,6 +50,7 @@ import (
 	"github.com/jsell-rh/stego/internal/generator/spicedbauthz"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/generator/typescriptsdk"
+	workergen "github.com/jsell-rh/stego/internal/generator/worker"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/slot"
 	"gopkg.in/yaml.v3"
@@ -1112,6 +1113,7 @@ func defaultGenerators() map[string]gen.Generator {
 		"query":                 &querygen.Generator{},
 		"spicedb-authz":         &spicedbauthz.Generator{},
 		"command":               &command.Generator{},
+		"worker":                &workergen.Generator{},
 	}
 }
 

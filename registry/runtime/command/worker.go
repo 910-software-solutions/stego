@@ -107,9 +107,8 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 	if interval <= 0 || due.UnixNano()%interval.Nanoseconds() != 0 {
 		return fmt.Errorf("command: the tick of %s is not due at a multiple of its interval", w.spec.Name)
 	}
-	ctx, finish := rt.span(ctx, WorkerSpanName)
-	outcome := otel.OutcomeRolledBack
-	defer func() { finish(outcome, false, err != nil) }()
+	ctx, finish := rt.workerSpan(ctx, WorkerSpanName, w.spec.Name)
+	defer func() { finish(spanOutcome(err), false, err != nil) }()
 
 	var notAfter time.Time
 	if held != nil {
@@ -184,9 +183,29 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		return deadlineOr(ctx, notAfter, err)
 	}
 	committed = true
-	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return nil
+}
+
+// workerOutcome is the fixed outcome of a worker run that did not commit (ST-SUP-RC35-OC09): fenced for a run that
+// its lease fenced, panicked for a fill that panicked, and rolled_back for any other error.
+func workerOutcome(err error) probe.WorkerOutcome {
+	switch {
+	case errors.Is(err, lease.ErrFenced):
+		return probe.WorkerFenced
+	case errors.Is(err, errPanic):
+		return probe.WorkerPanicked
+	}
+	return probe.WorkerRolledBack
+}
+
+// spanOutcome is the outcome of the span of a worker run: committed for a run that returned nil, and else the fixed
+// outcome of workerOutcome (ST-SUP-RC35-OC09).
+func spanOutcome(err error) otel.Outcome {
+	if err == nil {
+		return otel.OutcomeCommitted
+	}
+	return otel.Outcome(workerOutcome(err))
 }
 
 // workerBegin maps an error of tenant.Begin in a worker run.
@@ -262,9 +281,14 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	if rt == nil || w == nil || tx == nil || decode == nil || fill == nil || d.Tenant.IsZero() {
 		return errors.New("command: RunConsumer needs the runtime, the worker, the transaction, the decoder, the fill and a claimed message")
 	}
-	ctx, finish := rt.span(ctx, ConsumerSpanName)
+	ctx, finish := rt.workerSpan(ctx, ConsumerSpanName, w.spec.Name)
 	outcome := otel.OutcomeRolledBack
-	defer func() { finish(outcome, false, err != nil && !outbox.IsConflict(err)) }()
+	defer func() {
+		if outcome == otel.OutcomeRolledBack {
+			outcome = otel.Outcome(workerOutcome(err))
+		}
+		finish(outcome, false, err != nil && !outbox.IsConflict(err))
+	}()
 	if err := rt.activeTenant(ctx, d.Tenant); err != nil {
 		return err
 	}

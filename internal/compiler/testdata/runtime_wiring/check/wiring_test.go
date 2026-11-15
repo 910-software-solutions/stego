@@ -1124,6 +1124,55 @@ func TestWiring(t *testing.T) {
 		t.Fatalf("after 60 s the audit-sink messages did not all land in the default table: %s\n%s", last, s.log)
 	})
 
+	// The workers follow the tenant list (ST-SUP-RC35, ST-SUP-RC27-OC12): at each tick, every 10 s, the worker
+	// sync-partner-orders adds one to the qty of the seeded order syncedOrder in each tenant of the list whose ID
+	// starts with org-w, and the worker may sync that order only by the grant that seed writes.
+	const syncedOrder = "5b7c2f0e-3a1d-4c8e-9f60-1d2e3f4a5b6c"
+	ticks := func(t *testing.T, tenantID string) int {
+		return count(t, s.admin, `SELECT coalesce(sum(qty), 0) FROM orders WHERE tenant_id = $1 AND id = $2`, tenantID, syncedOrder)
+	}
+	seed := func(t *testing.T, tenantID string) {
+		t.Helper()
+		_, err := s.admin.Exec(`INSERT INTO orders (tenant_id, id, sku, qty) VALUES ($1, $2, 'synced', 0)`, tenantID, syncedOrder)
+		must(t, err)
+		resourceID, err := authz.ResourceID(s.as("u-seed", tenantID).tenant, syncedOrder)
+		must(t, err)
+		_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+			Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "order", ObjectId: resourceID}, Relation: "syncer",
+				Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "sync-partner-orders"}}}}}})
+		must(t, err)
+	}
+	kept, retired := "org-wa-"+short(), "org-wr-"+short()
+	t.Run("ST-SUP-RC35-OC02-T02 A generated service runs one runner for each declared worker in the worker mode", func(t *testing.T) {
+		s.t = t
+		s.provisioned(t, kept)
+		s.provisioned(t, retired)
+		seed(t, kept)
+		seed(t, retired)
+		s.eventually(t, "the ticker of sync-partner-orders runs for each provisioned tenant", func() bool {
+			return ticks(t, kept) >= 1 && ticks(t, retired) >= 1
+		})
+		// A single worker runs under its lease, one instance at a time.
+		if n := count(t, s.admin, `SELECT count(*) FROM leases WHERE name = 'stego.worker.sync-partner-orders'`); n != 1 {
+			t.Errorf("%d rows of the lease of sync-partner-orders, want one", n)
+		}
+	})
+	t.Run("ST-SUP-RC27-OC12-T05 A retired tenant gets no worker run from the next tick, and its rows stay", func(t *testing.T) {
+		s.t = t
+		if got := s.retire(&s.operator, retired, "k-"+uuid.NewString()); got.status != http.StatusOK {
+			t.Fatalf("the retire of %s answered %d %s, want 200", retired, got.status, got.body)
+		}
+		// A run that read the list before the retire may still commit; from the next tick none runs.
+		base := ticks(t, kept)
+		s.eventually(t, "the next tick runs for the kept tenant", func() bool { return ticks(t, kept) >= base+1 })
+		stopped := ticks(t, retired)
+		s.eventually(t, "two more ticks run for the kept tenant", func() bool { return ticks(t, kept) >= base+3 })
+		if n := ticks(t, retired); n != stopped || n == 0 {
+			t.Errorf("the seeded order of the retired tenant holds the qty %d, want its qty %d kept and no new tick", n, stopped)
+		}
+	})
+
 	t.Run("ST-SUP-RC33-OC02-T04 A declared query reaches its fill through the generated main.go", func(t *testing.T) {
 		s.t = t
 		if order == "" {

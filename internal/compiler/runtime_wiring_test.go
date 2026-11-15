@@ -415,6 +415,8 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC27-OC09-T01 A caller without the provision permission cannot provision a tenant",
 	"ST-SUP-RC27-OC09-T03 A grant on the service-level resource of one tenant provisions and retires no tenant",
 	"ST-SUP-RC27-OC10-T01 A provision and a retire each leave one audit row in their transaction",
+	"ST-SUP-RC35-OC02-T02 A generated service runs one runner for each declared worker in the worker mode",
+	"ST-SUP-RC27-OC12-T05 A retired tenant gets no worker run from the next tick, and its rows stay",
 	"ST-SUP-RC27-OC11-T01 A request for an unknown or retired tenant is refused before any handler",
 	"ST-SUP-RC20-OC37-T07 A collection create and read reach the generated handlers through the generated main.go",
 	"ST-SUP-RC32-OC02-T03 A declared command reaches its fill through the generated main.go",

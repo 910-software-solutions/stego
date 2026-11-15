@@ -237,6 +237,17 @@ func (s *AuthzSchema) Relations(typeName string) []string {
 	return names
 }
 
+// RelationAdmits tells whether the type of the schema has the relation and the relation admits the subject type,
+// such as tenant#worker_sync_partner_orders and service_account (ST-SUP-RC35-OC13).
+func (s *AuthzSchema) RelationAdmits(typeName, relation, subjectType string) bool {
+	for _, subject := range s.definitions[typeName].relations[relation] {
+		if subject == subjectType {
+			return true
+		}
+	}
+	return false
+}
+
 // grants tells whether a relation of the schema admits the subject type.
 func (s *AuthzSchema) grants(subjectType string) bool {
 	for _, definition := range s.definitions {

@@ -25,6 +25,7 @@ experimental_acceptances:
   - {component: spicedb-authz, accepted_until: 2027-04-30, reason: the runtime data path decides each permission}
   - {component: audit-log, accepted_until: 2027-04-30, reason: the runtime data path audits each write}
   - {component: idempotency, accepted_until: 2027-04-30, reason: the runtime data path keys each create}
+  - {component: worker, accepted_until: 2027-04-30, reason: the generated service runs its declared workers}
 overrides:
   jwt-auth:
     issuer: https://issuer.wiring.test/realms/r1
@@ -74,3 +75,13 @@ queries:
     resource_member: orderId
     route: GET /orders/{orderId}/summary
     fill: get-order-summary
+# The worker sync-partner-orders adds one to the qty of the seeded order in each tenant of the list whose ID starts
+# with org-w at each tick (ST-SUP-RC35). A worker that consumes a destination is not in this service: its run is a
+# transaction of the worker role, which holds no grant on the entity tables or on idempotency_keys (ST-SUP-Q134).
+workers:
+  - name: sync-partner-orders
+    trigger: every 10s
+    writes: [Order]
+    resource_type: order
+    permission: sync
+    fill: sync-partner-orders

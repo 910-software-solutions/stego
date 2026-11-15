@@ -276,7 +276,11 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 				w.f(", ")
 			}
 			declared := m.destinations[d]
-			w.f("{Name: %q, MustLand: %t, Idempotent: %t, Effects: []string{", d, declared.mustLand, declared.idempotent)
+			w.f("{Name: %q, MustLand: %t, Idempotent: %t, ", d, declared.mustLand, declared.idempotent)
+			if declared.consumed {
+				w.f("Consumed: true, ")
+			}
+			w.f("Effects: []string{")
 			for j, name := range c.effectNames[d] {
 				if j > 0 {
 					w.f(", ")

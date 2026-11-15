@@ -209,6 +209,19 @@ func (rt *Runtime) span(ctx context.Context, name string) (context.Context, otel
 	return spanCtx, finish
 }
 
+// workerSpan starts the operation span name of one run of the worker worker, with the attribute stego.worker
+// (ST-SUP-RC35-OC09).
+func (rt *Runtime) workerSpan(ctx context.Context, name, worker string) (context.Context, otel.Finish) {
+	if rt.cfg.Telemetry == nil {
+		return ctx, func(otel.Outcome, bool, bool) {}
+	}
+	spanCtx, finish, err := rt.cfg.Telemetry.StartWorkerOperation(ctx, otel.Child, name, worker)
+	if err != nil {
+		return ctx, func(otel.Outcome, bool, bool) {}
+	}
+	return spanCtx, finish
+}
+
 // CommandSpec is what the generated code declares of one command.
 type CommandSpec[P any] struct {
 	// Name is the command's name: the action of its audit rows and the operation of its probe.
