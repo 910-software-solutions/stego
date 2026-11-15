@@ -478,8 +478,9 @@ func templateLiterals(src string) []string {
 // action of a template as an argument, and matches across lines. A text that starts as a statement starts is
 // matched in any case; in another text, such as a part of a statement that a strings.Builder or a loop puts
 // together, only the keywords in upper case count, so prose is not read as a statement. The names of the common
-// table expressions of a text are not tables. A text that ends with a table keyword is a statement whose table
-// another value names. The files of ownerDDL give their constants to the fold, and are not read for statements.
+// table expressions of a text are not tables, and the cursor that a FETCH reads is no table. A text that ends with
+// a table keyword is a statement whose table another value names. The files of ownerDDL give their constants to the
+// fold, and are not read for statements.
 func unqualifiedSQL(tree Tree) []string {
 	tables := slices.Clone(runtimeTables)
 	var files, read []string
@@ -547,9 +548,10 @@ func unqualifiedSQL(tree Tree) []string {
 		}
 	}
 	// A statement starts with one of these words, after white space and parentheses.
-	head := regexp.MustCompile(`(?is)^[\s(]*(?:SELECT|INSERT|UPDATE|DELETE|WITH|LOCK|TRUNCATE|COPY|TABLE|CREATE|ALTER|DROP|GRANT|REVOKE|CALL|PERFORM|DO|VALUES|MERGE|DECLARE|EXPLAIN)\b`)
-	// The role list of GRANT and REVOKE, and the words FROM and UPDATE where they name no table.
-	notTable := regexp.MustCompile(`(?is)\bFOR\s+(?:NO\s+KEY\s+)?UPDATE\b|\bFOR\s+(?:KEY\s+)?SHARE\b|\bDO\s+UPDATE\b|\bDISTINCT\s+FROM\b|\b(?:GRANT|REVOKE)\b[^;]*`)
+	head := regexp.MustCompile(`(?is)^[\s(]*(?:SELECT|INSERT|UPDATE|DELETE|WITH|LOCK|TRUNCATE|COPY|TABLE|CREATE|ALTER|DROP|GRANT|REVOKE|CALL|PERFORM|DO|VALUES|MERGE|DECLARE|EXPLAIN|FETCH)\b`)
+	// The role list of GRANT and REVOKE, and the words FROM and UPDATE where they name no table: the FROM of a FETCH
+	// names a cursor, after the direction and the count of the FETCH.
+	notTable := regexp.MustCompile(`(?is)\bFETCH\s+(?:(?:NEXT|PRIOR|FIRST|LAST|ABSOLUTE|RELATIVE|FORWARD|BACKWARD|ALL|[+-]?[0-9]+|[\x00\x01])\s+){0,2}(?:FROM|IN)\b|\bFOR\s+(?:NO\s+KEY\s+)?UPDATE\b|\bFOR\s+(?:KEY\s+)?SHARE\b|\bDO\s+UPDATE\b|\bDISTINCT\s+FROM\b|\b(?:GRANT|REVOKE)\b[^;]*`)
 	cte := regexp.MustCompile(`(?is)(?:\bWITH(?:\s+RECURSIVE)?|,)\s+([a-z_][a-z0-9_]*)(?:\s*\([^)]*\))?\s+AS\s+(?:(?:NOT\s+)?MATERIALIZED\s+)?\(`)
 	action := regexp.MustCompile(`(?s)\{\{.*?\}\}`)
 	var faults []string
@@ -656,13 +658,15 @@ func TestQualifiedSQL(t *testing.T) {
 			"chain":      "import \"github.com/jsell-rh/stego/registry/runtime/alias\"\n\nconst a = \"SELECT 1 FROM \" + alias.Leases",
 			"indexed":    "import \"fmt\"\n\nfunc f() string { return fmt.Sprintf(\"SELECT %[2]s FROM %[1]s\", \"leases\", \"x\") }",
 			"fprintf":    "import (\n\t\"fmt\"\n\t\"io\"\n)\n\nfunc f(w io.Writer) { fmt.Fprintf(w, \"SELECT 1 FROM %s\", \"leases\") }",
+			"fetched":    "func f(n, c, t string) string { return \"FETCH FORWARD \" + n + \" FROM \" + c + \"; DELETE FROM \" + t }",
 			"field":      "type e struct{ table string }\n\nfunc f() string {\n\tx := e{table: \"leases\"}\n\treturn \"SELECT 1 FROM \" + x.table\n}",
 			// The forms that are no unqualified statement: a common table expression, prose, a function name in prose,
-			// a field that is always a schema and a table, FOR UPDATE, and the roles of a REVOKE.
+			// a field that is always a schema and a table, FOR UPDATE, the roles of a REVOKE, and the cursor of a FETCH.
 			"clean": "import \"errors\"\n\ntype q struct{ table string }\n\nfunc g(schema, name string) q { return q{table: schema + \".\" + name} }\n\n" +
 				"func f(v q, role string) []any {\n\tstep := \"lock \" + role\n\treturn []any{step, errors.New(\"cannot read from leases\"), \"move (the key), claim (the row)\",\n" +
 				"\t\t\"WITH leases AS (SELECT 1) SELECT * FROM leases\", \"SELECT 1 FROM \" + v.table + \" WHERE x\",\n" +
-				"\t\t\"SELECT x FROM public.leases WHERE k = $1 FOR UPDATE \", \"REVOKE ALL ON public.leases FROM \" + role}\n}",
+				"\t\t\"SELECT x FROM public.leases WHERE k = $1 FOR UPDATE \", \"REVOKE ALL ON public.leases FROM \" + role,\n" +
+				"\t\t\"FETCH FORWARD \" + role + \" FROM \" + role, \"FETCH NEXT IN \" + role, \"FETCH 10 FROM \" + role}\n}",
 			"qualified": "import \"fmt\"\n\nfunc f(t string) string { return fmt.Sprintf(\"UPDATE public.%s SET x = 1\", t) }\n\nconst a = `SELECT public.leases.x FROM public.leases, stego_outbox.messages m WHERE stego_outbox.claim($1) AND 'public.leases'::regclass IS NOT NULL`\n// FROM leases in a comment is no statement\n",
 		}
 		files := map[string][]byte{"examples/e/out/internal/storage/schema_manifest.go": []byte("package storage\n\nvar m = `{Schema: \"public\", Name: \"orders\",`\n"),
@@ -691,7 +695,7 @@ func TestQualifiedSQL(t *testing.T) {
 			"replaceall": "table leases", "replacer": "table leases", "reassigned": "table that another value names", "local": "table leases",
 			"loop": "table that another value names", "unknown": "table that another value names", "action": "table that a format argument names",
 			"joined": "table leases", "builder": "table that another value names", "chain": "table leases", "indexed": "table leases",
-			"fprintf": "table leases", "field": "table leases"} {
+			"fprintf": "table leases", "field": "table leases", "fetched": "table that another value names"} {
 			want = append(want, "registry/runtime/"+name+"/"+name+".go: the "+what+" with no schema")
 		}
 		want = append(want, "examples/e/out/internal/tenancy/migrations/x.sql: the table leases with no schema",
