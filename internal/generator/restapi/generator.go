@@ -1661,6 +1661,8 @@ var handlerScopeIdentifiers = map[string]bool{
 	"refs": true, "parent": true, "patch": true, "limit": true, "order": true, "fields": true, "where": true,
 	"after": true, "page": true, "items": true, "value": true, "loaded": true, "next": true,
 	"response": true, "slotReq": true, "slotResult": true, "slotErr": true, "slotPayload": true,
+	// The parent chain of a scoped collection (ST-SUP-RC20-OC24).
+	"chain": true, "ancestor": true, "ancestors": true,
 }
 
 // safeVarName returns the given name with a trailing underscore appended if it
