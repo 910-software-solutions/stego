@@ -19,6 +19,11 @@ architecture:
     postgres-databases: inbound
 
 environment:
+  - name: HOME
+    type: path
+    required: false
+    description: "Read by the pgx driver for its default pass, service and certificate files. The client gives each of those settings itself, so no file under HOME changes the connection."
+    secret: false
   - name: PGAPPNAME
     type: string
     required: false

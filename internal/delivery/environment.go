@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"path"
@@ -740,14 +741,37 @@ func checkValue(kind variableType, allowed allowedValues, value string) error {
 		}
 		return nil
 	}
-	number, _ := numericValue(kind, value)
+	if allowed.Min == nil && allowed.Max == nil {
+		return nil
+	}
+	number, err := numericValue(kind, value)
+	if err != nil {
+		return fmt.Errorf("the value is not a %s", kind)
+	}
+	// A bound that does not parse is an error, not 0 (#353 security review L3): the platform requirements give the
+	// range as text, and a range that the check cannot read must not let each value pass.
+	bound := func(text *string) (float64, error) {
+		n, err := numericValue(kind, *text)
+		if err != nil || n != n || math.IsInf(n, 0) {
+			return 0, fmt.Errorf("the range bound %q of the platform requirements is not a %s", *text, kind)
+		}
+		return n, nil
+	}
 	if allowed.Min != nil {
-		if minimum, _ := numericValue(kind, *allowed.Min); number < minimum {
+		minimum, err := bound(allowed.Min)
+		if err != nil {
+			return err
+		}
+		if number < minimum {
 			return fmt.Errorf("the value is less than %s", *allowed.Min)
 		}
 	}
 	if allowed.Max != nil {
-		if maximum, _ := numericValue(kind, *allowed.Max); number > maximum {
+		maximum, err := bound(allowed.Max)
+		if err != nil {
+			return err
+		}
+		if number > maximum {
 			return fmt.Errorf("the value is more than %s", *allowed.Max)
 		}
 	}
@@ -779,12 +803,12 @@ func checkVariableType(kind variableType, value string) error {
 			return fmt.Errorf("the value is not an integer")
 		}
 	case "number":
-		if n, err := strconv.ParseFloat(value, 64); err != nil || n != n {
-			return fmt.Errorf("the value is not a number")
+		if n, err := strconv.ParseFloat(value, 64); err != nil || n != n || math.IsInf(n, 0) {
+			return fmt.Errorf("the value is not a finite number")
 		}
 	case "duration":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("the value is not a duration such as 30s or 5m")
+		if d, err := time.ParseDuration(value); err != nil || d < 0 {
+			return fmt.Errorf("the value is not a duration of zero or more, such as 30s or 5m")
 		}
 	case "boolean":
 		if !slices.Contains([]string{"true", "false", "0", "1"}, value) {
@@ -795,6 +819,10 @@ func checkVariableType(kind variableType, value string) error {
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return fmt.Errorf("the value is not an absolute URL")
 		}
+		// A URL with user info holds a credential in a value that is not secret (#353 security review L1).
+		if u.User != nil {
+			return fmt.Errorf("the value holds user info; give the credential as a secret")
+		}
 	case "path":
 		if !path.IsAbs(value) {
 			return fmt.Errorf("the value is not an absolute file path")
@@ -802,7 +830,7 @@ func checkVariableType(kind variableType, value string) error {
 	case "address":
 		host, port, err := net.SplitHostPort(value)
 		number, portErr := strconv.Atoi(port)
-		if err != nil || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " /") {
+		if err != nil || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " /@") {
 			return fmt.Errorf("the value is not an address of a host and a port")
 		}
 	case "list":
