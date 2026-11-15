@@ -106,6 +106,7 @@ func listOrders(t *testing.T, rt *Runtime, q *Query, orders *Entity[Order], fill
 type served struct {
 	status      int
 	cache       string
+	retryAfter  string
 	contentType string
 	body        string
 	IDs         []string `json:"ids"`
@@ -121,7 +122,7 @@ func get(t *testing.T, h http.Handler, path, tenantID, subject string) served {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	body, _ := io.ReadAll(w.Result().Body)
-	s := served{status: w.Code, cache: w.Header().Get("Cache-Control"), contentType: w.Header().Get("Content-Type"), body: string(body)}
+	s := served{status: w.Code, cache: w.Header().Get("Cache-Control"), retryAfter: w.Header().Get("Retry-After"), contentType: w.Header().Get("Content-Type"), body: string(body)}
 	if w.Code == http.StatusOK {
 		if err := json.Unmarshal(body, &s); err != nil {
 			t.Fatalf("the body %q does not decode: %v", body, err)
@@ -327,7 +328,14 @@ func TestServe(t *testing.T) {
 		decision.mu.Lock()
 		decision.down = true
 		decision.mu.Unlock()
-		wantProblem(t, get(t, list, "/orders", "t1", "user:u-7"), http.StatusServiceUnavailable, "the provider is down")
+		undecided := get(t, list, "/orders", "t1", "user:u-7")
+		wantProblem(t, undecided, http.StatusServiceUnavailable, "the provider is down")
+		if undecided.retryAfter != RetryAfter {
+			t.Errorf("the 503 of an undecided list has Retry-After %q, want %q (ST-SUP-Q140)", undecided.retryAfter, RetryAfter)
+		}
+		if page.retryAfter != "" {
+			t.Errorf("the 200 of the list has Retry-After %q", page.retryAfter)
+		}
 		decision.mu.Lock()
 		decision.down = false
 		decision.mu.Unlock()

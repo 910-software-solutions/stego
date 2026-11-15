@@ -54,12 +54,56 @@ func (s *steps) record(t *testing.T) func(string, *sql.Conn) {
 }
 
 func TestMigrate(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC03-T27 The job ends only when SpiceDB serves every definition of the schema it wrote, and else fails closed at the step authorization_schema_served", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		saved := awaitSchema
+		t.Cleanup(func() { awaitSchema = saved })
+		// The real wait passes once the local SpiceDB serves the schema; the run also leaves a schema in SpiceDB, so
+		// the next run reads a token before its write.
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil {
+			t.Fatalf("Migrate with the real wait: %v", err)
+		}
+		var waited [][]string
+		writesBefore := 0
+		writes := 0
+		awaitSchema = func(ctx context.Context, conn grpc.ClientConnInterface, definitions []string, since authz.Token) error {
+			if since.IsZero() {
+				t.Error("the job waits with no token of the schema before its write")
+			}
+			waited = append(waited, definitions)
+			writesBefore = writes
+			return fmt.Errorf("%w: test", authz.ErrSchemaNotServed)
+		}
+		s := &steps{backends: map[int]bool{}}
+		stepped = s.record(t)
+		err := Migrate(context.Background(), settings, f.migration(&writes))
+		stepped = nil
+		var step *StepError
+		if !errors.As(err, &step) || step.Step != StepSchemaServed || Stage(err) != "migrate.authorization_schema_served" || !errors.Is(err, authz.ErrSchemaNotServed) {
+			t.Fatalf("a schema that SpiceDB does not serve gives %v, want a fault of the step %s with authz.ErrSchemaNotServed", err, StepSchemaServed)
+		}
+		if len(waited) != 1 || !slices.Equal(waited[0], []string{"user", "service", "order", "stego_floor"}) || writesBefore != 2 {
+			t.Fatalf("the job waited for %v after %d schema writes, want one wait for every definition after both", waited, writesBefore)
+		}
+		if last := s.names[len(s.names)-1]; last != StepSchemaServed || slices.Contains(s.names, StepManifestBefore) {
+			t.Fatalf("the job ran %v, want it to stop at %s", s.names, StepSchemaServed)
+		}
+		awaitSchema = saved
+		// A job with no definitions is refused before it opens anything.
+		bare := f.migration(nil)
+		bare.Definitions = nil
+		if err := Migrate(context.Background(), settings, bare); !errors.As(err, &step) || step.Step != StepSettings {
+			t.Fatalf("a job with no definitions gives %v, want a fault of the step %s", err, StepSettings)
+		}
+	})
 	t.Run("ST-SUP-RP14-LC03-T01 Migrate runs the migration job in its fixed order on one connection", func(t *testing.T) {
 		endpoint, key := startSpiceDB(t)
 		f := newFixture(t)
 		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
 		want := []string{StepOwnerRole, StepJobLock, StepLedgerCheck, StepAuthorizationSchema, StepTables, StepTenantKeys, StepTenantKeysValidate, StepOutboxQueue, StepOutboxSequence, StepAuditTables, StepAuditSink,
-			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepManifestBefore, StepBackfill, StepManifest}
+			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepSchemaServed, StepManifestBefore, StepBackfill, StepManifest}
 		run := func(m Migration) (*steps, error) {
 			s := &steps{backends: map[int]bool{}}
 			stepped = s.record(t)
@@ -1362,8 +1406,8 @@ func TestMigrateLocks(t *testing.T) {
 			!strings.Contains(err.Error(), "table public.orders: column status has the type character varying(20)") {
 			t.Fatalf("the job on a database with another column type gave %v at the stage %q, want the refusal of the step %s that names the column", err, Stage(err), StepManifestBefore)
 		}
-		if len(steps) < 2 || steps[len(steps)-1] != StepManifestBefore || steps[len(steps)-2] != StepSchemaAgain {
-			t.Fatalf("the refused job ran the steps %v, want it to end at %s, after %s and before any backfill", steps, StepManifestBefore, StepSchemaAgain)
+		if len(steps) < 3 || steps[len(steps)-1] != StepManifestBefore || steps[len(steps)-2] != StepSchemaServed || steps[len(steps)-3] != StepSchemaAgain {
+			t.Fatalf("the refused job ran the steps %v, want it to end at %s, after %s and %s and before any backfill", steps, StepManifestBefore, StepSchemaAgain, StepSchemaServed)
 		}
 		if _, err := f.admin.Exec("ALTER TABLE public.orders ALTER COLUMN status TYPE text"); err != nil {
 			t.Fatal(err)
@@ -1773,8 +1817,20 @@ func (f *fixture) migration(calls *int) Migration {
 			_, err := v1.NewSchemaServiceClient(conn).WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: spiceSchema})
 			return err
 		},
+		Definitions: []string{"user", "service", "order", "stego_floor"},
 		Grants: []string{`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "public"."orders"`,
 			`GRANT SELECT, INSERT, UPDATE ON TABLE "public"."idempotency_keys"`},
+	}
+}
+
+// The wait for the schema is a no-op in a test with no SpiceDB, as WriteSchema of the fixture is.
+func init() {
+	wait := awaitSchema
+	awaitSchema = func(ctx context.Context, conn grpc.ClientConnInterface, definitions []string, since authz.Token) error {
+		if spiceServer.endpoint == "" {
+			return nil
+		}
+		return wait(ctx, conn, definitions, since)
 	}
 }
 

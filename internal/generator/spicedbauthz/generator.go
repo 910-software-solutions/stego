@@ -63,9 +63,11 @@ func (*Generator) MinimumGoVersion() string { return "1.26.11" }
 
 // plan is what the emitted code holds, read from the context.
 type plan struct {
-	Package       string
-	SchemaPath    string
-	Schema        string
+	Package    string
+	SchemaPath string
+	Schema     string
+	// Definitions are the definitions of Schema, with the floor marker definition, sorted.
+	Definitions   []string
 	RelayName     string
 	AlertBound    time.Duration
 	WatchInterval time.Duration
@@ -162,7 +164,11 @@ func read(ctx gen.Context) (plan, error) {
 	}
 	p := plan{Package: path.Base(ctx.OutputNamespace), SchemaPath: setting.SchemaPath, Schema: withMarker(string(source)),
 		RelayName: ctx.ServiceName + "-authz-relay"}
-	var err error
+	compiled, err := declaration.CompileAuthzSchema(setting.SchemaPath, []byte(p.Schema))
+	if err != nil {
+		return plan{}, fmt.Errorf("spicedb-authz: the schema with the floor marker definition does not compile: %w", err)
+	}
+	p.Definitions = compiled.TypeNames()
 	if p.AlertBound, err = duration(ctx.ComponentConfig, "alert_bound"); err != nil {
 		return plan{}, err
 	}
@@ -419,6 +425,15 @@ func render(p plan) []byte {
 	fmt.Fprintf(&b, "// Schema is the service's schema %s with the floor marker definition %s added, which the relay\n", p.SchemaPath, types.FloorMarkerType)
 	b.WriteString("// touches to raise the revocation floor (ST-SUP-RP06-LC13); schema.zed holds the same text. The migration\n// job writes it to the provider with WriteSchema (ST-SUP-RC29-OC23); generation never does (ST-SUP-RC29-OC13).\n")
 	fmt.Fprintf(&b, "const Schema = %s\n\n", goText(p.Schema))
+	b.WriteString("// Definitions are the definitions of Schema. After the migration job writes Schema, it waits until SpiceDB\n// serves each of them, so the release does not start while a read of a new resource type fails (ST-SUP-Q140).\n")
+	b.WriteString("var Definitions = []string{")
+	for i, definition := range p.Definitions {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "%q", definition)
+	}
+	b.WriteString("}\n\n")
 	b.WriteString("// DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.\n")
 	fmt.Fprintf(&b, "const DatabaseSchema = %q\n\n", databaseSchema)
 	b.WriteString("// RelayName is the name of the relay's service account, service_account:<RelayName> (ST-SUP-RP06-LC07).\n")

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"reflect"
@@ -352,6 +353,54 @@ func TestAuthz(t *testing.T) {
 		errs, _, _ = get(denied, missing)
 		if !errors.Is(errs[0], ErrUndecided) || errs[0] == nil || errs[1] == nil || errs[0].Error() != errs[1].Error() {
 			t.Errorf("with the provider down the denied and the missing row give %v and %v, want the same ErrUndecided", errs[0], errs[1])
+		}
+	})
+
+	t.Run("ST-SUP-RP11-LC06-T03 A read and a list that the provider cannot decide each log the entity and a fixed cause, and no row key or provider text", func(t *testing.T) {
+		e := newEnv(t)
+		const row = "0000000a-0000-7000-8000-000000000011"
+		e.insert(t, "INSERT INTO app.tickets (tenant_id, id) VALUES ('t1', $1)", row)
+		port := &fakeDecision{down: true, decide: allowAll}
+		rt := e.runtimeOf(t, port)
+		tickets := ticketEntity(t)
+		var logged bytes.Buffer
+		saved := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+		t.Cleanup(func() { slog.SetDefault(saved) })
+		var getErr, listErr error
+		_, err := Run(context.Background(), rt, mustQuery(t, "ticket-detail", tickets), bound(t, "t1", "user:u-7", "ticket-detail"), struct{}{},
+			func(ctx context.Context, _ struct{}, h *Handle[noProbe]) (struct{}, error) {
+				repo, err := Repo(h, tickets)
+				if err != nil {
+					return struct{}{}, err
+				}
+				_, getErr = repo.Get(ctx, row)
+				_, listErr = repo.List(ctx, ListRequest{Limit: 10})
+				return struct{}{}, nil
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !errors.Is(getErr, ErrUndecided) || !errors.Is(listErr, ErrUndecided) {
+			t.Fatalf("with the provider down the read gives %v and the list %v, want ErrUndecided", getErr, listErr)
+		}
+		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+		var undecided []string
+		for _, line := range lines {
+			if strings.Contains(line, "query: the authorization provider could not decide the read") {
+				undecided = append(undecided, line)
+			}
+		}
+		if len(undecided) != 2 {
+			t.Fatalf("the log holds %d lines of an undecided read, want one for the read and one for the list: %q", len(undecided), lines)
+		}
+		for _, line := range undecided {
+			if !strings.Contains(line, "entity="+tickets.e.spec.Name) || !strings.Contains(line, "cause="+authz.CauseOther) || !strings.Contains(line, "level=WARN") {
+				t.Errorf("the line %q does not name the entity and the cause %s at WARN", line, authz.CauseOther)
+			}
+			if strings.Contains(line, row) || strings.Contains(line, "down") || strings.Contains(line, "u-7") {
+				t.Errorf("the line %q holds a row key, the subject or provider text", line)
+			}
 		}
 	})
 

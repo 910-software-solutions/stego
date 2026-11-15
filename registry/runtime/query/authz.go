@@ -236,7 +236,7 @@ func (r *Repository[T]) searchKeys(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		if err != nil {
-			return nil, ErrUndecided
+			return nil, undecided(ctx, e.spec.Name, err)
 		}
 		keys = append(keys, found.Keys...)
 		if len(keys) > MaxSearchKeys {
@@ -687,7 +687,7 @@ func (r *Repository[T]) tablePage(ctx context.Context, limit int, after Cursor, 
 		}
 		if len(page) == 0 {
 			if err := pad(); err != nil {
-				return ListResult[T]{}, ErrUndecided
+				return ListResult[T]{}, undecided(ctx, e.spec.Name, err)
 			}
 			return result, nil
 		}
@@ -728,7 +728,7 @@ func (r *Repository[T]) tablePage(ctx context.Context, limit int, after Cursor, 
 						return ListResult[T]{}, err
 					}
 				}
-				return ListResult[T]{}, ErrUndecided
+				return ListResult[T]{}, undecided(ctx, e.spec.Name, err)
 			}
 			// The kept rows are mapped back to their keys by position in candidates, never by parsing an ID.
 			byID := make(map[string]string, len(candidates))
@@ -758,7 +758,7 @@ func (r *Repository[T]) tablePage(ctx context.Context, limit int, after Cursor, 
 		}
 		if len(page) < size {
 			if err := pad(); err != nil {
-				return ListResult[T]{}, ErrUndecided
+				return ListResult[T]{}, undecided(ctx, e.spec.Name, err)
 			}
 			return result, nil
 		}
@@ -782,7 +782,7 @@ func (r *Repository[T]) searchPage(ctx context.Context, limit int, after Cursor,
 	}
 	if err != nil {
 		// A provider that fails gives the same error as an undecided read.
-		return ListResult[T]{}, ErrUndecided
+		return ListResult[T]{}, undecided(ctx, e.spec.Name, err)
 	}
 	var result ListResult[T]
 	if !found.Next.IsZero() {
@@ -818,4 +818,14 @@ func (r *Repository[T]) searchPage(ctx context.Context, limit int, after Cursor,
 		result.Items = append(result.Items, loaded)
 	}
 	return result, nil
+}
+
+// undecided logs a read that the decision port could not decide, with the entity and the fixed cause of the error
+// (authz.Cause), and gives ErrUndecided, which a handler answers 503 with Retry-After. The log line holds no text of
+// the provider, no subject and no row key (ST-SUP-RP06-LC20), so a failed read is never an error that no log
+// explains (walkthrough 3, G4; ST-SUP-Q140).
+func undecided(ctx context.Context, entity string, err error) error {
+	slog.WarnContext(ctx, "query: the authorization provider could not decide the read", "entity", entity, "cause", authz.Cause(err),
+		"transient", authz.Transient(err))
+	return ErrUndecided
 }

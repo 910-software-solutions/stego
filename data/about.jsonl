@@ -122,3 +122,8 @@
 {"source_id":"ST-SUP-Q134","target_id":"ST-GEN-UC08-R04"}
 {"source_id":"ST-SUP-Q134","target_id":"ST-SUP-EN08"}
 {"source_id":"ST-SUP-Q134","target_id":"ST-SUP-UC01-R05"}
+{"source_id":"ST-SUP-Q140","target_id":"ST-SUP-RC20-OC03"}
+{"source_id":"ST-SUP-Q140","target_id":"ST-SUP-RC29-OC23"}
+{"source_id":"ST-SUP-Q140","target_id":"ST-SUP-RP06-LC05"}
+{"source_id":"ST-SUP-Q140","target_id":"ST-SUP-RP11-LC06"}
+{"source_id":"ST-SUP-Q140","target_id":"ST-SUP-RP14-LC03"}

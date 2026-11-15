@@ -119,13 +119,22 @@ type Outcome struct {
 	Field, Reason string
 }
 
+// RetryAfter is the Retry-After value, in seconds, of a 503 answer of a command whose decision the provider could not
+// make now (ST-SUP-Q140).
+const RetryAfter = "1"
+
+// ErrUndecided is the error of a command whose permission the decision port could not decide now, such as for some
+// seconds after a schema write; OutcomeOf answers it 503 undecided, with Retry-After (ST-SUP-Q140).
+var ErrUndecided = errors.New("command: the permission of the command could not be decided now")
+
 // ErrorCodeInvalid is the fixed code of a command that ErrInvalid refused.
 const ErrorCodeInvalid = "invalid"
 
 // OutcomeOf maps an error of Run to its answer (ST-SUP-RP10-LC33, ST-SUP-RP10-LC34): a declared refusal among
 // refusals is its status and code; ErrDenied is 404 denied, the same answer as a missing row of a read
 // (ST-SUP-RP11-LC06); ErrInvalid is 400 invalid with the field it names (ST-SUP-Q118); a conflict after the last
-// attempt is 409 conflict; a COMMIT whose outcome is not known and
+// attempt is 409 conflict; a decision that the provider could not make now (authz.Transient) is 503 undecided, which
+// the handler answers with Retry-After (ST-SUP-Q140); a COMMIT whose outcome is not known and
 // every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal that is not
 // one of refusals is an other error. No error text reaches the answer, the audit row or the log. Serve uses it, and
 // so does a handler that decodes its own body, such as the handlers of generated CRUD.
@@ -149,6 +158,11 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 	code := ErrorCode(err)
 	if code == audit.ErrorCodeConflict {
 		return Outcome{Status: http.StatusConflict, Code: code, Audit: audit.OutcomeFailed}
+	}
+	if code == ErrorCodeInternal && (errors.Is(err, ErrUndecided) || authz.Transient(err)) {
+		// A decision that the provider could not make now, such as for some seconds after a schema write, is 503
+		// with Retry-After, never a bare 500 (walkthrough 3, G4; ST-SUP-Q140).
+		return Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: code, Audit: audit.OutcomeFailed}
 }
@@ -467,6 +481,10 @@ func writeProblem(w http.ResponseWriter, httpStatus int, problemType, code strin
 
 // writeFieldProblem is writeProblem with the declared field that an ErrInvalid names, when field is not empty.
 func writeFieldProblem(w http.ResponseWriter, httpStatus int, problemType, code, field string) {
+	if httpStatus == http.StatusServiceUnavailable {
+		// A 503 is a decision that the provider could not make now; the client may try again (ST-SUP-Q140).
+		w.Header().Set("Retry-After", RetryAfter)
+	}
 	if problemType == "" {
 		problemType = "about:blank"
 	}

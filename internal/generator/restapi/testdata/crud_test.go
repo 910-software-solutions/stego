@@ -30,8 +30,11 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
@@ -164,6 +167,8 @@ type env struct {
 	verifier *authn.Verifier
 	key      *authntest.Key
 	spice    *grpc.ClientConn
+	// decision is the decision provider of the runtimes: SpiceDB, or a SpiceDB that fails while a test sets a fault.
+	decision *faultyDecision
 	// orderGate and customerGate are the decisions of the gate fills of orders.before_create and
 	// customers.validate: nil, or a nil result, accepts.
 	mu           sync.Mutex
@@ -252,6 +257,62 @@ func service(t *testing.T) *env {
 	shared = e
 	return e
 }
+
+// faultyDecision decides through the SpiceDB provider live, and while a test sets a fault, through a SpiceDB provider
+// whose every call fails with that error of SpiceDB, so the test sees how the emitted handlers answer a decision that
+// the provider cannot make now.
+type faultyDecision struct {
+	live  authz.Decision
+	mu    sync.Mutex
+	fault authz.Decision
+}
+
+// failingConn is a SpiceDB connection whose every call fails with err.
+type failingConn struct{ err error }
+
+func (c failingConn) Invoke(context.Context, string, any, any, ...grpc.CallOption) error {
+	return c.err
+}
+
+func (c failingConn) NewStream(context.Context, *grpc.StreamDesc, string, ...grpc.CallOption) (grpc.ClientStream, error) {
+	return nil, c.err
+}
+
+// fail makes each decision fail with cause, an error of SpiceDB, until fail(nil).
+func (d *faultyDecision) fail(t *testing.T, cause error) {
+	t.Helper()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.fault = nil
+	if cause != nil {
+		failing, err := authz.NewSpiceDB(failingConn{err: cause})
+		must(t, err)
+		d.fault = failing
+	}
+}
+
+func (d *faultyDecision) now() authz.Decision {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.fault != nil {
+		return d.fault
+	}
+	return d.live
+}
+
+func (d *faultyDecision) Evaluate(ctx context.Context, r authz.EvaluationRequest) (authz.EvaluationResult, error) {
+	return d.now().Evaluate(ctx, r)
+}
+
+func (d *faultyDecision) EvaluateBatch(ctx context.Context, r authz.BatchRequest) ([]authz.EvaluationResult, error) {
+	return d.now().EvaluateBatch(ctx, r)
+}
+
+func (d *faultyDecision) Search(ctx context.Context, r authz.SearchRequest) (authz.SearchResult, error) {
+	return d.now().Search(ctx, r)
+}
+
+func (d *faultyDecision) Searches() bool { return d.live.Searches() }
 
 func must(t testing.TB, err error) {
 	t.Helper()
@@ -346,7 +407,8 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	must(t, err)
 	provider, err := authz.NewSpiceDB(conn)
 	must(t, err)
-	az, err := authz.New(authz.Config{Provider: provider, DB: pool, Schema: "authz", Outbox: queue})
+	e.decision = &faultyDecision{live: provider}
+	az, err := authz.New(authz.Config{Provider: e.decision, DB: pool, Schema: "authz", Outbox: queue})
 	must(t, err)
 
 	settings := audit.Settings{Level: audit.LevelChange}
@@ -1380,6 +1442,60 @@ func TestCrud(t *testing.T) {
 			if detail, _ := problem["detail"].(string); r.status != http.StatusBadRequest || !strings.Contains(detail, c.want) || !strings.HasSuffix(problem["type"].(string), "idempotency-key-missing") {
 				t.Errorf("a create with the Idempotency-Key %q answered %d %s, want 400 of the missing type that says %q", c.header, r.status, r.body, c.want)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, and the log names the cause", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		id := e.create(a, "orders", "order", `{"sku":"s-503","qty":1}`)
+		notServed, err := status.New(codes.FailedPrecondition, "object definition `order` not found").WithDetails(
+			&errdetails.ErrorInfo{Reason: v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION.String(), Domain: "authzed.com"})
+		must(t, err)
+		for _, fault := range []struct {
+			name  string
+			err   error
+			cause string
+		}{
+			{"a definition that SpiceDB does not serve yet", notServed.Err(), authz.CauseSchemaNotServed},
+			{"a SpiceDB that does not answer", status.Error(codes.Unavailable, "connection refused"), authz.CauseUnavailable},
+		} {
+			e.decision.fail(t, fault.err)
+			before := len(e.logs.String())
+			for _, call := range []struct{ method, path, body string }{
+				{http.MethodGet, "/api/v1/orders", ""},
+				{http.MethodGet, "/api/v1/orders/" + id, ""},
+				{http.MethodPatch, "/api/v1/orders/" + id, `{"qty":2}`},
+			} {
+				key := ""
+				if call.method != http.MethodGet {
+					key = "k-" + uuid.NewString()
+				}
+				r := e.send(a, call.method, call.path, key, call.body)
+				problem := r.object(t)
+				if r.status != http.StatusServiceUnavailable || r.header.Get("Retry-After") != "1" || problem["status"] != float64(http.StatusServiceUnavailable) ||
+					!strings.HasSuffix(fmt.Sprint(problem["code"]), "-INT-001") {
+					t.Errorf("%s: %s %s answered %d with Retry-After %q: %s, want 503 with Retry-After 1 and an INT code", fault.name, call.method, call.path, r.status, r.header.Get("Retry-After"), r.body)
+				}
+			}
+			logged := e.logs.String()[before:]
+			if strings.Count(logged, `"cause":"`+fault.cause+`"`) < 3 {
+				t.Errorf("%s: the log names the cause %s fewer than 3 times: %s", fault.name, fault.cause, logged)
+			}
+			if strings.Contains(logged, "not found\"") || strings.Contains(logged, "connection refused") || strings.Contains(logged, id) {
+				t.Errorf("%s: the log holds provider text or the row key: %s", fault.name, logged)
+			}
+		}
+		e.decision.fail(t, nil)
+		if r := e.send(a, http.MethodGet, "/api/v1/orders/"+id, "", ""); r.status != http.StatusOK || r.header.Get("Retry-After") != "" {
+			t.Errorf("after the fault the read answered %d with Retry-After %q, want 200 with none", r.status, r.header.Get("Retry-After"))
+		}
+		var qty float64
+		if r := e.send(a, http.MethodGet, "/api/v1/orders/"+id, "", ""); r.status == http.StatusOK {
+			qty, _ = r.object(t)["qty"].(float64)
+		}
+		if qty != 1 {
+			t.Errorf("the 503 patch changed the order: qty %v, want 1", qty)
 		}
 	})
 

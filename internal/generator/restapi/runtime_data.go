@@ -898,6 +898,8 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 		handleError(w, r, missing(kind, req))
 	case http.StatusConflict:
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
+	case http.StatusServiceUnavailable:
+		answerUndecided(w, r)
 	default:
 		handleError(w, r, InternalError("internal error"))
 	}
@@ -947,14 +949,27 @@ func canonicalID(id string) string {
 	return id
 }
 
-// answerRead answers an error of a read: a row that is not there or that the caller may not read is 404, and every
-// other error 500 (ST-SUP-RP11-LC06).
+// answerRead answers an error of a read: a row that is not there or that the caller may not read is 404, a read
+// that the authorization provider could not decide is 503 with Retry-After, and every other error 500
+// (ST-SUP-RP11-LC06).
 func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err error) {
 	if errors.Is(err, query.ErrNotFound) {
 		handleError(w, r, NotFound(kind, id))
 		return
 	}
+	if errors.Is(err, query.ErrUndecided) {
+		answerUndecided(w, r)
+		return
+	}
 	handleError(w, r, InternalError("internal error"))
+}
+
+// answerUndecided answers a request whose permission the authorization provider could not decide now, such as for
+// some seconds after a schema write: 503 with Retry-After, never a bare 500. The runtime logs the fixed cause
+// (walkthrough 3, G4; ST-SUP-Q140).
+func answerUndecided(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Retry-After", "1")
+	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
 }
 
 // writeResult writes the response that Run gives: the fill's response or the stored one of a replay.
@@ -2316,6 +2331,7 @@ func (w *runtimeHandlerWriter) list() {
 		w.f("\tif errors.Is(err, query.ErrNotFound) {\n\t\thandleError(w, r, NotFound(%q, scope))\n\t\treturn\n\t}\n", c.decl.ParentEntity())
 	}
 	w.f("\tif errors.Is(err, query.ErrBadRequest) {\n\t\thandleError(w, r, BadRequest(\"the list request is not valid\"))\n\t\treturn\n\t}\n")
+	w.f("\tif errors.Is(err, query.ErrUndecided) {\n\t\tanswerUndecided(w, r)\n\t\treturn\n\t}\n")
 	w.f("\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 	w.f("\titems := make([]any, 0, len(page.items))\n\tfor _, item := range page.items {\n\t\titems = append(items, selectFields(%sPresented(%s), fields))\n\t}\n", c.camel, w.presentedArgs("item"))
 	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")

@@ -20,6 +20,7 @@ import (
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/google/uuid"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -730,6 +731,136 @@ func TestSpiceDBProvider(t *testing.T) {
 		_, err = provider.Touch(ctx, []Tuple{{Resource: doc("1"), Relation: "viewer", Subject: Subject{Type: "user", ID: "bob secret"}}}, nil)
 		if err == nil || strings.Contains(err.Error(), "secret") {
 			t.Errorf("a bad subject ID gave %v", err)
+		}
+	})
+}
+
+// schemaProbes is a permissions client whose ReadRelationships answers each probe from answers in turn, the last
+// one again when they run out, and counts the probes.
+type schemaProbes struct {
+	v1.PermissionsServiceClient
+	answers []error
+	probes  int
+}
+
+// servedStream is the stream of a probe that SpiceDB serves: it ends at once.
+type servedStream struct {
+	grpc.ServerStreamingClient[v1.ReadRelationshipsResponse]
+}
+
+func (servedStream) Recv() (*v1.ReadRelationshipsResponse, error) { return nil, io.EOF }
+
+func (s *schemaProbes) ReadRelationships(context.Context, *v1.ReadRelationshipsRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[v1.ReadRelationshipsResponse], error) {
+	answer := s.answers[min(s.probes, len(s.answers)-1)]
+	s.probes++
+	if answer != nil {
+		return nil, answer
+	}
+	return servedStream{}, nil
+}
+
+// unknownDefinition is the error of SpiceDB for a definition that the schema it reads does not have.
+func unknownDefinition(t *testing.T) error {
+	t.Helper()
+	st, err := status.New(codes.FailedPrecondition, "object definition `comment` not found").WithDetails(
+		&errdetails.ErrorInfo{Reason: v1.ErrorReason_ERROR_REASON_UNKNOWN_DEFINITION.String(), Domain: "authzed.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st.Err()
+}
+
+func TestAwaitSchema(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC05-T06 After a schema write a check of a new definition at least as fresh as an older floor is a transient error with a named cause, and AwaitSchema returns once SpiceDB serves it", func(t *testing.T) {
+		env := startPostgresSpiceDB(t, fixtureSchema)
+		ctx := context.Background()
+		suffix := make([]byte, 4)
+		if _, err := rand.Read(suffix); err != nil {
+			t.Fatal(err)
+		}
+		definition := "wt3_comment_" + hex.EncodeToString(suffix)
+		schema := fixtureSchema + "\ndefinition " + definition + " {\n\trelation viewer: user\n\tpermission view = viewer\n}\n"
+		// The floor of the service is a token of a write before the schema write; the job reads its own token then.
+		since, err := SchemaToken(ctx, env.conn)
+		if err != nil || since.IsZero() {
+			t.Fatalf("SchemaToken gives %v, %v, want the token of the schema that SpiceDB holds", since, err)
+		}
+		before, err := env.provider.Touch(ctx, []Tuple{{Resource: Resource{Type: "user", ID: definition}, Relation: "delegate",
+			Subject: Subject{Type: "user", ID: "alice"}}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.schema.WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: schema}); err != nil {
+			t.Fatal(err)
+		}
+		// Right after the write, a check at least as fresh as the floor reads a quantized revision older than the write.
+		_, err = env.provider.EvaluateBatch(ctx, BatchRequest{Evaluations: []EvaluationRequest{{
+			Subject: Subject{Type: "user", ID: "alice"}, Action: Action{Name: "view"},
+			Resource: Resource{Type: definition, ID: "t1/c1"}, Consistency: AtLeast(before),
+		}}})
+		if err == nil {
+			t.Fatalf("a check of %s right after the write passed: the quantization of %v gives no stale read to test", definition, quantum)
+		}
+		if Cause(err) != CauseSchemaNotServed || !Transient(err) || !errors.Is(err, ErrProvider) {
+			t.Fatalf("the check gives %v with the cause %q and transient %v, want %q and transient", err, Cause(err), Transient(err), CauseSchemaNotServed)
+		}
+		if strings.Contains(err.Error(), definition) || strings.Contains(Cause(err), definition) {
+			t.Errorf("the error %q or its cause names the definition", err)
+		}
+		pauses := 0
+		saved := schemaPause
+		schemaPause = func(ctx context.Context) error { pauses++; return saved(ctx) }
+		t.Cleanup(func() { schemaPause = saved })
+		if err := AwaitSchema(ctx, env.conn, []string{"user", definition}, since); err != nil {
+			t.Fatalf("AwaitSchema: %v", err)
+		}
+		if pauses < schemaRounds {
+			t.Errorf("AwaitSchema paused %d times, want a wait for the stale revision", pauses)
+		}
+		results, err := env.provider.EvaluateBatch(ctx, BatchRequest{Evaluations: []EvaluationRequest{{
+			Subject: Subject{Type: "user", ID: "alice"}, Action: Action{Name: "view"},
+			Resource: Resource{Type: definition, ID: "t1/c1"}, Consistency: AtLeast(before),
+		}}})
+		if err != nil || len(results) != 1 || results[0].Allowed {
+			t.Fatalf("after AwaitSchema the check gives %v, %v, want one deny", results, err)
+		}
+	})
+	t.Run("ST-SUP-RP06-LC05-T07 AwaitSchema fails closed with a named error after its bound, at once on a refusal, and needs every definition served on two rounds in a row", func(t *testing.T) {
+		ctx := context.Background()
+		saved := schemaPause
+		pauses := 0
+		schemaPause = func(context.Context) error { pauses++; return nil }
+		t.Cleanup(func() { schemaPause = saved })
+		never := &schemaProbes{answers: []error{unknownDefinition(t)}}
+		if err := awaitSchema(ctx, never, []string{"comment"}, Fresh(), 5); !errors.Is(err, ErrSchemaNotServed) {
+			t.Fatalf("a definition that is never served gives %v, want ErrSchemaNotServed", err)
+		}
+		if never.probes != 5 || pauses != 4 {
+			t.Errorf("the bound of 5 rounds made %d probes and %d pauses, want 5 and 4", never.probes, pauses)
+		}
+		if strings.Contains(ErrSchemaNotServed.Error(), "comment") {
+			t.Error("the error names the definition")
+		}
+		down := &schemaProbes{answers: []error{status.Error(codes.Unavailable, "connection refused")}}
+		if err := awaitSchema(ctx, down, []string{"comment"}, Fresh(), 3); !errors.Is(err, ErrSchemaNotServed) || down.probes != 3 {
+			t.Errorf("a SpiceDB that does not answer gives %v after %d probes, want ErrSchemaNotServed after 3", err, down.probes)
+		}
+		refused := &schemaProbes{answers: []error{status.Error(codes.PermissionDenied, "bad key")}}
+		if err := awaitSchema(ctx, refused, []string{"comment"}, Fresh(), 5); err == nil || errors.Is(err, ErrSchemaNotServed) || refused.probes != 1 {
+			t.Errorf("a refused probe gives %v after %d probes, want the refusal after 1", err, refused.probes)
+		}
+		// served, not served, served, served: two rounds in a row end the wait, after 4 rounds.
+		flaky := &schemaProbes{answers: []error{nil, unknownDefinition(t), nil, nil}}
+		if err := awaitSchema(ctx, flaky, []string{"comment"}, Fresh(), 10); err != nil || flaky.probes != 4 {
+			t.Errorf("the flaky SpiceDB gives %v after %d probes, want nil after 4", err, flaky.probes)
+		}
+		// Each definition is probed in a round; the second is not served on the first round.
+		two := &schemaProbes{answers: []error{nil, unknownDefinition(t), nil, nil, nil, nil}}
+		if err := awaitSchema(ctx, two, []string{"task", "comment"}, Fresh(), 10); err != nil || two.probes != 6 {
+			t.Errorf("two definitions give %v after %d probes, want nil after 6", err, two.probes)
+		}
+		if err := AwaitSchema(ctx, nil, []string{"comment"}, Token{}); err == nil {
+			t.Error("AwaitSchema takes no connection")
 		}
 	})
 }
