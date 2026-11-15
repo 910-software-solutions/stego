@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115091635-92d8ef52ef22
+        module_version: v0.0.0-20261115102243-39e27636dc3d
         vcs: git
-        revision: 92d8ef52ef229e9c3e78c9a25ce11fa2e4cc5175
+        revision: 39e27636dc3da845386ade1a95abff159e571ed6
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -133,8 +133,8 @@ last_applied:
         internal/api/discovery.go: 31cf4a80ece098d319dad61a8c861282481707c57deeaab8af29485c6ded4f85
         internal/api/errors.go: 8746d7f2437f9d6409c35b3ce25a67f3b71f5888ad3cdfe721b55663674f2ec7
         internal/api/openapi.json: 00a51de2e34cd16d85994f58e81d4cf4b6980e3d3dd2e0b2e6391177b8ffbbd2
-        internal/api/org_settings_handler.go: 5efa87a8b268dc42c4cba538588f1d42f1e110b235985b7fe4a7f440d7f1c64c
-        internal/api/org_users_handler.go: 9226c4db4cbc09d957451a2d565433e1f70db8b8c7b5f9218ab9868619b63ae7
+        internal/api/org_settings_handler.go: 60e0b111e141c6da9918cdf256e33099cbc5f746ff177c880091ee681c1ee3b4
+        internal/api/org_users_handler.go: 4eac7ad83bc95348693a71fe0b16ed80aaf61e3bcedbc279ead8e5498b13890d
         internal/api/organizations_handler.go: 848c1fee1917ac10fa4c87063b5977e9fd54f077e3a98b913e6c53ca9253aed6
         internal/api/router.go: 015fe23fa351aba15bb5cfa5f7e5b0ada71215d6d50e4db74a5f73f0b07fe826
         internal/api/runtime.go: 7d66bbf4478580d6266826a1144408402842b77360afd44cacc57ced37785b17
@@ -195,9 +195,9 @@ last_applied:
     project_files:
         architecture/architecture.json: 0300bbcc15e9016c4e68619da8477f15d876d6d37e9bc9afce1f56639110003a
         architecture/index.html: 292532ee56705550cccfc113a32aa1ae9e8427ac40f9e7be66c98eefa8dd2db8
-        deploy/base/deployment.yaml: d816af658be3ae2081a66e273347a286571f72f418901e704bab6de0b9ae9b28
-        deploy/base/kustomization.yaml: efa2d1c91d00586405479f7287595be3cdcf07e1a3381b751aa75490d4c406ee
-        deploy/base/service-account.yaml: 818c19e7ca21ce2c6134917188cc24ff621ef342e31ee1307a1bf386cae1f0ba
+        deploy/base/deployment.yaml: 1db52c23930248664f335dfaaa32c265ada256c5d3c97eb6af45fac8cf09c400
+        deploy/base/kustomization.yaml: 0ca4224412b919b7f6273002bae6bc0d7eaeb0878820073075871fb59308b7b6
+        deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/environment-variables.md: d46826cb1f2ad23de313a7a6ec2e31dfbdd980efcc7005aa41566509cebbda7b
         deploy/platform-requirements.yaml: fca0777227e6ae968fbaf3584c5f6a49c5da9c768a50a03606f56427ba3d0f15
     archetype:
