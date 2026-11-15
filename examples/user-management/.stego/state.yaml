@@ -19,29 +19,29 @@ last_applied:
                 mode: 420
             go.mod:
                 exists: true
-                sha256: 33f122e6124d583bd9f5bd1bbdc1ecc3422289578f3166a266bd01a866cd1d1e
+                sha256: e4dfc1b9321f8aaa3e420b6df5035d4172cbce6e80964cc7b263b7bf8460fb77
                 mode: 420
             go.sum:
                 exists: true
-                sha256: b7d21f423170e35bab55b2d41e7cb89c515d606414adfcb96d4842a494841e84
+                sha256: ae794106fe8a2eacd696e25a2b409397056dd38e68b26a5407af93279d0247be
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: b8e5cafe2f4abda0eab498ebfbbece542b92246d4c1f6885503c6cd6762622c6
+        sha256: 72a5738ccff5c387b787182d5ad78a280aebb9360293a4e4de342670416d3898
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115003934-f80d66d14159
+        module_version: v0.0.0-20261115024200-945cc13d7044
         vcs: git
-        revision: f80d66d141595da275002215204201422bc5320c
+        revision: 945cc13d704438237d6e185320b8421fa2f6e72d
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: bdc96daba06b595d33cb19a8507a8a7e49e6f7f2831ea5327302564586dbe501
+    registry_content_sha256: eb7e85312649b4d8f829ed23eaf9ca8fdd289cbebf0e5eff75534ef4072321c4
     components:
         audit-log:
             version: 1.1.1
@@ -68,8 +68,8 @@ last_applied:
             version: 2.1.0
             sha: f9e7ee9c85ef6e0b7304429e7a6ba59f6e99c5bd249720221fe76d529574e465
         postgres-adapter:
-            version: 6.4.0
-            sha: ae9cc4a6b1bf67e8d295704d74447ebae6fa275752771e9f65d7c5d14e870575
+            version: 6.5.0
+            sha: fb81f19045f7d3b21810413f351da6beb40e8ee04a37eb7db986337687b97ac0
         query:
             version: 1.1.0
             sha: 9b4a5a4b5afcbc9d23c6d02d78b3a227ff445b857bef9e73c547af184d7226e0
@@ -209,9 +209,9 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     archetype:
         name: rest-crud
-        version: 3.113.0
+        version: 3.115.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
-            version: v0.105.0
-            sum: h1:PoclC3coxwkcpc++yzJSZgzDboypcl6G3lxJVTvW6jQ=
+            version: v0.107.0
+            sum: h1:vqv4Da01xDm7cpVD2nMzBmTqK53wt+8PWC+WzURYHVU=
         imports_runtime: true
