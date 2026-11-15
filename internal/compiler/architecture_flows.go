@@ -407,6 +407,11 @@ func settingFact(topic, about, name string, setting ArchSetting, ok bool) ArchFa
 	return fact(topic, setting.ID, name, setting.Value, state, setting.Source)
 }
 
+// ComplianceTopics is the one list of the compliance topics, in the order of the model (ST-GEN-UC16-R01): the model
+// holds a topic for each, and stego architecture facts (ST-GEN-CLI09) takes each as its --topic. A new topic is added
+// here and given its facts in compliance.
+var ComplianceTopics = []string{"personal-data", "tenant-isolation", "access", "audit", "data-protection", "owner-code", "retention", "configuration"}
+
 // compliance builds the facts of each compliance topic (ST-GEN-UC16-R01) from the model alone.
 func (d *deriver) compliance() {
 	m := d.model
@@ -530,7 +535,7 @@ func (d *deriver) compliance() {
 			put("configuration", fact("configuration", v.ID, "default", *v.Default, "stated", v.Source))
 		}
 	}
-	for _, topic := range []string{"personal-data", "tenant-isolation", "access", "audit", "data-protection", "owner-code", "retention", "configuration"} {
+	for _, topic := range ComplianceTopics {
 		facts := topics[topic]
 		if facts == nil {
 			facts = []ArchFact{}

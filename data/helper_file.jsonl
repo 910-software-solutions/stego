@@ -19,6 +19,7 @@
 {"record_id":"ST-GEN-CMD05-H","file":"internal/compiler/architecture_view.html"}
 {"record_id":"ST-GEN-CMD05-H","file":"internal/compiler/architecture_view.js"}
 {"record_id":"ST-GEN-CMD05-H","file":"internal/compiler/architecture_view_layout.go"}
+{"record_id":"ST-GEN-CMD05-H","file":"internal/compiler/architecture_view_trust.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/constructor_references.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/database_opener.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/lifecycle.go"}
@@ -35,6 +36,7 @@
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/project/fills/add-note/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/project/fills/get-order-summary/fill.go"}
 {"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_access.go"}
+{"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_context.go"}
 {"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_flows.go"}
 {"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_model.go"}
 {"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_validate.go"}

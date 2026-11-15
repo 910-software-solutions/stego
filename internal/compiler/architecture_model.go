@@ -20,6 +20,9 @@ type ArchitectureModel struct {
 	Layers        []string           `json:"layers"`
 	// Structure.
 	Containers []ArchContainer `json:"containers"`
+	// Actors and Relations are the context of the service (architecture_context.go).
+	Actors     []ArchActor     `json:"actors"`
+	Relations  []ArchRelation  `json:"relations"`
 	Components []ArchComponent `json:"components"`
 	Mixins     []ArchMixin     `json:"mixins"`
 	Ports      []ArchPort      `json:"ports"`
@@ -261,13 +264,15 @@ type ArchFlow struct {
 
 // ArchStep is one step of a flow.
 type ArchStep struct {
-	N       int        `json:"n"`
-	Kind    string     `json:"kind"`
-	Element string     `json:"element"`
-	ViaPort string     `json:"via_port,omitempty"`
-	Text    string     `json:"text"`
-	Mode    string     `json:"mode"`
-	Source  ArchSource `json:"source"`
+	N       int    `json:"n"`
+	Kind    string `json:"kind"`
+	Element string `json:"element"`
+	ViaPort string `json:"via_port,omitempty"`
+	Text    string `json:"text"`
+	Mode    string `json:"mode"`
+	// Layer is the layer of the step, which the deriver sets (flowStepLayer).
+	Layer  string     `json:"layer,omitempty"`
+	Source ArchSource `json:"source"`
 }
 
 // ArchExit is a point where a flow can stop, after a step, and the result it then gives.

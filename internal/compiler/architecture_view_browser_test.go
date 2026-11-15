@@ -253,18 +253,39 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		}
 		b.do("Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__ran = 0; window.alert = function(){ window.__ran++; };"})
 		b.problems()
-		for _, v := range []string{"platform", "flows", "trust", "data"} {
+		for _, v := range []string{"platform", "flows", "trust", "data", "overview", "components"} {
 			b.open("file://" + path + "#view=" + v)
 			var got struct {
 				Images, Ran int
-				Text        string
+				Text, Title string
 			}
-			b.eval(`(function(){ return {Images: document.querySelectorAll("img").length, Ran: window.__ran, Text: document.getElementById("view").textContent}; })()`, &got)
+			b.eval(`(function(){ return {Images: document.querySelectorAll("img").length, Ran: window.__ran, Text: document.getElementById("view").textContent + " " +
+				Array.prototype.map.call(document.querySelectorAll("#view [aria-label]"), function(e){ return e.getAttribute("aria-label"); }).join(" "),
+				Title: document.querySelector("header h1").textContent}; })()`, &got)
 			if got.Images != 0 || got.Ran != 0 {
 				t.Fatalf("view %s: the free text of the model became markup: %d images, %d calls", v, got.Images, got.Ran)
 			}
-			if (v == "platform" || v == "flows") && !strings.Contains(got.Text, value) {
+			if (v == "platform" || v == "flows" || v == "overview" || v == "components") && !strings.Contains(got.Text, value) {
 				t.Errorf("view %s does not show the free text as text", v)
+			}
+			if !strings.Contains(got.Title, value) {
+				t.Errorf("view %s does not show the system name as text: %q", v, got.Title)
+			}
+		}
+		// The index of the elements by ID has no prototype: an ID of the address that names a property of Object
+		// selects nothing, and a model element with the ID __proto__ is an element like any other.
+		for _, sel := range []string{"constructor", "toString", "__proto__"} {
+			b.open("file://" + path + "#view=components&sel=" + sel)
+			var shown struct {
+				Title string
+				Sel   string
+			}
+			b.eval(`(function(){ return {Title: (document.getElementById("detailsTitle")||{}).textContent || "", Sel: location.hash}; })()`, &shown)
+			if sel != "__proto__" && shown.Title != "" {
+				t.Errorf("the address sel=%s selects %q, a property of Object", sel, shown.Title)
+			}
+			if sel == "__proto__" && shown.Title == "" {
+				t.Errorf("the fill with the ID __proto__ is not an element of the index")
 			}
 		}
 		var model bool
@@ -344,6 +365,21 @@ func TestArchitectureViewBrowser(t *testing.T) {
 			if len(got.Drawn) == 0 || !slices.Equal(got.Drawn, got.Text) {
 				t.Errorf("the %s diagram draws %v and its text form holds %v", view.name, got.Drawn, got.Text)
 			}
+		}
+		// The overview draws a line for each relation of the service, and its text form lists each.
+		b.open(access + "#view=overview")
+		var rel struct{ Drawn, Text []string }
+		b.eval(`(function(){ var d = {}, x = {};
+			document.querySelectorAll("#view svg path[data-rel]").forEach(function(p){ if (p.getAttribute("data-rel")) d[p.getAttribute("data-rel")] = 1; });
+			document.querySelectorAll('#form-overview tr[data-id^="relation:"]').forEach(function(r){ x[r.getAttribute("data-id")] = 1; });
+			return {Drawn: Object.keys(d).sort(), Text: Object.keys(x).sort()}; })()`, &rel)
+		var relations []string
+		for _, r := range am.Relations {
+			relations = append(relations, r.ID)
+		}
+		sort.Strings(relations)
+		if len(relations) == 0 || !slices.Equal(rel.Drawn, relations) || !slices.Equal(rel.Text, relations) {
+			t.Errorf("the overview draws the relations %v and lists %v, and the model holds %v", rel.Drawn, rel.Text, relations)
 		}
 		b.open(access + "#view=flows&flow=org-users.create")
 		var steps struct{ Drawn, Text []string }
@@ -533,6 +569,188 @@ func TestArchitectureViewBrowser(t *testing.T) {
 			t.Fatalf("the cell of an incomplete permission does not say so: %q", notice)
 		}
 	})
+
+	t.Run("ST-GEN-UC08-R02-T03 Every view and the tour work under the content security policy of the view, with no violation", func(t *testing.T) {
+		b.do("Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": `window.__csp = [];
+			document.addEventListener("securitypolicyviolation", function(e){ window.__csp.push(e.violatedDirective+" "+e.blockedURI+" "+e.sample); });`})
+		b.problems()
+		b.eval(`localStorage.clear()`, nil)
+		b.open(access)
+		var policy string
+		b.eval(`(document.querySelector('meta[http-equiv="Content-Security-Policy"]')||{}).content || ""`, &policy)
+		if !strings.HasPrefix(policy, "default-src 'none'; script-src 'sha256-") || strings.Contains(policy, "unsafe-eval") || strings.Contains(policy, "script-src 'unsafe-inline'") {
+			t.Fatalf("the view states no strict policy: %q", policy)
+		}
+		b.eval(`document.getElementById("tourStart").click(); for (var i = 0; i < 5 && document.getElementById("tour"); i++){ var r = document.getElementById("tourReveal"); if (r) r.click(); document.getElementById("tourNext").click(); }`, nil)
+		for _, v := range []string{"overview", "components", "data", "flows", "trust", "platform"} {
+			b.eval(`document.querySelector('#nav button[data-view="`+v+`"]').click(); var c = document.querySelector("#view .el, #view button.cell"); if (c) c.dispatchEvent(new MouseEvent("click", {bubbles: true}));
+				document.getElementById("textToggle") && document.getElementById("textToggle").click();`, nil)
+		}
+		var drawn bool
+		b.eval(`!!document.querySelector("#nav button") && document.documentElement.classList.contains("js")`, &drawn)
+		var violations []string
+		b.eval(`window.__csp`, &violations)
+		if !drawn || len(violations) > 0 {
+			t.Fatalf("the view did not run under its policy (%v), or the policy refused %v", drawn, violations)
+		}
+		if blocked, errors := b.problems(); len(blocked)+len(errors) > 0 {
+			t.Fatalf("requests %v or errors %v under the policy", blocked, errors)
+		}
+		b.eval(`localStorage.setItem("stego-arch-tour", "seen")`, nil)
+	})
+
+	t.Run("ST-GEN-UC08-R09-T02 The tour card covers no part of the view that it explains, and shows together with it", func(t *testing.T) {
+		defer b.viewport(1280, 900)
+		for _, width := range []int{1280, 400} {
+			b.viewport(width, 860)
+			b.eval(`localStorage.setItem("stego-arch-tour", "seen")`, nil)
+			b.open(plain + "#view=overview")
+			b.eval(`document.getElementById("tourBtn").click()`, nil)
+			for i := 0; i < 6; i++ {
+				var got struct {
+					Title     string
+					Covers    []string
+					CardShown bool
+					PartShown bool
+				}
+				b.eval(`(function(){ var card = document.getElementById("tour"); if (!card) return {Title: ""};
+					var r = card.getBoundingClientRect(), out = [];
+					document.querySelectorAll("#view .canvas, #view .steps li.cur, #flowTitle, .stepper").forEach(function(e){ var q = e.getBoundingClientRect();
+						if (q.width && q.height && r.left < q.right && q.left < r.right && r.top < q.bottom && q.top < r.bottom) out.push(e.className || e.id); });
+					var part = document.getElementById("flowTitle") || document.querySelector("#view .canvas") || document.getElementById("view"), p = part.getBoundingClientRect();
+					return {Title: document.getElementById("tourTitle").textContent, Covers: out,
+						CardShown: r.top >= 0 && r.top < innerHeight, PartShown: p.top < innerHeight && p.bottom > 0}; })()`, &got)
+				if got.Title == "" {
+					break
+				}
+				if len(got.Covers) > 0 || !got.CardShown || !got.PartShown {
+					t.Errorf("%d px, stop %q: the card covers %v, or the card (%v) and the part it explains (%v) do not show together", width, got.Title, got.Covers, got.CardShown, got.PartShown)
+				}
+				b.eval(`document.getElementById("tourNext").click()`, nil)
+			}
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R11-T02 The trust view leads with a readable boundary map and the access matrix, and folds its tables behind controls that open on demand", func(t *testing.T) {
+		b.open(access + "#view=trust")
+		var got struct {
+			First     string
+			Regions   []string
+			Scale     float64
+			Order     []string
+			Folded    []string
+			Open      int
+			Decided   string
+			Crossings int
+		}
+		b.eval(`(function(){ var v = document.getElementById("view"), svg = v.querySelector(".canvas svg");
+			var out = {First: v.firstElementChild.className, Regions: Array.prototype.map.call(svg.querySelectorAll(".region"), function(g){ return g.getAttribute("data-id"); }).sort(),
+				Scale: svg.getBoundingClientRect().width / svg.viewBox.baseVal.width, Order: [], Folded: [], Open: v.querySelectorAll("details[open]").length,
+				Crossings: svg.querySelectorAll(".el").length};
+			v.querySelectorAll(":scope > .canvas, :scope > h3, :scope > details, :scope > .matrix-wrap").forEach(function(e){ out.Order.push(e.tagName === "H3" ? e.textContent : e.tagName === "DETAILS" ? "details" : e.className); });
+			v.querySelectorAll("details > summary .t").forEach(function(x){ out.Folded.push(x.textContent); });
+			document.querySelector('#view button.cell[data-check="check:operation:org-users.read"]').click();
+			out.Decided = document.getElementById("details").textContent;
+			// With the details open beside it, the map keeps a size that reads.
+			out.Scale = Math.min(out.Scale, svg.getBoundingClientRect().width / svg.viewBox.baseVal.width);
+			return out; })()`, &got)
+		var want []string
+		for _, bd := range am.Boundaries {
+			want = append(want, bd.ID)
+		}
+		sort.Strings(want)
+		if !strings.Contains(got.First, "canvas") || !slices.Equal(got.Regions, want) {
+			t.Fatalf("the trust view does not lead with a map of every boundary: first %q, regions %v", got.First, got.Regions)
+		}
+		if got.Scale < 0.78 {
+			t.Errorf("the boundary map is drawn at %.2f of its size, too small to read", got.Scale)
+		}
+		if len(got.Order) < 3 || got.Order[1] != "Access matrix: who may call each operation" {
+			t.Errorf("the access matrix does not follow the map: %v", got.Order)
+		}
+		for _, title := range []string{"Where a caller is authenticated, and where authorization is decided", "What each operation checks", "Grant paths"} {
+			if !slices.Contains(got.Folded, title) {
+				t.Errorf("%q is not folded behind a control: %v", title, got.Folded)
+			}
+		}
+		if got.Open != 0 {
+			t.Errorf("%d folded parts are open before the reader opens them", got.Open)
+		}
+		if !strings.Contains(got.Decided, "Decided") || !strings.Contains(got.Decided, "Decides the permission view on the member") {
+			t.Errorf("the details of a cell do not say where the operation is decided: %q", got.Decided)
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R14-T03 The access matrix shows every operation at 1280 px, grouped by collection, and keeps its headers in view as it scrolls", func(t *testing.T) {
+		b.viewport(1280, 900)
+		b.open(access + "#view=trust")
+		var got struct {
+			Heads, Groups    int
+			Sticky           []string
+			HeadTop, WrapTop float64
+		}
+		b.eval(`(function(){ var t = document.querySelector("#view table.access"), wrap = t.closest(".matrix-wrap");
+			var heads = t.querySelectorAll('th[data-id^="check:"]');
+			var out = {Heads: heads.length, Groups: t.querySelectorAll('th[scope$="group"]').length,
+				Sticky: [getComputedStyle(t.querySelector("thead th")).position, getComputedStyle(heads[0]).position]};
+			wrap.scrollTop = 400;
+			out.HeadTop = t.querySelector("thead th").getBoundingClientRect().top; out.WrapTop = wrap.getBoundingClientRect().top;
+			return out; })()`, &got)
+		if got.Heads != len(am.Access.Checks) {
+			t.Errorf("the matrix shows %d of %d operations", got.Heads, len(am.Access.Checks))
+		}
+		if got.Groups < len(am.Collections) {
+			t.Errorf("the matrix groups the operations in %d groups for %d collections", got.Groups, len(am.Collections))
+		}
+		if !slices.Equal(got.Sticky, []string{"sticky", "sticky"}) || got.HeadTop-got.WrapTop > 2 {
+			t.Errorf("the headers do not stay in view: %v, head at %.0f, matrix at %.0f", got.Sticky, got.HeadTop, got.WrapTop)
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R08-T06 Each label that a diagram cuts short has its full form on hover and on focus, and no diagram shows the layer by colour alone", func(t *testing.T) {
+		b.viewport(400, 860)
+		defer b.viewport(1280, 900)
+		cut := 0
+		for _, v := range []string{"overview", "components", "data", "trust", "flows"} {
+			b.open(access + "#view=" + v + "&flow=org-users.create")
+			var got struct {
+				Cut     int
+				NoTitle []string
+				Focus   []string
+			}
+			b.eval(`(function(){ var out = {Cut: 0, NoTitle: [], Focus: []};
+				document.querySelectorAll("#view svg text").forEach(function(t){ var own = t.firstChild && t.firstChild.nodeType === 3 ? t.firstChild.textContent : "";
+					if (own.slice(-1) !== "…") return; out.Cut++;
+					var title = t.querySelector("title"), full = title ? title.textContent : "";
+					if (!full || full.indexOf(own.slice(0, -1)) !== 0) out.NoTitle.push(own);
+					var el = t.closest(".el"); if (!el) return;
+					el.focus(); var info = el.closest(".canvas").querySelector(".hover-info").textContent;
+					if (info.indexOf(full.replace(/^→ /, "")) < 0) out.Focus.push(own+" shows "+info); });
+				return out; })()`, &got)
+			cut += got.Cut
+			if len(got.NoTitle) > 0 || len(got.Focus) > 0 {
+				t.Errorf("view %s: labels cut with no full form %v, or no full form on focus %v", v, got.NoTitle, got.Focus)
+			}
+		}
+		if cut == 0 {
+			t.Error("no label is cut at 400 px, so the test proves nothing")
+		}
+		b.open(access + "#view=flows")
+		var places map[string][]float64
+		b.eval(`(function(){ var out = {}, f = document.querySelector(".mini button[data-flow]"), id = f.getAttribute("data-flow");
+			var steps = JSON.parse(document.getElementById("model").textContent).flows.filter(function(x){ return x.id === id; })[0].steps;
+			f.querySelectorAll("circle").forEach(function(c, i){ (out[steps[i].layer] = out[steps[i].layer] || []).push(Number(c.getAttribute("cy"))); });
+			return out; })()`, &places)
+		seen := map[float64]string{}
+		for layer, ys := range places {
+			for _, y := range ys {
+				if other, ok := seen[y]; (ok && other != layer) || y != ys[0] {
+					t.Errorf("the overview of flows does not give each layer its own place: %v", places)
+				}
+				seen[y] = layer
+			}
+		}
+	})
 }
 
 // bo09StudyQuestions are the questions of the ST-BO09 study that the platform team keeps. The set is not recorded
@@ -590,6 +808,7 @@ return bad.slice(0, 12);`
 type cdpBrowser struct {
 	t       *testing.T
 	cmd     *exec.Cmd
+	log     *os.File
 	conn    *websocket.Conn
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -646,20 +865,24 @@ func startBrowser(t *testing.T) *cdpBrowser {
 	args := []string{"--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run",
 		"--no-default-browser-check", "--disable-background-networking", "--disable-gpu", "--disable-dev-shm-usage",
 		"--disable-extensions", "--disable-sync", "--mute-audio", "--window-size=1280,900", "about:blank"}
-	if os.Getenv("STEGO_BROWSER_NO_SANDBOX") == "1" || ci {
+	// The browser runs with its sandbox, except on a GitHub-hosted runner, whose throwaway machine cannot start it
+	// (#342 F2). No variable turns the sandbox off anywhere else.
+	if hostedRunner() {
 		args = append([]string{"--no-sandbox"}, args...)
 	}
 	cmd := exec.Command(path, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The browser dies with the test process, even when the test is killed (#342 F3).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	log, err := os.Create(filepath.Join(dir, "browser.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil {
+		_ = log.Close()
 		t.Fatalf("cannot start the browser: %v", err)
 	}
-	b := &cdpBrowser{t: t, cmd: cmd, waiting: map[int]chan cdpReply{}}
+	b := &cdpBrowser{t: t, cmd: cmd, log: log, waiting: map[int]chan cdpReply{}}
 	t.Cleanup(b.stop)
 	var ws string
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
@@ -711,6 +934,15 @@ func (b *cdpBrowser) stop() {
 		_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGKILL)
 		<-done
 	}
+	if b.log != nil {
+		_ = b.log.Close()
+	}
+}
+
+// hostedRunner says whether the test runs on a GitHub-hosted runner: GITHUB_ACTIONS and RUNNER_ENVIRONMENT both
+// say so. A self-hosted runner or a developer machine keeps the browser's sandbox.
+func hostedRunner() bool {
+	return os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("RUNNER_ENVIRONMENT") == "github-hosted"
 }
 
 // read takes each message of the socket: a reply goes to its caller, and an event is handled here.

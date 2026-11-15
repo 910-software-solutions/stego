@@ -133,6 +133,20 @@
         "$ref": "#/$defs/container"
       }
     },
+    "actors": {
+      "description": "The actors outside the service that an input states (ST-GEN-UC08-R01, R03). Every compiler since the context change writes it; a model without it is a model of an older compiler.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/actor"
+      }
+    },
+    "relations": {
+      "description": "The relations of the service container with the actors and the other containers, each with its source. Written with actors.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/relation"
+      }
+    },
     "components": {
       "type": "array",
       "items": {
@@ -418,6 +432,79 @@
             "service",
             "backing store",
             "topic"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "caller",
+            "token issuer",
+            "authorization service",
+            "outside system",
+            "store"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stated_by": {
+          "$ref": "#/$defs/id"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "text",
+        "mode",
+        "source"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "through": {
+          "$ref": "#/$defs/id"
+        },
+        "mode": {
+          "enum": [
+            "sync",
+            "async"
           ]
         },
         "source": {
@@ -1018,6 +1105,10 @@
         },
         "via_port": {
           "$ref": "#/$defs/id"
+        },
+        "layer": {
+          "description": "The layer of the step, which the deriver sets. Written by every compiler since the context change.",
+          "$ref": "#/$defs/layer"
         }
       }
     },

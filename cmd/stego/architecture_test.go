@@ -2,11 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -337,4 +340,189 @@ func withoutVariables(t *testing.T, registryDir string) {
 			t.Fatal(err)
 		}
 	}
+}
+
+// appliedArchitecture applies the project of ST-DLV-TD01 once, and gives a copy of it for each test of the queries
+// of the architecture model (ST-GEN-QRY05, ST-GEN-QRY06), with the environment of its runs.
+func appliedArchitecture(t *testing.T) (func(t *testing.T) string, []string) {
+	t.Helper()
+	registryDir := requirementsRegistry(t)
+	env := requirementsEnv(registryDir)
+	dir := requirementsProject(t)
+	mustRunInProject(t, dir, env, "apply")
+	return func(t *testing.T) string { return copyFolder(t, dir) }, env
+}
+
+// queryRefusals runs one query command on a project with no model, with a model changed after apply, and with a
+// model that is not valid, and expects each run to exit 1 with no output and a message that names the file and the
+// cause.
+func queryRefusals(t *testing.T, project func(t *testing.T) string, env []string, args ...string) {
+	t.Helper()
+	cases := []struct {
+		name, cause string
+		change      func(model string)
+	}{
+		{"missing", "missing", func(model string) {
+			if err := os.Remove(model); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"changed after apply", "does not match the record", func(model string) {
+			appendTo(t, model, " ")
+		}},
+		{"not valid", "schema", func(model string) {
+			data, err := os.ReadFile(model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			invalid := strings.Replace(string(data), `"schema_version": 1`, `"schema_version": 2`, 1)
+			if invalid == string(data) {
+				t.Fatal("the model has no schema_version 1")
+			}
+			if err := os.WriteFile(model, []byte(invalid), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// The record lists the bytes of the model, so only the schema refuses it.
+			state, err := compiler.LoadState(filepath.Join(filepath.Dir(filepath.Dir(model)), ".stego", "state.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			state.LastApplied.ProjectFiles[compiler.ArchitectureFile] = compiler.HashBytes([]byte(invalid))
+			if err := compiler.SaveState(filepath.Join(filepath.Dir(filepath.Dir(model)), ".stego", "state.yaml"), state); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, c := range cases {
+		dir := project(t)
+		c.change(filepath.Join(dir, compiler.ArchitectureFile))
+		before := envFolderState(t, dir)
+		stdout, stderr, err := runInProject(t, dir, env, args...)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("stego %s with a model %s: %v\n%s", strings.Join(args, " "), c.name, err, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("stego %s with a model %s gives output:\n%s", strings.Join(args, " "), c.name, stdout)
+		}
+		if !strings.Contains(stderr, compiler.ArchitectureFile) || !strings.Contains(stderr, c.cause) {
+			t.Fatalf("stego %s with a model %s does not name the file and the cause %q:\n%s", strings.Join(args, " "), c.name, c.cause, stderr)
+		}
+		if after := envFolderState(t, dir); !maps.Equal(before, after) {
+			t.Fatalf("stego %s with a model %s changes the project folder", strings.Join(args, " "), c.name)
+		}
+	}
+}
+
+func TestArchitectureQueries(t *testing.T) {
+	project, env := appliedArchitecture(t)
+
+	t.Run("ST-GEN-UC16-R06-T03 stego architecture facts refuses a missing, changed or not valid model, names the file and the cause, and gives no fact", func(t *testing.T) {
+		queryRefusals(t, project, env, "architecture", "facts", "--topic", "personal-data")
+		queryRefusals(t, project, env, "architecture", "facts", "--topic", "access", "--json")
+	})
+
+	t.Run("ST-GEN-UC17-R05-T01 stego architecture export refuses a missing, changed or not valid model, names the file and the cause, and gives no output", func(t *testing.T) {
+		queryRefusals(t, project, env, "architecture", "export", "--format", "structurizr")
+		queryRefusals(t, project, env, "architecture", "export", "--format", "mermaid", "--view", "data-model")
+	})
+
+	t.Run("ST-GEN-UC17-R02-T01 Apply writes no export and the record lists none, and an export writes no file", func(t *testing.T) {
+		dir := project(t)
+		state, err := compiler.LoadState(filepath.Join(dir, ".stego", "state.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		projectFiles := slices.Sorted(maps.Keys(state.LastApplied.ProjectFiles))
+		if strings.Join(projectFiles, " ") != "architecture/architecture.json architecture/index.html deploy/environment-variables.md deploy/platform-requirements.yaml" {
+			t.Fatalf("the record lists the project files %v, want the architecture model, the architecture view, the environment variable reference and the platform requirements", projectFiles)
+		}
+		entries, err := os.ReadDir(filepath.Join(dir, "architecture"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 2 || entries[0].Name() != "architecture.json" || entries[1].Name() != "index.html" {
+			t.Fatalf("apply wrote %v in architecture/", entries)
+		}
+		for path := range state.LastApplied.Files {
+			if strings.HasSuffix(path, ".dsl") || strings.HasSuffix(path, ".mmd") || strings.Contains(path, "structurizr") || strings.Contains(path, "mermaid") {
+				t.Fatalf("the record lists the export %s", path)
+			}
+		}
+		before := envFolderState(t, dir)
+		for _, format := range compiler.ExportFormats {
+			mustRunInProject(t, dir, env, "architecture", "export", "--format", format)
+		}
+		if after := envFolderState(t, dir); !maps.Equal(before, after) {
+			t.Fatal("an export changes the project folder")
+		}
+	})
+
+	t.Run("ST-GEN-UC17-FL-T The service author exports the architecture, finds the record in the header, and a stale model is refused", func(t *testing.T) {
+		dir := project(t)
+		// S01: the export gives the diagram text from the model that apply wrote.
+		dsl := mustRunInProject(t, dir, env, "architecture", "export", "--format", "structurizr")
+		if !strings.Contains(dsl, "workspace \"orders\"") || !strings.Contains(dsl, "= component ") {
+			t.Fatalf("the export is not the workspace of orders:\n%s", dsl)
+		}
+		flow := mustRunInProject(t, dir, env, "architecture", "export", "--format", "mermaid", "--view", "flow:orders.create")
+		if !strings.Contains(flow, "\nsequenceDiagram\n") || !strings.Contains(flow, "participant p1 as operation:orders.create") {
+			t.Fatalf("the Mermaid view of the flow of orders.create:\n%s", flow)
+		}
+		// S02: the header comment names the record that the model was written with.
+		data, err := os.ReadFile(filepath.Join(dir, compiler.ArchitectureFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range []string{"%% Record: .stego/state.yaml\n", "%% Model: architecture/architecture.json sha256:" + compiler.HashBytes(data) + "\n"} {
+			if !strings.HasPrefix(flow, "%% ") || !strings.Contains(flow, line) {
+				t.Fatalf("the header does not hold %q:\n%s", line, flow)
+			}
+		}
+		// S03: a model that no longer matches the record is refused, with no output.
+		appendTo(t, filepath.Join(dir, compiler.ArchitectureFile), "\n")
+		stdout, stderr, err := runInProject(t, dir, env, "architecture", "export", "--format", "structurizr")
+		if err == nil || stdout != "" || !strings.Contains(stderr, compiler.ArchitectureFile) || !strings.Contains(stderr, "does not match the record") {
+			t.Fatalf("a stale model is not refused: %v\n%s\n%s", err, stdout, stderr)
+		}
+	})
+
+	t.Run("ST-GEN-UC16-FL-T The service author lists the facts of a topic with their sources, and a stale model is refused", func(t *testing.T) {
+		dir := project(t)
+		before := envFolderState(t, dir)
+		// S01 and S02: the facts of each topic, from the model that apply wrote, each with its source.
+		for _, topic := range compiler.ComplianceTopics {
+			text := mustRunInProject(t, dir, env, "architecture", "facts", "--topic", topic)
+			var list compiler.FactList
+			if err := json.Unmarshal([]byte(mustRunInProject(t, dir, env, "architecture", "facts", "--topic", topic, "--json")), &list); err != nil || list.Topic != topic {
+				t.Fatalf("the JSON facts of %s: %v %+v", topic, err, list)
+			}
+			sources := strings.Count(text, "\n    source: ") + strings.Count(text, "\n    default, set by the rule ")
+			if !strings.HasPrefix(text, "Facts of the topic "+topic+" for the service orders\n") || sources < len(list.Facts) ||
+				(len(list.Facts) == 0) != strings.Contains(text, "The model holds no fact of this topic.") {
+				t.Fatalf("the facts of %s for %d facts of the JSON:\n%s", topic, len(list.Facts), text)
+			}
+		}
+		text := mustRunInProject(t, dir, env, "architecture", "facts", "--topic", "data-protection")
+		if !strings.Contains(text, "encryption at rest: unstated. The inputs do not state it.") {
+			t.Fatalf("encryption at rest is not said to be unstated:\n%s", text)
+		}
+		if after := envFolderState(t, dir); !maps.Equal(before, after) {
+			t.Fatal("a list of facts changes the project folder")
+		}
+		// A topic that is not known is a usage error that names the topics.
+		_, stderr, err := runInProject(t, dir, env, "architecture", "facts", "--topic", "everything")
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(stderr, "personal-data") {
+			t.Fatalf("an unknown topic: %v\n%s", err, stderr)
+		}
+		// S03: a model that is not there is refused, with no fact.
+		if err := os.Remove(filepath.Join(dir, compiler.ArchitectureFile)); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := runInProject(t, dir, env, "architecture", "facts", "--topic", "audit")
+		if err == nil || stdout != "" || !strings.Contains(stderr, compiler.ArchitectureFile) || !strings.Contains(stderr, "missing") {
+			t.Fatalf("a missing model is not refused: %v\n%s\n%s", err, stdout, stderr)
+		}
+	})
 }
