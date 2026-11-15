@@ -505,11 +505,11 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	// The architecture model comes from the declaration, the registry parts and the wiring of this run alone, and
 	// a component or slot that does not state its place stops the run before any file is written (ST-GEN-UC08-R05).
-	architecture, err := architectureFile(input, svcDecl, reg, archetype, componentNames, components, wirings, requirements)
+	architecture, err := architectureFiles(input, svcDecl, reg, archetype, componentNames, components, wirings, requirements)
 	if err != nil {
 		return nil, err
 	}
-	allFiles = append(allFiles, architecture)
+	allFiles = append(allFiles, architecture...)
 
 	// Validate no duplicate file paths across all sources (generators, slots,
 	// assembler). A duplicate means one generator's output would silently
@@ -658,17 +658,17 @@ const RequirementsFile = "deploy/platform-requirements.yaml"
 // generated output, and owned by STEGO whole: the record keeps its digest under project_files, so that apply refuses
 // a hand edit of it and drift names one (ST-DLV-UC01-R05).
 func isProjectGeneratedFile(filePath string) bool {
-	return filePath == RequirementsFile || filePath == ArchitectureFile
+	return filePath == RequirementsFile || filePath == ArchitectureFile || filePath == ArchitectureViewFile
 }
 
-// architectureFile derives the architecture model of the run (ST-GEN-CMD05): from the declaration, the registry
+// architectureFiles derives the architecture model of the run and renders its view (ST-GEN-CMD05): from the declaration, the registry
 // parts of the active set and the bound mixins, the wiring, the platform requirements of the run and the declared
 // authorization schema.
-func architectureFile(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, archetype *registry.Archetype,
-	names []string, components map[string]*registry.Component, wirings []ComponentWiring, requirements []byte) (gen.File, error) {
+func architectureFiles(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, archetype *registry.Archetype,
+	names []string, components map[string]*registry.Component, wirings []ComponentWiring, requirements []byte) ([]gen.File, error) {
 	mixinNames, err := boundMixins(reg, svcDecl.Mixins)
 	if err != nil {
-		return gen.File{}, err
+		return nil, err
 	}
 	mixins := make([]*registry.Mixin, 0, len(mixinNames))
 	for _, name := range mixinNames {
@@ -676,7 +676,7 @@ func architectureFile(input ReconcilerInput, svcDecl *types.ServiceDeclaration, 
 	}
 	schema, err := declaration.ReadAuthzSchema(svcDecl, os.DirFS(input.ProjectDir))
 	if err != nil {
-		return gen.File{}, fmt.Errorf("reading the authorization schema for the architecture model: %w", err)
+		return nil, fmt.Errorf("reading the authorization schema for the architecture model: %w", err)
 	}
 	return WriteArchitecture(ArchitectureInput{Service: svcDecl, Archetype: archetype, Components: components, Names: names, Mixins: mixins,
 		Wirings: wirings, Requirements: requirements, Schema: schema})

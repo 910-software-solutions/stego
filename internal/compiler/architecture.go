@@ -90,17 +90,22 @@ func encodeArchitecture(model *ArchitectureModel) ([]byte, error) {
 }
 
 // WriteArchitecture derives the model and checks it against the schema and the references between its elements,
-// and gives it as the project file architecture/architecture.json, which the record covers (ST-GEN-CMD05). It runs
-// in every apply.
-func WriteArchitecture(in ArchitectureInput) (gen.File, error) {
+// renders the architecture view from the model alone, and gives the two as the project files
+// architecture/architecture.json and architecture/index.html, which the record covers (ST-GEN-CMD05). It runs in
+// every apply.
+func WriteArchitecture(in ArchitectureInput) ([]gen.File, error) {
 	data, err := DeriveArchitecture(in)
 	if err != nil {
-		return gen.File{}, err
+		return nil, err
 	}
 	if err := ValidateArchitecture(data); err != nil {
-		return gen.File{}, fmt.Errorf("the derived architecture model is not valid: %w", err)
+		return nil, fmt.Errorf("the derived architecture model is not valid: %w", err)
 	}
-	return gen.File{Path: ArchitectureFile, Content: data}, nil
+	view, err := RenderArchitectureView(data)
+	if err != nil {
+		return nil, err
+	}
+	return []gen.File{{Path: ArchitectureFile, Content: data}, {Path: ArchitectureViewFile, Content: view}}, nil
 }
 
 // deriver holds the model while it is built.
