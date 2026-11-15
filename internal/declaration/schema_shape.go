@@ -84,6 +84,13 @@ var caveatMacros = map[string]bool{"map": true, "filter": true, "all": true, "ex
 // counts toward the statement it follows, at any depth. A caveat body, a CEL expression that the caveat compiler
 // bounds, is not counted for terms. At a lexer error it stops: the compiler reads no further than that token.
 func checkSchemaShape(schemaPath string, source []byte) error {
+	_, err := schemaShape(schemaPath, source)
+	return err
+}
+
+// schemaShape is checkSchemaShape that also gives the tokens it read from the lexer, so that a test can count the
+// work of a refusal and need no clock: it reads up to the first token past a bound and no further.
+func schemaShape(schemaPath string, source []byte) (tokens int, err error) {
 	lx := lexer.NewFlaggableLexer(lexer.Lex(input.Source(schemaPath), string(source)))
 	defer lx.Close()
 	var (
@@ -108,15 +115,16 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 	}
 	for {
 		token := lx.NextToken()
+		tokens++
 		switch token.Kind {
 		case lexer.TokenTypeEOF, lexer.TokenTypeError:
 			if body > 0 && len(source)-bodyStart > MaxCaveatBodyBytesEach {
-				return fault(line, "a caveat body has more than %d bytes, the most that checking compiles", MaxCaveatBodyBytesEach)
+				return tokens, fault(line, "a caveat body has more than %d bytes, the most that checking compiles", MaxCaveatBodyBytesEach)
 			}
 			if body > 0 && bodyBytes+len(source)-bodyStart > MaxCaveatBodyBytes {
-				return fault(line, "the caveat bodies have more than %d bytes, the most that checking compiles", MaxCaveatBodyBytes)
+				return tokens, fault(line, "the caveat bodies have more than %d bytes, the most that checking compiles", MaxCaveatBodyBytes)
 			}
-			return nil
+			return tokens, nil
 		}
 		// The lexer gives each space as a token of its own, so a body beyond its bytes is refused at the first token
 		// past the bound, a space or a comment too, and not only at its closing brace (review of PR #302, M6).
@@ -125,7 +133,7 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 				line += bytes.Count(source[seen:at], []byte{'\n'})
 				seen = at
 			}
-			return fault(line, "a caveat body has more than %d bytes, the most that checking compiles", MaxCaveatBodyBytesEach)
+			return tokens, fault(line, "a caveat body has more than %d bytes, the most that checking compiles", MaxCaveatBodyBytesEach)
 		}
 		switch token.Kind {
 		case lexer.TokenTypeWhitespace, lexer.TokenTypeNewline, lexer.TokenTypeSyntheticSemicolon,
@@ -139,7 +147,7 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 		switch token.Kind {
 		case lexer.TokenTypeLeftParen:
 			if nesting++; nesting > MaxSchemaNesting {
-				return fault(line, "the schema has more than %d parentheses open at one place, the most that checking compiles", MaxSchemaNesting)
+				return tokens, fault(line, "the schema has more than %d parentheses open at one place, the most that checking compiles", MaxSchemaNesting)
 			}
 		case lexer.TokenTypeRightParen:
 			nesting--
@@ -147,13 +155,13 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 		if body > 0 {
 			if macro && token.Kind == lexer.TokenTypeLeftParen {
 				if macros++; macros > MaxCaveatMacros {
-					return fault(line, "the caveat bodies have more than %d comprehension macros, the most that checking compiles", MaxCaveatMacros)
+					return tokens, fault(line, "the caveat bodies have more than %d comprehension macros, the most that checking compiles", MaxCaveatMacros)
 				}
 			}
 			if caveatOperators[token.Kind] || token.Kind == lexer.TokenTypeIdentifier && token.Value == "in" ||
 				(token.Kind == lexer.TokenTypeLeftParen || token.Kind == lexer.TokenTypeLeftBracket) && postfix(previous) {
 				if calls++; calls > MaxCaveatBodyCalls {
-					return fault(line, "a caveat body has more than %d calls, indexes and operators, the most that checking compiles", MaxCaveatBodyCalls)
+					return tokens, fault(line, "a caveat body has more than %d calls, indexes and operators, the most that checking compiles", MaxCaveatBodyCalls)
 				}
 			}
 			macro = (token.Kind == lexer.TokenTypeIdentifier || token.Kind == lexer.TokenTypeKeyword) && caveatMacros[token.Value] &&
@@ -161,7 +169,7 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 			switch token.Kind {
 			case lexer.TokenTypeLeftBracket, lexer.TokenTypeLeftBrace, lexer.TokenTypeLeftParen:
 				if open++; open > MaxCaveatBodyNesting {
-					return fault(line, "a caveat body has more than %d brackets, braces and parentheses open at one place, the most that checking compiles", MaxCaveatBodyNesting)
+					return tokens, fault(line, "a caveat body has more than %d brackets, braces and parentheses open at one place, the most that checking compiles", MaxCaveatBodyNesting)
 				}
 			case lexer.TokenTypeRightBracket, lexer.TokenTypeRightParen:
 				if open > 0 {
@@ -177,7 +185,7 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 				}
 				if body--; body == 0 {
 					if bodyBytes += int(token.Position) - bodyStart; bodyBytes > MaxCaveatBodyBytes {
-						return fault(line, "the caveat bodies have more than %d bytes, the most that checking compiles", MaxCaveatBodyBytes)
+						return tokens, fault(line, "the caveat bodies have more than %d bytes, the most that checking compiles", MaxCaveatBodyBytes)
 					}
 				}
 			}
@@ -198,7 +206,7 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 				break
 			}
 			if types++; types > MaxCaveatTypeNesting {
-				return fault(line, "a caveat parameter type has more than %d type arguments open at one place, the most that checking compiles", MaxCaveatTypeNesting)
+				return tokens, fault(line, "a caveat parameter type has more than %d type arguments open at one place, the most that checking compiles", MaxCaveatTypeNesting)
 			}
 		case lexer.TokenTypeGreaterThan:
 			if caveat && types > 0 {
@@ -213,13 +221,13 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 			case token.Kind == lexer.TokenTypeKeyword && (word == "relation" || word == "permission"):
 				members++
 				if members > MaxSchemaMembers {
-					return fault(line, "the schema has more than %d relations and permissions, the most that checking compiles", MaxSchemaMembers)
+					return tokens, fault(line, "the schema has more than %d relations and permissions, the most that checking compiles", MaxSchemaMembers)
 				}
 				statement, statementLine, terms, expectName = word, line, 1, true
 			case token.Kind == lexer.TokenTypeKeyword && word == "caveat" && depth == 0 &&
 				!(previous.Kind == lexer.TokenTypeKeyword && previous.Value == "definition"):
 				if caveats++; caveats > MaxCaveats {
-					return fault(line, "the schema has more than %d caveats, the most that checking compiles", MaxCaveats)
+					return tokens, fault(line, "the schema has more than %d caveats, the most that checking compiles", MaxCaveats)
 				}
 				caveat, statement, terms, types = true, "", 1, 0
 			case token.Kind == lexer.TokenTypeKeyword && word == "definition", word == "use":
@@ -231,7 +239,7 @@ func checkSchemaShape(schemaPath string, source []byte) error {
 				if statement != "" {
 					name = statement
 				}
-				return fault(statementLine, "the permission %s has more than %d terms in its expression, the most that checking compiles", name, MaxPermissionTerms)
+				return tokens, fault(statementLine, "the permission %s has more than %d terms in its expression, the most that checking compiles", name, MaxPermissionTerms)
 			}
 		}
 		previous = token
