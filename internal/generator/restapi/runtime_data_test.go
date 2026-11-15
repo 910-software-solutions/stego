@@ -690,14 +690,80 @@ func TestEveryField(t *testing.T) {
 }
 `
 
+// requiredMemberCheck is a test of the generated validation.go: a create or a PUT whose body leaves out the required
+// member title gets a 400 validation problem that names title, before any decode of the handler; a body that holds
+// title reaches the handler.
+const requiredMemberCheck = `package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestRequiredMember(t *testing.T) {
+	reached := false
+	handler := NewValidationMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	send := func(method, path, body string) *httptest.ResponseRecorder {
+		reached = false
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		answer := httptest.NewRecorder()
+		handler.ServeHTTP(answer, r)
+		return answer
+	}
+	const path = "/api/v1/todos/0b9c6a5e-6f7a-4c1e-9a52-2f1d3c4b5a69"
+	for _, c := range []struct{ method, path, body string }{
+		{http.MethodPost, "/api/v1/todos", "{\"done\":true}"},
+		{http.MethodPost, "/api/v1/todos", "{}"},
+		{http.MethodPut, path, "{\"done\":true}"},
+		{http.MethodPut, path, "{}"},
+	} {
+		answer := send(c.method, c.path, c.body)
+		var problem struct {
+			Errors []struct {
+				Field   string \x60json:"field"\x60
+				Message string \x60json:"message"\x60
+			} \x60json:"validation_errors"\x60
+		}
+		if err := json.Unmarshal(answer.Body.Bytes(), &problem); answer.Code != http.StatusBadRequest || err != nil || reached {
+			t.Fatalf("%s %s %s got %d (%v), handler reached %v: %s", c.method, c.path, c.body, answer.Code, err, reached, answer.Body)
+		}
+		if len(problem.Errors) != 1 || problem.Errors[0].Field != "title" || !strings.Contains(problem.Errors[0].Message, "title") {
+			t.Fatalf("%s %s %s: the problem lists %+v, want one entry that names title", c.method, c.path, c.body, problem.Errors)
+		}
+	}
+	for _, method := range []string{http.MethodPost, http.MethodPut} {
+		target := "/api/v1/todos"
+		if method == http.MethodPut {
+			target = path
+		}
+		if answer := send(method, target, "{\"title\":\"t\"}"); answer.Code != http.StatusNoContent || !reached {
+			t.Fatalf("%s %s with title got %d, handler reached %v: %s", method, target, answer.Code, reached, answer.Body)
+		}
+	}
+}
+`
+
 func TestValidationEveryField(t *testing.T) {
+	ctx := crudContext()
+	ctx.Conventions.RequestValidation = "openapi-schema"
+	p := newCrudProject(t, ctx, crudFiles(t, ctx))
+	p.write("out/api/every_field_test.go", []byte(strings.ReplaceAll(everyFieldCheck, "\\x60", "`")))
+	p.write("out/api/required_member_test.go", []byte(strings.ReplaceAll(requiredMemberCheck, "\\x60", "`")))
 	t.Run("ST-SUP-RC20-OC05-T04 A body with two bad members gets a validation problem with one entry for each", func(t *testing.T) {
-		ctx := crudContext()
-		ctx.Conventions.RequestValidation = "openapi-schema"
-		p := newCrudProject(t, ctx, crudFiles(t, ctx))
-		p.write("out/api/every_field_test.go", []byte(strings.ReplaceAll(everyFieldCheck, "\\x60", "`")))
 		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestEveryField$", "./out/api"); err != nil {
 			t.Fatalf("the check of every field failed: %v\n%s", err, output)
+		}
+	})
+	t.Run("ST-SUP-RC20-OC05-T07 A create or a PUT that leaves out a required member gets a validation problem that names it", func(t *testing.T) {
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestRequiredMember$", "./out/api"); err != nil {
+			t.Fatalf("the check of a missing required member failed: %v\n%s", err, output)
 		}
 	})
 }
