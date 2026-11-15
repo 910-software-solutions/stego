@@ -50,3 +50,7 @@ environment:
     description: "The file of the PEM TLS private key of the HTTP server. When it and STEGO_HTTP_TLS_CERT have no value, the server uses plain HTTP."
     secret: false
     example: "/etc/stego/tls/tls.key"
+# The platform needs (ST-SUP-EN09): the HTTP port and the pod security level of the service process.
+needs:
+  - {kind: ingress, name: http, port: 8080}
+  - {kind: pod security, name: pod-security, level: restricted}

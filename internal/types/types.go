@@ -378,6 +378,38 @@ type ServiceDeclaration struct {
 	Authorization *Authorization `yaml:"authorization,omitempty"`
 	// ExperimentalAcceptances are the components that are not ga that the service accepts (ST-DECL-EN07).
 	ExperimentalAcceptances []ExperimentalAcceptance `yaml:"experimental_acceptances,omitempty"`
+	// Delivery is the delivery stanza: the CI provider and the Argo CD delivery of the service (ST-DECL-EN01 field
+	// Delivery stanza, ST-DLV-Q12 (A)). It has no field for a cluster, a namespace, an overlay, a pipeline
+	// reference or a signer, so the strict decoder refuses each of them with its path.
+	Delivery *Delivery `yaml:"delivery,omitempty"`
+}
+
+// Delivery is the delivery stanza of a declaration. Without CI, apply writes no CI file; without ArgoCD, it writes
+// no delivery object.
+type Delivery struct {
+	CI     string          `yaml:"ci,omitempty"`
+	ArgoCD *ArgoCDDelivery `yaml:"argocd,omitempty"`
+}
+
+// ArgoCDDelivery is the Argo CD part of the delivery stanza: the project, where the Kubernetes base of the service
+// is, and where the platform's environment files are.
+type ArgoCDDelivery struct {
+	Project      string               `yaml:"project"`
+	Source       DeliverySource       `yaml:"source"`
+	Environments DeliveryEnvironments `yaml:"environments"`
+}
+
+// DeliverySource is the address of the service's repository and the path of its Kubernetes base in it.
+type DeliverySource struct {
+	Repo string `yaml:"repo"`
+	Path string `yaml:"path"`
+}
+
+// DeliveryEnvironments is the repository, the revision and the path pattern of the platform's environment files.
+type DeliveryEnvironments struct {
+	Repo     string `yaml:"repo"`
+	Revision string `yaml:"revision"`
+	Path     string `yaml:"path"`
 }
 
 // UnmarshalYAML implements custom YAML unmarshaling for ServiceDeclaration.

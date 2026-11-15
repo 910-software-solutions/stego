@@ -245,8 +245,8 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, "")
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersCreateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
-		// the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
+		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
 		{
 			ancestors, err := data.OrganizationRepository(ch)
 			if err != nil {
@@ -395,8 +395,8 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := query.Run(r.Context(), h.rt.Queries, orgUsersReadQuery, h.rt.boundQuery(r.Context(), b, orgUsersReadQuery), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (User, error) {
-		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
-		// the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
+		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
 		{
 			ancestors, err := query.Repo(qh, data.EntityOrganizationView())
 			if err != nil {
@@ -462,8 +462,8 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersUpdateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
-		// the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
+		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
 		{
 			ancestors, err := data.OrganizationRepository(ch)
 			if err != nil {
@@ -558,8 +558,8 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersDeleteCommand, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
-		// the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
+		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
 		{
 			ancestors, err := data.OrganizationRepository(ch)
 			if err != nil {
@@ -674,8 +674,8 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, orgUsersListQuery, h.rt.boundQuery(r.Context(), b, orgUsersListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (orgUsersPage, error) {
-		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
-		// the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
+		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
 		{
 			ancestors, err := query.Repo(qh, data.EntityOrganizationView())
 			if err != nil {
@@ -775,8 +775,8 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersPatchCommand, req, decodeOrgUsersPatch, func(ctx context.Context, patch OrgUsersPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain: every ancestor of the path exists in the tenant, the caller may read it, and it is of
-		// the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
+		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
 		{
 			ancestors, err := data.OrganizationRepository(ch)
 			if err != nil {

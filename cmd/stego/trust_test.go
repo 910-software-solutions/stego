@@ -12,6 +12,11 @@ import (
 	"testing"
 )
 
+// emitsNoCode are the components that the registry ships and that emit no code into a service, each with the reason.
+var emitsNoCode = map[string]string{
+	"ci-pipeline": "it states the pins of each CI provider, and delivery.WritePipeline writes the CI file from them (ST-SUP-RC25-G01, ST-DLV-CMD02-H)",
+}
+
 func TestCompilerContainsEveryGenerator(t *testing.T) {
 	t.Run("ST-STD-TRUST-R01-T01 The compiler contains a generator for every component the registry ships", func(t *testing.T) {
 		entries, err := os.ReadDir("../../registry/components")
@@ -29,6 +34,13 @@ func TestCompilerContainsEveryGenerator(t *testing.T) {
 			t.Fatal("the registry ships no components")
 		}
 		for _, name := range components {
+			if reason, ok := emitsNoCode[name]; ok {
+				t.Logf("component %q has no generator: %s", name, reason)
+				if generators[name] != nil {
+					t.Errorf("component %q emits no code, but the compiler has a generator for it", name)
+				}
+				continue
+			}
 			if generators[name] == nil {
 				t.Errorf("component %q has no generator in the compiler", name)
 			}

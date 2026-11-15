@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 // shapeSchema is a schema of one definition doc whose permission p has the expression expr, after extra.
@@ -30,8 +29,32 @@ func expectShapeFault(t *testing.T, err error, line int, limit int) {
 	}
 }
 
+// shapeTokenBudget is the most lexer tokens that the shape check may read before it refuses a hostile schema of up
+// to MaxSchemaBytes. Each such schema passes a bound within its first caveat body or expression, so the check reads at
+// most one body of MaxCaveatBodyBytesEach bytes, a token for each byte, and the lines before it. The work is counted,
+// not timed: a clock on a shared CI runner with the race detector gives no stable bound.
+const shapeTokenBudget = 2 * MaxCaveatBodyBytesEach
+
+// refuseEarly expects the shape check to refuse source after at most shapeTokenBudget tokens, and the refusal to come
+// before the compiler, which it replaces with one that fails the test. It gives the refusal.
+func refuseEarly(t *testing.T, source []byte) error {
+	t.Helper()
+	tokens, err := schemaShape("authz/schema.zed", source)
+	if err == nil {
+		t.Fatalf("the shape check accepts %d bytes", len(source))
+	}
+	if tokens > shapeTokenBudget {
+		t.Fatalf("the shape check read %d tokens of %d bytes before it refused, want at most %d", tokens, len(source), shapeTokenBudget)
+	}
+	_, err = shapedCompile("authz/schema.zed", source, func(string, []byte) (*AuthzSchema, error) {
+		t.Fatalf("a schema beyond the shape bounds reached the compiler")
+		return nil, nil
+	})
+	return err
+}
+
 func TestSchemaShape(t *testing.T) {
-	t.Run("ST-DECL-INV88-T A schema beyond the shape bounds is refused before it compiles, and a hostile wide schema in well under 1 s", func(t *testing.T) {
+	t.Run("ST-DECL-INV88-T A schema beyond the shape bounds is refused before it compiles, and a hostile wide schema after a bounded number of tokens", func(t *testing.T) {
 		accepted := map[string]string{
 			"256 terms joined by +":           shapeSchema("", joined("own", " + ", MaxPermissionTerms)),
 			"256 terms of &, - and arrows":    shapeSchema("", "own & ("+joined("parent->view", " + ", MaxPermissionTerms-2)+") - own"),
@@ -114,12 +137,8 @@ func TestSchemaShape(t *testing.T) {
 		})
 		t.Run("parentheses of 1 MiB", func(t *testing.T) {
 			depth := (MaxSchemaBytes - 200) / 2
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte(shapeSchema("", strings.Repeat("(", depth)+"own"+strings.Repeat(")", depth))))
+			err := refuseEarly(t, []byte(shapeSchema("", strings.Repeat("(", depth)+"own"+strings.Repeat(")", depth))))
 			expectShapeFault(t, err, 6, MaxSchemaNesting)
-			if elapsed := time.Since(start); elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
 		})
 		// Review of PR #302, M3: the CEL checker took 16 s on a list type 4000 deep, and ran out of memory at 150000.
 		t.Run("a caveat parameter type 9 deep", func(t *testing.T) {
@@ -135,12 +154,8 @@ func TestSchemaShape(t *testing.T) {
 			if len(source) > MaxSchemaBytes {
 				t.Fatalf("the schema has %d bytes, more than MaxSchemaBytes", len(source))
 			}
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte(source))
+			err := refuseEarly(t, []byte(source))
 			expectShapeFault(t, err, 1, MaxCaveatTypeNesting)
-			if elapsed := time.Since(start); elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
 		})
 		// Review of PR #302, L2: the CEL compiler took about 0.9 s for each caveat body of 95 KB.
 		t.Run("65 caveats", func(t *testing.T) {
@@ -185,21 +200,13 @@ func TestSchemaShape(t *testing.T) {
 			expectShapeFault(t, err, 2, MaxCaveatBodyCalls)
 		})
 		t.Run("4000 of m['a'] != m['b'] in one body of 64 KB", func(t *testing.T) {
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte(indexCompares(4000, "")+shapeSchema("", "own")))
+			err := refuseEarly(t, []byte(indexCompares(4000, "")+shapeSchema("", "own")))
 			expectShapeFault(t, err, 2, MaxCaveatBodyCalls)
-			if elapsed := time.Since(start); elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
 		})
 		t.Run("ten caveat bodies of 95 KB", func(t *testing.T) {
 			source := caveats(10, 95000) + shapeSchema("", "own")
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte(source))
+			err := refuseEarly(t, []byte(source))
 			expectShapeFault(t, err, 2, MaxCaveatBodyBytesEach)
-			if elapsed := time.Since(start); elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
 		})
 		// Review of PR #302, M4: each comprehension macro can wrap the inferred type once more, and the CEL checker took
 		// 1 min 48 s on 15 caveats of 240 chained maps each, a schema of 62 KB in every other bound.
@@ -234,36 +241,24 @@ func TestSchemaShape(t *testing.T) {
 			expectShapeFault(t, err, 2, MaxCaveatBodyNesting)
 		})
 		t.Run("map literals 240 deep compared", func(t *testing.T) {
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte("caveat cav(n int) {\n\t"+nestedMaps(240)+" == "+nestedMaps(240)+"\n}\n"+shapeSchema("", "own")))
+			err := refuseEarly(t, []byte("caveat cav(n int) {\n\t"+nestedMaps(240)+" == "+nestedMaps(240)+"\n}\n"+shapeSchema("", "own")))
 			expectShapeFault(t, err, 2, MaxCaveatBodyNesting)
-			if elapsed := time.Since(start); elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
 		})
 		t.Run("46 caveats of map literals 245 deep", func(t *testing.T) {
 			var b strings.Builder
 			for i := range 46 {
 				fmt.Fprintf(&b, "caveat cav%d(n int) {\n\t%s.size() > 0\n}\n", i, nestedMaps(245))
 			}
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte(b.String()+shapeSchema("", "own")))
+			err := refuseEarly(t, []byte(b.String()+shapeSchema("", "own")))
 			expectShapeFault(t, err, 2, MaxCaveatBodyNesting)
-			if elapsed := time.Since(start); elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
 		})
 		t.Run("15 caveats of 240 chained maps", func(t *testing.T) {
 			var b strings.Builder
 			for i := range 15 {
 				b.WriteString(chainedMaps(i, 240))
 			}
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte(b.String()+shapeSchema("", "own")))
+			err := refuseEarly(t, []byte(b.String()+shapeSchema("", "own")))
 			expectShapeFault(t, err, 2, MaxCaveatMacros)
-			if elapsed := time.Since(start); elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
 		})
 		t.Run("4097 relations and permissions", func(t *testing.T) {
 			_, err := CompileAuthzSchema("authz/schema.zed", []byte("definition user {}\ndefinition doc {\n"+relations(MaxSchemaMembers+1)+"}\n"))
@@ -275,14 +270,8 @@ func TestSchemaShape(t *testing.T) {
 			if len(source) > MaxSchemaBytes {
 				t.Fatalf("the schema has %d bytes, more than MaxSchemaBytes", len(source))
 			}
-			start := time.Now()
-			_, err := CompileAuthzSchema("authz/schema.zed", []byte(source))
-			elapsed := time.Since(start)
+			err := refuseEarly(t, []byte(source))
 			expectShapeFault(t, err, 6, MaxPermissionTerms)
-			if elapsed > time.Second/4 {
-				t.Fatalf("the refusal took %v, want well under 1 s", elapsed)
-			}
-			t.Logf("refused in %v", elapsed)
 		})
 		// The legal worst cases of the review of PR #302 at about 1 MiB pass the shape check at once; the compiler
 		// then takes seconds on them, within the time of a check.
@@ -298,13 +287,11 @@ func TestSchemaShape(t *testing.T) {
 					fmt.Fprintf(&b, "\tpermission p%d = %s\n", i, member)
 				}
 				b.WriteString("}\n")
-				start := time.Now()
-				if err := checkSchemaShape("authz/schema.zed", []byte(b.String())); err != nil {
+				tokens, err := schemaShape("authz/schema.zed", []byte(b.String()))
+				if err != nil {
 					t.Fatalf("%s: the shape check refuses %d bytes: %v", name, b.Len(), err)
 				}
-				// The time is logged, not bounded: the lexer sends each token on a channel, which the race detector of
-				// a shared CI runner makes more than ten times slower. The bounds on time are on the refusals.
-				t.Logf("%s: %d bytes pass the shape check in %v", name, b.Len(), time.Since(start))
+				t.Logf("%s: %d bytes pass the shape check in %d tokens", name, b.Len(), tokens)
 			}
 		})
 		t.Run("through checking", func(t *testing.T) {

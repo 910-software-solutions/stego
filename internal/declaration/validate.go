@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -127,6 +128,7 @@ func Validate(service *types.ServiceDeclaration, undeclared ...parser.Undeclared
 	faults.Service = append(faults.Service, validateModesAndMixins(service)...)
 	faults.Service = append(faults.Service, validateControllers(service)...)
 	faults.Service = append(faults.Service, validateSettingBounds(service)...)
+	faults.Service = append(faults.Service, validateDelivery(service.Delivery)...)
 	faults.Entities = append(faults.Entities, validateFieldTypes(service.Entities)...)
 	faults.Entities = append(faults.Entities, validateFieldDefaults(service.Entities)...)
 	faults.Entities = append(faults.Entities, validateMoney(service)...)
@@ -149,6 +151,62 @@ func Validate(service *types.ServiceDeclaration, undeclared ...parser.Undeclared
 	faults.Slots = append(faults.Slots, validateSlotBindingOperatorExclusivity(service.Slots)...)
 	faults.Slots = append(faults.Slots, validateSlotBindingFillUniqueness(service.Slots)...)
 	faults.Slots = append(faults.Slots, validateSlotBindingUniquenessCollect(service.Slots)...)
+	return faults
+}
+
+var (
+	// deliveryProject is an Argo CD project of its own: a DNS label other than default.
+	deliveryProject = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// deliveryRepo is an https or ssh Git address whose host starts with a letter or a digit, with no user
+	// information, query or fragment.
+	deliveryRepo = regexp.MustCompile(`^(https://[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/|ssh://git@[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]+)?/|git@[A-Za-z0-9][A-Za-z0-9.-]*:)[A-Za-z0-9._/~-]+$`)
+	// deliveryRevision is a branch, a tag or a commit.
+	deliveryRevision = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
+	// deliveryPattern is a relative path pattern of YAML or JSON files.
+	deliveryPattern = regexp.MustCompile(`^[A-Za-z0-9._*/-]+\.(yaml|yml|json)$`)
+)
+
+// deliveryPath tells if a path is relative, clean and stays in its repository.
+func deliveryPath(name string) bool {
+	return name != "" && !path.IsAbs(name) && path.Clean(name) == name && name != ".." && !strings.HasPrefix(name, "../")
+}
+
+// validateDelivery checks the delivery stanza (ST-DECL-EN01 field Delivery stanza, ST-DLV-Q12 (A), ST-DLV-Q15 (A)),
+// so that stego validate and stego apply refuse the same stanza: the CI provider is github-actions or konflux, and
+// each Argo CD field names what it must, with the project default refused.
+func validateDelivery(delivery *types.Delivery) []ValidationError {
+	if delivery == nil {
+		return nil
+	}
+	var faults []ValidationError
+	fault := func(path, found, message string) {
+		faults = append(faults, ValidationError{Category: "service", Rule: "delivery-stanza", Path: path, Found: found, Message: message})
+	}
+	if delivery.CI != "" && delivery.CI != "github-actions" && delivery.CI != "konflux" {
+		fault("delivery.ci", delivery.CI, "the CI provider is github-actions or konflux")
+	}
+	argo := delivery.ArgoCD
+	if argo == nil {
+		return faults
+	}
+	if !deliveryProject.MatchString(argo.Project) || argo.Project == "default" {
+		fault("delivery.argocd.project", argo.Project, "an Argo CD project is a DNS label other than default, which allows every source and destination")
+	}
+	if !deliveryRepo.MatchString(argo.Source.Repo) {
+		fault("delivery.argocd.source.repo", argo.Source.Repo, "the address of the service's repository is an https or ssh Git address")
+	}
+	if !deliveryPath(argo.Source.Path) || (argo.Source.Path != "deploy/base" && !strings.HasSuffix(argo.Source.Path, "/deploy/base")) {
+		fault("delivery.argocd.source.path", argo.Source.Path, "the path of the base is a clean relative path that ends in deploy/base")
+	}
+	if !deliveryRepo.MatchString(argo.Environments.Repo) {
+		fault("delivery.argocd.environments.repo", argo.Environments.Repo, "the address of the platform's repository is an https or ssh Git address")
+	}
+	if !deliveryRevision.MatchString(argo.Environments.Revision) {
+		fault("delivery.argocd.environments.revision", argo.Environments.Revision, "the revision is a branch, a tag or a commit")
+	}
+	if !deliveryPath(argo.Environments.Path) || !deliveryPattern.MatchString(argo.Environments.Path) {
+		fault("delivery.argocd.environments.path", argo.Environments.Path, "the path of the environment files is a clean relative pattern of YAML or JSON files")
+	}
 	return faults
 }
 

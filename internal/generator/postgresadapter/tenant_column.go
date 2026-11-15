@@ -109,7 +109,8 @@ var roleName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 // serviceRoles gives the runtime role and the owner role of a pooled service as the tenancy component names them:
 // its settings runtime_role and owner_role, or the service name in lower case with _runtime and _owner. The sync
 // function of a step names the owner role as the backfill role (ST-SUP-RC01-OC32), and the migration of a step
-// grants the backfill functions to the runtime role. It refuses a service without pooled tenancy.
+// grants the backfill functions to the runtime role. It refuses a service without pooled tenancy, and a runtime role
+// that is the owner role.
 func serviceRoles(ctx gen.Context) (string, string, error) {
 	if ctx.Tenancy == nil {
 		return "", "", fmt.Errorf("a step with a sync trigger and a backfill needs the tenancy component, whose owner role runs the backfill")
@@ -123,6 +124,13 @@ func serviceRoles(ctx gen.Context) (string, string, error) {
 	}
 	if !roleName.MatchString(runtime) || !roleName.MatchString(owner) {
 		return "", "", fmt.Errorf("the runtime role %q or the owner role %q is not a lower-case SQL name of at most 63 characters", runtime, owner)
+	}
+	// The sync trigger passes the writes of the backfill role, the owner role, in a transaction that names the change
+	// in stego.backfill_change, and any role can set that setting. So the runtime role must be another role, or the
+	// runtime could turn the sync off for its own writes (security review of PR #335, L4). The start check of the
+	// runtime refuses it too.
+	if runtime == owner {
+		return "", "", fmt.Errorf("the runtime role %q is also the owner role, which runs the backfill; set runtime_role and owner_role to two roles", runtime)
 	}
 	return runtime, owner, nil
 }

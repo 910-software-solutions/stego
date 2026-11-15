@@ -206,12 +206,14 @@ func stegoRefuseEnvironment() {
 // stegoRefusedVariable tells whether a library reads the variable and the service does not take it.
 func stegoRefusedVariable(name string) bool {
 	switch name {
-	case "SSL_CERT_FILE", "SSL_CERT_DIR":
+	case "SSL_CERT_FILE", "SSL_CERT_DIR",
+		// The names that the pgx driver reads (pgconn), and no other name that starts with PG, such as PG_IMAGE.
+		"PGAPPNAME", "PGCHANNELBINDING", "PGCONNECT_TIMEOUT", "PGDATABASE", "PGHOST", "PGMAXPROTOCOLVERSION", "PGMINPROTOCOLVERSION", "PGOPTIONS", "PGPASSFILE", "PGPASSWORD", "PGPORT", "PGREQUIREAUTH", "PGSERVICE", "PGSERVICEFILE", "PGSSLCERT", "PGSSLKEY", "PGSSLMODE", "PGSSLNEGOTIATION", "PGSSLPASSWORD", "PGSSLROOTCERT", "PGSSLSNI", "PGTARGETSESSIONATTRS", "PGTZ", "PGUSER":
 		return true
 	case "GRPC_GO_LOG_SEVERITY_LEVEL", "GRPC_GO_LOG_VERBOSITY_LEVEL", "GRPC_GO_LOG_FORMATTER":
 		return false
 	}
-	return len(name) >= 2 && name[:2] == "PG" || len(name) >= 5 && name[:5] == "GRPC_"
+	return len(name) >= 5 && name[:5] == "GRPC_"
 }
 
 // stegoWeakensTLS tells whether a GODEBUG value holds a tls or an x509 setting.
