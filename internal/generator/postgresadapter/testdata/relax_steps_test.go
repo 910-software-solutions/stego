@@ -184,7 +184,7 @@ func TestRelaxSteps(t *testing.T) {
 			t.Errorf("the stepped database and a new one differ:\n%s\n----\n%s", b, a)
 		}
 		var marked int
-		if err := db.QueryRow(`SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.boards'::pg_catalog.regclass AND pg_catalog.col_description(attrelid, attnum) = 'stego relax'`).Scan(&marked); err != nil || marked != 4 {
+		if err := db.QueryRow(`SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.boards'::pg_catalog.regclass AND pg_catalog.starts_with(pg_catalog.col_description(attrelid, attnum), 'stego relax step_')`).Scan(&marked); err != nil || marked != 4 {
 			t.Errorf("%d columns of boards have the relax marker, want 4 (error %v)", marked, err)
 		}
 	})

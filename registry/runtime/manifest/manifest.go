@@ -1235,7 +1235,7 @@ func checkConfined(ctx context.Context, tx *sql.Tx, role, owner string, named ma
 // checkTable refuses an unlisted column of any table whose type is no built-in base type of pg_catalog, such as a
 // domain with a CHECK that calls a function (decision of the orchestrator under the owner's delegation, 2026-11-13).
 // A listed column keeps the default of the manifest.
-func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column, entity bool, relaxed map[string]bool) ([]string, error) {
+func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column, entity bool, relaxed map[string]string) ([]string, error) {
 	want := map[string]string{}
 	listed := map[string]bool{}
 	for _, c := range columns {
@@ -1270,7 +1270,17 @@ func checkDefaults(ctx context.Context, tx *sql.Tx, oid uint32, columns []Column
 		switch {
 		case d.generated != "":
 			faults = append(faults, "column "+d.name+" is a generated column, which the manifest does not state")
-		case expected == "" && entity && (!listed[d.name] || relaxed[d.name]):
+		case expected == "" && listed[d.name] && relaxed[d.name] != "":
+			// The default that the relax step of a later release gave the column, in the exact form of its marker
+			// (ST-SUP-RP15-LC04), compared as a stated default.
+			same, err := sameLiteral(ctx, tx, d.expr, relaxed[d.name], d.typ)
+			if err != nil {
+				return nil, err
+			}
+			if !same {
+				faults = append(faults, "column "+d.name+" has another default than the relax step of the column states")
+			}
+		case expected == "" && entity && !listed[d.name]:
 			if _, _, ok := literal(d.expr); !ok || !builtinType.MatchString(d.typ) {
 				faults = append(faults, "column "+d.name+" has a default that the manifest does not state, and that is not a constant of a built-in type")
 			}
@@ -1613,9 +1623,9 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 		switch {
 		case !ok:
 			fault("column %s is missing", want.Name)
-		case got.typ != want.Type && !(relaxed.marked(want.Name) && relaxedType(want.Type, got.typ)):
+		case got.typ != want.Type && !relaxed.acceptType(want, got.typ):
 			fault("column %s has the type %s, and the manifest needs %s", want.Name, got.typ, want.Type)
-		case want.NotNull && !got.notNull && !relaxed.marked(want.Name):
+		case want.NotNull && !got.notNull && !relaxed.acceptNullable(want.Name):
 			fault("column %s is nullable, and the manifest needs NOT NULL", want.Name)
 		case !got.plainCollation:
 			fault("column %s has the collation %s, and the manifest needs the default or the C collation", want.Name, got.collation)
@@ -1641,7 +1651,7 @@ func checkTable(ctx context.Context, tx *sql.Tx, t Table, wantOwner string, step
 			fault("column %s is not in the manifest and has the type %s, which is no built-in base type of pg_catalog", n, columns[n].typ)
 		}
 	}
-	found, err := checkDefaults(ctx, tx, oid, t.Columns, t.Entity, relaxed.markedColumns())
+	found, err := checkDefaults(ctx, tx, oid, t.Columns, t.Entity, relaxed.defaults())
 	if err != nil {
 		return nil, err
 	}

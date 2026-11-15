@@ -3,6 +3,7 @@ package manifest
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -23,10 +24,20 @@ func relaxManifest() Manifest {
 const relaxBase = "ALTER TABLE public.books ADD COLUMN mood text NOT NULL, ADD COLUMN size character varying(8) NOT NULL, ADD COLUMN kind text, " +
 	"ADD CONSTRAINT books_mood_check CHECK (mood IN ('calm', 'busy')), ADD CONSTRAINT books_kind_check CHECK (kind IN ('a', 'b'));\n"
 
-// mark gives the comment of the relax step on the column of books.
-func mark(column string) string {
-	return fmt.Sprintf("COMMENT ON COLUMN public.books.%s IS '%s';\n", column, RelaxMarker)
+// mark gives the comment of a relax step on the column of books, with the lines of its relaxed form, as
+// postgresadapter.RelaxComment writes it.
+func mark(column string, lines ...string) string {
+	comment := strings.Join(append([]string{RelaxMarker + " step_0001_books-" + column + "-relax_expand"}, lines...), "\n")
+	return fmt.Sprintf("COMMENT ON COLUMN public.books.%s IS '%s';\n", column, strings.ReplaceAll(comment, "'", "''"))
 }
+
+// The relaxed forms of the four steps.
+var (
+	titleForm = []string{"type character varying(300)"}
+	moodForm  = []string{"check CHECK ((mood = ANY (ARRAY['calm'::text, 'busy'::text, 'sleepy'::text])))"}
+	sizeForm  = []string{"nullable", "default 'm'::character varying(8)"}
+	kindForm  = []string{"check none"}
+)
 
 // The states of the relax steps, as the generator writes them (postgresadapter.relaxSteps): the step's own
 // migration, its validate migration and its finish migration.
@@ -43,7 +54,7 @@ const (
 
 func TestRelaxForms(t *testing.T) {
 	m := relaxManifest()
-	title, mood, size, kind := mark("title"), mark("mood"), mark("size"), mark("kind")
+	title, mood, size, kind := mark("title", titleForm...), mark("mood", moodForm...), mark("size", sizeForm...), mark("kind", kindForm...)
 
 	t.Run("ST-SUP-RP15-LC04-T01 Check accepts each state of each relax step on a marked column", func(t *testing.T) {
 		for _, c := range []struct{ name, setup string }{
@@ -75,6 +86,18 @@ func TestRelaxForms(t *testing.T) {
 			{"the marker on another column", relaxBase + mood + titleExpand + titleValid + titleFinish},
 			{"a wrong marker text", relaxBase + "COMMENT ON COLUMN public.books.title IS 'stego relaxed';\n" + titleExpand + titleValid + titleFinish},
 			// A marked column in a form that is no relax of the manifest's.
+			// A marked column in a form that its relax does not state (security review of PR #334, M1).
+			{"a longer character varying than the relax states", relaxBase + title + "ALTER TABLE public.books DROP CONSTRAINT books_title_check, ALTER COLUMN title TYPE character varying(1000000);\nALTER TABLE public.books ADD CONSTRAINT books_title_check CHECK (char_length(title) >= 1);\n"},
+			{"NOT NULL dropped on a column whose relax states no nullable", relaxBase + mood + moodExpand + moodValid + moodFinish + "ALTER TABLE public.books ALTER COLUMN mood DROP NOT NULL;\n"},
+			{"a default on a column whose relax states none", relaxBase + title + titleExpand + titleValid + titleFinish + "ALTER TABLE public.books ALTER COLUMN title SET DEFAULT 'x';\n"},
+			{"another default than the relax states", relaxBase + size + "ALTER TABLE public.books ALTER COLUMN size DROP NOT NULL, ALTER COLUMN size SET DEFAULT 'l';\n"},
+			{"a wider enum CHECK than the relax states", relaxBase + mood + "ALTER TABLE public.books DROP CONSTRAINT books_mood_check, ADD CONSTRAINT books_mood_check CHECK (mood IN ('calm', 'busy', 'sleepy', 'angry'));\n"},
+			{"the enum CHECK dropped on a column whose relax states a CHECK", relaxBase + mood + "ALTER TABLE public.books DROP CONSTRAINT books_mood_check;\n"},
+			{"the enum CHECK dropped on a column whose relax changes no CHECK", relaxBase + mark("kind", "nullable") + kindExpand},
+			{"a type on a column whose relax states none", relaxBase + mark("size", "nullable") + "ALTER TABLE public.books ALTER COLUMN size TYPE character varying(9);\n"},
+			{"a comment that names no step migration", relaxBase + "COMMENT ON COLUMN public.books.size IS 'stego relax by hand\nnullable';\n" + "ALTER TABLE public.books ALTER COLUMN size DROP NOT NULL;\n"},
+			{"a comment with a line that is no relaxed form", relaxBase + mark("size", "nullable", "unique") + "ALTER TABLE public.books ALTER COLUMN size DROP NOT NULL;\n"},
+			{"a comment whose relaxed type is shorter than the manifest's", relaxBase + mark("size", "type character varying(4)") + "ALTER TABLE public.books ALTER COLUMN size TYPE character varying(4);\n"},
 			{"a shorter character varying", relaxBase + title + "ALTER TABLE public.books ALTER COLUMN title TYPE character varying(4) USING substr(title, 1, 4);\n"},
 			{"text in place of character varying", relaxBase + title + "ALTER TABLE public.books DROP CONSTRAINT books_title_check, ALTER COLUMN title TYPE text;\nALTER TABLE public.books ADD CONSTRAINT books_title_check CHECK (char_length(title) >= 1);\n"},
 			{"the length CHECK dropped with no relax CHECK", relaxBase + title + "ALTER TABLE public.books DROP CONSTRAINT books_title_check;\n"},
@@ -89,14 +112,14 @@ func TestRelaxForms(t *testing.T) {
 			{"the wider enum CHECK not validated under its own name", relaxBase + mood + moodExpand + moodFinish},
 			{"the relax CHECK of an unmarked column", relaxBase + mood + "ALTER TABLE public.books ADD CONSTRAINT books_kind_relax CHECK (kind IN ('a', 'b', 'c')) NOT VALID;\n"},
 			{"a default that is no constant", relaxBase + size + "ALTER TABLE public.books ALTER COLUMN size SET DEFAULT pg_catalog.md5('x');\n"},
-			{"a constant default on a marked column of the primary key", relaxBase + mark("id") + "ALTER TABLE public.books ALTER COLUMN id SET DEFAULT '00000000-0000-0000-0000-000000000000'::uuid;\n"},
+			{"a constant default on a marked column of the primary key", relaxBase + mark("id", "default '00000000-0000-0000-0000-000000000000'::uuid") + "ALTER TABLE public.books ALTER COLUMN id SET DEFAULT '00000000-0000-0000-0000-000000000000'::uuid;\n"},
 		} {
 			stepCase(t, c.name, c.setup, m, true)
 		}
 		// A fixed column of the table, such as version, keeps its form also with the marker.
 		versioned := relaxManifest()
 		versioned.Tables[1].Columns = append(versioned.Tables[1].Columns, Column{Name: "version", Type: "bigint", NotNull: true})
-		stepCase(t, "a constant default on a marked fixed column", relaxBase+"ALTER TABLE public.books ADD COLUMN version bigint NOT NULL;\n"+mark("version")+"ALTER TABLE public.books ALTER COLUMN version SET DEFAULT 1;\n", versioned, true)
+		stepCase(t, "a constant default on a marked fixed column", relaxBase+"ALTER TABLE public.books ADD COLUMN version bigint NOT NULL;\n"+mark("version", "default 1")+"ALTER TABLE public.books ALTER COLUMN version SET DEFAULT 1;\n", versioned, true)
 		stepCase(t, "the same column unmarked and with no default (control)", relaxBase+"ALTER TABLE public.books ADD COLUMN version bigint NOT NULL;\n", versioned, false)
 	})
 }

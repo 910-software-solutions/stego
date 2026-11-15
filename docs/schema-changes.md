@@ -86,23 +86,29 @@ PostgreSQL cannot make without a rewrite, such as an enum made a string with a
 `max_length`. Those still need a new field, a copy and a drop. `stego compat`
 names the relax to declare when you relax a field with no schema change.
 
-The step's own migration marks the column with a comment, the relax marker
-(`RelaxMarker` of the runtime library's schema check), and runs one `ALTER TABLE` that reads no row under its `ACCESS EXCLUSIVE` lock:
-the new `CHECK` of the field `NOT VALID` as `<table>_<column>_relax`, a longer
-`character varying`, `DROP NOT NULL` and `SET DEFAULT`. `ALTER COLUMN TYPE`
-scans the table again for each validated `CHECK` on the column, so when the
-type changes, the old `CHECK` goes in the same statement; the new `CHECK`
-holds each new write. A second migration validates the new `CHECK`, which
-blocks no read and no write, and a third drops the old `CHECK`, when it is
-still there, and gives the new one the name `<table>_<column>_check`.
+The step's own migration runs one `ALTER TABLE` that reads no row under its
+`ACCESS EXCLUSIVE` lock: the new `CHECK` of the field `NOT VALID` as
+`<table>_<column>_relax`, a longer `character varying`, `DROP NOT NULL` and
+`SET DEFAULT`. `ALTER COLUMN TYPE` scans the table again for each validated
+`CHECK` on the column, so when the type changes, the old `CHECK` goes in the
+same statement; the new `CHECK` holds each new write. In the same transaction,
+after the `ALTER TABLE`, the migration gives the column a comment, the relax
+marker, that states the exact form after the step of each attribute that it
+relaxes: the type, nullable, the default and the `CHECK`. A second migration
+validates the new `CHECK`, which blocks no read and no write, and a third drops
+the old `CHECK`, when it is still there, and gives the new one the name
+`<table>_<column>_check`.
 
-The schema check of the release before accepts each of these states on a
-column with the marker, and the same forms on a column with no marker stay a
-fault, so a column that someone changed by hand is still refused. The marker
-stays, so the schema check of each later release also accepts a column that
-is more relaxed than its manifest. A relax needs the runtime library v0.108.0
-or later in the release before: `stego compat` refuses a relax on a base that
-pins an older one, and names the version to deploy first.
+The schema check of each release accepts on a marked column, for each
+attribute, only the form of its own manifest or the exact form that the marker
+states. Any other form stays a fault: a longer type, a dropped `NOT NULL`, a
+default or a `CHECK` that the relax did not declare is refused on a marked
+column as on any other. A release whose manifest states the relaxed form
+accepts only that form, so for it the marker no longer counts. A role that owns
+the table can write such a marker by hand, as it can change the table itself.
+A relax needs the runtime library v0.108.0 or later in the release before:
+`stego compat` refuses a relax on a base that pins an older one, and names the
+version to deploy first.
 
 ## The migrations of the steps
 

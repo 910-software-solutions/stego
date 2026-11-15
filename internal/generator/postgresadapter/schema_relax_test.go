@@ -60,18 +60,25 @@ func TestRelaxSteps(t *testing.T) {
 			}
 		}
 		const table = `public."boards"`
-		comment := func(column string) string {
-			return "COMMENT ON COLUMN " + table + `."` + column + `" IS 'stego relax';` + "\n"
+		comment := func(column, step string, lines ...string) string {
+			text := strings.Join(append([]string{"stego relax " + step}, lines...), "\n")
+			return "COMMENT ON COLUMN " + table + `."` + column + `" IS '` + strings.ReplaceAll(text, "'", "''") + "';\n"
 		}
+		// The ALTER TABLE comes first, so the comment takes no lock beyond the one it holds, and the comment states
+		// the exact form of each attribute that the step relaxes (security review of PR #334, M1 and the lock order).
 		want := map[string]string{
-			"step_0001_board-title-relax_expand":                 comment("title") + "ALTER TABLE " + table + ` ADD CONSTRAINT "boards_title_relax" CHECK (char_length("title") >= 1) NOT VALID, DROP CONSTRAINT "boards_title_check", ALTER COLUMN "title" TYPE character varying(80);` + "\n",
+			"step_0001_board-title-relax_expand": "ALTER TABLE " + table + ` ADD CONSTRAINT "boards_title_relax" CHECK (char_length("title") >= 1) NOT VALID, DROP CONSTRAINT "boards_title_check", ALTER COLUMN "title" TYPE character varying(80);` + "\n" +
+				comment("title", "step_0001_board-title-relax_expand", "type character varying(80)"),
 			"step_0001_board-title-relax_expand_validate":        "ALTER TABLE " + table + ` VALIDATE CONSTRAINT "boards_title_relax";` + "\n",
 			"step_0001_board-title-relax_expand_validate_finish": "ALTER TABLE " + table + ` RENAME CONSTRAINT "boards_title_relax" TO "boards_title_check";` + "\n",
-			"step_0002_board-mood-relax_expand":                  comment("mood") + "ALTER TABLE " + table + ` ADD CONSTRAINT "boards_mood_relax" CHECK ("mood" IN ('calm', 'busy', 'sleepy')) NOT VALID;` + "\n",
-			"step_0002_board-mood-relax_expand_validate":         "ALTER TABLE " + table + ` VALIDATE CONSTRAINT "boards_mood_relax";` + "\n",
-			"step_0002_board-mood-relax_expand_validate_finish":  "ALTER TABLE " + table + ` DROP CONSTRAINT "boards_mood_check";` + "\nALTER TABLE " + table + ` RENAME CONSTRAINT "boards_mood_relax" TO "boards_mood_check";` + "\n",
-			"step_0003_board-size-relax_expand":                  comment("size") + "ALTER TABLE " + table + ` ALTER COLUMN "size" DROP NOT NULL, ALTER COLUMN "size" SET DEFAULT 'm';` + "\n",
-			"step_0004_board-kind-relax_expand":                  comment("kind") + "ALTER TABLE " + table + ` DROP CONSTRAINT "boards_kind_check";` + "\n",
+			"step_0002_board-mood-relax_expand": "ALTER TABLE " + table + ` ADD CONSTRAINT "boards_mood_relax" CHECK ("mood" IN ('calm', 'busy', 'sleepy')) NOT VALID;` + "\n" +
+				comment("mood", "step_0002_board-mood-relax_expand", "check CHECK ((mood = ANY (ARRAY['calm'::text, 'busy'::text, 'sleepy'::text])))"),
+			"step_0002_board-mood-relax_expand_validate":        "ALTER TABLE " + table + ` VALIDATE CONSTRAINT "boards_mood_relax";` + "\n",
+			"step_0002_board-mood-relax_expand_validate_finish": "ALTER TABLE " + table + ` DROP CONSTRAINT "boards_mood_check";` + "\nALTER TABLE " + table + ` RENAME CONSTRAINT "boards_mood_relax" TO "boards_mood_check";` + "\n",
+			"step_0003_board-size-relax_expand": "ALTER TABLE " + table + ` ALTER COLUMN "size" DROP NOT NULL, ALTER COLUMN "size" SET DEFAULT 'm';` + "\n" +
+				comment("size", "step_0003_board-size-relax_expand", "nullable", "default 'm'::character varying(8)"),
+			"step_0004_board-kind-relax_expand": "ALTER TABLE " + table + ` DROP CONSTRAINT "boards_kind_check";` + "\n" +
+				comment("kind", "step_0004_board-kind-relax_expand", "check none"),
 		}
 		for name, body := range want {
 			if got, ok := bodies[name]; !ok {

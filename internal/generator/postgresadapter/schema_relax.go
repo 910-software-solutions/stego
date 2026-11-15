@@ -16,10 +16,11 @@ import (
 // running on the result. Each of its migrations takes the ACCESS EXCLUSIVE lock of the table for one short
 // statement that reads no row, under the lock timeout of a step:
 //
-//  1. Its own migration marks the column with RelaxMarker (COMMENT ON COLUMN, which takes SHARE UPDATE EXCLUSIVE)
-//     and runs one ALTER TABLE: the CHECK of the field after the change NOT VALID under RelaxCheckName, the drop of
-//     the old CHECK when the type changes or the field keeps no CHECK, the longer character varying, DROP NOT NULL
-//     and SET DEFAULT. ALTER COLUMN TYPE checks each validated CHECK on the column again with a scan of the table
+//  1. Its own migration runs one ALTER TABLE: the CHECK of the field after the change NOT VALID under
+//     RelaxCheckName, the drop of the old CHECK when the type changes or the field keeps no CHECK, the longer
+//     character varying, DROP NOT NULL and SET DEFAULT. Then, in the same transaction, it marks the column with the
+//     exact relaxed form (RelaxComment); COMMENT ON COLUMN then needs no lock beyond the one that the ALTER TABLE
+//     holds (security review of PR #334). ALTER COLUMN TYPE checks each validated CHECK on the column again with a scan of the table
 //     under its lock (PostgreSQL 17.7), so the old CHECK goes before the type changes; the new CHECK holds each new
 //     write, and the old CHECK held each row there.
 //  2. The validate migration validates the new CHECK, which takes SHARE UPDATE EXCLUSIVE and blocks no write.
@@ -29,9 +30,35 @@ import (
 // The schema check of the release before accepts each state between these migrations on a column with the marker
 // (registry/runtime/manifest, ST-SUP-RP15-LC04).
 
-// RelaxMarker is the comment that the relax step gives the column: the schema check accepts the relaxed forms of
-// a column only with it. Its text is the runtime library's manifest.RelaxMarker (ST-SUP-RC01-OC45-T01).
+// RelaxMarker is the first word of the comment that the relax step gives the column, before the name of the step
+// migration. Its text is the runtime library's manifest.RelaxMarker (ST-SUP-RC01-OC45-T01).
 const RelaxMarker = "stego relax"
+
+// RelaxComment gives the comment of the column after the relax step: RelaxMarker and the step migration on the first
+// line, then one line for each attribute that the step relaxes, with its exact form after the step as the catalog
+// gives it: type T, nullable, default D (as the schema manifest states a default) and check C (the definition as
+// pg_get_constraintdef gives it) or check none. The schema check of every release accepts on the column only the form
+// of its own manifest or this form (registry/runtime/manifest, ST-SUP-RP15-LC04).
+func RelaxComment(step string, typ string, nullable bool, defaultValue string, check *string) string {
+	lines := []string{RelaxMarker + " " + step}
+	if typ != "" {
+		lines = append(lines, "type "+typ)
+	}
+	if nullable {
+		lines = append(lines, "nullable")
+	}
+	if defaultValue != "" {
+		lines = append(lines, "default "+defaultValue)
+	}
+	if check != nil {
+		form := "none"
+		if *check != "" {
+			form = *check
+		}
+		lines = append(lines, "check "+form)
+	}
+	return strings.Join(lines, "\n")
+}
 
 // FinishMigrationName gives the ledger name of the migration that ends the relax step name, after its validate
 // migration.
@@ -135,7 +162,25 @@ func relaxSteps(position int, before, after []tableModel, change types.SchemaCha
 		return nil, fmt.Errorf("a relax of %s.%s changes nothing of the column", name, change.Field)
 	}
 	step := StepMigrationName(position, change.ID, "expand")
-	body := fmt.Sprintf("COMMENT ON COLUMN %s.%s IS %s;\nALTER TABLE %s %s;\n", table, column, sqlString(RelaxMarker), table, strings.Join(parts, ", "))
+	form := struct {
+		typ, defaultValue string
+		check             *string
+	}{}
+	if typeChange {
+		form.typ = newColumn.typ
+	}
+	if newColumn.defaultClause != oldColumn.defaultClause {
+		form.defaultValue = newColumn.manifestDefault
+	}
+	if checkChange {
+		definition := ""
+		if hasCheck {
+			definition = newCheck.definition
+		}
+		form.check = &definition
+	}
+	comment := RelaxComment(step, form.typ, oldColumn.notNull && !newColumn.notNull, form.defaultValue, form.check)
+	body := fmt.Sprintf("ALTER TABLE %s %s;\nCOMMENT ON COLUMN %s.%s IS %s;\n", table, strings.Join(parts, ", "), table, column, sqlString(comment))
 	steps := []schemaStep{{Name: step, Change: change, Phase: "expand", Body: body}}
 	if relaxCheck {
 		validates := []validation{{table: table, name: relax}}
