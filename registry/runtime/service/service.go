@@ -350,7 +350,7 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the authorization runtime: %w", err)
 	}
 	// The migration job makes the key table in idempotency.KeySchema, where Wrap and Purge name it.
-	keys, err := idempotency.Manifest(idempotency.KeySchema, p.PurgeRole, runtimeRole, consumerRoles(&p, p.WorkerRole)...)
+	keys, err := idempotency.ManifestWithConsumers(idempotency.KeySchema, p.PurgeRole, runtimeRole, consumerRoles(&p, p.WorkerRole))
 	if err != nil {
 		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the key table: %w", err)
 	}

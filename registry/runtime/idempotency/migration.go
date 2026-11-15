@@ -44,12 +44,15 @@ const MaxPurgeBatch = 10000
 // back in the same transaction, also when purgeRole held it before; so the role that runs it must be able to grant CREATE on the schema, as its owner
 // is. It makes purgeRole when it is missing, which needs CREATEROLE. Migration refuses a role name that is not a
 // lower-case SQL name of at most 63 characters, and one name for both roles.
-//
-// consumerRoles are the roles that run a consuming worker's fill in their own transaction, such as the worker role of
-// a service with a consuming worker (ST-SUP-RC35-OC06): each gets SELECT, INSERT and UPDATE on the table and nothing
-// more, under the same tenant policy as every role (decision on ST-SUP-Q136, orchestrator under the owner's
-// delegation, 2026-11-15).
-func Migration(purgeRole, runtimeRole string, consumerRoles ...string) (string, error) {
+func Migration(purgeRole, runtimeRole string) (string, error) {
+	return MigrationWithConsumers(purgeRole, runtimeRole, nil)
+}
+
+// MigrationWithConsumers is Migration for a service whose consumerRoles run a consuming worker's fill in their own
+// transaction, such as the worker role of a service with a consuming worker (ST-SUP-RC35-OC06): each gets SELECT,
+// INSERT and UPDATE on the table and nothing more, under the same tenant policy as every role (decision on
+// ST-SUP-Q136, orchestrator under the owner's delegation, 2026-11-15).
+func MigrationWithConsumers(purgeRole, runtimeRole string, consumerRoles []string) (string, error) {
 	for _, role := range append([]string{purgeRole, runtimeRole}, consumerRoles...) {
 		if !rolePattern.MatchString(role) {
 			return "", fmt.Errorf("idempotency: %q is not a role name the migration accepts", role)
@@ -72,13 +75,18 @@ func Migration(purgeRole, runtimeRole string, consumerRoles ...string) (string, 
 // which the grants of the runtime role give it; and the purge function, SECURITY DEFINER with its fixed search path,
 // owned by purgeRole, with EXECUTE for runtimeRole only; purgeRole owns no other object, and CREATE on schema goes
 // to no role but its owner and the owner of the manifest. schema is a lower-case SQL name that needs no quotes, such as
-// public. The consumer roles get SELECT, INSERT and UPDATE, as Migration grants them. Manifest refuses the roles
-// that Migration refuses.
-func Manifest(schema, purgeRole, runtimeRole string, consumerRoles ...string) (manifest.Manifest, error) {
+// public. Manifest refuses the roles that Migration refuses.
+func Manifest(schema, purgeRole, runtimeRole string) (manifest.Manifest, error) {
+	return ManifestWithConsumers(schema, purgeRole, runtimeRole, nil)
+}
+
+// ManifestWithConsumers is Manifest for the database that MigrationWithConsumers makes: the consumer roles get
+// SELECT, INSERT and UPDATE on the table too.
+func ManifestWithConsumers(schema, purgeRole, runtimeRole string, consumerRoles []string) (manifest.Manifest, error) {
 	if !rolePattern.MatchString(schema) {
 		return manifest.Manifest{}, fmt.Errorf("idempotency: %q is not a schema name the manifest accepts", schema)
 	}
-	text, err := Migration(purgeRole, runtimeRole, consumerRoles...)
+	text, err := MigrationWithConsumers(purgeRole, runtimeRole, consumerRoles)
 	if err != nil {
 		return manifest.Manifest{}, err
 	}

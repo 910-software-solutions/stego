@@ -320,7 +320,7 @@ func TestKeyTableTenancy(t *testing.T) {
 		}
 		// The migration of a service with a consuming worker names its worker role as a consumer role; it runs again
 		// on the database that it made.
-		text, err := Migration(testPurgeRole, "idem_test_runtime", role)
+		text, err := MigrationWithConsumers(testPurgeRole, "idem_test_runtime", []string{role})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -362,7 +362,7 @@ func TestKeyTableTenancy(t *testing.T) {
 		if _, err := inTenant(ctx, worker, "t1", `DELETE FROM idempotency_keys`); pgCode(err) != "42501" {
 			t.Fatalf("the consumer role deleted key rows: %v", err)
 		}
-		m, err := Manifest(schema, testPurgeRole, "idem_test_runtime", role)
+		m, err := ManifestWithConsumers(schema, testPurgeRole, "idem_test_runtime", []string{role})
 		if err != nil {
 			t.Fatal(err)
 		}
