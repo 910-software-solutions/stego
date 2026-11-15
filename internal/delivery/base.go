@@ -171,7 +171,7 @@ func deliveryObjectFor(written BaseWritten, stanza *ArgoCDStanza) (*Application,
 	if err != nil {
 		return nil, "", err
 	}
-	return &application, "", nil
+	return &application, fmt.Sprintf(BaseNote, application.Base, application.Project), nil
 }
 
 // WriteBase writes the plain kustomize base of the service (ST-DLV-CMD03) from its platform requirements alone: a
