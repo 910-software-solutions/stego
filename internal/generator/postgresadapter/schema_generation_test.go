@@ -310,3 +310,29 @@ func TestSyncTemplateCopy(t *testing.T) {
 		}
 	})
 }
+
+func TestLedgerGrant(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC07-T02 The adapter grants the runtime role SELECT alone on the migration ledger", func(t *testing.T) {
+		ctx := basicContext()
+		ctx.ComponentConfig = map[string]any{"schema_generation": "fresh-v1"}
+		_, wiring, err := new(Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := 0
+		for _, object := range wiring.DatabaseAccess {
+			if object.Schema != "stego_schema" || object.Name != "migrations" {
+				continue
+			}
+			found++
+			// The start check of the service only reads the ledger; the runner of the migration job records it as
+			// the owner role, so the runtime role never writes it.
+			if object.Kind != "table" || len(object.Privileges) != 1 || object.Privileges[0] != "SELECT" {
+				t.Errorf("the runtime role gets %v on the %s stego_schema.migrations, want SELECT alone", object.Privileges, object.Kind)
+			}
+		}
+		if found != 1 {
+			t.Errorf("the database access names the ledger %d times, want once", found)
+		}
+	})
+}

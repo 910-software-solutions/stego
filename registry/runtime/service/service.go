@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"google.golang.org/grpc"
@@ -109,6 +110,11 @@ func (p Parts) check() error {
 		return errors.New("service: the parts need the worker, outbox relay, relay and purge roles and the authorization schema, which the manifests of the outbox, the authorization runtime and the key table name")
 	case p.TenantConfig == nil || p.NewQueue == nil || p.AuditQueue == nil || p.NewAuthz == nil:
 		return errors.New("service: the parts need the adapter's connection configuration, the outbox queue, the audit queue and the authorization runtime")
+	case len(p.SchemaSteps) > 0 && p.Release == "":
+		// A release with schema steps has migrations, so the start check of the ledger must run: parts that name
+		// no last migration fail closed, and never skip it (#373 security review L3, ST-SUP-RP14-LC07).
+		return fmt.Errorf("service: the parts name the schema steps %s but no release, the last migration of the release (Parts.Release), "+
+			"so the start check of the migration ledger %s cannot run; generate the service again with its PostgreSQL adapter", strings.Join(p.SchemaSteps, ", "), LedgerTable)
 	}
 	return nil
 }

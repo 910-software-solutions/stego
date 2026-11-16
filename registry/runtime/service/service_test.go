@@ -609,6 +609,24 @@ func TestStartRelease(t *testing.T) {
 		// A database on which no migration job ran.
 		refused("a database with no ledger", "is not in the database")
 
+		// A catalog that cannot be read is an error of the check, not a pending migration (#373 security review L5).
+		closed, err := sql.Open("pgx", f.runtimeURL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = closed.Close()
+		if err := checkRelease(ctx, closed, "todo-svc", "002_release"); err == nil || errors.Is(err, ErrMigrationPending) ||
+			!strings.Contains(err.Error(), "read the migration ledger "+LedgerTable+" in the catalog") {
+			t.Errorf("the check on a closed pool gave %v, want an error of the catalog read that is not ErrMigrationPending", err)
+		}
+
+		// Parts with schema steps and no release fail closed before the database opens (#373 security review L3).
+		stepped := parts(nil, nil)
+		stepped.SchemaSteps = []string{"orders-status-rename"}
+		if _, err := New(ctx, settings, stepped); err == nil || !strings.Contains(err.Error(), "no release") || !strings.Contains(err.Error(), LedgerTable) {
+			t.Errorf("New with schema steps and no release gave %v, want a refusal that names the release and the ledger", err)
+		}
+
 		// The migration job of a release before this one: it makes the ledger, as the adapter does, with its own last
 		// migration, and grants nothing on it.
 		ledger := func(versions ...string) func(context.Context, *sql.Conn) error {
