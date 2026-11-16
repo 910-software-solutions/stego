@@ -586,7 +586,11 @@ type spanQueue struct {
 	dropped  atomic.Uint64
 }
 
+// newSpanQueue starts the queue. A nil bound is context.WithTimeout, so no export runs with no bound.
 func newSpanQueue(exporter sdktrace.SpanExporter, bound deadline) *spanQueue {
+	if bound == nil {
+		bound = context.WithTimeout
+	}
 	base, cancel := context.WithCancel(context.Background())
 	q := &spanQueue{exporter: exporter, deadline: bound, queue: make(chan sdktrace.ReadOnlySpan, QueueSize), flushes: make(chan chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), base: base, cancel: cancel}
 	go q.run()
