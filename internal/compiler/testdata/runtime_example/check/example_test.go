@@ -560,16 +560,19 @@ func (rawCodec) Unmarshal(data []byte, v any) error {
 }
 func (rawCodec) Name() string { return "proto" }
 
-const reflectSchemaMethod = "/authzed.api.v1.SchemaService/ReflectSchema"
+const (
+	reflectSchemaMethod   = "/authzed.api.v1.SchemaService/ReflectSchema"
+	checkPermissionMethod = "/authzed.api.v1.PermissionsService/CheckPermission"
+)
 
 // schemaReads is a gRPC proxy in front of the local SpiceDB server, which the service reaches SpiceDB through. It
-// forwards each call as it is, and counts the calls of ReflectSchema: only the worker-tuples job and Retire read the
-// worker relations of the schema that way (authz.SpiceDB.RelationsOf), and a service whose schema has no definition
-// tenant does neither.
+// forwards each call as it is, and counts the calls of each method: only the worker-tuples job and Retire read the
+// worker relations of the schema with ReflectSchema (authz.SpiceDB.RelationsOf), and a service whose schema has no
+// definition tenant does neither. The counts of the other methods show that the service's calls pass the proxy.
 type schemaReads struct {
-	addr string
-	mu   sync.Mutex
-	n    int
+	addr  string
+	mu    sync.Mutex
+	calls map[string]int
 }
 
 // startSchemaReads starts the proxy to the SpiceDB server at target, and stops it when the test ends.
@@ -579,14 +582,12 @@ func startSchemaReads(t *testing.T, target string) *schemaReads {
 	t.Cleanup(func() { backend.Close() })
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	must(t, err)
-	r := &schemaReads{addr: listener.Addr().String()}
+	r := &schemaReads{addr: listener.Addr().String(), calls: map[string]int{}}
 	server := grpc.NewServer(grpc.ForceServerCodec(rawCodec{}), grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
 		method, _ := grpc.MethodFromServerStream(stream)
-		if method == reflectSchemaMethod {
-			r.mu.Lock()
-			r.n++
-			r.mu.Unlock()
-		}
+		r.mu.Lock()
+		r.calls[method]++
+		r.mu.Unlock()
 		incoming, _ := metadata.FromIncomingContext(stream.Context())
 		ctx := metadata.NewOutgoingContext(stream.Context(), metadata.MD{"authorization": incoming.Get("authorization")})
 		client, err := backend.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, method, grpc.ForceCodec(rawCodec{}))
@@ -629,10 +630,11 @@ func startSchemaReads(t *testing.T, target string) *schemaReads {
 	return r
 }
 
-func (r *schemaReads) count() int {
+// count gives the number of calls of method through the proxy.
+func (r *schemaReads) count(method string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.n
+	return r.calls[method]
 }
 
 // rollout is the service process of TestProvisionRetire, which the check stops and starts again as a rollout does.
@@ -696,8 +698,8 @@ func (r *rollout) awaitReady(t *testing.T) {
 	}
 }
 
-// healthy fails the test unless /readyz and /readyz/modes answer 200 now and name no job: a failed worker-tuples job
-// is named there (ST-SUP-RC35-OC13).
+// healthy fails the test unless /readyz and /readyz/modes answer 200 now with one line only: the line that names a
+// failed or degraded job, such as worker-tuples (ST-SUP-RC35-OC13), is refused.
 func (r *rollout) healthy(t *testing.T, when string) {
 	t.Helper()
 	for _, path := range []string{"/readyz", "/readyz/modes"} {
@@ -709,8 +711,8 @@ func (r *rollout) healthy(t *testing.T, when string) {
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("%s, %s answered %d %s, want 200", when, path, response.StatusCode, body)
 		}
-		if strings.Contains(string(body), "worker-tuples") {
-			t.Errorf("%s, %s answered 200 and names the worker-tuples job: %s", when, path, body)
+		if text := strings.TrimSpace(string(body)); text == "" || strings.Contains(text, "\n") || strings.Contains(text, "job") {
+			t.Errorf("%s, %s answered 200 with %q, want one line that names no job", when, path, body)
 		}
 	}
 }
@@ -815,7 +817,13 @@ func TestProvisionRetire(t *testing.T) {
 		resourceID, err := authz.ResourceID(user.tenant, org)
 		must(t, err)
 		s.awaitAllowed(user, "organization", resourceID, "view")
+		decisions := reads.count(checkPermissionMethod)
 		read := s.send(user, http.MethodGet, "/organizations/"+org, "")
+		// The read is decided in SpiceDB through the proxy: the proxy carries the service's calls, so the count of
+		// ReflectSchema at the end is a count of real traffic.
+		if n := reads.count(checkPermissionMethod); n <= decisions {
+			t.Errorf("the read of the organization made no CheckPermission call through the proxy")
+		}
 		if read.status != http.StatusOK || read.member(t, "id") != org || read.member(t, "name") != name {
 			t.Fatalf("the read of the organization answered %d %s, want 200 with the id %s and the name %s", read.status, read.body, org, name)
 		}
@@ -830,8 +838,9 @@ func TestProvisionRetire(t *testing.T) {
 		if !retired.Valid {
 			t.Errorf("the tenant list holds %s with no retire time after the retire", id)
 		}
-		if got := s.send(user, http.MethodGet, "/organizations/"+org, ""); got.status == http.StatusOK {
-			t.Errorf("a read in the retired tenant %s answered 200 %s", id, got.body)
+		// The tenant check refuses a request of a retired tenant before any handler (ST-SUP-RC27-OC11).
+		if got := s.send(user, http.MethodGet, "/organizations/"+org, ""); got.status != http.StatusForbidden || got.member(t, "code") != "tenant.not_provisioned" {
+			t.Errorf("a read in the retired tenant %s answered %d %s, want 403 with the code tenant.not_provisioned", id, got.status, got.body)
 		}
 		r.healthy(t, "after the retire")
 
@@ -842,7 +851,7 @@ func TestProvisionRetire(t *testing.T) {
 		r.controllerHolder(t, first)
 		r.awaitReady(t)
 		r.healthy(t, "after the start that followed the retire")
-		if n := reads.count(); n != 0 {
+		if n := reads.count(reflectSchemaMethod); n != 0 {
 			t.Errorf("the service read the relations of the schema %d times, want none for a schema with no definition tenant", n)
 		}
 	})
