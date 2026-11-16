@@ -4,8 +4,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // exampleFixture is the folder of the check that runs the example user-management on the runtime data path.
@@ -17,7 +20,9 @@ const exampleFixture = "testdata/runtime_example"
 // against the local PostgreSQL server of STEGO_TEST_POSTGRES_DSN and a local SpiceDB container, and calls the
 // example's collections over HTTP; then it changes the migrated database once for each kind of object of the schema
 // manifest and sees each start refused, and starts the service with no DATABASE_URL and on a closed database port and
-// reads the stage of each failure record. A missing server fails the test: a missing result is not a pass.
+// reads the stage of each failure record; last it provisions a tenant through the generated route, creates and reads
+// an organization, retires the tenant and starts the service again, and the readiness stays healthy (#379 gap). A
+// missing server fails the test: a missing result is not a pass.
 func TestRuntimeExample(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the example service")
@@ -44,9 +49,17 @@ func TestRuntimeExample(t *testing.T) {
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
 	endpoint, key := startWiringSpiceDB(t)
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=480s", "-v", "-run", "^(TestExample|TestSchemaManifest|TestStartFailure)$", "./out/examplecheck")
+	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout="+innerTimeout(t).String(), "-v", "-run", "^(TestExample|TestSchemaManifest|TestStartFailure|TestProvisionRetire)$", "./out/examplecheck")
 	cmd.Dir = p.dir
 	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_EXAMPLE_BINARY="+binary)
+	// The inner run and each process it starts are in a process group of their own, which the cleanup stops.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	brokers := kafkaContainers(t)
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			stopInnerRun(t, cmd.Process.Pid, brokers)
+		}
+	})
 	output, runErr := cmd.CombinedOutput()
 	t.Run("ST-SUP-RC20-OC39-T02 The example user-management runs on the runtime data path with its scoped collections, upsert, implicit fields and fills", func(t *testing.T) {
 		name := "ST-SUP-RC20-OC39-T02_The_example_user-management_runs_on_the_runtime_data_path_with_its_scoped_collections,_upsert,_implicit_fields_and_fills"
@@ -66,4 +79,73 @@ func TestRuntimeExample(t *testing.T) {
 			t.Fatalf("the start failure check of the example did not run and pass (go test: %v):\n%s", runErr, output)
 		}
 	})
+	t.Run(provisionRetireCheck, func(t *testing.T) {
+		name := strings.ReplaceAll(provisionRetireCheck, " ", "_")
+		if !strings.Contains(string(output), "--- PASS: TestProvisionRetire/"+name+" ") {
+			t.Fatalf("the provisioning check of the example did not run and pass (go test: %v):\n%s", runErr, output)
+		}
+	})
+}
+
+// provisionRetireCheck is the check of TestProvisionRetire in the module of the example, with the ID of the test
+// record it proves.
+const provisionRetireCheck = "ST-SUP-RC35-OC13-T13 The generated user-management example provisions a tenant, creates and reads an organization, retires the tenant, and stays ready"
+
+// innerMargin is the part of the outer test's time that the inner go test leaves for the checks of its output and
+// for the cleanups.
+const innerMargin = time.Minute
+
+// innerTimeout is the timeout of an inner go test: the time to the deadline of the outer go test less innerMargin,
+// so the inner run ends and reports first, or 15 minutes when the outer run has no deadline.
+func innerTimeout(t *testing.T) time.Duration {
+	t.Helper()
+	deadline, ok := t.Deadline()
+	if !ok {
+		return 15 * time.Minute
+	}
+	left := time.Until(deadline) - innerMargin
+	if left < time.Minute {
+		t.Fatalf("the outer go test has %s left before its deadline, too little for the inner run; give go test a longer -timeout", time.Until(deadline).Round(time.Second))
+	}
+	return left.Round(time.Second)
+}
+
+// kafkaContainers gives the names of the kafkatest containers that run now.
+func kafkaContainers(t *testing.T) map[string]bool {
+	t.Helper()
+	names := map[string]bool{}
+	out, err := exec.Command("docker", "ps", "-a", "--filter", "name=stego-kafkatest-", "--format", "{{.Names}}").Output()
+	if err != nil {
+		return names
+	}
+	for _, name := range strings.Fields(string(out)) {
+		names[name] = true
+	}
+	return names
+}
+
+// stopInnerRun stops what an inner go test left when it failed or ran out of time: it kills each process of its
+// process group pgid, and removes each kafkatest container that started after before and whose test process,
+// named in the container name stego-kafkatest-<pid>-<suffix>, no longer runs. A container of a test process that
+// still runs belongs to another test and stays.
+func stopInnerRun(t *testing.T, pgid int, before map[string]bool) {
+	if groupAlive(pgid) {
+		_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	}
+	for name := range kafkaContainers(t) {
+		if before[name] {
+			continue
+		}
+		fields := strings.SplitN(strings.TrimPrefix(name, "stego-kafkatest-"), "-", 2)
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); err == nil {
+			continue
+		}
+		if output, err := exec.Command("docker", "rm", "-f", name).CombinedOutput(); err != nil {
+			t.Errorf("remove the kafkatest container %s of the inner run: %v\n%s", name, err, output)
+		}
+	}
 }

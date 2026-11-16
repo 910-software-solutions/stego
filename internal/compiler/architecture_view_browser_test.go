@@ -1,8 +1,10 @@
 package compiler
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -873,6 +875,10 @@ type cdpBrowser struct {
 	mu      sync.Mutex
 	next    int
 	waiting map[int]chan cdpReply
+	exited  chan struct{} // closed when the browser process has exited; exit then holds what Wait gave
+	exit    error
+	drained chan struct{} // closed when all of stderr is in browser.log
+	stderr  *os.File      // the read end of the browser's stderr pipe
 	blocked []string
 	errors  []string
 }
@@ -919,9 +925,12 @@ func startBrowser(t *testing.T) *cdpBrowser {
 		t.Skip("set STEGO_BROWSER to a Chrome or Chromium executable to run the browser tests of the architecture view")
 	}
 	dir := t.TempDir()
+	// The flags after --disable-sync remove start work that needs no page: the key store over D-Bus, the component
+	// updater and the crash reporter. A slow start on a loaded runner then has less to do.
 	args := []string{"--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run",
 		"--no-default-browser-check", "--disable-background-networking", "--disable-gpu", "--disable-dev-shm-usage",
-		"--disable-extensions", "--disable-sync", "--mute-audio", "--window-size=1280,900", "about:blank"}
+		"--disable-extensions", "--disable-sync", "--password-store=basic", "--use-mock-keychain",
+		"--disable-component-update", "--disable-breakpad", "--mute-audio", "--window-size=1280,900", "about:blank"}
 	// The browser runs with its sandbox, except on a GitHub-hosted runner, whose throwaway machine cannot start it
 	// (#342 F2). No variable turns the sandbox off anywhere else.
 	if hostedRunner() {
@@ -934,24 +943,28 @@ func startBrowser(t *testing.T) *cdpBrowser {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.Stdout, cmd.Stderr = log, log
+	// The browser writes its DevTools address to stderr. The test reads stderr through a pipe and copies each line to
+	// browser.log; stdout goes to browser.log directly.
+	stderr, w, err := os.Pipe()
+	if err != nil {
+		_ = log.Close()
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = log, w
 	if err := cmd.Start(); err != nil {
+		_, _ = stderr.Close(), w.Close()
 		_ = log.Close()
 		t.Fatalf("cannot start the browser: %v", err)
 	}
-	b := &cdpBrowser{t: t, cmd: cmd, log: log, waiting: map[int]chan cdpReply{}}
+	_ = w.Close()
+	b := &cdpBrowser{t: t, cmd: cmd, log: log, waiting: map[int]chan cdpReply{}, exited: make(chan struct{}),
+		drained: make(chan struct{}), stderr: stderr}
+	go func() {
+		b.exit = cmd.Wait()
+		close(b.exited)
+	}()
 	t.Cleanup(b.stop)
-	var ws string
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		data, err := os.ReadFile(filepath.Join(dir, "DevToolsActivePort"))
-		if lines := strings.Split(strings.TrimSpace(string(data)), "\n"); err == nil && len(lines) == 2 {
-			ws = "ws://127.0.0.1:" + lines[0] + lines[1]
-			break
-		}
-	}
-	if ws == "" {
-		t.Fatal("the browser wrote no DevTools port")
-	}
+	ws := b.devToolsAddress(stderr, filepath.Join(dir, "browser.log"))
 	b.ctx, b.cancel = context.WithTimeout(context.Background(), 3*time.Minute)
 	b.conn, _, err = websocket.Dial(b.ctx, ws, nil)
 	if err != nil {
@@ -982,18 +995,142 @@ func (b *cdpBrowser) stop() {
 	if b.conn != nil {
 		_ = b.conn.CloseNow()
 	}
-	_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- b.cmd.Wait() }()
+	b.signal(syscall.SIGTERM)
 	select {
-	case <-done:
+	case <-b.exited:
 	case <-time.After(5 * time.Second):
-		_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGKILL)
-		<-done
 	}
+	b.release()
 	if b.log != nil {
 		_ = b.log.Close()
 	}
+}
+
+// signal sends sig to the process group of the browser, only while the browser has not exited: after Wait reaped
+// it, its process group ID may belong to another group.
+func (b *cdpBrowser) signal(sig syscall.Signal) {
+	select {
+	case <-b.exited:
+	default:
+		_ = syscall.Kill(-b.cmd.Process.Pid, sig)
+	}
+}
+
+// release kills the browser group, waits until the browser exited and no process of its group is left, and then
+// closes the read end of the stderr pipe, so the copy to browser.log ends even when a helper that left the group
+// holds the pipe open. No timer bounds it.
+func (b *cdpBrowser) release() {
+	b.signal(syscall.SIGKILL)
+	<-b.exited
+	for groupAlive(b.cmd.Process.Pid) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	select {
+	case <-b.drained:
+	default:
+		_ = b.stderr.Close()
+		<-b.drained
+	}
+}
+
+// groupAlive tells whether a process of the process group pgid is left, from the process group field of each
+// /proc/<pid>/stat.
+func groupAlive(pgid int) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		// The command name is in parentheses and may hold spaces; the fields after its ")" are state, ppid and pgrp.
+		rest := string(data)
+		if i := strings.LastIndexByte(rest, ')'); i >= 0 {
+			rest = rest[i+1:]
+		}
+		if fields := strings.Fields(rest); len(fields) >= 3 && fields[2] == strconv.Itoa(pgid) {
+			return true
+		}
+	}
+	return false
+}
+
+// devToolsAddress reads the browser's stderr until the line "DevTools listening on ws://..." comes, and gives that
+// address. It has no time limit: a slow start on a loaded runner is not a failure. When the browser exits or closes
+// stderr first, the test fails and shows the exit status and browser.log. Each line before the address goes to the
+// test log and to stderr as it comes, so a start that does not end is diagnosable from the test output.
+func (b *cdpBrowser) devToolsAddress(stderr *os.File, logPath string) string {
+	b.t.Helper()
+	lines := make(chan string)
+	go func() {
+		defer close(b.drained)
+		defer stderr.Close()
+		defer close(lines)
+		reader := bufio.NewReader(stderr)
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				_, _ = b.log.WriteString(line)
+				lines <- strings.TrimRight(line, "\r\n")
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	started := time.Now()
+	for {
+		select {
+		case line, open := <-lines:
+			if !open {
+				b.startFailed("the browser closed stderr before it wrote its DevTools address", logPath, lines)
+			}
+			if _, ws, found := strings.Cut(line, "DevTools listening on "); found && strings.HasPrefix(ws, "ws://") {
+				b.t.Logf("the browser started in %s", time.Since(started).Round(time.Millisecond))
+				// The rest of stderr goes on to browser.log only, so that the browser never stops on a full pipe.
+				go func() {
+					for range lines {
+					}
+				}()
+				return ws
+			}
+			if line != "" {
+				b.t.Logf("browser: %s", line)
+				// A run without -v keeps the test log until the test ends, and a timeout panic loses it: each line
+				// also goes to stderr at once, so a start that does not end is in the CI log.
+				fmt.Fprintf(os.Stderr, "%s: chrome: %s\n", b.t.Name(), line)
+			}
+		case <-b.exited:
+			b.startFailed("the browser exited before it wrote its DevTools address", logPath, lines)
+		}
+	}
+}
+
+// startFailed stops the browser group, waits until browser.log has all of stderr, and fails the test with the exit
+// status and the log.
+func (b *cdpBrowser) startFailed(reason, logPath string, lines <-chan string) {
+	b.t.Helper()
+	go func() {
+		for range lines {
+		}
+	}()
+	b.release()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		data = []byte("(cannot read browser.log: " + err.Error() + ")")
+	}
+	status := "no exit status"
+	if b.cmd.ProcessState != nil {
+		status = b.cmd.ProcessState.String()
+	} else if b.exit != nil {
+		status = b.exit.Error()
+	}
+	b.t.Fatalf("%s (%s)\nbrowser.log:\n%s", reason, status, data)
 }
 
 // hostedRunner says whether the test runs on a GitHub-hosted runner: GITHUB_ACTIONS and RUNNER_ENVIRONMENT both

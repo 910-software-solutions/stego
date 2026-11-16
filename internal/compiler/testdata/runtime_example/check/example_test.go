@@ -29,6 +29,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
@@ -244,6 +245,18 @@ type caller struct {
 }
 
 func (s *service) as(subject, tenantID string, roles ...string) caller {
+	c := s.mint(subject, tenantID, roles...)
+	// The tenant of the caller is provisioned, so the tenant check of the generated service lets its requests through
+	// (ST-SUP-RC27-OC11); the checks of this file prove other contracts, so the fixture adds it to the tenant list as
+	// the administrator, not through Provision. TestProvisionRetire provisions through Provision.
+	if _, err := s.admin.Exec(`INSERT INTO stego_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING`, tenantID); err != nil {
+		s.t.Fatalf("provision the tenant %s of the check: %v", tenantID, err)
+	}
+	return c
+}
+
+// mint mints a token for subject in tenantID with the roles given, and does not provision the tenant.
+func (s *service) mint(subject, tenantID string, roles ...string) caller {
 	t := s.t
 	claims := authntest.Claims(issuer, audience, subject, time.Now())
 	claims["tenant"] = tenantID
@@ -265,12 +278,6 @@ func (s *service) as(subject, tenantID string, roles ...string) caller {
 	principal, err := authz.Person("user", id)
 	must(t, err)
 	c.subject = principal.Subject().ID
-	// The tenant of the caller is provisioned, so the tenant check of the generated service lets its requests through
-	// (ST-SUP-RC27-OC11); the checks of this file prove other contracts, so the fixture adds it to the tenant list as
-	// the administrator, not through Provision.
-	if _, err := s.admin.Exec(`INSERT INTO stego_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING`, tenantID); err != nil {
-		s.t.Fatalf("provision the tenant %s of the check: %v", tenantID, err)
-	}
 	return c
 }
 
@@ -313,6 +320,12 @@ func (r reply) items(t *testing.T) []map[string]any {
 
 // send sends one request as the caller, with the token in the header that the example declares for jwt-auth.
 func (s *service) send(c caller, method, path, body string) reply {
+	s.t.Helper()
+	return s.sendKeyed(c, method, path, "", body)
+}
+
+// sendKeyed sends one request as send does, with an Idempotency-Key when key is not empty.
+func (s *service) sendKeyed(c caller, method, path, key, body string) reply {
 	t := s.t
 	t.Helper()
 	var reader io.Reader
@@ -322,6 +335,9 @@ func (s *service) send(c caller, method, path, body string) reply {
 	request, err := http.NewRequest(method, s.base+base+path, reader)
 	must(t, err)
 	request.Header.Set("X-Internal-Token", "Bearer "+c.token)
+	if key != "" {
+		request.Header.Set("Idempotency-Key", `"`+key+`"`)
+	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -511,6 +527,332 @@ func TestStartFailure(t *testing.T) {
 		unreachable := append(env, "DATABASE_URL=postgres://"+stegoruntime.RuntimeRole+":"+password+"@"+closed+"/app?sslmode=disable")
 		if output := run(unreachable); !strings.Contains(output, `"stage":"service.start.database"`) {
 			t.Fatalf("a start on a closed database port does not name the database in its failure record:\n%s", output)
+		}
+	})
+}
+
+// lockedBuffer is the log of a service process that the check stops and starts again: the process writes it while
+// the check reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// rawCodec passes the bytes of each message through the proxy as they are.
+type rawCodec struct{}
+
+func (rawCodec) Marshal(v any) ([]byte, error) { return *(v.(*[]byte)), nil }
+func (rawCodec) Unmarshal(data []byte, v any) error {
+	*(v.(*[]byte)) = append([]byte(nil), data...)
+	return nil
+}
+func (rawCodec) Name() string { return "proto" }
+
+const (
+	reflectSchemaMethod   = "/authzed.api.v1.SchemaService/ReflectSchema"
+	checkPermissionMethod = "/authzed.api.v1.PermissionsService/CheckPermission"
+)
+
+// schemaReads is a gRPC proxy in front of the local SpiceDB server, which the service reaches SpiceDB through. It
+// forwards each call as it is, and counts the calls of each method: only the worker-tuples job and Retire read the
+// worker relations of the schema with ReflectSchema (authz.SpiceDB.RelationsOf), and a service whose schema has no
+// definition tenant does neither. The counts of the other methods show that the service's calls pass the proxy.
+type schemaReads struct {
+	addr  string
+	mu    sync.Mutex
+	calls map[string]int
+}
+
+// startSchemaReads starts the proxy to the SpiceDB server at target, and stops it when the test ends.
+func startSchemaReads(t *testing.T, target string) *schemaReads {
+	backend, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	must(t, err)
+	t.Cleanup(func() { backend.Close() })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	must(t, err)
+	r := &schemaReads{addr: listener.Addr().String(), calls: map[string]int{}}
+	server := grpc.NewServer(grpc.ForceServerCodec(rawCodec{}), grpc.UnknownServiceHandler(func(_ any, stream grpc.ServerStream) error {
+		method, _ := grpc.MethodFromServerStream(stream)
+		r.mu.Lock()
+		r.calls[method]++
+		r.mu.Unlock()
+		incoming, _ := metadata.FromIncomingContext(stream.Context())
+		ctx := metadata.NewOutgoingContext(stream.Context(), metadata.MD{"authorization": incoming.Get("authorization")})
+		client, err := backend.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true, ClientStreams: true}, method, grpc.ForceCodec(rawCodec{}))
+		if err != nil {
+			return err
+		}
+		go func() {
+			for {
+				var message []byte
+				if err := stream.RecvMsg(&message); err != nil {
+					_ = client.CloseSend()
+					return
+				}
+				if err := client.SendMsg(&message); err != nil {
+					return
+				}
+			}
+		}()
+		for first := true; ; first = false {
+			var message []byte
+			if err := client.RecvMsg(&message); err != nil {
+				stream.SetTrailer(client.Trailer())
+				if err == io.EOF {
+					return nil
+				}
+				return err
+			}
+			if first {
+				if header, err := client.Header(); err == nil {
+					_ = stream.SendHeader(header)
+				}
+			}
+			if err := stream.SendMsg(&message); err != nil {
+				return err
+			}
+		}
+	}))
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	return r
+}
+
+// count gives the number of calls of method through the proxy.
+func (r *schemaReads) count(method string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls[method]
+}
+
+// rollout is the service process of TestProvisionRetire, which the check stops and starts again as a rollout does.
+type rollout struct {
+	s      *service
+	env    []string
+	log    *lockedBuffer
+	exited chan struct{}
+	stop   func()
+}
+
+// start starts the service process in all modes and waits until it answers /livez; the wait has no deadline of its
+// own.
+func (r *rollout) start(t *testing.T) {
+	t.Helper()
+	process := exec.Command(os.Getenv("STEGO_EXAMPLE_BINARY"))
+	process.Env = r.env
+	process.Stdout, process.Stderr = r.log, r.log
+	must(t, process.Start())
+	exited := make(chan struct{})
+	go func() { _ = process.Wait(); close(exited) }()
+	r.exited = exited
+	r.stop = func() {
+		_ = process.Process.Signal(os.Interrupt)
+		select {
+		case <-exited:
+		case <-time.After(30 * time.Second):
+			_ = process.Process.Kill()
+			<-exited
+		}
+	}
+	for !r.probe(t, "/livez") {
+	}
+}
+
+// probe gets the probe path once and tells whether it answered 200. It fails the test when the process exited, and
+// waits a little before it gives false, so a caller may call it again at once.
+func (r *rollout) probe(t *testing.T, path string) bool {
+	t.Helper()
+	select {
+	case <-r.exited:
+		t.Fatalf("the service stopped before %s answered 200:\n%s", path, r.log)
+	default:
+	}
+	response, err := http.Get(r.s.base + path)
+	if err == nil {
+		response.Body.Close()
+		if response.StatusCode == http.StatusOK {
+			return true
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	return false
+}
+
+// awaitReady waits until /readyz and /readyz/modes both answer 200: the workers of the worker and the controller
+// modes start after the HTTP server.
+func (r *rollout) awaitReady(t *testing.T) {
+	t.Helper()
+	for !r.probe(t, "/readyz") || !r.probe(t, "/readyz/modes") {
+	}
+}
+
+// healthy fails the test unless /readyz and /readyz/modes answer 200 now with one line only: the line that names a
+// failed or degraded job, such as worker-tuples (ST-SUP-RC35-OC13), is refused.
+func (r *rollout) healthy(t *testing.T, when string) {
+	t.Helper()
+	for _, path := range []string{"/readyz", "/readyz/modes"} {
+		response, err := http.Get(r.s.base + path)
+		must(t, err)
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		must(t, err)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s, %s answered %d %s, want 200", when, path, response.StatusCode, body)
+		}
+		if text := strings.TrimSpace(string(body)); text == "" || strings.Contains(text, "\n") || strings.Contains(text, "job") {
+			t.Errorf("%s, %s answered 200 with %q, want one line that names no job", when, path, body)
+		}
+	}
+}
+
+// controllerHolder waits until a controller other than not holds the controller lease, and gives it. A controller
+// runs the first run of each periodic job when it takes the lease.
+func (r *rollout) controllerHolder(t *testing.T, not string) string {
+	t.Helper()
+	for {
+		var holder sql.NullString
+		err := r.s.admin.QueryRow(`SELECT holder FROM public.leases WHERE name = $1 AND expires_at > pg_catalog.now()`,
+			"stego.controller").Scan(&holder)
+		if err != nil && err != sql.ErrNoRows {
+			t.Fatal(err)
+		}
+		if holder.Valid && holder.String != "" && holder.String != not {
+			return holder.String
+		}
+		select {
+		case <-r.exited:
+			t.Fatalf("the service stopped before a controller held the lease:\n%s", r.log)
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// awaitAllowed waits until SpiceDB answers, at its quantized revision, that c has the permission on the resource, as
+// the service asks it.
+func (s *service) awaitAllowed(c caller, resourceType, resourceID, permission string) {
+	for {
+		answer, err := v1.NewPermissionsServiceClient(s.spice).CheckPermission(s.ctx, &v1.CheckPermissionRequest{
+			Consistency: &v1.Consistency{Requirement: &v1.Consistency_MinimizeLatency{MinimizeLatency: true}},
+			Resource:    &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Permission: permission,
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}})
+		if err == nil && answer.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// grantOperator writes the relation operator of c on the service-level resource service:user-management, whose ID is
+// not tenant-qualified (ST-SUP-RP06-LC22), as the operator of the platform does.
+func (s *service) grantOperator(c caller) {
+	_, err := v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "service", ObjectId: stegoruntime.Service}, Relation: "operator",
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}}}}})
+	must(s.t, err)
+}
+
+// short gives a new random suffix of 8 hex digits.
+func short() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// TestProvisionRetire runs the tenant provisioning of the example through its generated routes: the schema of the
+// example has no definition tenant, so the service has no worker-tuples job and Retire reads no worker relation of
+// the schema (ST-SUP-RC35-OC13). Each wait has no deadline of its own: only the timeout of go test bounds it.
+func TestProvisionRetire(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC13-T13 The generated user-management example provisions a tenant, creates and reads an organization, retires the tenant, and stays ready", func(t *testing.T) {
+		s := migrated(t)
+		reads := startSchemaReads(t, os.Getenv("STEGO_TEST_SPICEDB"))
+		port := freePort(t)
+		s.base = "http://127.0.0.1:" + port
+		// The service reaches SpiceDB through the proxy: the last value of a variable wins.
+		r := &rollout{s: s, log: &lockedBuffer{}, env: append(s.processEnv(port), "STEGO_SPICEDB_ENDPOINT="+reads.addr)}
+		t.Cleanup(func() {
+			if r.stop != nil {
+				r.stop()
+			}
+			if t.Failed() {
+				t.Logf("service log:\n%s", r.log)
+			}
+		})
+		r.start(t)
+		r.awaitReady(t)
+		first := r.controllerHolder(t, "")
+		r.healthy(t, "after the start")
+
+		// The operator holds provision and retire on service:user-management, which is of no tenant; the operator's
+		// own tenant is never provisioned.
+		operator := s.mint("op-"+short(), "ops-"+short())
+		s.grantOperator(operator)
+		s.awaitAllowed(operator, "service", stegoruntime.Service, "provision")
+		id := "acme-" + short()
+		if got := s.sendKeyed(operator, http.MethodPost, "/stego/tenants", "k-"+short(), `{"tenant_id":"`+id+`"}`); got.status != http.StatusCreated || got.member(t, "tenant_id") != id {
+			t.Fatalf("the provision of %s answered %d %s, want 201", id, got.status, got.body)
+		}
+
+		user := s.mint("u-"+short(), id)
+		created := s.sendKeyed(user, http.MethodPost, "/organizations", "k-"+short(), `{"name":"Acme `+short()+`"}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create of an organization answered %d %s, want 201", created.status, created.body)
+		}
+		org, name := created.member(t, "id"), created.member(t, "name")
+		// The create of a public operation writes no owner tuple; the owner relation is written as an application
+		// does it, and the read is decided on view.
+		s.relate(user, "organization", org, "owner")
+		resourceID, err := authz.ResourceID(user.tenant, org)
+		must(t, err)
+		s.awaitAllowed(user, "organization", resourceID, "view")
+		decisions := reads.count(checkPermissionMethod)
+		read := s.send(user, http.MethodGet, "/organizations/"+org, "")
+		// The read is decided in SpiceDB through the proxy: the proxy carries the service's calls, so the count of
+		// ReflectSchema at the end is a count of real traffic.
+		if n := reads.count(checkPermissionMethod); n <= decisions {
+			t.Errorf("the read of the organization made no CheckPermission call through the proxy")
+		}
+		if read.status != http.StatusOK || read.member(t, "id") != org || read.member(t, "name") != name {
+			t.Fatalf("the read of the organization answered %d %s, want 200 with the id %s and the name %s", read.status, read.body, org, name)
+		}
+		r.healthy(t, "after the create and the read")
+
+		// With no definition tenant, Retire stages no worker tuple and still retires (ST-SUP-RC35-OC13).
+		if got := s.sendKeyed(operator, http.MethodPost, "/stego/tenants/"+url.PathEscape(id)+"/retire", "k-"+short(), ""); got.status != http.StatusOK {
+			t.Fatalf("the retire of %s answered %d %s, want 200", id, got.status, got.body)
+		}
+		var retired sql.NullTime
+		must(t, s.admin.QueryRow(`SELECT retired_at FROM stego_tenants WHERE tenant_id = $1`, id).Scan(&retired))
+		if !retired.Valid {
+			t.Errorf("the tenant list holds %s with no retire time after the retire", id)
+		}
+		// The tenant check refuses a request of a retired tenant before any handler (ST-SUP-RC27-OC11).
+		if got := s.send(user, http.MethodGet, "/organizations/"+org, ""); got.status != http.StatusForbidden || got.member(t, "code") != "tenant.not_provisioned" {
+			t.Errorf("a read in the retired tenant %s answered %d %s, want 403 with the code tenant.not_provisioned", id, got.status, got.body)
+		}
+		r.healthy(t, "after the retire")
+
+		// A start after the retire, as a rollout does: the new controller takes the lease over a tenant list with a
+		// retired tenant, and the service is ready again.
+		r.stop()
+		r.start(t)
+		r.controllerHolder(t, first)
+		r.awaitReady(t)
+		r.healthy(t, "after the start that followed the retire")
+		if n := reads.count(reflectSchemaMethod); n != 0 {
+			t.Errorf("the service read the relations of the schema %d times, want none for a schema with no definition tenant", n)
 		}
 	})
 }
