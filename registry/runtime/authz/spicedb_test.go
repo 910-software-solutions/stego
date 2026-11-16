@@ -490,7 +490,7 @@ func TestSpiceDBProvider(t *testing.T) {
 		if err != nil || !slices.Equal(relations, []string{"banned", "owner", "reader", "viewer"}) {
 			t.Fatalf("the relations of document are %v (%v), want banned, owner, reader and viewer, without the permissions", relations, err)
 		}
-		if _, err := db.provider.RelationsOf(ctx, "invoice"); err == nil || !strings.Contains(err.Error(), "invoice") {
+		if _, err := db.provider.RelationsOf(ctx, "invoice"); !errors.Is(err, ErrNoDefinition) || !strings.Contains(err.Error(), "invoice") {
 			t.Errorf("the relations of a type the schema does not declare gave %v, want an error that names it", err)
 		}
 		other := Tuple{Resource: doc("2"), Relation: "viewer", Subject: user("bob")}

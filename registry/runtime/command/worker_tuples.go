@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
@@ -89,6 +90,39 @@ type WorkerReconcile struct {
 	page      int
 	// afterLock, set only by the tests of the package, runs in the transaction of a tenant after its lock.
 	afterLock func()
+
+	mu sync.Mutex
+	// fencedRuns counts the runs in a row that the release identity row fenced, and fencedBy is the identity of the
+	// row of the last one.
+	fencedRuns int
+	fencedBy   string
+}
+
+// DegradedAfter is the count of runs in a row that the release identity row fences after which the job reports
+// itself degraded; a degraded job does not make the controller not ready.
+const DegradedAfter = 3
+
+// Degraded gives, after DegradedAfter fenced runs in a row, why the job is degraded: the identity of the row and the
+// identity of the binary; and else the empty text.
+func (r *WorkerReconcile) Degraded() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.fencedRuns < DegradedAfter {
+		return ""
+	}
+	return "fenced: identity row " + r.fencedBy + " is not " + r.own.String()
+}
+
+// countFenced records the end of a run: fenced or not.
+func (r *WorkerReconcile) countFenced(fenced bool, row string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !fenced {
+		r.fencedRuns, r.fencedBy = 0, ""
+		return
+	}
+	r.fencedRuns++
+	r.fencedBy = row
 }
 
 // Fencer fences a write under the lease of the controller in the transaction of the write, as lease.Held does: it
@@ -97,8 +131,12 @@ type Fencer interface {
 	Fence(ctx context.Context, tx *sql.Tx) (int64, error)
 }
 
-// errFenced ends a run whose release identity is not the one of the release identity row.
-var errFenced = errors.New("command: the release identity row is not the identity of this release")
+// fencedError ends a run whose release identity is not the one of the release identity row, which row names.
+type fencedError struct{ row string }
+
+func (e *fencedError) Error() string {
+	return "command: the release identity row " + e.row + " is not the identity of this release"
+}
 
 // ReconcileReport counts the tenants of one run of the reconcile: each one it visited, each one whose tuples it
 // changed, and each one where it failed.
@@ -108,6 +146,8 @@ type ReconcileReport struct {
 	FirstClass string
 	// Fenced tells that the run wrote nothing more because the release identity row is not the run's own.
 	Fenced bool
+	// fencedBy is the identity of the row that fenced the run, or missing.
+	fencedBy string
 }
 
 // NewWorkerReconcile gives the reconcile of the worker tuples on the command runtime rt, for the tenant list of
@@ -152,15 +192,25 @@ func NewWorkerReconcile(rt *Runtime, schema string, workers []string, reader Wor
 // each tenant it also fences the write under the lease of fencer, when it is not nil, and stops the run when the
 // lease is lost.
 func (r *WorkerReconcile) Run(ctx context.Context, fencer Fencer) (ReconcileReport, error) {
+	report, err := r.run(ctx, fencer)
+	r.countFenced(report.Fenced, report.fencedBy)
+	return report, err
+}
+
+func (r *WorkerReconcile) run(ctx context.Context, fencer Fencer) (ReconcileReport, error) {
 	var report ReconcileReport
-	if ok, err := r.fenceIdentity(ctx, r.rt.cfg.DB); err != nil {
+	if ok, err := r.fenceIdentity(ctx, r.rt.cfg.DB, &report); err != nil {
 		return report, r.fail(ctx, &report, failedAt(ReconcileTransaction, err), 0)
 	} else if !ok {
 		report.Fenced = true
 		return report, nil
 	}
 	relations, err := r.reader.RelationsOf(ctx, authz.TenantType)
-	if err != nil {
+	switch {
+	case errors.Is(err, authz.ErrNoDefinition):
+		// A schema with no definition tenant has no worker relation: there is nothing to reconcile.
+		relations = nil
+	case err != nil:
 		return report, r.fail(ctx, &report, failedAt(ReconcileSchemaRead, err), 0)
 	}
 	declared := map[string]bool{}
@@ -189,8 +239,10 @@ func (r *WorkerReconcile) Run(ctx context.Context, fencer Fencer) (ReconcileRepo
 			report.Tenants++
 			changed, err := r.tenant(ctx, t, undeclared, fencer)
 			switch {
-			case errors.Is(err, errFenced):
-				report.Fenced = true
+			case errors.As(err, new(*fencedError)):
+				var fenced *fencedError
+				errors.As(err, &fenced)
+				report.Fenced, report.fencedBy = true, fenced.row
 				return report, nil
 			case classOf(err) == ReconcileLease:
 				report.Failed++
@@ -315,10 +367,10 @@ func (r *WorkerReconcile) stage(ctx context.Context, t tenant.Tenant, resource a
 		// Retired since the page was read: Retire deleted its tuples, and the reconcile writes none.
 		return false, nil
 	}
-	if ok, err := r.fenceIdentity(ctx, tx); err != nil {
+	if ok, row, err := fenceIdentity(ctx, r.rt, tx, r.schema, r.own, WorkerTuplesJob); err != nil {
 		return false, failedAt(ReconcileTransaction, err)
 	} else if !ok {
-		return false, errFenced
+		return false, &fencedError{row: row}
 	}
 	// The lease row is locked before the audit row, whose chain lock is the last lock of the transaction
 	// (ST-SUP-RP10-LC06).
@@ -376,29 +428,33 @@ func (r *WorkerReconcile) event(ctx context.Context, t tenant.Tenant) audit.Even
 
 // fenceIdentity reads the release identity row through q and tells whether it is the release identity of the
 // binary; when it is not, it logs one notice that names the job, both identities and no tenant.
-func (r *WorkerReconcile) fenceIdentity(ctx context.Context, q tenant.Querier) (bool, error) {
-	return fenceIdentity(ctx, r.rt, q, r.schema, r.own, WorkerTuplesJob)
+func (r *WorkerReconcile) fenceIdentity(ctx context.Context, q tenant.Querier, report *ReconcileReport) (bool, error) {
+	ok, row, err := fenceIdentity(ctx, r.rt, q, r.schema, r.own, WorkerTuplesJob)
+	if err == nil && !ok {
+		report.fencedBy = row
+	}
+	return ok, err
 }
 
 // fenceIdentity reads the release identity row of schema through q and tells whether it is own; when it is not, it
 // logs one notice of what, the job or the command, with both identities and no tenant (ST-SUP-RC35-OC13).
-func fenceIdentity(ctx context.Context, rt *Runtime, q tenant.Querier, schema string, own tenant.ReleaseIdentity, what string) (bool, error) {
+func fenceIdentity(ctx context.Context, rt *Runtime, q tenant.Querier, schema string, own tenant.ReleaseIdentity, what string) (bool, string, error) {
 	row, found, err := tenant.ReadIdentity(ctx, q, schema)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	if found && row == own {
-		return true, nil
-	}
-	if rt.logger == nil {
-		return false, nil
+		return true, "", nil
 	}
 	rowIdentity := "missing"
 	if found {
 		rowIdentity = row.String()
 	}
+	if rt.logger == nil {
+		return false, rowIdentity, nil
+	}
 	var record otellog.Record
-	record.SetSeverity(otellog.SeverityInfo)
+	record.SetSeverity(otellog.SeverityWarn)
 	record.SetEventName("command.worker_tuples.fenced")
 	record.SetBody(attribute.StringValue("no tuple of an undeclared worker is changed: the release identity row is not the identity of this release, so only a binary of the release that the migration job last ran changes them"))
 	record.AddAttributes(
@@ -407,5 +463,5 @@ func fenceIdentity(ctx context.Context, rt *Runtime, q tenant.Querier, schema st
 		attribute.String("stego.row_identity", rowIdentity),
 	)
 	rt.logger.Emit(ctx, record)
-	return false, nil
+	return false, rowIdentity, nil
 }

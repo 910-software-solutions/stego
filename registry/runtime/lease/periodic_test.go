@@ -11,6 +11,25 @@ import (
 )
 
 func TestPeriodic(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC13-T03 A degraded job is named in the health with its reason and stays healthy", func(t *testing.T) {
+		reason := ""
+		p, err := NewPeriodic(PeriodicConfig{Lease: func() *Held { return nil }, Jobs: []Job{
+			{Name: "worker-tuples", Interval: time.Hour, Run: func(context.Context, *Held) error { return nil },
+				Degraded: func() string { return reason }},
+			{Name: "audit-anchor", Interval: time.Hour, Run: func(context.Context, *Held) error { return nil }},
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, got := p.Health(); !ok || got != "" {
+			t.Fatalf("Health with no degraded job gave %v %q, want true and no reason", ok, got)
+		}
+		reason = "fenced: identity row a/1 is not b/2"
+		if ok, got := p.Health(); !ok || got != "the periodic job worker-tuples is degraded: fenced: identity row a/1 is not b/2" {
+			t.Fatalf("Health with a degraded job gave %v %q, want true and the job with its reason", ok, got)
+		}
+	})
+
 	t.Run("ST-SUP-RP09-LC13-T01 A periodic job runs at its interval only while the lease is held", func(t *testing.T) {
 		d := openDatabase(t)
 		ctx := context.Background()

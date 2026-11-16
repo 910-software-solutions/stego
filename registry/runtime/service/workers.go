@@ -424,10 +424,10 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 const WorkerTuplesInterval = time.Hour
 
 // workerReconcile gives the reconcile of the worker tuples when the service declares its tenant provisioning, which
-// binds authorization, and else nil (ST-SUP-RC35-OC13). It runs with no declared worker too, so the tuples of the
-// last removed worker are deleted.
+// binds authorization, and its schema declares the definition tenant, and else nil (ST-SUP-RC35-OC13). It runs with
+// no declared worker too, so the tuples of the last removed worker are deleted.
 func (svc *Service) workerReconcile() (*command.WorkerReconcile, error) {
-	if svc.tenants == nil {
+	if svc.tenants == nil || !svc.parts.declaresTenant() {
 		return nil, nil
 	}
 	if svc.provider == nil {
@@ -482,7 +482,7 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 	}
 	if reconcile != nil {
 		w.reconcile = reconcile
-		jobs = append(jobs, lease.Job{Name: command.WorkerTuplesJob, Interval: WorkerTuplesInterval,
+		jobs = append(jobs, lease.Job{Name: command.WorkerTuplesJob, Interval: WorkerTuplesInterval, Degraded: reconcile.Degraded,
 			Run: func(ctx context.Context, held *lease.Held) error {
 				// Each tenant's write is fenced under the controller lease (security review of PR #379, L3).
 				var fencer command.Fencer
@@ -637,6 +637,12 @@ func (w *Workers) Handler() http.Handler {
 			return
 		}
 		_, _ = fmt.Fprintln(rw, "ready")
+		// A degraded periodic job, such as a fenced reconcile of the worker tuples, is named and stays ready.
+		if w.periodic != nil {
+			if _, degraded := w.periodic.Health(); degraded != "" {
+				_, _ = fmt.Fprintln(rw, degraded)
+			}
+		}
 	})
 	mux.HandleFunc("GET /livez", func(rw http.ResponseWriter, _ *http.Request) {
 		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")

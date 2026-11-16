@@ -3262,3 +3262,36 @@ func TestReleaseIdentityNote(t *testing.T) {
 		}
 	})
 }
+
+func TestUserManagementRetireGuard(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC13-T12 The generated user-management service gives the runtime its definitions, which have no definition tenant, so its Retire reads no worker relation", func(t *testing.T) {
+		root := filepath.Join("..", "..", "examples", "user-management")
+		declaration, err := os.ReadFile(filepath.Join(root, "service.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(declaration), "provisioning:") {
+			t.Fatal("examples/user-management declares no tenant provisioning, so this check proves nothing")
+		}
+		wiring, err := os.ReadFile(filepath.Join(root, "out", "internal", "stegoruntime", "runtime.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(wiring), "Definitions: svcauthz.Definitions,") {
+			t.Fatal("the runtime wiring of examples/user-management gives the service runtime no definitions of its schema")
+		}
+		authzFile, err := os.ReadFile(filepath.Join(root, "out", "internal", "authz", "authz.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var definitions string
+		for _, line := range strings.Split(string(authzFile), "\n") {
+			if strings.HasPrefix(line, "var Definitions = ") {
+				definitions = line
+			}
+		}
+		if definitions == "" || strings.Contains(definitions, `"tenant"`) {
+			t.Fatalf("the definitions of examples/user-management are %q, want a list with no definition tenant", definitions)
+		}
+	})
+}

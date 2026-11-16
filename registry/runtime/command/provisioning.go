@@ -149,7 +149,7 @@ func unrelateUndeclared(ctx context.Context, rt *Runtime, spec TenantSpec, tx *s
 		return nil
 	}
 	own := tenant.ReleaseIdentity{Release: spec.Release, Workers: tenant.WorkersDigest(spec.Workers)}
-	ok, err := fenceIdentity(ctx, rt, tx, spec.Schema, own, RetireCommand)
+	ok, _, err := fenceIdentity(ctx, rt, tx, spec.Schema, own, RetireCommand)
 	if err != nil || !ok {
 		return err
 	}
@@ -183,6 +183,7 @@ func (s TenantSpec) undeclaredRelations(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	declared := map[string]bool{}
 	for _, name := range s.Workers {
 		declared[WorkerTenantRelation(name)] = true
@@ -370,6 +371,23 @@ func (rt *Runtime) unlistedOutcome(ctx context.Context, command string, o Outcom
 	rt.logger.Emit(ctx, record)
 }
 
+// undeclaredReadFailed logs the one warn line of a Retire whose read of the undeclared worker relations failed: the
+// command and the class of the failure only, and no tenant.
+func (rt *Runtime) undeclaredReadFailed(ctx context.Context) {
+	if rt.logger == nil {
+		return
+	}
+	var record otellog.Record
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetEventName("command.worker_tuples.read_failed")
+	record.SetBody(attribute.StringValue("the retire did not read the undeclared worker relations; it deletes the tuples of its declared workers, and the reconcile of the worker tuples deletes the others later"))
+	record.AddAttributes(
+		attribute.String("stego.job", RetireCommand),
+		attribute.String("stego.error_class", ReconcileSchemaRead),
+	)
+	rt.logger.Emit(ctx, record)
+}
+
 // UnlistedOutcomes returns how many denied or failed provisioning calls of a caller whose tenant is not active wrote
 // no audit row (ST-SUP-RC27-OC10).
 func (rt *Runtime) UnlistedOutcomes() int64 { return rt.unlistedOutcomes.Load() }
@@ -419,10 +437,17 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (
 	}
 	keyRequest := idempotency.Request{Tenant: target.ID(), Principal: req.Principal.Subject().String(), Key: req.Key,
 		Fingerprint: req.Fingerprint, Retention: req.Retention}
-	// The undeclared worker relations are read before the transaction, so no call to SpiceDB holds it open.
+	// The undeclared worker relations are read before the transaction, so no call to SpiceDB holds it open. A
+	// schema with no definition tenant has none. A failed read never fails the Retire: it still deletes the tuples of
+	// its declared workers and retires the tenant, and only the extra deletes are left to the reconcile, with one
+	// warn line (security re-review of PR #379, H1).
 	undeclared, err := spec.undeclaredRelations(ctx)
-	if err != nil {
-		return Result{}, internalf("the relations of the type tenant were not read")
+	switch {
+	case errors.Is(err, authz.ErrNoDefinition):
+		undeclared = nil
+	case err != nil:
+		undeclared = nil
+		rt.undeclaredReadFailed(ctx)
 	}
 	var result Result
 	hook := func(ctx context.Context, q tenant.Querier, t tenant.Tenant) error {

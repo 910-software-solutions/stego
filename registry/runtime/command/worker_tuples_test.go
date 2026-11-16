@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	"github.com/jsell-rh/stego/registry/runtime/authn"
@@ -413,6 +414,9 @@ func TestWorkerTuples(t *testing.T) {
 			if i > 0 {
 				f.identity(row)
 			}
+			if got := r.Degraded(); got != "" {
+				t.Fatalf("after %d fenced runs the job is degraded: %s, want degraded only after %d", i, got, DegradedAfter)
+			}
 			before := f.writes()
 			report, err := r.Run(e.ctx, nil)
 			if err != nil || !report.Fenced || report.Tenants != 0 || f.writes() != before {
@@ -428,6 +432,21 @@ func TestWorkerTuples(t *testing.T) {
 				t.Fatalf("the notices of the fenced runs are %v, want one more with the job, %s and %s", notices, own, wantRow)
 			}
 		}
+		for _, record := range f.logs.all() {
+			if record.EventName() == "command.worker_tuples.fenced" && record.Severity() != otellog.SeverityWarn {
+				t.Fatalf("a notice of a fenced run has the severity %v, want warn", record.Severity())
+			}
+		}
+		// After 3 fenced runs in a row the job is degraded, with both identities; a run that is not fenced ends it.
+		if got, want := r.Degraded(), "fenced: identity row "+others[1].String()+" is not "+own.String(); got != want {
+			t.Fatalf("after %d fenced runs the job gives %q, want %q", DegradedAfter, got, want)
+		}
+		f.identity(own)
+		reader.set(f.syncT("org-a"), f.apply("org-a"), f.syncT("org-b"), f.apply("org-b"), f.syncT("org-c"), f.apply("org-c"))
+		if report, err := r.Run(e.ctx, nil); err != nil || report.Fenced || report.Tenants != 3 || r.Degraded() != "" {
+			t.Fatalf("the run with its own row gave %+v and %v, degraded %q, want a run of 3 tenants that is not fenced and no degraded job", report, err, r.Degraded())
+		}
+		reader.set(f.old("org-a"))
 		// The row of another worker set changes in the middle of a run: the run stops at the next tenant's
 		// transaction and writes nothing more.
 		f.identity(own)
@@ -522,6 +541,48 @@ func TestWorkerTuples(t *testing.T) {
 		}
 		if visited := report.Tenants; visited != 1 {
 			t.Fatalf("the run whose lease is lost visited %d tenants, want it to stop at the first", visited)
+		}
+	})
+	t.Run("ST-SUP-RC35-OC13-T10 With no definition tenant, or a failed read of the schema, Retire still retires and deletes its declared workers' tuples, and the reconcile writes nothing", func(t *testing.T) {
+		f := newReconcileFixture(t, "org-a", "org-b", "org-c")
+		e := f.e
+		// A provisioning service with no worker whose schema has no definition tenant, as examples/user-management.
+		none := &fakeTuples{relationsErr: fmt.Errorf("fake: the schema declares no definition tenant: %w", authz.ErrNoDefinition)}
+		f.identity(tenant.ReleaseIdentity{Release: reconcileRelease, Workers: tenant.WorkersDigest(nil)})
+		send := f.tenantRoutes(TenantSpec{ResourceType: "service", Schema: "public", SubjectType: "user", Reader: none, Release: reconcileRelease})
+		if got := send("/stego/tenants/org-a/retire", "k-retire-org-a", ""); got != http.StatusOK {
+			t.Fatalf("the retire of org-a in a service with no definition tenant answered %d, want 200", got)
+		}
+		r, err := NewWorkerReconcile(f.rt, "public", nil, none, reconcileRelease)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := f.writes()
+		if report, err := r.Run(e.ctx, nil); err != nil || report.Fenced || f.writes() != before {
+			t.Fatalf("the reconcile with no definition tenant gave %+v and %v, and wrote %d, want no error and no write, so the job stays healthy", report, err, f.writes()-before)
+		}
+		// With workers and a read of the schema that fails for another cause, the Retire still retires org-b and
+		// deletes its declared workers' tuples, skips the undeclared ones and logs one warn line with no tenant.
+		f.identity(tenant.ReleaseIdentity{Release: reconcileRelease, Workers: tenant.WorkersDigest(f.workers)})
+		down := &fakeTuples{relationsErr: errors.New("fake: SpiceDB does not answer for org-b")}
+		send = f.tenantRoutes(TenantSpec{ResourceType: "service", Schema: "public", SubjectType: "user", Workers: f.workers, Reader: down, Release: reconcileRelease})
+		if got := send("/stego/tenants/org-b/retire", "k-retire-org-b", ""); got != http.StatusOK {
+			t.Fatalf("the retire of org-b with a failed read of the schema answered %d, want 200", got)
+		}
+		if n := e.count(`SELECT count(*) FROM stego_tenants WHERE tenant_id = 'org-b' AND retired_at IS NOT NULL`); n != 1 {
+			t.Fatal("the retire of org-b with a failed read of the schema did not retire it")
+		}
+		if got, want := f.staged("org-b"), []string{"delete " + f.syncT("org-b"), "delete " + f.apply("org-b")}; !slices.Equal(got, want) {
+			t.Fatalf("the retire of org-b staged %v, want the deletes of its declared workers only %v", got, want)
+		}
+		warned := f.logged("command.worker_tuples.read_failed")
+		if len(warned) != 1 || warned[0]["stego.job"] != RetireCommand || warned[0]["stego.error_class"] != ReconcileSchemaRead || len(warned[0]) != 2 {
+			t.Fatalf("the failed read logged %v, want one line with the command and the class only", warned)
+		}
+		for _, record := range f.logs.all() {
+			if strings.Contains(record.Body().AsString(), "org-") {
+				t.Fatalf("a log line names a tenant: %s", record.Body().AsString())
+			}
 		}
 	})
 }

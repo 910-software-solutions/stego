@@ -138,3 +138,23 @@ func TestTenantGate(t *testing.T) {
 		}
 	})
 }
+
+func TestWorkerReconcileGuard(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC13-T11 A provisioning service whose schema has no definition tenant runs no reconcile of the worker tuples", func(t *testing.T) {
+		// The definitions of examples/user-management: provisioning on service, and no definition tenant.
+		svc := &Service{parts: Parts{Definitions: []string{"activity_entry", "member", "org_setting", "organization", "service", "stego_floor", "user"}},
+			tenants: &tenantProvisioning{}}
+		if r, err := svc.workerReconcile(); r != nil || err != nil {
+			t.Fatalf("a schema with no definition tenant gave the reconcile %v and %v, want none and no error", r, err)
+		}
+		// With the definition tenant, the service builds the reconcile, which refuses the missing command runtime of
+		// this check: the guard let it through.
+		svc.parts.Definitions = append(svc.parts.Definitions, "tenant")
+		if _, err := svc.workerReconcile(); err == nil {
+			t.Fatal("a schema with the definition tenant built no reconcile")
+		}
+		if (Parts{}).declaresTenant() {
+			t.Fatal("parts with no definitions declare the definition tenant")
+		}
+	})
+}

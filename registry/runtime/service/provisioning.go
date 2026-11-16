@@ -81,7 +81,7 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	// (ST-SUP-RC35-OC13).
 	spec := command.TenantSpec{ResourceType: p.ResourceType, Schema: schema, SubjectType: svc.parts.SubjectType,
 		Changed: gate.Forget, Active: gate.Active, Workers: svc.parts.WorkerNames, Release: svc.parts.Release}
-	if svc.provider != nil {
+	if svc.provider != nil && svc.parts.declaresTenant() {
 		// A Retire also deletes the tuples of undeclared workers, under the fence of the release identity row.
 		spec.Reader = svc.provider
 	}

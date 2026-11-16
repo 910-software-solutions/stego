@@ -74,6 +74,10 @@ type Parts struct {
 	// observations (ST-SUP-RP12-LC21).
 	WorkerEntities []command.Declared
 	WorkerNames    []string
+	// Definitions are the definitions of the authorization schema of the service. Only a schema that declares the
+	// definition tenant has worker relations: without it, no reconcile of the worker tuples runs and a Retire reads
+	// no undeclared worker relation (ST-SUP-RC35-OC13, security re-review of PR #379, H1).
+	Definitions []string
 	// Workers are the parts of the worker and controller modes, which Start runs (ST-SUP-RP14-LC04).
 	Workers WorkerParts
 	// OwnerRole is the owner role of the service, which the migration job runs as and which must own each table of
@@ -125,6 +129,9 @@ func (p Parts) check() error {
 	}
 	return nil
 }
+
+// declaresTenant tells whether the authorization schema of the parts declares the definition tenant.
+func (p Parts) declaresTenant() bool { return slices.Contains(p.Definitions, authz.TenantType) }
 
 // Identity is the release identity of the parts: the release and the workers digest of the declared workers, which
 // the migration job writes in the release identity row and the reconcile of the worker tuples checks

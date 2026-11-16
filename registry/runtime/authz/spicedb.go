@@ -64,8 +64,12 @@ func (s *SpiceDB) RelationsOf(ctx context.Context, definition string) ([]string,
 		sort.Strings(names)
 		return names, nil
 	}
-	return nil, fmt.Errorf("authz: the schema that SpiceDB serves declares no definition %s", definition)
+	return nil, fmt.Errorf("authz: the schema that SpiceDB serves declares no definition %s: %w", definition, ErrNoDefinition)
 }
+
+// ErrNoDefinition is the error of RelationsOf for a definition that the served schema does not declare, such as the
+// definition tenant of a service whose schema has no worker relation: a caller takes it as no relation.
+var ErrNoDefinition = errors.New("authz: the served schema declares no such definition")
 
 // Exists tells whether SpiceDB holds a relationship that the filter matches, at full consistency, through one
 // ReadRelationships call with a limit of one. The filter must name one resource type, one resource ID and one
