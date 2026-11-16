@@ -805,10 +805,18 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	if turned {
 		orientation = "operations in lines"
 	}
-	w.raw("<div class=\"scroll matrix-wrap\"><table class=\"matrix access\" aria-label=\"Access matrix\"" + attr("data-orientation", orientation) + ">")
-	if len(roles) == 0 {
-		w.raw("<tbody><tr><td>The declared authorization schema grants no role a permission that an operation checks.</td></tr></tbody></table></div>")
+	// With no role, the matrix says that no role is granted only when no limit cut a grant path short. When a limit
+	// cut the paths short, the model names no role, but a role may hold a permission by a path past the limit, so
+	// the matrix says so and keeps the line of the paths that stop (security review of PR #384, L1).
+	if len(roles) == 0 && m.Access.RolesComplete {
+		w.tag("p", " id=\"no-role\"", "The declared authorization schema grants no role a permission that an operation checks.")
+	} else if len(roles) == 0 {
+		w.tag("p", " class=\"incomplete\" role=\"note\" id=\"no-role-named\"", "⚠ Incomplete: a limit cut the grant paths short before they reached a role, so the model names no role. A role may hold a permission by a path past the limit; this matrix does not say that no role holds one.")
+	}
+	if len(lines) == 0 {
+		// No line to draw: the sentence above is the whole matrix.
 	} else if turned {
+		w.raw("<div class=\"scroll matrix-wrap\"><table class=\"matrix access\" aria-label=\"Access matrix\"" + attr("data-orientation", orientation) + ">")
 		w.raw("<thead><tr>")
 		w.tag("th", " scope=\"col\"", "Operation")
 		for _, l := range lines {
@@ -838,6 +846,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		}
 		w.raw("</table></div>")
 	} else {
+		w.raw("<div class=\"scroll matrix-wrap\"><table class=\"matrix access\" aria-label=\"Access matrix\"" + attr("data-orientation", orientation) + ">")
 		w.raw("<thead><tr class=\"group\">")
 		w.tag("th", " scope=\"col\" rowspan=\"2\"", "Role")
 		for _, g := range groups {
