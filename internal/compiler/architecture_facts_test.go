@@ -326,6 +326,44 @@ func TestComplianceFactList(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC16-R01-T07 The checks fact of a permission whose every grant path a limit stopped before a role says that a role may hold it, never that no role holds it", func(t *testing.T) {
+		// A chain of rewrites one past the depth limit: the model names no role, as the access matrix of
+		// ST-GEN-UC08-R14-T09 shows it.
+		_, data := deriveFixture(t, chainFixture(t, maxGrantDepth+1))
+		text, list, _ := factsOf(t, archProject(t, data), "access")
+		n := 0
+		for _, f := range list.Facts {
+			if f.Name != "checks" || f.Grants == nil {
+				continue
+			}
+			n++
+			if f.Grants.Complete || len(f.Grants.Paths) == 0 {
+				t.Errorf("the checks fact of %s says that its grant paths are complete, or has none: %+v", f.About, f.Grants)
+			}
+			for _, g := range f.Grants.Paths {
+				if g.Role != "" || !slices.Contains(g.Kinds, "depth limit") {
+					t.Errorf("the checks fact of %s has a path that does not stop at the depth limit: %+v", f.About, g)
+				}
+			}
+			line := "a limit cut the paths of " + f.Grants.Permission + " short before they reached a role, so the model names no role that holds it, and a role may hold it by a path past the limit"
+			if !strings.Contains(text, line) {
+				t.Errorf("the text does not say that a role may hold %s", f.Grants.Permission)
+			}
+		}
+		if n == 0 {
+			t.Fatal("the chain fixture proves too little: no checks fact with grants")
+		}
+		if strings.Contains(text, "so no role holds it") || strings.Contains(text, "more roles than these") {
+			t.Error("the text of grant paths that a limit stopped before a role says that no role holds them, or names roles it does not give")
+		}
+		// A schema that grants nothing, with no limit reached: the text says that no role holds it.
+		_, data = deriveFixture(t, chainFixture(t, 0))
+		if text, _, _ = factsOf(t, archProject(t, data), "access"); !strings.Contains(text, "permission:doc#read has no grant path, so no role holds it") ||
+			strings.Contains(text, "before they reached a role") {
+			t.Error("the text of a schema that grants nothing does not say that no role holds the permission")
+		}
+	})
+
 	t.Run("ST-GEN-UC16-R02-T01 Each fact of a list names its one source, in the text and in the JSON", func(t *testing.T) {
 		_, project := claimFixtureProject(t, "a new doc has no resource before it exists")
 		for _, topic := range ComplianceTopics {

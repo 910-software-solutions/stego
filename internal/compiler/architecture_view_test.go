@@ -805,6 +805,80 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R14-T09 With no role that a grant path names, the access matrix says that no role is granted only when no limit cut a path short, and else shows the paths that stop", func(t *testing.T) {
+		const definite = "grants no role a permission that an operation checks"
+		// A chain of rewrites one past the depth limit: every path of every checked permission stops at the limit.
+		model, data := deriveFixture(t, chainFixture(t, maxGrantDepth+1))
+		if len(model.Access.Roles) != 0 || model.Access.RolesComplete {
+			t.Fatalf("the chain fixture proves too little: %d roles, roles complete %v", len(model.Access.Roles), model.Access.RolesComplete)
+		}
+		for _, perm := range model.Access.Permissions {
+			if perm.Complete || len(perm.Paths) == 0 || !strings.Contains(perm.Paths[0].Stops, "depth limit") {
+				t.Fatalf("the grant paths of %s do not stop at the depth limit: %+v", perm.ID, perm)
+			}
+		}
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := parseView(t, view)
+		if strings.Contains(textOf(p.root), definite) {
+			t.Error("the matrix of grant paths that a limit cut short says that no role is granted")
+		}
+		note := p.byID("no-role-named")
+		if note == nil || attrOf(note, "role") != "note" || !strings.Contains(attrOf(note, "class"), "incomplete") ||
+			!strings.Contains(textOf(note), "a limit cut the grant paths short before they reached a role") ||
+			!strings.Contains(textOf(note), "does not say that no role holds one") {
+			t.Errorf("the matrix with no named role does not say that a role may hold a permission: %v", note)
+		}
+		if p.byID("roles-incomplete") == nil {
+			t.Error("the matrix with no named role has no notice that a limit was reached")
+		}
+		tables := p.all(func(n *html.Node) bool { return n.Data == "table" && strings.Contains(attrOf(n, "class"), "access") })
+		if len(tables) != 1 {
+			t.Fatalf("the matrix with no named role has %d access tables, want the one with the line of the paths that stop", len(tables))
+		}
+		heads := within(tables[0], func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "class") == "role" })
+		if len(heads) != 1 || textOf(heads[0]) != "Paths that stop, with no role" {
+			t.Errorf("the matrix with no named role does not have the one line of the paths that stop: %d role heads", len(heads))
+		}
+		for _, c := range model.Access.Checks {
+			cells := within(tables[0], func(n *html.Node) bool {
+				return n.Data == "td" && attrOf(n, "data-check") == c.ID && attrOf(n, "data-role") == ""
+			})
+			buttons := within(tables[0], func(n *html.Node) bool {
+				return n.Data == "button" && attrOf(n, "data-check") == c.ID && attrOf(n, "data-role") == ""
+			})
+			switch {
+			case len(cells) != 1:
+				t.Errorf("%s has %d cells in the line of the paths that stop", c.ID, len(cells))
+			case c.Public && len(buttons) != 0:
+				t.Errorf("the public %s has a cell of paths that stop", c.ID)
+			case !c.Public && (len(buttons) != 1 || !strings.Contains(attrOf(buttons[0], "title"), "depth limit")):
+				t.Errorf("the cell of the paths that stop of %s does not name the depth limit: %q", c.ID, textOf(cells[0]))
+			}
+		}
+		// A schema that grants nothing, with no limit reached: the matrix says that no role is granted, and draws no
+		// table.
+		model, data = deriveFixture(t, chainFixture(t, 0))
+		if len(model.Access.Roles) != 0 || !model.Access.RolesComplete {
+			t.Fatalf("the empty schema gives %d roles, roles complete %v", len(model.Access.Roles), model.Access.RolesComplete)
+		}
+		if view, err = RenderArchitectureView(data); err != nil {
+			t.Fatal(err)
+		}
+		p = parseView(t, view)
+		if n := p.byID("no-role"); n == nil || !strings.Contains(textOf(n), definite) {
+			t.Error("the matrix of a schema that grants no role does not say so")
+		}
+		if p.byID("no-role-named") != nil || p.byID("roles-incomplete") != nil {
+			t.Error("the matrix of a schema that grants no role with no limit reached says incomplete")
+		}
+		if n := len(p.all(func(n *html.Node) bool { return n.Data == "table" && strings.Contains(attrOf(n, "class"), "access") })); n != 0 {
+			t.Errorf("the matrix of a schema that grants no role draws %d access tables", n)
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R15-T01 The matrix of the data model is titled Operations each collection offers", func(t *testing.T) {
 		data := page.byID("form-data")
 		tables := within(data, func(n *html.Node) bool { return n.Data == "table" && attrOf(n, "class") == "matrix" })

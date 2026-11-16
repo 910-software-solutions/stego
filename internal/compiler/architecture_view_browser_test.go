@@ -762,6 +762,53 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R14-T10 The trust view of a model whose every grant path a limit stopped before a role says that a role may hold a permission, and its cells show the paths that stop", func(t *testing.T) {
+		// The model of a chain of rewrites one past the depth limit (ST-GEN-UC08-R14-T09).
+		_, data := deriveFixture(t, chainFixture(t, maxGrantDepth+1))
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "index.html")
+		if err := os.WriteFile(path, view, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		type shown struct {
+			Note, Heads, Title, Own, MayHold string
+			Definite                         bool
+			Paths, Scroll, Width             int
+		}
+		b.problems()
+		for _, width := range []int{1280, 400} {
+			b.viewport(width, 900)
+			b.open("file://" + path + "#view=trust")
+			var got shown
+			b.eval(`(function(){ var n = document.getElementById("no-role-named");
+				var heads = Array.prototype.map.call(document.querySelectorAll("#view table.access thead th.role"), function(th){ return th.textContent; }).join("|");
+				document.querySelector('#view button.cell[data-check="check:operation:docs.read"][data-role=""]').click();
+				function text(id){ return (document.getElementById(id)||{}).textContent || ""; }
+				return {Note: n && n.offsetHeight > 0 ? n.textContent : "", Heads: heads, Title: (document.querySelector("#details h3")||{}).textContent || "",
+					Own: text("cellIncomplete"), MayHold: text("cellMayHold"),
+					Definite: document.getElementById("view").textContent.indexOf("grants no role a permission") >= 0,
+					Paths: Array.prototype.filter.call(document.querySelectorAll("#details li[data-grant]"), function(l){ return l.textContent.indexOf("depth limit") >= 0; }).length,
+					Scroll: document.documentElement.scrollWidth, Width: window.innerWidth}; })()`, &got)
+			if !strings.Contains(got.Note, "a limit cut the grant paths short before they reached a role") || got.Definite {
+				t.Errorf("at %d px the trust view does not say that a role may hold a permission: %+v", width, got)
+			}
+			if got.Heads != "Paths that stop, with no role" || got.Title != "Paths that stop · docs.read" ||
+				!strings.Contains(got.Own, "doc#read may grant more roles") || got.MayHold != "" || got.Paths == 0 {
+				t.Errorf("at %d px the cell of the paths that stop shows %+v", width, got)
+			}
+			if got.Scroll > got.Width {
+				t.Errorf("at %d px the page is %d px wide", width, got.Scroll)
+			}
+			if blocked, errors := b.problems(); len(blocked) > 0 || len(errors) > 0 {
+				t.Errorf("at %d px: blocked %v, errors %v", width, blocked, errors)
+			}
+		}
+		b.viewport(1280, 900)
+	})
+
 	t.Run("ST-GEN-UC08-R02-T03 Every view and the tour work under the content security policy of the view, with no violation", func(t *testing.T) {
 		b.do("Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": `window.__csp = [];
 			document.addEventListener("securitypolicyviolation", function(e){ window.__csp.push(e.violatedDirective+" "+e.blockedURI+" "+e.sample); });`})

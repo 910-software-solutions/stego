@@ -144,6 +144,37 @@ func nestedFixture(t *testing.T) ArchitectureInput {
 	return in
 }
 
+// chainSchema gives a schema whose doc permissions read and write each pass a chain of n permission rewrites before
+// they reach the relation owner, or grant nothing (nil) when n is 0.
+func chainSchema(n int) string {
+	var b strings.Builder
+	b.WriteString("definition user {}\n\ndefinition doc {\n\trelation owner: user\n")
+	if n == 0 {
+		b.WriteString("\tpermission read = nil\n\tpermission write = nil\n}\n")
+		return b.String()
+	}
+	b.WriteString("\tpermission read = step1\n\tpermission write = step1\n")
+	for i := 1; i < n; i++ {
+		fmt.Fprintf(&b, "\tpermission step%d = step%d\n", i, i+1)
+	}
+	fmt.Fprintf(&b, "\tpermission step%d = owner\n}\n", n)
+	return b.String()
+}
+
+// chainFixture gives the inputs of archFixture with the schema chainSchema(n): with n above the depth limit, every
+// grant path of every checked permission stops at the limit before it reaches a role (security review of PR #384,
+// L1).
+func chainFixture(t *testing.T, n int) ArchitectureInput {
+	t.Helper()
+	in := archFixture(t)
+	schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(chainSchema(n)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Schema = schema
+	return in
+}
+
 func deriveFixture(t *testing.T, in ArchitectureInput) (*ArchitectureModel, []byte) {
 	t.Helper()
 	files, err := WriteArchitecture(in)
