@@ -286,7 +286,8 @@ func TestArchitectureViewBrowser(t *testing.T) {
 			btn.click();
 			var list = document.getElementById("cellAncestors");
 			return {Found: true, Text: list ? list.textContent : "", Images: document.querySelectorAll("img").length, Ran: window.__ran}; })()`, &cell)
-		if !cell.Found || !strings.Contains(cell.Text, value) || cell.Images != 0 || cell.Ran != 0 {
+		// The list shows the parameter, the reason and the scope source as text: three times the hostile text.
+		if !cell.Found || strings.Count(cell.Text, value) < 3 || cell.Images != 0 || cell.Ran != 0 {
 			t.Errorf("the details of a nested cell do not show the hostile ancestor names as text only: %+v", cell)
 		}
 		// The index of the elements by ID has no prototype: an ID of the address that names a property of Object

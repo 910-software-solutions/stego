@@ -320,6 +320,29 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 		if err := checkArchitectureRules(model); err == nil || !strings.Contains(err.Error(), "entity:Nowhere") {
 			t.Fatalf("a model with an ancestor of no entity is valid: %v", err)
 		}
+		// The grants of an ancestor check and of a check must name a permission of the model, not another element
+		// such as a role or a field (security review of PR #374, L1).
+		for _, mutate := range []func(m *ArchitectureModel) string{
+			func(m *ArchitectureModel) string {
+				for i := range m.Access.Checks {
+					if len(m.Access.Checks[i].Ancestors) > 1 {
+						m.Access.Checks[i].Ancestors[1].Grants = m.Access.Roles[0].ID
+						return m.Access.Roles[0].ID
+					}
+				}
+				return ""
+			},
+			func(m *ArchitectureModel) string {
+				m.Access.Checks[0].Grants = "field:Doc.title"
+				return "field:Doc.title"
+			},
+		} {
+			fresh, _ := deriveFixture(t, nestedFixture(t))
+			ref := mutate(fresh)
+			if err := checkArchitectureRules(fresh); ref == "" || err == nil || !strings.Contains(err.Error(), ref+", which is no permission") {
+				t.Fatalf("a model whose grants name %q is valid, or fails for another reason: %v", ref, err)
+			}
+		}
 	})
 
 	t.Run("ST-GEN-UC08-R13-T01 The grant paths are expanded from the schema: an arrow, a userset, a caveat, an intersection, an exclusion, a wildcard and each recursion stated", func(t *testing.T) {

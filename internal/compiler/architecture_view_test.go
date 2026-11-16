@@ -686,8 +686,8 @@ const hostileValue = "</script><img src=x onerror=alert(1)><!-- \u2028 & end"
 
 // hostileModel gives the model of user-management with the hostile text in the reason of its empty aspect, the
 // reason of each public check, the first step of each flow, the name of the system, and the name and the ID of a
-// component, an entity, a collection and an actor, and the path parameter, the entity and the ID of each ancestor
-// check; one fill takes the ID __proto__, which an index of the elements by ID must hold as a plain key (#342 F5, F6).
+// component, an entity, a collection and an actor, and the path parameter, entity, ID, reason and scope source of
+// each ancestor check, whose grants name a role; one fill takes the ID __proto__, which an index of the elements by ID must hold as a plain key (#342 F5, F6).
 func hostileModel(t *testing.T) ([]byte, string) {
 	t.Helper()
 	data, err := os.ReadFile("testdata/architecture/user-management.json")
@@ -705,11 +705,19 @@ func hostileModel(t *testing.T) ([]byte, string) {
 		}
 		// The names of the parent chain check: the path parameter, the entity and the ID of each ancestor
 		// (ST-SUP-RC20-OC24), as the view shows them in the matrix head, the check table and the cell details.
+		// Each ancestor also gets a hostile reason and scope source, and no permission with grants that name a role:
+		// the view must show the text as text and must not fail on a grant that is no permission (security review
+		// of PR #374, L1, L4).
 		ancestors, _ := c.(map[string]any)["ancestors"].([]any)
 		for _, a := range ancestors {
-			a.(map[string]any)["param"] = hostileValue
-			a.(map[string]any)["entity"] = "entity:" + hostileValue
-			a.(map[string]any)["id"] = "ancestor:" + hostileValue
+			a := a.(map[string]any)
+			a["param"] = hostileValue
+			a["entity"] = "entity:" + hostileValue
+			a["id"] = "ancestor:" + hostileValue
+			a["reason"] = hostileValue
+			a["scope_source"] = map[string]any{"declaration": hostileValue}
+			delete(a, "permission")
+			a["grants"] = m["access"].(map[string]any)["roles"].([]any)[0].(map[string]any)["id"]
 		}
 	}
 	for _, f := range m["flows"].([]any) {

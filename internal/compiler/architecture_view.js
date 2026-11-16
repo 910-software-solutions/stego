@@ -530,10 +530,12 @@ function cellDetails(d, id){
     d.appendChild(h("strong", {text:"Ancestors read first, the top one first"}));
     var al = h("ol", {id:"cellAncestors"});
     c.ancestors.forEach(function(a){
-      var q = a.grants && byId[a.grants], held = q && q.paths.some(function(g){ return (g.role || "") === role; });
-      var what = a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public" : "no permission: "+(a.reason || ""));
+      // A grant that names no permission, in a model that the reader edited, shows as not held (security review of PR #374, L1).
+      var q = a.grants && byId[a.grants], held = !!(q && Array.isArray(q.paths) && q.paths.some(function(g){ return (g.role || "") === role; }));
+      var what = a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public"+(a.reason ? ": "+a.reason : "") : "no permission: "+(a.reason || ""));
       var who = !a.permission || !role ? "" : (held ? "; this role grants it" : "; this role alone does not grant it, so the caller also needs it");
-      al.appendChild(h("li", {"data-ancestor":a.id}, [nameOf(a.entity)+" ("+a.param+"): "+what+who]));
+      var by = a.scope_source ? srcText(a.scope_source) : "";
+      al.appendChild(h("li", {"data-ancestor":a.id}, [nameOf(a.entity)+" ("+a.param+"): "+what+who+(by ? "; in the path by "+by : "")]));
     });
     d.appendChild(al);
     d.appendChild(h("p", {"class":"k", text:"A missing, denied or wrong ancestor answers 404, before the row is read or written."}));
@@ -541,7 +543,7 @@ function cellDetails(d, id){
   if (p && p.complete === false) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: a limit was reached, so "+c.resource_type+"#"+c.permission+" may grant more roles than its paths name."}));
   d.appendChild(h("strong", {text:"Grant paths"}));
   var ul = h("ul");
-  (p ? p.paths : []).filter(function(g){ return (g.role || "") === role; }).forEach(function(g){
+  (p && Array.isArray(p.paths) ? p.paths : []).filter(function(g){ return (g.role || "") === role; }).forEach(function(g){
     ul.appendChild(h("li", {"data-grant":g.id}, [g.kinds.map(function(k){ return GLYPH[k] || ""; }).join("")+" "+grantSentence(p, g)]));
   });
   d.appendChild(ul);
