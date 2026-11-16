@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -48,9 +49,9 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/internal/spanevent"
 )
 
-// collector is a fake OTLP gRPC collector on loopback with TLS. With hold set, each export waits until release, a
-// hold limit or the caller's deadline. With large set, it answers a trace export with a response of about that many
-// bytes.
+// collector is a fake OTLP gRPC collector on loopback with TLS. With hold set, each export waits until release or
+// until the caller gives up. A held trace export sends on arrived when it comes in, and on cancelled when the caller
+// gives up. With large set, it answers a trace export with a response of about that many bytes.
 type collector struct {
 	tracecollector.UnimplementedTraceServiceServer
 	traces    chan *tracecollector.ExportTraceServiceRequest
@@ -58,42 +59,41 @@ type collector struct {
 	metrics   chan *metriccollector.ExportMetricsServiceRequest
 	hold      chan struct{}
 	holding   atomic.Bool
-	holdLimit atomic.Int64
 	large     atomic.Int64
 	release   func()
+	arrived   chan struct{}
+	cancelled chan struct{}
 	mu        sync.Mutex
 	batches   []int
-	held      []time.Duration
 }
 
-// wait holds one export when the collector holds, and tells how long the hold lasted and whether the caller gave
-// up first.
+// wait holds one export when the collector holds, until release or until the caller gives up.
 func (c *collector) wait(ctx context.Context) error {
 	if !c.holding.Load() {
 		return nil
 	}
-	start := time.Now()
-	limit := time.Duration(c.holdLimit.Load())
-	if limit == 0 {
-		limit = time.Hour
-	}
-	timer := time.NewTimer(limit)
-	defer timer.Stop()
 	select {
 	case <-c.hold:
 		return nil
-	case <-timer.C:
-		return nil
 	case <-ctx.Done():
-		c.mu.Lock()
-		c.held = append(c.held, time.Since(start))
-		c.mu.Unlock()
 		return ctx.Err()
 	}
 }
 
+// signal sends on a channel of the collector without blocking the export.
+func signal(to chan struct{}) {
+	select {
+	case to <- struct{}{}:
+	default:
+	}
+}
+
 func (c *collector) Export(ctx context.Context, request *tracecollector.ExportTraceServiceRequest) (*tracecollector.ExportTraceServiceResponse, error) {
+	if c.holding.Load() {
+		signal(c.arrived)
+	}
 	if err := c.wait(ctx); err != nil {
+		signal(c.cancelled)
 		return nil, err
 	}
 	count := 0
@@ -198,7 +198,7 @@ func startCollector(t testing.TB, hold bool) *collector {
 		t.Fatal(err)
 	}
 	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}})))
-	c := &collector{traces: make(chan *tracecollector.ExportTraceServiceRequest, 1024), logs: make(chan *logcollector.ExportLogsServiceRequest, 64), metrics: make(chan *metriccollector.ExportMetricsServiceRequest, 64), release: func() {}}
+	c := &collector{traces: make(chan *tracecollector.ExportTraceServiceRequest, 1024), logs: make(chan *logcollector.ExportLogsServiceRequest, 64), metrics: make(chan *metriccollector.ExportMetricsServiceRequest, 64), release: func() {}, arrived: make(chan struct{}, 1024), cancelled: make(chan struct{}, 1024)}
 	if hold {
 		c.hold = make(chan struct{})
 		c.holding.Store(true)
@@ -723,11 +723,12 @@ func TestExportLimits(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer r.Close()
+		// The collector holds the first batch, so at most the queue and that batch are outside the drop count,
+		// whatever the speed of the export goroutine.
 		for range 300 {
 			_, span := r.testSpan("span")
 			span.End()
 		}
-		time.Sleep(300 * time.Millisecond)
 		c.release()
 		r.Close()
 		exported, largest := c.exported()
@@ -737,33 +738,66 @@ func TestExportLimits(t *testing.T) {
 		}
 	})
 	t.Run("ST-SUP-RP03-LC10-T02 Each export ends within two seconds with a 64 KiB response limit", func(t *testing.T) {
+		clearEnvironment(t)
+		if r, err := New("records"); err != nil || reflect.ValueOf(r.deadline).Pointer() != reflect.ValueOf(context.WithTimeout).Pointer() {
+			t.Fatal("New does not bound the exports with the real clock", err)
+		}
+
+		// The queue gives the exporter a context that ends at two seconds on the clock, and not before.
+		clock := newHandClock(t)
+		exporter := &heldExporter{calls: make(chan context.Context, 1)}
+		q := newSpanQueue(exporter, clock.deadline)
+		sampled := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{1}, TraceFlags: trace.FlagsSampled})
+		q.OnEnd(tracetest.SpanStub{SpanContext: sampled}.Snapshot())
+		export := <-exporter.calls
+		bound := clock.next(t)
+		if bound.d != ExportTimeout {
+			t.Fatalf("the export is bounded at %v, not at %v", bound.d, ExportTimeout)
+		}
+		clock.advance(ExportTimeout - time.Nanosecond)
+		if export.Err() != nil {
+			t.Fatal("the export was cancelled before its bound")
+		}
+		clock.advance(time.Nanosecond)
+		if export.Err() == nil || !errors.Is(context.Cause(export), context.DeadlineExceeded) {
+			t.Fatal("the held export was not cancelled at two seconds", export.Err())
+		}
+		<-clock.ended
+		if err := q.Shutdown(context.Background()); err != nil || q.dropped.Load() != 1 {
+			t.Fatal("the cancelled export was not counted dropped", err, q.dropped.Load())
+		}
+
+		// Through the gRPC exporter, the collector sees the held export cancelled at the bound, and the export
+		// fails.
+		clock = newHandClock(t)
 		c := startCollector(t, true)
-		c.holdLimit.Store(int64(5 * time.Second))
-		r, err := New("records")
+		r, err := newRuntime("records", clock.deadline)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer r.Close()
 		_, span := r.testSpan("held")
 		span.End()
-		waitFor(t, 4*time.Second, func() bool { return r.ExportFailures() == 1 })
-		c.mu.Lock()
-		held := append([]time.Duration(nil), c.held...)
-		c.mu.Unlock()
-		if len(held) != 1 || held[0] < ExportTimeout-200*time.Millisecond || held[0] > ExportTimeout+500*time.Millisecond {
-			t.Fatal("the held export was not cancelled at two seconds", held)
+		<-c.arrived
+		bound = clock.next(t)
+		if bound.d != ExportTimeout {
+			t.Fatalf("the export is bounded at %v, not at %v", bound.d, ExportTimeout)
 		}
+		clock.advance(ExportTimeout)
+		<-c.cancelled
+		<-clock.ended
+		if r.ExportFailures() != 1 {
+			t.Fatal("the cancelled export was not counted as a failure", r.ExportFailures())
+		}
+
 		c.holding.Store(false)
 		for _, size := range []int64{ResponseLimit - 1024, 65 << 10} {
 			c.large.Store(size)
 			before := r.ExportFailures()
-			c.mu.Lock()
-			batches := len(c.batches)
-			c.mu.Unlock()
 			_, span := r.testSpan("large")
 			span.End()
-			waitFor(t, 3*time.Second, func() bool { c.mu.Lock(); defer c.mu.Unlock(); return len(c.batches) > batches })
-			time.Sleep(100 * time.Millisecond)
+			// The queue calls the cancel function of the export's context when the export returned.
+			<-clock.ended
 			refused := r.ExportFailures() > before
 			if refused != (size > ResponseLimit) {
 				t.Fatalf("a response of %d bytes: refused %v", size, refused)
@@ -771,8 +805,9 @@ func TestExportLimits(t *testing.T) {
 		}
 	})
 	t.Run("ST-SUP-RP03-LC10-T03 Shutdown gives the provider at most three seconds", func(t *testing.T) {
+		clock := newHandClock(t)
 		c := startCollector(t, true)
-		r, err := New("records")
+		r, err := newRuntime("records", clock.deadline)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -780,11 +815,24 @@ func TestExportLimits(t *testing.T) {
 			_, span := r.testSpan("span")
 			span.End()
 		}
-		started := time.Now()
-		r.Close()
-		if elapsed := time.Since(started); elapsed > ShutdownTimeout+500*time.Millisecond {
-			t.Fatal("shutdown took", elapsed)
+		<-c.arrived
+		returned := make(chan struct{})
+		go func() {
+			r.Close()
+			close(returned)
+		}()
+		// Shutdown asks for its bound before it shuts the providers down. The provider does not shut the queue down
+		// when its context has already ended, so the clock moves only after the queue's shutdown started.
+		<-r.spans.stop
+		clock.find(t, ShutdownTimeout)
+		clock.advance(ShutdownTimeout - time.Nanosecond)
+		select {
+		case <-returned:
+			t.Fatal("shutdown ended before its bound while the collector held an export")
+		default:
 		}
+		clock.advance(time.Nanosecond)
+		<-returned
 		exported, _ := c.exported()
 		if dropped := int(r.DroppedSpans()); exported != 0 || dropped != QueueSize {
 			t.Fatalf("exported %d, dropped %d: each span must be exported or counted", exported, dropped)
@@ -794,27 +842,134 @@ func TestExportLimits(t *testing.T) {
 		}
 	})
 	t.Run("ST-SUP-RP03-LC10-T03 Shutdown ends by the earlier of the caller's deadline and three seconds", func(t *testing.T) {
-		startCollector(t, true)
-		r, err := New("records")
+		clock := newHandClock(t)
+		c := startCollector(t, true)
+		r, err := newRuntime("records", clock.deadline)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, span := r.testSpan("span")
 		span.End()
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		started := time.Now()
-		if err := r.Shutdown(ctx); err == nil {
-			t.Fatal("a blocked shutdown reported success")
+		<-c.arrived
+		caller, end := context.WithCancel(context.Background())
+		defer end()
+		result := make(chan error, 1)
+		go func() { result <- r.Shutdown(caller) }()
+		<-r.spans.stop
+		if bound := clock.find(t, ShutdownTimeout); bound.parent != caller {
+			t.Fatal("the three-second bound does not start from the caller's context")
 		}
-		if elapsed := time.Since(started); elapsed > time.Second {
-			t.Fatal("shutdown passed the caller's deadline:", elapsed)
+		select {
+		case <-result:
+			t.Fatal("shutdown ended before a bound while the collector held an export")
+		default:
+		}
+		// The caller's deadline ends first: its context ends while the clock is before three seconds.
+		end()
+		if err := <-result; err == nil {
+			t.Fatal("a blocked shutdown reported success")
 		}
 		if r.Shutdown(context.Background()) == nil || r.DroppedSpans() != 1 {
 			t.Fatal("a second shutdown did not return the first result, or the span was not counted")
 		}
 	})
 }
+
+// handClock is a clock that the test moves itself, for the bounds of ST-SUP-RP03-LC10. Each context it gives ends
+// when the test moves the clock to its deadline, or when its parent ends. Its cancel function does not end it: it
+// sends the bound on ended, so the test knows that the bounded work returned, and reads when the context ended.
+type handClock struct {
+	mu     sync.Mutex
+	now    time.Duration
+	bounds []*handBound
+	made   chan *handBound
+	ended  chan *handBound
+}
+
+// handBound is one context that the clock gave.
+type handBound struct {
+	parent context.Context
+	d, at  time.Duration
+	end    context.CancelCauseFunc
+}
+
+func newHandClock(t testing.TB) *handClock {
+	c := &handClock{made: make(chan *handBound, 1024), ended: make(chan *handBound, 1024)}
+	t.Cleanup(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, bound := range c.bounds {
+			bound.end(context.Canceled)
+		}
+	})
+	return c
+}
+
+func (c *handClock) deadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, end := context.WithCancelCause(parent)
+	c.mu.Lock()
+	bound := &handBound{parent: parent, d: d, at: c.now + d, end: end}
+	c.bounds = append(c.bounds, bound)
+	c.mu.Unlock()
+	c.made <- bound
+	return ctx, func() {
+		select {
+		case c.ended <- bound:
+		default:
+		}
+	}
+}
+
+// advance moves the clock and ends each context whose deadline it reached.
+func (c *handClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now += d
+	for _, bound := range c.bounds {
+		if bound.at <= c.now {
+			bound.end(context.DeadlineExceeded)
+		}
+	}
+}
+
+// next returns the bound that the clock gave first and that the test did not read yet. The code under test asks for
+// the bound before it starts the work, so a missing bound fails the test and does not wait.
+func (c *handClock) next(t testing.TB) *handBound {
+	t.Helper()
+	select {
+	case bound := <-c.made:
+		return bound
+	default:
+		t.Fatal("the work has no bound on the clock")
+		return nil
+	}
+}
+
+// find reads the bounds that the clock gave until one of d. It passes over export bounds. Any other bound, or no
+// bound of d, fails the test: the caller knows that the code under test asked for the bound already.
+func (c *handClock) find(t testing.TB, d time.Duration) *handBound {
+	t.Helper()
+	for {
+		bound := c.next(t)
+		switch bound.d {
+		case d:
+			return bound
+		case ExportTimeout:
+		default:
+			t.Fatalf("a bound of %v, not of %v", bound.d, d)
+		}
+	}
+}
+
+// heldExporter sends each export's context on calls and holds the export until that context ends.
+type heldExporter struct{ calls chan context.Context }
+
+func (e *heldExporter) ExportSpans(ctx context.Context, _ []sdktrace.ReadOnlySpan) error {
+	e.calls <- ctx
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (e *heldExporter) Shutdown(context.Context) error { return nil }
 
 func waitFor(t testing.TB, limit time.Duration, done func() bool) {
 	t.Helper()
@@ -842,7 +997,7 @@ func TestSpanQueueShutdownRace(t *testing.T) {
 		span := tracetest.SpanStub{SpanContext: sampled}.Snapshot()
 		for range 20 {
 			exporter := &countingExporter{}
-			q := newSpanQueue(exporter)
+			q := newSpanQueue(exporter, context.WithTimeout)
 			var ended atomic.Int64
 			var group sync.WaitGroup
 			for range 4 {
