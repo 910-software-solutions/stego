@@ -17,7 +17,9 @@ const exampleFixture = "testdata/runtime_example"
 // against the local PostgreSQL server of STEGO_TEST_POSTGRES_DSN and a local SpiceDB container, and calls the
 // example's collections over HTTP; then it changes the migrated database once for each kind of object of the schema
 // manifest and sees each start refused, and starts the service with no DATABASE_URL and on a closed database port and
-// reads the stage of each failure record. A missing server fails the test: a missing result is not a pass.
+// reads the stage of each failure record; last it provisions a tenant through the generated route, creates and reads
+// an organization, retires the tenant and starts the service again, and the readiness stays healthy (#379 gap). A
+// missing server fails the test: a missing result is not a pass.
 func TestRuntimeExample(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the example service")
@@ -44,7 +46,7 @@ func TestRuntimeExample(t *testing.T) {
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
 	endpoint, key := startWiringSpiceDB(t)
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=480s", "-v", "-run", "^(TestExample|TestSchemaManifest|TestStartFailure)$", "./out/examplecheck")
+	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=15m", "-v", "-run", "^(TestExample|TestSchemaManifest|TestStartFailure|TestProvisionRetire)$", "./out/examplecheck")
 	cmd.Dir = p.dir
 	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_EXAMPLE_BINARY="+binary)
 	output, runErr := cmd.CombinedOutput()
@@ -66,4 +68,14 @@ func TestRuntimeExample(t *testing.T) {
 			t.Fatalf("the start failure check of the example did not run and pass (go test: %v):\n%s", runErr, output)
 		}
 	})
+	t.Run(provisionRetireCheck, func(t *testing.T) {
+		name := strings.ReplaceAll(provisionRetireCheck, " ", "_")
+		if !strings.Contains(string(output), "--- PASS: TestProvisionRetire/"+name+" ") {
+			t.Fatalf("the provisioning check of the example did not run and pass (go test: %v):\n%s", runErr, output)
+		}
+	})
 }
+
+// provisionRetireCheck is the check of TestProvisionRetire in the module of the example, with the ID of the test
+// record it proves.
+const provisionRetireCheck = "ST-SUP-RC35-OC13-T13 The generated user-management example provisions a tenant, creates and reads an organization, retires the tenant, and stays ready"
