@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261116155224-22fc8a0d9f51
+        module_version: v0.0.0-20261116163059-ae2c1b62ffe1
         vcs: git
-        revision: 22fc8a0d9f51175920fe05237313395fdddd8429
+        revision: ae2c1b62ffe186db567ca6776e123381d06e3d3f
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: e4f86d3409696f8a53b989b7fab68e7ef2913b2ea9159d56c4311d8c3b99b16c
+    registry_content_sha256: 8bd7b5cb406bb7b11c13597fe79c0b1f2994ac3ead1a46f006b166b0c5239808
     components:
         audit-log:
             version: 1.1.1
@@ -60,7 +60,7 @@ last_applied:
             sha: 2a86d2ba707e3924781b35bb5009380f623f907f2836e71098cb9fc978f6c1d5
         kafka-producer:
             version: 3.0.0
-            sha: 2948192b1f913b330c2ae480688f309611820774cee403c157b8809cc8f6e0de
+            sha: 680a3ec31303c1afac80f4cda838a6ea24bec1f98d135e86095fafb99a9ced2c
         otel-tracing:
             version: 1.19.0
             sha: 493f1a9b4c15574a0ad10f70ca302558d5d81541676353883275d0ca4ffd80ee
@@ -69,7 +69,7 @@ last_applied:
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
             version: 6.7.0
-            sha: ef593f698d417671faeea23628c05687a78999cc8a25d49f43cea71a39b24a01
+            sha: 084a4260e6267fb670901b9f3311d4de6158f4b2fb1890c6226cbef8cef2e710
         query:
             version: 1.1.0
             sha: ec99c6e40f1ec83f09e8355c76320fc81d4c30aece6712088475e4ba8d978df1
@@ -216,13 +216,16 @@ last_applied:
         deploy/base/migration-job.yaml: 662e34f7cf4f1eee7dacf5e86d2618d0014659f73b5f5c3739dfa804ca777f0e
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
-        deploy/components/secret-files/kustomization.yaml: 2b658de48cf6ef22904381c67bfd384d2a7ff2e606b56c1a8a0de0f7cba925c8
-        deploy/components/secret-files/mount-files.yaml: f477052f0f5d34d1c4d77be68025a9c8f155d4dacd23dd4d7ed1dc3583894365
-        deploy/components/secret-files/mount-job-files.yaml: 49ecade3367c23307a28195548a397adc0a2926f2d9312062c2a81d6de76e7b4
-        deploy/components/secret-files/remove-env.yaml: 328479c67f7a09999b5481bd84d19622f3ba1205ca6d13f4c88be4cadad2960a
-        deploy/components/secret-files/remove-job-env.yaml: ab4b34892c6397191dd25c4e75a6d1fdda1a18d5e1ce2d944c5f2a4e0bd75885
-        deploy/environment-variables.md: f82edcd60f41767bd8f499525f2b4ab0cfa14d6d33b5c4ef1f3ff32ada146f3d
-        deploy/platform-requirements.yaml: e1bd1479fefd95e9b93fd0cb284a16536d6feb2475ada1e3db4d4d09af672eaa
+        deploy/components/fs-group/deployment-fs-group.yaml: 9a4f92991ebab2ead72ab1a3129ebf94f44fa63249b337e6e6ce8fa11944d667
+        deploy/components/fs-group/job-fs-group.yaml: eb80fed68a9114e8f9affa88f5c49fae889a324de37bcf30303397c7f6f9dfee
+        deploy/components/fs-group/kustomization.yaml: cee4fb45b3d3f632d93206e074ba891e51f4151c76e88aed741a0ce7de942867
+        deploy/components/secret-files/kustomization.yaml: 75234bcae3c80c007034ebfded036239d9129181bafb0e6b96aa525b3e85f443
+        deploy/components/secret-files/mount-files.yaml: 388ccb04b69ad2bd7346d7579269a9b1c2e8bc27ba30b94ec5c767112c95cb32
+        deploy/components/secret-files/mount-job-files.yaml: 26befaf008344b352fdba8d444407a40b612d52973757ea5c5fa3a75e9117aaf
+        deploy/components/secret-files/remove-env.yaml: a243baeae3309873606fb81e1556b5f922fc23b6c504191261e2cea7dfdc4ab6
+        deploy/components/secret-files/remove-job-env.yaml: 77b7081107e665b8e939c6f4fdbaff002510eb2a5e94298cc6373d063f2ac2d8
+        deploy/environment-variables.md: bbd44ecf86e80e2325b323aa3946a454c595f88f718cc3282962bfd8baa4d2f6
+        deploy/platform-requirements.yaml: 214cfe8afa4d4c6235aabaa78045c9810a9fb423ea15cca50cb73f92e84f75b2
     archetype:
         name: rest-crud
         version: 3.133.0
