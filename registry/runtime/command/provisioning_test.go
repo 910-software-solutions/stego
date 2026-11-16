@@ -245,6 +245,30 @@ func TestProvisioning(t *testing.T) {
 				t.Fatalf("the tuple %s holds a wildcard", line)
 			}
 		}
+		// When the second worker tuple cannot be staged, the change of the tenant list, its audit row and the first
+		// tuple roll back together (security review of PR #376, L4).
+		e.exec(`CREATE FUNCTION authz.refuse_second_tuple() RETURNS trigger LANGUAGE plpgsql AS $f$
+BEGIN
+  IF EXISTS (SELECT 1 FROM authz.authz_revocation_tuples WHERE revocation_id = NEW.revocation_id) THEN
+    RAISE EXCEPTION 'the check refuses the second tuple';
+  END IF;
+  RETURN NEW;
+END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revocation_tuples FOR EACH ROW EXECUTE FUNCTION authz.refuse_second_tuple()`)
+		if got := send("/stego/tenants", "k-org-r", `{"tenant_id":"org-r"}`); got != http.StatusInternalServerError {
+			t.Fatalf("the provision whose second tuple fails answered %d, want 500", got)
+		}
+		e.exec(`DROP TRIGGER refuse_second_tuple ON authz.authz_revocation_tuples`, `DROP FUNCTION authz.refuse_second_tuple()`)
+		if n := e.count(`SELECT count(*) FROM stego_tenants WHERE tenant_id = 'org-r'`); n != 0 || len(tuples("org-r")) != 0 ||
+			e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'org-r' AND outcome = 'ok'`) != 0 ||
+			e.count(`SELECT count(*) FROM authz.authz_revocation_tuples WHERE tenant_id = 'org-r'`) != 0 {
+			t.Fatal("the provision whose second tuple failed committed a part of its change")
+		}
+		// Two workers whose names give one relation, such as a-b and a_b, are refused: each would hold the other's
+		// grant (security review of PR #376, L2).
+		if _, err := ServeTenant(rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",
+			Schema: "public", SubjectType: "user", Workers: []string{"a-b", "a_b"}}); err == nil || !strings.Contains(err.Error(), "worker_a_b") {
+			t.Errorf("the workers a-b and a_b gave %v, want a refusal that names the relation worker_a_b", err)
+		}
 		// A worker name that no tuple can hold is refused before any request.
 		for _, name := range []string{"a/b", "*", ""} {
 			_, err := ServeTenant(rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",

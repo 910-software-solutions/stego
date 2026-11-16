@@ -150,7 +150,13 @@ func (s TenantSpec) check(rt *Runtime) error {
 	case s.ResourceType == "" || s.Permission == "" || s.Schema == "" || s.SubjectType == "":
 		return errors.New("command: the tenant provisioning needs the resource type, the permission, the schema of the tenant list and the subject type")
 	}
+	relations := map[string]string{}
 	for _, name := range s.Workers {
+		// Two workers with one relation would hold each other's grant (ST-SUP-RC35-OC13).
+		if other, taken := relations[WorkerTenantRelation(name)]; taken {
+			return fmt.Errorf("command: the workers %q and %q of the tenant provisioning both give the relation tenant#%s, so each would hold the other's grant", other, name, WorkerTenantRelation(name))
+		}
+		relations[WorkerTenantRelation(name)] = name
 		if _, err := authz.ServiceAccount(name); err != nil {
 			return fmt.Errorf("command: the worker %q of the tenant provisioning is no service account that a tuple can hold: %w", name, err)
 		}

@@ -587,6 +587,10 @@ func validateSchemaNames(service *types.ServiceDeclaration, schema *AuthzSchema)
 		a := entity.EntityAuthorization
 		where := fmt.Sprintf("entity %q", entity.Name)
 		definition, defined := schema.definitions[a.ResourceType]
+		if a.ResourceType == TenantResourceType {
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "schema-names", Path: fmt.Sprintf("entities[%d].resource_type", ei), Found: a.ResourceType,
+				Message: fmt.Sprintf("%s names the resource type %q, which is reserved for the tenant resource that holds the tuple of each worker (ST-SUP-RC35-OC13, ST-SUP-Q132); a row of it could take the ID of its tenant's resource, and its delete would clear the worker tuples; give the entity another resource type", where, a.ResourceType)})
+		}
 		if a.ResourceType != "" && !defined {
 			lacks(fmt.Sprintf("entities[%d].resource_type", ei), "resource type", a.ResourceType, where, schema.typeNames())
 		}
@@ -696,6 +700,12 @@ func writtenRelationUnknown(written string, declared map[string]bool, schema *Au
 	switch {
 	case !ok || resourceType == "" || relation == "" || strings.Contains(relation, "#"):
 		return "which is not of the form resource_type#relation"
+	case resourceType == TenantResourceType:
+		return fmt.Sprintf("but %s is the tenant resource, whose worker relations only the tenant provisioning writes (ST-SUP-RC35-OC13)", TenantResourceType)
+	case relation == TenantRelation:
+		return fmt.Sprintf("but %s is the relation of each row to its tenant, which the runtime writes alone (ST-SUP-RP10-LC05, ST-SUP-Q132)", TenantRelation)
+	case strings.HasPrefix(relation, WorkerRelationPrefix):
+		return fmt.Sprintf("but a relation that starts with %s holds the grant of a worker, which only the tenant provisioning writes (ST-SUP-RC35-OC13)", WorkerRelationPrefix)
 	case !schema.Defines(resourceType):
 		return fmt.Sprintf("but the schema %s lacks the resource type %s", schema.Path, resourceType)
 	case !declared[resourceType]:

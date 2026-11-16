@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -161,18 +162,22 @@ func (c *clock) waitedAt(at time.Time) (bool, <-chan struct{}) {
 	return false, c.changed
 }
 
-// first blocks until one of the clocks has a wait that ends at its time, and gives the index of the first such
-// clock in the order given. It has no deadline: a party that never waits ends the check at the timeout of go test,
-// and a missing result is not a pass.
-func first(waits ...clockWait) int {
+// first blocks until one of the clocks has a wait that ends at its time, and gives the index of each wait that is
+// there then, in the order given, so a check that both waits are there sees both. It has no deadline: a party that
+// never waits ends the check at the timeout of go test, and a missing result is not a pass.
+func first(waits ...clockWait) []int {
 	for {
 		var signals []<-chan struct{}
+		var present []int
 		for i, w := range waits {
 			found, changed := w.clock.waitedAt(w.at)
 			if found {
-				return i
+				present = append(present, i)
 			}
 			signals = append(signals, changed)
+		}
+		if len(present) > 0 {
+			return present
 		}
 		cases := make([]reflect.SelectCase, len(signals))
 		for i, ch := range signals {
@@ -646,7 +651,9 @@ func committed(t *testing.T, e *env, tenantID, status string) {
 	}
 }
 
-// noCall checks that no call of the fill is waiting to be read: a check calls it when no party can call the fill.
+// noCall checks that no call of the fill is waiting to be read. A check calls it only after it proved that no
+// party can call the fill: each run of the tick committed, and each other instance waits for a clock that the
+// check does not move.
 func noCall(t *testing.T) {
 	t.Helper()
 	select {
@@ -877,17 +884,18 @@ func TestWorker(t *testing.T) {
 		// h2 cannot take the lease: it waits for its retry on the lease clock, and it never waits for a tick. A
 		// single worker that ticked without its lease would wait for the due time instead.
 		startLeased(t, e, ticks2, leases, "h2")
-		if got := first(clockWait{leases, leases.Now().Add(leaseRetry)}, clockWait{ticks2, due}); got != 0 {
-			t.Fatal("the instance h2 waits for a tick without the lease")
+		if got := first(clockWait{leases, leases.Now().Add(leaseRetry)}, clockWait{ticks2, due}); !slices.Equal(got, []int{0}) {
+			t.Fatalf("the waits of h2 are %v of [its retry of the lease, a tick]: h2 waits for a tick without the lease", got)
 		}
 		both(due.Sub(ticks1.Now()))
 		if r := <-calls; r.tenant != ids[0] || !r.due.Equal(due) {
 			t.Fatalf("the fill was called for %s at %v, want %s at %v", r.tenant, r.due, ids[0], due)
 		}
-		// The run of h1 commits; no other call follows, since h2 holds no lease and h1's next tick is not due.
+		// The run of h1 commits, and its tick of one tenant ends. h2 never waited on its tick clock, so it is still
+		// in the wait for its retry of the lease, which the lease clock has not reached, and it can call no fill.
 		committed(t, e, ids[0], "synced")
-		if waits, _ := ticks2.waitedAt(due.Add(interval)); waits {
-			t.Fatal("the instance h2 waits for the next tick without the lease")
+		if n := ticks2.waits.Load(); n != 0 {
+			t.Fatalf("the instance h2 waited %d times on its tick clock without the lease", n)
 		}
 		noCall(t)
 
@@ -908,7 +916,10 @@ func TestWorker(t *testing.T) {
 		if r := <-calls; r.tenant != ids[0] || !r.due.Equal(next) {
 			t.Fatalf("the fill was called for %s at %v, want %s at %v", r.tenant, r.due, ids[0], next)
 		}
+		// The run of h2 commits. h1 tried the lease again at its retry and waits for the next retry on the lease
+		// clock, which the check does not move, so it can call no fill.
 		committed(t, e, ids[0], "synced")
+		first(clockWait{leases, leases.Now().Add(leaseRetry)})
 		noCall(t)
 	})
 

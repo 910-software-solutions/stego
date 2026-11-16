@@ -489,6 +489,11 @@ func NewEntity[T any](spec EntitySpec[T]) (*Entity[T], error) {
 	if spec.Name == "" {
 		return nil, errors.New("command: an entity needs a name")
 	}
+	// The resource type tenant is the tenant resource of the worker tuples: a row of it whose key is its tenant's ID
+	// would be that resource, and its delete would clear the tuple of each worker (ST-SUP-RC35-OC13, ST-SUP-Q132).
+	if spec.ResourceType == authz.TenantType {
+		return nil, fmt.Errorf("command: the entity %s has the resource type %s, which is reserved for the tenant resource that holds the tuple of each worker; give it another resource type", spec.Name, authz.TenantType)
+	}
 	statements := map[string]string{"Select": spec.Select, "SelectForUpdate": spec.SelectForUpdate,
 		"SelectForDelete": spec.SelectForDelete, "Insert": spec.Insert, "Update": spec.Update, "Delete": spec.Delete}
 	for name, text := range statements {

@@ -398,6 +398,16 @@ func TestContract(t *testing.T) {
 		if order := contract[strings.Index(contract, "OrderEntity = "):]; marked.MatchString(order[:strings.Index(order, "}))")]) {
 			t.Errorf("the entity Order, whose relation tenant takes a user, is marked Tenant:\n%s", order)
 		}
+		// No command may relate the tenant relation, a worker relation or the tenant resource: the generator refuses
+		// each, so it emits no Relate or Unrelate helper for it (ST-SUP-RC35-OC13).
+		for relation, why := range map[string]string{"order#tenant": "the runtime writes it alone",
+			"order#worker_sync": "only the tenant provisioning writes", "tenant#worker_sync": "only the tenant provisioning writes"} {
+			svc := declaration(t)
+			svc.Commands[0].RelationshipsWritten = []string{relation}
+			if _, _, err := new(Generator).Generate(commandContext(t, svc, commandSlot)); err == nil || !strings.Contains(err.Error(), relation) || !strings.Contains(err.Error(), why) {
+				t.Errorf("a command that writes %s gave %v, want a refusal that names it and says %q", relation, err, why)
+			}
+		}
 		// With the schema of the test declaration, no entity is marked.
 		if marked.Match(generated(t, commandContext(t, declaration(t), commandSlot))["commands/commands.go"]) {
 			t.Error("an entity is marked Tenant with a schema that has no relation tenant")
