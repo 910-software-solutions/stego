@@ -82,16 +82,20 @@ jobs:
           else
             echo "This compiler has no --base: apply checks against no base."
           fi
+          # --strict refuses a secret source that the run drops (ST-DLV-UC01-R06). An older compiler has no --strict.
+          if grep -qE '^ +-strict( |$)' <<< "$help"; then
+            echo "STEGO_STRICT=--strict" >> "$GITHUB_ENV"
+          fi
       - name: Generate the example candidate
         working-directory: examples/${{ matrix.project }}
         env:
           STEGO_REGISTRY: ${{ github.workspace }}/registry
           GOWORK: 'off'
         run: |
-          "$RUNNER_TEMP/stego" validate
-          "$RUNNER_TEMP/stego" apply ${STEGO_APPLY_BASE:+--base "$STEGO_APPLY_BASE"}
+          "$RUNNER_TEMP/stego" validate ${STEGO_STRICT:-}
+          "$RUNNER_TEMP/stego" apply ${STEGO_STRICT:-} ${STEGO_APPLY_BASE:+--base "$STEGO_APPLY_BASE"}
           "$RUNNER_TEMP/stego" deps
-          "$RUNNER_TEMP/stego" apply ${STEGO_APPLY_BASE:+--base "$STEGO_APPLY_BASE"}
+          "$RUNNER_TEMP/stego" apply ${STEGO_STRICT:-} ${STEGO_APPLY_BASE:+--base "$STEGO_APPLY_BASE"}
           "$RUNNER_TEMP/stego" drift
       - name: Save the example candidate for review
         working-directory: examples/${{ matrix.project }}
