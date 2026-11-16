@@ -29,6 +29,9 @@ type Variable struct {
 	// SecretSource is the secret need and the key that give the value of a secret variable, or the file of a path
 	// variable; its name may hold the placeholders of a need name (ST-DLV-Q19).
 	SecretSource *SecretSource
+	// RefusedAtStart marks a variable that a library reads and that the start guard of the service refuses when it
+	// has a value, such as PGHOST (ST-SUP-UC01-R10): the service never takes it.
+	RefusedAtStart bool
 }
 
 // SecretSource is one key of one secret need: the need name and the key (ST-DLV-EN08 field Secret source,
@@ -61,6 +64,9 @@ type AcceptedVariable struct {
 	// SecretSource is the secret need and the key that give the value, or the file of a path variable, when the
 	// service states that need (ST-DLV-Q19).
 	SecretSource *SecretSource `yaml:"secret_source,omitempty"`
+	// RefusedAtStart marks a variable that the start guard refuses when it has a value (ST-SUP-UC01-R10): the base
+	// never wires it, and the environment check refuses a value for it.
+	RefusedAtStart bool `yaml:"refused_at_start,omitempty"`
 	// example is the example of the first reader, for the reference alone: the platform requirements never hold
 	// it, because an example is often a host name (ST-DLV-INV02).
 	example *string
@@ -201,6 +207,8 @@ func conflict(a, b AcceptedVariable) string {
 		return "allowed values"
 	case a.SecretSource != nil && b.SecretSource != nil && *a.SecretSource != *b.SecretSource:
 		return "secret source"
+	case a.RefusedAtStart != b.RefusedAtStart:
+		return "refused at start flag"
 	}
 	return ""
 }
@@ -213,7 +221,7 @@ func acceptedOf(service string, settings map[string]string, variable Variable) (
 		return AcceptedVariable{}, err
 	}
 	accepted := AcceptedVariable{Name: name, Type: variable.Type, Required: variable.Required, Description: variable.Description,
-		Secret: variable.Secret, Allowed: variable.Allowed}
+		Secret: variable.Secret, Allowed: variable.Allowed, RefusedAtStart: variable.RefusedAtStart}
 	if source := variable.SecretSource; source != nil {
 		if !variable.Secret && variable.Type != "path" {
 			return AcceptedVariable{}, fmt.Errorf("only a secret variable, or a path variable that names the file of a secret, states a secret source")
@@ -271,6 +279,9 @@ func checkAccepted(v AcceptedVariable) error {
 	if v.Default != nil && (len(*v.Default) > maxVariableValue || strings.ContainsAny(*v.Default, "\n\r")) {
 		return fmt.Errorf("the default is not one line of at most %d characters", maxVariableValue)
 	}
+	if v.RefusedAtStart && v.Required {
+		return fmt.Errorf("a variable that the service refuses at start is not required")
+	}
 	if v.Secret && v.Allowed != "" {
 		return fmt.Errorf("a secret variable lists no allowed values")
 	}
@@ -304,7 +315,7 @@ func checkDescription(text string) error {
 func configurationNeeds(list []AcceptedVariable) []Requirement {
 	var needs []Requirement
 	for _, variable := range list {
-		if !variable.Required || variable.Secret {
+		if !variable.Required || variable.Secret || variable.RefusedAtStart {
 			continue
 		}
 		components := make([]string, 0, len(variable.ReadBy))

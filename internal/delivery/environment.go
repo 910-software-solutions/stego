@@ -483,7 +483,7 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 	for _, variable := range requirements.Environment {
 		listed[variable.Name] = true
 		secretVariables[variable.Name] = variable.Secret
-		if !variable.Required || named[string(Configuration)+" "+variable.Name] {
+		if !variable.Required || variable.RefusedAtStart || named[string(Configuration)+" "+variable.Name] {
 			continue
 		}
 		given := false
@@ -510,6 +510,13 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 					}
 				}
 			}
+			continue
+		}
+		if (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] && variables[entry.name].RefusedAtStart &&
+			!(entry.kind == Configuration && entry.empty) && !(entry.kind == Secret && len(entry.keys) == 0) {
+			// A value of a variable that the start guard refuses stops the service (ST-SUP-UC01-R10).
+			fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType,
+				Detail: fmt.Sprintf("the service refuses the environment variable %s at start; give its setting through a declared variable", entry.name)})
 			continue
 		}
 		if (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] {

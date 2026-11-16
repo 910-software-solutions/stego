@@ -57,6 +57,14 @@ environment file against them.
 - A secret variable that no secret need gives, such as `PGPASSWORD`, gets no entry.
 - `STEGO_PROBE_CONSOLE` gets no entry, so the domain probes stay off the console. An overlay that wants them on
   the console sets the variable itself.
+- A variable that the service refuses at start gets no entry: the `PG` names that the pgx driver reads, the
+  `GRPC_` names except the three log settings, `SSL_CERT_FILE` and `SSL_CERT_DIR`. The platform requirements mark
+  each of them `refused_at_start: true`, and `stego env check` fails when the environment file gives one a value.
+  `GODEBUG` keeps its entry, but the service does not start when it holds a `tls` or `x509` setting.
+
+When a component names a secret source that the service does not state, such as a key that its secret need does
+not have, `stego validate`, `stego plan` and `stego apply` write a `WARNING` with the variable, the need and the
+key, and the base gets no entry for that variable.
 
 When a required key is not there, the pod does not start. The kubelet does not start the container, and the pod
 stays in `CreateContainerConfigError`. The pod event names the Secret or the ConfigMap and the key, for example

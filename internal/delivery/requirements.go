@@ -117,6 +117,8 @@ type Requirements struct {
 	// Environment is every environment variable that the service accepts, in name order (ST-DLV-EN08,
 	// ST-DLV-UC01-R06).
 	Environment []AcceptedVariable `yaml:"environment"`
+	// warnings name each secret source that the derivation did not keep; the file never holds them.
+	warnings []string
 }
 
 // RequirementsFile is the path, in the project folder, of the platform requirements (ST-DLV-EN01-TB).
@@ -214,10 +216,14 @@ func DeriveRequirements(service string, components []ComponentNeeds) (Requiremen
 	}
 	// A secret source names a secret need of the service and one of its keys. A source whose need the service does
 	// not state with that key is not kept: no Secret of the service holds that value, so the base wires no entry
-	// for it (ST-DLV-Q19). The release test of the registry proves that each shipped source names a shipped need.
+	// for it, and the run warns with the variable, the need and the key (ST-DLV-Q19). The release test of the
+	// registry proves that each shipped source names a shipped need.
+	var warnings []string
 	for i, variable := range variables {
 		if source := variable.SecretSource; source != nil {
 			if requirement, stated := byName[source.Name]; !stated || requirement.Kind != Secret || !slices.Contains(requirement.Keys, source.Key) {
+				warnings = append(warnings, fmt.Sprintf("the environment variable %s (read by %s) names the secret source %s key %s, but the service states no secret need %s with the key %s; the Kubernetes base wires no entry for it",
+					variable.Name, strings.Join(variable.ReadBy, ", "), source.Name, source.Key, source.Name, source.Key))
 				variables[i].SecretSource = nil
 			}
 		}
@@ -229,7 +235,7 @@ func DeriveRequirements(service string, components []ComponentNeeds) (Requiremen
 		}
 		byName[requirement.Name] = &requirement
 	}
-	result := Requirements{Version: RequirementsVersion, Service: service, Requirements: []Requirement{}, Environment: variables}
+	result := Requirements{Version: RequirementsVersion, Service: service, Requirements: []Requirement{}, Environment: variables, warnings: warnings}
 	for _, requirement := range byName {
 		slices.Sort(requirement.Components)
 		result.Requirements = append(result.Requirements, *requirement)
@@ -428,10 +434,12 @@ const requirementsHeader = "# The platform requirements of the service: what its
 	"# components. Do not edit it: change the declaration or the registry.\n"
 
 // RequirementsFiles are the files that Write the platform requirements gives: the platform requirements and the
-// environment variable reference rendered from the same derived list.
+// environment variable reference rendered from the same derived list, and the warnings of the derivation.
 type RequirementsFiles struct {
 	Requirements []byte
 	Reference    []byte
+	// Warnings name each secret source that the run did not keep, with its variable, need and key (ST-DLV-Q19).
+	Warnings []string
 }
 
 // WriteRequirements writes the service's platform requirements, with the list of every environment variable it
@@ -453,7 +461,7 @@ func WriteRequirements(service string, components []ComponentNeeds) (Requirement
 	if err := encoder.Close(); err != nil {
 		return RequirementsFiles{}, err
 	}
-	return RequirementsFiles{Requirements: out.Bytes(), Reference: renderReference(requirements.Service, requirements.Environment)}, nil
+	return RequirementsFiles{Requirements: out.Bytes(), Reference: renderReference(requirements.Service, requirements.Environment), Warnings: requirements.warnings}, nil
 }
 
 // LoadRequirements reads the platform requirements back through the strict decoder (ST-DLV-REPO01): one document

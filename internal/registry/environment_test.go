@@ -215,6 +215,17 @@ func TestSecretSource(t *testing.T) {
 		if err := checkSecretSources(shipped); err != nil {
 			t.Error(err)
 		}
+		sources := 0
+		for _, component := range shipped.Components() {
+			for _, variable := range component.Variables() {
+				if variable.SecretSource != nil {
+					sources++
+				}
+			}
+		}
+		if sources < 14 {
+			t.Errorf("the shipped registry states %d secret sources, fewer than the 14 it ships", sources)
+		}
 	})
 }
 

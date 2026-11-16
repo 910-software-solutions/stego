@@ -21,6 +21,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/delivery"
+	"github.com/jsell-rh/stego/internal/gen"
 )
 
 // These tests prove that apply writes the platform requirements of a service from the needs that its components
@@ -1136,4 +1137,59 @@ func TestEnvironmentSettingDefaults(t *testing.T) {
 			t.Fatal("the refused apply changed the project folder")
 		}
 	})
+}
+
+func TestEnvironmentGuardAndSecretSources(t *testing.T) {
+	t.Run("ST-DLV-UC01-R06-T03 Apply marks each variable that the start guard refuses, and validate and apply warn on a secret source that they do not keep", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		dir := requirementsProject(t)
+		env := requirementsEnv(registry)
+		// The registry copy states the secret orders-database with the keys url and password only, so the sources
+		// of the migration and the worker URLs name keys that the service does not state.
+		for _, command := range []string{"validate", "apply"} {
+			_, stderr := mustRunInProjectStderr(t, dir, env, command)
+			for _, want := range []string{"WARNING: the environment variable STEGO_MIGRATION_DATABASE_URL", "secret source orders-database key migration-url",
+				"WARNING: the environment variable STEGO_WORKER_DATABASE_URL", "secret source orders-database key worker-url"} {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stego %s does not warn %q:\n%s", command, want, stderr)
+				}
+			}
+			if strings.Contains(stderr, "WARNING: the environment variable DATABASE_URL ") {
+				t.Errorf("stego %s warns on the source of DATABASE_URL, which the service states:\n%s", command, stderr)
+			}
+		}
+		requirements, _ := readRequirements(t, dir)
+		refused := 0
+		for _, variable := range requirements.Environment {
+			if variable.RefusedAtStart != gen.RefusedVariable(variable.Name) {
+				t.Errorf("the variable %s has refused_at_start %v; the start guard refuses it: %v", variable.Name, variable.RefusedAtStart, gen.RefusedVariable(variable.Name))
+			}
+			if variable.RefusedAtStart {
+				refused++
+			}
+		}
+		if refused < 20 {
+			t.Errorf("the platform requirements mark %d variables as refused at start, fewer than the PG names that pgx reads", refused)
+		}
+		deployment, err := os.ReadFile(filepath.Join(dir, "deploy", "base", "deployment.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, variable := range requirements.Environment {
+			if variable.RefusedAtStart && strings.Contains(string(deployment), "- name: "+variable.Name+"\n") {
+				t.Errorf("the base wires %s, which the start guard refuses", variable.Name)
+			}
+		}
+	})
+}
+
+// mustRunInProjectStderr runs the stego binary in the project folder and fails the test when it exits non-zero; it
+// gives standard output and standard error.
+func mustRunInProjectStderr(t *testing.T, dir string, env []string, args ...string) (string, string) {
+	t.Helper()
+	stdout, stderr, err := runInProject(t, dir, env, args...)
+	if err != nil {
+		t.Fatalf("stego %s: %v\n%s\n%s", strings.Join(args, " "), err, stdout, stderr)
+	}
+	return stdout, stderr
 }

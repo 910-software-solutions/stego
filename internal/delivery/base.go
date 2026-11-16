@@ -375,7 +375,8 @@ type secretFile struct {
 // secret variable gets no entry, because the two forms are exclusive and the base wires the environment form. Each
 // other variable takes its value from the key of its name in the ConfigMap <service>-config, optional when the
 // variable is optional, so that the code keeps its default when the key is not there. The console sink of the
-// domain probes gets no entry (ST-STD-OBS-R03).
+// domain probes gets no entry (ST-STD-OBS-R03), and a variable that the start guard refuses gets none, because a
+// value of it stops the service (ST-SUP-UC01-R10).
 func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFile) {
 	sourced := map[string]SecretSource{}
 	for _, variable := range list {
@@ -390,7 +391,7 @@ func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFi
 	var entries []any
 	var switched []secretFile
 	for _, variable := range list {
-		if variable.Name == ConsoleSinkVariable {
+		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart {
 			continue
 		}
 		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile {

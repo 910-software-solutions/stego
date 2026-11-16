@@ -158,6 +158,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_BINARY_LOG_FILTER
     read_by:
       - otel-tracing
@@ -165,6 +166,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_ENABLE_TXT_SERVICE_CONFIG
     read_by:
       - otel-tracing
@@ -172,6 +174,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_ENFORCE_ALPN_ENABLED
     read_by:
       - otel-tracing
@@ -179,6 +182,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_ALTS_HANDSHAKER_KEEPALIVE_PARAMS
     read_by:
       - otel-tracing
@@ -186,6 +190,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_ENABLE_DEFAULT_PORT_FOR_PROXY_TARGET
     read_by:
       - otel-tracing
@@ -193,6 +198,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_ENABLE_PRIORITY_LB_CHILD_POLICY_CACHE
     read_by:
       - otel-tracing
@@ -200,6 +206,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_PF_WEIGHTED_SHUFFLING
     read_by:
       - otel-tracing
@@ -207,6 +214,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_RING_HASH_SET_REQUEST_HASH_KEY
     read_by:
       - otel-tracing
@@ -214,6 +222,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_AUTHORITY_REWRITE
     read_by:
       - otel-tracing
@@ -221,6 +230,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_BOOTSTRAP_CALL_CREDS
     read_by:
       - otel-tracing
@@ -228,6 +238,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_DUALSTACK_ENDPOINTS
     read_by:
       - otel-tracing
@@ -235,6 +246,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_EXT_PROC_ON_CLIENT
     read_by:
       - otel-tracing
@@ -242,6 +254,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_GCP_AUTHENTICATION_FILTER
     read_by:
       - otel-tracing
@@ -249,6 +262,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_HTTP_CONNECT
     read_by:
       - otel-tracing
@@ -256,6 +270,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_MTLS_SPIFFE
     read_by:
       - otel-tracing
@@ -263,6 +278,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_ORCA_LRS_PROPAGATION
     read_by:
       - otel-tracing
@@ -270,6 +286,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_SNI
     read_by:
       - otel-tracing
@@ -277,6 +294,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_EXPERIMENTAL_XDS_SYSTEM_ROOT_CERTS
     read_by:
       - otel-tracing
@@ -284,6 +302,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GCP_OBSERVABILITY_CONFIG
     read_by:
       - otel-tracing
@@ -291,6 +310,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GCP_OBSERVABILITY_CONFIG_FILE
     read_by:
       - otel-tracing
@@ -298,6 +318,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_EXPERIMENTAL_CASE_SENSITIVE_BALANCER_REGISTRIES
     read_by:
       - otel-tracing
@@ -305,6 +326,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_EXPERIMENTAL_CONTROL_BUFFER_THROTTLE_LIMIT
     read_by:
       - otel-tracing
@@ -312,6 +334,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_EXPERIMENTAL_ENABLE_8KB_DEFAULT_HEADER_LIST_SIZE
     read_by:
       - otel-tracing
@@ -319,6 +342,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_EXPERIMENTAL_ENABLE_RECEIVE_BUFFER_COMPACTION
     read_by:
       - otel-tracing
@@ -326,6 +350,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_EXPERIMENTAL_HTTP_FRAMER_READ_BUFFER_POOLING
     read_by:
       - otel-tracing
@@ -333,6 +358,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_EXPERIMENTAL_XDS_RESOURCE_PANIC_RECOVERY
     read_by:
       - otel-tracing
@@ -340,6 +366,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_IGNORE_TXT_ERRORS
     read_by:
       - otel-tracing
@@ -347,6 +374,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_GO_LOG_FORMATTER
     read_by:
       - otel-tracing
@@ -380,6 +408,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_RING_HASH_CAP
     read_by:
       - otel-tracing
@@ -387,6 +416,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_TEST_ONLY_GOOGLE_C2P_RESOLVER_TRAFFIC_DIRECTOR_URI
     read_by:
       - otel-tracing
@@ -394,6 +424,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_XDS_BOOTSTRAP
     read_by:
       - otel-tracing
@@ -401,6 +432,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_XDS_BOOTSTRAP_CONFIG
     read_by:
       - otel-tracing
@@ -408,6 +440,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: GRPC_XDS_ENDPOINT_HASH_KEY_BACKWARD_COMPAT
     read_by:
       - otel-tracing
@@ -415,6 +448,7 @@ environment:
     required: false
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
+    refused_at_start: true
   - name: JWK_CA_FILE
     read_by:
       - rh-sso-auth
@@ -518,6 +552,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGCHANNELBINDING
     read_by:
       - postgres-adapter
@@ -525,6 +560,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGCONNECT_TIMEOUT
     read_by:
       - postgres-adapter
@@ -532,6 +568,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGDATABASE
     read_by:
       - postgres-adapter
@@ -539,6 +576,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGHOST
     read_by:
       - postgres-adapter
@@ -546,6 +584,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGMAXPROTOCOLVERSION
     read_by:
       - postgres-adapter
@@ -553,6 +592,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGMINPROTOCOLVERSION
     read_by:
       - postgres-adapter
@@ -560,6 +600,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGOPTIONS
     read_by:
       - postgres-adapter
@@ -567,6 +608,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGPASSFILE
     read_by:
       - postgres-adapter
@@ -574,6 +616,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGPASSWORD
     read_by:
       - postgres-adapter
@@ -581,6 +624,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: true
+    refused_at_start: true
   - name: PGPORT
     read_by:
       - postgres-adapter
@@ -588,6 +632,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGREQUIREAUTH
     read_by:
       - postgres-adapter
@@ -595,6 +640,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSERVICE
     read_by:
       - postgres-adapter
@@ -602,6 +648,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSERVICEFILE
     read_by:
       - postgres-adapter
@@ -609,6 +656,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSSLCERT
     read_by:
       - postgres-adapter
@@ -616,6 +664,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSSLKEY
     read_by:
       - postgres-adapter
@@ -623,6 +672,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSSLMODE
     read_by:
       - postgres-adapter
@@ -630,6 +680,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSSLNEGOTIATION
     read_by:
       - postgres-adapter
@@ -637,6 +688,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSSLPASSWORD
     read_by:
       - postgres-adapter
@@ -644,6 +696,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: true
+    refused_at_start: true
   - name: PGSSLROOTCERT
     read_by:
       - postgres-adapter
@@ -651,6 +704,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGSSLSNI
     read_by:
       - postgres-adapter
@@ -658,6 +712,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGTARGETSESSIONATTRS
     read_by:
       - postgres-adapter
@@ -665,6 +720,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGTZ
     read_by:
       - postgres-adapter
@@ -672,6 +728,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PGUSER
     read_by:
       - postgres-adapter
@@ -679,6 +736,7 @@ environment:
     required: false
     description: 'Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL.'
     secret: false
+    refused_at_start: true
   - name: PORT
     read_by:
       - health-check
@@ -694,6 +752,7 @@ environment:
     required: false
     description: 'Read by the Go TLS library for folders of system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection.'
     secret: false
+    refused_at_start: true
   - name: SSL_CERT_FILE
     read_by:
       - command
@@ -701,6 +760,7 @@ environment:
     required: false
     description: 'Read by the Go TLS library for the system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection.'
     secret: false
+    refused_at_start: true
   - name: STEGO_AUDIT_SINK_AUTH_HEADER
     read_by:
       - audit-log

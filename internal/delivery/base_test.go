@@ -480,6 +480,75 @@ func TestBaseEnvironment(t *testing.T) {
 	})
 }
 
+func TestRefusedVariables(t *testing.T) {
+	t.Run("ST-DLV-UC07-R03-T09 A variable that the start guard refuses gets no entry in the base, is never required, and the environment check refuses a value for it", func(t *testing.T) {
+		components := secretsFixture()
+		components[2].Variables = append(components[2].Variables,
+			Variable{Name: "PGHOST", Type: "string", Description: "Read by the driver.", RefusedAtStart: true},
+			Variable{Name: "GRPC_GO_LOG_SEVERITY_LEVEL", Type: "string", Description: "Read by gRPC."})
+		files, err := WriteRequirements("orders", components)
+		if err != nil {
+			t.Fatal(err)
+		}
+		requirements, err := LoadRequirements(files.Requirements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, variable := range requirements.Environment {
+			if variable.RefusedAtStart != (variable.Name == "PGHOST") {
+				t.Errorf("the platform requirements mark %s refused at start: %v", variable.Name, variable.RefusedAtStart)
+			}
+		}
+		base, _, err := WriteBase("orders", files.Requirements, healthCheckProbes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env := envByName(t, containerOf(t, string(base.Files[DeploymentFile])))
+		if _, wired := env["PGHOST"]; wired {
+			t.Error("the base wires PGHOST, which the start guard refuses")
+		}
+		if _, wired := env["GRPC_GO_LOG_SEVERITY_LEVEL"]; !wired {
+			t.Error("the base does not wire GRPC_GO_LOG_SEVERITY_LEVEL, which the start guard allows")
+		}
+		// A refused variable that a component states as required is refused, so it never reaches the required list.
+		required := secretsFixture()
+		required[2].Variables = append(required[2].Variables, Variable{Name: "PGHOST", Type: "string", Required: true, Description: "Read by the driver.", RefusedAtStart: true})
+		if _, err := WriteRequirements("orders", required); err == nil {
+			t.Error("a required variable that the start guard refuses is accepted")
+		}
+		// The environment check names a value for the refused variable, and passes without it.
+		file := func(extra string) []byte {
+			return []byte("version: 1\nservice: orders\nenvironment: test\nimage: registry.example/orders@sha256:" + strings.Repeat("ab", 32) + "\n" +
+				"destination: {cluster: \"https://api.example.com:6443\", namespace: orders-test, overlay_path: overlays/test}\n" +
+				"secrets:\n  orders-database: {url: x}\n  orders-cursor: {key: x}\n" +
+				"configuration:\n  STEGO_CURSOR_KEY_FILE: /k\n  STEGO_ISSUER: https://issuer.example\n" + extra +
+				"ingresses:\n  http: {port: 8080}\n")
+		}
+		fit, err := CheckEnvironment(requirements, file(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range fit.Rows {
+			if strings.Contains(row.Requirement, "PGHOST") {
+				t.Errorf("the check names PGHOST with no value given: %+v", row)
+			}
+		}
+		fit, err = CheckEnvironment(requirements, file("  PGHOST: db.example\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		named := false
+		for _, row := range fit.Rows {
+			if row.Requirement == "configuration PGHOST" && row.Status == WrongType && strings.Contains(row.Detail, "refuses") && !strings.Contains(row.Detail, "db.example") {
+				named = true
+			}
+		}
+		if !named {
+			t.Errorf("the check does not refuse a value for PGHOST, without the value: %+v", fit.Rows)
+		}
+	})
+}
+
 // mustYAML encodes a value as YAML for a comparison or a message.
 func mustYAML(t *testing.T, value any) []byte {
 	t.Helper()
