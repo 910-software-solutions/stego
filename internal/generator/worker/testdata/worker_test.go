@@ -427,7 +427,39 @@ type instance struct {
 	clock  *clock
 	ticker *command.Ticker
 	rec    *probe.Recorder
-	done   chan struct{}
+	// signals gets each skipped tick and each failed run of the instance, after the recorder got it, so a check
+	// waits for them with no deadline and no poll.
+	signals *signalled
+	done    chan struct{}
+}
+
+// signalled holds the channels that a signalledObserver sends to: one value for each skipped tick and each failed
+// run. A full channel drops the value, as no check reads more than 64.
+type signalled struct {
+	skipped chan struct{}
+	failed  chan probe.WorkerOutcome
+}
+
+// signalledObserver is the observer of the recorder that also signals each skipped tick and each failed run.
+type signalledObserver struct {
+	command.WorkerObserver
+	signals *signalled
+}
+
+func (o signalledObserver) RunFailed(ctx context.Context, outcome probe.WorkerOutcome) {
+	o.WorkerObserver.RunFailed(ctx, outcome)
+	select {
+	case o.signals.failed <- outcome:
+	default:
+	}
+}
+
+func (o signalledObserver) TickSkipped() {
+	o.WorkerObserver.TickSkipped()
+	select {
+	case o.signals.skipped <- struct{}{}:
+	default:
+	}
 }
 
 // calls gets each call of the fill, from every instance of the check. The check binds the fill once for the test
@@ -508,13 +540,16 @@ func startWith(t *testing.T, e *env, c *clock, leaseOf func(name string, ttl tim
 		Lease:   leaseOf,
 	}
 	rec := newRecorder(t)
-	env.Observe = func(name string) command.WorkerObserver { return rec.Worker(name) }
+	signals := &signalled{skipped: make(chan struct{}, 64), failed: make(chan probe.WorkerOutcome, 64)}
+	env.Observe = func(name string) command.WorkerObserver {
+		return signalledObserver{WorkerObserver: rec.Worker(name), signals: signals}
+	}
 	tickers, err := runners.Tickers(runners.BoundFills())(env)
 	must(t, err)
 	if len(tickers) != 1 || tickers[0].Name() != worker {
 		t.Fatalf("the runners give %d tickers, want the one of %s", len(tickers), worker)
 	}
-	in := &instance{t: t, e: e, clock: c, ticker: tickers[0], rec: rec, done: make(chan struct{})}
+	in := &instance{t: t, e: e, clock: c, ticker: tickers[0], rec: rec, signals: signals, done: make(chan struct{})}
 	ctx, cancel := context.WithCancel(e.ctx)
 	go func() {
 		defer close(in.done)
@@ -558,6 +593,23 @@ func (in *instance) tick() {
 	in.t.Helper()
 	in.armed()
 	in.clock.move(in.clock.nextDue().Sub(in.clock.Now()))
+}
+
+// runTick moves the instance's clock to the next due time once the scheduler waits for it, and gives the call of
+// the fill that the tick makes. A tick that comes while the run of the tick before still ends is skipped
+// (ST-SUP-RC35-OC04), so it moves the clock to the next due time again. It has no deadline: a scheduler that never
+// waits ends the check at the timeout of go test, and a missing result is not a pass.
+func (in *instance) runTick() call {
+	for {
+		due := in.clock.nextDue()
+		first(clockWait{in.clock, due})
+		in.clock.advance(due.Sub(in.clock.Now()))
+		select {
+		case r := <-calls:
+			return r
+		case <-in.signals.skipped:
+		}
+	}
 }
 
 // next gives the next call of the fill.
@@ -1197,16 +1249,26 @@ func TestWorker(t *testing.T) {
 			}
 			return write(ctx, h, "secret-7")
 		})
-		c := newClock()
-		in := start(t, e, c, "h1")
-		for i, ending := range []string{"nil", "error", "panic"} {
+		// The check does not depend on time (as ST-SUP-RC35-OC05-T01): the ticks are on a clock that only the check
+		// moves, in one step to each due time, and the lease is on a clock of its own that the check never moves, so
+		// no renew, retry or expiry happens while the check runs. Each step waits for the event that the next one
+		// needs, with no deadline: the scheduler's wait for the due time, the call of the fill, the commit or the
+		// failed run of the instance.
+		ticks, leases := newClock(), newLeaseClock()
+		in := startLeased(t, e, ticks, leases, "h1")
+		for _, ending := range []string{"nil", "error", "panic"} {
 			end.Store(ending)
-			in.tick()
-			next(t)
-			eventually(t, "the run is over", func() bool { return len(in.failed(t)) == i && (i > 0 || e.status(ids[0]) == "secret-7") })
+			if r := in.runTick(); r.tenant != ids[0] {
+				t.Fatalf("the fill was called for %s, want %s", r.tenant, ids[0])
+			}
+			switch ending {
+			case "nil":
+				committed(t, e, ids[0], "secret-7")
+			default:
+				<-in.signals.failed
+			}
 		}
-		eventually(t, "two runs are reported", func() bool { return len(in.failed(t)) == 2 })
-		if got := in.failed(t); got[0] != "rolled_back" || got[1] != "panicked" {
+		if got := in.failed(t); len(got) != 2 || got[0] != "rolled_back" || got[1] != "panicked" {
 			t.Fatalf("worker.run.failed reported %v, want rolled_back and panicked", got)
 		}
 		in.ticker.Stop()
