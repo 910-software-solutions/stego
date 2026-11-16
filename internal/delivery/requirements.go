@@ -133,8 +133,12 @@ const MaxRequirementsBytes = 1 << 20
 
 var (
 	// requirementName is a resolved requirement name: letters, digits, '-' and '_', so that it cannot hold a host
-	// name, an address, a path or a URL.
+	// name, an address, a path or a URL. The name of a configuration requirement is a variable name.
 	requirementName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+	// kubernetesName is the name of a need that a component states, and of an object that a cluster permission names:
+	// a DNS label of lower-case letters, digits and '-', which starts and ends with a letter or a digit, because the
+	// base names a Secret, a volume, a port or an object by it (#370 security re-review L4).
+	kubernetesName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	// shapeWord is a key, an engine or a resource.
 	shapeWord = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	// placeholder is one placeholder of a need name.
@@ -299,6 +303,9 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 	if len(name) > maxWord || !requirementName.MatchString(name) {
 		return Requirement{}, fault(name, "name", "the name is not a name of at most %d letters, digits, '-' or '_', so it can hold a value of an environment, such as a host name or an address", maxWord)
 	}
+	if !kubernetesName.MatchString(name) {
+		return Requirement{}, fault(name, "name", "%s", kubernetesNameFault(name))
+	}
 	kind, err := ParseRequirementKind(need.Kind)
 	if err != nil {
 		return Requirement{}, fault(name, "kind", "%s", err)
@@ -308,6 +315,9 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 		filled, err := fillName(service, component.Settings, resourceName)
 		if err != nil {
 			return Requirement{}, fault(name, "resource_names", "%s", err)
+		}
+		if !kubernetesName.MatchString(filled) {
+			return Requirement{}, fault(name, "resource_names", "the resource name %q: %s", filled, kubernetesNameFault(filled))
 		}
 		resourceNames = append(resourceNames, filled)
 	}
@@ -321,6 +331,22 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 		return Requirement{}, fault(name, field, "%s", reason)
 	}
 	return requirement, nil
+}
+
+// kubernetesNameFault tells why a resolved name is not a Kubernetes name, and what to change.
+func kubernetesNameFault(name string) string {
+	var faults []string
+	if strings.ToLower(name) != name {
+		faults = append(faults, "a capital letter")
+	}
+	if strings.Contains(name, "_") {
+		faults = append(faults, "'_'")
+	}
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
+		faults = append(faults, "a '-' at the start or the end")
+	}
+	return fmt.Sprintf("the name holds %s, which a Kubernetes name refuses; a need name is a DNS label of lower-case letters, digits and '-' that starts and ends with a letter or a digit, so write it in lower case with '-' in place of '_', also in the value of a setting that it holds",
+		strings.Join(faults, " and "))
 }
 
 // fillName fills the placeholders {service} and {settings.<key>} of a need name from the service name and the
@@ -397,8 +423,8 @@ func checkShape(r Requirement) (string, string) {
 		return "resource_names", fmt.Sprintf("a %s need has no field resource_names", r.Kind)
 	}
 	for i, resourceName := range r.ResourceNames {
-		if len(resourceName) > maxWord || !requirementName.MatchString(resourceName) {
-			return "resource_names", fmt.Sprintf("the resource name %q is not a name of at most %d letters, digits, '-' or '_'", resourceName, maxWord)
+		if len(resourceName) > maxWord || !kubernetesName.MatchString(resourceName) {
+			return "resource_names", fmt.Sprintf("the resource name %q is not a Kubernetes name of at most %d lower-case letters, digits and '-'", resourceName, maxWord)
 		}
 		if i > 0 && r.ResourceNames[i-1] == resourceName {
 			return "resource_names", fmt.Sprintf("the resource name %s is stated twice", resourceName)
@@ -498,6 +524,9 @@ func LoadRequirements(data []byte) (Requirements, error) {
 		if len(requirement.Name) > maxWord || !requirementName.MatchString(requirement.Name) {
 			return Requirements{}, fmt.Errorf("platform requirements: the requirement name %q is not a name of at most %d letters, digits, '-' or '_'", requirement.Name, maxWord)
 		}
+		if requirement.Kind != Configuration && !kubernetesName.MatchString(requirement.Name) {
+			return Requirements{}, fmt.Errorf("platform requirements: the %s requirement %q: %s", requirement.Kind, requirement.Name, kubernetesNameFault(requirement.Name))
+		}
 		if seen[requirement.Name] {
 			return Requirements{}, fmt.Errorf("platform requirements: the requirement %s is stated twice", requirement.Name)
 		}
@@ -511,6 +540,9 @@ func LoadRequirements(data []byte) (Requirements, error) {
 		if field, reason := checkShape(sorted); field != "" {
 			return Requirements{}, fmt.Errorf("platform requirements: requirement %s: field %s: %s", requirement.Name, field, reason)
 		}
+	}
+	if err := checkGroups(requirements.Environment); err != nil {
+		return Requirements{}, fmt.Errorf("platform requirements: %w", err)
 	}
 	listed := map[string]bool{}
 	for i, variable := range requirements.Environment {

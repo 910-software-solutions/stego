@@ -3,6 +3,7 @@ package delivery
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -12,7 +13,8 @@ const ReferenceFile = "deploy/environment-variables.md"
 
 // renderReference renders the environment variable reference of the service from the derived list alone
 // (ST-DLV-UC01-R07, ST-DLV-DS01): one section for each reader in name order, and one table row for each variable it
-// reads in name order. A secret variable shows its name, type, required flag, description and secret flag only,
+// reads in name order, then the groups of one of and the secret sources. The Required cell of a variable of a group
+// names the group. A secret variable shows its name, type, required flag, description and secret flag only,
 // and never a default, an example or a value (ST-DLV-UC01-R08).
 func renderReference(service string, list []AcceptedVariable) []byte {
 	var out bytes.Buffer
@@ -55,12 +57,37 @@ func renderReference(service string, list []AcceptedVariable) []byte {
 				// A secret variable shows no default, no example and no allowed values.
 				defaultText, example, allowed = "-", "-", "-"
 			}
-			fmt.Fprintf(&out, "| %s | %s | %s | %s | %s | %s | %s | %s |\n", code(variable.Name), cell(variable.Type), yesNo(variable.Required),
+			required := yesNo(variable.Required)
+			if variable.OneOf != "" {
+				required = "one of " + code(variable.OneOf)
+			}
+			fmt.Fprintf(&out, "| %s | %s | %s | %s | %s | %s | %s | %s |\n", code(variable.Name), cell(variable.Type), required,
 				defaultText, yesNo(variable.Secret), allowed, example, cell(variable.Description))
 		}
 	}
+	renderGroups(&out, list)
 	renderSecretSources(&out, list)
 	return out.Bytes()
+}
+
+// renderGroups renders, from the list alone, each group of one of with its variables: the service needs exactly one
+// of them, and stego env check fails when the environment file gives none or more than one (ST-DLV-UC01-R07,
+// ST-DLV-Q09). It renders nothing when the list has no group.
+func renderGroups(out *bytes.Buffer, list []AcceptedVariable) {
+	groups := Groups(list)
+	if len(groups) == 0 {
+		return
+	}
+	out.WriteString("\n## Groups of one of\n\nThe service needs exactly one variable of each group: it does not start when the group has no value, " +
+		"or\nmore than one. stego env check fails in the same cases.\n\n")
+	out.WriteString("| Group | Variables |\n|---|---|\n")
+	for _, name := range slices.Sorted(maps.Keys(groups)) {
+		var names []string
+		for _, variable := range groups[name] {
+			names = append(names, code(variable.Name))
+		}
+		fmt.Fprintf(out, "| %s | %s |\n", code(name), strings.Join(names, ", "))
+	}
 }
 
 // renderSecretSources renders, from the list alone, the Secret and the key of each variable with a secret source,

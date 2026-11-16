@@ -50,9 +50,14 @@ A port is a number from 1 to 65535. The verbs are `get`, `list`, `watch`, `creat
 - A required environment variable must have a value under `configuration`, or a secret of its name when the variable
   is secret.
 - A secret environment variable under `configuration` is the wrong type: give it as a secret.
+- The variables of a group of one of (`one_of` in the `environment` list), such as `DATABASE_URL` and
+  `DATABASE_URL_FILE`, need exactly one value. A variable has a value when `configuration` gives it one that is not
+  empty, when a secret of its name has a key, or when the secret of its `secret_source` has that key. The check names
+  the group as missing when no variable of it has a value, and as the wrong type when more than one has.
 - An entry that no requirement and no listed variable names is listed as unused. It does not fail the check.
 
-`deploy/environment-variables.md` lists each environment variable with its type, its default and its allowed values.
+`deploy/environment-variables.md` lists each environment variable with its type, its default, its allowed values and
+its group of one of.
 
 ## Example
 

@@ -89,6 +89,10 @@ type EnvironmentVariable struct {
 	// migration job (ST-SUP-EN14 field Read by mode, ST-DLV-Q19). The Deployment of the base, which serves, wires no
 	// such variable.
 	ReadByMode string `yaml:"read_by_mode,omitempty"`
+	// OneOf is the group of variables of the component of which the process needs exactly one value, such as
+	// DATABASE_URL and DATABASE_URL_FILE (ST-SUP-EN14 field One of, ST-DLV-Q09). A group has at least two variables
+	// of the component, and none of them is required on its own (ST-SUP-INV24).
+	OneOf string `yaml:"one_of,omitempty"`
 }
 
 // ReadByModes are the modes that a variable may state as its one reader: the migration job.
@@ -211,6 +215,12 @@ func declaresVariables(component *Component) error {
 		if variable.ReadByMode != "" && variable.IsRequired() {
 			return fault("read_by_mode", "a variable that one mode reads is not required by the service")
 		}
+		if variable.OneOf != "" && !groupName.MatchString(variable.OneOf) {
+			return fault("one_of", "the group %q is not a name of at most 63 lower-case letters, digits and '-', such as database-url", variable.OneOf)
+		}
+		if variable.OneOf != "" && variable.IsRequired() {
+			return fault("one_of", "the variable is required and in the group %s; a variable of a group is not required on its own, because the group needs exactly one of its variables: give required: false", variable.OneOf)
+		}
 		if source := variable.SecretSource; source != nil {
 			if !variable.IsSecret() && variable.Type != "path" {
 				return fault("secret_source", "only a secret variable, or a path variable that names the file of a secret, states a secret source")
@@ -221,6 +231,27 @@ func declaresVariables(component *Component) error {
 			if len(source.Key) > maxNeedWord || !needWord.MatchString(source.Key) {
 				return fault("secret_source", "the key %q is not a key name of at most %d letters, digits, '-' or '_'", source.Key, maxNeedWord)
 			}
+		}
+	}
+	return checkGroups(component)
+}
+
+// groupName is the name of a group of one of: lower-case letters, digits and '-'.
+var groupName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// checkGroups holds each group of one of of a component to at least two variables (ST-SUP-INV24, ST-DLV-Q09). The
+// group is the component's own: the platform requirements refuse one group name that two components state.
+func checkGroups(component *Component) error {
+	members := map[string][]string{}
+	for _, variable := range *component.Environment {
+		if variable.OneOf != "" {
+			members[variable.OneOf] = append(members[variable.OneOf], variable.Name)
+		}
+	}
+	for _, group := range slices.Sorted(maps.Keys(members)) {
+		if len(members[group]) < 2 {
+			return &VariableError{Component: component.Name, Variable: variableLabel(members[group][0]), Fact: "one_of",
+				Reason: fmt.Sprintf("the variable is the only one of the group %s; a group has at least two variables of the component, such as X and X_FILE, so give the other one the same one_of or remove one_of", group)}
 		}
 	}
 	return nil

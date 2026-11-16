@@ -51,8 +51,8 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
-| `STEGO_KAFKA_BROKERS` | list | no | none | no | - | `kafka-0.example.com:9093,kafka-1.example.com:9093` | The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value. |
-| `STEGO_KAFKA_BROKERS_FILE` | path | no | none | no | - | `/etc/stego/kafka/brokers` | The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two. |
+| `STEGO_KAFKA_BROKERS` | list | one of `kafka-brokers` | none | no | - | `kafka-0.example.com:9093,kafka-1.example.com:9093` | The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value. |
+| `STEGO_KAFKA_BROKERS_FILE` | path | one of `kafka-brokers` | none | no | - | `/etc/stego/kafka/brokers` | The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two. |
 | `STEGO_KAFKA_BROKER_HOSTS` | list | no | none | no | - | `kafka-0.example.com,kafka-1.example.com` | The hosts that the worker may dial, at most 64, or STEGO_KAFKA_BROKER_HOSTS_FILE in its place. When the two have no value, the worker dials each broker that a broker names. |
 | `STEGO_KAFKA_BROKER_HOSTS_FILE` | path | no | none | no | - | `/etc/stego/kafka/broker-hosts` | The file that holds the list of the hosts that the worker may dial. Give it or STEGO_KAFKA_BROKER_HOSTS, not the two. |
 | `STEGO_KAFKA_CA_FILE` | path | no | none | no | - | `/etc/stego/kafka/ca.crt` | A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots. |
@@ -122,8 +122,8 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
-| `DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
-| `DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database/url` | The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two. |
+| `DATABASE_URL` | string | one of `database-url` | - | yes | - | - | The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
+| `DATABASE_URL_FILE` | path | one of `database-url` | none | no | - | `/etc/stego/database/url` | The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two. |
 | `HOME` | path | no | none | no | - | - | Read by the pgx driver for its default pass, service and certificate files. The database opener gives each of those settings itself, so no file under HOME changes the connection. |
 | `PGAPPNAME` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
 | `PGCHANNELBINDING` | string | no | none | no | - | - | Read by the pgx driver for a part that the connection string does not give. The service does not start when it has a value: give the part in DATABASE_URL. |
@@ -154,12 +154,12 @@ shows its name only: give its value through a secret of the platform.
 | `STEGO_DATABASE_CONNECTION_MAX_LIFETIME` | duration | no | `30m` | no | 1s to 24h | `1h` | The longest time that the pool keeps one database connection. When it has no value, the limit is 30 minutes. |
 | `STEGO_DATABASE_MAX_IDLE_CONNECTIONS` | integer | no | none | no | 0 to 1024 | `8` | The largest number of idle connections in the database pool, at most the open limit. When it has no value, the limit is 4, or the open limit when it is less. |
 | `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` | integer | no | `16` | no | 1 to 1024 | `32` | The largest number of open connections in the database pool. When it has no value, the pool opens at most 16 connections. |
-| `STEGO_MIGRATION_DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
-| `STEGO_MIGRATION_DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database-owner/url` | The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two. |
-| `STEGO_RELAY_DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
-| `STEGO_RELAY_DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database/relay-url` | The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two. |
-| `STEGO_WORKER_DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
-| `STEGO_WORKER_DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database/worker-url` | The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two. |
+| `STEGO_MIGRATION_DATABASE_URL` | string | one of `migration-database-url` | - | yes | - | - | The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
+| `STEGO_MIGRATION_DATABASE_URL_FILE` | path | one of `migration-database-url` | none | no | - | `/etc/stego/database-owner/url` | The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two. |
+| `STEGO_RELAY_DATABASE_URL` | string | one of `relay-database-url` | - | yes | - | - | The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
+| `STEGO_RELAY_DATABASE_URL_FILE` | path | one of `relay-database-url` | none | no | - | `/etc/stego/database/relay-url` | The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two. |
+| `STEGO_WORKER_DATABASE_URL` | string | one of `worker-database-url` | - | yes | - | - | The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
+| `STEGO_WORKER_DATABASE_URL_FILE` | path | one of `worker-database-url` | none | no | - | `/etc/stego/database/worker-url` | The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two. |
 
 ## query
 
@@ -200,6 +200,19 @@ shows its name only: give its value through a secret of the platform.
 | `STEGO_SPICEDB_ENDPOINT` | address | yes | none | no | - | `spicedb.example.svc:50051` | The host and port of SpiceDB. The service does not start when it has no value. |
 | `STEGO_SPICEDB_INSECURE_LOOPBACK` | boolean | no | `0` | no | 0, 1 | - | Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS. |
 | `STEGO_SPICEDB_KEY_FILE` | path | yes | none | no | - | `/etc/stego/spicedb/key` | The file of the preshared key of SpiceDB. The service does not start when it has no value. |
+
+## Groups of one of
+
+The service needs exactly one variable of each group: it does not start when the group has no value, or
+more than one. stego env check fails in the same cases.
+
+| Group | Variables |
+|---|---|
+| `database-url` | `DATABASE_URL`, `DATABASE_URL_FILE` |
+| `kafka-brokers` | `STEGO_KAFKA_BROKERS`, `STEGO_KAFKA_BROKERS_FILE` |
+| `migration-database-url` | `STEGO_MIGRATION_DATABASE_URL`, `STEGO_MIGRATION_DATABASE_URL_FILE` |
+| `relay-database-url` | `STEGO_RELAY_DATABASE_URL`, `STEGO_RELAY_DATABASE_URL_FILE` |
+| `worker-database-url` | `STEGO_WORKER_DATABASE_URL`, `STEGO_WORKER_DATABASE_URL_FILE` |
 
 ## Secrets
 

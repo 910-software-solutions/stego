@@ -23,3 +23,41 @@ func TestRequirementKind(t *testing.T) {
 		}
 	})
 }
+
+func TestKubernetesNeedNames(t *testing.T) {
+	t.Run("ST-DLV-UC01-R01-T03 A need name or a resource name that is not a Kubernetes name is refused at the requirements stage with a clear message", func(t *testing.T) {
+		for _, need := range []Need{
+			{Kind: "secret", Name: "{service}-Database", Keys: []string{"url"}},
+			{Kind: "secret", Name: "{service}_database", Keys: []string{"url"}},
+			{Kind: "secret", Name: "{service}-{settings.store}", Keys: []string{"url"}},
+			{Kind: "backing store", Name: "{service}-db-", Engine: "postgres"},
+			{Kind: "cluster permission", Name: "{service}-maps", Resource: "configmaps", Verbs: []string{"get"}, ResourceNames: []string{"{service}_Settings"}},
+		} {
+			component := ComponentNeeds{Component: "store", Settings: map[string]string{"store": "MAIN"}, Needs: []Need{need}}
+			_, err := DeriveRequirements("orders", []ComponentNeeds{component})
+			if err == nil {
+				t.Errorf("the need %+v is accepted", need)
+				continue
+			}
+			for _, want := range []string{"component store", "which a Kubernetes name refuses", "lower case"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal of %+v does not say %q: %v", need, want, err)
+				}
+			}
+		}
+		// A lower-case need is accepted, and a required variable keeps its configuration need of its own name.
+		component := ComponentNeeds{Component: "store", Needs: []Need{{Kind: "secret", Name: "{service}-database", Keys: []string{"url"}}},
+			Variables: []Variable{{Name: "STEGO_STORE_MODE", Type: "string", Required: true, Description: "The mode."}}}
+		files, err := WriteRequirements("orders", []ComponentNeeds{component})
+		if err != nil {
+			t.Fatalf("a lower-case need is refused: %v", err)
+		}
+		if _, err := LoadRequirements(files.Requirements); err != nil {
+			t.Fatalf("the platform requirements with the configuration need STEGO_STORE_MODE do not load: %v", err)
+		}
+		changed := strings.Replace(string(files.Requirements), "name: orders-database", "name: Orders_Database", 1)
+		if _, err := LoadRequirements([]byte(changed)); err == nil || !strings.Contains(err.Error(), "Orders_Database") || !strings.Contains(err.Error(), "a capital letter and '_'") {
+			t.Errorf("LoadRequirements does not refuse the secret requirement Orders_Database with a clear message: %v", err)
+		}
+	})
+}

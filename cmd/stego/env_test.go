@@ -336,8 +336,9 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE")
 		// A required secret variable has no configuration need: the check names it as a variable, and reads only
-		// its name when the file gives it.
+		// its name when the file gives it. A required variable is in no group of one of, so the pair leaves its group.
 		c = newEnvCase(t)
+		c.write(t, "platform-requirements.yaml", strings.ReplaceAll(c.read(t, "platform-requirements.yaml"), "    one_of: database-url\n", ""))
 		c.change(t, "platform-requirements.yaml", "  - name: DATABASE_URL\n    read_by:\n      - postgres-adapter\n    type: string\n    required: false\n",
 			"  - name: DATABASE_URL\n    read_by:\n      - postgres-adapter\n    type: string\n    required: true\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")

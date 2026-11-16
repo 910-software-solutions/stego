@@ -57,6 +57,12 @@ When the base ref has a record, the check refuses:
 Each fault names the entity, the field, the rule and the schema change and
 phase to declare. See [schema changes](schema-changes.md).
 
+`stego apply --base <ref>` and `stego plan --base <ref>` run the same check
+before they plan, and write nothing when it refuses. Their flag `--strict`
+does not change the check: it also refuses a secret source of an environment
+variable that the base of the service does not wire (see
+[delivery](delivery.md)).
+
 ## Exit status
 
 - 0: no fault.

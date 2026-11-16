@@ -12,6 +12,9 @@ platform supplies those values.
   the release. See "The migration Job".
 - `deploy/components/secret-files/`, when a variable of the service comes from a secret: an opt-in kustomize
   Component that gives each secret as a file. See "Secrets as files".
+- `deploy/components/fs-group/`, next to `secret-files`: a second opt-in kustomize Component that sets the pod
+  `fsGroup` 65532 on the Deployment and on the migration Job, so that the process can read the files. Use it only on
+  a cluster other than OpenShift. See "Secrets as files".
 - `Containerfile`: the offline Containerfile of the image that the base runs. It builds with the network off, with
   the Go SDK, the settings and the arguments of `stego build`, from the Go modules at
   `/cachi2/output/deps/gomod/pkg/mod`, where the Go module prefetch of Konflux puts them. The final image is
@@ -62,7 +65,10 @@ environment file against them.
   required variable has no `optional` flag. An optional variable has `optional: true`: when the key is not there,
   the service uses the default in its code. The base writes no default.
 - A variable with a `*_FILE` form, such as `DATABASE_URL` and `DATABASE_URL_FILE`, gets the environment form only.
-  The service refuses the two together.
+  The service refuses the two together. When the service needs one of the two, the pair is a group of one of
+  (`one_of`), and `stego env check` fails when the environment file gives none or both. The Secret of the
+  environment form counts as its value, so with the Component secret-files give the Secret and not the `*_FILE`
+  variable.
 - A secret variable that no secret need gives, such as `PGPASSWORD`, gets no entry.
 - A variable that only the migration job reads (`read_by_mode: migrate` in the platform requirements), such as
   `STEGO_MIGRATION_DATABASE_URL`, gets no entry in the Deployment. Only the migration Job takes it, from its own
@@ -77,7 +83,13 @@ environment file against them.
 
 When a component names a secret source that the service does not state, such as a key that its secret need does
 not have, `stego validate`, `stego plan` and `stego apply` write a `WARNING` with the variable, the need and the
-key, and the base gets no entry for that variable.
+key, and the base gets no entry for that variable. With `--strict`, each of the three commands refuses such a source,
+names each variable, need and key, and writes nothing. Use `--strict` in CI, so that a source that the base does not
+wire stops the change.
+
+A need name is a Kubernetes name: lower-case letters, digits and `-`, which starts and ends with a letter or a digit,
+of at most 63 characters, also after `{service}` and the settings fill it. `stego apply` refuses a need name with a
+capital letter or `_`, and names the component and the need.
 
 When a required key is not there, the pod does not start. The kubelet does not start the container, and the pod
 stays in `CreateContainerConfigError`. The pod event names the Secret or the ConfigMap and the key, for example
@@ -148,7 +160,8 @@ A release before this one read the owner credential from the key `migration-url`
   image needs a pull secret, give it to the default service account, or patch the Job in the overlay.
 - The pod security of the Deployment: non-root, the seccomp profile `RuntimeDefault`, no privilege escalation, every
   capability dropped, a read-only root file system and the emptyDir `/tmp`. It sets no `fsGroup`, for the same
-  reason as the Deployment (see "Secrets as files").
+  reason as the Deployment. The Component fs-group sets one on a cluster other than OpenShift (see "Secrets as
+  files").
 - On the Job, the labels `app.kubernetes.io/name: <service>`, `app.kubernetes.io/part-of: <service>` and
   `app.kubernetes.io/component: migration`. They do not change between releases, so one selector finds the Job of
   any release. On its pods, only `app.kubernetes.io/part-of` and `app.kubernetes.io/component`, with no
@@ -250,10 +263,22 @@ patch then:
   `DATABASE_URL_FILE=/var/run/secrets/stego/orders-database/url`.
 
 The files have the mode 0400 and the owner root, so that no other user can read them. The process runs as a user
-that is not root, so give the pod an `fsGroup`: Kubernetes then gives the files to that group with read access.
-The restricted SCC of OpenShift sets an `fsGroup` for each namespace, and it refuses a pod that sets another one,
-so the base sets none. On another cluster, set `fsGroup` in the overlay, on the Deployment and on the Job, for
-example to the user of the image.
+that is not root, so the pod must have an `fsGroup`: Kubernetes then gives the files to that group with read
+access. The restricted-v2 SCC of OpenShift gives each namespace its own `fsGroup` range, sets an `fsGroup` from it
+on each pod, and refuses a pod that sets one outside the range. So the base sets none:
+
+- On OpenShift, list only `secret-files`. Never list `fs-group`: the SCC refuses its pods.
+- On a cluster other than OpenShift, list `fs-group` with `secret-files`. It sets the pod `fsGroup` 65532, the user
+  and the group of the image, on the Deployment and on the migration Job, and it changes nothing else:
+
+  ```yaml
+  components:
+    - https://git.example/orders.git//deploy/components/secret-files?ref=0123456789abcdef0123456789abcdef01234567
+    - https://git.example/orders.git//deploy/components/fs-group?ref=0123456789abcdef0123456789abcdef01234567
+  ```
+
+  Without it, or another `fsGroup` from the overlay, the process cannot read the files and does not start.
+
 Do not widen the mode of the files, and do not run the process as root.
 
 The Component switches only the variables that state a secret source. In the Job, it switches only the owner
@@ -276,8 +301,23 @@ switch a credential file that has no secret source, such as `STEGO_KAFKA_PASSWOR
 `STEGO_AUDIT_SINK_TOKEN_FILE` or `STEGO_OTEL_TOKEN_FILE`: the base wires its path from the ConfigMap, and the
 overlay mounts the file.
 
-When a Secret is not there, the pod stays in `ContainerCreating`, and the pod event `FailedMount` names the Secret.
-When a key is not there, the service does not start and names the variable of the file.
+With the Component, a missing Secret or a missing key stops the pod before the container starts. The kubelet cannot
+mount the volume, so the pod stays in `ContainerCreating` (not `CreateContainerConfigError`), and the kubelet writes
+a `FailedMount` event that names the volume, the Secret and the key, for example:
+
+```text
+Warning  FailedMount  kubelet  MountVolume.SetUp failed for volume "orders-database" : secret "orders-database" not found
+Warning  FailedMount  kubelet  MountVolume.SetUp failed for volume "orders-database" : references non-existent secret key: url
+```
+
+The process never runs, so it writes no log. To find the cause, read the events of the pod:
+
+```sh
+kubectl describe pod -n <namespace> <pod>
+kubectl get events -n <namespace> --field-selector reason=FailedMount,involvedObject.name=<pod>
+```
+
+The kubelet tries again, and the pod starts when the Secret holds the key.
 
 ## The CI file
 

@@ -109,7 +109,8 @@ func newEvolution(t *testing.T) *evolution {
 	}
 	// The files of the migration Job name the schema of the example, which v1 changes, so they go with the record
 	// too (ST-DLV-UC07-R06).
-	for _, file := range []string{"deploy/base/migration-job.yaml", "deploy/components/secret-files/remove-job-env.yaml", "deploy/components/secret-files/mount-job-files.yaml"} {
+	for _, file := range []string{"deploy/base/migration-job.yaml", "deploy/components/secret-files/remove-job-env.yaml", "deploy/components/secret-files/mount-job-files.yaml",
+		"deploy/components/fs-group/job-fs-group.yaml"} {
 		if err := os.Remove(filepath.Join(e.repo, filepath.FromSlash(file))); err != nil {
 			t.Fatal(err)
 		}
