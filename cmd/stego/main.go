@@ -463,7 +463,8 @@ func runPlan(args []string) error {
 }
 
 // checkBeforeSteps runs the checks of stego validate on the declaration in the working folder, and prints the faults
-// and refuses when it has one.
+// and refuses when it has one: the declaration checks, then the check plan, which derives the platform requirements,
+// so that --strict refuses a secret source that the run does not keep (#375 security review L1).
 func checkBeforeSteps(stdout io.Writer) error {
 	input, err := buildReconcilerInput()
 	if err != nil {
@@ -476,6 +477,10 @@ func checkBeforeSteps(stdout io.Writer) error {
 	if result.HasErrors() {
 		fmt.Fprint(stdout, declaration.NewFaultsReader(result).Prose())
 		return fmt.Errorf("validation failed with %d error(s), so plan saved no plan", len(result.Errors))
+	}
+	input.CheckOnly = true
+	if _, err := compiler.Reconcile(input); err != nil {
+		return fmt.Errorf("the check of the declaration failed, so plan saved no plan: %w", err)
 	}
 	return nil
 }
@@ -519,6 +524,7 @@ func runApply(args []string) error {
 			// Once Apply starts, its journal names the new declaration, and stego recover completes it.
 			if !started {
 				restore()
+				return fmt.Errorf("apply wrote the old service.yaml back, without the add steps: %w", err)
 			}
 			return err
 		}

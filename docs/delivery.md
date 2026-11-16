@@ -66,9 +66,11 @@ environment file against them.
   the service uses the default in its code. The base writes no default.
 - A variable with a `*_FILE` form, such as `DATABASE_URL` and `DATABASE_URL_FILE`, gets the environment form only.
   The service refuses the two together. When the service needs one of the two, the pair is a group of one of
-  (`one_of`), and `stego env check` fails when the environment file gives none or both. The Secret of the
-  environment form counts as its value, so with the Component secret-files give the Secret and not the `*_FILE`
-  variable.
+  (`one_of`), and `stego env check` fails when the environment file gives none or both. The key of the Secret is
+  the one value of the pair in both forms: the base gives it as the environment form, and the Component
+  secret-files gives it as the `*_FILE` file. Give the Secret in the environment file, with or without the
+  Component, and never the `*_FILE` variable: the base never wires it from the environment file, and the check
+  prints a notice for it.
 - A secret variable that no secret need gives, such as `PGPASSWORD`, gets no entry.
 - A variable that only the migration job reads (`read_by_mode: migrate` in the platform requirements), such as
   `STEGO_MIGRATION_DATABASE_URL`, gets no entry in the Deployment. Only the migration Job takes it, from its own

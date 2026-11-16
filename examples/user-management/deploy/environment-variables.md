@@ -210,6 +210,12 @@ more than one. stego env check fails in the same cases.
 | `relay-database-url` | `STEGO_RELAY_DATABASE_URL`, `STEGO_RELAY_DATABASE_URL_FILE` |
 | `worker-database-url` | `STEGO_WORKER_DATABASE_URL`, `STEGO_WORKER_DATABASE_URL_FILE` |
 
+The key of the Secret of each of these variables is the one value of its group:
+`DATABASE_URL`, `STEGO_MIGRATION_DATABASE_URL`, `STEGO_RELAY_DATABASE_URL`, `STEGO_WORKER_DATABASE_URL`.
+The base gives it as the variable, and the Component secret-files gives it as the file of the *_FILE form. Give
+the Secret in the environment file, with or without the Component, and never the *_FILE variable: the base never
+wires it.
+
 ## Secrets
 
 The Secret and the key that give each secret variable, or the file of a path variable, names only. The migration Job

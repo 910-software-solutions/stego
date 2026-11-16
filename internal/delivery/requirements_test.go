@@ -55,6 +55,16 @@ func TestKubernetesNeedNames(t *testing.T) {
 		if _, err := LoadRequirements(files.Requirements); err != nil {
 			t.Fatalf("the platform requirements with the configuration need STEGO_STORE_MODE do not load: %v", err)
 		}
+		// A configuration need that a component states is named by its environment variable, in capitals with '_':
+		// the base never uses it as a Kubernetes name, so it is accepted, as LoadRequirements accepts it (#375 L4).
+		configured := ComponentNeeds{Component: "store", Needs: []Need{{Kind: "configuration", Name: "STEGO_STORE_REGION"}}}
+		written, err := WriteRequirements("orders", []ComponentNeeds{configured})
+		if err != nil {
+			t.Fatalf("the configuration need STEGO_STORE_REGION of a component is refused: %v", err)
+		}
+		if _, err := LoadRequirements(written.Requirements); err != nil || !strings.Contains(string(written.Requirements), "name: STEGO_STORE_REGION") {
+			t.Fatalf("the platform requirements with the configuration need STEGO_STORE_REGION do not hold it or do not load: %v\n%s", err, written.Requirements)
+		}
 		changed := strings.Replace(string(files.Requirements), "name: orders-database", "name: Orders_Database", 1)
 		if _, err := LoadRequirements([]byte(changed)); err == nil || !strings.Contains(err.Error(), "Orders_Database") || !strings.Contains(err.Error(), "a capital letter and '_'") {
 			t.Errorf("LoadRequirements does not refuse the secret requirement Orders_Database with a clear message: %v", err)
