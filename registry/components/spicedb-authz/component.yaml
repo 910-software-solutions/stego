@@ -62,6 +62,7 @@ environment:
     required: true
     description: "The file of the preshared key of SpiceDB. The service does not start when it has no value."
     secret: false
+    secret_source: {name: "{service}-spicedb", key: preshared-key}
     example: "/etc/stego/spicedb/key"
   - name: STEGO_SPICEDB_INSECURE_LOOPBACK
     type: boolean

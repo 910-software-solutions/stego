@@ -63,12 +63,14 @@ environment:
     required: false
     description: "The file of the PEM TLS certificate of the HTTP server. The browser backend does not start when it has no value."
     secret: false
+    secret_source: {name: "{service}-tls", key: tls-crt}
     example: "/etc/stego/tls/tls.crt"
   - name: STEGO_HTTP_TLS_KEY
     type: path
     required: false
     description: "The file of the PEM TLS private key of the HTTP server. The browser backend does not start when it has no value."
     secret: false
+    secret_source: {name: "{service}-tls", key: tls-key}
     example: "/etc/stego/tls/tls.key"
   - name: STEGO_BROWSER_ORIGIN
     type: url
@@ -111,12 +113,14 @@ environment:
     required: true
     description: "The file of the OAuth client secret. The backend does not start when it has no value."
     secret: false
+    secret_source: {name: "{service}-browser", key: client-secret}
     example: "/etc/stego/browser/client-secret"
   - name: STEGO_BROWSER_SESSION_KEY_FILE
     type: path
     required: true
     description: "The file of the keys that encrypt the browser sessions. The backend does not start when it has no value."
     secret: false
+    secret_source: {name: "{service}-browser", key: session-keys}
     example: "/etc/stego/browser/session-keys"
 # The platform needs (ST-SUP-EN09): the TLS certificate of the backend, the OAuth client secret and the session keys,
 # the OpenID Connect issuer and the network path to it, the HTTP port and the pod security level.

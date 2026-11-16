@@ -1153,16 +1153,21 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) (co
 		}
 		variables := make([]delivery.Variable, 0, len(component.Variables))
 		for _, variable := range component.Variables {
+			var source *delivery.SecretSource
+			if variable.SecretSource != nil {
+				source = &delivery.SecretSource{Name: variable.SecretSource.Name, Key: variable.SecretSource.Key}
+			}
 			variables = append(variables, delivery.Variable{Name: variable.Name, Type: variable.Type, Required: variable.IsRequired(),
 				Default: variable.Default, Description: variable.Description, Secret: variable.IsSecret(), Example: variable.Example,
-				Allowed: variable.Allowed.Text()})
+				Allowed: variable.Allowed.Text(), SecretSource: source, RefusedAtStart: gen.RefusedVariable(variable.Name),
+				ReadByMode: variable.ReadByMode})
 		}
 		declared := make([]delivery.DeclaredVariables, 0, len(component.Declared))
 		for _, group := range component.Declared {
 			list := make([]delivery.Variable, 0, len(group.Variables))
 			for _, variable := range group.Variables {
 				list = append(list, delivery.Variable{Name: variable.Name, Type: variable.Type, Required: variable.Required, Default: variable.Default,
-					Description: variable.Description, Secret: variable.Secret, Allowed: variable.Allowed})
+					Description: variable.Description, Secret: variable.Secret, Allowed: variable.Allowed, RefusedAtStart: gen.RefusedVariable(variable.Name)})
 			}
 			declared = append(declared, delivery.DeclaredVariables{Group: group.Group, Variables: list})
 		}
@@ -1172,6 +1177,11 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) (co
 	files, err := delivery.WriteRequirements(service, stated)
 	if err != nil {
 		return compiler.RequirementsFiles{}, err
+	}
+	// A secret source that the run does not keep is named on standard error, by validate, plan and apply alike
+	// (ST-DLV-Q19).
+	for _, warning := range files.Warnings {
+		fmt.Fprintf(os.Stderr, "WARNING: %s\n", warning)
 	}
 	return compiler.RequirementsFiles{Requirements: files.Requirements, Reference: files.Reference}, nil
 }

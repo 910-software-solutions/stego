@@ -50,6 +50,7 @@ environment:
     required: false
     description: "The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
     secret: true
+    secret_source: {name: "{service}-database", key: url}
   - name: DATABASE_URL_FILE
     type: path
     required: false
@@ -61,17 +62,21 @@ environment:
     required: false
     description: "The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
     secret: true
+    secret_source: {name: "{service}-database", key: migration-url}
+    read_by_mode: migrate
   - name: STEGO_MIGRATION_DATABASE_URL_FILE
     type: path
     required: false
     description: "The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two."
     secret: false
+    read_by_mode: migrate
     example: "/etc/stego/database/migration-url"
   - name: STEGO_WORKER_DATABASE_URL
     type: string
     required: false
     description: "The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
     secret: true
+    secret_source: {name: "{service}-database", key: worker-url}
   - name: STEGO_WORKER_DATABASE_URL_FILE
     type: path
     required: false
@@ -83,6 +88,7 @@ environment:
     required: false
     description: "The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
     secret: true
+    secret_source: {name: "{service}-database-relay", key: url}
   - name: STEGO_RELAY_DATABASE_URL_FILE
     type: path
     required: false

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -26,8 +27,36 @@ const (
 	RoleBindingFile    = BaseFolder + "/role-binding.yaml"
 )
 
-// BaseFiles are the paths of every file that the Kubernetes base may hold, in the order of the kustomization file.
-var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, ServiceFile, RoleFile, RoleBindingFile}
+// SecretFilesFolder is the folder, in the project folder, of the opt-in kustomize Component that gives each secret
+// to the service as a mounted file in place of an environment variable (ST-DLV-Q18).
+const SecretFilesFolder = "deploy/components/secret-files"
+
+// The files of the Component secret-files: its kustomization, the patch that removes the environment entries of the
+// secrets, and the patch that mounts the secrets and sets the *_FILE variables. The forms are exclusive, so the first
+// patch removes each entry that the second replaces.
+const (
+	SecretFilesKustomization = SecretFilesFolder + "/kustomization.yaml"
+	SecretFilesRemoval       = SecretFilesFolder + "/remove-env.yaml"
+	SecretFilesMounts        = SecretFilesFolder + "/mount-files.yaml"
+)
+
+// SecretFilesRoot is the folder in the container under which the Component mounts each secret, one folder for each
+// secret, named by the secret, with one file for each key.
+const SecretFilesRoot = "/var/run/secrets/stego"
+
+// SecretFileMode is the mode of each file that the Component mounts: 0400, read by the owner only.
+const SecretFileMode = 0o400
+
+// BaseFiles are the paths of every file that the Kubernetes base may hold, in the order of the kustomization file,
+// and then the files of the Component secret-files.
+var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, ServiceFile, RoleFile, RoleBindingFile,
+	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts}
+
+// ConfigMapName is the name of the one ConfigMap from which the base takes each variable that is not secret
+// (ST-DLV-Q18): the platform makes it, with the variable name as the key.
+func ConfigMapName(service string) string {
+	return service + "-config"
+}
 
 // ResourceDefaults are the default resource requests and limits of each container of the base (ST-DLV-EN04 field
 // Resource defaults). An overlay may change each of them (ST-DLV-UC07-R03).
@@ -249,6 +278,11 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 	container["securityContext"] = map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}},
 		"readOnlyRootFilesystem": true}
 	container["volumeMounts"] = []any{map[string]any{"name": "tmp", "mountPath": "/tmp"}}
+	// One environment entry, names only, for each variable that the service reads (ST-DLV-UC07-R03, ST-DLV-Q18).
+	environment, switched := baseEnvironment(service, stated.Environment)
+	if len(environment) > 0 {
+		container["env"] = environment
+	}
 	pod := map[string]any{"serviceAccountName": service, "automountServiceAccountToken": len(permissions) > 0, "containers": []any{container},
 		"securityContext": map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
 		"volumes":         []any{map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": TmpSizeLimit}}}}
@@ -310,12 +344,151 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 		return Base{}, BaseWritten{}, err
 	}
 	files[KustomizationFile] = data
+	if len(switched) > 0 {
+		component, err := secretFilesComponent(service, switched)
+		if err != nil {
+			return Base{}, BaseWritten{}, err
+		}
+		maps.Copy(files, component)
+	}
 	base := Base{Service: service, Image: ImagePlaceholder(service), Files: files}
 	if _, err := LoadBase(base.Files); err != nil {
 		return Base{}, BaseWritten{}, fmt.Errorf("the Kubernetes base is not a plain kustomize base: %w", err)
 	}
 	return base, BaseWritten{Service: service, Base: BaseFolder}, nil
 }
+
+// ConsoleSinkVariable is the variable that turns the console sink of the domain probes on. The base never names
+// it, so that domain observations stay off the console in each environment whose own overlay does not turn them
+// on (ST-STD-OBS-R03).
+const ConsoleSinkVariable = "STEGO_PROBE_CONSOLE"
+
+// secretFile is one variable that the Component secret-files gives as a mounted file: the environment entry that
+// the base writes and the Component removes, the *_FILE variable that the Component sets, and the secret and key
+// of the file.
+type secretFile struct {
+	Removed  string
+	Variable string
+	Source   SecretSource
+}
+
+// baseEnvironment gives the environment entries of the container, in name order, with names only and never a value
+// (ST-DLV-UC07-R03, ST-DLV-Q18), and the variables that the Component secret-files gives as files.
+//
+// A secret variable with a secret source takes its value from that key of that Secret, with no optional flag: the
+// secret need requires each of its keys, so a missing key stops the pod before the process starts. A secret
+// variable with no secret source gets no entry, because no Secret of the service holds it. The *_FILE form of a
+// secret variable gets no entry, because the two forms are exclusive and the base wires the environment form. Each
+// other variable takes its value from the key of its name in the ConfigMap <service>-config, optional when the
+// variable is optional, so that the code keeps its default when the key is not there. The console sink of the
+// domain probes gets no entry (ST-STD-OBS-R03); a variable that the start guard refuses gets none, because a value
+// of it stops the service (ST-SUP-UC01-R10); and a variable that only the migration job reads gets none, so that the
+// serving pod never holds the credential of the owner role (ST-DLV-Q19, least privilege).
+func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFile) {
+	sourced := map[string]SecretSource{}
+	for _, variable := range list {
+		if variable.Secret && variable.SecretSource != nil {
+			sourced[variable.Name] = *variable.SecretSource
+		}
+	}
+	listed := map[string]bool{}
+	for _, variable := range list {
+		listed[variable.Name] = true
+	}
+	var entries []any
+	var switched []secretFile
+	for _, variable := range list {
+		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode != "" {
+			continue
+		}
+		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile {
+			if _, paired := sourced[form]; paired {
+				continue
+			}
+		}
+		switch {
+		case variable.Secret && variable.SecretSource == nil:
+			continue
+		case variable.Secret:
+			entries = append(entries, map[string]any{"name": variable.Name, "valueFrom": map[string]any{
+				"secretKeyRef": map[string]any{"name": variable.SecretSource.Name, "key": variable.SecretSource.Key}}})
+			if listed[variable.Name+"_FILE"] {
+				switched = append(switched, secretFile{Removed: variable.Name, Variable: variable.Name + "_FILE", Source: *variable.SecretSource})
+			}
+			continue
+		}
+		reference := map[string]any{"name": ConfigMapName(service), "key": variable.Name}
+		if !variable.Required {
+			reference["optional"] = true
+		}
+		entries = append(entries, map[string]any{"name": variable.Name, "valueFrom": map[string]any{"configMapKeyRef": reference}})
+		if variable.SecretSource != nil {
+			// A path variable that names the file of a secret: the Component replaces its entry with the path.
+			switched = append(switched, secretFile{Removed: variable.Name, Variable: variable.Name, Source: *variable.SecretSource})
+		}
+	}
+	return entries, switched
+}
+
+// SecretFilePath is the path in the container of the file that holds one key of one secret, as the Component
+// secret-files mounts it.
+func SecretFilePath(source SecretSource) string {
+	return SecretFilesRoot + "/" + source.Name + "/" + source.Key
+}
+
+// secretFilesComponent writes the opt-in kustomize Component secret-files (ST-DLV-Q18): a patch that removes the
+// environment entry of each switched variable, and a patch that sets each *_FILE variable to the path of its file
+// and mounts each secret read-only, with the mode 0400 and no subPath, so that a new value of the secret reaches
+// the file in place. The forms are exclusive, so the first patch removes what the second replaces.
+func secretFilesComponent(service string, switched []secretFile) (map[string][]byte, error) {
+	var removed, set, mounts, volumes []any
+	// The keys of each secret that a switched variable reads: the volume projects only these keys, so that no other
+	// key of the Secret, such as the credential of the migration job, is a file of the pod (ST-DLV-Q19).
+	keys := map[string][]any{}
+	var secrets []string
+	for _, file := range switched {
+		removed = append(removed, map[string]any{"name": file.Removed, "$patch": "delete"})
+		set = append(set, map[string]any{"name": file.Variable, "value": SecretFilePath(file.Source)})
+		if _, seen := keys[file.Source.Name]; !seen {
+			secrets = append(secrets, file.Source.Name)
+		}
+		keys[file.Source.Name] = append(keys[file.Source.Name], map[string]any{"key": file.Source.Key, "path": file.Source.Key})
+	}
+	for _, secret := range secrets {
+		if !serviceLabel.MatchString(secret) || secret == "tmp" {
+			return nil, fmt.Errorf("the secret %s is not a Kubernetes volume name: a DNS label of at most 63 characters that is not tmp; use a shorter service name", secret)
+		}
+		mounts = append(mounts, map[string]any{"name": secret, "mountPath": SecretFilesRoot + "/" + secret, "readOnly": true})
+		volumes = append(volumes, map[string]any{"name": secret, "secret": map[string]any{"secretName": secret, "defaultMode": SecretFileMode,
+			"items": keys[secret]}})
+	}
+	patch := func(container map[string]any, pod map[string]any) map[string]any {
+		container["name"] = service
+		pod["containers"] = []any{container}
+		return map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": service},
+			"spec": map[string]any{"template": map[string]any{"spec": pod}}}
+	}
+	files := map[string][]byte{}
+	for file, object := range map[string]map[string]any{
+		SecretFilesKustomization: {"apiVersion": "kustomize.config.k8s.io/v1alpha1", "kind": "Component",
+			"patches": []any{map[string]any{"path": path.Base(SecretFilesRemoval)}, map[string]any{"path": path.Base(SecretFilesMounts)}}},
+		SecretFilesRemoval: patch(map[string]any{"env": removed}, map[string]any{}),
+		SecretFilesMounts:  patch(map[string]any{"env": set, "volumeMounts": mounts}, map[string]any{"volumes": volumes}),
+	} {
+		data, err := encodeWith(secretFilesHeader, object)
+		if err != nil {
+			return nil, err
+		}
+		files[file] = data
+	}
+	return files, nil
+}
+
+// secretFilesHeader is the first lines of each file of the Component secret-files.
+const secretFilesHeader = "# The opt-in kustomize Component secret-files of the service. stego apply writes this file from the platform\n" +
+	"# requirements. An overlay that lists this folder under components gets each secret as a read-only file under\n" +
+	"# " + SecretFilesRoot + " in place of an environment variable. Each file has the mode 0400: give the pod an\n" +
+	"# fsGroup, as the restricted SCC of OpenShift does, and do not widen the mode. Do not edit it.\n"
 
 // probePort is the port of the probes: the default of the variable that the probes' component states for it, from
 // the environment list of the platform requirements.
@@ -378,14 +551,21 @@ func encodeWith(header string, object map[string]any) ([]byte, error) {
 var baseKinds = []string{"ServiceAccount", "Deployment", "Service", "Role", "RoleBinding"}
 
 // LoadBase reads the files of a Kubernetes base back and holds them to plain kustomize (ST-DLV-REPO03,
-// ST-DLV-INV09): each file is one of the base folder; the kustomization file has only its apiVersion, its kind and
-// its resources, so it names no generator, transformer, Helm chart or remote base; each resource is a file of the
-// base folder that the base holds; and each resource file is one YAML document with an apiVersion, a kind and a
-// name. The tests build the base with the kustomize library itself; the compiler does not carry it.
+// ST-DLV-INV09): each file is one of the base folder or of the Component secret-files; the kustomization file has
+// only its apiVersion, its kind and its resources, so it names no generator, transformer, Helm chart or remote
+// base; each resource is a file of the base folder that the base holds; each resource file is one YAML document
+// with an apiVersion, a kind and a name; each environment entry of the Deployment names a key of a Secret or of a
+// ConfigMap and never holds a value (ST-DLV-Q18); and the Component, when the base has one, is exactly a Component
+// with its two patches of the Deployment (loadSecretFiles). The tests build the base with the kustomize library
+// itself; the compiler does not carry it.
 func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
+	inBase := 0
 	for file := range files {
-		if path.Dir(file) != BaseFolder || !slices.Contains(BaseFiles, file) {
+		if !slices.Contains(BaseFiles, file) {
 			return nil, fmt.Errorf("%s is not a file of the Kubernetes base", file)
+		}
+		if path.Dir(file) == BaseFolder {
+			inBase++
 		}
 	}
 	data, ok := files[KustomizationFile]
@@ -427,10 +607,263 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 		if kind, _ := resource["kind"].(string); !slices.Contains(baseKinds, kind) {
 			return nil, fmt.Errorf("%s holds the kind %v, which is not one of %s", file, resource["kind"], strings.Join(baseKinds, ", "))
 		}
+		if resource["kind"] == "Deployment" {
+			if err := checkEnvironmentEntries(content); err != nil {
+				return nil, fmt.Errorf("%s: %w", file, err)
+			}
+		}
 		resources[file] = resource
 	}
-	if len(resources) != len(files)-1 {
+	if len(resources) != inBase-1 {
 		return nil, fmt.Errorf("%s does not list each file of the base", KustomizationFile)
 	}
+	if err := loadSecretFiles(files); err != nil {
+		return nil, err
+	}
 	return resources, nil
+}
+
+// keyReference is a reference to one key of a Secret or of a ConfigMap, with an optional flag that may only be true.
+type keyReference struct {
+	Name     string `yaml:"name"`
+	Key      string `yaml:"key"`
+	Optional *bool  `yaml:"optional,omitempty"`
+}
+
+// containerVariable is the one shape of an environment entry of the Deployment of a base: a name and a valueFrom
+// with a key reference. The strict decoder refuses each other field, such as a value or a field reference.
+type containerVariable struct {
+	Name      string `yaml:"name"`
+	ValueFrom *struct {
+		SecretKeyRef    *keyReference `yaml:"secretKeyRef"`
+		ConfigMapKeyRef *keyReference `yaml:"configMapKeyRef"`
+	} `yaml:"valueFrom"`
+}
+
+// checkEnvironmentEntries holds each environment entry of the Deployment of a base to names only (ST-DLV-UC07-R02,
+// ST-DLV-Q18): a variable name and one reference to a key of a Secret or of a ConfigMap, with no value and no other
+// field. A secret reference has no optional flag, because the secret need requires each of its keys; a ConfigMap
+// reference may be optional. No variable has two entries.
+func checkEnvironmentEntries(content []byte) error {
+	type container struct {
+		Name    string      `yaml:"name"`
+		Env     []yaml.Node `yaml:"env"`
+		EnvFrom []yaml.Node `yaml:"envFrom"`
+	}
+	var deployment struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Containers          []container `yaml:"containers"`
+					InitContainers      []container `yaml:"initContainers"`
+					EphemeralContainers []container `yaml:"ephemeralContainers"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(content, &deployment); err != nil {
+		return err
+	}
+	// The base writes no envFrom, which takes every key of a ConfigMap or a Secret, also a name that the service
+	// refuses, and no environment of an init or an ephemeral container (#370 security review L2).
+	pod := deployment.Spec.Template.Spec
+	for _, other := range append(slices.Clone(pod.InitContainers), pod.EphemeralContainers...) {
+		if len(other.Env) > 0 || len(other.EnvFrom) > 0 {
+			return fmt.Errorf("the container %q is an init or an ephemeral container with an environment, which the base never writes", other.Name)
+		}
+	}
+	for _, container := range pod.Containers {
+		if len(container.EnvFrom) > 0 {
+			return fmt.Errorf("the container %q takes its environment from envFrom, which the base never writes; each variable is one env entry", container.Name)
+		}
+		seen := map[string]bool{}
+		for _, node := range container.Env {
+			text, err := yaml.Marshal(&node)
+			if err != nil {
+				return err
+			}
+			var entry containerVariable
+			if err := decodeStrict(text, MaxRequirementsBytes, &entry); err != nil {
+				return fmt.Errorf("an environment entry has a field that the base never writes, such as a value: %w", err)
+			}
+			if !variableName.MatchString(entry.Name) || seen[entry.Name] {
+				return fmt.Errorf("the environment entry %q is not a variable name, or is given twice", entry.Name)
+			}
+			seen[entry.Name] = true
+			from := entry.ValueFrom
+			if from == nil || (from.SecretKeyRef == nil) == (from.ConfigMapKeyRef == nil) {
+				return fmt.Errorf("the environment entry %s does not take its value from one key of a Secret or of a ConfigMap", entry.Name)
+			}
+			reference := from.ConfigMapKeyRef
+			if from.SecretKeyRef != nil {
+				reference = from.SecretKeyRef
+				if reference.Optional != nil {
+					return fmt.Errorf("the environment entry %s takes its value from a Secret with an optional flag; the secret need requires each of its keys", entry.Name)
+				}
+			}
+			if !serviceLabel.MatchString(reference.Name) || !shapeWord.MatchString(reference.Key) {
+				return fmt.Errorf("the environment entry %s does not name a Secret or a ConfigMap and a key", entry.Name)
+			}
+			if reference.Optional != nil && !*reference.Optional {
+				return fmt.Errorf("the environment entry %s states optional: false; a required entry states no optional flag", entry.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// secretFilesKustomization is the shape of the kustomization of the Component secret-files.
+type secretFilesKustomization struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Patches    []struct {
+		Path string `yaml:"path"`
+	} `yaml:"patches"`
+}
+
+// secretFilesPatch is the shape of each patch of the Component secret-files: a patch of the Deployment of the
+// service that changes the environment entries, the volume mounts of its container and the volumes of its pod.
+type secretFilesPatch struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name string `yaml:"name"`
+	} `yaml:"metadata"`
+	Spec struct {
+		Template struct {
+			Spec struct {
+				Containers []struct {
+					Name string `yaml:"name"`
+					Env  []struct {
+						Name  string  `yaml:"name"`
+						Value *string `yaml:"value"`
+						Patch string  `yaml:"$patch"`
+					} `yaml:"env"`
+					VolumeMounts []struct {
+						Name      string `yaml:"name"`
+						MountPath string `yaml:"mountPath"`
+						ReadOnly  bool   `yaml:"readOnly"`
+					} `yaml:"volumeMounts"`
+				} `yaml:"containers"`
+				Volumes []struct {
+					Name   string `yaml:"name"`
+					Secret *struct {
+						SecretName  string `yaml:"secretName"`
+						DefaultMode *int   `yaml:"defaultMode"`
+						Items       []struct {
+							Key  string `yaml:"key"`
+							Path string `yaml:"path"`
+						} `yaml:"items"`
+					} `yaml:"secret"`
+				} `yaml:"volumes"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	} `yaml:"spec"`
+}
+
+// loadSecretFiles holds the Component secret-files, when the base has one, to its exact shape (ST-DLV-Q18): a
+// kustomization of the kind Component that lists the removal patch and then the mount patch and nothing else; and
+// two patches of the Deployment, each of one container. The removal patch only deletes environment entries. The
+// mount patch only sets each *_FILE variable to the path of a file under SecretFilesRoot, mounts each secret
+// read-only at its folder there, and adds a secret volume with the mode 0400 for each mount. No patch names a
+// variable twice, and the mount patch sets no variable that the removal patch keeps.
+func loadSecretFiles(files map[string][]byte) error {
+	component := []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts}
+	held := 0
+	for _, file := range component {
+		if _, ok := files[file]; ok {
+			held++
+		}
+	}
+	if held == 0 {
+		return nil
+	}
+	if held != len(component) {
+		return fmt.Errorf("the Component %s does not hold each of its files", SecretFilesFolder)
+	}
+	var kustomization secretFilesKustomization
+	if err := decodeStrict(files[SecretFilesKustomization], MaxRequirementsBytes, &kustomization); err != nil {
+		return fmt.Errorf("%s: %w", SecretFilesKustomization, err)
+	}
+	if kustomization.APIVersion != "kustomize.config.k8s.io/v1alpha1" || kustomization.Kind != "Component" || len(kustomization.Patches) != 2 ||
+		kustomization.Patches[0].Path != path.Base(SecretFilesRemoval) || kustomization.Patches[1].Path != path.Base(SecretFilesMounts) {
+		return fmt.Errorf("%s is not a Component that lists %s and then %s", SecretFilesKustomization, path.Base(SecretFilesRemoval), path.Base(SecretFilesMounts))
+	}
+	var patches [2]secretFilesPatch
+	for i, file := range []string{SecretFilesRemoval, SecretFilesMounts} {
+		if err := decodeStrict(files[file], MaxRequirementsBytes, &patches[i]); err != nil {
+			return fmt.Errorf("%s: %w", file, err)
+		}
+		patch := patches[i]
+		if patch.APIVersion != "apps/v1" || patch.Kind != "Deployment" || !serviceLabel.MatchString(patch.Metadata.Name) || len(patch.Spec.Template.Spec.Containers) != 1 ||
+			patch.Spec.Template.Spec.Containers[0].Name != patch.Metadata.Name {
+			return fmt.Errorf("%s is not a patch of the one container of the Deployment of the service", file)
+		}
+	}
+	if patches[0].Metadata.Name != patches[1].Metadata.Name {
+		return fmt.Errorf("the patches of %s are not of one Deployment", SecretFilesFolder)
+	}
+	removal, mount := patches[0].Spec.Template.Spec, patches[1].Spec.Template.Spec
+	removed := map[string]bool{}
+	if len(removal.Volumes) > 0 || len(removal.Containers[0].VolumeMounts) > 0 || len(removal.Containers[0].Env) == 0 {
+		return fmt.Errorf("%s does more than remove environment entries", SecretFilesRemoval)
+	}
+	for _, entry := range removal.Containers[0].Env {
+		if entry.Patch != "delete" || entry.Value != nil || !variableName.MatchString(entry.Name) || removed[entry.Name] {
+			return fmt.Errorf("%s does more than remove each environment entry once: %q", SecretFilesRemoval, entry.Name)
+		}
+		removed[entry.Name] = true
+	}
+	volumes := map[string]bool{}
+	// projected holds each key that a volume projects, as secret/key; each must be the file of one set variable.
+	projected := map[string]bool{}
+	for _, volume := range mount.Volumes {
+		if !serviceLabel.MatchString(volume.Name) || volume.Name == "tmp" || volumes[volume.Name] || volume.Secret == nil || volume.Secret.SecretName != volume.Name ||
+			volume.Secret.DefaultMode == nil || *volume.Secret.DefaultMode != SecretFileMode || len(volume.Secret.Items) == 0 {
+			return fmt.Errorf("%s holds the volume %q, which is not one secret volume of the mode 0400 named by its secret, with its keys", SecretFilesMounts, volume.Name)
+		}
+		for _, item := range volume.Secret.Items {
+			if item.Path != item.Key || !shapeWord.MatchString(item.Key) || projected[volume.Name+"/"+item.Key] {
+				return fmt.Errorf("%s projects %q of %s, which is not one key at the path of its name", SecretFilesMounts, item.Key, volume.Name)
+			}
+			projected[volume.Name+"/"+item.Key] = true
+		}
+		volumes[volume.Name] = true
+	}
+	mounted := map[string]bool{}
+	for _, volumeMount := range mount.Containers[0].VolumeMounts {
+		if !volumes[volumeMount.Name] || mounted[volumeMount.Name] || volumeMount.MountPath != SecretFilesRoot+"/"+volumeMount.Name || !volumeMount.ReadOnly {
+			return fmt.Errorf("%s mounts %q, which is not one read-only secret volume at its folder under %s", SecretFilesMounts, volumeMount.Name, SecretFilesRoot)
+		}
+		mounted[volumeMount.Name] = true
+	}
+	if len(mounted) != len(volumes) || len(mount.Containers[0].Env) == 0 {
+		return fmt.Errorf("%s does not mount each volume it adds, or sets no variable", SecretFilesMounts)
+	}
+	set, used := map[string]bool{}, map[string]bool{}
+	for _, entry := range mount.Containers[0].Env {
+		if entry.Patch != "" || entry.Value == nil || !variableName.MatchString(entry.Name) || set[entry.Name] {
+			return fmt.Errorf("%s does more than set each file variable once: %q", SecretFilesMounts, entry.Name)
+		}
+		folder, key := path.Split(*entry.Value)
+		if !mounted[path.Base(folder)] || path.Clean(folder) != SecretFilesRoot+"/"+path.Base(folder) || !shapeWord.MatchString(key) ||
+			!projected[path.Base(folder)+"/"+key] {
+			return fmt.Errorf("%s sets %s to a path that is not a projected key of a mounted secret", SecretFilesMounts, entry.Name)
+		}
+		set[entry.Name] = true
+		used[path.Base(folder)+"/"+key] = true
+	}
+	for key := range projected {
+		if !used[key] {
+			return fmt.Errorf("%s projects the key %s, which no variable that it sets reads", SecretFilesMounts, key)
+		}
+	}
+	for name := range set {
+		// The mount patch sets the *_FILE form of a removed secret variable, or a removed path variable itself: a
+		// path variable that the base wires from the ConfigMap must be removed first, or the two entries merge.
+		if !removed[name] && !removed[strings.TrimSuffix(name, "_FILE")] {
+			return fmt.Errorf("%s sets %s, but %s does not remove the environment form", SecretFilesMounts, name, SecretFilesRemoval)
+		}
+	}
+	return nil
 }

@@ -26,6 +26,21 @@ type Variable struct {
 	Example *string
 	// Allowed are the allowed values as one text, such as "otlp, none" or "1s to 30m".
 	Allowed string
+	// SecretSource is the secret need and the key that give the value of a secret variable, or the file of a path
+	// variable; its name may hold the placeholders of a need name (ST-DLV-Q19).
+	SecretSource *SecretSource
+	// RefusedAtStart marks a variable that a library reads and that the start guard of the service refuses when it
+	// has a value, such as PGHOST (ST-SUP-UC01-R10): the service never takes it.
+	RefusedAtStart bool
+	// ReadByMode is the one mode that reads the variable, migrate for the migration job, or "" (ST-DLV-Q19).
+	ReadByMode string
+}
+
+// SecretSource is one key of one secret need: the need name and the key (ST-DLV-EN08 field Secret source,
+// ST-DLV-Q19). The Kubernetes base names the Secret and the key of a secret variable from it.
+type SecretSource struct {
+	Name string `yaml:"name"`
+	Key  string `yaml:"key"`
 }
 
 // DeclaredVariables are the environment variables that the declaration gives one group of a component, such as the
@@ -48,6 +63,15 @@ type AcceptedVariable struct {
 	Description string   `yaml:"description"`
 	Secret      bool     `yaml:"secret"`
 	Allowed     string   `yaml:"allowed,omitempty"`
+	// SecretSource is the secret need and the key that give the value, or the file of a path variable, when the
+	// service states that need (ST-DLV-Q19).
+	SecretSource *SecretSource `yaml:"secret_source,omitempty"`
+	// RefusedAtStart marks a variable that the start guard refuses when it has a value (ST-SUP-UC01-R10): the base
+	// never wires it, and the environment check refuses a value for it.
+	RefusedAtStart bool `yaml:"refused_at_start,omitempty"`
+	// ReadByMode is the one mode of the process that reads the variable, migrate for the migration job, when no other
+	// mode reads it. The serving Deployment of the base never wires such a variable (ST-DLV-Q19).
+	ReadByMode string `yaml:"read_by_mode,omitempty"`
 	// example is the example of the first reader, for the reference alone: the platform requirements never hold
 	// it, because an example is often a host name (ST-DLV-INV02).
 	example *string
@@ -134,6 +158,10 @@ func deriveVariables(service string, components []ComponentNeeds) ([]AcceptedVar
 				Reason: fmt.Sprintf("the sources state the variable with a different %s; one variable has one %s", fact, fact)}
 		}
 		previous.variable.ReadBy = append(previous.variable.ReadBy, accepted.ReadBy[0])
+		// A source that one reader states and another does not is the source of the variable.
+		if previous.variable.SecretSource == nil {
+			previous.variable.SecretSource = accepted.SecretSource
+		}
 		// The description and the example of the first reader in name order.
 		if accepted.ReadBy[0] < previous.first {
 			previous.first = accepted.ReadBy[0]
@@ -182,6 +210,12 @@ func conflict(a, b AcceptedVariable) string {
 		return "default"
 	case a.Allowed != b.Allowed:
 		return "allowed values"
+	case a.SecretSource != nil && b.SecretSource != nil && *a.SecretSource != *b.SecretSource:
+		return "secret source"
+	case a.RefusedAtStart != b.RefusedAtStart:
+		return "refused at start flag"
+	case a.ReadByMode != b.ReadByMode:
+		return "mode that reads it"
 	}
 	return ""
 }
@@ -194,7 +228,18 @@ func acceptedOf(service string, settings map[string]string, variable Variable) (
 		return AcceptedVariable{}, err
 	}
 	accepted := AcceptedVariable{Name: name, Type: variable.Type, Required: variable.Required, Description: variable.Description,
-		Secret: variable.Secret, Allowed: variable.Allowed}
+		Secret: variable.Secret, Allowed: variable.Allowed, RefusedAtStart: variable.RefusedAtStart,
+		ReadByMode: variable.ReadByMode}
+	if source := variable.SecretSource; source != nil {
+		if !variable.Secret && variable.Type != "path" {
+			return AcceptedVariable{}, fmt.Errorf("only a secret variable, or a path variable that names the file of a secret, states a secret source")
+		}
+		secretName, err := fillName(service, settings, source.Name)
+		if err != nil {
+			return AcceptedVariable{}, fmt.Errorf("the secret source: %w", err)
+		}
+		accepted.SecretSource = &SecretSource{Name: secretName, Key: source.Key}
+	}
 	if !variable.Secret {
 		accepted.example = variable.Example
 		if variable.Default != nil {
@@ -242,6 +287,12 @@ func checkAccepted(v AcceptedVariable) error {
 	if v.Default != nil && (len(*v.Default) > maxVariableValue || strings.ContainsAny(*v.Default, "\n\r")) {
 		return fmt.Errorf("the default is not one line of at most %d characters", maxVariableValue)
 	}
+	if v.ReadByMode != "" && (v.ReadByMode != "migrate" || v.Required) {
+		return fmt.Errorf("the mode that reads the variable is migrate, and such a variable is not required")
+	}
+	if v.RefusedAtStart && v.Required {
+		return fmt.Errorf("a variable that the service refuses at start is not required")
+	}
 	if v.Secret && v.Allowed != "" {
 		return fmt.Errorf("a secret variable lists no allowed values")
 	}
@@ -275,7 +326,7 @@ func checkDescription(text string) error {
 func configurationNeeds(list []AcceptedVariable) []Requirement {
 	var needs []Requirement
 	for _, variable := range list {
-		if !variable.Required || variable.Secret {
+		if !variable.Required || variable.Secret || variable.RefusedAtStart {
 			continue
 		}
 		components := make([]string, 0, len(variable.ReadBy))

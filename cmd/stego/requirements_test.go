@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/delivery"
+	"github.com/jsell-rh/stego/internal/gen"
 )
 
 // These tests prove that apply writes the platform requirements of a service from the needs that its components
@@ -555,12 +557,26 @@ func expectOnlyRequirementFields(t *testing.T, data []byte) {
 	}
 	// An entry of the environment list holds its facts only, never an example; a secret one holds no default and no
 	// allowed values (ST-DLV-INV02, ST-DLV-INV12).
+	loaded, err := delivery.LoadRequirements(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stated := loaded.Requirements
 	variables, _ := file["environment"].([]any)
 	for _, item := range variables {
 		entry, _ := item.(map[string]any)
 		for field := range entry {
-			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed"}, field) {
+			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed", "secret_source", "refused_at_start", "read_by_mode"}, field) {
 				t.Errorf("the environment variable %v holds the field %s", entry["name"], field)
+			}
+		}
+		// A secret source names a secret requirement of the file and one of its keys, and nothing else (ST-DLV-Q19).
+		if source, given := entry["secret_source"].(map[string]any); given {
+			name, _ := source["name"].(string)
+			if len(source) != 2 || !slices.ContainsFunc(stated, func(r delivery.Requirement) bool {
+				return r.Kind == delivery.Secret && r.Name == name && slices.Contains(r.Keys, fmt.Sprint(source["key"]))
+			}) {
+				t.Errorf("the secret source of %v is not one key of a secret requirement of the file: %v", entry["name"], source)
 			}
 		}
 		if entry["secret"] == true && (entry["default"] != nil || entry["allowed"] != nil) {
@@ -1119,6 +1135,105 @@ func TestEnvironmentSettingDefaults(t *testing.T) {
 		}
 		if after := folderDigests(t, dir); !maps.Equal(before, after) {
 			t.Fatal("the refused apply changed the project folder")
+		}
+	})
+}
+
+func TestEnvironmentGuardAndSecretSources(t *testing.T) {
+	t.Run("ST-DLV-UC01-R06-T03 Apply marks each variable that the start guard refuses, and validate and apply warn on a secret source that they do not keep", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		dir := requirementsProject(t)
+		env := requirementsEnv(registry)
+		// The registry copy states the secret orders-database with the keys url and password only, so the sources
+		// of the migration and the worker URLs name keys that the service does not state.
+		for _, command := range []string{"validate", "apply"} {
+			_, stderr := mustRunInProjectStderr(t, dir, env, command)
+			for _, want := range []string{"WARNING: the environment variable STEGO_MIGRATION_DATABASE_URL", "secret source orders-database key migration-url",
+				"WARNING: the environment variable STEGO_WORKER_DATABASE_URL", "secret source orders-database key worker-url"} {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stego %s does not warn %q:\n%s", command, want, stderr)
+				}
+			}
+			if strings.Contains(stderr, "WARNING: the environment variable DATABASE_URL ") {
+				t.Errorf("stego %s warns on the source of DATABASE_URL, which the service states:\n%s", command, stderr)
+			}
+		}
+		requirements, _ := readRequirements(t, dir)
+		refused := 0
+		for _, variable := range requirements.Environment {
+			if variable.RefusedAtStart != gen.RefusedVariable(variable.Name) {
+				t.Errorf("the variable %s has refused_at_start %v; the start guard refuses it: %v", variable.Name, variable.RefusedAtStart, gen.RefusedVariable(variable.Name))
+			}
+			if variable.RefusedAtStart {
+				refused++
+			}
+		}
+		if refused < 20 {
+			t.Errorf("the platform requirements mark %d variables as refused at start, fewer than the PG names that pgx reads", refused)
+		}
+		deployment, err := os.ReadFile(filepath.Join(dir, "deploy", "base", "deployment.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, variable := range requirements.Environment {
+			if variable.RefusedAtStart && strings.Contains(string(deployment), "- name: "+variable.Name+"\n") {
+				t.Errorf("the base wires %s, which the start guard refuses", variable.Name)
+			}
+		}
+	})
+}
+
+// mustRunInProjectStderr runs the stego binary in the project folder and fails the test when it exits non-zero; it
+// gives standard output and standard error.
+func mustRunInProjectStderr(t *testing.T, dir string, env []string, args ...string) (string, string) {
+	t.Helper()
+	stdout, stderr, err := runInProject(t, dir, env, args...)
+	if err != nil {
+		t.Fatalf("stego %s: %v\n%s\n%s", strings.Join(args, " "), err, stdout, stderr)
+	}
+	return stdout, stderr
+}
+
+func TestMigrationCredentialStaysOutOfTheBase(t *testing.T) {
+	t.Run("ST-DLV-UC07-R03-T10 No file of the base or of the Component names the credential of the migration job", func(t *testing.T) {
+		registry := shippedRegistryCopy(t)
+		dir := requirementsProject(t)
+		mustRunInProject(t, dir, requirementsEnv(registry), "apply")
+		requirements, _ := readRequirements(t, dir)
+		migration := 0
+		for _, variable := range requirements.Environment {
+			if variable.ReadByMode == "migrate" {
+				migration++
+			}
+		}
+		if migration != 2 {
+			t.Errorf("the platform requirements mark %d variables as read by the migration job, want STEGO_MIGRATION_DATABASE_URL and its _FILE form", migration)
+		}
+		written := 0
+		for _, folder := range []string{filepath.Join(dir, "deploy", "base"), filepath.Join(dir, "deploy", "components")} {
+			err := filepath.WalkDir(folder, func(file string, entry os.DirEntry, err error) error {
+				if err != nil || entry.IsDir() {
+					return err
+				}
+				data, err := os.ReadFile(file)
+				if err != nil {
+					return err
+				}
+				written++
+				for _, banned := range []string{"migration-url", "STEGO_MIGRATION_DATABASE_URL"} {
+					if strings.Contains(string(data), banned) {
+						t.Errorf("%s names %s, the credential of the migration job:\n%s", file, banned, data)
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The Component exists, so the check reads its patches too.
+		if _, err := os.Stat(filepath.Join(dir, "deploy", "components", "secret-files", "mount-files.yaml")); err != nil || written < 5 {
+			t.Fatalf("apply wrote %d files of the base and the Component: %v", written, err)
 		}
 	})
 }
