@@ -1054,26 +1054,56 @@ func TestMigrateBackfillStall(t *testing.T) {
 		if _, err := lock.ExecContext(ctx, `SELECT id FROM public.boards WHERE title = 'tenant-c-07' FOR UPDATE`); err != nil {
 			t.Fatal(err)
 		}
-		ttl, renew := time.Second, 300*time.Millisecond
+		// The lease, its renew, the retry of the batch, the stall watch and the time limit run on a hand clock. The
+		// renew interval and the retry period are one tick, so each tick ends the three waits of the job at once.
+		// The lease of 1 min is long on the database clock: no renew is late while the test runs.
+		clock := newBackfillClock()
+		ttl, tick := time.Minute, 20*time.Second
 		job := m
 		job.Backfills = slices.Clone(backfills)
-		job.BackfillLease = lease.Settings{TTL: ttl, Renew: renew, Retry: 100 * time.Millisecond}
-		job.BackfillTimeout = 3*ttl + 3*time.Second
-		seen := &stallRecorder{}
+		job.BackfillLease = lease.Settings{TTL: ttl, Renew: tick, Retry: tick, Clock: clock}
+		job.BackfillTimeout = 12 * tick
+		seen := &stallRecorder{now: clock.Now}
 		job.Backfills[0].Settings.Observer = seen
 		job.Backfills[0].Settings.LockTimeout = 200 * time.Millisecond
-		started := time.Now()
-		err = runBackfills(ctx, f.admin, job)
-		took := time.Since(started)
-		if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		// No pause after a batch: the batches that commit do not wait on the clock, so they all commit at the start.
+		job.Backfills[0].Settings.Pause = 0
+		start := clock.Now()
+		done := make(chan error, 1)
+		go func() { done <- runBackfillsWithin(ctx, f.admin, job, clock.deadline) }()
+		// The job is at rest when the renew, the watch and the retry of the waiting batch wait on the clock. It asks
+		// for its time limit before it starts, so the limit is there by then.
+		clock.waits(t, 3, tick)
+		select {
+		case got := <-clock.limits:
+			if got != job.BackfillTimeout {
+				t.Fatalf("the backfill step has a time limit of %v, want %v", got, job.BackfillTimeout)
+			}
+		default:
+			t.Fatal("the backfill step has no time limit on the clock")
+		}
+		for n := 1; n < 12; n++ {
+			clock.Advance(tick)
+			clock.waits(t, 3, tick)
+			select {
+			case err := <-done:
+				t.Fatalf("the stalled job ended at %v, before its backfill time limit of %v: %v", clock.Now().Sub(start), job.BackfillTimeout, err)
+			default:
+			}
+			// Three lease durations with no batch are nine ticks: the stall comes at that tick, and once.
+			stalls, lastRows := seen.state()
+			want := 0
+			if n >= 9 {
+				want = 1
+			}
+			if len(stalls) != want || (want == 1 && stalls[0].Sub(lastRows) != 3*ttl) || !lastRows.Equal(start) {
+				t.Fatalf("after %v schema.backfill.stalled came %d times (%v; last batch at %v), want %d, at three TTLs after the last batch", clock.Now().Sub(start), len(stalls), stalls, lastRows, want)
+			}
+		}
+		// The time limit ends the step.
+		clock.Advance(tick)
+		if err := <-done; err == nil || !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("the stalled job ends with %v, want the end of its backfill time limit", err)
-		}
-		if took < job.BackfillTimeout {
-			t.Fatalf("the stalled job ended after %v, before its backfill time limit of %v", took, job.BackfillTimeout)
-		}
-		stalls, lastRows := seen.state()
-		if len(stalls) != 1 || stalls[0].Sub(lastRows) > 3*ttl+renew+300*time.Millisecond || stalls[0].Sub(lastRows) < 3*ttl {
-			t.Fatalf("schema.backfill.stalled came %d times (%v after the last batch), want once within three TTLs and one renew interval", len(stalls), stalls)
 		}
 		var moved int64
 		var completed bool
@@ -1081,8 +1111,13 @@ func TestMigrateBackfillStall(t *testing.T) {
 			moved < 10 || moved >= 24 || completed {
 			t.Fatalf("after the stalled job the checkpoint has %d moved, complete %v (error %v); want the 10 rows of tenant-a at least, fewer than 24, and not complete", moved, completed, err)
 		}
-		// The next run, after the lock is released, resumes from the checkpoint and moves each other row once.
+		// The next run, after the lock is released, resumes from the checkpoint and moves each other row once. The
+		// lease of the stalled job is one minute on the database clock; the test moves it into the past as the
+		// database clock would, so the next run does not wait for it.
 		_ = lock.Rollback()
+		if _, err := f.admin.ExecContext(ctx, `UPDATE public.leases SET expires_at = pg_catalog.now() - interval '1 second' WHERE name = $1`, BackfillLeaseName("board-title-rename")); err != nil {
+			t.Fatal(err)
+		}
 		next := m
 		next.Backfills = slices.Clone(backfills)
 		resumed := &stallRecorder{}
@@ -1102,8 +1137,125 @@ func TestMigrateBackfillStall(t *testing.T) {
 	})
 }
 
+// backfillClock is a lease clock that moves only when the test advances it, for ST-SUP-RP09-LC12-T02. Each call of
+// After sends its duration on asked, so the test knows when the job waits. Its deadline gives the time limit of the
+// backfill step on the same clock: each limit sends its duration on limits, and ends with
+// context.DeadlineExceeded when the test moves the clock to it.
+type backfillClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	waiters []backfillWaiter
+	limits  chan time.Duration
+	asked   chan time.Duration
+	ends    []*handLimit
+}
+
+type backfillWaiter struct {
+	at time.Time
+	ch chan time.Time
+}
+
+func newBackfillClock() *backfillClock {
+	return &backfillClock{now: time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC), limits: make(chan time.Duration, 16),
+		asked: make(chan time.Duration, 256)}
+}
+
+func (c *backfillClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *backfillClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	if d <= 0 {
+		ch <- c.now
+	} else {
+		c.waiters = append(c.waiters, backfillWaiter{at: c.now.Add(d), ch: ch})
+	}
+	c.asked <- d
+	return ch
+}
+
+// Advance moves the clock, fires each timer that is due and ends each time limit that is due.
+func (c *backfillClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+	kept := c.waiters[:0]
+	for _, w := range c.waiters {
+		if !w.at.After(c.now) {
+			w.ch <- c.now
+			continue
+		}
+		kept = append(kept, w)
+	}
+	c.waiters = kept
+	for _, end := range c.ends {
+		if !end.at.After(c.now) {
+			end.end(context.DeadlineExceeded)
+		}
+	}
+}
+
+// waits receives the next n waits of the job on the clock, and fails the test when one is not of d.
+func (c *backfillClock) waits(t *testing.T, n int, d time.Duration) {
+	t.Helper()
+	for range n {
+		if got := <-c.asked; got != d {
+			t.Fatalf("the job waits %v on the clock, want %v", got, d)
+		}
+	}
+}
+
+func (c *backfillClock) deadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx := &handLimit{parent: parent, done: make(chan struct{})}
+	c.mu.Lock()
+	ctx.at = c.now.Add(d)
+	c.ends = append(c.ends, ctx)
+	c.mu.Unlock()
+	stop := context.AfterFunc(parent, func() { ctx.end(parent.Err()) })
+	c.limits <- d
+	return ctx, func() {
+		stop()
+		ctx.end(context.Canceled)
+	}
+}
+
+// handLimit is a context that ends when its clock reaches its time, with context.DeadlineExceeded as a context of
+// context.WithTimeout does, when its parent ends, or when it is cancelled.
+type handLimit struct {
+	parent context.Context
+	at     time.Time
+	done   chan struct{}
+	mu     sync.Mutex
+	err    error
+}
+
+func (h *handLimit) end(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.err == nil {
+		h.err = err
+		close(h.done)
+	}
+}
+
+func (h *handLimit) Deadline() (time.Time, bool) { return h.parent.Deadline() }
+func (h *handLimit) Done() <-chan struct{}       { return h.done }
+func (h *handLimit) Value(key any) any           { return h.parent.Value(key) }
+func (h *handLimit) Err() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.err
+}
+
 // stallRecorder records the stalls of a backfill, the time of its last batch and the rows it moved.
 type stallRecorder struct {
+	// now is the clock of the times; nil is time.Now.
+	now    func() time.Time
 	mu     sync.Mutex
 	stalls []time.Time
 	last   time.Time
@@ -1114,7 +1266,7 @@ func (s *stallRecorder) BackfillRows(_ string, rows int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rows += rows
-	s.last = time.Now()
+	s.last = s.clock()
 }
 func (s *stallRecorder) BackfillFailedRows(string, int64)      {}
 func (s *stallRecorder) BackfillDuplicateGroups(string, int64) {}
@@ -1123,7 +1275,14 @@ func (s *stallRecorder) BackfillThrottled(string, string)      {}
 func (s *stallRecorder) BackfillStalled(string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.stalls = append(s.stalls, time.Now())
+	s.stalls = append(s.stalls, s.clock())
+}
+
+func (s *stallRecorder) clock() time.Time {
+	if s.now == nil {
+		return time.Now()
+	}
+	return s.now()
 }
 
 func (s *stallRecorder) state() ([]time.Time, time.Time) {

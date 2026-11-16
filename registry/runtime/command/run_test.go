@@ -633,62 +633,75 @@ func TestRunConflicts(t *testing.T) {
 		a := e.session()
 		a.exec(`SELECT 1 FROM users WHERE id = 'u1' FOR UPDATE`)
 		defer a.commit()
+		// The time left before a deadline is read on a clock that the test moves itself, so each lock_timeout is an
+		// exact value; each request deadline is on the same clock. PostgreSQL ends the lock wait at the lock_timeout
+		// that the runtime set, and the test does not measure how long that takes.
+		clock := newHandRunClock(time.Now())
 		rt := e.runtime(nil)
+		rt.runClock = clock
 		var lefts []time.Duration
 		rt.rerun = func(_ int, _, left time.Duration) { lefts = append(lefts, left) }
+		// lockTimeouts records the lock_timeout that the runtime set right before each statement that locks a user
+		// row with FOR NO KEY UPDATE.
+		var lockTimeouts []string
+		var setting string
+		rt.recorder = func(query string, args []any) {
+			switch {
+			case query == setLockTimeout:
+				setting = args[0].(string)
+			case strings.Contains(query, "FOR NO KEY UPDATE"):
+				lockTimeouts = append(lockTimeouts, setting)
+			}
+		}
 		lock := fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
 			_, err := repo(t, h, e.users).GetForUpdate(ctx, "u1")
 			return err
 		})
-		check := func(name string, err error, took, from, to time.Duration) {
+		check := func(name string, err error, want string) {
 			t.Helper()
-			if !errors.Is(err, ErrConflict) || took < from || took > to {
-				t.Errorf("%s: %v after %s, want a conflict after %s to %s", name, err, took, from, to)
+			if !errors.Is(err, ErrConflict) || len(lockTimeouts) != 1 || lockTimeouts[0] != want {
+				t.Errorf("%s: %v with the lock_timeout %v before the lock, want a conflict at %s", name, err, lockTimeouts, want)
 			}
 			if waits := e.lockWaits(); waits != 0 || e.pool.Stats().InUse != 0 {
 				t.Errorf("%s: %d sessions wait for a lock and %d connections are in use after the call", name, waits, e.pool.Stats().InUse)
 			}
+			lockTimeouts = nil
 		}
-		timed := func(deadline time.Duration, cmd *Command[testProbe], key string, fill func(context.Context, *Handle[testProbe]) (idempotency.Response, error)) (error, time.Duration) {
-			ctx, cancel := context.WithTimeout(e.ctx, deadline)
+		timed := func(deadline time.Duration, cmd *Command[testProbe], key string, fill func(context.Context, *Handle[testProbe]) (idempotency.Response, error)) error {
+			ctx, cancel := clock.WithDeadline(e.ctx, clock.Now().Add(deadline))
 			defer cancel()
-			start := time.Now()
 			_, err := Run(ctx, rt, cmd, e.request("t1", u7(t), key, `{}`), noBody,
 				func(ctx context.Context, _ struct{}, h *Handle[testProbe]) (idempotency.Response, error) {
 					return fill(ctx, h)
 				})
-			return err, time.Since(start)
+			return err
 		}
-		err, took := timed(time.Minute, e.command("lock-200", func(s *CommandSpec[testProbe]) { s.LockTimeout = 200 * time.Millisecond }, e.users), "k-28-1", lock)
-		check("a Lock timeout of 200 ms", err, took, 190*time.Millisecond, 600*time.Millisecond)
-		err, took = timed(500*time.Millisecond, e.command("lock-default", nil, e.users), "k-28-2", lock)
-		check("a deadline of 500 ms", err, took, 400*time.Millisecond, 500*time.Millisecond)
-		var lockStart time.Time
-		err, took = timed(time.Second, e.command("lock-late", nil, e.users), "k-28-3", fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
-			time.Sleep(700 * time.Millisecond)
-			lockStart = time.Now()
+		err := timed(time.Minute, e.command("lock-200", func(s *CommandSpec[testProbe]) { s.LockTimeout = 200 * time.Millisecond }, e.users), "k-28-1", lock)
+		check("a Lock timeout of 200 ms", err, "200ms")
+		err = timed(500*time.Millisecond, e.command("lock-default", nil, e.users), "k-28-2", lock)
+		check("a deadline of 500 ms", err, "450ms")
+		err = timed(time.Second, e.command("lock-late", nil, e.users), "k-28-3", fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			// The fill works for 700 ms of the deadline of 1 s before its lock.
+			clock.add(700 * time.Millisecond)
 			_, err := repo(t, h, e.users).GetForUpdate(ctx, "u1")
 			return err
 		}))
-		check("a lock wait after 700 ms of a deadline of 1 s", err, took, 900*time.Millisecond, time.Second)
-		if waited := time.Since(lockStart); waited < 200*time.Millisecond || waited > 320*time.Millisecond {
-			t.Errorf("the late lock waited %s, want about 250 ms", waited)
-		}
+		check("a lock wait after 700 ms of a deadline of 1 s", err, "250ms")
 		calls := 0
-		err, took = timed(250*time.Millisecond, e.command("slow-conflict", retry(2), e.users), "k-28-4", fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+		err = timed(250*time.Millisecond, e.command("slow-conflict", retry(2), e.users), "k-28-4", fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
 			calls++
-			time.Sleep(160 * time.Millisecond)
+			clock.add(160 * time.Millisecond)
 			return e.conflictOn(ctx, h, "u2")
 		}))
-		if !errors.Is(err, ErrConflict) || calls != 1 {
-			t.Errorf("a conflict with 90 ms left: %v after %d calls, want the conflict and no rerun", err, calls)
+		if !errors.Is(err, ErrConflict) || calls != 1 || len(lefts) != 0 {
+			t.Errorf("a conflict with 90 ms left: %v after %d calls and %d reruns, want the conflict and no rerun", err, calls, len(lefts))
 		}
 		lefts, calls = nil, 0
 		var starts []time.Duration
-		deadline := time.Now().Add(400 * time.Millisecond)
-		err, _ = timed(400*time.Millisecond, e.command("fast-conflict", retry(3), e.users), "k-28-5", fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+		deadline := clock.Now().Add(400 * time.Millisecond)
+		err = timed(400*time.Millisecond, e.command("fast-conflict", retry(3), e.users), "k-28-5", fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
 			calls++
-			starts = append(starts, time.Until(deadline))
+			starts = append(starts, deadline.Sub(clock.Now()))
 			return e.conflictOn(ctx, h, "u2")
 		}))
 		if !errors.Is(err, ErrConflict) {
@@ -700,30 +713,30 @@ func TestRunConflicts(t *testing.T) {
 			}
 		}
 		for i, left := range starts {
-			if left <= 0 {
-				t.Errorf("the attempt %d started after the deadline", i+1)
+			if left < RerunRoom {
+				t.Errorf("the attempt %d started with %s left", i+1, left)
 			}
 		}
-		if len(starts) != len(lefts)+1 {
-			t.Errorf("%d attempts and %d reruns", len(starts), len(lefts))
+		if len(starts) != len(lefts)+1 || len(starts) < 2 {
+			t.Errorf("%d attempts and %d reruns, want at least one rerun", len(starts), len(lefts))
 		}
 		w, err := NewWorker(WorkerSpec[testProbe]{Name: "lock-worker", Permission: "sync", Interval: time.Minute, Writes: []Declared{e.users}, Probe: newTestProbe})
 		if err != nil {
 			t.Fatal(err)
 		}
-		start := time.Now()
 		err = RunWorker(e.ctx, rt, w, time.Unix(1793966400, 0), mustTenant(t, "t1"), nil, func(ctx context.Context, _ time.Time, h *Handle[testProbe]) error {
 			_, err := repo(t, h, e.users).GetForUpdate(ctx, "u1")
 			return err
 		})
-		check("a worker tick", err, time.Since(start), 1900*time.Millisecond, 2600*time.Millisecond)
+		check("a worker tick", err, "2000ms")
 
 		// The time left is checked again after the random wait: a wait that ends with less than 100 ms left starts no
 		// rerun. The hook of the test runs after the wait and uses up the room.
 		late := e.runtime(nil)
-		late.rerun = func(_ int, _, left time.Duration) { time.Sleep(left - 60*time.Millisecond) }
+		late.runClock = clock
+		late.rerun = func(_ int, _, left time.Duration) { clock.add(left - 60*time.Millisecond) }
 		calls = 0
-		ctx, cancel := context.WithTimeout(e.ctx, 600*time.Millisecond)
+		ctx, cancel := clock.WithDeadline(e.ctx, clock.Now().Add(600*time.Millisecond))
 		_, err = Run(ctx, late, e.command("late-rerun", retry(3), e.users), e.request("t1", u7(t), "k-28-late", `{}`), noBody,
 			func(ctx context.Context, _ struct{}, h *Handle[testProbe]) (idempotency.Response, error) {
 				calls++
@@ -735,10 +748,11 @@ func TestRunConflicts(t *testing.T) {
 		}
 
 		// lock_timeout is set again before each statement of the wrapper, the enqueue, the audit record and COMMIT, to
-		// the time left before the deadline less 50 ms. The hook reads it and lets 100 ms pass, so a value that was
-		// not set again is too large at the next step.
+		// the time left before the deadline less 50 ms. The hook reads it and moves the clock by 100 ms, so a value
+		// that was not set again is too large at the next step.
 		refreshed := e.runtime(nil)
-		deadline = time.Now().Add(1500 * time.Millisecond)
+		refreshed.runClock = clock
+		deadline = clock.Now().Add(1500 * time.Millisecond)
 		seen := map[string]int{}
 		refreshed.step = func(name string, tx *sql.Tx) {
 			var setting string
@@ -747,14 +761,13 @@ func TestRunConflicts(t *testing.T) {
 				return
 			}
 			got, err := time.ParseDuration(setting)
-			want := time.Until(deadline) - LockMargin
-			if err != nil || got > want+40*time.Millisecond || got < want-40*time.Millisecond {
-				t.Errorf("before %s, lock_timeout is %s, want about %s", name, setting, want)
+			if want := deadline.Sub(clock.Now()) - LockMargin; err != nil || got != want {
+				t.Errorf("before %s, lock_timeout is %s, want %s", name, setting, want)
 			}
 			seen[name]++
-			time.Sleep(100 * time.Millisecond)
+			clock.add(100 * time.Millisecond)
 		}
-		ctx, cancel = context.WithDeadline(e.ctx, deadline)
+		ctx, cancel = clock.WithDeadline(e.ctx, deadline)
 		_, err = Run(ctx, refreshed, e.command("refresh", nil, e.users), e.request("t1", u7(t), "k-28-refresh", `{}`), noBody,
 			func(ctx context.Context, _ struct{}, h *Handle[testProbe]) (idempotency.Response, error) {
 				r := repo(t, h, e.users)
@@ -769,7 +782,7 @@ func TestRunConflicts(t *testing.T) {
 				}
 				err = h.Effects().Stage(ctx, "billing", "user-ranked", u, []byte(`{}`))
 				// Time passes after the fill's last statement, so a value that the enqueue did not set again is stale.
-				time.Sleep(150 * time.Millisecond)
+				clock.add(150 * time.Millisecond)
 				return ok, err
 			})
 		cancel()

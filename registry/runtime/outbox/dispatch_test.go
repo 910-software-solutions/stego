@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,11 +37,15 @@ type fakeDestination struct {
 	answers []string // ok, hold, close, refuse, unavailable; the last one repeats
 	keys    []string
 	kinds   []string
+	// attempts holds the attempt context of each request in flight, by its X-Attempt header, so that a held
+	// request moves the hand clock to the bound of its attempt.
+	attempts map[string]context.Context
+	sent     int
 }
 
 func newDestination(t *testing.T, answers ...string) *fakeDestination {
 	t.Helper()
-	f := &fakeDestination{answers: answers, client: &http.Client{}}
+	f := &fakeDestination{answers: answers, client: &http.Client{}, attempts: map[string]context.Context{}}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
 		f.mu.Lock()
@@ -53,9 +58,19 @@ func newDestination(t *testing.T, answers ...string) *fakeDestination {
 				f.answers = f.answers[1:]
 			}
 		}
+		attempt := f.attempts[r.Header.Get("X-Attempt")]
 		f.mu.Unlock()
 		switch answer {
 		case "hold":
+			// The request is held past the attempt deadline: the hand clock moves to the attempt's bound, and the
+			// worker's client ends the request.
+			a, ok := attempt.(*handAttempt)
+			if !ok {
+				t.Errorf("a held request has no attempt bound on the hand clock")
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			a.expire()
 			<-r.Context().Done()
 		case "close":
 			conn, _, err := w.(http.Hijacker).Hijack()
@@ -84,6 +99,17 @@ func (f *fakeDestination) handler(ctx context.Context, _ *sql.Tx, d Delivery) er
 	}
 	request.Header.Set(idempotency.KeyHeader, d.OutgoingKey)
 	request.Header.Set("X-Kind", d.Kind)
+	f.mu.Lock()
+	f.sent++
+	attempt := strconv.Itoa(f.sent)
+	f.attempts[attempt] = ctx
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		delete(f.attempts, attempt)
+		f.mu.Unlock()
+	}()
+	request.Header.Set("X-Attempt", attempt)
 	response, err := f.client.Do(request)
 	if err != nil {
 		return err

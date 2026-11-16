@@ -997,7 +997,8 @@ func TestSpanQueueShutdownRace(t *testing.T) {
 		span := tracetest.SpanStub{SpanContext: sampled}.Snapshot()
 		for range 20 {
 			exporter := &countingExporter{}
-			q := newSpanQueue(exporter, context.WithTimeout)
+			// A nil bound is the real clock's bound: the queue must not export with no bound.
+			q := newSpanQueue(exporter, nil)
 			var ended atomic.Int64
 			var group sync.WaitGroup
 			for range 4 {

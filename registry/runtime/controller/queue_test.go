@@ -362,7 +362,7 @@ func TestQueueBackoff(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RP02-LC10-T01 A queued action longer than the reconnect delay finishes", func(t *testing.T) {
+	t.Run("ST-SUP-RP02-LC10-T05 A queued action longer than the reconnect delay finishes", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		m := new(Metrics)

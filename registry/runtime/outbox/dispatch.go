@@ -281,7 +281,7 @@ func (w *Worker) dispatch(ctx context.Context, d Delivery, reg Destination) {
 	}
 	// The handler runs only while the lease, measured on the local monotonic clock from the claim, holds the attempt
 	// and the two statements after it; else the message goes back to pending unsent (ST-SUP-RP01-LC02).
-	left := time.Until(d.leaseEnd)
+	left := d.leaseEnd.Sub(w.now())
 	if left < w.config.AttemptTimeout+2*operationTimeout {
 		w.lostLeases.Add(1)
 		w.finish(ctx, d, reg, Pending, change{attempts: -1, failureCode: "lease-short"})
@@ -309,7 +309,7 @@ func (w *Worker) dispatch(ctx context.Context, d Delivery, reg Destination) {
 	defer txCancel()
 	tx, err := tenant.Begin(txCtx, w.queue.db, d.Tenant, nil)
 	if err == nil {
-		if left = time.Until(d.leaseEnd); left < w.config.AttemptTimeout+2*operationTimeout {
+		if left = d.leaseEnd.Sub(w.now()); left < w.config.AttemptTimeout+2*operationTimeout {
 			_ = tx.Rollback()
 			w.lostLeases.Add(1)
 			w.finish(ctx, d, reg, Pending, change{attempts: -1, failureCode: "lease-short"})
@@ -323,7 +323,7 @@ func (w *Worker) dispatch(ctx context.Context, d Delivery, reg Destination) {
 		return
 	}
 	deadline := min(w.config.AttemptTimeout, left-2*operationTimeout)
-	attempt, cancel := context.WithTimeout(ctx, deadline)
+	attempt, cancel := w.deadline(ctx, deadline)
 	err = callHandler(attempt, reg.Handler, tx, d)
 	expired := errors.Is(attempt.Err(), context.DeadlineExceeded)
 	cancel()
@@ -380,7 +380,7 @@ func (w *Worker) afterUnknown(ctx context.Context, d Delivery, reg Destination) 
 			w.park(ctx, d, reg, change{failureCode: "attempts-exhausted"})
 			return
 		}
-		sent := time.Now()
+		sent := w.now()
 		ok, m := w.resend(ctx, &d)
 		if !ok {
 			return
@@ -430,7 +430,7 @@ func (w *Worker) reconcile(ctx context.Context, d Delivery, reg Destination) {
 		w.releaseLease(ctx, d, 0, "worker-stopping")
 		return
 	}
-	attempt, cancel := context.WithTimeout(ctx, w.config.AttemptTimeout)
+	attempt, cancel := w.deadline(ctx, w.config.AttemptTimeout)
 	status, err := callLookup(attempt, reg.Lookup, LookupRequest{ID: d.ID, OutgoingKey: d.OutgoingKey,
 		Destination: d.Destination, Tenant: d.Tenant})
 	cancel()

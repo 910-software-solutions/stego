@@ -34,6 +34,24 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
+// WaitClock is the clock of the waits of WaitFor: the bound of a wait and the time between two reads
+// (ST-SUP-RP06-LC24). The runtime uses context.WithTimeout and a timer of the real clock. A test gives a clock that
+// it moves itself, so it proves the wait cap and the waiter limits with no wall-clock limit.
+type WaitClock interface {
+	// WithTimeout gives a context that ends d after it is made, or when parent ends.
+	WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
+	// After gives a channel that receives the time when d has passed.
+	After(d time.Duration) <-chan time.Time
+}
+
+type systemWaitClock struct{}
+
+func (systemWaitClock) WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, d)
+}
+
+func (systemWaitClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
 // MinRetention is the shortest retention of a revocation record (ST-SUP-RP06-LC18); it is also the default.
 const MinRetention = 30 * 24 * time.Hour
 
@@ -59,6 +77,8 @@ type Config struct {
 	Retention time.Duration
 	// Clock is the clock of the retention. Nil is the system clock.
 	Clock Clock
+	// WaitClock is the clock of the waits of WaitFor. Nil is the real clock.
+	WaitClock WaitClock
 	// WaitCap is the longest wait of WaitFor (ST-SUP-RP06-LC24). Zero is DefaultWaitCap.
 	WaitCap time.Duration
 	// Waiters is the most calls of WaitFor that wait at one time; a call over it reads the status once and does not
@@ -81,6 +101,7 @@ type Runtime struct {
 	poll      time.Duration
 	retention time.Duration
 	clock     Clock
+	waitClock WaitClock
 	waitCap   time.Duration
 	waiters   chan struct{}
 
@@ -131,7 +152,7 @@ func New(cfg Config) (*Runtime, error) {
 		return nil, err
 	}
 	r := &Runtime{port: port, db: cfg.DB, schema: schema, outbox: cfg.Outbox, poll: cfg.Poll,
-		retention: cfg.Retention, clock: cfg.Clock}
+		retention: cfg.Retention, clock: cfg.Clock, waitClock: cfg.WaitClock}
 	if r.poll == 0 {
 		r.poll = 50 * time.Millisecond
 	}
@@ -140,6 +161,9 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	if r.clock == nil {
 		r.clock = systemClock{}
+	}
+	if r.waitClock == nil {
+		r.waitClock = systemWaitClock{}
 	}
 	r.waitCap = cfg.WaitCap
 	if r.waitCap == 0 {
@@ -860,7 +884,7 @@ func (r *Runtime) WaitFor(ctx context.Context, t tenant.Tenant, p Principal, id 
 	}
 	defer r.endWait(t)
 	allowed = min(wait, r.waitCap)
-	waitCtx, cancel := context.WithTimeout(ctx, allowed)
+	waitCtx, cancel := r.waitClock.WithTimeout(ctx, allowed)
 	defer cancel()
 	found := false
 	poll := r.poll
@@ -882,12 +906,10 @@ func (r *Runtime) WaitFor(ctx context.Context, t tenant.Tenant, p Principal, id 
 		if status.State != RevocationPending {
 			return status, allowed, nil
 		}
-		timer := time.NewTimer(poll)
 		select {
 		case <-waitCtx.Done():
-			timer.Stop()
 			return status, allowed, ctx.Err()
-		case <-timer.C:
+		case <-r.waitClock.After(poll):
 		}
 		poll = nextPoll(poll)
 	}
