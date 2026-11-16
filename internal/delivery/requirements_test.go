@@ -103,8 +103,12 @@ func TestNeedNamedLikeAVariable(t *testing.T) {
 		}
 		// A required variable that is not secret keeps the configuration need of its own name, and a need of another
 		// name is accepted.
+		// The broker also reads the required secret variable BROKER_TOKEN, which has no configuration need: a
+		// configuration requirement of its name would let env check meet it with the plaintext value (#380 security
+		// review L1).
 		components := groupComponents()
 		components[1].Variables[0].Required = true
+		components[1].Variables = append(components[1].Variables, Variable{Name: "BROKER_TOKEN", Type: "string", Required: true, Secret: true, Description: "The token of the brokers."})
 		components[1].Needs = []Need{{Kind: "configuration", Name: "STEGO_BROKER_REGION"}}
 		files, err := WriteRequirements("orders", components)
 		if err != nil {
@@ -115,15 +119,16 @@ func TestNeedNamedLikeAVariable(t *testing.T) {
 		}
 		// LoadRequirements refuses a requirement with the name of a listed variable, but for the configuration need
 		// of a required variable that is not secret.
-		for name, change := range map[string][2]string{
-			"a configuration requirement of a secret variable":    {"name: STEGO_BROKER_REGION", "name: DATABASE_URL"},
-			"a configuration requirement of an optional variable": {"name: STEGO_BROKER_REGION", "name: DATABASE_URL_FILE"},
+		for name, change := range map[string][3]string{
+			"a configuration requirement of a secret variable":          {"name: STEGO_BROKER_REGION", "name: DATABASE_URL", "store"},
+			"a configuration requirement of an optional variable":       {"name: STEGO_BROKER_REGION", "name: DATABASE_URL_FILE", "store"},
+			"a configuration requirement of a required secret variable": {"name: STEGO_BROKER_REGION", "name: BROKER_TOKEN", "broker"},
 		} {
 			changed := strings.Replace(string(files.Requirements), change[0], change[1], 1)
 			_, err := LoadRequirements([]byte(changed))
 			variable := strings.TrimPrefix(change[1], "name: ")
 			if err == nil || !strings.Contains(err.Error(), "the configuration requirement "+variable+" of the components broker has the name of the") ||
-				!strings.Contains(err.Error(), "environment variable "+variable+", which store reads") {
+				!strings.Contains(err.Error(), "environment variable "+variable+", which "+change[2]+" reads") {
 				t.Errorf("%s: LoadRequirements does not refuse it with the requirement, the components and the variable: %v", name, err)
 			}
 		}

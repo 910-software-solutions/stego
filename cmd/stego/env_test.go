@@ -382,6 +382,23 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 			c.change(t, "dev.yaml", cursorLine, "  STEGO_QUERY_CURSOR_KEY_FILE: "+empty+"\n")
 			stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 			expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE", "empty")
+			if blank := empty != "\"\""; blank != strings.Contains(stdout, "wrong type: configuration STEGO_QUERY_CURSOR_KEY_FILE: the configuration value of STEGO_QUERY_CURSOR_KEY_FILE is white space only") {
+				t.Errorf("the value %s of the required variable: the check names it as white space only %v, want %v:\n%s", empty, !blank, blank, stdout)
+			}
+		}
+		// A value of white space only of the optional PORT is given, and the service reads it as it is, so the check
+		// fails with a row of the wrong type; an empty or null value gives no value (#380 security review L2).
+		for _, blank := range []string{"\"  \"", "\"\\t\""} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", configBlock, configBlock+"  PORT: "+blank+"\n")
+			stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, "wrong type: configuration PORT", "the configuration value of PORT is white space only", "remove PORT from the environment file")
+		}
+		for _, empty := range []string{"\"\"", "null", ""} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", configBlock, configBlock+"  PORT: "+empty+"\n")
+			stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectPassed(t, stdout, stderr, passed)
 		}
 	})
 	t.Run("ST-DLV-UC02-R05-T03 An unknown environment variable is listed as unused, and a value of a listed variable is not", func(t *testing.T) {
@@ -440,6 +457,12 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		if strings.Contains(stdout+stderr, "CANARY") {
 			t.Fatalf("the check shows the value of the secret variable:\n%s\n%s", stdout, stderr)
 		}
+		// A value of white space only of a secret variable is a secret given as configuration too (#380 security
+		// review L2).
+		c = newEnvCase(t)
+		c.change(t, "dev.yaml", configBlock, configBlock+"  DATABASE_URL: \" \"\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "wrong type: configuration DATABASE_URL: the environment variable DATABASE_URL is secret")
 	})
 	t.Run("ST-DLV-UC02-R02-T05 Each configuration value has the type, the allowed values and the range of its variable", func(t *testing.T) {
 		for _, bad := range []struct{ line, parts string }{
