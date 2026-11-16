@@ -87,7 +87,7 @@ func TestGroupsOfOneOf(t *testing.T) {
 		for _, want := range []string{
 			"| `DATABASE_URL` | string | one of `database-url` |", "| `DATABASE_URL_FILE` | path | one of `database-url` |", "| `BROKERS` | list | no |",
 			"## Groups of one of", "The service needs exactly one variable of each group", "| `database-url` | `DATABASE_URL`, `DATABASE_URL_FILE` |",
-			"The key of the Secret of `DATABASE_URL` is the one value of its group", "never the *_FILE variable",
+			"The key of the Secret of each of these variables is the one value of its group:\n`DATABASE_URL`.\n", "never the *_FILE variable",
 		} {
 			if !strings.Contains(reference, want) {
 				t.Errorf("the reference does not hold %q:\n%s", want, reference)

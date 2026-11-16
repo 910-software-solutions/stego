@@ -101,9 +101,10 @@ func renderGroups(out *bytes.Buffer, list []AcceptedVariable) {
 		}
 	}
 	if len(sourced) > 0 {
-		fmt.Fprintf(out, "\nThe key of the Secret of %s is the one value of its group: the base gives it as that variable, and the\n"+
-			"Component secret-files gives it as the file of the *_FILE form. Give the Secret in the environment file, with or\n"+
-			"without the Component, and never the *_FILE variable: the base never wires it.\n", strings.Join(sourced, ", "))
+		fmt.Fprintf(out, "\nThe key of the Secret of each of these variables is the one value of its group:\n%s.\n"+
+			"The base gives it as the variable, and the Component secret-files gives it as the file of the *_FILE form. Give\n"+
+			"the Secret in the environment file, with or without the Component, and never the *_FILE variable: the base never\n"+
+			"wires it.\n", strings.Join(sourced, ", "))
 	}
 }
 
