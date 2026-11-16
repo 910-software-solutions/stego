@@ -3193,3 +3193,29 @@ slots: []
 		t.Errorf("error should mention the invalid value 'maybe', got: %v", err)
 	}
 }
+
+func TestReleaseDigest(t *testing.T) {
+	t.Run("ST-DLV-UC07-R06-T06 The digest of the release that names the migration Job is the same for the same files and changes with any file", func(t *testing.T) {
+		files := []gen.File{{Path: "out/main.go", Content: []byte("package main\n")}, {Path: "out/internal/storage/migrations/001_initial.sql", Content: []byte("CREATE TABLE t ();\n")},
+			{Path: "go.sum", Content: []byte("x v1 h1:a\n")}}
+		digest := releaseDigest(files)
+		if len(digest) != 64 || strings.Trim(digest, "0123456789abcdef") != "" {
+			t.Fatalf("the digest %q is not 64 lower-case hex digits", digest)
+		}
+		reversed := []gen.File{files[2], files[1], files[0]}
+		if releaseDigest(reversed) != digest {
+			t.Error("the digest depends on the order of the files")
+		}
+		for name, changed := range map[string][]gen.File{
+			"a new migration":  append(append([]gen.File{}, files...), gen.File{Path: "out/internal/storage/migrations/002_add.sql", Content: []byte("ALTER TABLE t ADD c int;\n")}),
+			"a changed source": {{Path: "out/main.go", Content: []byte("package main // v2\n")}, files[1], files[2]},
+			"a changed go.sum": {files[0], files[1], {Path: "go.sum", Content: []byte("x v2 h1:b\n")}},
+			"a moved content":  {{Path: "out/main.go", Content: []byte("package main\nCREATE TABLE t ();\n")}, {Path: "out/internal/storage/migrations/001_initial.sql", Content: nil}, files[2]},
+			"a renamed file":   {{Path: "out/main2.go", Content: files[0].Content}, files[1], files[2]},
+		} {
+			if releaseDigest(changed) == digest {
+				t.Errorf("%s keeps the digest of the release", name)
+			}
+		}
+	})
+}

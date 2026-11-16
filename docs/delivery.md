@@ -8,6 +8,8 @@ platform supplies those values.
 - `deploy/base/`: a plain kustomize base. Its image is `stego.invalid/<service>:set-by-overlay`, which no registry
   serves. The container has one `env` entry for each variable that the service reads. See "Secrets and
   configuration".
+- `deploy/base/migration-job.yaml`, when the service has a migration job: a Job that runs the schema migration of
+  the release. See "The migration Job".
 - `deploy/components/secret-files/`, when a variable of the service comes from a secret: an opt-in kustomize
   Component that gives each secret as a file. See "Secrets as files".
 - `Containerfile`: the offline Containerfile of the image that the base runs. It builds with the network off, with
@@ -63,9 +65,9 @@ environment file against them.
   The service refuses the two together.
 - A secret variable that no secret need gives, such as `PGPASSWORD`, gets no entry.
 - A variable that only the migration job reads (`read_by_mode: migrate` in the platform requirements), such as
-  `STEGO_MIGRATION_DATABASE_URL`, gets no entry. The Deployment serves, and it never holds the credential of the
-  owner role. The secret need still has the key, for the migration job: run the job with its own manifest
-  (`<binary> migrate`), and give it the key there.
+  `STEGO_MIGRATION_DATABASE_URL`, gets no entry in the Deployment. Only the migration Job takes it, from its own
+  Secret `<service>-database-owner`. The Deployment serves, and it never references that Secret. See "The
+  migration Job".
 - `STEGO_PROBE_CONSOLE` gets no entry, so the domain probes stay off the console. An overlay that wants them on
   the console sets the variable itself.
 - A variable that the service refuses at start gets no entry: the `PG` names that the pgx driver reads, the
@@ -89,6 +91,97 @@ Component. Use a tool such as Reloader, or a rollout from your secret operator, 
 When the platform uses other names, the overlay must patch them. A `namePrefix` or a `nameSuffix` of the overlay
 does not rename a Secret that the overlay does not make, such as one that an operator makes on the cluster.
 
+## The migration Job
+
+The schema migration of a release runs in a Kubernetes Job of its own, `deploy/base/migration-job.yaml`. The Job
+runs the service binary with the one argument `migrate`. The migration job makes and changes the tables, writes
+the authorization schema to SpiceDB, runs the backfills, and then checks the database against the schema manifest.
+
+### Two database roles
+
+The service uses two kinds of database role:
+
+- The owner role owns the tables and runs the DDL and the backfills. Only the migration Job connects as it, with
+  `STEGO_MIGRATION_DATABASE_URL` from the Secret `<service>-database-owner`, key `url`.
+- The runtime role, the worker role and the relay role run the DML of the serving process. The Deployment
+  connects as them, with `DATABASE_URL`, `STEGO_WORKER_DATABASE_URL` and `STEGO_RELAY_DATABASE_URL` from
+  `<service>-database` and `<service>-database-relay`. The runtime role is not the owner role and is no member of
+  it: the service does not start when it is.
+
+So the platform makes two Secrets for the database: `<service>-database` with the keys `url` and `worker-url`,
+and `<service>-database-owner` with the key `url`. The Deployment, the Component secret-files and their
+projections never reference `<service>-database-owner`. `stego apply` refuses a base where they do. The Job
+references no Secret that the Deployment takes a variable from.
+
+### What the Job holds
+
+- The name `<service>-migrate-<release>`, where `<release>` is the first ten hex digits of the digest of the files
+  that `stego apply` generates. A new apply cannot change the pod template of a Job, so each release that changes
+  the generated code or the schema gets a Job of a new name. The name is at most 63 characters, so the service
+  name is at most 44 characters. A release that changes only a fill keeps the Job name; see "Plain kubectl".
+- The annotations `argocd.argoproj.io/hook: PreSync` and
+  `argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded`. Plain Kubernetes ignores them.
+- `backoffLimit: 2`, `activeDeadlineSeconds: 7200` (two hours: the schema steps have 10 minutes and the backfills
+  one hour) and `ttlSecondsAfterFinished: 86400`. A finished Job stays one day, so that you can read its pods and
+  logs, and then Kubernetes deletes it.
+- `restartPolicy: Never`, no service account token, and the default service account of the namespace. Argo CD runs
+  the PreSync hook before it syncs the service account of the base, so the Job cannot use that account. When the
+  image needs a pull secret, give it to the default service account, or patch the Job in the overlay.
+- The pod security of the Deployment: non-root, the seccomp profile `RuntimeDefault`, no privilege escalation, every
+  capability dropped, a read-only root file system and the emptyDir `/tmp`. It sets no `fsGroup`, for the same
+  reason as the Deployment (see "Secrets as files").
+- The labels `app.kubernetes.io/part-of: <service>` and `app.kubernetes.io/component: migration`, and no
+  `app.kubernetes.io/name`, so that the selectors of the Deployment and the Service never take a pod of the Job.
+- An `env` entry, names only, for each variable that is not secret, from the ConfigMap `<service>-config`, as in
+  the Deployment, and `STEGO_MIGRATION_DATABASE_URL` from `<service>-database-owner`. It has no credential of a
+  serving role, and no path of a secret file except `STEGO_SPICEDB_KEY_FILE`, the key that the Job uses to write
+  the authorization schema.
+
+The image of the Job is the image of the base, so the `images` entry of the overlay sets its digest too.
+
+### With Argo CD
+
+Argo CD runs the Job as a PreSync hook: before it syncs the Deployment, it deletes the Job of the sync before
+(`BeforeHookCreation`), runs the Job, and syncs the rest only when the Job passed. A Job that passed is deleted
+(`HookSucceeded`). A Job that failed stops the sync, and stays until the next sync or its time to live, so that you
+can read its logs.
+
+The Job runs before Argo CD syncs the other resources of the Application. So the Secret `<service>-database-owner`,
+the Secret `<service>-spicedb` and the ConfigMap `<service>-config` must be on the cluster before the sync, for
+example from an operator or another Application. When the overlay itself makes them, the first sync waits on the
+Job until its time limit, because the Job cannot start without them.
+
+### Plain kubectl
+
+`kubectl apply -k <overlay>` makes the Job and the Deployment at the same time, and nothing runs the Job first.
+The serving process checks this at start: it reads the migration ledger `stego_schema.migrations`, and when the
+ledger does not hold the last migration of its release, the process stops with the stage
+`service.start.migration` and an error line that names the ledger and the migration, and says to run the migration
+Job of the release and to wait until it completes. The pod restarts, with the back-off of Kubernetes, until the Job
+is done, and then starts. To wait in a script:
+
+```sh
+kubectl apply -k overlays/test
+kubectl wait --for=condition=complete job -l app.kubernetes.io/part-of=orders,app.kubernetes.io/component=migration --timeout=2h
+kubectl rollout status deployment/orders
+```
+
+A database whose ledger holds the migration of the release, but that does not hold the schema manifest, still
+starts, with an alert for each fault. The migration Job refuses such a database.
+
+A second apply of the same release changes nothing in a Job that is still there. After its time to live, the Job is
+gone, and the next apply makes it again; the job then finds nothing to do. When a release changes only a fill, the
+Job keeps its name but gets a new image, and the apply fails with `field is immutable` while the Job of the release
+before is still there. Then delete that Job (`kubectl delete job <service>-migrate-<release>`) and apply again: it
+has finished its work.
+
+### In local tests
+
+The local tests run the migrate mode directly against the local PostgreSQL stand-in, with no pod, and prove the
+manifest of the Job with the kustomize library. To run the migration of a service by hand, run the binary with
+`migrate` and the variables of the Job, for example
+`STEGO_MIGRATION_DATABASE_URL=... STEGO_SPICEDB_ENDPOINT=... STEGO_SPICEDB_KEY_FILE=... ./service migrate`.
+
 ## Secrets as files
 
 The Component `deploy/components/secret-files/` gives each secret to the service as a file, in place of an
@@ -103,7 +196,8 @@ components:
   - https://git.example/orders.git//deploy/components/secret-files?ref=0123456789abcdef0123456789abcdef01234567
 ```
 
-The Component has two patches of the Deployment. The forms are exclusive, so the first patch removes the
+The Component has two patches of the Deployment and, when the base has a migration Job, two patches of the Job.
+The forms are exclusive, so the first patch removes the
 environment entry of each secret variable, and of each path variable that names the file of a secret. The second
 patch then:
 
@@ -115,17 +209,20 @@ patch then:
 The files have the mode 0400 and the owner root, so that no other user can read them. The process runs as a user
 that is not root, so give the pod an `fsGroup`: Kubernetes then gives the files to that group with read access.
 The restricted SCC of OpenShift sets an `fsGroup` for each namespace, and it refuses a pod that sets another one,
-so the base sets none. On another cluster, set `fsGroup` in the overlay, for example to the user of the image.
+so the base sets none. On another cluster, set `fsGroup` in the overlay, on the Deployment and on the Job, for
+example to the user of the image.
 Do not widen the mode of the files, and do not run the process as root.
 
-The Component switches only the variables that state a secret source. With the shipped registry, these are:
+The Component switches only the variables that state a secret source. In the Job, it switches only the owner
+credential and the key of SpiceDB. With the shipped registry, these are:
 
 | Variable that the Component sets | Environment entry that it removes | Secret and key |
 |---|---|---|
 | `DATABASE_URL_FILE` | `DATABASE_URL` | `<service>-database`, `url` |
+| `STEGO_MIGRATION_DATABASE_URL_FILE` (the Job only) | `STEGO_MIGRATION_DATABASE_URL` | `<service>-database-owner`, `url` |
 | `STEGO_WORKER_DATABASE_URL_FILE` | `STEGO_WORKER_DATABASE_URL` | `<service>-database`, `worker-url` |
 | `STEGO_RELAY_DATABASE_URL_FILE` | `STEGO_RELAY_DATABASE_URL` | `<service>-database-relay`, `url` |
-| `STEGO_SPICEDB_KEY_FILE` | `STEGO_SPICEDB_KEY_FILE` | `<service>-spicedb`, `preshared-key` |
+| `STEGO_SPICEDB_KEY_FILE` (the Deployment and the Job) | `STEGO_SPICEDB_KEY_FILE` | `<service>-spicedb`, `preshared-key` |
 | `STEGO_QUERY_CURSOR_KEY_FILE` | `STEGO_QUERY_CURSOR_KEY_FILE` | `<service>-query-cursor`, `key` |
 | `STEGO_HTTP_TLS_CERT`, `STEGO_HTTP_TLS_KEY` | the same | `<service>-tls`, `tls-crt` and `tls-key` (browser-backend) |
 | `STEGO_BROWSER_CLIENT_SECRET_FILE`, `STEGO_BROWSER_SESSION_KEY_FILE` | the same | `<service>-browser`, `client-secret` and `session-keys` |

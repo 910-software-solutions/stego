@@ -25,6 +25,7 @@ const (
 	ServiceFile        = BaseFolder + "/service.yaml"
 	RoleFile           = BaseFolder + "/role.yaml"
 	RoleBindingFile    = BaseFolder + "/role-binding.yaml"
+	MigrationJobFile   = BaseFolder + "/migration-job.yaml"
 )
 
 // SecretFilesFolder is the folder, in the project folder, of the opt-in kustomize Component that gives each secret
@@ -38,6 +39,9 @@ const (
 	SecretFilesKustomization = SecretFilesFolder + "/kustomization.yaml"
 	SecretFilesRemoval       = SecretFilesFolder + "/remove-env.yaml"
 	SecretFilesMounts        = SecretFilesFolder + "/mount-files.yaml"
+	// The two patches of the migration Job, of the same shapes as those of the Deployment (ST-DLV-Q20).
+	SecretFilesJobRemoval = SecretFilesFolder + "/remove-job-env.yaml"
+	SecretFilesJobMounts  = SecretFilesFolder + "/mount-job-files.yaml"
 )
 
 // SecretFilesRoot is the folder in the container under which the Component mounts each secret, one folder for each
@@ -49,8 +53,56 @@ const SecretFileMode = 0o400
 
 // BaseFiles are the paths of every file that the Kubernetes base may hold, in the order of the kustomization file,
 // and then the files of the Component secret-files.
-var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, ServiceFile, RoleFile, RoleBindingFile,
-	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts}
+var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, ServiceFile, RoleFile, RoleBindingFile, MigrationJobFile,
+	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts}
+
+// MigrateMode is the mode of the migration job: the argument of the service binary in the migration Job, and the
+// value of read_by_mode of a variable that only that mode reads (ST-DLV-Q19, ST-DLV-Q20).
+const MigrateMode = "migrate"
+
+// OwnerSecret is the name of the Secret of the credential of the owner role, which only the migration Job
+// references (ST-DLV-Q20, ST-DLV-INV13).
+func OwnerSecret(service string) string {
+	return service + "-database-owner"
+}
+
+// MigrationKeyFiles are the path variables of a secret file that the migrate mode reads besides its own variables:
+// the preshared key of SpiceDB, to which the migration job writes the authorization schema (ReadMigrationSettings of
+// the service runtime). The Job gets no path of another secret file, so the Component mounts no other key in it.
+var MigrationKeyFiles = []string{"STEGO_SPICEDB_KEY_FILE"}
+
+// The settings of the migration Job (ST-DLV-UC07-R06). The job runs its schema steps within 10 minutes and its
+// backfills within one hour (MigrationTimeout and BackfillTimeout of the service runtime), so two hours hold one run
+// and its retries. A finished Job stays one day, so that an operator or an agent can read its pods and logs, and
+// then Kubernetes deletes it, so that a later apply of the same base makes it again.
+const (
+	MigrationBackoffLimit = 2
+	MigrationDeadline     = 7200
+	MigrationTimeToLive   = 86400
+)
+
+// releaseSuffixLength is the length of the suffix of the name of the migration Job: the first hex digits of the
+// digest of the release.
+const releaseSuffixLength = 10
+
+// releaseDigest is the digest of a release that names its migration Job: lower-case hex digits.
+var releaseDigest = regexp.MustCompile(`^[0-9a-f]{10,}$`)
+
+// MigrationJobName is the name of the migration Job of a release: the service, -migrate- and the first ten hex
+// digits of the digest of the release. A new apply cannot change the pod template of a Job, so each release that
+// changes the generated code or the schema gets a Job of a new name. Kubernetes also writes the name as the value of
+// the label job-name on each pod of the Job, so the name is a DNS label of at most 63 characters.
+func MigrationJobName(service, release string) (string, error) {
+	if !releaseDigest.MatchString(release) {
+		return "", fmt.Errorf("the digest of the release %q is not ten or more lower-case hex digits", release)
+	}
+	name := service + "-migrate-" + release[:releaseSuffixLength]
+	if len(name) > 63 || !serviceLabel.MatchString(name) {
+		return "", fmt.Errorf("the name of the migration Job %s has %d characters, more than the 63 of a Kubernetes label value; use a service name of at most %d characters",
+			name, len(name), 63-len("-migrate-")-releaseSuffixLength)
+	}
+	return name, nil
+}
 
 // ConfigMapName is the name of the one ConfigMap from which the base takes each variable that is not secret
 // (ST-DLV-Q18): the platform makes it, with the variable name as the key.
@@ -135,11 +187,13 @@ const noProbePort = "no Kubernetes base is written: the platform requirements gi
 // ci-pipeline component (ST-DLV-CMD02), and then the Kubernetes base and the delivery object (WriteDeployment).
 // When the stanza names no provider, or the component states no pins for it (ST-DLV-Q13 (C)), the run writes no
 // CI file and says so in the plan.
-func WriteDelivery(service string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
+//
+// release is the digest of the release, in hex, which names the migration Job (MigrationJobName).
+func WriteDelivery(service, release string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
 	if provider != "" && provider != GitHubActions && provider != Konflux {
 		return DeploymentFiles{}, &StanzaError{Path: "delivery.ci", Reason: fmt.Sprintf("the CI provider %q is not %s or %s", provider, GitHubActions, Konflux)}
 	}
-	written, err := WriteDeployment(service, requirements, probes, source, stanza)
+	written, err := WriteDeployment(service, release, requirements, probes, source, stanza)
 	if err != nil {
 		return DeploymentFiles{}, err
 	}
@@ -165,11 +219,11 @@ func WriteDelivery(service string, requirements []byte, probes *ProbeSource, sou
 // offline Containerfile of the image that the base runs (ST-DLV-CMD03), and then, as the base is written, the
 // delivery object from the Argo CD part of the delivery stanza, or none when the declaration has no such part
 // (ST-DLV-PO04).
-func WriteDeployment(service string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza) (DeploymentFiles, error) {
+func WriteDeployment(service, release string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza) (DeploymentFiles, error) {
 	if probes == nil {
 		return DeploymentFiles{Notes: []string{NoBase}}, nil
 	}
-	base, written, err := WriteBase(service, requirements, *probes)
+	base, written, err := WriteBase(service, release, requirements, *probes)
 	if errors.Is(err, errNoProbePort) {
 		return DeploymentFiles{Notes: []string{fmt.Sprintf(noProbePort, probes.PortVariable)}}, nil
 	}
@@ -212,8 +266,10 @@ func deliveryObjectFor(written BaseWritten, stanza *ArgoCDStanza) (*Application,
 // WriteBase writes the plain kustomize base of the service (ST-DLV-CMD03) from its platform requirements alone: a
 // ServiceAccount, a Deployment with the probes and the default resources, a Service for each ingress, and a Role and
 // a RoleBinding for the cluster permissions. It sets no replicas, namespace, image digest, host name, address or
-// secret value (ST-DLV-INV08), and it reads the base back with LoadBase before it gives it (ST-DLV-INV09).
-func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, BaseWritten, error) {
+// secret value (ST-DLV-INV08), and it reads the base back with LoadBase before it gives it (ST-DLV-INV09). When the
+// migrate mode alone reads a variable of the service, the base also holds the migration Job of the release, named
+// from the digest release (migrationJob, ST-DLV-UC07-R06).
+func WriteBase(service, release string, requirements []byte, probes ProbeSource) (Base, BaseWritten, error) {
 	stated, err := LoadRequirements(requirements)
 	if err != nil {
 		return Base{}, BaseWritten{}, err
@@ -338,14 +394,27 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 		}
 	}
 
+	var jobSwitched []secretFile
+	jobName := ""
+	if migrates(stated.Environment) {
+		if jobName, err = MigrationJobName(service, release); err != nil {
+			return Base{}, BaseWritten{}, err
+		}
+		var job map[string]any
+		job, jobSwitched = migrationJob(service, jobName, stated.Environment)
+		if err := add(MigrationJobFile, job); err != nil {
+			return Base{}, BaseWritten{}, err
+		}
+	}
+
 	kustomization := map[string]any{"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization", "resources": resources}
 	data, err := encodeResource(kustomization)
 	if err != nil {
 		return Base{}, BaseWritten{}, err
 	}
 	files[KustomizationFile] = data
-	if len(switched) > 0 {
-		component, err := secretFilesComponent(service, switched)
+	if len(switched) > 0 || len(jobSwitched) > 0 {
+		component, err := secretFilesComponent(service, jobName, switched, jobSwitched)
 		if err != nil {
 			return Base{}, BaseWritten{}, err
 		}
@@ -356,6 +425,116 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 		return Base{}, BaseWritten{}, fmt.Errorf("the Kubernetes base is not a plain kustomize base: %w", err)
 	}
 	return base, BaseWritten{Service: service, Base: BaseFolder}, nil
+}
+
+// migrates tells whether the migrate mode alone reads a variable of the service: then the service has a migration
+// job, and the base writes its Job.
+func migrates(list []AcceptedVariable) bool {
+	for _, variable := range list {
+		if variable.ReadByMode == MigrateMode {
+			return true
+		}
+	}
+	return false
+}
+
+// The labels of the migration Job and its pods. They have no app.kubernetes.io/name, so that the selector of the
+// Deployment and of the Service never takes a pod of the Job.
+const (
+	partOfLabel    = "app.kubernetes.io/part-of"
+	componentLabel = "app.kubernetes.io/component"
+	migrationLabel = "migration"
+)
+
+// The Argo CD annotations of the migration Job: it runs as a PreSync hook, before Argo CD syncs the Deployment, a new
+// sync deletes the Job of the sync before, and a Job that passed is deleted. Plain Kubernetes ignores them.
+const (
+	HookAnnotation       = "argocd.argoproj.io/hook"
+	HookDeleteAnnotation = "argocd.argoproj.io/hook-delete-policy"
+	HookPhase            = "PreSync"
+	HookDeletePolicy     = "BeforeHookCreation,HookSucceeded"
+)
+
+// migrationJob writes the migration Job of the release (ST-DLV-UC07-R06, ST-DLV-Q20): a batch/v1 Job that runs the
+// service binary with the argument migrate, as a PreSync hook of Argo CD, with a retry limit, a time limit and a time
+// to live, the restricted pod security and the resource defaults of the Deployment, and no service account token. It
+// runs as the default service account of the namespace, because Argo CD runs the hook before it syncs the service
+// account of the base. It gives the environment entries of jobEnvironment, and the variables that the Component
+// secret-files gives the Job as files.
+func migrationJob(service, name string, list []AcceptedVariable) (map[string]any, []secretFile) {
+	labels := map[string]any{partOfLabel: service, componentLabel: migrationLabel}
+	container := map[string]any{
+		"name":      service,
+		"image":     ImagePlaceholder(service),
+		"args":      []any{MigrateMode},
+		"resources": ResourceDefaults,
+		"securityContext": map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}},
+			"readOnlyRootFilesystem": true},
+		"volumeMounts": []any{map[string]any{"name": "tmp", "mountPath": "/tmp"}},
+	}
+	environment, switched := jobEnvironment(service, list)
+	if len(environment) > 0 {
+		container["env"] = environment
+	}
+	pod := map[string]any{"restartPolicy": "Never", "automountServiceAccountToken": false, "containers": []any{container},
+		"securityContext": map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
+		"volumes":         []any{map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": TmpSizeLimit}}}}
+	return map[string]any{"apiVersion": "batch/v1", "kind": "Job",
+		"metadata": map[string]any{"name": name, "labels": labels,
+			"annotations": map[string]any{HookAnnotation: HookPhase, HookDeleteAnnotation: HookDeletePolicy}},
+		"spec": map[string]any{"backoffLimit": MigrationBackoffLimit, "activeDeadlineSeconds": MigrationDeadline,
+			"ttlSecondsAfterFinished": MigrationTimeToLive,
+			"template":                map[string]any{"metadata": map[string]any{"labels": labels}, "spec": pod}}}, switched
+}
+
+// jobEnvironment gives the environment entries of the migration Job, in name order, with names only, and the
+// variables that the Component secret-files gives the Job as files. A secret variable gets an entry only when the
+// migrate mode alone reads it, so that the Job never holds the credential of a serving role; each other variable
+// that is not secret takes its value from the ConfigMap as in the Deployment, except a path variable of a secret file
+// that is not one of MigrationKeyFiles, so that the Job holds no path of a secret file that it does not read. The
+// console sink, the variables that the start guard refuses and the *_FILE form of a sourced secret variable get no
+// entry, as in the Deployment.
+func jobEnvironment(service string, list []AcceptedVariable) ([]any, []secretFile) {
+	sourced := map[string]bool{}
+	listed := map[string]bool{}
+	for _, variable := range list {
+		listed[variable.Name] = true
+		if variable.Secret && variable.SecretSource != nil {
+			sourced[variable.Name] = true
+		}
+	}
+	var entries []any
+	var switched []secretFile
+	for _, variable := range list {
+		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart {
+			continue
+		}
+		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile && sourced[form] {
+			continue
+		}
+		switch {
+		case variable.Secret && (variable.SecretSource == nil || variable.ReadByMode != MigrateMode):
+			continue
+		case variable.Secret:
+			entries = append(entries, map[string]any{"name": variable.Name, "valueFrom": map[string]any{
+				"secretKeyRef": map[string]any{"name": variable.SecretSource.Name, "key": variable.SecretSource.Key}}})
+			if listed[variable.Name+"_FILE"] {
+				switched = append(switched, secretFile{Removed: variable.Name, Variable: variable.Name + "_FILE", Source: *variable.SecretSource})
+			}
+			continue
+		case variable.SecretSource != nil && !slices.Contains(MigrationKeyFiles, variable.Name):
+			continue
+		}
+		reference := map[string]any{"name": ConfigMapName(service), "key": variable.Name}
+		if !variable.Required {
+			reference["optional"] = true
+		}
+		entries = append(entries, map[string]any{"name": variable.Name, "valueFrom": map[string]any{"configMapKeyRef": reference}})
+		if variable.SecretSource != nil {
+			switched = append(switched, secretFile{Removed: variable.Name, Variable: variable.Name, Source: *variable.SecretSource})
+		}
+	}
+	return entries, switched
 }
 
 // ConsoleSinkVariable is the variable that turns the console sink of the domain probes on. The base never names
@@ -436,14 +615,45 @@ func SecretFilePath(source SecretSource) string {
 	return SecretFilesRoot + "/" + source.Name + "/" + source.Key
 }
 
-// secretFilesComponent writes the opt-in kustomize Component secret-files (ST-DLV-Q18): a patch that removes the
-// environment entry of each switched variable, and a patch that sets each *_FILE variable to the path of its file
-// and mounts each secret read-only, with the mode 0400 and no subPath, so that a new value of the secret reaches
-// the file in place. The forms are exclusive, so the first patch removes what the second replaces.
-func secretFilesComponent(service string, switched []secretFile) (map[string][]byte, error) {
+// secretFilesComponent writes the opt-in kustomize Component secret-files (ST-DLV-Q18): for the Deployment, and for
+// the migration Job job when the base has one (ST-DLV-Q20), a patch that removes the environment entry of each
+// switched variable, and a patch that sets each *_FILE variable to the path of its file and mounts each secret
+// read-only, with the mode 0400, no subPath and only the keys that the switched variables read, so that a new value
+// of the secret reaches the file in place. The forms are exclusive, so the first patch removes what the second
+// replaces.
+func secretFilesComponent(service, job string, switched, jobSwitched []secretFile) (map[string][]byte, error) {
+	files := map[string][]byte{}
+	var patches []any
+	for _, target := range []struct {
+		kind, apiVersion, name, removal, mounts string
+		switched                                []secretFile
+	}{
+		{"Deployment", "apps/v1", service, SecretFilesRemoval, SecretFilesMounts, switched},
+		{"Job", "batch/v1", job, SecretFilesJobRemoval, SecretFilesJobMounts, jobSwitched},
+	} {
+		if len(target.switched) == 0 {
+			continue
+		}
+		removal, mounts, err := secretFilesPatches(service, target.apiVersion, target.kind, target.name, target.switched)
+		if err != nil {
+			return nil, err
+		}
+		files[target.removal], files[target.mounts] = removal, mounts
+		patches = append(patches, map[string]any{"path": path.Base(target.removal)}, map[string]any{"path": path.Base(target.mounts)})
+	}
+	data, err := encodeWith(secretFilesHeader, map[string]any{"apiVersion": "kustomize.config.k8s.io/v1alpha1", "kind": "Component", "patches": patches})
+	if err != nil {
+		return nil, err
+	}
+	files[SecretFilesKustomization] = data
+	return files, nil
+}
+
+// secretFilesPatches writes the removal patch and the mount patch of one workload of the Component secret-files.
+func secretFilesPatches(service, apiVersion, kind, name string, switched []secretFile) ([]byte, []byte, error) {
 	var removed, set, mounts, volumes []any
 	// The keys of each secret that a switched variable reads: the volume projects only these keys, so that no other
-	// key of the Secret, such as the credential of the migration job, is a file of the pod (ST-DLV-Q19).
+	// key of the Secret is a file of the pod (ST-DLV-Q19).
 	keys := map[string][]any{}
 	var secrets []string
 	for _, file := range switched {
@@ -456,7 +666,7 @@ func secretFilesComponent(service string, switched []secretFile) (map[string][]b
 	}
 	for _, secret := range secrets {
 		if !serviceLabel.MatchString(secret) || secret == "tmp" {
-			return nil, fmt.Errorf("the secret %s is not a Kubernetes volume name: a DNS label of at most 63 characters that is not tmp; use a shorter service name", secret)
+			return nil, nil, fmt.Errorf("the secret %s is not a Kubernetes volume name: a DNS label of at most 63 characters that is not tmp; use a shorter service name", secret)
 		}
 		mounts = append(mounts, map[string]any{"name": secret, "mountPath": SecretFilesRoot + "/" + secret, "readOnly": true})
 		volumes = append(volumes, map[string]any{"name": secret, "secret": map[string]any{"secretName": secret, "defaultMode": SecretFileMode,
@@ -465,23 +675,18 @@ func secretFilesComponent(service string, switched []secretFile) (map[string][]b
 	patch := func(container map[string]any, pod map[string]any) map[string]any {
 		container["name"] = service
 		pod["containers"] = []any{container}
-		return map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": service},
+		return map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"name": name},
 			"spec": map[string]any{"template": map[string]any{"spec": pod}}}
 	}
-	files := map[string][]byte{}
-	for file, object := range map[string]map[string]any{
-		SecretFilesKustomization: {"apiVersion": "kustomize.config.k8s.io/v1alpha1", "kind": "Component",
-			"patches": []any{map[string]any{"path": path.Base(SecretFilesRemoval)}, map[string]any{"path": path.Base(SecretFilesMounts)}}},
-		SecretFilesRemoval: patch(map[string]any{"env": removed}, map[string]any{}),
-		SecretFilesMounts:  patch(map[string]any{"env": set, "volumeMounts": mounts}, map[string]any{"volumes": volumes}),
-	} {
-		data, err := encodeWith(secretFilesHeader, object)
-		if err != nil {
-			return nil, err
-		}
-		files[file] = data
+	removal, err := encodeWith(secretFilesHeader, patch(map[string]any{"env": removed}, map[string]any{}))
+	if err != nil {
+		return nil, nil, err
 	}
-	return files, nil
+	mount, err := encodeWith(secretFilesHeader, patch(map[string]any{"env": set, "volumeMounts": mounts}, map[string]any{"volumes": volumes}))
+	if err != nil {
+		return nil, nil, err
+	}
+	return removal, mount, nil
 }
 
 // secretFilesHeader is the first lines of each file of the Component secret-files.
@@ -548,16 +753,18 @@ func encodeWith(header string, object map[string]any) ([]byte, error) {
 }
 
 // baseKinds are the kinds of resource that a Kubernetes base may hold.
-var baseKinds = []string{"ServiceAccount", "Deployment", "Service", "Role", "RoleBinding"}
+var baseKinds = []string{"ServiceAccount", "Deployment", "Service", "Role", "RoleBinding", "Job"}
 
 // LoadBase reads the files of a Kubernetes base back and holds them to plain kustomize (ST-DLV-REPO03,
 // ST-DLV-INV09): each file is one of the base folder or of the Component secret-files; the kustomization file has
 // only its apiVersion, its kind and its resources, so it names no generator, transformer, Helm chart or remote
 // base; each resource is a file of the base folder that the base holds; each resource file is one YAML document
 // with an apiVersion, a kind and a name; each environment entry of the Deployment names a key of a Secret or of a
-// ConfigMap and never holds a value (ST-DLV-Q18); and the Component, when the base has one, is exactly a Component
-// with its two patches of the Deployment (loadSecretFiles). The tests build the base with the kustomize library
-// itself; the compiler does not carry it.
+// ConfigMap and never holds a value (ST-DLV-Q18); the Deployment never references the Secret of the owner
+// credential, and the migration Job, when the base has one, has its exact shape and references no other Secret
+// (checkMigrationJob, ST-DLV-INV13); and the Component, when the base has one, is exactly a Component with its two
+// patches of the Deployment and, with a Job, its two patches of the Job (loadSecretFiles). The tests build the base
+// with the kustomize library itself; the compiler does not carry it.
 func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 	inBase := 0
 	for file := range files {
@@ -584,6 +791,9 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 		return nil, fmt.Errorf("%s is not a kustomization that lists its resources", KustomizationFile)
 	}
 	resources := map[string]map[string]any{}
+	var service, job string
+	var servingSecrets []string
+	var jobContent []byte
 	for _, name := range kustomization.Resources {
 		file := BaseFolder + "/" + name
 		if path.Base(name) != name || name == path.Base(KustomizationFile) || !slices.Contains(BaseFiles, file) {
@@ -607,17 +817,44 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 		if kind, _ := resource["kind"].(string); !slices.Contains(baseKinds, kind) {
 			return nil, fmt.Errorf("%s holds the kind %v, which is not one of %s", file, resource["kind"], strings.Join(baseKinds, ", "))
 		}
-		if resource["kind"] == "Deployment" {
-			if err := checkEnvironmentEntries(content); err != nil {
+		switch resource["kind"] {
+		case "Deployment":
+			if service != "" || file != DeploymentFile {
+				return nil, fmt.Errorf("%s holds a second Deployment, or a Deployment out of %s", file, DeploymentFile)
+			}
+			service, _ = metadata["name"].(string)
+			secrets, _, err := checkEnvironmentEntries(content)
+			if err != nil {
 				return nil, fmt.Errorf("%s: %w", file, err)
 			}
+			servingSecrets = secrets
+		case "Job":
+			if job != "" || file != MigrationJobFile {
+				return nil, fmt.Errorf("%s holds a second Job, or a Job out of %s", file, MigrationJobFile)
+			}
+			job, _ = metadata["name"].(string)
+			jobContent = content
 		}
 		resources[file] = resource
 	}
 	if len(resources) != inBase-1 {
 		return nil, fmt.Errorf("%s does not list each file of the base", KustomizationFile)
 	}
-	if err := loadSecretFiles(files); err != nil {
+	if service == "" {
+		return nil, fmt.Errorf("the Kubernetes base holds no Deployment in %s", DeploymentFile)
+	}
+	// The serving Deployment never references the Secret of the owner credential (ST-DLV-INV13).
+	for _, secret := range servingSecrets {
+		if isOwnerSecret(service, secret) {
+			return nil, fmt.Errorf("%s takes a variable from the Secret %s, the credential of the owner role, which only the migration Job may reference (ST-DLV-INV13)", DeploymentFile, secret)
+		}
+	}
+	if job != "" {
+		if err := checkMigrationJob(jobContent, service, job); err != nil {
+			return nil, fmt.Errorf("%s: %w", MigrationJobFile, err)
+		}
+	}
+	if err := loadSecretFiles(files, service, job, servingSecrets); err != nil {
 		return nil, err
 	}
 	return resources, nil
@@ -643,8 +880,9 @@ type containerVariable struct {
 // checkEnvironmentEntries holds each environment entry of the Deployment of a base to names only (ST-DLV-UC07-R02,
 // ST-DLV-Q18): a variable name and one reference to a key of a Secret or of a ConfigMap, with no value and no other
 // field. A secret reference has no optional flag, because the secret need requires each of its keys; a ConfigMap
-// reference may be optional. No variable has two entries.
-func checkEnvironmentEntries(content []byte) error {
+// reference may be optional. No variable has two entries. It gives the names of the Secrets and of the ConfigMaps
+// that the entries reference, each once.
+func checkEnvironmentEntries(content []byte) (secrets, configMaps []string, err error) {
 	type container struct {
 		Name    string      `yaml:"name"`
 		Env     []yaml.Node `yaml:"env"`
@@ -662,51 +900,181 @@ func checkEnvironmentEntries(content []byte) error {
 		} `yaml:"spec"`
 	}
 	if err := yaml.Unmarshal(content, &deployment); err != nil {
-		return err
+		return nil, nil, err
 	}
 	// The base writes no envFrom, which takes every key of a ConfigMap or a Secret, also a name that the service
 	// refuses, and no environment of an init or an ephemeral container (#370 security review L2).
 	pod := deployment.Spec.Template.Spec
 	for _, other := range append(slices.Clone(pod.InitContainers), pod.EphemeralContainers...) {
 		if len(other.Env) > 0 || len(other.EnvFrom) > 0 {
-			return fmt.Errorf("the container %q is an init or an ephemeral container with an environment, which the base never writes", other.Name)
+			return nil, nil, fmt.Errorf("the container %q is an init or an ephemeral container with an environment, which the base never writes", other.Name)
 		}
 	}
 	for _, container := range pod.Containers {
 		if len(container.EnvFrom) > 0 {
-			return fmt.Errorf("the container %q takes its environment from envFrom, which the base never writes; each variable is one env entry", container.Name)
+			return nil, nil, fmt.Errorf("the container %q takes its environment from envFrom, which the base never writes; each variable is one env entry", container.Name)
 		}
 		seen := map[string]bool{}
 		for _, node := range container.Env {
 			text, err := yaml.Marshal(&node)
 			if err != nil {
-				return err
+				return nil, nil, err
 			}
 			var entry containerVariable
 			if err := decodeStrict(text, MaxRequirementsBytes, &entry); err != nil {
-				return fmt.Errorf("an environment entry has a field that the base never writes, such as a value: %w", err)
+				return nil, nil, fmt.Errorf("an environment entry has a field that the base never writes, such as a value: %w", err)
 			}
 			if !variableName.MatchString(entry.Name) || seen[entry.Name] {
-				return fmt.Errorf("the environment entry %q is not a variable name, or is given twice", entry.Name)
+				return nil, nil, fmt.Errorf("the environment entry %q is not a variable name, or is given twice", entry.Name)
 			}
 			seen[entry.Name] = true
 			from := entry.ValueFrom
 			if from == nil || (from.SecretKeyRef == nil) == (from.ConfigMapKeyRef == nil) {
-				return fmt.Errorf("the environment entry %s does not take its value from one key of a Secret or of a ConfigMap", entry.Name)
+				return nil, nil, fmt.Errorf("the environment entry %s does not take its value from one key of a Secret or of a ConfigMap", entry.Name)
 			}
 			reference := from.ConfigMapKeyRef
 			if from.SecretKeyRef != nil {
 				reference = from.SecretKeyRef
 				if reference.Optional != nil {
-					return fmt.Errorf("the environment entry %s takes its value from a Secret with an optional flag; the secret need requires each of its keys", entry.Name)
+					return nil, nil, fmt.Errorf("the environment entry %s takes its value from a Secret with an optional flag; the secret need requires each of its keys", entry.Name)
 				}
 			}
 			if !serviceLabel.MatchString(reference.Name) || !shapeWord.MatchString(reference.Key) {
-				return fmt.Errorf("the environment entry %s does not name a Secret or a ConfigMap and a key", entry.Name)
+				return nil, nil, fmt.Errorf("the environment entry %s does not name a Secret or a ConfigMap and a key", entry.Name)
 			}
 			if reference.Optional != nil && !*reference.Optional {
-				return fmt.Errorf("the environment entry %s states optional: false; a required entry states no optional flag", entry.Name)
+				return nil, nil, fmt.Errorf("the environment entry %s states optional: false; a required entry states no optional flag", entry.Name)
 			}
+			if from.SecretKeyRef != nil && !slices.Contains(secrets, reference.Name) {
+				secrets = append(secrets, reference.Name)
+			}
+			if from.ConfigMapKeyRef != nil && !slices.Contains(configMaps, reference.Name) {
+				configMaps = append(configMaps, reference.Name)
+			}
+		}
+	}
+	return secrets, configMaps, nil
+}
+
+// isOwnerSecret tells whether a Secret is the Secret of the owner credential: the one of the service, or any whose
+// name ends as one, so that a renamed copy is refused too.
+func isOwnerSecret(service, secret string) bool {
+	return secret == OwnerSecret(service) || strings.HasSuffix(secret, "-database-owner")
+}
+
+// migrationJobShape is the one shape of the migration Job of a base. The strict decoder refuses each other field,
+// such as a service account, an fsGroup, an init container, an envFrom or a volume of a secret.
+type migrationJobShape struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name        string            `yaml:"name"`
+		Labels      map[string]string `yaml:"labels"`
+		Annotations map[string]string `yaml:"annotations"`
+	} `yaml:"metadata"`
+	Spec struct {
+		BackoffLimit            *int `yaml:"backoffLimit"`
+		ActiveDeadlineSeconds   *int `yaml:"activeDeadlineSeconds"`
+		TTLSecondsAfterFinished *int `yaml:"ttlSecondsAfterFinished"`
+		Template                struct {
+			Metadata struct {
+				Labels map[string]string `yaml:"labels"`
+			} `yaml:"metadata"`
+			Spec struct {
+				RestartPolicy                string `yaml:"restartPolicy"`
+				AutomountServiceAccountToken *bool  `yaml:"automountServiceAccountToken"`
+				SecurityContext              struct {
+					RunAsNonRoot   *bool `yaml:"runAsNonRoot"`
+					SeccompProfile struct {
+						Type string `yaml:"type"`
+					} `yaml:"seccompProfile"`
+				} `yaml:"securityContext"`
+				Containers []struct {
+					Name            string    `yaml:"name"`
+					Image           string    `yaml:"image"`
+					Args            []string  `yaml:"args"`
+					Resources       yaml.Node `yaml:"resources"`
+					SecurityContext struct {
+						AllowPrivilegeEscalation *bool `yaml:"allowPrivilegeEscalation"`
+						Capabilities             struct {
+							Drop []string `yaml:"drop"`
+						} `yaml:"capabilities"`
+						ReadOnlyRootFilesystem *bool `yaml:"readOnlyRootFilesystem"`
+					} `yaml:"securityContext"`
+					VolumeMounts []struct {
+						Name      string `yaml:"name"`
+						MountPath string `yaml:"mountPath"`
+					} `yaml:"volumeMounts"`
+					Env []yaml.Node `yaml:"env"`
+				} `yaml:"containers"`
+				Volumes []struct {
+					Name     string `yaml:"name"`
+					EmptyDir *struct {
+						SizeLimit string `yaml:"sizeLimit"`
+					} `yaml:"emptyDir"`
+				} `yaml:"volumes"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	} `yaml:"spec"`
+}
+
+// checkMigrationJob holds the migration Job of a base to its exact shape (ST-DLV-UC07-R06, ST-DLV-INV13): a batch/v1
+// Job of the name of the release with the labels of the migration and no app.kubernetes.io/name, the two Argo CD hook
+// annotations, a retry limit, a time limit and a time to live; a pod that never restarts in place, with no service
+// account token, that runs as non-root with the seccomp profile RuntimeDefault and no fsGroup, and has only the
+// emptyDir at /tmp; and one container of the service that runs the binary with migrate alone, with no privilege
+// escalation, every capability dropped and a read-only root file system. Its environment entries name only keys,
+// from the Secret of the owner credential and from the ConfigMap of the service alone.
+func checkMigrationJob(content []byte, service, name string) error {
+	var job migrationJobShape
+	if err := decodeStrict(content, MaxRequirementsBytes, &job); err != nil {
+		return fmt.Errorf("the migration Job has a field that the base never writes: %w", err)
+	}
+	labels := map[string]string{partOfLabel: service, componentLabel: migrationLabel}
+	annotations := map[string]string{HookAnnotation: HookPhase, HookDeleteAnnotation: HookDeletePolicy}
+	spec, pod := job.Spec, job.Spec.Template.Spec
+	switch {
+	case job.APIVersion != "batch/v1" || job.Kind != "Job" || !strings.HasPrefix(name, service+"-migrate-") || len(name) > 63 || !serviceLabel.MatchString(name):
+		return fmt.Errorf("the Job %q is not the batch/v1 migration Job <service>-migrate-<release> of %s", name, service)
+	case !maps.Equal(job.Metadata.Labels, labels) || !maps.Equal(spec.Template.Metadata.Labels, labels):
+		return fmt.Errorf("the Job %s and its pods do not have exactly the labels %s: %s and %s: %s", name, partOfLabel, service, componentLabel, migrationLabel)
+	case !maps.Equal(job.Metadata.Annotations, annotations):
+		return fmt.Errorf("the Job %s does not have exactly the annotations %s: %s and %s: %s", name, HookAnnotation, HookPhase, HookDeleteAnnotation, HookDeletePolicy)
+	case spec.BackoffLimit == nil || *spec.BackoffLimit < 0 || spec.ActiveDeadlineSeconds == nil || *spec.ActiveDeadlineSeconds <= 0 ||
+		spec.TTLSecondsAfterFinished == nil || *spec.TTLSecondsAfterFinished <= 0:
+		return fmt.Errorf("the Job %s does not set backoffLimit, activeDeadlineSeconds and ttlSecondsAfterFinished", name)
+	case pod.RestartPolicy != "Never" || pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken:
+		return fmt.Errorf("the pod of the Job %s does not have restartPolicy Never and no service account token", name)
+	case pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot || pod.SecurityContext.SeccompProfile.Type != "RuntimeDefault":
+		return fmt.Errorf("the pod of the Job %s does not run as non-root with the seccomp profile RuntimeDefault", name)
+	case len(pod.Volumes) != 1 || pod.Volumes[0].Name != "tmp" || pod.Volumes[0].EmptyDir == nil:
+		return fmt.Errorf("the pod of the Job %s has a volume other than the emptyDir tmp", name)
+	case len(pod.Containers) != 1:
+		return fmt.Errorf("the pod of the Job %s has more than one container", name)
+	}
+	container := pod.Containers[0]
+	security := container.SecurityContext
+	switch {
+	case container.Name != service || !slices.Equal(container.Args, []string{MigrateMode}):
+		return fmt.Errorf("the container of the Job %s is not %s with the one argument %s", name, service, MigrateMode)
+	case security.AllowPrivilegeEscalation == nil || *security.AllowPrivilegeEscalation || !slices.Equal(security.Capabilities.Drop, []string{"ALL"}) ||
+		security.ReadOnlyRootFilesystem == nil || !*security.ReadOnlyRootFilesystem:
+		return fmt.Errorf("the container of the Job %s does not drop ALL capabilities with no privilege escalation and a read-only root file system", name)
+	case len(container.VolumeMounts) != 1 || container.VolumeMounts[0].Name != "tmp" || container.VolumeMounts[0].MountPath != "/tmp":
+		return fmt.Errorf("the container of the Job %s mounts more than the emptyDir tmp at /tmp", name)
+	}
+	secrets, configMaps, err := checkEnvironmentEntries(content)
+	if err != nil {
+		return err
+	}
+	for _, secret := range secrets {
+		if secret != OwnerSecret(service) {
+			return fmt.Errorf("the Job %s takes a variable from the Secret %s; it may take one from %s alone (ST-DLV-INV13)", name, secret, OwnerSecret(service))
+		}
+	}
+	for _, configMap := range configMaps {
+		if configMap != ConfigMapName(service) {
+			return fmt.Errorf("the Job %s takes a variable from the ConfigMap %s; it may take one from %s alone", name, configMap, ConfigMapName(service))
 		}
 	}
 	return nil
@@ -762,108 +1130,154 @@ type secretFilesPatch struct {
 }
 
 // loadSecretFiles holds the Component secret-files, when the base has one, to its exact shape (ST-DLV-Q18): a
-// kustomization of the kind Component that lists the removal patch and then the mount patch and nothing else; and
-// two patches of the Deployment, each of one container. The removal patch only deletes environment entries. The
-// mount patch only sets each *_FILE variable to the path of a file under SecretFilesRoot, mounts each secret
-// read-only at its folder there, and adds a secret volume with the mode 0400 for each mount. No patch names a
-// variable twice, and the mount patch sets no variable that the removal patch keeps.
-func loadSecretFiles(files map[string][]byte) error {
-	component := []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts}
-	held := 0
+// kustomization of the kind Component that lists, in this order, the removal patch and then the mount patch of the
+// Deployment and, when the base has a migration Job, of the Job, and nothing else; each patch is of the one
+// container of its workload (loadPatchPair). The Deployment patches never mount the Secret of the owner credential,
+// and the Job patches never mount a Secret that the Deployment takes a variable from (ST-DLV-INV13).
+func loadSecretFiles(files map[string][]byte, service, job string, servingSecrets []string) error {
+	component := []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts}
+	held := map[string]bool{}
 	for _, file := range component {
 		if _, ok := files[file]; ok {
-			held++
+			held[file] = true
 		}
 	}
-	if held == 0 {
+	if len(held) == 0 {
 		return nil
 	}
-	if held != len(component) {
+	pairs := []struct {
+		removal, mounts, apiVersion, kind, name string
+	}{
+		{SecretFilesRemoval, SecretFilesMounts, "apps/v1", "Deployment", service},
+		{SecretFilesJobRemoval, SecretFilesJobMounts, "batch/v1", "Job", job},
+	}
+	var listed []string
+	for _, pair := range pairs {
+		if held[pair.removal] != held[pair.mounts] {
+			return fmt.Errorf("the Component %s holds one patch of the %s and not the other", SecretFilesFolder, pair.kind)
+		}
+		if held[pair.removal] {
+			listed = append(listed, path.Base(pair.removal), path.Base(pair.mounts))
+		}
+	}
+	if !held[SecretFilesKustomization] || len(listed) == 0 {
 		return fmt.Errorf("the Component %s does not hold each of its files", SecretFilesFolder)
+	}
+	if held[SecretFilesJobRemoval] && job == "" {
+		return fmt.Errorf("the Component %s patches a migration Job, but the base has none", SecretFilesFolder)
 	}
 	var kustomization secretFilesKustomization
 	if err := decodeStrict(files[SecretFilesKustomization], MaxRequirementsBytes, &kustomization); err != nil {
 		return fmt.Errorf("%s: %w", SecretFilesKustomization, err)
 	}
-	if kustomization.APIVersion != "kustomize.config.k8s.io/v1alpha1" || kustomization.Kind != "Component" || len(kustomization.Patches) != 2 ||
-		kustomization.Patches[0].Path != path.Base(SecretFilesRemoval) || kustomization.Patches[1].Path != path.Base(SecretFilesMounts) {
-		return fmt.Errorf("%s is not a Component that lists %s and then %s", SecretFilesKustomization, path.Base(SecretFilesRemoval), path.Base(SecretFilesMounts))
+	var paths []string
+	for _, patch := range kustomization.Patches {
+		paths = append(paths, patch.Path)
 	}
+	if kustomization.APIVersion != "kustomize.config.k8s.io/v1alpha1" || kustomization.Kind != "Component" || !slices.Equal(paths, listed) {
+		return fmt.Errorf("%s is not a Component that lists %s, in this order", SecretFilesKustomization, strings.Join(listed, ", "))
+	}
+	for _, pair := range pairs {
+		if !held[pair.removal] {
+			continue
+		}
+		mounted, err := loadPatchPair(files, pair.removal, pair.mounts, pair.apiVersion, pair.kind, pair.name, service)
+		if err != nil {
+			return err
+		}
+		for _, secret := range mounted {
+			if pair.kind == "Deployment" && isOwnerSecret(service, secret) {
+				return fmt.Errorf("%s mounts the Secret %s, the credential of the owner role, in the Deployment (ST-DLV-INV13)", pair.mounts, secret)
+			}
+			if pair.kind == "Job" && slices.Contains(servingSecrets, secret) {
+				return fmt.Errorf("%s mounts the Secret %s, which the Deployment takes a variable from, in the migration Job (ST-DLV-INV13)", pair.mounts, secret)
+			}
+		}
+	}
+	return nil
+}
+
+// loadPatchPair holds the removal patch and the mount patch of one workload of the Component secret-files to their
+// exact shape: two patches of the workload name of the kind, each of its one container, the service. The removal
+// patch only deletes environment entries. The mount patch only sets each *_FILE variable to the path of a file under
+// SecretFilesRoot, mounts each secret read-only at its folder there, and adds a secret volume with the mode 0400 for
+// each mount, with only the keys that a set variable reads. No patch names a variable twice, and the mount patch
+// sets no variable that the removal patch keeps. It gives the mounted secrets.
+func loadPatchPair(files map[string][]byte, removalFile, mountsFile, apiVersion, kind, name, service string) ([]string, error) {
 	var patches [2]secretFilesPatch
-	for i, file := range []string{SecretFilesRemoval, SecretFilesMounts} {
+	for i, file := range []string{removalFile, mountsFile} {
 		if err := decodeStrict(files[file], MaxRequirementsBytes, &patches[i]); err != nil {
-			return fmt.Errorf("%s: %w", file, err)
+			return nil, fmt.Errorf("%s: %w", file, err)
 		}
 		patch := patches[i]
-		if patch.APIVersion != "apps/v1" || patch.Kind != "Deployment" || !serviceLabel.MatchString(patch.Metadata.Name) || len(patch.Spec.Template.Spec.Containers) != 1 ||
-			patch.Spec.Template.Spec.Containers[0].Name != patch.Metadata.Name {
-			return fmt.Errorf("%s is not a patch of the one container of the Deployment of the service", file)
+		if patch.APIVersion != apiVersion || patch.Kind != kind || patch.Metadata.Name != name || len(patch.Spec.Template.Spec.Containers) != 1 ||
+			patch.Spec.Template.Spec.Containers[0].Name != service {
+			return nil, fmt.Errorf("%s is not a patch of the one container of the %s %s", file, kind, name)
 		}
-	}
-	if patches[0].Metadata.Name != patches[1].Metadata.Name {
-		return fmt.Errorf("the patches of %s are not of one Deployment", SecretFilesFolder)
 	}
 	removal, mount := patches[0].Spec.Template.Spec, patches[1].Spec.Template.Spec
 	removed := map[string]bool{}
 	if len(removal.Volumes) > 0 || len(removal.Containers[0].VolumeMounts) > 0 || len(removal.Containers[0].Env) == 0 {
-		return fmt.Errorf("%s does more than remove environment entries", SecretFilesRemoval)
+		return nil, fmt.Errorf("%s does more than remove environment entries", removalFile)
 	}
 	for _, entry := range removal.Containers[0].Env {
 		if entry.Patch != "delete" || entry.Value != nil || !variableName.MatchString(entry.Name) || removed[entry.Name] {
-			return fmt.Errorf("%s does more than remove each environment entry once: %q", SecretFilesRemoval, entry.Name)
+			return nil, fmt.Errorf("%s does more than remove each environment entry once: %q", removalFile, entry.Name)
 		}
 		removed[entry.Name] = true
 	}
 	volumes := map[string]bool{}
+	var secrets []string
 	// projected holds each key that a volume projects, as secret/key; each must be the file of one set variable.
 	projected := map[string]bool{}
 	for _, volume := range mount.Volumes {
 		if !serviceLabel.MatchString(volume.Name) || volume.Name == "tmp" || volumes[volume.Name] || volume.Secret == nil || volume.Secret.SecretName != volume.Name ||
 			volume.Secret.DefaultMode == nil || *volume.Secret.DefaultMode != SecretFileMode || len(volume.Secret.Items) == 0 {
-			return fmt.Errorf("%s holds the volume %q, which is not one secret volume of the mode 0400 named by its secret, with its keys", SecretFilesMounts, volume.Name)
+			return nil, fmt.Errorf("%s holds the volume %q, which is not one secret volume of the mode 0400 named by its secret, with its keys", mountsFile, volume.Name)
 		}
 		for _, item := range volume.Secret.Items {
 			if item.Path != item.Key || !shapeWord.MatchString(item.Key) || projected[volume.Name+"/"+item.Key] {
-				return fmt.Errorf("%s projects %q of %s, which is not one key at the path of its name", SecretFilesMounts, item.Key, volume.Name)
+				return nil, fmt.Errorf("%s projects %q of %s, which is not one key at the path of its name", mountsFile, item.Key, volume.Name)
 			}
 			projected[volume.Name+"/"+item.Key] = true
 		}
 		volumes[volume.Name] = true
+		secrets = append(secrets, volume.Name)
 	}
 	mounted := map[string]bool{}
 	for _, volumeMount := range mount.Containers[0].VolumeMounts {
 		if !volumes[volumeMount.Name] || mounted[volumeMount.Name] || volumeMount.MountPath != SecretFilesRoot+"/"+volumeMount.Name || !volumeMount.ReadOnly {
-			return fmt.Errorf("%s mounts %q, which is not one read-only secret volume at its folder under %s", SecretFilesMounts, volumeMount.Name, SecretFilesRoot)
+			return nil, fmt.Errorf("%s mounts %q, which is not one read-only secret volume at its folder under %s", mountsFile, volumeMount.Name, SecretFilesRoot)
 		}
 		mounted[volumeMount.Name] = true
 	}
 	if len(mounted) != len(volumes) || len(mount.Containers[0].Env) == 0 {
-		return fmt.Errorf("%s does not mount each volume it adds, or sets no variable", SecretFilesMounts)
+		return nil, fmt.Errorf("%s does not mount each volume it adds, or sets no variable", mountsFile)
 	}
 	set, used := map[string]bool{}, map[string]bool{}
 	for _, entry := range mount.Containers[0].Env {
 		if entry.Patch != "" || entry.Value == nil || !variableName.MatchString(entry.Name) || set[entry.Name] {
-			return fmt.Errorf("%s does more than set each file variable once: %q", SecretFilesMounts, entry.Name)
+			return nil, fmt.Errorf("%s does more than set each file variable once: %q", mountsFile, entry.Name)
 		}
 		folder, key := path.Split(*entry.Value)
 		if !mounted[path.Base(folder)] || path.Clean(folder) != SecretFilesRoot+"/"+path.Base(folder) || !shapeWord.MatchString(key) ||
 			!projected[path.Base(folder)+"/"+key] {
-			return fmt.Errorf("%s sets %s to a path that is not a projected key of a mounted secret", SecretFilesMounts, entry.Name)
+			return nil, fmt.Errorf("%s sets %s to a path that is not a projected key of a mounted secret", mountsFile, entry.Name)
 		}
 		set[entry.Name] = true
 		used[path.Base(folder)+"/"+key] = true
 	}
 	for key := range projected {
 		if !used[key] {
-			return fmt.Errorf("%s projects the key %s, which no variable that it sets reads", SecretFilesMounts, key)
+			return nil, fmt.Errorf("%s projects the key %s, which no variable that it sets reads", mountsFile, key)
 		}
 	}
 	for name := range set {
 		// The mount patch sets the *_FILE form of a removed secret variable, or a removed path variable itself: a
 		// path variable that the base wires from the ConfigMap must be removed first, or the two entries merge.
 		if !removed[name] && !removed[strings.TrimSuffix(name, "_FILE")] {
-			return fmt.Errorf("%s sets %s, but %s does not remove the environment form", SecretFilesMounts, name, SecretFilesRemoval)
+			return nil, fmt.Errorf("%s sets %s, but %s does not remove the environment form", mountsFile, name, removalFile)
 		}
 	}
-	return nil
+	return secrets, nil
 }

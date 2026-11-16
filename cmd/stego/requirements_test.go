@@ -314,7 +314,8 @@ func TestPlatformRequirementsApply(t *testing.T) {
 		mustRunInProject(t, dir, env, "apply")
 		requirements, _ := readRequirements(t, dir)
 		expectStated(t, requirements.Requirements, []delivery.Requirement{
-			{Kind: delivery.Secret, Name: "orders-database", Keys: []string{"migration-url", "url", "worker-url"}, Components: []string{"postgres-adapter"}},
+			{Kind: delivery.Secret, Name: "orders-database", Keys: []string{"url", "worker-url"}, Components: []string{"postgres-adapter"}},
+			{Kind: delivery.Secret, Name: "orders-database-owner", Keys: []string{"url"}, Components: []string{"postgres-adapter"}},
 			{Kind: delivery.Secret, Name: "orders-database-relay", Keys: []string{"url"}, Components: []string{"spicedb-authz"}},
 			{Kind: delivery.Secret, Name: "orders-query-cursor", Keys: []string{"key"}, Components: []string{"query"}},
 			{Kind: delivery.Secret, Name: "orders-spicedb", Keys: []string{"preshared-key"}, Components: []string{"spicedb-authz"}},
@@ -1145,10 +1146,10 @@ func TestEnvironmentGuardAndSecretSources(t *testing.T) {
 		dir := requirementsProject(t)
 		env := requirementsEnv(registry)
 		// The registry copy states the secret orders-database with the keys url and password only, so the sources
-		// of the migration and the worker URLs name keys that the service does not state.
+		// of the migration URL (in orders-database-owner) and the worker URL name needs and keys that the service does not state.
 		for _, command := range []string{"validate", "apply"} {
 			_, stderr := mustRunInProjectStderr(t, dir, env, command)
-			for _, want := range []string{"WARNING: the environment variable STEGO_MIGRATION_DATABASE_URL", "secret source orders-database key migration-url",
+			for _, want := range []string{"WARNING: the environment variable STEGO_MIGRATION_DATABASE_URL", "secret source orders-database-owner key url",
 				"WARNING: the environment variable STEGO_WORKER_DATABASE_URL", "secret source orders-database key worker-url"} {
 				if !strings.Contains(stderr, want) {
 					t.Errorf("stego %s does not warn %q:\n%s", command, want, stderr)
@@ -1195,21 +1196,41 @@ func mustRunInProjectStderr(t *testing.T, dir string, env []string, args ...stri
 }
 
 func TestMigrationCredentialStaysOutOfTheBase(t *testing.T) {
-	t.Run("ST-DLV-UC07-R03-T10 No file of the base or of the Component names the credential of the migration job", func(t *testing.T) {
+	t.Run("ST-DLV-UC07-R03-T10 No serving file of the base or of the Component names the credential of the migration job, which has a Secret of its own", func(t *testing.T) {
 		registry := shippedRegistryCopy(t)
 		dir := requirementsProject(t)
 		mustRunInProject(t, dir, requirementsEnv(registry), "apply")
 		requirements, _ := readRequirements(t, dir)
+		service := requirements.Service
 		migration := 0
 		for _, variable := range requirements.Environment {
 			if variable.ReadByMode == "migrate" {
 				migration++
 			}
+			if variable.Name == "STEGO_MIGRATION_DATABASE_URL" &&
+				(variable.SecretSource == nil || variable.SecretSource.Name != service+"-database-owner" || variable.SecretSource.Key != "url") {
+				t.Errorf("STEGO_MIGRATION_DATABASE_URL takes its value from %+v, want the key url of %s-database-owner", variable.SecretSource, service)
+			}
 		}
 		if migration != 2 {
 			t.Errorf("the platform requirements mark %d variables as read by the migration job, want STEGO_MIGRATION_DATABASE_URL and its _FILE form", migration)
 		}
-		written := 0
+		// The owner credential is in a secret need of its own, and the need that the Deployment reads does not hold it
+		// (ST-DLV-Q20, ST-DLV-INV13).
+		keys := map[string][]string{}
+		for _, requirement := range requirements.Requirements {
+			if requirement.Kind == delivery.Secret {
+				keys[requirement.Name] = requirement.Keys
+			}
+		}
+		if got := keys[service+"-database"]; !slices.Equal(got, []string{"url", "worker-url"}) {
+			t.Errorf("the secret need %s-database states the keys %v, want url and worker-url only", service, got)
+		}
+		if got := keys[service+"-database-owner"]; !slices.Equal(got, []string{"url"}) {
+			t.Errorf("the secret need %s-database-owner states the keys %v, want url", service, got)
+		}
+		job := map[string]bool{"migration-job.yaml": true, "remove-job-env.yaml": true, "mount-job-files.yaml": true}
+		written, jobFiles := 0, 0
 		for _, folder := range []string{filepath.Join(dir, "deploy", "base"), filepath.Join(dir, "deploy", "components")} {
 			err := filepath.WalkDir(folder, func(file string, entry os.DirEntry, err error) error {
 				if err != nil || entry.IsDir() {
@@ -1220,7 +1241,14 @@ func TestMigrationCredentialStaysOutOfTheBase(t *testing.T) {
 					return err
 				}
 				written++
-				for _, banned := range []string{"migration-url", "STEGO_MIGRATION_DATABASE_URL"} {
+				if job[filepath.Base(file)] {
+					jobFiles++
+					if filepath.Base(file) != "remove-job-env.yaml" && !strings.Contains(string(data), service+"-database-owner") {
+						t.Errorf("%s does not name the Secret %s-database-owner of the migration job:\n%s", file, service, data)
+					}
+					return nil
+				}
+				for _, banned := range []string{"migration-url", "STEGO_MIGRATION_DATABASE_URL", "database-owner"} {
 					if strings.Contains(string(data), banned) {
 						t.Errorf("%s names %s, the credential of the migration job:\n%s", file, banned, data)
 					}
@@ -1232,8 +1260,8 @@ func TestMigrationCredentialStaysOutOfTheBase(t *testing.T) {
 			}
 		}
 		// The Component exists, so the check reads its patches too.
-		if _, err := os.Stat(filepath.Join(dir, "deploy", "components", "secret-files", "mount-files.yaml")); err != nil || written < 5 {
-			t.Fatalf("apply wrote %d files of the base and the Component: %v", written, err)
+		if _, err := os.Stat(filepath.Join(dir, "deploy", "components", "secret-files", "mount-files.yaml")); err != nil || written < 8 || jobFiles != 3 {
+			t.Fatalf("apply wrote %d files of the base and the Component, %d of the Job: %v", written, jobFiles, err)
 		}
 	})
 }

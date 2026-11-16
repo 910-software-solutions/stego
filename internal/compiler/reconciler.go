@@ -2,6 +2,8 @@ package compiler
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"os"
@@ -518,7 +520,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		if component := reg.Component(registry.PipelineComponent); component != nil {
 			pipelines = component.Pipelines
 		}
-		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills)
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, releaseDigest(allFiles))
 		if err != nil {
 			return nil, err
 		}
@@ -705,9 +707,10 @@ const DeliveryObjectFile = "deploy/argocd/applicationset.yaml"
 // import. A run writes the files that the platform
 // requirements need, and apply removes a file of the base that a run no longer writes.
 var BaseFiles = []string{"deploy/base/kustomization.yaml", "deploy/base/service-account.yaml", "deploy/base/deployment.yaml",
-	"deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml",
+	"deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml", "deploy/base/migration-job.yaml",
 	"deploy/components/secret-files/kustomization.yaml", "deploy/components/secret-files/remove-env.yaml",
-	"deploy/components/secret-files/mount-files.yaml"}
+	"deploy/components/secret-files/mount-files.yaml", "deploy/components/secret-files/remove-job-env.yaml",
+	"deploy/components/secret-files/mount-job-files.yaml"}
 
 // DeploymentWriter writes the Kubernetes base of the service from the platform requirements of the run and the
 // probes of the active set, and then the delivery object or the plan line that says why the run writes none
@@ -731,6 +734,9 @@ type DeploymentInput struct {
 	// Containerfile copies both (ST-DLV-INV07).
 	OutputDir  string
 	HoldsFills bool
+	// Release is the digest of the release, in hex: the SHA-256 of the path and the content of each file of the run
+	// before the deployment files, which names the migration Job of the base (ST-DLV-UC07-R06).
+	Release string
 }
 
 // DeploymentFiles are the files of the Kubernetes base and of the delivery object, and the lines of the plan.
@@ -743,7 +749,7 @@ type DeploymentFiles struct {
 // component of the active set serves, in the order of the active set (ST-DLV-INV08). It refuses a file out of the
 // paths of the base.
 func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, names []string, generators map[string]gen.Generator,
-	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool) ([]gen.File, []string, error) {
+	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool, release string) ([]gen.File, []string, error) {
 	var probes *gen.Probes
 	for _, name := range names {
 		declarer, ok := generators[name].(gen.ProbeDeclarer)
@@ -760,7 +766,7 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 		probes = &served
 	}
 	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery, Pipelines: pipelines,
-		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills})
+		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills, Release: release})
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
 	}
@@ -770,6 +776,21 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 		}
 	}
 	return written.Files, written.Notes, nil
+}
+
+// releaseDigest is the digest of the release that a run writes: the SHA-256, in hex, of the path and the content of
+// each file in path order. The files of a run are the generated code, its migrations, go.mod and go.sum, and the
+// platform requirements, so a release that changes the image or the schema gets a new digest, and the same inputs
+// give the same digest (ST-DLV-UC07-R06).
+func releaseDigest(files []gen.File) string {
+	sorted := slices.Clone(files)
+	slices.SortFunc(sorted, func(a, b gen.File) int { return strings.Compare(a.Path, b.Path) })
+	sum := sha256.New()
+	for _, file := range sorted {
+		fmt.Fprintf(sum, "%d:%s\n%d:", len(file.Path), file.Path, len(file.Content))
+		sum.Write(file.Content)
+	}
+	return hex.EncodeToString(sum.Sum(nil))
 }
 
 // ReferenceFile is the path, in the project folder, of the environment variable reference that apply writes: the
