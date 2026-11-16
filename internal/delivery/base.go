@@ -352,6 +352,11 @@ func WriteBase(service string, requirements []byte, probes ProbeSource) (Base, B
 	return base, BaseWritten{Service: service, Base: BaseFolder}, nil
 }
 
+// ConsoleSinkVariable is the variable that turns the console sink of the domain probes on. The base never names
+// it, so that domain observations stay off the console in each environment whose own overlay does not turn them
+// on (ST-STD-OBS-R03).
+const ConsoleSinkVariable = "STEGO_PROBE_CONSOLE"
+
 // secretFile is one variable that the Component secret-files gives as a mounted file: the environment entry that
 // the base writes and the Component removes, the *_FILE variable that the Component sets, and the secret and key
 // of the file.
@@ -369,7 +374,8 @@ type secretFile struct {
 // variable with no secret source gets no entry, because no Secret of the service holds it. The *_FILE form of a
 // secret variable gets no entry, because the two forms are exclusive and the base wires the environment form. Each
 // other variable takes its value from the key of its name in the ConfigMap <service>-config, optional when the
-// variable is optional, so that the code keeps its default when the key is not there.
+// variable is optional, so that the code keeps its default when the key is not there. The console sink of the
+// domain probes gets no entry (ST-STD-OBS-R03).
 func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFile) {
 	sourced := map[string]SecretSource{}
 	for _, variable := range list {
@@ -384,6 +390,9 @@ func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFi
 	var entries []any
 	var switched []secretFile
 	for _, variable := range list {
+		if variable.Name == ConsoleSinkVariable {
+			continue
+		}
 		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile {
 			if _, paired := sourced[form]; paired {
 				continue

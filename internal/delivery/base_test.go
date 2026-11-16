@@ -208,6 +208,7 @@ func secretsFixture() []ComponentNeeds {
 				{Name: "PORT", Type: "integer", Default: &port, Description: "The port."},
 				{Name: "STEGO_ISSUER", Type: "url", Required: true, Description: "The issuer.", Example: &canary},
 			}},
+		{Component: "probe", Variables: []Variable{{Name: ConsoleSinkVariable, Type: "string", Description: "The console format."}}},
 	}
 }
 

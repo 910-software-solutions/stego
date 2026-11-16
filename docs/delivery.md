@@ -55,6 +55,8 @@ environment file against them.
 - A variable with a `*_FILE` form, such as `DATABASE_URL` and `DATABASE_URL_FILE`, gets the environment form only.
   The service refuses the two together.
 - A secret variable that no secret need gives, such as `PGPASSWORD`, gets no entry.
+- `STEGO_PROBE_CONSOLE` gets no entry, so the domain probes stay off the console. An overlay that wants them on
+  the console sets the variable itself.
 
 When a required key is not there, the pod does not start. The kubelet does not start the container, and the pod
 stays in `CreateContainerConfigError`. The pod event names the Secret or the ConfigMap and the key, for example
