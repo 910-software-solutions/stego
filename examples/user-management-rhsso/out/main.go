@@ -198,7 +198,8 @@ func stegoRefusedVariable(name string) bool {
 	return len(name) >= 5 && name[:5] == "GRPC_"
 }
 
-// stegoWeakensTLS tells whether a GODEBUG value holds a tls or an x509 setting.
+// stegoWeakensTLS tells whether a GODEBUG value holds a tls or an x509 setting, which can turn a TLS check off, or
+// an http2debug setting, which logs the header fields of each HTTP/2 request.
 func stegoWeakensTLS(value string) bool {
 	start := 0
 	for i := 0; i <= len(value); i++ {
@@ -207,7 +208,7 @@ func stegoWeakensTLS(value string) bool {
 			for len(key) > 0 && key[0] == ' ' {
 				key = key[1:]
 			}
-			if len(key) >= 3 && key[:3] == "tls" || len(key) >= 4 && key[:4] == "x509" {
+			if len(key) >= 3 && key[:3] == "tls" || len(key) >= 4 && key[:4] == "x509" || len(key) >= 10 && key[:10] == "http2debug" {
 				return true
 			}
 			start = i + 1

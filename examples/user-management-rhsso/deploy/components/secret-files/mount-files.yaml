@@ -1,6 +1,7 @@
 # The opt-in kustomize Component secret-files of the service. stego apply writes this file from the platform
 # requirements. An overlay that lists this folder under components gets each secret as a read-only file under
-# /var/run/secrets/stego in place of an environment variable. Do not edit it.
+# /var/run/secrets/stego in place of an environment variable. Each file has the mode 0400: give the pod an
+# fsGroup, as the restricted SCC of OpenShift does, and do not widen the mode. Do not edit it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,8 +13,6 @@ spec:
         - env:
             - name: DATABASE_URL_FILE
               value: /var/run/secrets/stego/user-management-database/url
-            - name: STEGO_MIGRATION_DATABASE_URL_FILE
-              value: /var/run/secrets/stego/user-management-database/migration-url
             - name: STEGO_QUERY_CURSOR_KEY_FILE
               value: /var/run/secrets/stego/user-management-query-cursor/key
             - name: STEGO_RELAY_DATABASE_URL_FILE
@@ -40,16 +39,30 @@ spec:
         - name: user-management-database
           secret:
             defaultMode: 256
+            items:
+              - key: url
+                path: url
+              - key: worker-url
+                path: worker-url
             secretName: user-management-database
         - name: user-management-query-cursor
           secret:
             defaultMode: 256
+            items:
+              - key: key
+                path: key
             secretName: user-management-query-cursor
         - name: user-management-database-relay
           secret:
             defaultMode: 256
+            items:
+              - key: url
+                path: url
             secretName: user-management-database-relay
         - name: user-management-spicedb
           secret:
             defaultMode: 256
+            items:
+              - key: preshared-key
+                path: preshared-key
             secretName: user-management-spicedb

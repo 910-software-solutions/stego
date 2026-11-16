@@ -1036,6 +1036,7 @@ environment:
     secret_source:
       name: user-management-database
       key: migration-url
+    read_by_mode: migrate
   - name: STEGO_MIGRATION_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1043,6 +1044,7 @@ environment:
     required: false
     description: The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two.
     secret: false
+    read_by_mode: migrate
   - name: STEGO_MODE
     read_by:
       - command
