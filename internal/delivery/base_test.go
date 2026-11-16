@@ -1208,45 +1208,63 @@ func TestFSGroupComponent(t *testing.T) {
 				return nil
 			}
 		}
-		for name, change := range map[string]func(map[string][]byte) error{
-			"another fsGroup":                         replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 0"),
-			"another fsGroup of the Job":              replace(FSGroupJob, "fsGroup: 65532", "fsGroup: 1000"),
-			"a runAsUser":                             replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 65532\n          runAsUser: 0"),
-			"a privileged container":                  replace(FSGroupJob, "      securityContext:", "      containers: [{name: orders, securityContext: {privileged: true}}]\n      securityContext:"),
-			"a supplemental group":                    replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 65532\n          supplementalGroups: [0]"),
-			"a patch of another Deployment":           replace(FSGroupDeployment, "  name: orders\n", "  name: other\n"),
-			"a patch of a StatefulSet":                replace(FSGroupDeployment, "kind: Deployment", "kind: StatefulSet"),
-			"a patch of another Job":                  replace(FSGroupJob, "name: "+testJob, "name: other"),
-			"a Kustomization in place of a Component": replace(FSGroupKustomization, "kind: Component", "kind: Kustomization"),
-			"the patches in the other order":          replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n  - path: job-fs-group.yaml\n", "  - path: job-fs-group.yaml\n  - path: deployment-fs-group.yaml\n"),
-			"a resource in the Component":             replace(FSGroupKustomization, "patches:", "resources: [x.yaml]\npatches:"),
+		const (
+			notDeployment = FSGroupDeployment + " is not a patch of the apps/v1 Deployment orders that sets the pod fsGroup 65532"
+			notJob        = FSGroupJob + " is not a patch of the batch/v1 Job " + testJob + " that sets the pod fsGroup 65532"
+			notComponent  = FSGroupKustomization + " is not a Component that lists deployment-fs-group.yaml, job-fs-group.yaml, in this order"
+			notExactly    = "the Component " + FSGroupFolder + " does not hold exactly its kustomization and the patches deployment-fs-group.yaml, job-fs-group.yaml"
+			moreThan      = ": the patch does more than set the fsGroup of the pod: "
+		)
+		// Each probe names the reason of its refusal, so that a probe that LoadBase refuses for another reason, such as
+		// a YAML syntax error of the probe, fails the test.
+		for name, probe := range map[string]struct {
+			change func(map[string][]byte) error
+			reason []string
+		}{
+			"another fsGroup":                         {replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 0"), []string{notDeployment}},
+			"another fsGroup of the Job":              {replace(FSGroupJob, "fsGroup: 65532", "fsGroup: 1000"), []string{notJob}},
+			"a runAsUser":                             {replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 65532\n        runAsUser: 0"), []string{FSGroupDeployment + moreThan + "yaml: unmarshal errors:", "field runAsUser not found"}},
+			"a privileged container":                  {replace(FSGroupJob, "      securityContext:", "      containers: [{name: orders, securityContext: {privileged: true}}]\n      securityContext:"), []string{FSGroupJob + moreThan + "yaml: unmarshal errors:", "field containers not found"}},
+			"a supplemental group":                    {replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 65532\n        supplementalGroups: [0]"), []string{FSGroupDeployment + moreThan + "yaml: unmarshal errors:", "field supplementalGroups not found"}},
+			"a patch of another Deployment":           {replace(FSGroupDeployment, "  name: orders\n", "  name: other\n"), []string{notDeployment}},
+			"a patch of a StatefulSet":                {replace(FSGroupDeployment, "kind: Deployment", "kind: StatefulSet"), []string{notDeployment}},
+			"a patch of another Job":                  {replace(FSGroupJob, "name: "+testJob, "name: other"), []string{notJob}},
+			"a Kustomization in place of a Component": {replace(FSGroupKustomization, "kind: Component", "kind: Kustomization"), []string{notComponent}},
+			"the patches in the other order":          {replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n  - path: job-fs-group.yaml\n", "  - path: job-fs-group.yaml\n  - path: deployment-fs-group.yaml\n"), []string{notComponent}},
+			"a resource in the Component":             {replace(FSGroupKustomization, "patches:", "resources: [x.yaml]\npatches:"), []string{FSGroupKustomization + ": yaml: unmarshal errors:", "field resources not found"}},
 			// The probes of the #375 security review: each is refused by the strict decoder, and stays refused.
-			"a hostPath volume":          replace(FSGroupDeployment, "      securityContext:", "      volumes: [{name: host, hostPath: {path: /}}]\n      securityContext:"),
-			"a hostNetwork":              replace(FSGroupJob, "      securityContext:", "      hostNetwork: true\n      securityContext:"),
-			"a namespace":                replace(FSGroupDeployment, "  name: orders\n", "  name: orders\n  namespace: kube-system\n"),
-			"a patch target":             replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n", "  - path: deployment-fs-group.yaml\n    target: {kind: Deployment}\n"),
-			"an inline patch":            replace(FSGroupKustomization, "  - path: job-fs-group.yaml\n", "  - path: job-fs-group.yaml\n  - patch: '{\"spec\": {}}'\n"),
-			"a patch with options":       replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n", "  - path: deployment-fs-group.yaml\n    options: {allowNameChange: true}\n"),
-			"no patch of the Job":        remove(FSGroupJob),
-			"no patch of the Deployment": remove(FSGroupDeployment),
-			"no kustomization":           remove(FSGroupKustomization),
-			"the Component fs-group without the Component secret-files": func(files map[string][]byte) error {
+			"a hostPath volume":          {replace(FSGroupDeployment, "      securityContext:", "      volumes: [{name: host, hostPath: {path: /}}]\n      securityContext:"), []string{FSGroupDeployment + moreThan + "yaml: unmarshal errors:", "field volumes not found"}},
+			"a hostNetwork":              {replace(FSGroupJob, "      securityContext:", "      hostNetwork: true\n      securityContext:"), []string{FSGroupJob + moreThan + "yaml: unmarshal errors:", "field hostNetwork not found"}},
+			"a namespace":                {replace(FSGroupDeployment, "  name: orders\n", "  name: orders\n  namespace: kube-system\n"), []string{FSGroupDeployment + moreThan + "yaml: unmarshal errors:", "field namespace not found"}},
+			"a patch target":             {replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n", "  - path: deployment-fs-group.yaml\n    target: {kind: Deployment}\n"), []string{FSGroupKustomization + ": yaml: unmarshal errors:", "field target not found"}},
+			"an inline patch":            {replace(FSGroupKustomization, "  - path: job-fs-group.yaml\n", "  - path: job-fs-group.yaml\n  - patch: '{\"spec\": {}}'\n"), []string{FSGroupKustomization + ": yaml: unmarshal errors:", "field patch not found"}},
+			"a patch with options":       {replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n", "  - path: deployment-fs-group.yaml\n    options: {allowNameChange: true}\n"), []string{FSGroupKustomization + ": yaml: unmarshal errors:", "field options not found"}},
+			"no patch of the Job":        {remove(FSGroupJob), []string{notExactly}},
+			"no patch of the Deployment": {remove(FSGroupDeployment), []string{notExactly}},
+			"no kustomization":           {remove(FSGroupKustomization), []string{notExactly}},
+			"the Component fs-group without the Component secret-files": {func(files map[string][]byte) error {
 				for _, file := range []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts} {
 					delete(files, file)
 				}
 				return nil
-			},
-			"another file in the Component": func(files map[string][]byte) error {
+			}, []string{"the base holds the Component " + FSGroupFolder + " but not the Component " + SecretFilesFolder + "; the base writes the two together"}},
+			"another file in the Component": {func(files map[string][]byte) error {
 				files[FSGroupFolder+"/other.yaml"] = []byte("kind: ConfigMap\n")
 				return nil
-			},
+			}, []string{FSGroupFolder + "/other.yaml is not a file of the Kubernetes base"}},
 		} {
 			files := maps.Clone(base.Files)
-			if err := change(files); err != nil {
+			if err := probe.change(files); err != nil {
 				t.Fatalf("%s: %v", name, err)
 			}
 			if _, err := LoadBase(files); err == nil {
 				t.Errorf("LoadBase accepts a Component fs-group with %s", name)
+			} else {
+				for _, reason := range probe.reason {
+					if !strings.Contains(err.Error(), reason) {
+						t.Errorf("LoadBase refuses a Component fs-group with %s, but not for the reason %q: %v", name, reason, err)
+					}
+				}
 			}
 		}
 		// A base with no migration Job gets the patch of the Deployment alone, and LoadBase refuses a patch of a Job.

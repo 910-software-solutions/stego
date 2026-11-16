@@ -232,11 +232,17 @@ func DeriveRequirements(service string, components []ComponentNeeds) (Requiremen
 			}
 		}
 	}
-	for _, requirement := range configurationNeeds(variables) {
-		if previous, stated := byName[requirement.Name]; stated {
-			return Requirements{}, &RequirementError{Components: append(slices.Clone(previous.Components[:1]), requirement.Components[0]), Need: requirement.Name,
-				Reason: fmt.Sprintf("the %s need and the required environment variable share one name; one name is one requirement", previous.Kind)}
+	// A need of a component does not have the name of a listed environment variable. Else the environment check
+	// could count a value of the variable as a value of the need: a secret variable, such as DATABASE_URL, given as a
+	// plain configuration value would meet a configuration need of its name (#378 security review L1).
+	for _, variable := range variables {
+		if need, stated := byName[variable.Name]; stated {
+			return Requirements{}, &RequirementError{Components: need.Components[:1], Need: need.Name,
+				Reason: fmt.Sprintf("the %s need has the name of the %s, which %s reads; give the need another name, because one name is one requirement",
+					need.Kind, variableKind(variable), strings.Join(variable.ReadBy, ", "))}
 		}
+	}
+	for _, requirement := range configurationNeeds(variables) {
 		byName[requirement.Name] = &requirement
 	}
 	result := Requirements{Version: RequirementsVersion, Service: service, Requirements: []Requirement{}, Environment: variables, warnings: warnings}
@@ -251,6 +257,15 @@ func DeriveRequirements(service string, components []ComponentNeeds) (Requiremen
 		return strings.Compare(a.Name, b.Name)
 	})
 	return result, nil
+}
+
+// variableKind names a listed environment variable with its kind, such as "secret environment variable
+// DATABASE_URL", for a refusal that names it.
+func variableKind(variable AcceptedVariable) string {
+	if variable.Secret {
+		return "secret environment variable " + variable.Name
+	}
+	return "environment variable " + variable.Name
 }
 
 // shape gives the shape fields of a requirement as one text, to compare two statements of one need.
@@ -564,6 +579,17 @@ func LoadRequirements(data []byte) (Requirements, error) {
 			}
 			if requirement := requirementOfKind(requirements, Secret, source.Name); requirement.Kind != Secret || !slices.Contains(requirement.Keys, source.Key) {
 				return Requirements{}, fmt.Errorf("platform requirements: the secret source of the environment variable %s names the key %s of %s, which is not a key of a secret requirement", variable.Name, source.Key, source.Name)
+			}
+		}
+	}
+	// A requirement has the name of a listed variable only as the configuration need of a required variable that is
+	// not secret, which DeriveRequirements writes for it (#378 security review L1).
+	for _, variable := range requirements.Environment {
+		for _, requirement := range requirements.Requirements {
+			derived := requirement.Kind == Configuration && variable.Required && !variable.Secret && !variable.RefusedAtStart
+			if requirement.Name == variable.Name && !derived {
+				return Requirements{}, fmt.Errorf("platform requirements: the %s requirement %s of the components %s has the name of the %s, which %s reads; one name is one requirement",
+					requirement.Kind, requirement.Name, strings.Join(requirement.Components, ", "), variableKind(variable), strings.Join(variable.ReadBy, ", "))
 			}
 		}
 	}

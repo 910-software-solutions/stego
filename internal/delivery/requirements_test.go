@@ -71,3 +71,61 @@ func TestKubernetesNeedNames(t *testing.T) {
 		}
 	})
 }
+
+func TestNeedNamedLikeAVariable(t *testing.T) {
+	t.Run("ST-DLV-UC01-R04-T03 A need with the name of a listed environment variable is refused, naming the component, the need and the variable", func(t *testing.T) {
+		// A configuration need DATABASE_URL beside the secret variable DATABASE_URL: env check would meet the need with
+		// the credential given as a plain configuration value (#378 security review L1).
+		for name, tc := range map[string]struct {
+			component int
+			need      Need
+			want      []string
+		}{
+			"a configuration need of a secret variable": {1, Need{Kind: "configuration", Name: "DATABASE_URL"},
+				[]string{"component broker", "need DATABASE_URL", "the configuration need has the name of the secret environment variable DATABASE_URL, which store reads"}},
+			"a configuration need of a variable of the same component": {0, Need{Kind: "configuration", Name: "DATABASE_URL_FILE"},
+				[]string{"component store", "need DATABASE_URL_FILE", "the configuration need has the name of the environment variable DATABASE_URL_FILE, which store reads"}},
+			"a configuration need of an optional variable": {0, Need{Kind: "configuration", Name: "BROKERS"},
+				[]string{"component store", "need BROKERS", "environment variable BROKERS, which broker reads"}},
+		} {
+			components := groupComponents()
+			components[tc.component].Needs = append(components[tc.component].Needs, tc.need)
+			_, err := DeriveRequirements("orders", components)
+			if err == nil {
+				t.Errorf("%s: the need is accepted", name)
+				continue
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: the refusal does not say %q: %v", name, want, err)
+				}
+			}
+		}
+		// A required variable that is not secret keeps the configuration need of its own name, and a need of another
+		// name is accepted.
+		components := groupComponents()
+		components[1].Variables[0].Required = true
+		components[1].Needs = []Need{{Kind: "configuration", Name: "STEGO_BROKER_REGION"}}
+		files, err := WriteRequirements("orders", components)
+		if err != nil {
+			t.Fatalf("the needs are refused: %v", err)
+		}
+		if _, err := LoadRequirements(files.Requirements); err != nil {
+			t.Fatalf("the platform requirements with the configuration need BROKERS of the required variable do not load: %v", err)
+		}
+		// LoadRequirements refuses a requirement with the name of a listed variable, but for the configuration need
+		// of a required variable that is not secret.
+		for name, change := range map[string][2]string{
+			"a configuration requirement of a secret variable":    {"name: STEGO_BROKER_REGION", "name: DATABASE_URL"},
+			"a configuration requirement of an optional variable": {"name: STEGO_BROKER_REGION", "name: DATABASE_URL_FILE"},
+		} {
+			changed := strings.Replace(string(files.Requirements), change[0], change[1], 1)
+			_, err := LoadRequirements([]byte(changed))
+			variable := strings.TrimPrefix(change[1], "name: ")
+			if err == nil || !strings.Contains(err.Error(), "the configuration requirement "+variable+" of the components broker has the name of the") ||
+				!strings.Contains(err.Error(), "environment variable "+variable+", which store reads") {
+				t.Errorf("%s: LoadRequirements does not refuse it with the requirement, the components and the variable: %v", name, err)
+			}
+		}
+	})
+}
