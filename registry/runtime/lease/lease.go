@@ -394,7 +394,7 @@ func (h *Held) WithToken(ctx context.Context, write func(ctx context.Context, tx
 // and renews the lease every renew interval while work runs. When a renew fails or gives another token, or a write
 // meets a higher token, it cancels work's context at once, which is within one renew interval and before the lease
 // can expire, waits for work to return, and returns the cause (ST-SUP-RP09-LC03, ST-SUP-RP09-LC04). When work
-// returns or ctx ends, it releases the lease.
+// returns or ctx ends, it releases the lease, also when ctx ends before or while a renew runs.
 func (c *Client) Hold(ctx context.Context, work func(ctx context.Context, held *Held) error) error {
 	for {
 		h, err := c.Acquire(ctx)
@@ -454,7 +454,17 @@ func (c *Client) hold(ctx context.Context, h *Held, work func(ctx context.Contex
 			cancelRenew()
 			if err != nil {
 				cancel()
-				<-done
+				workErr := <-done
+				// A renew that runs after ctx ended, or that ctx ends while it runs, fails because ctx ended. This
+				// is the case where the renew timer wins the select against ctx.Done(), or a renew is in flight at
+				// the time limit of the caller. Hold then releases the lease and returns as it does when ctx ends
+				// first, so the next holder does not wait for the lease to expire (review of PR #387, L2). The
+				// release changes the row only while it names this holder with its own token, so a lease that
+				// another holder took stays as it is.
+				if ctx.Err() != nil {
+					release()
+					return errors.Join(ctx.Err(), workErr)
+				}
 				return err
 			}
 		}

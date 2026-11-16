@@ -922,6 +922,119 @@ func TestStoppedHolder(t *testing.T) {
 	})
 }
 
+// armClock is a process clock that stands still and gives the test each timer that the client arms, so the test
+// fires a timer by name and knows when the client waits on it.
+type armClock struct {
+	now   time.Time
+	armed chan chan time.Time
+}
+
+func newArmClock() *armClock { return &armClock{now: time.Now(), armed: make(chan chan time.Time, 8)} }
+
+func (c *armClock) Now() time.Time { return c.now }
+
+func (c *armClock) After(time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	c.armed <- ch
+	return ch
+}
+
+// renewGate is a DB that stops each Renew statement before it goes to the database: it tells the test on sent,
+// waits until the test closes proceed, sends the statement with the context of the renew, and tells the test on
+// returned when the database answered.
+type renewGate struct {
+	DB
+	sent     chan struct{}
+	proceed  chan struct{}
+	returned chan struct{}
+}
+
+func (g *renewGate) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if query != renewStatement {
+		return g.DB.QueryRowContext(ctx, query, args...)
+	}
+	g.sent <- struct{}{}
+	<-g.proceed
+	row := g.DB.QueryRowContext(ctx, query, args...)
+	close(g.returned)
+	return row
+}
+
+// TestHoldReleaseAfterRenew is the race of the review of PR #387, L2: the renew timer of Hold wins the select against
+// the end of ctx, or ctx ends while a renew runs. The renew then fails because ctx ended, and Hold must release the
+// lease as it does when ctx ends first, so the next holder does not wait for the lease to expire.
+func TestHoldReleaseAfterRenew(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC06-T05 A holder whose context ends before or while a renew runs releases the lease", func(t *testing.T) {
+		for _, during := range []bool{false, true} {
+			name := "ctx ends after the renew timer fired"
+			if during {
+				name = "ctx ends while the renew waits on the lease row"
+			}
+			t.Run(name, func(t *testing.T) { holdReleaseAfterRenew(t, during) })
+		}
+	})
+}
+
+func holdReleaseAfterRenew(t *testing.T, during bool) {
+	d := openDatabase(t)
+	if err := Declare(context.Background(), d.other, "stego.controller"); err != nil {
+		t.Fatal(err)
+	}
+	gate := &renewGate{DB: d.db, sent: make(chan struct{}), proceed: make(chan struct{}), returned: make(chan struct{})}
+	clock := newArmClock()
+	c := newClient(t, gate, "stego.controller", "h1", Settings{Clock: clock})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	held := make(chan *Held, 1)
+	result := make(chan error, 1)
+	go func() {
+		result <- c.Hold(ctx, func(ctx context.Context, h *Held) error {
+			held <- h
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+	h := <-held
+	token := h.Token()
+	// The renew timer fires while ctx has not ended, so Hold takes the renew branch of its select.
+	(<-clock.armed) <- clock.Now()
+	<-gate.sent
+	var lock *sql.Tx
+	if during {
+		// A second session locks the lease row, so the renew waits on it in the database until ctx ends.
+		var err error
+		if lock, err = d.other.BeginTx(context.Background(), nil); err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = lock.Rollback() }()
+		if _, err := lock.Exec("SELECT 1 FROM leases WHERE name='stego.controller' FOR UPDATE"); err != nil {
+			t.Fatal(err)
+		}
+		close(gate.proceed)
+		cancel()
+		// The renew answers with the end of ctx; only then does the lock go, so the renew never commits.
+		<-gate.returned
+		if err := lock.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		// The end of ctx comes before the renew statement goes to the database.
+		cancel()
+		close(gate.proceed)
+	}
+	err := <-result
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrLost) {
+		t.Fatalf("Hold returned %v, want the end of ctx and not a lost lease, as when ctx ends first", err)
+	}
+	holder, after, expires := d.leaseRow(t, "stego.controller")
+	if holder != "h1" || after != token || !expires.Equal(time.Unix(0, 0)) {
+		t.Fatalf("after Hold the row has holder %s, token %d, expires_at %v; want h1, %d and released (-infinity)", holder, after, expires, token)
+	}
+	if _, err := newClient(t, d.other, "stego.controller", "h2", Settings{}).Acquire(context.Background()); err != nil {
+		t.Fatalf("the next holder cannot take the lease at once: %v", err)
+	}
+}
+
 // within receives from ch, and fails the test when nothing comes within 10 seconds.
 func within[T any](t *testing.T, ch <-chan T, what string) T {
 	t.Helper()

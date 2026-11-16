@@ -1111,13 +1111,15 @@ func TestMigrateBackfillStall(t *testing.T) {
 			moved < 10 || moved >= 24 || completed {
 			t.Fatalf("after the stalled job the checkpoint has %d moved, complete %v (error %v); want the 10 rows of tenant-a at least, fewer than 24, and not complete", moved, completed, err)
 		}
-		// The next run, after the lock is released, resumes from the checkpoint and moves each other row once. The
-		// lease of the stalled job is one minute on the database clock; the test moves it into the past as the
-		// database clock would, so the next run does not wait for it.
-		_ = lock.Rollback()
-		if _, err := f.admin.ExecContext(ctx, `UPDATE public.leases SET expires_at = pg_catalog.now() - interval '1 second' WHERE name = $1`, BackfillLeaseName("board-title-rename")); err != nil {
-			t.Fatal(err)
+		// The time limit releases the lease, whether it ends the job before or while a renew runs: the row keeps the
+		// holder's token and expires at once, so the next run does not wait one lease duration for it (review of PR
+		// #387, L2).
+		var released bool
+		if err := f.admin.QueryRowContext(ctx, `SELECT expires_at = '-infinity' FROM public.leases WHERE name = $1`, BackfillLeaseName("board-title-rename")).Scan(&released); err != nil || !released {
+			t.Fatalf("after the time limit the lease of the stalled job is released %v (error %v), want released", released, err)
 		}
+		// The next run, after the lock is released, resumes from the checkpoint and moves each other row once.
+		_ = lock.Rollback()
 		next := m
 		next.Backfills = slices.Clone(backfills)
 		resumed := &stallRecorder{}
