@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261116132652-32cd3ec6a01c
+        module_version: v0.0.0-20261116134233-28bc8712ac03
         vcs: git
-        revision: 32cd3ec6a01c0bee75e8d816681a017a0e79f014
+        revision: 28bc8712ac03298dcfea5889880072b50bc71bc3
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -213,14 +213,14 @@ last_applied:
         architecture/index.html: 7790a416c8a5b84a335bb3f12a083cc8acc76b2e04656635d76e8d3d4a09391f
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
-        deploy/base/migration-job.yaml: 7d55c4dbdbc98fd439c61fddd8f26799d4475ce2b1288d89b97faab014844d3a
+        deploy/base/migration-job.yaml: 53cc2ae97b19e4d6b472ccb74515a682533519f9e5fa1c058e0a0ea317f1add8
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
         deploy/components/secret-files/kustomization.yaml: 2b658de48cf6ef22904381c67bfd384d2a7ff2e606b56c1a8a0de0f7cba925c8
         deploy/components/secret-files/mount-files.yaml: f477052f0f5d34d1c4d77be68025a9c8f155d4dacd23dd4d7ed1dc3583894365
-        deploy/components/secret-files/mount-job-files.yaml: 21c716d8cbd27df4c23bf2cf1a32a9f95ceeffa3c63589da195a8ca0d4358a3c
+        deploy/components/secret-files/mount-job-files.yaml: 5d15a1b25e207820d5db7e1fcc8f716c2fdde097d8c36a1eceeff42a55762e60
         deploy/components/secret-files/remove-env.yaml: 328479c67f7a09999b5481bd84d19622f3ba1205ca6d13f4c88be4cadad2960a
-        deploy/components/secret-files/remove-job-env.yaml: bea9b831f73e1093f694b2a345e3da744af599663c288dcff34177fc938d7e5c
+        deploy/components/secret-files/remove-job-env.yaml: 218ee830d0ca2d2ffa2a07cd68544ecffa0ccbc1008db4b7d5f81c7d81e64bf2
         deploy/environment-variables.md: f82edcd60f41767bd8f499525f2b4ab0cfa14d6d33b5c4ef1f3ff32ada146f3d
         deploy/platform-requirements.yaml: e1bd1479fefd95e9b93fd0cb284a16536d6feb2475ada1e3db4d4d09af672eaa
     archetype:
