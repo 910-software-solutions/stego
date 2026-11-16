@@ -633,15 +633,24 @@ func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchP
 	w.text(name)
 	w.tag("span", " class=\"sub\"", what)
 	if len(c.Ancestors) > 0 {
-		w.tag("span", " class=\"sub ancestors\"", "⤒ "+ancestorsShort(c, perms))
+		// The read of an ancestor whose grant paths a limit cut short may be held by more roles than the matrix shows,
+		// so the head marks it next to the ancestor: the view never shows an incomplete grant set as complete (security
+		// review of PR #374, L2).
+		w.raw("<span class=\"sub ancestors\">⤒ ")
+		for i, a := range c.Ancestors {
+			if i > 0 {
+				w.text(", ")
+			}
+			w.text(shortID(a.Entity) + " " + ancestorText(a))
+			if ancestorIncomplete(a, perms) {
+				w.text(" ")
+				w.tag("span", " class=\"incomplete\"", incompleteMark)
+			}
+		}
+		w.raw("</span>")
 	}
 	if p := perms[c.Grants]; p != nil && !p.Complete {
 		w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: a limit was reached")
-	}
-	// The read of an ancestor whose grant paths a limit cut short may be held by more roles than the matrix shows, so
-	// the head marks it too: the view never shows an incomplete grant set as complete (security review of PR #374, L2).
-	if names := incompleteAncestors(c, perms); len(names) > 0 {
-		w.tag("span", " class=\"sub incomplete ancestor-incomplete\"", "⚠ ancestor read incomplete: a limit was reached for "+strings.Join(names, ", "))
 	}
 	w.raw("</th>")
 }
@@ -664,7 +673,7 @@ func ancestorsShort(c ArchCheck, perms map[string]*ArchPermission) string {
 	for _, a := range c.Ancestors {
 		part := shortID(a.Entity) + " " + ancestorText(a)
 		if ancestorIncomplete(a, perms) {
-			part += " (incomplete: a limit was reached)"
+			part += " " + incompleteMark
 		}
 		parts = append(parts, part)
 	}
@@ -676,22 +685,13 @@ func ancestorsText(c ArchCheck, perms map[string]*ArchPermission) string {
 	return "first reads each ancestor in the path, the top one first, and answers 404 when one is missing, denied or of another parent: " + ancestorsShort(c, perms)
 }
 
+// incompleteMark marks the read of an ancestor whose grant paths a limit cut short.
+const incompleteMark = "⚠ incomplete: a limit was reached"
+
 // ancestorIncomplete says whether a limit cut short the grant paths of the read permission of an ancestor.
 func ancestorIncomplete(a ArchAncestor, perms map[string]*ArchPermission) bool {
 	p := perms[a.Grants]
 	return a.Grants != "" && p != nil && !p.Complete
-}
-
-// incompleteAncestors gives each ancestor of a check whose read permission has grant paths that a limit cut short,
-// with that permission: more roles may hold the read than the paths name.
-func incompleteAncestors(c ArchCheck, perms map[string]*ArchPermission) []string {
-	var out []string
-	for _, a := range c.Ancestors {
-		if ancestorIncomplete(a, perms) {
-			out = append(out, shortID(a.Entity)+" ("+ancestorText(a)+")")
-		}
-	}
-	return out
 }
 
 // missingAncestors gives the ancestors whose read permission the role alone does not hold by a path that the model

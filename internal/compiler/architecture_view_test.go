@@ -364,11 +364,17 @@ func TestArchitectureView(t *testing.T) {
 		if len(heads) == 0 || !strings.Contains(textOf(heads[0]), value) {
 			t.Fatal("the matrix head does not show the hostile ancestor name as text")
 		}
-		cut := p.all(func(n *html.Node) bool {
-			return n.Data == "span" && attrOf(n, "class") == "sub incomplete ancestor-incomplete"
-		})
-		if len(cut) == 0 || !strings.Contains(textOf(cut[0]), value) {
-			t.Fatal("the mark of an incomplete ancestor read does not show the hostile ancestor name as text")
+		cut := 0
+		for _, head := range heads {
+			if len(within(head, func(n *html.Node) bool { return n.Data == "span" && attrOf(n, "class") == "incomplete" })) > 0 {
+				cut++
+				if !strings.Contains(textOf(head), value+" organization#view "+incompleteMark) {
+					t.Errorf("the head does not show the hostile name of an incomplete ancestor read as text: %q", textOf(head))
+				}
+			}
+		}
+		if cut == 0 {
+			t.Fatal("the hostile model has no head with an incomplete ancestor read")
 		}
 		// Each role head of the turned access matrix shows the role name as text, with a break only between its parts.
 		var model ArchitectureModel
@@ -634,33 +640,33 @@ func TestArchitectureView(t *testing.T) {
 			if len(head) != 1 {
 				t.Fatalf("the matrix has no head for %s", c.ID)
 			}
-			marks := within(head[0], func(n *html.Node) bool {
-				return n.Data == "span" && attrOf(n, "class") == "sub incomplete ancestor-incomplete"
-			})
 			names := within(head[0], func(n *html.Node) bool { return n.Data == "span" && attrOf(n, "class") == "sub ancestors" })
+			var marks []*html.Node
+			if len(names) == 1 {
+				marks = within(names[0], func(n *html.Node) bool { return n.Data == "span" && attrOf(n, "class") == "incomplete" })
+			}
 			row := p.all(func(n *html.Node) bool { return n.Data == "tr" && attrOf(n, "data-id") == c.ID })
 			if len(row) != 1 {
 				t.Fatalf("the table of what each operation checks has no row for %s", c.ID)
 			}
 			if len(cut) == 0 {
 				without++
-				if len(marks) != 0 || strings.Contains(attrOf(head[0], "title"), "ancestor") && strings.Contains(attrOf(head[0], "title"), "(incomplete") ||
-					strings.Contains(textOf(row[0]), "incomplete") {
+				if len(marks) != 0 || strings.Contains(textOf(row[0]), incompleteMark) || strings.Contains(attrOf(head[0], "title"), incompleteMark) {
 					t.Errorf("the head or the check row of %s marks an ancestor read as incomplete, and none is", c.ID)
 				}
 				continue
 			}
 			withCut++
-			if len(marks) != 1 || len(names) != 1 {
-				t.Fatalf("the head of %s has %d marks of an incomplete ancestor read, not 1", c.ID, len(marks))
+			if len(names) != 1 || len(marks) != len(cut) {
+				t.Fatalf("the head of %s has %d marks of an incomplete ancestor read, not %d", c.ID, len(marks), len(cut))
 			}
-			for _, a := range cut {
-				want := shortID(a.Entity) + " " + a.ResourceType + "#" + a.Permission
-				if !strings.Contains(textOf(marks[0]), shortID(a.Entity)+" ("+a.ResourceType+"#"+a.Permission+")") || !strings.Contains(textOf(marks[0]), "incomplete: a limit was reached") {
-					t.Errorf("the mark in the head of %s does not name %s: %q", c.ID, want, textOf(marks[0]))
+			for i, a := range cut {
+				want := shortID(a.Entity) + " " + a.ResourceType + "#" + a.Permission + " " + incompleteMark
+				if textOf(marks[i]) != incompleteMark {
+					t.Errorf("the mark in the head of %s is %q", c.ID, textOf(marks[i]))
 				}
 				for _, text := range []string{textOf(names[0]), attrOf(head[0], "title"), textOf(row[0])} {
-					if !strings.Contains(text, want+" (incomplete: a limit was reached)") {
+					if !strings.Contains(text, want) {
 						t.Errorf("the ancestors of %s do not mark %s as incomplete: %q", c.ID, want, text)
 					}
 				}
