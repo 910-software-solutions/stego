@@ -704,14 +704,15 @@ func isPipelineFile(filePath string) bool {
 const DeliveryObjectFile = "deploy/argocd/applicationset.yaml"
 
 // BaseFiles are the paths, in the project folder, of every file that the Kubernetes base may hold, with the opt-in
-// Component secret-files (ST-DLV-Q18): the paths of delivery.BaseFiles (ST-DLV-EN04-TB), which Generating may not
+// Components secret-files (ST-DLV-Q18) and fs-group: the paths of delivery.BaseFiles (ST-DLV-EN04-TB), which Generating may not
 // import. A run writes the files that the platform
 // requirements need, and apply removes a file of the base that a run no longer writes.
 var BaseFiles = []string{"deploy/base/kustomization.yaml", "deploy/base/service-account.yaml", "deploy/base/deployment.yaml",
 	"deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml", "deploy/base/migration-job.yaml",
 	"deploy/components/secret-files/kustomization.yaml", "deploy/components/secret-files/remove-env.yaml",
 	"deploy/components/secret-files/mount-files.yaml", "deploy/components/secret-files/remove-job-env.yaml",
-	"deploy/components/secret-files/mount-job-files.yaml"}
+	"deploy/components/secret-files/mount-job-files.yaml", "deploy/components/fs-group/kustomization.yaml",
+	"deploy/components/fs-group/deployment-fs-group.yaml", "deploy/components/fs-group/job-fs-group.yaml"}
 
 // DeploymentWriter writes the Kubernetes base of the service from the platform requirements of the run and the
 // probes of the active set, and then the delivery object or the plan line that says why the run writes none

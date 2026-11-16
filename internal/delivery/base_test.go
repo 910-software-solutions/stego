@@ -365,8 +365,8 @@ func TestBaseEnvironment(t *testing.T) {
 
 	t.Run("ST-DLV-UC07-R03-T06 No file of the base or of the Component holds a value, and LoadBase refuses an entry with one", func(t *testing.T) {
 		base := secretsBase(t)
-		if len(base.Files) != 10 {
-			t.Fatalf("the base has %d files, want the five of the base with the Job and the five of the Component", len(base.Files))
+		if len(base.Files) != 13 {
+			t.Fatalf("the base has %d files, want the five of the base with the Job the five of the Component secret-files and the three of the Component fs-group", len(base.Files))
 		}
 		for file, data := range base.Files {
 			if strings.Contains(string(data), secretsCanary) {
@@ -1119,4 +1119,182 @@ func mustYAML(t *testing.T, value any) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+// podOf gives the pod spec of a built workload.
+func podOf(t *testing.T, workload map[string]any) map[string]any {
+	t.Helper()
+	spec, _ := workload["spec"].(map[string]any)
+	template, _ := spec["template"].(map[string]any)
+	pod, _ := template["spec"].(map[string]any)
+	if pod == nil {
+		t.Fatalf("the workload has no pod spec: %v", workload)
+	}
+	return pod
+}
+
+func TestFSGroupComponent(t *testing.T) {
+	t.Run("ST-DLV-UC07-R03-T11 A kustomize build of the base with the Components secret-files and fs-group gives files of the mode 0400 to the fsGroup 65532", func(t *testing.T) {
+		base := secretsBase(t)
+		for _, file := range []string{FSGroupKustomization, FSGroupDeployment, FSGroupJob} {
+			if base.Files[file] == nil {
+				t.Fatalf("the base with the Component secret-files has no %s", file)
+			}
+		}
+		if text := string(base.Files[FSGroupKustomization]); !strings.Contains(text, "Never list it on\n# OpenShift") {
+			t.Errorf("the kustomization of the Component fs-group does not say never to list it on OpenShift:\n%s", text)
+		}
+		project := writeProject(t, base.Files)
+		plain := resourcesOf(t, buildOverlay(t, project, "plain", "components: [../deploy/components/secret-files]\n"))
+		both := resourcesOf(t, buildOverlay(t, project, "both", "components: [../deploy/components/secret-files, ../deploy/components/fs-group]\n"))
+		for _, kind := range []string{"Deployment", "Job"} {
+			if len(plain[kind]) != 1 || len(both[kind]) != 1 {
+				t.Fatalf("the builds have the %s resources %v and %v, want one each", kind, plain[kind], both[kind])
+			}
+			// The base and the Component secret-files alone set no fsGroup, for OpenShift.
+			if security, _ := podOf(t, plain[kind][0])["securityContext"].(map[string]any); security["fsGroup"] != nil {
+				t.Errorf("the %s without the Component fs-group sets the fsGroup %v", kind, security["fsGroup"])
+			}
+			pod := podOf(t, both[kind][0])
+			security, _ := pod["securityContext"].(map[string]any)
+			want := map[string]any{"fsGroup": FSGroup, "runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}}
+			if !reflect.DeepEqual(security, want) {
+				t.Errorf("the %s with the Component fs-group has the pod security %v, want %v", kind, security, want)
+			}
+			// Each secret volume keeps the mode 0400; the fsGroup gives the files to the group of the process.
+			secrets := 0
+			for _, item := range pod["volumes"].([]any) {
+				volume := item.(map[string]any)
+				source, _ := volume["secret"].(map[string]any)
+				if source == nil {
+					continue
+				}
+				secrets++
+				if source["defaultMode"] != SecretFileMode {
+					t.Errorf("the %s volume %v does not have the mode 0400 with the Component fs-group", kind, volume)
+				}
+			}
+			if secrets == 0 {
+				t.Errorf("the %s build with the two Components mounts no secret", kind)
+			}
+		}
+		// The Component changes nothing but the fsGroup.
+		for _, kind := range []string{"Deployment", "Job"} {
+			pod := podOf(t, both[kind][0])
+			delete(pod["securityContext"].(map[string]any), "fsGroup")
+			if !reflect.DeepEqual(both[kind][0], plain[kind][0]) {
+				t.Errorf("the Component fs-group changes more than the fsGroup of the %s", kind)
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC07-R03-T12 LoadBase accepts the Component fs-group only with its exact shape", func(t *testing.T) {
+		base := secretsBase(t)
+		if _, err := LoadBase(base.Files); err != nil {
+			t.Fatalf("LoadBase refuses the base with its Components: %v", err)
+		}
+		replace := func(file, old, replacement string) func(map[string][]byte) error {
+			return func(files map[string][]byte) error {
+				if !strings.Contains(string(files[file]), old) {
+					return fmt.Errorf("%s does not hold %q", file, old)
+				}
+				files[file] = []byte(strings.Replace(string(files[file]), old, replacement, 1))
+				return nil
+			}
+		}
+		remove := func(file string) func(map[string][]byte) error {
+			return func(files map[string][]byte) error {
+				delete(files, file)
+				return nil
+			}
+		}
+		for name, change := range map[string]func(map[string][]byte) error{
+			"another fsGroup":                         replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 0"),
+			"another fsGroup of the Job":              replace(FSGroupJob, "fsGroup: 65532", "fsGroup: 1000"),
+			"a runAsUser":                             replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 65532\n          runAsUser: 0"),
+			"a privileged container":                  replace(FSGroupJob, "      securityContext:", "      containers: [{name: orders, securityContext: {privileged: true}}]\n      securityContext:"),
+			"a supplemental group":                    replace(FSGroupDeployment, "fsGroup: 65532", "fsGroup: 65532\n          supplementalGroups: [0]"),
+			"a patch of another Deployment":           replace(FSGroupDeployment, "  name: orders\n", "  name: other\n"),
+			"a patch of a StatefulSet":                replace(FSGroupDeployment, "kind: Deployment", "kind: StatefulSet"),
+			"a patch of another Job":                  replace(FSGroupJob, "name: "+testJob, "name: other"),
+			"a Kustomization in place of a Component": replace(FSGroupKustomization, "kind: Component", "kind: Kustomization"),
+			"the patches in the other order":          replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n  - path: job-fs-group.yaml\n", "  - path: job-fs-group.yaml\n  - path: deployment-fs-group.yaml\n"),
+			"a resource in the Component":             replace(FSGroupKustomization, "patches:", "resources: [x.yaml]\npatches:"),
+			"no patch of the Job":                     remove(FSGroupJob),
+			"no patch of the Deployment":              remove(FSGroupDeployment),
+			"no kustomization":                        remove(FSGroupKustomization),
+			"the Component fs-group without the Component secret-files": func(files map[string][]byte) error {
+				for _, file := range []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts} {
+					delete(files, file)
+				}
+				return nil
+			},
+			"another file in the Component": func(files map[string][]byte) error {
+				files[FSGroupFolder+"/other.yaml"] = []byte("kind: ConfigMap\n")
+				return nil
+			},
+		} {
+			files := maps.Clone(base.Files)
+			if err := change(files); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if _, err := LoadBase(files); err == nil {
+				t.Errorf("LoadBase accepts a Component fs-group with %s", name)
+			}
+		}
+		// A base with no migration Job gets the patch of the Deployment alone, and LoadBase refuses a patch of a Job.
+		fixture := secretsFixture()
+		store := &fixture[0]
+		store.Variables = slices.DeleteFunc(store.Variables, func(variable Variable) bool { return variable.ReadByMode != "" })
+		store.Needs = store.Needs[:1]
+		requirements, err := WriteRequirements("orders", fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		noJob, _, err := WriteBase("orders", testRelease, requirements.Requirements, healthCheckProbes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if noJob.Files[MigrationJobFile] != nil || noJob.Files[FSGroupJob] != nil || noJob.Files[FSGroupDeployment] == nil {
+			t.Fatalf("a base with no migration Job holds the files %v", slices.Sorted(maps.Keys(noJob.Files)))
+		}
+		files := maps.Clone(noJob.Files)
+		files[FSGroupJob] = base.Files[FSGroupJob]
+		if _, err := LoadBase(files); err == nil {
+			t.Error("LoadBase accepts a patch of a Job in a base with no migration Job")
+		}
+	})
+}
+
+func TestLongServiceName(t *testing.T) {
+	t.Run("ST-DLV-UC07-R03-T13 A service name of 57 to 63 characters gets its ConfigMap reference, and a secret name of more than 63 characters is refused with a clear message", func(t *testing.T) {
+		port := "8080"
+		service := strings.Repeat("s", 63)
+		configOnly := []ComponentNeeds{{Component: "health", Needs: []Need{{Kind: "ingress", Name: "http", Port: 8080}},
+			Variables: []Variable{{Name: "PORT", Type: "integer", Default: &port, Description: "The port."},
+				{Name: "STEGO_ISSUER", Type: "url", Required: true, Description: "The issuer."}}}}
+		files, err := WriteRequirements(service, configOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		base, _, err := WriteBase(service, testRelease, files.Requirements, healthCheckProbes)
+		if err != nil {
+			t.Fatalf("a service name of 63 characters is refused: %v", err)
+		}
+		if !strings.Contains(string(base.Files[DeploymentFile]), "name: "+ConfigMapName(service)+"\n") {
+			t.Errorf("the base does not take STEGO_ISSUER from the ConfigMap %s", ConfigMapName(service))
+		}
+		_, err = WriteRequirements(service, secretsFixture())
+		if err == nil || !strings.Contains(err.Error(), service+"-database") || !strings.Contains(err.Error(), "more than the 63") || !strings.Contains(err.Error(), "use a shorter service name") {
+			t.Errorf("a secret name of more than 63 characters is not refused with a clear message: %v", err)
+		}
+		// A reference of more than 253 characters, or with a capital letter, is refused.
+		for _, name := range []string{strings.Repeat("a", 254), "Orders-config", "orders_config"} {
+			changed := maps.Clone(base.Files)
+			changed[DeploymentFile] = []byte(strings.Replace(string(base.Files[DeploymentFile]), "name: "+ConfigMapName(service)+"\n", "name: "+name+"\n", 1))
+			if _, err := LoadBase(changed); err == nil || !strings.Contains(err.Error(), "DNS subdomain") {
+				t.Errorf("LoadBase does not refuse the ConfigMap reference %q with a clear message: %v", name, err)
+			}
+		}
+	})
 }
