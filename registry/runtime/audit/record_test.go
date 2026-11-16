@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -816,13 +818,16 @@ func TestRecord(t *testing.T) {
 		}
 		read := sampleEvent("t1", "")
 		read.RequestID = "req-42"
-		start := time.Now()
-		_, err := w.RecordRead(f.ctx, f.audit, f.tn("t1"), read)
-		if !errors.Is(err, ErrReadAfterRecord) {
-			t.Errorf("RecordRead after Record of the same request gives %v, want ErrReadAfterRecord", err)
+		// It fails before it asks for a connection, so it cannot wait on the chain lock: a pool that counts each
+		// connection that it is asked to open gets no request. The test needs no time limit.
+		unused := &countingConnector{}
+		pool := sql.OpenDB(unused)
+		defer pool.Close()
+		if _, err := w.RecordRead(f.ctx, pool, f.tn("t1"), read); !errors.Is(err, ErrReadAfterRecord) || unused.asked.Load() != 0 {
+			t.Errorf("RecordRead after Record of the same request gives %v after %d connection requests, want ErrReadAfterRecord and none", err, unused.asked.Load())
 		}
-		if d := time.Since(start); d > 200*time.Millisecond {
-			t.Errorf("RecordRead waited %s, want it to fail at once", d)
+		if _, err := w.RecordRead(f.ctx, f.audit, f.tn("t1"), read); !errors.Is(err, ErrReadAfterRecord) {
+			t.Errorf("RecordRead after Record of the same request gives %v, want ErrReadAfterRecord", err)
 		}
 		// A read row of another request is not refused; it waits on the lock as any writer does.
 		other := sampleEvent("t1", "")
@@ -1009,3 +1014,17 @@ func TestRecord(t *testing.T) {
 }
 
 func utf8Valid(s string) bool { return strings.ToValidUTF8(s, "") == s }
+
+// countingConnector counts the connections that a pool asks it to open, and opens none.
+type countingConnector struct{ asked atomic.Int64 }
+
+func (c *countingConnector) Connect(context.Context) (driver.Conn, error) {
+	c.asked.Add(1)
+	return nil, errors.New("countingConnector opens no connection")
+}
+
+func (c *countingConnector) Driver() driver.Driver { return countingDriver{c} }
+
+type countingDriver struct{ c *countingConnector }
+
+func (d countingDriver) Open(string) (driver.Conn, error) { return d.c.Connect(context.Background()) }
