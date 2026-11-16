@@ -105,6 +105,7 @@ environment:
     secret_source:
       name: orders-database
       key: url
+    one_of: database-url
   - name: DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -112,6 +113,7 @@ environment:
     required: false
     description: The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two.
     secret: false
+    one_of: database-url
   - name: GODEBUG
     read_by:
       - command
@@ -952,6 +954,7 @@ environment:
     required: false
     description: The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value.
     secret: false
+    one_of: kafka-brokers
   - name: STEGO_KAFKA_BROKERS_FILE
     read_by:
       - kafka-producer
@@ -959,6 +962,7 @@ environment:
     required: false
     description: The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two.
     secret: false
+    one_of: kafka-brokers
   - name: STEGO_KAFKA_BROKER_HOSTS
     read_by:
       - kafka-producer
@@ -1061,6 +1065,7 @@ environment:
     description: The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
     read_by_mode: migrate
+    one_of: migration-database-url
   - name: STEGO_MIGRATION_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1069,6 +1074,7 @@ environment:
     description: The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two.
     secret: false
     read_by_mode: migrate
+    one_of: migration-database-url
   - name: STEGO_MODE
     read_by:
       - command
@@ -1108,6 +1114,7 @@ environment:
     required: false
     description: The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    one_of: relay-database-url
   - name: STEGO_RELAY_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1115,6 +1122,7 @@ environment:
     required: false
     description: The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two.
     secret: false
+    one_of: relay-database-url
   - name: STEGO_SERVICE_VERSION
     read_by:
       - command
@@ -1152,6 +1160,7 @@ environment:
     required: false
     description: The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    one_of: worker-database-url
   - name: STEGO_WORKER_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1159,6 +1168,7 @@ environment:
     required: false
     description: The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two.
     secret: false
+    one_of: worker-database-url
   - name: TZ
     read_by:
       - command

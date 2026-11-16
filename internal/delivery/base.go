@@ -44,6 +44,24 @@ const (
 	SecretFilesJobMounts  = SecretFilesFolder + "/mount-job-files.yaml"
 )
 
+// FSGroupFolder is the folder, in the project folder, of the second opt-in kustomize Component, which sets the pod
+// fsGroup of the Deployment and of the migration Job to FSGroup, so that the process reads the files of the Component
+// secret-files on a cluster that does not set an fsGroup itself. The restricted-v2 SCC of OpenShift gives each
+// namespace its own fsGroup and refuses a pod that sets another one, so the base sets none, and an overlay on
+// OpenShift never lists this Component.
+const FSGroupFolder = "deploy/components/fs-group"
+
+// The files of the Component fs-group: its kustomization, the patch of the Deployment and, when the base has a
+// migration Job, the patch of the Job.
+const (
+	FSGroupKustomization = FSGroupFolder + "/kustomization.yaml"
+	FSGroupDeployment    = FSGroupFolder + "/deployment-fs-group.yaml"
+	FSGroupJob           = FSGroupFolder + "/job-fs-group.yaml"
+)
+
+// FSGroup is the fsGroup that the Component fs-group sets: the user and the group of the image (WriteContainerfile).
+const FSGroup = 65532
+
 // SecretFilesRoot is the folder in the container under which the Component mounts each secret, one folder for each
 // secret, named by the secret, with one file for each key.
 const SecretFilesRoot = "/var/run/secrets/stego"
@@ -52,9 +70,10 @@ const SecretFilesRoot = "/var/run/secrets/stego"
 const SecretFileMode = 0o400
 
 // BaseFiles are the paths of every file that the Kubernetes base may hold, in the order of the kustomization file,
-// and then the files of the Component secret-files.
+// and then the files of the Component secret-files and of the Component fs-group.
 var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, ServiceFile, RoleFile, RoleBindingFile, MigrationJobFile,
-	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts}
+	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts,
+	FSGroupKustomization, FSGroupDeployment, FSGroupJob}
 
 // MigrateMode is the mode of the migration job: the argument of the service binary in the migration Job, and the
 // value of read_by_mode of a variable that only that mode reads (ST-DLV-Q19, ST-DLV-Q20).
@@ -139,6 +158,13 @@ const baseHeader = "# The Kubernetes base of the service. stego apply writes thi
 
 // serviceLabel is a Kubernetes object name that the base gives each resource: a DNS label.
 var serviceLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// objectName is the name of a Secret or a ConfigMap: a DNS subdomain of lower-case letters, digits, '-' and '.', of
+// at most maxObjectName characters.
+var objectName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
+
+// maxObjectName bounds the name of a Secret or a ConfigMap.
+const maxObjectName = 253
 
 // TmpSizeLimit bounds the emptyDir at /tmp, within the ephemeral storage limit of the container.
 const TmpSizeLimit = "64Mi"
@@ -433,6 +459,11 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource)
 			return Base{}, BaseWritten{}, err
 		}
 		maps.Copy(files, component)
+		fsGroup, err := fsGroupComponent(service, jobName)
+		if err != nil {
+			return Base{}, BaseWritten{}, err
+		}
+		maps.Copy(files, fsGroup)
 	}
 	base := Base{Service: service, Image: ImagePlaceholder(service), Files: files}
 	if _, err := LoadBase(base.Files); err != nil {
@@ -712,11 +743,49 @@ func secretFilesPatches(service, apiVersion, kind, name string, switched []secre
 	return removal, mount, nil
 }
 
+// fsGroupComponent writes the opt-in kustomize Component fs-group: a patch that sets the pod fsGroup of the
+// Deployment to FSGroup and, when the base has the migration Job job, the same patch of the Job. Kubernetes then
+// gives the files of the Component secret-files, which have the mode 0400, to that group, so that the process, which
+// is not root, reads them. The base writes it next to the Component secret-files, for clusters other than OpenShift.
+func fsGroupComponent(service, job string) (map[string][]byte, error) {
+	files := map[string][]byte{}
+	var patches []any
+	for _, target := range []struct{ kind, apiVersion, name, file string }{
+		{"Deployment", "apps/v1", service, FSGroupDeployment},
+		{"Job", "batch/v1", job, FSGroupJob},
+	} {
+		if target.name == "" {
+			continue
+		}
+		data, err := encodeWith(fsGroupHeader, map[string]any{"apiVersion": target.apiVersion, "kind": target.kind, "metadata": map[string]any{"name": target.name},
+			"spec": map[string]any{"template": map[string]any{"spec": map[string]any{"securityContext": map[string]any{"fsGroup": FSGroup}}}}})
+		if err != nil {
+			return nil, err
+		}
+		files[target.file] = data
+		patches = append(patches, map[string]any{"path": path.Base(target.file)})
+	}
+	data, err := encodeWith(fsGroupHeader, map[string]any{"apiVersion": "kustomize.config.k8s.io/v1alpha1", "kind": "Component", "patches": patches})
+	if err != nil {
+		return nil, err
+	}
+	files[FSGroupKustomization] = data
+	return files, nil
+}
+
+// fsGroupHeader is the first lines of each file of the Component fs-group.
+const fsGroupHeader = "# The opt-in kustomize Component fs-group of the service. stego apply writes this file next to the Component\n" +
+	"# secret-files. It sets the pod fsGroup 65532 of the Deployment and of the migration Job, so that the process reads\n" +
+	"# the secret files of the mode 0400. List it only on a cluster that sets no fsGroup itself. Never list it on\n" +
+	"# OpenShift: the restricted-v2 SCC gives each namespace its own fsGroup and refuses a pod that sets another one.\n" +
+	"# Do not edit it.\n"
+
 // secretFilesHeader is the first lines of each file of the Component secret-files.
 const secretFilesHeader = "# The opt-in kustomize Component secret-files of the service. stego apply writes this file from the platform\n" +
 	"# requirements. An overlay that lists this folder under components gets each secret as a read-only file under\n" +
 	"# " + SecretFilesRoot + " in place of an environment variable. Each file has the mode 0400: give the pod an\n" +
-	"# fsGroup, as the restricted SCC of OpenShift does, and do not widen the mode. Do not edit it.\n"
+	"# fsGroup, as the restricted SCC of OpenShift does, or list the Component fs-group on another cluster, and do not\n" +
+	"# widen the mode. Do not edit it.\n"
 
 // probePort is the port of the probes: the default of the variable that the probes' component states for it, from
 // the environment list of the platform requirements.
@@ -887,6 +956,9 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 	if err := loadSecretFiles(files, service, job, servingSecrets); err != nil {
 		return nil, err
 	}
+	if err := loadFSGroup(files, service, job); err != nil {
+		return nil, err
+	}
 	return resources, nil
 }
 
@@ -969,8 +1041,13 @@ func checkEnvironmentEntries(content []byte) (secrets []keyReference, configMaps
 					return nil, nil, fmt.Errorf("the environment entry %s takes its value from a Secret with an optional flag; the secret need requires each of its keys", entry.Name)
 				}
 			}
-			if !serviceLabel.MatchString(reference.Name) || !shapeWord.MatchString(reference.Key) {
-				return nil, nil, fmt.Errorf("the environment entry %s does not name a Secret or a ConfigMap and a key", entry.Name)
+			// A Secret and a ConfigMap have a DNS subdomain name of at most 253 characters, not a DNS label: the
+			// ConfigMap <service>-config of a service name of 57 or more characters is longer than 63 (#370 security
+			// re-review L1). A Secret that the Component secret-files mounts is also a volume name, which
+			// secretFilesPatches holds to a DNS label.
+			if len(reference.Name) > maxObjectName || !objectName.MatchString(reference.Name) || !shapeWord.MatchString(reference.Key) {
+				return nil, nil, fmt.Errorf("the environment entry %s does not name a Secret or a ConfigMap, a DNS subdomain of at most %d characters, and a key: %q, key %q",
+					entry.Name, maxObjectName, reference.Name, reference.Key)
 			}
 			if reference.Optional != nil && !*reference.Optional {
 				return nil, nil, fmt.Errorf("the environment entry %s states optional: false; a required entry states no optional flag", entry.Name)
@@ -1289,6 +1366,80 @@ func loadSecretFiles(files map[string][]byte, service, job string, servingSecret
 			if pair.kind == "Job" && slices.Contains(servingSecrets, secret) {
 				return fmt.Errorf("%s mounts the Secret %s, which the Deployment takes a variable from, in the migration Job (ST-DLV-INV13)", pair.mounts, secret)
 			}
+		}
+	}
+	return nil
+}
+
+// fsGroupPatch is the one shape of a patch of the Component fs-group: a patch of one workload that sets the fsGroup
+// of its pod and nothing else. The strict decoder refuses each other field, such as a runAsUser, a supplemental
+// group, a container or a volume.
+type fsGroupPatch struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name string `yaml:"name"`
+	} `yaml:"metadata"`
+	Spec struct {
+		Template struct {
+			Spec struct {
+				SecurityContext struct {
+					FSGroup *int `yaml:"fsGroup"`
+				} `yaml:"securityContext"`
+			} `yaml:"spec"`
+		} `yaml:"template"`
+	} `yaml:"spec"`
+}
+
+// loadFSGroup holds the Component fs-group, when the base has one, to its exact shape: the base holds it exactly when
+// it holds the Component secret-files; its kustomization is a Component that lists, in this order, the patch of the
+// Deployment and, when the base has a migration Job, the patch of the Job, and nothing else; and each patch only sets
+// the pod fsGroup of its workload to FSGroup.
+func loadFSGroup(files map[string][]byte, service, job string) error {
+	_, secretFiles := files[SecretFilesKustomization]
+	held := map[string]bool{}
+	for _, file := range []string{FSGroupKustomization, FSGroupDeployment, FSGroupJob} {
+		if _, ok := files[file]; ok {
+			held[file] = true
+		}
+	}
+	if len(held) == 0 && !secretFiles {
+		return nil
+	}
+	if !secretFiles {
+		return fmt.Errorf("the base holds the Component %s but not the Component %s; the base writes the two together", FSGroupFolder, SecretFilesFolder)
+	}
+	type target struct{ file, apiVersion, kind, name string }
+	want := []target{{FSGroupDeployment, "apps/v1", "Deployment", service}}
+	if job != "" {
+		want = append(want, target{FSGroupJob, "batch/v1", "Job", job})
+	}
+	var listed []string
+	for _, patch := range want {
+		listed = append(listed, path.Base(patch.file))
+	}
+	if !held[FSGroupKustomization] || len(held) != len(want)+1 || !held[FSGroupDeployment] || (job != "" && !held[FSGroupJob]) {
+		return fmt.Errorf("the Component %s does not hold exactly its kustomization and the patches %s", FSGroupFolder, strings.Join(listed, ", "))
+	}
+	var kustomization secretFilesKustomization
+	if err := decodeStrict(files[FSGroupKustomization], MaxRequirementsBytes, &kustomization); err != nil {
+		return fmt.Errorf("%s: %w", FSGroupKustomization, err)
+	}
+	var paths []string
+	for _, patch := range kustomization.Patches {
+		paths = append(paths, patch.Path)
+	}
+	if kustomization.APIVersion != "kustomize.config.k8s.io/v1alpha1" || kustomization.Kind != "Component" || !slices.Equal(paths, listed) {
+		return fmt.Errorf("%s is not a Component that lists %s, in this order", FSGroupKustomization, strings.Join(listed, ", "))
+	}
+	for _, patch := range want {
+		var shape fsGroupPatch
+		if err := decodeStrict(files[patch.file], MaxRequirementsBytes, &shape); err != nil {
+			return fmt.Errorf("%s: the patch does more than set the fsGroup of the pod: %w", patch.file, err)
+		}
+		group := shape.Spec.Template.Spec.SecurityContext.FSGroup
+		if shape.APIVersion != patch.apiVersion || shape.Kind != patch.kind || shape.Metadata.Name != patch.name || group == nil || *group != FSGroup {
+			return fmt.Errorf("%s is not a patch of the %s %s %s that sets the pod fsGroup %d", patch.file, patch.apiVersion, patch.kind, patch.name, FSGroup)
 		}
 	}
 	return nil

@@ -30,12 +30,14 @@ environment:
     required: false
     description: "The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value."
     secret: false
+    one_of: kafka-brokers
     example: "kafka-0.example.com:9093,kafka-1.example.com:9093"
   - name: STEGO_KAFKA_BROKERS_FILE
     type: path
     required: false
     description: "The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two."
     secret: false
+    one_of: kafka-brokers
     example: "/etc/stego/kafka/brokers"
   - name: STEGO_KAFKA_BROKER_HOSTS
     type: list

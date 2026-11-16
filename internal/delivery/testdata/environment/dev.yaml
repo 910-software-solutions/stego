@@ -14,6 +14,10 @@ secrets:
     password: CANARY-SECRET-VALUE
 configuration:
   LOG_LEVEL: info
+  STEGO_KAFKA_BROKERS: kafka-0.dev.example.com:9093
+  STEGO_MIGRATION_DATABASE_URL_FILE: /etc/orders/database-owner/url
+  STEGO_RELAY_DATABASE_URL_FILE: /etc/orders/database-relay/url
+  STEGO_WORKER_DATABASE_URL_FILE: /etc/orders/database/worker-url
   STEGO_QUERY_CURSOR_KEY_FILE: /etc/orders/cursor/key
   STEGO_SPICEDB_ENDPOINT: spicedb.dev.example.com:50051
   STEGO_SPICEDB_KEY_FILE: /etc/orders/spicedb/key

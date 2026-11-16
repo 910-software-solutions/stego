@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -34,6 +35,9 @@ type Variable struct {
 	RefusedAtStart bool
 	// ReadByMode is the one mode that reads the variable, migrate for the migration job, or "" (ST-DLV-Q19).
 	ReadByMode string
+	// OneOf is the group of variables of the component of which the process needs exactly one value, such as
+	// DATABASE_URL and DATABASE_URL_FILE, or "" (ST-SUP-EN14 field One of, ST-DLV-Q09).
+	OneOf string
 }
 
 // SecretSource is one key of one secret need: the need name and the key (ST-DLV-EN08 field Secret source,
@@ -72,6 +76,10 @@ type AcceptedVariable struct {
 	// ReadByMode is the one mode of the process that reads the variable, migrate for the migration job, when no other
 	// mode reads it. The serving Deployment of the base never wires such a variable (ST-DLV-Q19).
 	ReadByMode string `yaml:"read_by_mode,omitempty"`
+	// OneOf is the group of variables of which the service needs exactly one value (ST-DLV-EN08 field One of,
+	// ST-DLV-Q09): the environment check fails when the environment file gives no variable of the group a value, or
+	// more than one.
+	OneOf string `yaml:"one_of,omitempty"`
 	// example is the example of the first reader, for the reference alone: the platform requirements never hold
 	// it, because an example is often a host name (ST-DLV-INV02).
 	example *string
@@ -194,7 +202,46 @@ func deriveVariables(service string, components []ComponentNeeds) ([]AcceptedVar
 		slices.Sort(variable.ReadBy)
 		list = append(list, variable)
 	}
+	if err := checkGroups(list); err != nil {
+		return nil, err
+	}
 	return list, nil
+}
+
+// groupName is the name of a group of one of: lower-case letters, digits and '-'.
+var groupName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// Groups gives the variables of each group of one of of the list, by group, in name order.
+func Groups(list []AcceptedVariable) map[string][]AcceptedVariable {
+	groups := map[string][]AcceptedVariable{}
+	for _, variable := range list {
+		if variable.OneOf != "" {
+			groups[variable.OneOf] = append(groups[variable.OneOf], variable)
+		}
+	}
+	return groups
+}
+
+// checkGroups holds each group of one of of the list to its rules (ST-SUP-INV24, ST-DLV-Q09): at least two
+// variables, which the same components read, so that the group of one component never takes a variable of another.
+// checkAccepted holds the name of the group and that no variable of a group is required on its own.
+func checkGroups(list []AcceptedVariable) error {
+	groups := Groups(list)
+	for _, name := range slices.Sorted(maps.Keys(groups)) {
+		members := groups[name]
+		if len(members) < 2 {
+			return &VariableError{Sources: members[0].ReadBy, Variable: members[0].Name,
+				Reason: fmt.Sprintf("the variable is the only one of the group of one of %s; a group has at least two variables, such as X and X_FILE", name)}
+		}
+		for _, member := range members[1:] {
+			if !slices.Equal(member.ReadBy, members[0].ReadBy) {
+				return &VariableError{Sources: append(slices.Clone(members[0].ReadBy), member.ReadBy...), Variable: member.Name,
+					Reason: fmt.Sprintf("the group of one of %s holds %s, read by %s, and %s, read by %s; the variables of a group are of one component, so give the group of each component its own name",
+						name, members[0].Name, strings.Join(members[0].ReadBy, ", "), member.Name, strings.Join(member.ReadBy, ", "))}
+			}
+		}
+	}
+	return nil
 }
 
 // conflict gives the first fact on which two statements of one variable differ, or "".
@@ -216,6 +263,8 @@ func conflict(a, b AcceptedVariable) string {
 		return "refused at start flag"
 	case a.ReadByMode != b.ReadByMode:
 		return "mode that reads it"
+	case a.OneOf != b.OneOf:
+		return "group of one of"
 	}
 	return ""
 }
@@ -229,7 +278,7 @@ func acceptedOf(service string, settings map[string]string, variable Variable) (
 	}
 	accepted := AcceptedVariable{Name: name, Type: variable.Type, Required: variable.Required, Description: variable.Description,
 		Secret: variable.Secret, Allowed: variable.Allowed, RefusedAtStart: variable.RefusedAtStart,
-		ReadByMode: variable.ReadByMode}
+		ReadByMode: variable.ReadByMode, OneOf: variable.OneOf}
 	if source := variable.SecretSource; source != nil {
 		if !variable.Secret && variable.Type != "path" {
 			return AcceptedVariable{}, fmt.Errorf("only a secret variable, or a path variable that names the file of a secret, states a secret source")
@@ -289,6 +338,12 @@ func checkAccepted(v AcceptedVariable) error {
 	}
 	if v.ReadByMode != "" && (v.ReadByMode != "migrate" || v.Required) {
 		return fmt.Errorf("the mode that reads the variable is migrate, and such a variable is not required")
+	}
+	if v.OneOf != "" && !groupName.MatchString(v.OneOf) {
+		return fmt.Errorf("the group of one of %q is not a name of at most 63 lower-case letters, digits and '-'", v.OneOf)
+	}
+	if v.OneOf != "" && v.Required {
+		return fmt.Errorf("the variable is required and in the group of one of %s; a variable of a group is not required on its own, because the group needs exactly one of its variables", v.OneOf)
 	}
 	if v.RefusedAtStart && v.Required {
 		return fmt.Errorf("a variable that the service refuses at start is not required")
