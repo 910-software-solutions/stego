@@ -811,14 +811,18 @@ func TestArchitectureContext(t *testing.T) {
 		if !slices.Contains(actors, "actor:token-issuer.auth token issuer https://id.example/realm <service.yaml overrides.auth.issuer>") {
 			t.Fatalf("the declared issuer does not name the actor:\n%s", strings.Join(actors, "\n"))
 		}
-		// The model shows the scheme, host and path of the issuer, and no user info, query or fragment; a value with
-		// no scheme and host is not shown.
+		// The model shows the scheme, host and path of the issuer, and no user info, query or fragment; a value that
+		// is not an https URL with a host, or whose path holds '@', is not shown.
 		for issuer, want := range map[string]string{
 			"https://user:secret@id.example/realm?token=t0#f": "https://id.example/realm",
 			"https://id.example/realm?":                       "https://id.example/realm",
 			"https://id.example/realm#":                       "https://id.example/realm",
 			"user:secret@id.example/realm":                    "Token issuer of auth",
 			"id.example/realm":                                "Token issuer of auth",
+			"https://u:123/secret@id.example/realm":           "Token issuer of auth",
+			"https://id.example/realm%40secret":               "Token issuer of auth",
+			"http://id.example/realm":                         "Token issuer of auth",
+			"HTTPS://id.example/realm":                        "https://id.example/realm",
 		} {
 			in.Service.Overrides["auth"] = map[string]any{"issuer": issuer}
 			model, _ = deriveFixture(t, in)
