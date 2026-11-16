@@ -105,11 +105,17 @@ func newRevocationEnv(t *testing.T, waitCap time.Duration, waiters int) *revocat
 // newRevocationEnvOf is newRevocationEnv with the waiter limit of a tenant tenantWaiters.
 func newRevocationEnvOf(t *testing.T, waitCap time.Duration, waiters, tenantWaiters int) *revocationEnv {
 	t.Helper()
+	return newRevocationEnvClock(t, waitCap, waiters, tenantWaiters, nil)
+}
+
+// newRevocationEnvClock is newRevocationEnvOf with the wait clock of the authorization runtime; nil is the real clock.
+func newRevocationEnvClock(t *testing.T, waitCap time.Duration, waiters, tenantWaiters int, clock authz.WaitClock) *revocationEnv {
+	t.Helper()
 	e := newEnv(t)
 	r := &revocationEnv{env: e, port: &deliveredPort{}, identity: map[string]context.Context{}}
 	var err error
 	if r.az, err = authz.New(authz.Config{Provider: r.port, DB: e.pool, Schema: "authz", Outbox: e.queue,
-		Poll: 10 * time.Millisecond, WaitCap: waitCap, Waiters: waiters, TenantWaiters: tenantWaiters}); err != nil {
+		Poll: 10 * time.Millisecond, WaitCap: waitCap, Waiters: waiters, TenantWaiters: tenantWaiters, WaitClock: clock}); err != nil {
 		t.Fatal(err)
 	}
 	r.rt = e.runtime(func(c *Config) { c.Authz = r.az })
@@ -145,6 +151,131 @@ func newRevocationEnvOf(t *testing.T, waitCap time.Duration, waiters, tenantWait
 		r.identity[who] = ctx
 	}
 	return r
+}
+
+// waitClock is a wait clock of WaitFor that the test moves itself (ST-SUP-RP06-LC24). Each wait bound that it gives
+// is sent on bounds and ends when the test moves the clock to its end, or when its parent ends. Its poll timers never
+// fire, so a wait reads again only when the test lets it; a wait that asks for a poll timer before its bound fails the
+// test, because it waits with no bound.
+type waitClock struct {
+	t      *testing.T
+	mu     sync.Mutex
+	now    time.Duration
+	open   []*waitBound
+	bounds chan *waitBound
+	// asked counts the bounds that the clock gave; a poll timer asked when the clock gave no bound has no bound, and
+	// is sent on unbounded.
+	asked     int
+	unbounded chan struct{}
+	// polls receives one value each time a bounded wait asks for its poll timer: its read ended and it waits.
+	polls chan struct{}
+}
+
+// waitBound is one wait bound that the clock gave.
+type waitBound struct {
+	d, at time.Duration
+	ctx   context.Context
+	end   context.CancelFunc
+}
+
+func newWaitClock(t *testing.T) *waitClock {
+	c := &waitClock{t: t, bounds: make(chan *waitBound, 64), unbounded: make(chan struct{}, 64), polls: make(chan struct{}, 1024)}
+	t.Cleanup(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, b := range c.open {
+			b.end()
+		}
+	})
+	return c
+}
+
+func (c *waitClock) WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, end := context.WithCancel(parent)
+	c.mu.Lock()
+	b := &waitBound{d: d, at: c.now + d, ctx: ctx, end: end}
+	c.open = append(c.open, b)
+	c.asked++
+	c.mu.Unlock()
+	c.bounds <- b
+	return ctx, end
+}
+
+func (c *waitClock) After(time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.asked == 0 {
+		c.unbounded <- struct{}{}
+		return nil
+	}
+	c.polls <- struct{}{}
+	return nil
+}
+
+// advance moves the clock and ends each bound whose end it reached.
+func (c *waitClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now += d
+	for _, b := range c.open {
+		if b.at <= c.now {
+			b.end()
+		}
+	}
+}
+
+// statusAnswer is the answer of one status read.
+type statusAnswer struct {
+	code    int
+	state   string
+	applied string
+}
+
+// statusAsync starts a status read as who and sends its answer on the channel it returns.
+func (r *revocationEnv) statusAsync(who, path, prefer string) <-chan statusAnswer {
+	answers := make(chan statusAnswer, 1)
+	go func() {
+		answer, body, _ := r.status(who, path, prefer)
+		answers <- statusAnswer{answer.Code, body["state"], answer.Header().Get("Preference-Applied")}
+	}()
+	return answers
+}
+
+// waitBound reads the next bound that the clock gave, or fails when the read answers first: a read that waits asks
+// for its bound before it waits, and a read over a limit answers and asks for none.
+func (c *waitClock) waitBound(t *testing.T, answers <-chan statusAnswer) *waitBound {
+	t.Helper()
+	select {
+	case b := <-c.bounds:
+		return b
+	case a := <-answers:
+		t.Fatalf("the read answered %+v and did not wait", a)
+		return nil
+	case <-c.unbounded:
+		t.Fatal("the read waits for its poll timer with no wait bound")
+		return nil
+	}
+}
+
+// polled waits until a wait asks for its poll timer, so its read found the revocation pending and it waits now; it
+// fails when the read answers first.
+func (c *waitClock) polled(t *testing.T, answers <-chan statusAnswer) {
+	t.Helper()
+	select {
+	case <-c.polls:
+	case a := <-answers:
+		t.Fatalf("the read answered %+v before it waited", a)
+	}
+}
+
+// pending fails when the read answered: its bound has not ended.
+func pending(t *testing.T, answers <-chan statusAnswer, why string) {
+	t.Helper()
+	select {
+	case a := <-answers:
+		t.Fatalf("%s: the read answered %+v before its bound ended", why, a)
+	default:
+	}
 }
 
 // bound is the verified tenant and principal of who.
@@ -352,40 +483,59 @@ func TestRevocationNotFound(t *testing.T) {
 
 func TestRevocationWait(t *testing.T) {
 	t.Run("ST-SUP-RP06-LC24-T01 WaitFor waits at most the wait cap and at most the waiter limit of calls wait", func(t *testing.T) {
-		r := newRevocationEnv(t, 400*time.Millisecond, 2)
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 400*time.Millisecond, 2, 0, clock)
 		location := r.create("u-7@t1", "k-lc24-1", "o4", nil).Response.Header.Get(authz.RevocationLocationHeader)
 		// The relay does not run: the cap cuts a longer wait, and Preference-Applied gives the cap.
-		answer, body, took := r.status("u-7@t1", location, "wait=30")
-		if body["state"] != "pending" || took < 400*time.Millisecond || took > 3*time.Second {
-			t.Fatalf("a wait of 30 s with a cap of 0.4 s answered %v after %s, want pending after the cap", body, took)
+		answers := r.statusAsync("u-7@t1", location, "wait=30")
+		b := clock.waitBound(t, answers)
+		if b.d != 400*time.Millisecond {
+			t.Fatalf("a wait of 30 s with a cap of 0.4 s is bounded at %s, want the cap", b.d)
 		}
-		if answer.Header().Get("Preference-Applied") != "wait=0" {
-			t.Fatalf("Preference-Applied is %q, want the cap in whole seconds, wait=0", answer.Header().Get("Preference-Applied"))
+		clock.polled(t, answers)
+		clock.advance(400*time.Millisecond - time.Nanosecond)
+		if b.ctx.Err() != nil {
+			t.Fatal("the wait ended before the cap")
 		}
-		// Three waits at one time with a limit of two: one answers at once with no Preference-Applied.
-		type outcome struct {
-			took    time.Duration
-			applied string
+		pending(t, answers, "a wait of 30 s at 1 ns before the cap")
+		clock.advance(time.Nanosecond)
+		a := <-answers
+		if a.state != "pending" || a.applied != "wait=0" {
+			t.Fatalf("a wait of 30 s with a cap of 0.4 s answered %+v, want pending with the cap in whole seconds, wait=0", a)
 		}
-		results := make(chan outcome, 3)
+		// Three waits at one time with a limit of two: one answers at once with no Preference-Applied, and two wait
+		// for the bound of their wait.
+		merged := make(chan statusAnswer, 3)
 		for range 3 {
-			go func() {
-				answer, _, took := r.status("u-7@t1", location, "wait=1")
-				results <- outcome{took, answer.Header().Get("Preference-Applied")}
-			}()
+			answers := r.statusAsync("u-7@t1", location, "wait=1")
+			go func() { merged <- <-answers }()
 		}
-		var quick, waited int
+		var quick []statusAnswer
+		var waits []*waitBound
 		for range 3 {
-			o := <-results
-			switch {
-			case o.took < 200*time.Millisecond && o.applied == "":
-				quick++
-			case o.took >= 350*time.Millisecond && o.applied != "":
-				waited++
+			select {
+			case b := <-clock.bounds:
+				waits = append(waits, b)
+			case a := <-merged:
+				quick = append(quick, a)
 			}
 		}
-		if quick != 1 || waited != 2 {
-			t.Fatalf("three waits with a limit of two gave %d at once and %d after the cap, want 1 and 2", quick, waited)
+		if len(quick) != 1 || len(waits) != 2 || quick[0].applied != "" || quick[0].state != "pending" {
+			t.Fatalf("three waits with a limit of two gave %v at once and %d bounds, want one pending with no Preference-Applied and two bounds", quick, len(waits))
+		}
+		for _, b := range waits {
+			if b.d != 400*time.Millisecond {
+				t.Fatalf("a wait of 1 s with a cap of 0.4 s is bounded at %s", b.d)
+			}
+		}
+		clock.polled(t, merged)
+		clock.polled(t, merged)
+		pending(t, merged, "two waits before the cap")
+		clock.advance(400 * time.Millisecond)
+		for range 2 {
+			if a := <-merged; a.applied != "wait=0" || a.state != "pending" {
+				t.Fatalf("a wait answered %+v after the cap, want pending with wait=0", a)
+			}
 		}
 	})
 	t.Run("ST-SUP-RP06-LC24-T02 A waiting call holds no pooled connection", func(t *testing.T) {
@@ -419,27 +569,50 @@ func TestRevocationWait(t *testing.T) {
 
 func TestTenantWaiters(t *testing.T) {
 	t.Run("ST-SUP-RP06-LC24-T03 A tenant that holds its waiter places does not block the waits of another tenant", func(t *testing.T) {
-		// The waiter limit of all is 100 and that of a tenant 2; no relay runs, so each wait lasts until its end.
-		r := newRevocationEnvOf(t, 2*time.Second, 100, 2)
+		// The waiter limit of all is 100 and that of a tenant 2; no relay runs, so each wait lasts until its bound
+		// ends on the clock of the test.
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 2*time.Second, 100, 2, clock)
 		hog := r.create("u-7@t2", "k-lc24-3", "o7", nil).Response.Header.Get(authz.RevocationLocationHeader)
 		own := r.create("u-7@t1", "k-lc24-4", "o8", nil).Response.Header.Get(authz.RevocationLocationHeader)
-		var wg sync.WaitGroup
+		var hogs []<-chan statusAnswer
 		for range 2 {
-			wg.Add(1)
-			go func() { defer wg.Done(); r.status("u-7@t2", hog, "wait=5") }()
+			answers := r.statusAsync("u-7@t2", hog, "wait=5")
+			hogs = append(hogs, answers)
+			if b := clock.waitBound(t, answers); b.d != 2*time.Second {
+				t.Fatalf("a wait of 5 s of t2 with a cap of 2 s is bounded at %s", b.d)
+			}
+			clock.polled(t, answers)
 		}
-		time.Sleep(200 * time.Millisecond)
 		// A third wait of t2 is over the limit of its tenant: it answers at once and does not wait.
-		answer, body, took := r.status("u-7@t2", hog, "wait=5")
-		if took > 300*time.Millisecond || answer.Header().Get("Preference-Applied") != "" || body["state"] != "pending" {
-			t.Fatalf("a third wait of t2 answered %v %v after %s, want pending at once with no Preference-Applied", body, answer.Header(), took)
+		third := r.statusAsync("u-7@t2", hog, "wait=5")
+		select {
+		case a := <-third:
+			if a.applied != "" || a.state != "pending" {
+				t.Fatalf("a third wait of t2 answered %+v, want pending at once with no Preference-Applied", a)
+			}
+		case b := <-clock.bounds:
+			t.Fatalf("a third wait of t2 waits with a bound of %s, want an answer at once", b.d)
 		}
 		// A wait of t1 waits: t2 holds no place of t1.
-		answer, body, took = r.status("u-7@t1", own, "wait=1")
-		if took < 900*time.Millisecond || answer.Header().Get("Preference-Applied") != "wait=1" || body["state"] != "pending" {
-			t.Fatalf("a wait of t1 answered %v %v after %s, want pending after 1 s with Preference-Applied: wait=1", body, answer.Header(), took)
+		answers := r.statusAsync("u-7@t1", own, "wait=1")
+		b := clock.waitBound(t, answers)
+		if b.d != time.Second {
+			t.Fatalf("a wait of 1 s of t1 is bounded at %s, want 1 s", b.d)
 		}
-		wg.Wait()
+		clock.polled(t, answers)
+		clock.advance(time.Second - time.Nanosecond)
+		pending(t, answers, "a wait of t1 at 1 ns before 1 s")
+		clock.advance(time.Nanosecond)
+		if a := <-answers; a.applied != "wait=1" || a.state != "pending" {
+			t.Fatalf("a wait of t1 answered %+v, want pending after 1 s with Preference-Applied: wait=1", a)
+		}
+		clock.advance(time.Second)
+		for _, answers := range hogs {
+			if a := <-answers; a.applied != "wait=2" || a.state != "pending" {
+				t.Fatalf("a wait of t2 answered %+v after its cap, want pending with wait=2", a)
+			}
+		}
 	})
 }
 
