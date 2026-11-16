@@ -49,6 +49,10 @@ A port is a number from 1 to 65535. The verbs are `get`, `list`, `watch`, `creat
   as `30s`.
 - A value that is null, white space only, an empty map or an empty list is no value: a secret key with such a value
   is missing, and so is a configuration value.
+- A configuration value of a listed variable that is given but is white space only, such as `PORT: " "`, is the
+  wrong type, for a required and an optional variable: the base gives the text as it is to the service. Give a value,
+  or remove the variable from the environment file. An empty text `""` or null is no value, and is not the wrong
+  type. A value of white space only of a variable that the service refuses at start is refused, as any other value.
 - A required environment variable must have a value, as the base wires it. A variable that is not secret has a value
   under `configuration`. A secret variable with a `secret_source` has a value when the secret of its source has that
   key. A secret of the variable's name is not a value. A secret variable with no `secret_source` never has a value:

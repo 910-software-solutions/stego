@@ -115,6 +115,9 @@ type environmentEntry struct {
 	fault string
 	// empty marks a configuration value that is null or empty: it gives no value.
 	empty bool
+	// blank marks a configuration value that is given but is white space only: the check counts it as no value,
+	// but the base gives the text as it is to the service, which reads it raw (#380 security review L2).
+	blank bool
 	// value is the text of a configuration value, which is never secret: a secret variable given as a configuration
 	// value is of the wrong type, and the check names it without its value.
 	value string
@@ -302,6 +305,7 @@ func readEntry(section string, kind RequirementKind, known []string, name string
 			entry.fault = "a configuration value is one value, not a " + nodeKind(node)
 		}
 		entry.empty = emptyValue(node)
+		entry.blank = node.Kind == yaml.ScalarNode && node.Tag != "!!null" && node.Value != "" && entry.empty
 		if node.Kind == yaml.ScalarNode && !entry.empty {
 			entry.value = node.Value
 		}
@@ -515,6 +519,15 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 				entry.kind, entry.name, entry.name, form.SecretSource.Key, form.SecretSource.Name, form.Name, entry.name, SecretFilesFolder, entry.name))
 			continue
 		}
+		if entry.kind == Configuration && entry.blank && listed[entry.name] && !secretVariables[entry.name] && !variables[entry.name].RefusedAtStart {
+			// A value of white space only of a listed variable that is not secret, required or optional: the check of
+			// required variables counts it as no value, and the type check does not read it, but the service reads
+			// the text as it is (#380 security review L2).
+			fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType,
+				Detail: fmt.Sprintf("the configuration value of %s is white space only: the check counts it as no value, but the service reads the text as it is; "+
+					"give a value, or remove %s from the environment file", entry.name, entry.name)})
+			continue
+		}
 		if named[string(entry.kind)+" "+entry.name] {
 			if requirement := requirementOfKind(requirements, entry.kind, entry.name); requirement.Kind == Secret {
 				for _, key := range entry.keys {
@@ -526,8 +539,9 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 			continue
 		}
 		if (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] && variables[entry.name].RefusedAtStart &&
-			!(entry.kind == Configuration && entry.empty) && !(entry.kind == Secret && len(entry.keys) == 0) {
-			// A value of a variable that the start guard refuses stops the service (ST-SUP-UC01-R10).
+			!(entry.kind == Configuration && entry.empty && !entry.blank) && !(entry.kind == Secret && len(entry.keys) == 0) {
+			// A value of a variable that the start guard refuses stops the service (ST-SUP-UC01-R10), also a value
+			// of white space only: the guard refuses each value that is not "" (#380 security review L2).
 			fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType,
 				Detail: fmt.Sprintf("the service refuses the environment variable %s at start; give its setting through a declared variable", entry.name)})
 			continue
@@ -551,7 +565,8 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 				continue
 			}
 			// Each configuration value of a listed variable has the variable's type, allowed values and range
-			// (ST-DLV-UC02-R02). An empty value gives no value, and the check of required variables names it.
+			// (ST-DLV-UC02-R02). An empty value gives no value, and the check of required variables names it; a
+			// value of white space only has a row of its own above.
 			if entry.kind == Configuration && !entry.empty {
 				if fault := valueFault(variables[entry.name], entry.value); fault != "" {
 					fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType, Detail: fault})
