@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -157,6 +158,61 @@ func TestComplianceFactList(t *testing.T) {
 			if p.Role != "" && !strings.Contains(block, "granted to "+p.Role) {
 				t.Fatalf("the text does not name the role %s of the folder check:\n%s", p.Role, block)
 			}
+		}
+	})
+
+	t.Run("ST-GEN-UC16-R01-T05 The checks fact of a nested operation names each ancestor read whose grant paths a limit cut short", func(t *testing.T) {
+		_, data := deriveFixture(t, nestedFixture(t))
+		_, list, _ := factsOf(t, archProject(t, data), "access")
+		for _, f := range list.Facts {
+			if len(f.AncestorsIncomplete) != 0 {
+				t.Fatalf("a complete model gives an incomplete ancestor read: %+v", f)
+			}
+		}
+		// The same model with a limit in the grant paths of folder#view.
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		access := raw["access"].(map[string]any)
+		access["roles_complete"] = false
+		for _, perm := range access["permissions"].([]any) {
+			if perm.(map[string]any)["id"] == "permission:folder#view" {
+				perm.(map[string]any)["complete"] = false
+			}
+		}
+		cut, err := json.MarshalIndent(raw, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, list, out := factsOf(t, archProject(t, append(cut, '\n')), "access")
+		facts := map[string]FactOfList{}
+		for _, f := range list.Facts {
+			facts[f.About+"|"+f.Name] = f
+		}
+		want := []FactAncestor{{Fact: "checks ancestor 2 Folder", Permission: "permission:folder#view"}}
+		for _, op := range []string{"operation:folder-docs.update", "operation:folder-docs.read"} {
+			if got := facts[op+"|checks"].AncestorsIncomplete; !slices.Equal(got, want) {
+				t.Errorf("the checks fact of %s names the incomplete ancestor reads %+v, not %+v", op, got, want)
+			}
+		}
+		for _, op := range []string{"operation:docs.read", "operation:shelf-folders.read"} {
+			if got := facts[op+"|checks"].AncestorsIncomplete; len(got) != 0 {
+				t.Errorf("the checks fact of %s, which reads no ancestor with a permission, names %+v", op, got)
+			}
+		}
+		if !bytes.Contains(out, []byte(`"ancestors_incomplete"`)) {
+			t.Error("the JSON list does not name the incomplete ancestor read")
+		}
+		at := strings.Index(text, "operation:folder-docs.update\n")
+		if at < 0 {
+			t.Fatalf("the text names no operation:folder-docs.update:\n%s", text)
+		}
+		block := text[at:]
+		checks := strings.Index(block, "  checks: ")
+		line := strings.Index(block, "a limit cut a path of the ancestor read permission:folder#view short (checks ancestor 2 Folder), so it can grant more roles than its paths name")
+		if checks < 0 || line < checks || strings.Index(block, "checks ancestor 1 Shelf") < line {
+			t.Fatalf("the text does not mark the incomplete ancestor read at the checks fact of folder-docs.update:\n%s", block)
 		}
 	})
 

@@ -623,14 +623,31 @@ func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchP
 		name = strings.TrimPrefix(name, group+".")
 	}
 	title := shortID(c.Subject) + ": " + what
+	if p := perms[c.Grants]; p != nil && !p.Complete {
+		title += " (incomplete: a limit was reached)"
+	}
 	if len(c.Ancestors) > 0 {
-		title += "; " + ancestorsText(c)
+		title += "; " + ancestorsText(c, perms)
 	}
 	w.raw("<th" + attrs + attr("data-id", c.ID) + attr("title", title) + ">")
 	w.text(name)
 	w.tag("span", " class=\"sub\"", what)
 	if len(c.Ancestors) > 0 {
-		w.tag("span", " class=\"sub ancestors\"", "⤒ "+ancestorsShort(c))
+		// The read of an ancestor whose grant paths a limit cut short may be held by more roles than the matrix shows,
+		// so the head marks it next to the ancestor: the view never shows an incomplete grant set as complete (security
+		// review of PR #374, L2).
+		w.raw("<span class=\"sub ancestors\">⤒ ")
+		for i, a := range c.Ancestors {
+			if i > 0 {
+				w.text(", ")
+			}
+			w.text(shortID(a.Entity) + " " + ancestorText(a))
+			if ancestorIncomplete(a, perms) {
+				w.text(" ")
+				w.tag("span", " class=\"incomplete\"", incompleteMark)
+			}
+		}
+		w.raw("</span>")
 	}
 	if p := perms[c.Grants]; p != nil && !p.Complete {
 		w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: a limit was reached")
@@ -649,27 +666,47 @@ func ancestorText(a ArchAncestor) string {
 	return "no permission"
 }
 
-// ancestorsShort gives the ancestors of a check, the top one first, each with what it decides.
-func ancestorsShort(c ArchCheck) string {
+// ancestorsShort gives the ancestors of a check, the top one first, each with what it decides, and the mark
+// incomplete on each whose grant paths a limit cut short.
+func ancestorsShort(c ArchCheck, perms map[string]*ArchPermission) string {
 	var parts []string
 	for _, a := range c.Ancestors {
-		parts = append(parts, shortID(a.Entity)+" "+ancestorText(a))
+		part := shortID(a.Entity) + " " + ancestorText(a)
+		if ancestorIncomplete(a, perms) {
+			part += " " + incompleteMark
+		}
+		parts = append(parts, part)
 	}
 	return strings.Join(parts, ", ")
 }
 
 // ancestorsText says in words what the handler of a nested operation checks first (ST-SUP-RC20-OC24).
-func ancestorsText(c ArchCheck) string {
-	return "first reads each ancestor in the path, the top one first, and answers 404 when one is missing, denied or of another parent: " + ancestorsShort(c)
+func ancestorsText(c ArchCheck, perms map[string]*ArchPermission) string {
+	return "first reads each ancestor in the path, the top one first, and answers 404 when one is missing, denied or of another parent: " + ancestorsShort(c, perms)
 }
 
-// missingAncestors gives the ancestors whose read permission the role alone does not hold: a caller with only that
-// role passes the check of the operation, and still gets 404 from the parent chain check.
+// incompleteMark marks the read of an ancestor whose grant paths a limit cut short.
+const incompleteMark = "⚠ incomplete: a limit was reached"
+
+// ancestorIncomplete says whether a limit cut short the grant paths of the read permission of an ancestor.
+func ancestorIncomplete(a ArchAncestor, perms map[string]*ArchPermission) bool {
+	p := perms[a.Grants]
+	return a.Grants != "" && p != nil && !p.Complete
+}
+
+// missingAncestors gives the ancestors whose read permission the role alone does not hold by a path that the model
+// names: a caller with only that role passes the check of the operation, and still gets 404 from the parent chain
+// check. An ancestor whose grant paths a limit cut short is named as incomplete, because the role may hold its read
+// by a path past the limit.
 func missingAncestors(c ArchCheck, role string, perms map[string]*ArchPermission) []string {
 	var out []string
 	for _, a := range c.Ancestors {
 		if a.Grants != "" && len(matrixCell(perms[a.Grants], role)) == 0 {
-			out = append(out, shortID(a.Entity)+" ("+ancestorText(a)+")")
+			name := shortID(a.Entity) + " (" + ancestorText(a) + ")"
+			if ancestorIncomplete(a, perms) {
+				name += ", whose grant paths are incomplete: a limit was reached"
+			}
+			out = append(out, name)
 		}
 	}
 	return out
@@ -824,7 +861,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		if c.Public {
 			perm = "public: " + c.Reason
 		}
-		w.row(c.ID, shortID(c.Subject), c.ResourceType, perm, ancestorsShort(c), sourceText(c.Source))
+		w.row(c.ID, shortID(c.Subject), c.ResourceType, perm, ancestorsShort(c, perms), sourceText(c.Source))
 	}
 	w.end()
 	w.h3("Grant paths")

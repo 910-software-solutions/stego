@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/command"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
 )
@@ -404,6 +406,78 @@ func TestArchitectureRefusals(t *testing.T) {
 			for _, part := range tc.want {
 				if !strings.Contains(err.Error(), part) {
 					t.Fatalf("%s: the refusal does not name %s: %v", tc.name, part, err)
+				}
+			}
+		}
+	})
+}
+
+func TestArchitectureAncestorRefusals(t *testing.T) {
+	t.Run("ST-GEN-UC08-R12-T03 The derivation and the generators refuse the same ancestor with a public read or no read permission", func(t *testing.T) {
+		// entityNames gives the entities whose rows the rest-api data path plans with the command runtime, as
+		// generateRuntimeHandlers does: the entity of each collection, and each entity with a resource type that a ref
+		// field of one names. Each ancestor of a path is the entity of a collection, so it is one of them.
+		entityNames := func(svc *types.ServiceDeclaration) []string {
+			byName := map[string]types.Entity{}
+			for _, e := range svc.Entities {
+				byName[e.Name] = e
+			}
+			var names []string
+			for _, c := range svc.Collections {
+				if !slices.Contains(names, c.Entity) {
+					names = append(names, c.Entity)
+				}
+			}
+			for _, c := range svc.Collections {
+				for _, f := range byName[c.Entity].Fields {
+					if f.Type == types.FieldTypeRef && byName[f.To].ResourceType != "" && !slices.Contains(names, f.To) {
+						names = append(names, f.To)
+					}
+				}
+			}
+			return names
+		}
+		// generate runs the entity planning of the command runtime that the rest-api and the worker generators
+		// share (command.EntityFile).
+		generate := func(svc *types.ServiceDeclaration) error {
+			_, err := command.EntityFile("data", entityNames(svc), svc.Entities, "tenant_id", command.Relations{})
+			return err
+		}
+		// The nested fixture with a read permission of the folder: both accept it.
+		in := nestedFixture(t)
+		if err := generate(in.Service); err != nil {
+			t.Fatalf("the generators refuse the nested fixture: %v", err)
+		}
+		if _, err := WriteArchitecture(in); err != nil {
+			t.Fatalf("the derivation refuses the nested fixture: %v", err)
+		}
+		for _, tc := range []struct {
+			name, read, want string
+		}{
+			{"public read", types.PermissionPublic, "the read permission public"},
+			{"no read", "", "no read permission"},
+		} {
+			in := nestedFixture(t)
+			folder := &in.Service.Entities[1]
+			folder.Permissions = maps.Clone(folder.Permissions)
+			if tc.read == "" {
+				delete(folder.Permissions, types.OpRead)
+			} else {
+				folder.Permissions[types.OpRead] = tc.read
+				folder.PublicReasons = map[types.Operation]string{types.OpRead: "Anyone may see a folder."}
+			}
+			err := generate(in.Service)
+			if err == nil || !strings.Contains(err.Error(), "entity Folder") || !strings.Contains(err.Error(), "no read permission") {
+				t.Fatalf("%s: the generators do not refuse the ancestor Folder: %v", tc.name, err)
+			}
+			_, err = WriteArchitecture(in)
+			var refusal *ArchitectureRefusal
+			if !errors.As(err, &refusal) {
+				t.Fatalf("%s: the derivation gives %v, want a refusal", tc.name, err)
+			}
+			for _, part := range []string{"collections.folder-docs.scope", "entity Folder", "entities[1]", "resource type folder", tc.want, "entities[1].permissions.read", "ST-SUP-RC20-OC24"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("%s: the refusal does not name %q: %v", tc.name, part, err)
 				}
 			}
 		}
