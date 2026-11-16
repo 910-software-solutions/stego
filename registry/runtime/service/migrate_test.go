@@ -104,7 +104,7 @@ func TestMigrate(t *testing.T) {
 		f := newFixture(t)
 		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
 		want := []string{StepOwnerRole, StepJobLock, StepLedgerCheck, StepAuthorizationSchema, StepTables, StepTenantKeys, StepTenantKeysValidate, StepOutboxQueue, StepOutboxSequence, StepAuditTables, StepAuditSink,
-			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepSchemaServed, StepManifestBefore, StepBackfill, StepManifest}
+			StepIdempotencyKeys, StepAuthorizationTables, StepRuntimeGrants, StepAuditPartitions, StepReleaseReports, StepSchemaAgain, StepSchemaServed, StepManifestBefore, StepBackfill, StepManifest, StepReleaseIdentity}
 		run := func(m Migration) (*steps, error) {
 			s := &steps{backends: map[int]bool{}}
 			stepped = s.record(t)
@@ -113,12 +113,18 @@ func TestMigrate(t *testing.T) {
 		}
 		writes := 0
 		for _, pass := range []string{"a fresh database", "the same database again"} {
-			s, err := run(f.migration(&writes))
+			m := f.migration(&writes)
+			s, err := run(m)
 			if err != nil {
 				t.Fatalf("Migrate on %s: %v", pass, err)
 			}
 			if !slices.Equal(s.names, want) || len(s.backends) != 1 {
 				t.Fatalf("Migrate on %s ran %v on %d connections, want %v on one", pass, s.names, len(s.backends), want)
+			}
+			// The last step writes the one release identity row of the release and its workers (ST-SUP-RC35-OC13).
+			got, found, err := tenant.ReadIdentity(context.Background(), f.admin, "public")
+			if err != nil || !found || got != m.Parts.Identity() || got.Workers != tenant.WorkersDigest(m.Parts.WorkerNames) {
+				t.Fatalf("Migrate on %s left the release identity row %+v (found %v, %v), want %+v", pass, got, found, err, m.Parts.Identity())
 			}
 		}
 		if writes != 4 {
@@ -2204,8 +2210,8 @@ func TestMigrateManifestBefore(t *testing.T) {
 		if err := Migrate(ctx, settings, m); err != nil {
 			t.Fatalf("the job with no trigger of its own gave %v after the steps %v", err, steps)
 		}
-		if !boardsCompleted(t, f) || unmoved(t, f) != 0 || steps[len(steps)-1] != StepManifest {
-			t.Fatalf("the job ran the steps %v, complete %v with %d rows unmoved, want the change complete and the step %s last", steps, boardsCompleted(t, f), unmoved(t, f), StepManifest)
+		if !boardsCompleted(t, f) || unmoved(t, f) != 0 || len(steps) < 2 || steps[len(steps)-2] != StepManifest || steps[len(steps)-1] != StepReleaseIdentity {
+			t.Fatalf("the job ran the steps %v, complete %v with %d rows unmoved, want the change complete and the steps %s and %s last", steps, boardsCompleted(t, f), unmoved(t, f), StepManifest, StepReleaseIdentity)
 		}
 	})
 

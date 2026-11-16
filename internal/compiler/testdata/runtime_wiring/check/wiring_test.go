@@ -1499,13 +1499,40 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 	})
 	t.Run("ST-SUP-RC35-OC13-T06 The reconcile at start gives a tenant of an earlier release each worker's tuple and deletes the tuple of a removed worker", func(t *testing.T) {
 		s.t = t
+		// The tuples of the other active tenants once the relay delivered every message, which the reconcile must
+		// not change.
+		for polls := 1; ; polls++ {
+			pending := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz' AND state <> 'done'`)
+			if pending == 0 {
+				break
+			}
+			if polls%50 == 0 {
+				t.Logf("after %d reads, %d messages for authz are not done", polls, pending)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		others := map[string][]string{}
+		rows, err := s.admin.Query(`SELECT tenant_id FROM stego_tenants WHERE retired_at IS NULL`)
+		must(t, err)
+		for rows.Next() {
+			var id string
+			must(t, rows.Scan(&id))
+			others[id] = nil
+		}
+		must(t, rows.Err())
+		rows.Close()
+		for id := range others {
+			others[id] = s.relations(t, "tenant", s.tenantResource(t, id), "")
+		}
 		// A tenant of an earlier release: listed with no tuple of the declared workers and with the tuple of the
 		// removed worker retired-export. The service starts again, as at the rollout of a release, and the reconcile
-		// of the controller mode, which runs at start, mends both.
-		preTenant := "org-pre-" + uuid.NewString()[:8]
+		// of the controller mode, which runs at start, mends both. Its ID sorts after the IDs of the other tenants,
+		// so the reconcile visits it last.
+		preTenant := "zz-pre-" + uuid.NewString()[:8]
 		resource := s.tenantResource(t, preTenant)
+		restarted := time.Now()
 		execAll(t, s.admin, "INSERT INTO stego_tenants (tenant_id) VALUES ('"+preTenant+"')")
-		_, err := v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
 			Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
 			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "tenant", ObjectId: resource},
 				Relation: "worker_retired_export",
@@ -1525,9 +1552,19 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
  AND actor_kind = 'system' AND resource_type = 'tenant' AND resource_id = $1 AND outcome = 'ok'`, preTenant); n != 1 {
 			t.Fatalf("%d audit rows of the reconcile in %s, want 1", n, preTenant)
 		}
+		// The reconcile visited the other tenants first and changed none: no tuple write for them since the restart,
+		// and SpiceDB holds their tuples as before.
+		if n := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'authz' AND tenant_id <> $1 AND created_at >= $2`, preTenant, restarted); n != 0 {
+			t.Fatalf("the reconcile staged %d tuple writes for other tenants, want none: their tuples were whole", n)
+		}
+		for id, before := range others {
+			if after := s.relations(t, "tenant", s.tenantResource(t, id), ""); !slices.Equal(after, before) {
+				t.Fatalf("the tuples of %s changed in the reconcile:\n%s\nwant:\n%s", id, strings.Join(after, "\n"), strings.Join(before, "\n"))
+			}
+		}
 		// The job worker-tuples is healthy, so the modes become ready; a readiness that names the job fails the check
 		// at once. The wait has no deadline of its own.
-		for {
+		for polls := 1; ; polls++ {
 			response, err := http.Get(s.base + "/readyz/modes")
 			must(t, err)
 			body, _ := io.ReadAll(response.Body)
@@ -1537,6 +1574,9 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 			}
 			if strings.Contains(string(body), "worker-tuples") {
 				t.Fatalf("the readiness of the modes answered %d %s after the reconcile, want the job worker-tuples healthy", response.StatusCode, body)
+			}
+			if polls%50 == 0 {
+				t.Logf("after %d reads, the readiness of the modes answers %d %s", polls, response.StatusCode, body)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
@@ -1580,10 +1620,15 @@ func (s *service) relations(t *testing.T, resourceType, resourceID, relation str
 // wait that never ends, and a missing result is not a pass.
 func (s *service) awaitRelation(t *testing.T, resourceType, resourceID, relation string, want []string) []string {
 	t.Helper()
-	for {
+	for polls := 1; ; polls++ {
 		got := s.relations(t, resourceType, resourceID, relation)
 		if slices.Equal(got, want) {
 			return got
+		}
+		// A wait that never ends shows in the log what SpiceDB held last.
+		if polls%50 == 0 {
+			t.Logf("after %d reads, SpiceDB holds on %s:%s#%s:\n%s\nwant:\n%s", polls, resourceType, resourceID, relation,
+				strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

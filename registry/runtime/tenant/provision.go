@@ -2,9 +2,12 @@ package tenant
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -125,11 +128,96 @@ func List(ctx context.Context, db *sql.DB, schema string) ([]Tenant, error) {
 	return tenants, nil
 }
 
+// ReleaseIdentity is a release identity: the release, the name of the last migration of the release (Parts.Release), and
+// the workers digest of its declared workers (WorkersDigest). A binary has its own; the migration job writes the one
+// of its release in the release identity row (ST-SUP-RC35-OC13, ST-SUP-RP14-LC03).
+type ReleaseIdentity struct {
+	Release, Workers string
+}
+
+// String gives the identity as release/workers digest, for a log line.
+func (i ReleaseIdentity) String() string { return i.Release + "/" + i.Workers }
+
+// WorkersDigest gives the workers digest of the worker names: the lower-case hex SHA-256 of the names in byte
+// order, each followed by a line feed. The same set of names gives the same digest in any order.
+func WorkersDigest(names []string) string {
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	sum := sha256.New()
+	for _, name := range sorted {
+		sum.Write([]byte(name + "\n"))
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// IdentityTable is the table of the release identity row, in the schema of the tenant list.
+const IdentityTable = "stego_release_identity"
+
+// identityText creates the table of the release identity row: one row, which only the owner writes; the runtime
+// role may only read it. It runs again with no error on a database that it made.
+const identityText = `CREATE TABLE IF NOT EXISTS {{schema}}.stego_release_identity (
+	only_row boolean PRIMARY KEY DEFAULT true CHECK (only_row),
+	release text NOT NULL,
+	workers text NOT NULL,
+	written_at timestamptz NOT NULL DEFAULT now()
+);
+
+REVOKE ALL ON {{schema}}.stego_release_identity FROM PUBLIC;
+GRANT SELECT ON {{schema}}.stego_release_identity TO {{runtime_role}};
+`
+
+// IdentityMigration returns the SQL text that creates the table of the release identity row in schema, for the
+// migration job to run as the owner role in its tables step; the runtime role may read the table only.
+func IdentityMigration(schema, runtimeRole string) (string, error) {
+	quotedSchema, err := quoteName("schema", schema)
+	if err != nil {
+		return "", err
+	}
+	quotedRole, err := quoteName("runtime role", runtimeRole)
+	if err != nil {
+		return "", err
+	}
+	text := strings.ReplaceAll(identityText, schemaPlaceholder, quotedSchema)
+	return strings.ReplaceAll(text, runtimeRolePlaceholder, quotedRole), nil
+}
+
+// WriteIdentity writes the release identity row of schema through q, in place of the row before; the migration job
+// runs it last, as the owner role (ST-SUP-RP14-LC03).
+func WriteIdentity(ctx context.Context, q Querier, schema string, id ReleaseIdentity) error {
+	quotedSchema, err := quoteName("schema", schema)
+	if err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx, "INSERT INTO "+quotedSchema+".stego_release_identity (only_row, release, workers, written_at)"+
+		" VALUES (true, $1, $2, pg_catalog.now()) ON CONFLICT (only_row) DO UPDATE SET release = EXCLUDED.release,"+
+		" workers = EXCLUDED.workers, written_at = EXCLUDED.written_at", id.Release, id.Workers); err != nil {
+		return fmt.Errorf("tenant: write the release identity row: %w", err)
+	}
+	return nil
+}
+
+// ReadIdentity reads the release identity row of schema through q, and tells whether there is one.
+func ReadIdentity(ctx context.Context, q Querier, schema string) (ReleaseIdentity, bool, error) {
+	quotedSchema, err := quoteName("schema", schema)
+	if err != nil {
+		return ReleaseIdentity{}, false, err
+	}
+	var id ReleaseIdentity
+	err = q.QueryRowContext(ctx, "SELECT release, workers FROM "+quotedSchema+".stego_release_identity WHERE only_row").Scan(&id.Release, &id.Workers)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ReleaseIdentity{}, false, nil
+	case err != nil:
+		return ReleaseIdentity{}, false, fmt.Errorf("tenant: read the release identity row: %w", err)
+	}
+	return id, true, nil
+}
+
 // MaxListPage is the most tenants that one call of ListAfter gives.
 const MaxListPage = 1000
 
 // ListAfter gives at most limit active tenants of the tenant list of schema whose IDs come after the ID after, in
-// tenant ID order (byte order), so a job that visits the list in pages holds one page at a time and resumes after the
+// the order of the collation of the column, which the primary key index serves, so a job that visits the list in pages holds one page at a time and resumes after the
 // last tenant of the page before (ST-SUP-RC35-OC13). An empty after starts at the first tenant. It refuses a limit
 // that is not from 1 to MaxListPage.
 func ListAfter(ctx context.Context, db *sql.DB, schema, after string, limit int) ([]Tenant, error) {
@@ -144,7 +232,7 @@ func ListAfter(ctx context.Context, db *sql.DB, schema, after string, limit int)
 		return nil, err
 	}
 	rows, err := db.QueryContext(ctx, "SELECT tenant_id FROM "+quotedSchema+
-		".stego_tenants WHERE retired_at IS NULL AND tenant_id COLLATE \"C\" > $1 ORDER BY tenant_id COLLATE \"C\" LIMIT $2", after, limit)
+		".stego_tenants WHERE retired_at IS NULL AND tenant_id > $1 ORDER BY tenant_id LIMIT $2", after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("tenant: read a page of the tenant list: %w", err)
 	}

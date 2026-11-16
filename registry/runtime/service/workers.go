@@ -423,16 +423,17 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 // once an hour (ST-SUP-RC35-OC13).
 const WorkerTuplesInterval = time.Hour
 
-// workerReconcile gives the reconcile of the worker tuples when the service declares workers and its tenant
-// provisioning, which binds authorization, and else nil (ST-SUP-RC35-OC13).
+// workerReconcile gives the reconcile of the worker tuples when the service declares its tenant provisioning, which
+// binds authorization, and else nil (ST-SUP-RC35-OC13). It runs with no declared worker too, so the tuples of the
+// last removed worker are deleted.
 func (svc *Service) workerReconcile() (*command.WorkerReconcile, error) {
-	if svc.tenants == nil || len(svc.parts.WorkerNames) == 0 {
+	if svc.tenants == nil {
 		return nil, nil
 	}
 	if svc.provider == nil {
 		return nil, errors.New("service: the reconcile of the worker tuples needs the SpiceDB provider")
 	}
-	return command.NewWorkerReconcile(svc.tenants.rt, svc.parts.Workers.TenantSchema, svc.parts.WorkerNames, svc.provider)
+	return command.NewWorkerReconcile(svc.tenants.rt, svc.parts.Workers.TenantSchema, svc.parts.WorkerNames, svc.provider, svc.parts.Release)
 }
 
 // startController builds the audit jobs, the reconcile of the worker tuples and the controller lease loop that runs
@@ -482,8 +483,13 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 	if reconcile != nil {
 		w.reconcile = reconcile
 		jobs = append(jobs, lease.Job{Name: command.WorkerTuplesJob, Interval: WorkerTuplesInterval,
-			Run: func(ctx context.Context, _ *lease.Held) error {
-				_, err := reconcile.Run(ctx)
+			Run: func(ctx context.Context, held *lease.Held) error {
+				// Each tenant's write is fenced under the controller lease (security review of PR #379, L3).
+				var fencer command.Fencer
+				if held != nil {
+					fencer = held
+				}
+				_, err := reconcile.Run(ctx, fencer)
 				return err
 			}})
 	}

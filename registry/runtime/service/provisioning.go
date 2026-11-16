@@ -80,7 +80,11 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	// Provision writes the tuple of each declared worker's relation on the new tenant, and Retire deletes it
 	// (ST-SUP-RC35-OC13).
 	spec := command.TenantSpec{ResourceType: p.ResourceType, Schema: schema, SubjectType: svc.parts.SubjectType,
-		Changed: gate.Forget, Active: gate.Active, Workers: svc.parts.WorkerNames}
+		Changed: gate.Forget, Active: gate.Active, Workers: svc.parts.WorkerNames, Release: svc.parts.Release}
+	if svc.provider != nil {
+		// A Retire also deletes the tuples of undeclared workers, under the fence of the release identity row.
+		spec.Reader = svc.provider
+	}
 	var err error
 	spec.Action, spec.Permission = tenant.ProvisionAction, p.Provision
 	if tp.provision, err = command.ServeTenant(rt, spec); err != nil {

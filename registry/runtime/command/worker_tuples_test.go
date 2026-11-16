@@ -2,7 +2,11 @@ package command
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +16,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
+	"github.com/jsell-rh/stego/registry/runtime/authn"
+	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -25,9 +31,14 @@ type fakeTuples struct {
 	held      map[string]bool
 	fail      string
 	onRead    func(resourceID string)
+	// relationsErr, when it is not nil, is the error of each read of the schema.
+	relationsErr error
 }
 
 func (f *fakeTuples) RelationsOf(_ context.Context, definition string) ([]string, error) {
+	if f.relationsErr != nil {
+		return nil, f.relationsErr
+	}
 	if definition != authz.TenantType {
 		return nil, errors.New("fake: no definition " + definition)
 	}
@@ -64,119 +75,273 @@ func (f *fakeTuples) set(tuples ...string) {
 	}
 }
 
-func TestWorkerTuples(t *testing.T) {
-	t.Run("ST-SUP-RC35-OC13-T05 The reconcile stages the missing worker tuples and deletes those of undeclared workers, once, in pages, audited", func(t *testing.T) {
-		e := newEnv(t)
-		migration, err := tenant.Migration("public", e.roles[0])
-		if err != nil {
+// reconcileFixture is the database, the command runtime and the reader of SpiceDB of the reconcile checks.
+type reconcileFixture struct {
+	t       *testing.T
+	e       *env
+	rt      *Runtime
+	logs    *logRecorder
+	reader  *fakeTuples
+	workers []string
+}
+
+const reconcileRelease = "step_0002_add-x_expand"
+
+func newReconcileFixture(t *testing.T, ids ...string) *reconcileFixture {
+	t.Helper()
+	e := newEnv(t)
+	migration, err := tenant.Migration("public", e.roles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := tenant.IdentityMigration("public", e.roles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.exec(migration, identity)
+	logs := &logRecorder{}
+	provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logs)))
+	f := &reconcileFixture{t: t, e: e, logs: logs,
+		rt:      e.runtime(func(c *Config) { c.Entities = nil; c.Logger = provider }),
+		reader:  &fakeTuples{relations: []string{"member", "worker_apply_partner_replies", "worker_old_sync", "worker_sync_partner_orders"}},
+		workers: []string{"sync-partner-orders", "apply-partner-replies"}}
+	for _, id := range ids {
+		if err := tenant.Provision(e.ctx, e.pool, "public", mustTenant(t, id), nil); err != nil {
 			t.Fatal(err)
 		}
-		e.exec(migration)
-		logs := &logRecorder{}
-		provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logs)))
-		rt := e.runtime(func(c *Config) { c.Entities = nil; c.Logger = provider })
-		ids := []string{"org-a", "org-b", "org-c", "org-d", "org-e"}
-		for _, id := range ids {
-			if err := tenant.Provision(e.ctx, e.pool, "public", mustTenant(t, id), nil); err != nil {
-				t.Fatal(err)
-			}
-		}
-		resourceOf := func(tenantID string) string {
-			resource, err := authz.TenantResource(mustTenant(t, tenantID))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return resource.Type + ":" + resource.ID
-		}
-		syncT := func(id string) string {
-			return resourceOf(id) + "#worker_sync_partner_orders@service_account:sync-partner-orders"
-		}
-		apply := func(id string) string {
-			return resourceOf(id) + "#worker_apply_partner_replies@service_account:apply-partner-replies"
-		}
-		old := func(id string) string { return resourceOf(id) + "#worker_old_sync@service_account:old-sync" }
-		member := func(id string) string { return resourceOf(id) + "#member@user:u1" }
-		// org-a and org-b hold their tuples and a member; org-a also the tuple of the removed worker old-sync; org-c
-		// was provisioned before apply-partner-replies was added; org-d and org-e hold no worker tuple.
-		reader := &fakeTuples{relations: []string{"member", "worker_apply_partner_replies", "worker_old_sync", "worker_sync_partner_orders"}}
-		reader.set(syncT("org-a"), apply("org-a"), old("org-a"), member("org-a"), syncT("org-b"), apply("org-b"), member("org-b"), syncT("org-c"))
-		r, err := NewWorkerReconcile(rt, "public", []string{"sync-partner-orders", "apply-partner-replies"}, reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r.page = 2
-		// staged gives the staged tuple writes of the tenant, in order.
-		staged := func(tenantID string) []string {
-			rows, err := e.admin.QueryContext(e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
+	}
+	f.identity(tenant.ReleaseIdentity{Release: reconcileRelease, Workers: tenant.WorkersDigest(f.workers)})
+	return f
+}
+
+// identity writes the release identity row as the migration job does.
+func (f *reconcileFixture) identity(id tenant.ReleaseIdentity) {
+	f.t.Helper()
+	if err := tenant.WriteIdentity(f.e.ctx, f.e.admin, "public", id); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *reconcileFixture) reconcile() *WorkerReconcile {
+	f.t.Helper()
+	r, err := NewWorkerReconcile(f.rt, "public", f.workers, f.reader, reconcileRelease)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return r
+}
+
+func (f *reconcileFixture) resourceOf(tenantID string) string {
+	f.t.Helper()
+	resource, err := authz.TenantResource(mustTenant(f.t, tenantID))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return resource.Type + ":" + resource.ID
+}
+
+func (f *reconcileFixture) syncT(id string) string {
+	return f.resourceOf(id) + "#worker_sync_partner_orders@service_account:sync-partner-orders"
+}
+
+func (f *reconcileFixture) apply(id string) string {
+	return f.resourceOf(id) + "#worker_apply_partner_replies@service_account:apply-partner-replies"
+}
+
+func (f *reconcileFixture) old(id string) string {
+	return f.resourceOf(id) + "#worker_old_sync@service_account:old-sync"
+}
+
+// staged gives the staged tuple writes of the tenant, in order.
+func (f *reconcileFixture) staged(tenantID string) []string {
+	f.t.Helper()
+	rows, err := f.e.admin.QueryContext(f.e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
  (p->'tuple'->>'relation') || '@' || coalesce(p->'tuple'->>'subject_type', '') || ':' || coalesce(p->'tuple'->>'subject_id', '')
  FROM (SELECT convert_from(payload, 'UTF8')::jsonb AS p, created_at, id FROM stego_outbox.messages
  WHERE tenant_id = $1 AND destination = 'authz') m ORDER BY created_at, id`, tenantID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer rows.Close()
-			var out []string
-			for rows.Next() {
-				var line string
-				if err := rows.Scan(&line); err != nil {
-					t.Fatal(err)
-				}
-				out = append(out, line)
-			}
-			return out
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			f.t.Fatal(err)
 		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// writes counts the outbox messages and the audit rows of the database.
+func (f *reconcileFixture) writes() int {
+	return f.e.count(`SELECT (SELECT count(*) FROM stego_outbox.messages) + (SELECT count(*) FROM audit_event)`)
+}
+
+// awaitLockWait waits, with no deadline, until a session of the database waits for an advisory lock, and gives false
+// when done ends first. It logs the state it saw each 2 s, so a wait that never ends can be read in the log.
+func (f *reconcileFixture) awaitLockWait(done <-chan error) (bool, error) {
+	f.t.Helper()
+	for polls := 1; ; polls++ {
+		select {
+		case err := <-done:
+			return false, err
+		default:
+		}
+		waiting := f.e.count(`SELECT count(*) FROM pg_catalog.pg_locks WHERE locktype = 'advisory' AND NOT granted
+ AND database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())`)
+		if waiting > 0 {
+			return true, nil
+		}
+		if polls%400 == 0 {
+			f.t.Logf("still no session waits for an advisory lock after %d polls; granted advisory locks: %d", polls,
+				f.e.count(`SELECT count(*) FROM pg_catalog.pg_locks WHERE locktype = 'advisory' AND granted`))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// tenantRoutes serves Provision and Retire of spec on rt for the operator op-1, and gives the sender of a request.
+func (f *reconcileFixture) tenantRoutes(spec TenantSpec) func(path, key, body string) int {
+	t := f.t
+	t.Helper()
+	mux := http.NewServeMux()
+	for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+		"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+		spec := spec
+		spec.Action, spec.Permission = action, string(action)
+		h, err := ServeTenant(f.rt, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.Handle(route, h)
+	}
+	signing := authntest.NewKey(t, "k1")
+	keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+		Keys: keys, TenantClaim: "tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(verifier.Stop)
+	claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+	claims["tenant"] = "ops"
+	token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+	f.e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+	t.Cleanup(func() { f.e.decision.setAllow(nil) })
+	return func(path, key, body string) int {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("Idempotency-Key", `"`+key+`"`)
+		w := httptest.NewRecorder()
+		verifier.Middleware(mux).ServeHTTP(w, r)
+		return w.Code
+	}
+}
+
+// logged gives the attributes of each log record of the event name.
+func (f *reconcileFixture) logged(name string) []map[string]string {
+	var out []map[string]string
+	for _, record := range f.logs.all() {
+		if record.EventName() != name {
+			continue
+		}
+		got := map[string]string{}
+		record.WalkAttributes(func(kv attribute.KeyValue) bool {
+			got[string(kv.Key)] = kv.Value.Emit()
+			return true
+		})
+		out = append(out, got)
+	}
+	return out
+}
+
+func TestWorkerTuples(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC13-T05 The reconcile stages the missing worker tuples and deletes those of undeclared workers, once, in pages, audited", func(t *testing.T) {
+		ids := []string{"org-a", "org-b", "org-c", "org-d", "org-e"}
+		f := newReconcileFixture(t, ids...)
+		e, reader := f.e, f.reader
+		member := func(id string) string { return f.resourceOf(id) + "#member@user:u1" }
+		// org-a and org-b hold their tuples and a member; org-a also the tuple of the removed worker old-sync; org-c
+		// was provisioned before apply-partner-replies was added; org-d and org-e hold no worker tuple.
+		reader.set(f.syncT("org-a"), f.apply("org-a"), f.old("org-a"), member("org-a"), f.syncT("org-b"), f.apply("org-b"), member("org-b"), f.syncT("org-c"))
+		r := f.reconcile()
+		r.page = 2
 		audited := func(tenantID string) int {
 			return e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = $2 AND actor_kind = 'system'
  AND actor_id = 'service_account:stego-controller' AND resource_type = 'tenant' AND resource_id = $1 AND outcome = 'ok'`, tenantID, ReconcileCommand)
 		}
-		report, err := r.Run(e.ctx)
+		// A failed read of the schema writes nothing at all.
+		reader.relationsErr = errors.New("fake: SpiceDB does not serve the schema")
+		before := f.writes()
+		if report, err := r.Run(e.ctx, nil); err == nil || !strings.Contains(err.Error(), ReconcileSchemaRead) || report.Tenants != 0 {
+			t.Fatalf("the run with a failed read of the schema gave %+v and %v, want an error of the class schema_read and no tenant", report, err)
+		}
+		if f.writes() != before {
+			t.Fatal("the run with a failed read of the schema wrote an outbox message or an audit row")
+		}
+		reader.relationsErr = nil
+		report, err := r.Run(e.ctx, nil)
 		if err != nil || report != (ReconcileReport{Tenants: 5, Changed: 4}) {
 			t.Fatalf("the first run gave %+v and %v, want 5 tenants, 4 changed and no error", report, err)
 		}
 		want := map[string][]string{
-			"org-a": {"delete_relation " + resourceOf("org-a") + "#worker_old_sync@:"},
+			"org-a": {"delete_relation " + f.resourceOf("org-a") + "#worker_old_sync@:"},
 			"org-b": nil,
-			"org-c": {"touch " + apply("org-c")},
-			"org-d": {"touch " + syncT("org-d"), "touch " + apply("org-d")},
-			"org-e": {"touch " + syncT("org-e"), "touch " + apply("org-e")},
+			"org-c": {"touch " + f.apply("org-c")},
+			"org-d": {"touch " + f.syncT("org-d"), "touch " + f.apply("org-d")},
+			"org-e": {"touch " + f.syncT("org-e"), "touch " + f.apply("org-e")},
 		}
 		for _, id := range ids {
-			if got := staged(id); !slices.Equal(got, want[id]) {
+			if got := f.staged(id); !slices.Equal(got, want[id]) {
 				t.Fatalf("the reconcile staged %v for %s, want %v", got, id, want[id])
 			}
 			if n, wantRows := audited(id), min(len(want[id]), 1); n != wantRows {
 				t.Fatalf("the reconcile wrote %d audit rows for %s, want %d", n, id, wantRows)
 			}
-			for _, line := range staged(id) {
-				if strings.Contains(line, "*") || !strings.Contains(line, resourceOf(id)+"#") {
+			for _, line := range f.staged(id) {
+				if strings.Contains(line, "*") || !strings.Contains(line, f.resourceOf(id)+"#") {
 					t.Fatalf("the reconcile staged %s for %s: a wildcard or a tuple of another tenant", line, id)
 				}
 			}
 		}
 		// The relay delivers: a second run finds nothing to change and writes nothing.
-		reader.set(syncT("org-a"), apply("org-a"), member("org-a"), syncT("org-b"), apply("org-b"), member("org-b"), syncT("org-c"), apply("org-c"),
-			syncT("org-d"), apply("org-d"), syncT("org-e"), apply("org-e"))
-		messages := e.count(`SELECT count(*) FROM stego_outbox.messages`)
-		rows := e.count(`SELECT count(*) FROM audit_event`)
-		if report, err := r.Run(e.ctx); err != nil || report != (ReconcileReport{Tenants: 5}) {
+		reader.set(f.syncT("org-a"), f.apply("org-a"), member("org-a"), f.syncT("org-b"), f.apply("org-b"), member("org-b"), f.syncT("org-c"), f.apply("org-c"),
+			f.syncT("org-d"), f.apply("org-d"), f.syncT("org-e"), f.apply("org-e"))
+		before = f.writes()
+		if report, err := r.Run(e.ctx, nil); err != nil || report != (ReconcileReport{Tenants: 5}) {
 			t.Fatalf("the second run gave %+v and %v, want 5 tenants, none changed", report, err)
 		}
-		if e.count(`SELECT count(*) FROM stego_outbox.messages`) != messages || e.count(`SELECT count(*) FROM audit_event`) != rows {
+		if f.writes() != before {
 			t.Fatal("the second run wrote an outbox message or an audit row with nothing to change")
 		}
-		// A retired tenant is not visited, and its tuples are not written again.
+		// A retired tenant is not visited. With 4 active tenants, a page of 2 divides them exactly: each is visited
+		// once, and the run ends after the empty page.
 		if err := tenant.Retire(e.ctx, e.pool, "public", mustTenant(t, "org-e"), nil); err != nil {
 			t.Fatal(err)
 		}
-		reader.set(syncT("org-a"), apply("org-a"), syncT("org-b"), apply("org-b"), syncT("org-c"), apply("org-c"), syncT("org-d"), apply("org-d"))
-		if report, err := r.Run(e.ctx); err != nil || report != (ReconcileReport{Tenants: 4}) {
+		var visited []string
+		reader.onRead = func(resourceID string) { visited = append(visited, resourceID) }
+		if report, err := r.Run(e.ctx, nil); err != nil || report != (ReconcileReport{Tenants: 4}) {
 			t.Fatalf("the run after the retire of org-e gave %+v and %v, want 4 tenants, none changed", report, err)
 		}
+		reader.onRead = nil
+		perTenant := map[string]int{}
+		for _, id := range visited {
+			perTenant[id]++
+		}
+		if len(perTenant) != 4 || len(visited) != 4*3 {
+			t.Fatalf("the run with a page that divides the tenants read %d tuples of %d tenants, want three reads for each of 4 tenants, once", len(visited), len(perTenant))
+		}
 		// A tenant retired after its page was read gets no write: the reconcile reads it again in its transaction.
-		reader.set(syncT("org-a"), apply("org-a"), syncT("org-b"), apply("org-b"), syncT("org-c"), apply("org-c"), syncT("org-d"))
+		reader.set(f.syncT("org-a"), f.apply("org-a"), f.syncT("org-b"), f.apply("org-b"), f.syncT("org-c"), f.apply("org-c"), f.syncT("org-d"))
 		var once sync.Once
 		reader.onRead = func(resourceID string) {
-			if resourceID == strings.TrimPrefix(resourceOf("org-d"), "tenant:") {
+			if resourceID == strings.TrimPrefix(f.resourceOf("org-d"), "tenant:") {
 				once.Do(func() {
 					if err := tenant.Retire(e.ctx, e.pool, "public", mustTenant(t, "org-d"), nil); err != nil {
 						t.Error(err)
@@ -184,95 +349,186 @@ func TestWorkerTuples(t *testing.T) {
 				})
 			}
 		}
-		if report, err := r.Run(e.ctx); err != nil || report != (ReconcileReport{Tenants: 4}) {
+		if report, err := r.Run(e.ctx, nil); err != nil || report != (ReconcileReport{Tenants: 4}) {
 			t.Fatalf("the run with org-d retired during it gave %+v and %v, want 4 tenants, none changed", report, err)
 		}
 		reader.onRead = nil
-		if got := staged("org-d"); !slices.Equal(got, want["org-d"]) {
+		if got := f.staged("org-d"); !slices.Equal(got, want["org-d"]) {
 			t.Fatalf("the reconcile staged %v for org-d after its retire, want only %v", got, want["org-d"])
-		}
-		// A Retire that holds the lock of the worker tuples of org-c makes the reconcile wait, and the reconcile then
-		// reads org-c as retired and stages nothing for it.
-		reader.set(syncT("org-a"), apply("org-a"), syncT("org-b"), apply("org-b"), syncT("org-c"))
-		locked, release := make(chan struct{}), make(chan struct{})
-		retired := make(chan error, 1)
-		go func() {
-			retired <- tenant.Retire(e.ctx, e.pool, "public", mustTenant(t, "org-c"), []tenant.Hook{func(ctx context.Context, q tenant.Querier, tn tenant.Tenant) error {
-				if _, err := q.ExecContext(ctx, workerTuplesLock, tn.ID()); err != nil {
-					return err
-				}
-				close(locked)
-				<-release
-				return nil
-			}})
-		}()
-		<-locked
-		done := make(chan error, 1)
-		go func() {
-			_, err := r.Run(e.ctx)
-			done <- err
-		}()
-		// The reconcile either waits for the lock, which the check sees in pg_locks, or, with no lock, ends first.
-		for waiting := false; !waiting; {
-			select {
-			case err := <-done:
-				close(release)
-				<-retired
-				t.Fatalf("the reconcile ended (%v) while a Retire of org-c held the lock of its worker tuples", err)
-			default:
-			}
-			waiting = e.count(`SELECT count(*) FROM pg_catalog.pg_locks WHERE locktype = 'advisory' AND NOT granted
- AND database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())`) > 0
-			if !waiting {
-				time.Sleep(5 * time.Millisecond)
-			}
-		}
-		close(release)
-		if err := <-retired; err != nil {
-			t.Fatal(err)
-		}
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-		if got := staged("org-c"); !slices.Equal(got, want["org-c"]) {
-			t.Fatalf("the reconcile staged %v for org-c while its Retire committed, want only %v", got, want["org-c"])
 		}
 		// A failure in one tenant does not stop the next; the run fails with the count and the first class, and its
 		// one log line names no tenant and no tuple.
 		if err := tenant.Provision(e.ctx, e.pool, "public", mustTenant(t, "org-f"), nil); err != nil {
 			t.Fatal(err)
 		}
-		reader.set(syncT("org-a"), apply("org-a"))
-		reader.fail = strings.TrimPrefix(resourceOf("org-a"), "tenant:")
-		report, err = r.Run(e.ctx)
-		if err == nil || !strings.Contains(err.Error(), "failed in 1 of 3 tenants") || !strings.Contains(err.Error(), "first error class is tuple_read") ||
+		reader.set(f.syncT("org-a"), f.apply("org-a"), f.syncT("org-c"), f.apply("org-c"))
+		reader.fail = strings.TrimPrefix(f.resourceOf("org-a"), "tenant:")
+		report, err = r.Run(e.ctx, nil)
+		if err == nil || !strings.Contains(err.Error(), "failed in 1 of 4 tenants") || !strings.Contains(err.Error(), "first error class is tuple_read") ||
 			strings.Contains(err.Error(), "org-") {
-			t.Fatalf("the run with a failing tenant gave %v, want an error that counts 1 of 3 failed tenants, names tuple_read and no tenant", err)
+			t.Fatalf("the run with a failing tenant gave %v, want an error that counts 1 of 4 failed tenants, names tuple_read and no tenant", err)
 		}
 		if report.Changed != 2 || report.Failed != 1 {
 			t.Fatalf("the run with a failing tenant gave %+v, want org-b and org-f changed and org-a failed", report)
 		}
-		records := logs.all()
-		if len(records) != 1 || records[0].EventName() != "command.worker_tuples.failed" {
-			t.Fatalf("the failed run logged %d records, want the one command.worker_tuples.failed", len(records))
+		failed := f.logged("command.worker_tuples.failed")
+		if len(failed) != 2 {
+			t.Fatalf("the failed runs logged %d records command.worker_tuples.failed, want 2 (the schema read and the tenant)", len(failed))
 		}
-		got := map[string]string{}
-		records[0].WalkAttributes(func(kv attribute.KeyValue) bool {
-			got[string(kv.Key)] = kv.Value.Emit()
-			return true
-		})
-		if got["stego.job"] != WorkerTuplesJob || got["stego.failed_tenants"] != "1" || got["stego.tenants"] != "3" ||
+		got := failed[1]
+		if got["stego.job"] != WorkerTuplesJob || got["stego.failed_tenants"] != "1" || got["stego.tenants"] != "4" ||
 			got["stego.error_class"] != ReconcileTupleRead || len(got) != 4 {
 			t.Fatalf("the log line of the failed run holds %v", got)
 		}
-		if body := records[0].Body().AsString(); strings.Contains(body, "org-") || strings.Contains(body, "service_account") {
-			t.Fatalf("the log line of the failed run names a tenant or a tuple: %s", body)
+		for _, record := range f.logs.all() {
+			if body := record.Body().AsString(); strings.Contains(body, "org-") || strings.Contains(body, "service_account") {
+				t.Fatalf("a log line of the reconcile names a tenant or a tuple: %s", body)
+			}
 		}
-		// The reconcile refuses what Provision refuses, and no worker.
-		for _, workers := range [][]string{nil, {"a-b", "a_b"}, {"*"}, {"a/b"}} {
-			if _, err := NewWorkerReconcile(rt, "public", workers, reader); err == nil || !strings.Contains(err.Error(), "worker") {
+		// The reconcile refuses what Provision refuses.
+		for _, workers := range [][]string{{"a-b", "a_b"}, {"*"}, {"a/b"}} {
+			if _, err := NewWorkerReconcile(f.rt, "public", workers, reader, reconcileRelease); err == nil || !strings.Contains(err.Error(), "worker") {
 				t.Errorf("the workers %q gave %v, want a refusal that names the worker", workers, err)
 			}
 		}
 	})
+
+	t.Run("ST-SUP-RC35-OC13-T07 Only a binary of the release identity row reconciles or deletes undeclared worker tuples, and Retire always deletes its declared workers' tuples", func(t *testing.T) {
+		f := newReconcileFixture(t, "org-a", "org-b", "org-c")
+		e, reader := f.e, f.reader
+		reader.set(f.old("org-a"))
+		r := f.reconcile()
+		own := tenant.ReleaseIdentity{Release: reconcileRelease, Workers: tenant.WorkersDigest(f.workers)}
+		// The digest is the one that `stego plan` shows (ST-SUP-RC35-OC13-T09): the same in any order.
+		if own.Workers != "da200a1d8cb9d7dea09dde2570b5341b474a1c3c234361ea5e13598d40e8a7d1" ||
+			tenant.WorkersDigest([]string{f.workers[1], f.workers[0]}) != own.Workers {
+			t.Fatalf("the workers digest of %v is %s, want the vector of the plan in any order", f.workers, own.Workers)
+		}
+		// No row, a row of another release and a row of another worker set: the run writes nothing and logs one
+		// notice each with both identities and no tenant.
+		e.exec(`DELETE FROM public.stego_release_identity`)
+		others := []tenant.ReleaseIdentity{{Release: "step_0003_add-y_expand", Workers: own.Workers},
+			{Release: reconcileRelease, Workers: tenant.WorkersDigest([]string{"sync-partner-orders"})}}
+		for i, row := range append([]tenant.ReleaseIdentity{{}}, others...) {
+			if i > 0 {
+				f.identity(row)
+			}
+			before := f.writes()
+			report, err := r.Run(e.ctx, nil)
+			if err != nil || !report.Fenced || report.Tenants != 0 || f.writes() != before {
+				t.Fatalf("the run with the row %+v gave %+v and %v, and wrote %d, want a fenced run that writes nothing", row, report, err, f.writes()-before)
+			}
+			notices := f.logged("command.worker_tuples.fenced")
+			wantRow := "missing"
+			if i > 0 {
+				wantRow = row.String()
+			}
+			if len(notices) != i+1 || notices[i]["stego.job"] != WorkerTuplesJob || notices[i]["stego.identity"] != own.String() ||
+				notices[i]["stego.row_identity"] != wantRow || len(notices[i]) != 3 {
+				t.Fatalf("the notices of the fenced runs are %v, want one more with the job, %s and %s", notices, own, wantRow)
+			}
+		}
+		// The row of another worker set changes in the middle of a run: the run stops at the next tenant's
+		// transaction and writes nothing more.
+		f.identity(own)
+		var once sync.Once
+		reader.onRead = func(string) { once.Do(func() { f.identity(others[1]) }) }
+		before := f.writes()
+		if report, err := r.Run(e.ctx, nil); err != nil || !report.Fenced || f.writes() != before {
+			t.Fatalf("the run whose row changed during it gave %+v and %v, and wrote %d, want a fenced run that writes nothing", report, err, f.writes()-before)
+		}
+		reader.onRead = nil
+		// A Retire stages the deletes of its declared workers' tuples with any row; the delete of the undeclared
+		// relation worker_old_sync only with its own row.
+		send := f.tenantRoutes(TenantSpec{ResourceType: "service", Schema: "public", SubjectType: "user", Workers: f.workers,
+			Reader: reader, Release: reconcileRelease})
+		declared := func(id string) []string {
+			return []string{"delete " + f.syncT(id), "delete " + f.apply(id)}
+		}
+		for _, c := range []struct {
+			id  string
+			row *tenant.ReleaseIdentity
+		}{{"org-a", nil}, {"org-b", &others[0]}, {"org-c", &own}} {
+			if c.row == nil {
+				e.exec(`DELETE FROM public.stego_release_identity`)
+			} else {
+				f.identity(*c.row)
+			}
+			if got := send("/stego/tenants/"+c.id+"/retire", "k-retire-"+c.id, ""); got != http.StatusOK {
+				t.Fatalf("the retire of %s answered %d, want 200", c.id, got)
+			}
+			want := declared(c.id)
+			if c.row != nil && *c.row == own {
+				want = append(want, "delete_relation "+f.resourceOf(c.id)+"#worker_old_sync@:")
+			}
+			if got := f.staged(c.id); !slices.Equal(got, want) {
+				t.Fatalf("the retire of %s with the row %v staged %v, want %v", c.id, c.row, got, want)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC13-T08 Retire and the reconcile take their locks in one order, and the reconcile stops when it loses the lease", func(t *testing.T) {
+		f := newReconcileFixture(t, "org-a", "org-b")
+		e, reader := f.e, f.reader
+		send := f.tenantRoutes(TenantSpec{ResourceType: "service", Schema: "public", SubjectType: "user", Workers: f.workers,
+			Reader: reader, Release: reconcileRelease})
+		// The reconcile holds the lock of the worker tuples of org-a and waits; a Retire of org-a waits for that lock,
+		// before it takes the chain lock of its audit row, so both end with no deadlock.
+		r := f.reconcile()
+		locked, release := make(chan struct{}), make(chan struct{})
+		var once sync.Once
+		r.afterLock = func() {
+			once.Do(func() {
+				close(locked)
+				<-release
+			})
+		}
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Run(e.ctx, nil)
+			done <- err
+		}()
+		<-locked
+		answered := make(chan error, 1)
+		go func() {
+			if got := send("/stego/tenants/org-a/retire", "k-retire-org-a", ""); got != http.StatusOK {
+				answered <- fmt.Errorf("the retire of org-a answered %d, want 200", got)
+				return
+			}
+			answered <- nil
+		}()
+		if waiting, err := f.awaitLockWait(answered); !waiting {
+			close(release)
+			t.Fatalf("the retire of org-a ended (%v) while the reconcile held the lock of its worker tuples", err)
+		}
+		close(release)
+		if err := <-done; err != nil {
+			t.Fatalf("the reconcile gave %v, want no error and no deadlock", err)
+		}
+		if err := <-answered; err != nil {
+			t.Fatal(err)
+		}
+		// The reconcile staged its touches first, and the Retire's deletes come after them.
+		want := []string{"touch " + f.syncT("org-a"), "touch " + f.apply("org-a"), "delete " + f.syncT("org-a"), "delete " + f.apply("org-a"),
+			"delete_relation " + f.resourceOf("org-a") + "#worker_old_sync@:"}
+		if got := f.staged("org-a"); !slices.Equal(got, want) {
+			t.Fatalf("org-a staged %v, want %v", got, want)
+		}
+		// A lost lease stops the run before the tenant's write commits.
+		before := f.writes()
+		report, err := r.Run(e.ctx, lostLease{})
+		if err == nil || !strings.Contains(err.Error(), ReconcileLease) || report.Changed != 0 || f.writes() != before {
+			t.Fatalf("the run whose lease is lost gave %+v and %v, and wrote %d, want an error of the class lease and no write", report, err, f.writes()-before)
+		}
+		if visited := report.Tenants; visited != 1 {
+			t.Fatalf("the run whose lease is lost visited %d tenants, want it to stop at the first", visited)
+		}
+	})
+}
+
+// lostLease is a lease that another holder took: each fence fails.
+type lostLease struct{}
+
+func (lostLease) Fence(context.Context, *sql.Tx) (int64, error) {
+	return 0, errors.New("fake: the lease row holds another holder")
 }

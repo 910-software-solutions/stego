@@ -238,7 +238,10 @@ func TestProvisioning(t *testing.T) {
 		}
 		answered := make(chan int, 1)
 		go func() { answered <- send("/stego/tenants/org-b/retire", "k-retire-org-b", "") }()
-		for waiting := false; !waiting; {
+		for polls, waiting := 1, false; !waiting; polls++ {
+			if polls%400 == 0 {
+				t.Logf("after %d polls, no session waits for the lock of the worker tuples of org-b", polls)
+			}
 			select {
 			case got := <-answered:
 				_ = hold.Rollback()

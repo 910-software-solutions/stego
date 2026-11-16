@@ -51,6 +51,7 @@ const (
 	ReconcileStage       = "stage"
 	ReconcileAudit       = "audit"
 	ReconcileCommit      = "commit"
+	ReconcileLease       = "lease"
 )
 
 // reconcileError is a failure of one class of the reconcile.
@@ -83,9 +84,21 @@ type WorkerReconcile struct {
 	schema    string
 	workers   []string
 	reader    WorkerTupleReader
+	own       tenant.ReleaseIdentity
 	principal authz.Principal
 	page      int
+	// afterLock, set only by the tests of the package, runs in the transaction of a tenant after its lock.
+	afterLock func()
 }
+
+// Fencer fences a write under the lease of the controller in the transaction of the write, as lease.Held does: it
+// locks the lease row and fails when another holder took the lease (ST-SUP-RP09-LC03).
+type Fencer interface {
+	Fence(ctx context.Context, tx *sql.Tx) (int64, error)
+}
+
+// errFenced ends a run whose release identity is not the one of the release identity row.
+var errFenced = errors.New("command: the release identity row is not the identity of this release")
 
 // ReconcileReport counts the tenants of one run of the reconcile: each one it visited, each one whose tuples it
 // changed, and each one where it failed.
@@ -93,19 +106,20 @@ type ReconcileReport struct {
 	Tenants, Changed, Failed int
 	// FirstClass is the class of the first failure, or empty.
 	FirstClass string
+	// Fenced tells that the run wrote nothing more because the release identity row is not the run's own.
+	Fenced bool
 }
 
 // NewWorkerReconcile gives the reconcile of the worker tuples on the command runtime rt, for the tenant list of
-// schema, the declared workers and the reader of SpiceDB. It refuses no worker, a worker whose relation another
-// worker gives, and a worker name that a tuple cannot hold, as Provision does.
-func NewWorkerReconcile(rt *Runtime, schema string, workers []string, reader WorkerTupleReader) (*WorkerReconcile, error) {
+// schema, the declared workers, which may be none, the reader of SpiceDB and the release of the binary. Its release
+// identity is the release with the workers digest of the workers (ST-SUP-RC35-OC13). It refuses a worker whose
+// relation another worker gives, and a worker name that a tuple cannot hold, as Provision does.
+func NewWorkerReconcile(rt *Runtime, schema string, workers []string, reader WorkerTupleReader, release string) (*WorkerReconcile, error) {
 	switch {
 	case rt == nil || rt.cfg.DB == nil:
 		return nil, errors.New("command: the reconcile of the worker tuples needs the command runtime")
 	case schema == "":
 		return nil, errors.New("command: the reconcile of the worker tuples needs the schema of the tenant list")
-	case len(workers) == 0:
-		return nil, errors.New("command: the reconcile of the worker tuples needs at least one declared worker")
 	case reader == nil:
 		return nil, errors.New("command: the reconcile of the worker tuples needs the reader of SpiceDB")
 	}
@@ -119,7 +133,8 @@ func NewWorkerReconcile(rt *Runtime, schema string, workers []string, reader Wor
 		return nil, err
 	}
 	return &WorkerReconcile{rt: rt, schema: schema, workers: append([]string(nil), workers...), reader: reader,
-		principal: principal, page: WorkerTuplesPage}, nil
+		own: tenant.ReleaseIdentity{Release: release, Workers: tenant.WorkersDigest(workers)}, principal: principal,
+		page: WorkerTuplesPage}, nil
 }
 
 // Run reconciles once (ST-SUP-RC35-OC13). It reads the relations of the type tenant that SpiceDB serves, and visits
@@ -130,8 +145,20 @@ func NewWorkerReconcile(rt *Runtime, schema string, workers []string, reader Wor
 // every tuple of each such relation, with one audit row. A tenant whose tuples match writes nothing. A failure in
 // one tenant does not stop the next tenant: the run ends with an error that counts the failed tenants and names the
 // class of the first failure, which its log line also names, with no tenant and no tuple.
-func (r *WorkerReconcile) Run(ctx context.Context) (ReconcileReport, error) {
+//
+// Before it reads SpiceDB, and again in the transaction of each tenant, it reads the release identity row: when the
+// row is missing or is not the release identity of the binary, it logs one notice and writes nothing more, so only a
+// controller of the release that the migration job last ran reconciles (ST-SUP-RC35-OC13). In the transaction of
+// each tenant it also fences the write under the lease of fencer, when it is not nil, and stops the run when the
+// lease is lost.
+func (r *WorkerReconcile) Run(ctx context.Context, fencer Fencer) (ReconcileReport, error) {
 	var report ReconcileReport
+	if ok, err := r.fenceIdentity(ctx, r.rt.cfg.DB); err != nil {
+		return report, r.fail(ctx, &report, failedAt(ReconcileTransaction, err), 0)
+	} else if !ok {
+		report.Fenced = true
+		return report, nil
+	}
 	relations, err := r.reader.RelationsOf(ctx, authz.TenantType)
 	if err != nil {
 		return report, r.fail(ctx, &report, failedAt(ReconcileSchemaRead, err), 0)
@@ -146,6 +173,9 @@ func (r *WorkerReconcile) Run(ctx context.Context) (ReconcileReport, error) {
 			undeclared = append(undeclared, relation)
 		}
 	}
+	if len(r.workers)+len(undeclared) == 0 {
+		return report, nil
+	}
 	after := ""
 	for {
 		page, err := tenant.ListAfter(ctx, r.rt.cfg.DB, r.schema, after, r.page)
@@ -157,8 +187,14 @@ func (r *WorkerReconcile) Run(ctx context.Context) (ReconcileReport, error) {
 				return report, r.fail(ctx, &report, failedAt(ReconcileTransaction, ctx.Err()), 0)
 			}
 			report.Tenants++
-			changed, err := r.tenant(ctx, t, undeclared)
+			changed, err := r.tenant(ctx, t, undeclared, fencer)
 			switch {
+			case errors.Is(err, errFenced):
+				report.Fenced = true
+				return report, nil
+			case classOf(err) == ReconcileLease:
+				report.Failed++
+				return report, r.fail(ctx, &report, err, 0)
 			case err != nil:
 				report.Failed++
 				if report.FirstClass == "" {
@@ -213,7 +249,7 @@ func (r *WorkerReconcile) logFailure(ctx context.Context, report ReconcileReport
 }
 
 // tenant reconciles the tuples of one tenant, and tells whether it staged a change.
-func (r *WorkerReconcile) tenant(ctx context.Context, t tenant.Tenant, undeclared []string) (bool, error) {
+func (r *WorkerReconcile) tenant(ctx context.Context, t tenant.Tenant, undeclared []string, fencer Fencer) (bool, error) {
 	resource, err := authz.TenantResource(t)
 	if err != nil {
 		return false, failedAt(ReconcileTupleRead, err)
@@ -246,7 +282,7 @@ func (r *WorkerReconcile) tenant(ctx context.Context, t tenant.Tenant, undeclare
 	if len(touches)+len(drops) == 0 {
 		return false, nil
 	}
-	return r.stage(ctx, t, resource, touches, drops)
+	return r.stage(ctx, t, resource, touches, drops, fencer)
 }
 
 // workerTuplesLock is the transaction lock of the worker tuples of one tenant, which the reconcile and the
@@ -256,7 +292,7 @@ const workerTuplesLock = `SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.has
 
 // stage writes the change of one tenant in one transaction of it: the lock of its worker tuples, the check that it is
 // still active, the touches and the deletes through the authz destination, and one audit row.
-func (r *WorkerReconcile) stage(ctx context.Context, t tenant.Tenant, resource authz.Resource, touches []authz.Tuple, drops []string) (bool, error) {
+func (r *WorkerReconcile) stage(ctx context.Context, t tenant.Tenant, resource authz.Resource, touches []authz.Tuple, drops []string, fencer Fencer) (bool, error) {
 	tx, err := tenant.Begin(ctx, r.rt.cfg.DB, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, failedAt(ReconcileTransaction, err)
@@ -272,9 +308,24 @@ func (r *WorkerReconcile) stage(ctx context.Context, t tenant.Tenant, resource a
 	if err != nil {
 		return false, failedAt(ReconcileTransaction, err)
 	}
+	if r.afterLock != nil {
+		r.afterLock()
+	}
 	if !active {
 		// Retired since the page was read: Retire deleted its tuples, and the reconcile writes none.
 		return false, nil
+	}
+	if ok, err := r.fenceIdentity(ctx, tx); err != nil {
+		return false, failedAt(ReconcileTransaction, err)
+	} else if !ok {
+		return false, errFenced
+	}
+	// The lease row is locked before the audit row, whose chain lock is the last lock of the transaction
+	// (ST-SUP-RP10-LC06).
+	if fencer != nil {
+		if _, err := fencer.Fence(ctx, tx); err != nil {
+			return false, failedAt(ReconcileLease, err)
+		}
 	}
 	allowed := make([]authz.Relation, 0, len(touches)+len(drops))
 	for _, tuple := range touches {
@@ -321,4 +372,40 @@ func (r *WorkerReconcile) event(ctx context.Context, t tenant.Tenant) audit.Even
 		e.TraceID, e.SpanID = span.TraceID().String(), span.SpanID().String()
 	}
 	return e
+}
+
+// fenceIdentity reads the release identity row through q and tells whether it is the release identity of the
+// binary; when it is not, it logs one notice that names the job, both identities and no tenant.
+func (r *WorkerReconcile) fenceIdentity(ctx context.Context, q tenant.Querier) (bool, error) {
+	return fenceIdentity(ctx, r.rt, q, r.schema, r.own, WorkerTuplesJob)
+}
+
+// fenceIdentity reads the release identity row of schema through q and tells whether it is own; when it is not, it
+// logs one notice of what, the job or the command, with both identities and no tenant (ST-SUP-RC35-OC13).
+func fenceIdentity(ctx context.Context, rt *Runtime, q tenant.Querier, schema string, own tenant.ReleaseIdentity, what string) (bool, error) {
+	row, found, err := tenant.ReadIdentity(ctx, q, schema)
+	if err != nil {
+		return false, err
+	}
+	if found && row == own {
+		return true, nil
+	}
+	if rt.logger == nil {
+		return false, nil
+	}
+	rowIdentity := "missing"
+	if found {
+		rowIdentity = row.String()
+	}
+	var record otellog.Record
+	record.SetSeverity(otellog.SeverityInfo)
+	record.SetEventName("command.worker_tuples.fenced")
+	record.SetBody(attribute.StringValue("no tuple of an undeclared worker is changed: the release identity row is not the identity of this release, so only a binary of the release that the migration job last ran changes them"))
+	record.AddAttributes(
+		attribute.String("stego.job", what),
+		attribute.String("stego.identity", own.String()),
+		attribute.String("stego.row_identity", rowIdentity),
+	)
+	rt.logger.Emit(ctx, record)
+	return false, nil
 }

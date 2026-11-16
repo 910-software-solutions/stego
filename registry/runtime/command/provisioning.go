@@ -79,6 +79,13 @@ type TenantSpec struct {
 	// tenant:<tenant resource ID>#worker_<name in snake case>@service_account:<name> of each, and a Retire stages the
 	// delete of each, so no worker holds another's relation and none acts in a retired tenant (ST-SUP-RC35-OC13).
 	Workers []string
+	// Reader, when it is not nil, reads the relations of the type tenant that SpiceDB serves, and Release is the
+	// release of the binary. A Retire then also stages the delete of every tuple of each relation worker_<name> that
+	// no declared worker gives, on the tenant resource of the retired tenant, but only when the release identity row
+	// is the identity of the release and the workers; the delete of the declared workers' tuples has no fence
+	// (ST-SUP-RC35-OC13).
+	Reader  WorkerTupleReader
+	Release string
 }
 
 // WorkerTenantRelation is the relation of the type tenant that holds the tuple of the worker name in each tenant:
@@ -114,11 +121,6 @@ func relateWorkers(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx
 	if err != nil || len(tuples) == 0 {
 		return err
 	}
-	// The lock of the worker tuples of t, which the reconcile takes too: it waits for this change to commit, and
-	// then reads whether t is active (ST-SUP-RC35-OC13).
-	if _, err := tx.ExecContext(ctx, workerTuplesLock, t.ID()); err != nil {
-		return fmt.Errorf("command: the lock of the worker tuples of the tenant was not taken: %w", err)
-	}
 	allowed := make([]authz.Relation, len(tuples))
 	for i, tuple := range tuples {
 		allowed[i] = authz.Relation{ResourceType: tuple.Resource.Type, Name: tuple.Relation}
@@ -137,6 +139,61 @@ func relateWorkers(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx
 		}
 	}
 	return nil
+}
+
+// unrelateUndeclared stages, for a Retire, the delete of every tuple of each relation of undeclared on the tenant
+// resource of t, in the transaction tx of the change, only when the release identity row is the identity of the
+// binary (ST-SUP-RC35-OC13).
+func unrelateUndeclared(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx, req Request, t tenant.Tenant, undeclared []string) error {
+	if len(undeclared) == 0 {
+		return nil
+	}
+	own := tenant.ReleaseIdentity{Release: spec.Release, Workers: tenant.WorkersDigest(spec.Workers)}
+	ok, err := fenceIdentity(ctx, rt, tx, spec.Schema, own, RetireCommand)
+	if err != nil || !ok {
+		return err
+	}
+	resource, err := authz.TenantResource(t)
+	if err != nil {
+		return err
+	}
+	allowed := make([]authz.Relation, len(undeclared))
+	for i, relation := range undeclared {
+		allowed[i] = authz.Relation{ResourceType: resource.Type, Name: relation}
+	}
+	handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, allowed)
+	if err != nil {
+		return fmt.Errorf("command: the authorization handle of the undeclared worker tuples was not bound: %w", err)
+	}
+	for _, relation := range undeclared {
+		if _, err := handle.UnrelateAll(ctx, resource, relation); err != nil {
+			return fmt.Errorf("command: the delete of the relation %s of the retired tenant was not staged: %w", relation, err)
+		}
+	}
+	return nil
+}
+
+// undeclaredRelations reads, for a Retire with a reader, the relations worker_<name> of the type tenant that no
+// declared worker gives.
+func (s TenantSpec) undeclaredRelations(ctx context.Context) ([]string, error) {
+	if s.Action != tenant.RetireAction || s.Reader == nil {
+		return nil, nil
+	}
+	relations, err := s.Reader.RelationsOf(ctx, authz.TenantType)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]bool{}
+	for _, name := range s.Workers {
+		declared[WorkerTenantRelation(name)] = true
+	}
+	var undeclared []string
+	for _, relation := range relations {
+		if strings.HasPrefix(relation, WorkerRelationPrefix) && !declared[relation] {
+			undeclared = append(undeclared, relation)
+		}
+	}
+	return undeclared, nil
 }
 
 func (s TenantSpec) command() string {
@@ -362,6 +419,11 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (
 	}
 	keyRequest := idempotency.Request{Tenant: target.ID(), Principal: req.Principal.Subject().String(), Key: req.Key,
 		Fingerprint: req.Fingerprint, Retention: req.Retention}
+	// The undeclared worker relations are read before the transaction, so no call to SpiceDB holds it open.
+	undeclared, err := spec.undeclaredRelations(ctx)
+	if err != nil {
+		return Result{}, internalf("the relations of the type tenant were not read")
+	}
 	var result Result
 	hook := func(ctx context.Context, q tenant.Querier, t tenant.Tenant) error {
 		// The audit writer stages the row for the audit sink in the outbox of this transaction, which needs the
@@ -373,6 +435,14 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (
 		if _, err := q.ExecContext(ctx, setLockTimeout, fmt.Sprintf("%dms", DefaultLockTimeout.Milliseconds())); err != nil {
 			return err
 		}
+		// The lock of the worker tuples of t, which the reconcile takes too, comes first: before the key of the
+		// request and the chain lock of the audit row, which is the last lock of the transaction (ST-SUP-RP10-LC06),
+		// in the order of the reconcile, so the two never wait on each other (security review of PR #379, M1).
+		if len(spec.Workers) > 0 || len(undeclared) > 0 {
+			if _, err := q.ExecContext(ctx, workerTuplesLock, t.ID()); err != nil {
+				return fmt.Errorf("command: the lock of the worker tuples of the tenant was not taken: %w", err)
+			}
+		}
 		wrapped, err := idempotency.Wrap(ctx, hookTx{q: q}, keyRequest, func(ctx context.Context) (idempotency.Response, error) {
 			if _, err := rt.cfg.Audit.Record(ctx, tx, t, []audit.Event{tenantEvent(ctx, rt, spec, req, t)}); err != nil {
 				return idempotency.Response{}, err
@@ -380,6 +450,9 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (
 			// The tuples of the workers commit with the change of the tenant list, or not at all; a replay of the
 			// key stages none again (ST-SUP-RC35-OC13).
 			if err := relateWorkers(ctx, rt, spec, tx, req, t); err != nil {
+				return idempotency.Response{}, err
+			}
+			if err := unrelateUndeclared(ctx, rt, spec, tx, req, t, undeclared); err != nil {
 				return idempotency.Response{}, err
 			}
 			return tenantResponse(spec.Action, t.ID())

@@ -126,6 +126,13 @@ func (p Parts) check() error {
 	return nil
 }
 
+// Identity is the release identity of the parts: the release and the workers digest of the declared workers, which
+// the migration job writes in the release identity row and the reconcile of the worker tuples checks
+// (ST-SUP-RC35-OC13).
+func (p Parts) Identity() tenant.ReleaseIdentity {
+	return tenant.ReleaseIdentity{Release: p.Release, Workers: tenant.WorkersDigest(p.WorkerNames)}
+}
+
 // Service holds the runtime library objects of one running service, which New gives.
 type Service struct {
 	parts         Parts
@@ -437,7 +444,7 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 	if err != nil {
 		return manifest.Manifest{}, fmt.Errorf("service: the manifest of the key table: %w", err)
 	}
-	want := manifest.Join(p.Schema, record, queue, revocations, keys)
+	want := manifest.Join(p.Schema, record, queue, revocations, keys, identityManifest(p, runtimeRole))
 	want.Owner = p.OwnerRole
 	if err := entityGrants(&want, p, runtimeRole); err != nil {
 		return manifest.Manifest{}, err
@@ -670,4 +677,29 @@ func (svc *Service) Close() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// identityManifest is the manifest of the table of the release identity row in the schema of the tenant list: one
+// row, read by the runtime role only (ST-SUP-RP14-LC06).
+func identityManifest(p Parts, runtimeRole string) manifest.Manifest {
+	schema := p.Workers.TenantSchema
+	if schema == "" {
+		schema = "public"
+	}
+	return manifest.Manifest{Tables: []manifest.Table{{
+		Schema: schema, Name: tenant.IdentityTable,
+		Columns: []manifest.Column{
+			{Name: "only_row", Type: "boolean", NotNull: true, Default: "true"},
+			{Name: "release", Type: "text", NotNull: true},
+			{Name: "workers", Type: "text", NotNull: true},
+			{Name: "written_at", Type: "timestamp with time zone", NotNull: true, Default: "now()"},
+		},
+		Constraints: []manifest.Constraint{
+			{Name: tenant.IdentityTable + "_pkey", Kind: manifest.KindPrimaryKey, Definition: "PRIMARY KEY (only_row)"},
+			{Name: tenant.IdentityTable + "_only_row_check", Kind: manifest.KindCheck, Definition: "CHECK (only_row)"},
+		},
+		Indexes:     []manifest.Index{{Name: tenant.IdentityTable + "_pkey", Columns: []string{"only_row"}}},
+		CheckGrants: true,
+		Grants:      []manifest.Grant{{Role: runtimeRole, Privileges: []string{"SELECT"}}},
+	}}}
 }
