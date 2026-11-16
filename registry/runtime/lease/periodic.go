@@ -24,6 +24,9 @@ type Job struct {
 	// Run runs the job once under held, the lease that the controller holds. Its context ends when the lease
 	// stops. An error, or a panic, is a failed run.
 	Run func(ctx context.Context, held *Held) error
+	// Degraded, when it is not nil, tells why the job is degraded, or gives the empty text. A degraded job is
+	// reported by Health with its reason and stays healthy: it does not make the controller not ready.
+	Degraded func() string
 }
 
 // JobStats are the counts of one job.
@@ -196,7 +199,8 @@ func (p *Periodic) Stats(name string) (JobStats, bool) {
 	return *s, true
 }
 
-// Health is the health signal of the jobs: false, with the names of the jobs, while the last run of any job failed.
+// Health is the health signal of the jobs: false, with the names of the jobs, while the last run of any job failed;
+// else true, with the reason of each degraded job (Job.Degraded), or the empty text.
 func (p *Periodic) Health() (bool, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -207,7 +211,17 @@ func (p *Periodic) Health() (bool, string) {
 		}
 	}
 	if len(failed) == 0 {
-		return true, ""
+		// A degraded job keeps the health true, and the reason names it and why.
+		var degraded []string
+		for _, j := range p.jobs {
+			if j.Degraded == nil {
+				continue
+			}
+			if reason := j.Degraded(); reason != "" {
+				degraded = append(degraded, "the periodic job "+j.Name+" is degraded: "+reason)
+			}
+		}
+		return true, strings.Join(degraded, "; ")
 	}
 	sort.Strings(failed)
 	return false, "the last run of the periodic jobs " + strings.Join(failed, ", ") + " failed"

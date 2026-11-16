@@ -226,8 +226,38 @@ func TestProvisioning(t *testing.T) {
 		if got := tuples("org-a"); len(got) != 2 {
 			t.Fatalf("the replay staged more tuples: %v", got)
 		}
-		// Retire deletes the tuples of the retired tenant only.
-		if got := send("/stego/tenants/org-b/retire", "k-retire-org-b", ""); got != http.StatusOK {
+		// Retire deletes the tuples of the retired tenant only. It takes the lock of the worker tuples of org-b first,
+		// which the reconcile takes too (ST-SUP-RC35-OC13): while a session of the check holds that lock, the retire
+		// waits for it.
+		hold, err := e.admin.BeginTx(e.ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hold.ExecContext(e.ctx, workerTuplesLock, "org-b"); err != nil {
+			t.Fatal(err)
+		}
+		answered := make(chan int, 1)
+		go func() { answered <- send("/stego/tenants/org-b/retire", "k-retire-org-b", "") }()
+		for polls, waiting := 1, false; !waiting; polls++ {
+			if polls%400 == 0 {
+				t.Logf("after %d polls, no session waits for the lock of the worker tuples of org-b", polls)
+			}
+			select {
+			case got := <-answered:
+				_ = hold.Rollback()
+				t.Fatalf("the retire of org-b answered %d while the lock of its worker tuples was held", got)
+			default:
+			}
+			waiting = e.count(`SELECT count(*) FROM pg_catalog.pg_locks WHERE locktype = 'advisory' AND NOT granted
+ AND database = (SELECT oid FROM pg_catalog.pg_database WHERE datname = pg_catalog.current_database())`) > 0
+			if !waiting {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		if err := hold.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if got := <-answered; got != http.StatusOK {
 			t.Fatalf("the retire of org-b answered %d, want 200", got)
 		}
 		if got := tuples("org-b"); !slices.Equal(got, append(want("touch", "org-b"), want("delete", "org-b")...)) {

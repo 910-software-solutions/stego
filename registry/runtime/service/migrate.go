@@ -54,6 +54,7 @@ const (
 	StepManifestBefore      = "manifest_before_backfill"
 	StepBackfill            = "backfill"
 	StepManifest            = "manifest"
+	StepReleaseIdentity     = "release_identity"
 )
 
 // BackfillTimeout is the longest time that the backfill step of the migration job runs when Migration gives none.
@@ -295,6 +296,12 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	if err != nil {
 		return failed(StepSettings, err)
 	}
+	// The table of the release identity row, beside the tenant list, which the last step writes (ST-SUP-RP14-LC03).
+	identityTable, err := tenant.IdentityMigration(tenants, m.RuntimeRole)
+	if err != nil {
+		return failed(StepSettings, err)
+	}
+	tenantList += identityTable
 	sinkTable, err := auditsink.Migration(m.WorkerRole)
 	if err != nil {
 		return failed(StepSettings, err)
@@ -398,10 +405,21 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	// completeness CHECK of each open change, the job checks again, as the rollout would find the database (F10). The
 	// step has its own time limit, manifest.Timeout, from parent, as a backfill may end near the time limit of the
 	// job (review of PR #305, L1).
-	return step(StepManifest, func() error {
+	if err := step(StepManifest, func() error {
 		ctx, cancel := context.WithTimeout(parent, manifest.Timeout)
 		defer cancel()
 		return checkManifest(ctx, conn, m, false)
+	}); err != nil {
+		return err
+	}
+	// Last, the release identity row: the release and the workers digest of this job's release, so only a controller
+	// of this release reconciles the worker tuples (ST-SUP-RC35-OC13). It has the time limit of the last check.
+	return step(StepReleaseIdentity, func() error {
+		ctx, cancel := context.WithTimeout(parent, manifest.Timeout)
+		defer cancel()
+		return ownerStep(ctx, conn, m.OwnerRole, func(tx *sql.Tx) error {
+			return tenant.WriteIdentity(ctx, tx, tenants, m.Parts.Identity())
+		})
 	})
 }
 

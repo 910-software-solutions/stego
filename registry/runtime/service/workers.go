@@ -196,6 +196,7 @@ type Workers struct {
 	tickers           []*command.Ticker
 	anchorer          *audit.Anchorer
 	maintainer        *audit.Maintainer
+	reconcile         *command.WorkerReconcile
 
 	// controller ends the controller lease loop, which releases the lease; controllerDone is closed when it returned.
 	controller     context.CancelFunc
@@ -418,13 +419,35 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 	return set, nil
 }
 
-// startController builds the audit jobs and the controller lease loop that runs them.
-func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Component, error) {
-	p := svc.parts.Workers
-	if p.AuditJobs == nil {
+// WorkerTuplesInterval is the interval of the job worker-tuples of the controller mode: it runs at start and then
+// once an hour (ST-SUP-RC35-OC13).
+const WorkerTuplesInterval = time.Hour
+
+// workerReconcile gives the reconcile of the worker tuples when the service declares its tenant provisioning, which
+// binds authorization, and its schema declares the definition tenant, and else nil (ST-SUP-RC35-OC13). It runs with
+// no declared worker too, so the tuples of the last removed worker are deleted.
+func (svc *Service) workerReconcile() (*command.WorkerReconcile, error) {
+	if svc.tenants == nil || !svc.parts.declaresTenant() {
 		return nil, nil
 	}
-	if p.AnchorPeriod <= 0 || p.TenantSchema == "" {
+	if svc.provider == nil {
+		return nil, errors.New("service: the reconcile of the worker tuples needs the SpiceDB provider")
+	}
+	return command.NewWorkerReconcile(svc.tenants.rt, svc.parts.Workers.TenantSchema, svc.parts.WorkerNames, svc.provider, svc.parts.Release)
+}
+
+// startController builds the audit jobs, the reconcile of the worker tuples and the controller lease loop that runs
+// them.
+func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Component, error) {
+	p := svc.parts.Workers
+	reconcile, err := svc.workerReconcile()
+	if err != nil {
+		return nil, err
+	}
+	if p.AuditJobs == nil && reconcile == nil {
+		return nil, nil
+	}
+	if p.AuditJobs != nil && (p.AnchorPeriod <= 0 || p.TenantSchema == "") {
 		return nil, errors.New("service: the audit jobs need the anchor period and the schema of the tenant list")
 	}
 	holder := c.Holder
@@ -435,26 +458,42 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 	if err != nil {
 		return nil, err
 	}
-	enqueuer, err := svc.parts.AuditQueue(svc.queue)
-	if err != nil {
-		return nil, err
-	}
 	leaseOf := func() *lease.Held { return w.held.Load() }
-	schema, pool := p.TenantSchema, svc.pool
-	tenants := func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, pool, schema) }
-	if w.anchorer, w.maintainer, err = p.AuditJobs(leaseOf, tenants, svc.pool, enqueuer); err != nil {
-		return nil, err
+	var jobs []lease.Job
+	if p.AuditJobs != nil {
+		enqueuer, err := svc.parts.AuditQueue(svc.queue)
+		if err != nil {
+			return nil, err
+		}
+		schema, pool := p.TenantSchema, svc.pool
+		tenants := func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, pool, schema) }
+		if w.anchorer, w.maintainer, err = p.AuditJobs(leaseOf, tenants, svc.pool, enqueuer); err != nil {
+			return nil, err
+		}
+		anchorer, maintainer := w.anchorer, w.maintainer
+		jobs = append(jobs,
+			lease.Job{Name: AnchorJobName, Interval: p.AnchorPeriod, Run: func(ctx context.Context, _ *lease.Held) error {
+				return anchorer.Tick(ctx, time.Now())
+			}},
+			lease.Job{Name: MaintainJobName, Interval: MaintainInterval, Run: func(ctx context.Context, _ *lease.Held) error {
+				_, err := maintainer.Run(ctx)
+				return err
+			}})
 	}
-	anchorer, maintainer := w.anchorer, w.maintainer
-	if w.periodic, err = lease.NewPeriodic(lease.PeriodicConfig{Lease: leaseOf, Retry: client.RetryEvery(), Jobs: []lease.Job{
-		{Name: AnchorJobName, Interval: p.AnchorPeriod, Run: func(ctx context.Context, _ *lease.Held) error {
-			return anchorer.Tick(ctx, time.Now())
-		}},
-		{Name: MaintainJobName, Interval: MaintainInterval, Run: func(ctx context.Context, _ *lease.Held) error {
-			_, err := maintainer.Run(ctx)
-			return err
-		}},
-	}}); err != nil {
+	if reconcile != nil {
+		w.reconcile = reconcile
+		jobs = append(jobs, lease.Job{Name: command.WorkerTuplesJob, Interval: WorkerTuplesInterval, Degraded: reconcile.Degraded,
+			Run: func(ctx context.Context, held *lease.Held) error {
+				// Each tenant's write is fenced under the controller lease (security review of PR #379, L3).
+				var fencer command.Fencer
+				if held != nil {
+					fencer = held
+				}
+				_, err := reconcile.Run(ctx, fencer)
+				return err
+			}})
+	}
+	if w.periodic, err = lease.NewPeriodic(lease.PeriodicConfig{Lease: leaseOf, Retry: client.RetryEvery(), Jobs: jobs}); err != nil {
 		return nil, err
 	}
 	controllerCtx, stop := context.WithCancel(context.Background())
@@ -526,14 +565,19 @@ func (w *Workers) controllerReason() string {
 		return reason
 	}
 	var unhealthy []string
-	if ok, _ := w.periodic.Health(); !ok {
-		unhealthy = append(unhealthy, "a periodic job failed its last run")
+	// The reason names each job whose last run failed, such as worker-tuples (ST-SUP-RC35-OC13).
+	if ok, reason := w.periodic.Health(); !ok {
+		unhealthy = append(unhealthy, reason)
 	}
-	if ok, _ := w.anchorer.Health(); !ok {
-		unhealthy = append(unhealthy, "the "+AnchorJobName+" job has a boundary that is due and not anchored")
+	if w.anchorer != nil {
+		if ok, _ := w.anchorer.Health(); !ok {
+			unhealthy = append(unhealthy, "the "+AnchorJobName+" job has a boundary that is due and not anchored")
+		}
 	}
-	if ok, _ := w.maintainer.Health(); !ok {
-		unhealthy = append(unhealthy, "the "+MaintainJobName+" job found no partition of the next month")
+	if w.maintainer != nil {
+		if ok, _ := w.maintainer.Health(); !ok {
+			unhealthy = append(unhealthy, "the "+MaintainJobName+" job found no partition of the next month")
+		}
 	}
 	return strings.Join(unhealthy, "; ")
 }
@@ -593,6 +637,12 @@ func (w *Workers) Handler() http.Handler {
 			return
 		}
 		_, _ = fmt.Fprintln(rw, "ready")
+		// A degraded periodic job, such as a fenced reconcile of the worker tuples, is named and stays ready.
+		if w.periodic != nil {
+			if _, degraded := w.periodic.Health(); degraded != "" {
+				_, _ = fmt.Fprintln(rw, degraded)
+			}
+		}
 	})
 	mux.HandleFunc("GET /livez", func(rw http.ResponseWriter, _ *http.Request) {
 		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -609,6 +659,9 @@ func (w *Workers) Relay() *authz.Relay { return w.relay }
 
 // Periodic is the periodic job component of the controller mode, or nil.
 func (w *Workers) Periodic() *lease.Periodic { return w.periodic }
+
+// Reconcile is the reconcile of the worker tuples of the controller mode, or nil (ST-SUP-RC35-OC13).
+func (w *Workers) Reconcile() *command.WorkerReconcile { return w.reconcile }
 
 // Anchorer and Maintainer are the audit jobs of the controller mode, or nil.
 func (w *Workers) Anchorer() *audit.Anchorer     { return w.anchorer }

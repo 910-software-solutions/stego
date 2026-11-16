@@ -528,6 +528,9 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		allFiles = append(allFiles, files...)
 		notes = written
 	}
+	if note := releaseIdentityNote(svcDecl); note != "" {
+		notes = append(notes, note)
+	}
 	// The architecture model comes from the declaration, the registry parts and the wiring of this run alone, and
 	// a component or slot that does not state its place stops the run before any file is written (ST-GEN-UC08-R05).
 	architecture, err := architectureFiles(input, svcDecl, reg, archetype, componentNames, components, wirings, requirements)
@@ -1590,6 +1593,33 @@ func FormatPlan(plan *Plan) string {
 		generateCount, updateCount, deleteCount, unchangedCount)
 
 	return result.String()
+}
+
+// WorkersDigest gives the workers digest of the worker names, as the runtime's tenant.WorkersDigest gives it: the
+// lower-case hex SHA-256 of the names in byte order, each followed by a line feed (ST-SUP-RC35-OC13).
+func WorkersDigest(names []string) string {
+	sorted := slices.Clone(names)
+	slices.Sort(sorted)
+	sum := sha256.New()
+	for _, name := range sorted {
+		sum.Write([]byte(name + "\n"))
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// releaseIdentityNote is the plan line of a service with tenant provisioning: the workers digest that the migration
+// job of the release writes in the release identity row, which fences the reconcile of the worker tuples
+// (ST-SUP-RC35-OC13). A service with no provisioning has none.
+func releaseIdentityNote(service *types.ServiceDeclaration) string {
+	if service == nil || service.Tenancy == nil || service.Tenancy.Provisioning == nil {
+		return ""
+	}
+	names := make([]string, len(service.Workers))
+	for i, w := range service.Workers {
+		names[i] = w.Name
+	}
+	slices.Sort(names)
+	return fmt.Sprintf("release identity: workers digest %s of the workers [%s]; the migration job writes it, and only a controller of the same release reconciles the worker tuples", WorkersDigest(names), strings.Join(names, ", "))
 }
 
 // validateSlotCollectionsDefined checks that every slot binding with a non-empty

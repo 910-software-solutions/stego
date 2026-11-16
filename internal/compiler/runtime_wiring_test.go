@@ -429,6 +429,7 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC20-OC40-T03 A replay of a write with its idempotency key stages no second event",
 	"ST-SUP-RC20-OC40-T04 A write that rolls back after it staged its event leaves no outbox message and no record",
 	"ST-SUP-RC35-OC13-T01 Provisioning a tenant writes one tuple for each worker in that tenant only",
+	"ST-SUP-RC35-OC13-T06 The reconcile at start gives a tenant of an earlier release each worker's tuple and deletes the tuple of a removed worker",
 }
 
 // The checks of the generated service that prove the UC requirements of the tenant provisioning (ST-DECL-UC10),

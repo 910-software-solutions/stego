@@ -3233,3 +3233,65 @@ func TestSchemaDigest(t *testing.T) {
 		}
 	})
 }
+
+func TestReleaseIdentityNote(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC13-T09 The plan shows the workers digest of a service with tenant provisioning, as the runtime computes it", func(t *testing.T) {
+		// The same vector holds tenant.WorkersDigest of the runtime (ST-SUP-RC35-OC13-T07).
+		const want = "da200a1d8cb9d7dea09dde2570b5341b474a1c3c234361ea5e13598d40e8a7d1"
+		for _, names := range [][]string{{"sync-partner-orders", "apply-partner-replies"}, {"apply-partner-replies", "sync-partner-orders"}} {
+			if got := WorkersDigest(names); got != want {
+				t.Fatalf("WorkersDigest(%v) = %s, want %s in any order", names, got, want)
+			}
+		}
+		if got := WorkersDigest(nil); got != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" {
+			t.Fatalf("WorkersDigest of no worker = %s, want the SHA-256 of the empty text", got)
+		}
+		service := &types.ServiceDeclaration{Workers: []types.Worker{{Name: "sync-partner-orders"}, {Name: "apply-partner-replies"}},
+			Tenancy: &types.Tenancy{Provisioning: &types.TenantProvisioning{ResourceType: "service"}}}
+		note := releaseIdentityNote(service)
+		if !strings.Contains(note, want) || !strings.Contains(note, "[apply-partner-replies, sync-partner-orders]") {
+			t.Fatalf("the note is %q, want the digest %s and the sorted workers", note, want)
+		}
+		plan := FormatPlan(&Plan{Files: []PlannedFile{{Path: "out/main.go", Action: ActionUpdate}}, Notes: []string{note}})
+		if !strings.Contains(plan, "note:     "+note) {
+			t.Fatalf("the plan text does not show the note:\n%s", plan)
+		}
+		service.Tenancy.Provisioning = nil
+		if note := releaseIdentityNote(service); note != "" {
+			t.Fatalf("a service with no provisioning gave the note %q, want none", note)
+		}
+	})
+}
+
+func TestUserManagementRetireGuard(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC13-T12 The generated user-management service gives the runtime its definitions, which have no definition tenant, so its Retire reads no worker relation", func(t *testing.T) {
+		root := filepath.Join("..", "..", "examples", "user-management")
+		declaration, err := os.ReadFile(filepath.Join(root, "service.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(declaration), "provisioning:") {
+			t.Fatal("examples/user-management declares no tenant provisioning, so this check proves nothing")
+		}
+		wiring, err := os.ReadFile(filepath.Join(root, "out", "internal", "stegoruntime", "runtime.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(wiring), "Definitions: svcauthz.Definitions,") {
+			t.Fatal("the runtime wiring of examples/user-management gives the service runtime no definitions of its schema")
+		}
+		authzFile, err := os.ReadFile(filepath.Join(root, "out", "internal", "authz", "authz.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var definitions string
+		for _, line := range strings.Split(string(authzFile), "\n") {
+			if strings.HasPrefix(line, "var Definitions = ") {
+				definitions = line
+			}
+		}
+		if definitions == "" || strings.Contains(definitions, `"tenant"`) {
+			t.Fatalf("the definitions of examples/user-management are %q, want a list with no definition tenant", definitions)
+		}
+	})
+}
