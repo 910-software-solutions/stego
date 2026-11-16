@@ -641,7 +641,7 @@ func (k *keyTable) validate(ctx context.Context, validate func(context.Context, 
 }
 
 func validateOrders(ctx context.Context, tx *sql.Tx) error {
-	return ValidateForeignKey(ctx, tx, "public", "orders", ordersKey)
+	return ValidateForeignKey(ctx, tx, `public."orders"`, ordersKey)
 }
 
 func TestValidateForeignKey(t *testing.T) {
@@ -665,7 +665,7 @@ func TestValidateForeignKey(t *testing.T) {
 		k := newKeyTable(t, 100, false, "GRANT SELECT ON public.orders TO PUBLIC")
 		before := k.acl(t)
 		err := k.validate(context.Background(), validateOrders)
-		if err == nil || !strings.Contains(err.Error(), "reads the columns of the foreign key orders_tenant_id_fkey of \"public\".\"orders\" after its SELECT is revoked") {
+		if err == nil || !strings.Contains(err.Error(), "reads the columns of the foreign key orders_tenant_id_fkey of public.\"orders\" after its SELECT is revoked") {
 			t.Fatalf("the validation with SELECT granted to PUBLIC gave %v, want the failure that the role still reads the table", err)
 		}
 		if k.validated(t) {
@@ -722,7 +722,7 @@ func TestValidateForeignKey(t *testing.T) {
 		// The validation with no revoke is the one that a PostgreSQL that takes its one query in spite of the revoke
 		// would run: row-level security hides the row of secret-orphan from the owner role.
 		err := k.validate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
-			return validateForeignKey(ctx, tx, "public", "orders", ordersKey, false)
+			return validateForeignKey(ctx, tx, `public."orders"`, ordersKey, false)
 		})
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || pgErr.Code != "42501" {
@@ -764,7 +764,7 @@ func TestValidateForeignKey(t *testing.T) {
 			}
 		}
 		if err := k.validate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
-			return ValidateForeignKey(ctx, tx, "public", "items", "items_list_fkey")
+			return ValidateForeignKey(ctx, tx, "public.items", "items_list_fkey")
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -792,7 +792,7 @@ func TestValidateForeignKey(t *testing.T) {
 			}
 		}
 		validateParent := func(ctx context.Context, tx *sql.Tx) error {
-			return ValidateForeignKey(ctx, tx, "public", "orders", "orders_parent_fkey")
+			return ValidateForeignKey(ctx, tx, "public.orders", "orders_parent_fkey")
 		}
 		columns := func() string {
 			var text string

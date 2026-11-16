@@ -901,7 +901,7 @@ func CopyBackfills(copies []lease.Copy, tenantSchema string) ([]Backfill, error)
 	}
 	var out []Backfill
 	for _, c := range copies {
-		c.TenantSchema = tenantSchema
+		c.Tenants = quote(tenantSchema) + ".stego_tenants"
 		step, err := c.Step()
 		if err != nil {
 			return nil, err
@@ -1003,6 +1003,7 @@ func (r *tenantKeyRefusal) Refusal() string { return r.text }
 // delegation, 2026-11-14).
 func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants string, keys []tenantKey) error {
 	for _, k := range keys {
+		table := quote(k.schema) + "." + quote(k.table)
 		err := lockedStep(ctx, conn, owner, StepTenantKeysValidate, func(tx *sql.Tx) error {
 			present, validated, err := keyState(ctx, tx, k)
 			switch {
@@ -1013,7 +1014,7 @@ func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants stri
 			case validated:
 				return nil
 			}
-			return tenant.ValidateForeignKey(ctx, tx, k.schema, k.table, k.key.Name)
+			return tenant.ValidateForeignKey(ctx, tx, table, k.key.Name)
 		})
 		var state interface{ SQLState() string }
 		if errors.As(err, &state) && state.SQLState() == "23503" {

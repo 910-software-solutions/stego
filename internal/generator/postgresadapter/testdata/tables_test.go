@@ -2589,7 +2589,7 @@ CREATE EVENT TRIGGER fail_drop ON ddl_command_start WHEN TAG IN ('DROP INDEX') E
 		t.Helper()
 		for _, c := range boardsrt.BackfillCopies {
 			if c.Change == change {
-				c.TenantSchema = "public"
+				c.Tenants = "public.stego_tenants"
 				return c
 			}
 		}
