@@ -149,6 +149,50 @@ func TestCheckEnvironment(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ST-DLV-DS02-T03 A configuration value that hides a credential or an unsafe number, and a range bound that does not parse, are refused", func(t *testing.T) {
+		cases := []struct {
+			variable    AcceptedVariable
+			value, want string
+		}{
+			{AcceptedVariable{Name: "JWK_CERT_URL", Type: "url"}, "https://reader:CANARY@keys.example.com/certs", "user info"},
+			{AcceptedVariable{Name: "JWK_CERT_URL", Type: "url"}, "https://CANARY@keys.example.com/certs", "user info"},
+			{AcceptedVariable{Name: "SAMPLE_RATIO", Type: "number"}, "+Inf", "not a finite number"},
+			{AcceptedVariable{Name: "SAMPLE_RATIO", Type: "number"}, "-Inf", "not a finite number"},
+			{AcceptedVariable{Name: "SAMPLE_RATIO", Type: "number", Allowed: "0 to 1"}, "Inf", "not a finite number"},
+			{AcceptedVariable{Name: "RETRY_WAIT", Type: "duration"}, "-5s", "zero or more"},
+			{AcceptedVariable{Name: "RETRY_WAIT", Type: "duration", Allowed: "at most 30s"}, "-5s", "zero or more"},
+			{AcceptedVariable{Name: "STEGO_SPICEDB_ENDPOINT", Type: "address"}, "CANARY@spicedb.example.com:50051", "not an address"},
+			{AcceptedVariable{Name: "GOMAXPROCS", Type: "integer", Allowed: "1 to many"}, "4", `range bound "many"`},
+			{AcceptedVariable{Name: "GOMAXPROCS", Type: "integer", Allowed: "at least one"}, "4", `range bound "one"`},
+			{AcceptedVariable{Name: "RETRY_WAIT", Type: "duration", Allowed: "at most soon"}, "5s", `range bound "soon"`},
+			{AcceptedVariable{Name: "SAMPLE_RATIO", Type: "number", Allowed: "0 to NaN"}, "0.5", `range bound "NaN"`},
+		}
+		for _, c := range cases {
+			fault := valueFault(c.variable, c.value)
+			if !strings.Contains(fault, c.want) || !strings.Contains(fault, c.variable.Name) {
+				t.Errorf("%s=%q (allowed %q) gives %q, want a refusal that names %s and %q", c.variable.Name, c.value, c.variable.Allowed, fault, c.variable.Name, c.want)
+			}
+			if strings.Contains(fault, "CANARY") {
+				t.Errorf("the refusal of %s shows the value: %q", c.variable.Name, fault)
+			}
+		}
+		// Values of the type inside a range that parses pass.
+		for _, c := range []struct {
+			variable AcceptedVariable
+			value    string
+		}{
+			{AcceptedVariable{Name: "JWK_CERT_URL", Type: "url"}, "https://keys.example.com/certs"},
+			{AcceptedVariable{Name: "SAMPLE_RATIO", Type: "number", Allowed: "0 to 1"}, "0.5"},
+			{AcceptedVariable{Name: "RETRY_WAIT", Type: "duration", Allowed: "at most 30s"}, "0s"},
+			{AcceptedVariable{Name: "STEGO_SPICEDB_ENDPOINT", Type: "address"}, "spicedb.example.com:50051"},
+			{AcceptedVariable{Name: "GOMAXPROCS", Type: "integer", Allowed: "1 to 1024"}, "4"},
+		} {
+			if fault := valueFault(c.variable, c.value); fault != "" {
+				t.Errorf("%s=%q (allowed %q) is refused: %s", c.variable.Name, c.value, c.variable.Allowed, fault)
+			}
+		}
+	})
 }
 
 // environmentWith gives an environment file of the service orders with the sections given.

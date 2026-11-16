@@ -166,6 +166,21 @@ needs:
 			{"a default outside the list", "    type: duration\n    required: false\n    default: \"5m\"\n", "    type: string\n    required: false\n    default: \"fast\"\n", "ENV_A_TIMEOUT", "allowed"},
 			{"a default of a setting the component has not", "    default: \"5m\"\n", "    default: \"{settings.other}\"\n", "ENV_A_TIMEOUT", "default"},
 		})
+		// A default holds no credential and no unsafe number (#353 security review L1 and I2).
+		block := "    type: duration\n    required: false\n    default: \"5m\"\n    description: \"The longest time of a call. When it has no value, it is 5 minutes.\"\n    secret: false\n    example: \"2m\"\n    allowed: {min: \"1s\", max: \"30m\"}\n"
+		for _, c := range []struct{ typ, value, want string }{
+			{"url", "https://reader:CANARY@keys.example.com/certs", "user info"},
+			{"number", "+Inf", "finite number"},
+			{"duration", "-5m", "zero or more"},
+			{"address", "CANARY@spicedb.example.com:50051", "not an address"},
+		} {
+			_, err := parseEnv(t, block, "    type: "+c.typ+"\n    required: false\n    default: \""+c.value+"\"\n    description: \"The value of the test.\"\n    secret: false\n")
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "ENV_A_TIMEOUT") {
+				t.Errorf("the %s default %q is accepted, or the refusal does not name the variable and %q: %v", c.typ, c.value, c.want, err)
+			} else if strings.Contains(err.Error(), "CANARY") {
+				t.Errorf("the refusal shows the default: %v", err)
+			}
+		}
 	})
 	t.Run("ST-SUP-UC01-R09-T01 The registry refuses a component that leaves out a fact, or states a default or an example for a secret or a default for a required variable, and names the component, the variable and the fact", func(t *testing.T) {
 		expectRefused(t, []refusal{

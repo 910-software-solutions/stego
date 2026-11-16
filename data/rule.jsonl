@@ -100,6 +100,7 @@
 {"id":"ST-DIS-INV10-RL","title":"verify_published_release","invariant_id":"ST-DIS-INV10","file":"scripts/qualify-compiler-release.py"}
 {"id":"ST-DIS-INV11-RL","title":"provenance","invariant_id":"ST-DIS-INV11","file":".github/workflows/compiler-artifact.yml"}
 {"id":"ST-DIS-INV12-RL","title":"lifecycle.failDateInWindow","invariant_id":"ST-DIS-INV12","file":"internal/lifecycle/rules.go"}
+{"id":"ST-DLV-INV07-RL","title":"delivery.LoadContainerfile","invariant_id":"ST-DLV-INV07","file":"internal/delivery/containerfile.go"}
 {"id":"ST-DLV-INV09-RL","title":"delivery.LoadBase","invariant_id":"ST-DLV-INV09","file":"internal/delivery/base.go"}
 {"id":"ST-DLV-INV11-RL","title":"delivery.deriveVariables","invariant_id":"ST-DLV-INV11","file":"internal/delivery/variables.go"}
 {"id":"ST-DLV-INV12-RL","title":"delivery.acceptedOf","invariant_id":"ST-DLV-INV12","file":"internal/delivery/variables.go"}

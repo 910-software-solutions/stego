@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/kustomize/api/types"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 
+	"github.com/jsell-rh/stego/internal/appbuild"
 	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/delivery"
 )
@@ -299,6 +300,148 @@ func TestKubernetesBaseApply(t *testing.T) {
 				if bytes.Contains(data, []byte(word)) {
 					t.Errorf("the generated file %s holds %q", name, word)
 				}
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC03-R04-T03 Apply writes the offline Containerfile: a pinned Go build with the network off, then a scratch image that runs as a user that is not root", func(t *testing.T) {
+		// The compiler keeps the path that Delivering writes as a file of the project, and the record tracks it.
+		if compiler.ContainerFile != delivery.ContainerFile {
+			t.Fatalf("the compiler keeps %s as the Containerfile; Delivering writes %s", compiler.ContainerFile, delivery.ContainerFile)
+		}
+		if !strings.Contains(printed, "generate: "+delivery.ContainerFile) {
+			t.Fatalf("the plan does not list %s:\n%s", delivery.ContainerFile, printed)
+		}
+		record, err := os.ReadFile(filepath.Join(dir, ".stego", "state.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var state struct {
+			LastApplied struct {
+				ProjectFiles map[string]any `yaml:"project_files"`
+			} `yaml:"last_applied"`
+		}
+		if err := yaml.Unmarshal(record, &state); err != nil {
+			t.Fatal(err)
+		}
+		if tracked := state.LastApplied.ProjectFiles; tracked[delivery.ContainerFile] == nil {
+			t.Fatalf("the record does not track %s under project_files: %v", delivery.ContainerFile, slices.Sorted(maps.Keys(tracked)))
+		}
+		data, err := os.ReadFile(filepath.Join(dir, delivery.ContainerFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The test reads the file with its own small parser: comments are dropped and a trailing backslash joins
+		// the next line.
+		var stages [][]string
+		var froms []string
+		joined := ""
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if joined == "" && (line == "" || strings.HasPrefix(line, "#")) {
+				continue
+			}
+			if rest, ok := strings.CutSuffix(line, "\\"); ok {
+				joined += strings.TrimSpace(rest) + " "
+				continue
+			}
+			joined += line
+			if keyword, args, _ := strings.Cut(joined, " "); keyword == "FROM" {
+				froms = append(froms, args)
+				stages = append(stages, nil)
+			} else if len(stages) == 0 {
+				t.Fatalf("the instruction %q comes before FROM", joined)
+			} else {
+				stages[len(stages)-1] = append(stages[len(stages)-1], joined)
+			}
+			joined = ""
+		}
+		if len(froms) != 2 {
+			t.Fatalf("the Containerfile has the stages %v, not a build stage and a final stage", froms)
+		}
+		goImage := "docker.io/library/golang:" + strings.TrimPrefix(appbuild.GoVersion, "go") + "-"
+		image, alias, _ := strings.Cut(froms[0], " AS ")
+		name, digest, pinned := strings.Cut(image, "@sha256:")
+		if !pinned || len(digest) != 64 || strings.Trim(digest, "0123456789abcdef") != "" || !strings.HasPrefix(name, goImage) || alias != "build" {
+			t.Errorf("the build stage is FROM %q, not the Go image of %s named by its digest", froms[0], appbuild.GoVersion)
+		}
+		if froms[1] != "scratch" {
+			t.Errorf("the final stage is FROM %q, not scratch", froms[1])
+		}
+		var runs []string
+		for _, instruction := range stages[0] {
+			keyword, args, _ := strings.Cut(instruction, " ")
+			switch keyword {
+			case "RUN":
+				runs = append(runs, args)
+			case "COPY", "WORKDIR":
+			default:
+				t.Errorf("the build stage holds %q; only WORKDIR, COPY and one RUN may be in it, and no ADD that fetches", instruction)
+			}
+		}
+		if !slices.Contains(stages[0], "COPY go.mod go.sum ./") || !slices.Contains(stages[0], "COPY out/ ./out/") {
+			t.Errorf("the build stage does not copy the module files and the generated output: %v", stages[0])
+		}
+		if len(runs) != 1 {
+			t.Fatalf("the build stage runs %v, not the one build", runs)
+		}
+		run := runs[0]
+		if !strings.HasPrefix(run, "env -i ") {
+			t.Errorf("the build does not drop the settings of the image and the host: %s", run)
+		}
+		settings := appbuild.BuildEnvironment()
+		settings["GOMODCACHE"] = delivery.PrefetchedModules
+		for key, value := range settings {
+			if !strings.Contains(run, "'"+key+"="+value+"'") {
+				t.Errorf("the build does not set %s=%s, the setting of the application build", key, value)
+			}
+		}
+		if settings["GOPROXY"] != "off" || settings["GOFLAGS"] != "" {
+			t.Errorf("the application build settings are not offline: %v", settings)
+		}
+		build := "go " + strings.Join(appbuild.BuildFlags(delivery.ImageExecutable, "out"), " ")
+		for _, part := range []string{"test \"$(go env GOVERSION)\" = " + appbuild.GoVersion + " ", "go mod verify && " + build + "'"} {
+			if !strings.Contains(run, part) {
+				t.Errorf("the build does not run %q: %s", part, run)
+			}
+		}
+		for _, fetch := range []string{"go mod download", "curl", "wget", "http://", "https://"} {
+			if strings.Contains(run, fetch) {
+				t.Errorf("the build fetches with %q: %s", fetch, run)
+			}
+		}
+		var user, entrypoint string
+		for _, instruction := range stages[1] {
+			keyword, args, _ := strings.Cut(instruction, " ")
+			switch keyword {
+			case "COPY":
+				if !strings.HasPrefix(args, "--from=build ") {
+					t.Errorf("the final stage copies %q from the build context", args)
+				}
+			case "USER":
+				user = args
+			case "ENTRYPOINT":
+				entrypoint = args
+			default:
+				t.Errorf("the final stage holds %q; a scratch image that writes no file runs nothing", instruction)
+			}
+		}
+		// The base runs the pod as non-root with a read-only root file system and an emptyDir at /tmp: a numeric
+		// user that is not root passes runAsNonRoot, and the image needs no other writable folder.
+		uid, gid, _ := strings.Cut(user, ":")
+		if n, err := strconv.Atoi(uid); err != nil || n == 0 {
+			t.Errorf("the image runs as the user %q, not a numeric user that is not root", user)
+		}
+		if n, err := strconv.Atoi(gid); err != nil || n == 0 {
+			t.Errorf("the image runs as the group of %q, not a numeric group that is not root", user)
+		}
+		if entrypoint != `["`+delivery.ImageExecutable+`"]` {
+			t.Errorf("the image starts %s, not the executable by its absolute path in exec form", entrypoint)
+		}
+		containers := containersOf(t, buildBase(t, base))
+		for _, container := range containers {
+			if field(container, "securityContext", "readOnlyRootFilesystem") != true {
+				t.Errorf("the container %v has no read-only root file system", container["name"])
 			}
 		}
 	})

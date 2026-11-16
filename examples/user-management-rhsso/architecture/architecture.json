@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.123.2",
+    "archetype_version": "3.125.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -1087,7 +1087,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.123.2",
+          "version": "3.125.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1110,7 +1110,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.123.2",
+          "version": "3.125.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -5071,6 +5071,24 @@
           "part": "component",
           "name": "otel-tracing",
           "version": "1.19.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
+      "id": "variable:HOME",
+      "name": "HOME",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
           "field": "environment"
         }
       }
@@ -10207,6 +10225,51 @@
               "part": "component",
               "name": "otel-tracing",
               "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:HOME/read-by",
+          "about": "variable:HOME",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:HOME/required",
+          "about": "variable:HOME",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:HOME/secret",
+          "about": "variable:HOME",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
               "field": "environment"
             }
           }

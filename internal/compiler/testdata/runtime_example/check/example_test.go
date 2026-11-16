@@ -475,3 +475,42 @@ CREATE UNIQUE INDEX org_settings_org_id_key_key ON public.org_settings (tenant_i
 		})
 	})
 }
+
+func TestStartFailure(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC05-T04 The service binary of the example names the missing setting or the database in its failure record, with no value", func(t *testing.T) {
+		s := migrated(t)
+		run := func(env []string) string {
+			process := exec.Command(os.Getenv("STEGO_EXAMPLE_BINARY"))
+			process.Env = env
+			output, err := process.CombinedOutput()
+			if err == nil {
+				t.Fatalf("the service started:\n%s", output)
+			}
+			if strings.Contains(string(output), password) || strings.Contains(string(output), "postgres://") {
+				t.Fatalf("the failure of the start shows a credential:\n%s", output)
+			}
+			return string(output)
+		}
+		without := func(env []string, name string) []string {
+			var kept []string
+			for _, entry := range env {
+				if !strings.HasPrefix(entry, name+"=") {
+					kept = append(kept, entry)
+				}
+			}
+			return kept
+		}
+		env := without(without(s.processEnv(freePort(t)), "DATABASE_URL"), "DATABASE_URL_FILE")
+		if output := run(env); !strings.Contains(output, `"stage":"service.start.setting.postgres-adapter.DATABASE_URL"`) {
+			t.Fatalf("a start with no DATABASE_URL does not name the setting in its failure record:\n%s", output)
+		}
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		must(t, err)
+		closed := listener.Addr().String()
+		must(t, listener.Close())
+		unreachable := append(env, "DATABASE_URL=postgres://"+stegoruntime.RuntimeRole+":"+password+"@"+closed+"/app?sslmode=disable")
+		if output := run(unreachable); !strings.Contains(output, `"stage":"service.start.database"`) {
+			t.Fatalf("a start on a closed database port does not name the database in its failure record:\n%s", output)
+		}
+	})
+}

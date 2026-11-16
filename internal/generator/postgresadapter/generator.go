@@ -245,6 +245,8 @@ var reservedTypeNames = map[string]bool{
 	"os":                       true,
 	"strconv":                  true,
 	"databaseConfiguration":    true,
+	"databaseWithoutHomeFiles": true,
+	"strings":                  true,
 	"databaseTracer":           true,
 	"databaseCallKey":          true,
 	"databaseCall":             true,
