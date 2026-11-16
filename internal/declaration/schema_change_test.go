@@ -279,3 +279,67 @@ func TestSchemaRelax(t *testing.T) {
 		})
 	}
 }
+
+// Each schema change is checked against its field as its own step leaves it, with each later step undone (decision
+// on ST-DECL-Q17 (a), orchestrator under the owner's delegation, 2026-11-14).
+func TestSchemaStepShape(t *testing.T) {
+	done := "{name: done, type: bool, default: false}"
+	toInt := "{id: summary-retype, kind: retype, entity: Todo, field: summary, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, pattern ^[0-9]{1,9}$\"}"
+	toText := "{id: summary-retype-2, kind: retype, entity: Todo, field: summary, from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}"
+	text := []string{"{name: summary, type: string, pattern: '^-?[0-9]{1,18}$'}", done}
+	t.Run("ST-DECL-INV58-T Two retypes of one field, string to int64 and then int64 to string, are each checked at their own step and accepted", func(t *testing.T) {
+		service := todoFields(text, "", []string{toInt, toText}, "summary-retype expand", "summary-retype contract", "summary-retype-2 expand")
+		wantNoFault(t, schemaFaults(t, service))
+	})
+	t.Run("ST-DECL-INV58-T A middle retype from the type that the field has after its own step is refused, and the fault names the step and the shape", func(t *testing.T) {
+		middle := "{id: summary-retype-2, kind: retype, entity: Todo, field: summary, from: int64, conversion: integer_to_int64, inverse_conversion: int64_to_integer}"
+		last := "{id: summary-retype-3, kind: retype, entity: Todo, field: summary, from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}"
+		service := todoFields(text, "", []string{toInt, middle, last},
+			"summary-retype expand", "summary-retype contract", "summary-retype-2 expand", "summary-retype-2 contract", "summary-retype-3 expand")
+		wantFault(t, schemaFaults(t, service, "schema-change-entity"), `"summary-retype-2"`, "the retype is from int64", "after its step schema_history[2] (Todo.summary: int64, with each later step undone)")
+	})
+	t.Run("ST-DECL-INV58-T A retype and then a require of the same field are refused, as the require adds the field after the retype's step", func(t *testing.T) {
+		retype := "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: int64, conversion: int64_to_text, inverse_conversion: text_to_int64}"
+		require := "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: x}"
+		service := todoFields(append(append([]string(nil), renamed...), "{name: owner, type: string}"), "", []string{retype, require},
+			"owner-retype expand", "owner-retype contract", "owner-require expand")
+		wantFault(t, schemaFaults(t, service, "schema-change-entity"), `"owner-retype"`, "does not declare the field", "after its step schema_history[0]")
+	})
+	t.Run("ST-DECL-INV62-T A require and then a retype of the same field: the fill value suits the field at the require's step", func(t *testing.T) {
+		require := "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: nobody}"
+		retype := "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, fill_value: 0}"
+		fields := append(append([]string(nil), renamed...), "{name: owner, type: int64}")
+		service := todoFields(fields, "", []string{require, retype}, "owner-require expand", "owner-require contract", "owner-retype expand")
+		wantNoFault(t, schemaFaults(t, service))
+		wrong := strings.Replace(service, "fill_value: nobody", "fill_value: 7", 1)
+		wantFault(t, schemaFaults(t, wrong, "schema-change-value"), `"owner-require"`, "does not suit the type string", "after the step schema_history[0] is Todo.owner: string")
+	})
+	t.Run("ST-DECL-INV62-T A relax and then a retype of the same field: the relax is checked against the Definition of the retype", func(t *testing.T) {
+		relax := "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: max_length 255}"
+		retype := func(definition string) string {
+			return "{id: title-retype, kind: retype, entity: Todo, field: title, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, fill_value: 0" + definition + "}"
+		}
+		fields := []string{"{name: title, type: int64}", done}
+		wantNoFault(t, schemaFaults(t, todoFields(fields, "", []string{relax, retype(", definition: \"string, max_length 500\"")}, "todo-title-relax expand", "title-retype expand")))
+		wantFault(t, schemaFaults(t, todoFields(fields, "", []string{relax, retype("")}, "todo-title-relax expand", "title-retype expand"), "schema-change-value"),
+			`"todo-title-relax"`, "needs a retype", "after the step schema_history[0] is Todo.title: string,")
+	})
+	t.Run("ST-DECL-INV58-T A relax and then a rename of the same field: the relax names the field by its name at its own step", func(t *testing.T) {
+		relax := "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: max_length 255}"
+		fields := []string{"{name: summary, type: string, min_length: 1, max_length: 500}", done}
+		wantNoFault(t, schemaFaults(t, todoFields(fields, "", []string{relax, rename}, "todo-title-relax expand", "todo-title-rename expand")))
+	})
+	t.Run("ST-DECL-INV62-T Two relaxes, the later one not a relax of the field that the earlier one leaves, refuse the later one only", func(t *testing.T) {
+		first := "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: max_length 255}"
+		second := "{id: todo-title-relax-2, kind: relax, entity: Todo, field: title, definition: max_length 600}"
+		fields := []string{"{name: title, type: string, max_length: 500}", done}
+		wantFault(t, schemaFaults(t, todoFields(fields, "", []string{first, second}, "todo-title-relax expand", "todo-title-relax-2 expand"), "schema-change-value"),
+			`"todo-title-relax-2"`, "only makes a max_length longer")
+	})
+	t.Run("ST-DECL-INV60-T An add finishes at its expand step, so a later rename of the field that it adds is accepted", func(t *testing.T) {
+		add := "{id: note-add, kind: add, entity: Todo, field: note}"
+		memo := "{id: note-rename, kind: rename, entity: Todo, field: memo, from: note}"
+		fields := append(append([]string(nil), renamed...), "{name: memo, type: string, optional: true}")
+		wantNoFault(t, schemaFaults(t, todoFields(fields, "", []string{add, memo}, "note-add expand", "note-rename expand")))
+	})
+}

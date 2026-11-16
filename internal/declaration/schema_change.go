@@ -3,6 +3,7 @@ package declaration
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -129,18 +130,209 @@ func findField(entity types.Entity, name string) (types.Field, bool) {
 	return types.Field{}, false
 }
 
+// firstSteps gives the position in the schema history of the first step of each schema change.
+func firstSteps(history []types.SchemaStep) map[string]int {
+	first := map[string]int{}
+	for i, step := range history {
+		if _, seen := first[step.Change]; !seen {
+			first[step.Change] = i
+		}
+	}
+	return first
+}
+
+// fieldShape gives the type and the constraints of a field as text, for a fault that names the shape of a field at
+// a step.
+func fieldShape(field types.Field) string {
+	items := []string{string(field.Type)}
+	if field.MinLength != nil {
+		items = append(items, fmt.Sprintf("min_length %d", *field.MinLength))
+	}
+	if field.MaxLength != nil {
+		items = append(items, fmt.Sprintf("max_length %d", *field.MaxLength))
+	}
+	if field.Min != nil {
+		items = append(items, fmt.Sprintf("min %v", *field.Min))
+	}
+	if field.Max != nil {
+		items = append(items, fmt.Sprintf("max %v", *field.Max))
+	}
+	if len(field.Values) > 0 {
+		items = append(items, "values "+strings.Join(field.Values, " "))
+	}
+	if field.Optional {
+		items = append(items, "optional")
+	}
+	if field.Default != nil {
+		items = append(items, fmt.Sprintf("default %v", field.Default))
+	}
+	if field.Pattern != "" {
+		items = append(items, "pattern "+field.Pattern)
+	}
+	return strings.Join(items, ", ")
+}
+
+// stepShape is the shape of an entity as the step of one schema change leaves it.
+type stepShape struct {
+	// entity is the entity after the step; declared is false when the entity does not exist after it.
+	entity   types.Entity
+	declared bool
+	// later is true when a schema change on the entity has its step after the step of the change, so that the
+	// shape after the step is not the shape that the declaration declares.
+	later bool
+	// step is the path of the first step of the change, empty when it has no step.
+	step string
+	// reason is why a later schema change cannot be undone, and so why the shape is not known; empty when it is.
+	reason string
+}
+
+// field gives the field of the entity after the step, by its name at that step.
+func (s stepShape) field(name string) (types.Field, bool) {
+	if !s.declared {
+		return types.Field{}, false
+	}
+	return findField(s.entity, name)
+}
+
+// of names, for a fault, the shape of the field after the step when a later step changes the entity, or gives
+// empty.
+func (s stepShape) of(entity string, field types.Field) string {
+	if !s.later {
+		return ""
+	}
+	return fmt.Sprintf(" (the field after the step %s is %s.%s: %s, with each later step undone)", s.step, entity, field.Name, fieldShape(field))
+}
+
+// shapeAtStep gives the entity of a schema change as the change's own step leaves it: the entity that the
+// declaration declares, with each schema change on the entity whose first step comes after the first step of the
+// change undone, the last first, as gen.Context.AtSchemaStep undoes them (decision on ST-DECL-Q17 (a), orchestrator
+// under the owner's delegation, 2026-11-14). So each change is checked against the shape of its field at its own
+// step, and a chain such as a retype from A to B and then a retype from B to C is checked step by step. An add or a
+// require is undone by removing its field, or its entity; a rename by giving the field the name From; a retype by
+// giving the field its type and constraints before the change (gen.RetypeField); a relax by giving the field what it
+// was before the change (types.SchemaChange.RelaxedFrom); and a drop of a field by giving the entity the field of
+// its Definition. A unique changes no field. A change with no step is checked against the declared shape, and is
+// not undone. When a later change cannot be undone, the reason names it, its step and the shape of the field after
+// that step; that later change is also refused by its own check.
+func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) stepShape {
+	entity, declared := findEntity(service.Entities, change.Entity)
+	shape := stepShape{declared: declared}
+	if declared {
+		entity.Fields = append([]types.Field(nil), entity.Fields...)
+		shape.entity = entity
+	}
+	first := firstSteps(service.SchemaHistory)
+	at, stepped := first[change.ID]
+	if !stepped {
+		return shape
+	}
+	shape.step = schemaStepPath(at)
+	var later []types.SchemaChange
+	for _, other := range service.SchemaChanges {
+		if position, ok := first[other.ID]; ok && other.Entity == change.Entity && position > at && other.Kind != "unique" {
+			later = append(later, other)
+		}
+	}
+	slices.SortFunc(later, func(a, b types.SchemaChange) int { return first[b.ID] - first[a.ID] })
+	for _, other := range later {
+		shape.later = true
+		if !shape.declared {
+			// An entity that a later step drops whole is not built again from its Definition here, and a change on an
+			// entity that the shape does not have is refused by its own check.
+			return shape
+		}
+		fields := shape.entity.Fields
+		found := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == other.Field })
+		cannot := func(message string) stepShape {
+			shape.reason = fmt.Sprintf("the later %s %q at %s cannot be undone: %s", other.Kind, other.ID, schemaStepPath(first[other.ID]), message)
+			return shape
+		}
+		if found < 0 && other.Field != "" && other.Kind != "drop" {
+			return cannot(fmt.Sprintf("the entity %s after that step has no field %s", other.Entity, other.Field))
+		}
+		switch other.Kind {
+		case "add", "require":
+			if other.Field == "" {
+				shape.declared = false
+				continue
+			}
+			shape.entity.Fields = slices.Delete(fields, found, found+1)
+		case "rename":
+			if _, taken := findField(shape.entity, other.From); taken {
+				return cannot(fmt.Sprintf("the entity %s after that step still has the field %s, the name before the rename", other.Entity, other.From))
+			}
+			fields[found].Name = other.From
+		case "retype":
+			before := gen.RetypeField(other)
+			before.Name, before.Optional, before.Sensitivity = fields[found].Name, fields[found].Optional, fields[found].Sensitivity
+			if other.Definition == "" {
+				before.Default = nil
+			}
+			fields[found] = before
+		case "relax":
+			before, reason := other.RelaxedFrom(fields[found])
+			if reason != "" {
+				return cannot(fmt.Sprintf("it does not relax the field %s.%s after that step, %s: %s", other.Entity, other.Field, fieldShape(fields[found]), reason))
+			}
+			fields[found] = before
+		case "drop":
+			if other.Field == "" {
+				return cannot(fmt.Sprintf("the entity %s after that step is still declared", other.Entity))
+			}
+			if found >= 0 {
+				return cannot(fmt.Sprintf("the entity %s after that step still has the field %s", other.Entity, other.Field))
+			}
+			dropped, reason := definitionField(other.Definition)
+			if reason != "" {
+				return cannot(fmt.Sprintf("its definition %q cannot be read: %s", other.Definition, reason))
+			}
+			dropped.Name = other.Field
+			shape.entity.Fields = append(fields, dropped)
+		default:
+			return cannot("its kind is not one that checking knows")
+		}
+	}
+	return shape
+}
+
+// FieldAtStep gives the field of a schema change as the change's own step leaves it (shapeAtStep): the declared
+// field with each later schema change on its entity undone. It tells false when the field does not exist after the
+// step, and gives the reason when a later change cannot be undone.
+func FieldAtStep(service *types.ServiceDeclaration, change types.SchemaChange) (types.Field, bool, string) {
+	shape := shapeAtStep(service, change)
+	if shape.reason != "" {
+		return types.Field{}, false, shape.reason
+	}
+	field, found := shape.field(change.Field)
+	return field, found, ""
+}
+
 // validateSchemaChangeEntity checks that the entity and the field of each schema change agree with the declaration
-// (ST-DECL-INV58): for add, rename, retype and require the entity declares the field, for rename it does not
-// declare From, for drop it does not declare the field, a drop with no field names an entity that the declaration
-// does not declare, and for unique the field names a declared invariant of kind unique on the entity.
+// (ST-DECL-INV58), as the change's own step leaves the entity (shapeAtStep, decision on ST-DECL-Q17 (a)): for add,
+// rename, retype and require the entity declares the field, for rename it does not declare From, for retype From is
+// not the type of the field, for drop it does not declare the field, a drop with no field names an entity that the
+// declaration does not declare, and for unique the field names a declared invariant of kind unique on the entity.
+// A change whose shape is not known, because a later change cannot be undone, is not checked here: the check of the
+// later change refuses it.
 func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationError {
 	var faults []ValidationError
 	for i, change := range service.SchemaChanges {
 		path := schemaChangePath(i)
-		fault := func(where, message string) {
-			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-entity", Path: path + where, Found: change.Entity + "." + change.Field, Message: fmt.Sprintf("schema change %q on the entity %q and the field %q: %s", change.ID, change.Entity, change.Field, message)})
+		shape := shapeAtStep(service, change)
+		after := ""
+		if shape.later {
+			after = fmt.Sprintf(" after its step %s, with each later step undone", shape.step)
+			if field, found := shape.field(change.Field); found {
+				after = fmt.Sprintf(" after its step %s (%s.%s: %s, with each later step undone)", shape.step, change.Entity, field.Name, fieldShape(field))
+			}
 		}
-		entity, declared := findEntity(service.Entities, change.Entity)
+		fault := func(where, message string) {
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-entity", Path: path + where, Found: change.Entity + "." + change.Field, Message: fmt.Sprintf("schema change %q on the entity %q and the field %q%s: %s", change.ID, change.Entity, change.Field, after, message)})
+		}
+		if shape.reason != "" {
+			continue
+		}
+		entity, declared := shape.entity, shape.declared
 		if change.Kind == "drop" && change.Field == "" {
 			if declared {
 				fault(".entity", "the declaration still declares the entity that the change drops; remove the entity")
@@ -253,14 +445,28 @@ func validateSchemaSteps(service *types.ServiceDeclaration) []ValidationError {
 	return faults
 }
 
+// openOnField gives the open schema changes that hold a field for ST-DECL-INV60: an add, as a relax, finishes at
+// its expand step, as it has no contract step (decision on ST-DECL-Q17 (a), orchestrator under the owner's
+// delegation, 2026-11-14), so a later change of the field that an add added is not refused for ever.
+func openOnField(service *types.ServiceDeclaration) []types.SchemaChange {
+	var open []types.SchemaChange
+	for _, change := range openSchemaChanges(service) {
+		if change.Kind != "add" {
+			open = append(open, change)
+		}
+	}
+	return open
+}
+
 // validateSchemaChangeOpen checks that at most one open schema change names a given field of an entity, as Field or
 // as From, and that no relax has its step after the expand step of an open change that names its field: the two
-// columns of that change hold the field until its contract step (ST-DECL-INV60).
+// columns of that change hold the field until its contract step (ST-DECL-INV60). An add is not open here
+// (openOnField).
 func validateSchemaChangeOpen(service *types.ServiceDeclaration) []ValidationError {
 	var faults []ValidationError
 	faults = append(faults, relaxOpenFaults(service)...)
 	owner := map[[2]string]string{}
-	for _, change := range openSchemaChanges(service) {
+	for _, change := range openOnField(service) {
 		for _, field := range []string{change.Field, change.From} {
 			if field == "" || (change.Kind == "retype" && field == change.From) {
 				continue
@@ -341,10 +547,12 @@ func valueSuits(field types.Field, value any) (bool, string) {
 	return true, ""
 }
 
-// validateSchemaChangeValues checks that the values of each schema change suit its field (ST-DECL-INV62): the field
-// of a require is required with no default, and a fill value suits the type and the constraints of the field, or
-// for a drop those of its Definition. Checking does not hold the conversions of a retype against the database
-// component yet, as the registry does not declare them.
+// validateSchemaChangeValues checks that the values of each schema change suit its field (ST-DECL-INV62), as the
+// change's own step leaves the field (shapeAtStep, decision on ST-DECL-Q17 (a)): the field of a require is required
+// with no default, a fill value suits the type and the constraints of the field, or for a drop those of its
+// Definition, and the Definition of a relax relaxes the field in place. A change whose shape is not known, because
+// a later change cannot be undone, is not checked here: the check of the later change refuses it. Checking holds the conversions of a retype against the database component in
+// ValidateSchemaConversions.
 func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationError {
 	var faults []ValidationError
 	for i, change := range service.SchemaChanges {
@@ -353,31 +561,31 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-value", Path: path + where, Found: found, Message: fmt.Sprintf("schema change %q: %s", change.ID, message)})
 		}
 		var field types.Field
+		var at string
 		switch change.Kind {
 		case "relax":
-			entity, declared := findEntity(service.Entities, change.Entity)
-			if !declared || change.Definition == "" {
+			if change.Definition == "" {
 				continue
 			}
-			if now, found := findField(entity, change.Field); found {
-				field, reason := types.FieldAfterRelax(service.SchemaChanges, service.SchemaHistory, change, now)
-				if reason == "" {
-					_, reason = change.RelaxedFrom(field)
-				}
-				if reason != "" {
-					fault(".definition", change.Definition, fmt.Sprintf("the relax of %s.%s cannot be carried out in place: %s", change.Entity, change.Field, reason))
-				}
+			shape := shapeAtStep(service, change)
+			after, found := shape.field(change.Field)
+			if shape.reason != "" || !found {
+				continue
+			}
+			if _, reason := change.RelaxedFrom(after); reason != "" {
+				fault(".definition", change.Definition, fmt.Sprintf("the relax of %s.%s cannot be carried out in place: %s%s", change.Entity, change.Field, reason, shape.of(change.Entity, after)))
 			}
 			continue
 		case "require", "retype":
-			entity, declared := findEntity(service.Entities, change.Entity)
+			shape := shapeAtStep(service, change)
 			found := false
-			if declared {
-				field, found = findField(entity, change.Field)
+			if shape.reason == "" {
+				field, found = shape.field(change.Field)
 			}
 			if !found {
 				continue
 			}
+			at = shape.of(change.Entity, field)
 			if change.Kind == "retype" && change.Definition != "" {
 				// The Definition of a retype is the field before the change, whose type is From (decision on
 				// ST-GEN-Q07 (a), orchestrator under the owner's delegation, 2026-11-13).
@@ -390,7 +598,7 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 				}
 			}
 			if change.Kind == "require" && (field.Optional || field.Default != nil) {
-				fault(".field", change.Field, fmt.Sprintf("the field %s.%s of a require must be required with no default; a field that is optional or has a default is an add", change.Entity, change.Field))
+				fault(".field", change.Field, fmt.Sprintf("the field %s.%s of a require must be required with no default; a field that is optional or has a default is an add%s", change.Entity, change.Field, at))
 			}
 		case "drop":
 			if change.Field == "" || change.Definition == "" {
@@ -408,7 +616,7 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 			continue
 		}
 		if ok, reason := valueSuits(field, change.FillValue); !ok {
-			fault(".fill_value", fmt.Sprint(change.FillValue), fmt.Sprintf("the fill value %v does not suit the field %s: %s", change.FillValue, change.Field, reason))
+			fault(".fill_value", fmt.Sprint(change.FillValue), fmt.Sprintf("the fill value %v does not suit the field %s: %s%s", change.FillValue, change.Field, reason, at))
 		}
 	}
 	return faults
@@ -429,7 +637,7 @@ func relaxOpenFaults(service *types.ServiceDeclaration) []ValidationError {
 		if relax.Kind != "relax" || !stepped {
 			continue
 		}
-		for _, open := range openSchemaChanges(service) {
+		for _, open := range openOnField(service) {
 			if open.Entity != relax.Entity || (open.Field != relax.Field && open.From != relax.Field) || first[open.ID] > at {
 				continue
 			}

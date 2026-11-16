@@ -136,35 +136,6 @@ func (c SchemaChange) RelaxedFrom(after Field) (Field, string) {
 	return before, ""
 }
 
-// FieldAfterRelax gives the field as the relax change left it: the field now, with each relax of the same field
-// whose step comes after the step of change undone, the last first, as the schema history orders them. It gives the
-// reason when one of those later relaxes cannot be undone.
-func FieldAfterRelax(changes []SchemaChange, history []SchemaStep, change SchemaChange, now Field) (Field, string) {
-	first := map[string]int{}
-	for i, step := range history {
-		if _, seen := first[step.Change]; !seen {
-			first[step.Change] = i
-		}
-	}
-	at, stepped := first[change.ID]
-	var later []SchemaChange
-	for _, other := range changes {
-		if position, ok := first[other.ID]; ok && stepped && other.Kind == "relax" && other.Entity == change.Entity && other.Field == change.Field && position > at {
-			later = append(later, other)
-		}
-	}
-	slices.SortFunc(later, func(a, b SchemaChange) int { return first[b.ID] - first[a.ID] })
-	field := now
-	for _, other := range later {
-		before, reason := other.RelaxedFrom(field)
-		if reason != "" {
-			return Field{}, fmt.Sprintf("the later relax %s cannot be undone: %s", other.ID, reason)
-		}
-		field = before
-	}
-	return field, ""
-}
-
 // Conversion is one conversion of a retype that a database component declares: its name, the field type it
 // converts from and the one it converts to, and its totality. A total conversion converts every value of From; a
 // partial one converts a value only under one of TotalWhen, the constraints of the field before the change under

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 	"github.com/jsell-rh/stego/internal/parser"
@@ -985,21 +986,17 @@ func relaxFaults(base, head *types.ServiceDeclaration) []BaseFault {
 		if change.Kind != "relax" || slices.ContainsFunc(base.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == change.ID }) {
 			continue
 		}
-		entity, declared := findStoredEntity(head, change.Entity)
-		if !declared {
+		// The relax is checked against its field as its own step leaves it, each later step undone (decision on
+		// ST-DECL-Q17 (a), orchestrator under the owner's delegation, 2026-11-14).
+		after, found, reason := declaration.FieldAtStep(head, change)
+		if !found && reason == "" {
 			continue
 		}
-		for _, field := range entity.Fields {
-			if field.Name != change.Field {
-				continue
-			}
-			after, reason := types.FieldAfterRelax(head.SchemaChanges, head.SchemaHistory, change, field)
-			if reason == "" {
-				_, reason = change.RelaxedFrom(after)
-			}
-			if reason != "" {
-				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the relax %s of %s.%s does not relax the field in place: %s", change.ID, change.Entity, change.Field, reason)})
-			}
+		if reason == "" {
+			_, reason = change.RelaxedFrom(after)
+		}
+		if reason != "" {
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the relax %s of %s.%s does not relax the field in place: %s", change.ID, change.Entity, change.Field, reason)})
 		}
 	}
 	return faults
