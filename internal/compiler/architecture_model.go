@@ -364,8 +364,9 @@ type ArchCheck struct {
 
 // ArchAncestor is the check of one ancestor in the path of an operation: the entity of the row that the path
 // parameter names, the field of that row that names the ancestor above it, and the read permission of the entity,
-// which the handler decides on the row. An entity with no resource type, or no bound authorization, gets no
-// permission check, and Reason says why; the row must still exist in the tenant and be of the ancestor above it.
+// which the handler decides on the row. With no bound authorization it gets no permission check, and Reason says
+// why; the row must still exist in the tenant and be of the ancestor above it. The derivation refuses an ancestor
+// with no resource type, which no generator builds.
 type ArchAncestor struct {
 	ID           string `json:"id"`
 	Entity       string `json:"entity"`

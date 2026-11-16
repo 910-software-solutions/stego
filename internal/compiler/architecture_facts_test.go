@@ -122,7 +122,7 @@ func TestComplianceFactList(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC16-R01-T04 The access list gives each ancestor check of a nested operation, with its permission and who it grants, or the rule that gives it none", func(t *testing.T) {
+	t.Run("ST-GEN-UC16-R01-T04 The access list gives each ancestor check of a nested operation, with its permission and who it grants, or unstated with its rule when no authorization is bound", func(t *testing.T) {
 		model, data := deriveFixture(t, nestedFixture(t))
 		text, list, _ := factsOf(t, archProject(t, data), "access")
 		facts := map[string]FactOfList{}
@@ -136,7 +136,8 @@ func TestComplianceFactList(t *testing.T) {
 			t.Fatalf("the ancestor check of the folder is %+v", folder)
 		}
 		shelf, ok := facts["operation:folder-docs.update|checks ancestor 1 Shelf"]
-		if !ok || shelf.Value != "none" || shelf.Source.Rule != "ST-SUP-RC20-OC24" || shelf.Grants != nil || len(shelf.Quoted) != 0 {
+		if !ok || shelf.Value != "shelf#view" || shelf.Source.Declaration != "entities[2].permissions.read" || shelf.Grants == nil ||
+			shelf.Grants.Permission != "permission:shelf#view" || len(shelf.Quoted) != 0 {
 			t.Fatalf("the ancestor check of the shelf is %+v", shelf)
 		}
 		if _, ok := facts["operation:shelf-folders.read|checks ancestor 1 Shelf"]; !ok {
@@ -153,13 +154,30 @@ func TestComplianceFactList(t *testing.T) {
 			t.Fatalf("the text names no operation:folder-docs.update:\n%s", text)
 		}
 		block := text[at:]
-		if s, f := strings.Index(block, "checks ancestor 1 Shelf: none"), strings.Index(block, "checks ancestor 2 Folder: folder#view"); s < 0 || f < s {
+		if s, f := strings.Index(block, "checks ancestor 1 Shelf: shelf#view"), strings.Index(block, "checks ancestor 2 Folder: folder#view"); s < 0 || f < s {
 			t.Fatalf("the text does not give the shelf, then the folder:\n%s", block)
 		}
 		for _, p := range folder.Grants.Paths {
 			if p.Role != "" && !strings.Contains(block, "granted to "+p.Role) {
 				t.Fatalf("the text does not name the role %s of the folder check:\n%s", p.Role, block)
 			}
+		}
+		// With no bound authorization, each ancestor fact is unstated, with the rule that binds none.
+		in := nestedFixture(t)
+		in.Service.Authorization, in.Schema = nil, nil
+		_, unbound := deriveFixture(t, in)
+		_, list, _ = factsOf(t, archProject(t, unbound), "access")
+		n := 0
+		for _, f := range list.Facts {
+			if strings.HasPrefix(f.Name, "checks ancestor") {
+				n++
+				if f.State != "unstated" || f.Source.Rule != "ST-DECL-UC06-R01" || f.Grants != nil {
+					t.Errorf("with no authorization, the ancestor fact is %+v", f)
+				}
+			}
+		}
+		if n == 0 {
+			t.Error("with no authorization, the list holds no ancestor fact")
 		}
 	})
 

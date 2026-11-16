@@ -133,8 +133,13 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 	}
 	if e.ResourceType != "" {
 		p.read, p.list = e.Permissions[types.OpRead], e.Permissions[types.OpList]
-		if p.read == "" || p.read == "public" {
-			return nil, fmt.Errorf("the entity has the resource type %s and no read permission", e.ResourceType)
+		if p.read == "" || p.read == types.PermissionPublic {
+			// The message names the declared read exactly: none, or public (security review of PR #383, L4).
+			read := "no read permission"
+			if p.read == types.PermissionPublic {
+				read = "the read permission public"
+			}
+			return nil, fmt.Errorf("the entity has the resource type %s and %s; the command runtime decides the read permission of each row that it loads (ST-SUP-RP10-LC13), so declare permissions.read as a permission of %s", e.ResourceType, read, e.ResourceType)
 		}
 		if p.list == "public" {
 			p.list = ""

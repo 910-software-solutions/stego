@@ -173,6 +173,9 @@ func deriveModel(in ArchitectureInput) (*ArchitectureModel, error) {
 	if err := d.access(); err != nil {
 		return nil, err
 	}
+	if err := d.plannedReads(); err != nil {
+		return nil, err
+	}
 	d.flows()
 	d.stepLayers()
 	d.trust()
