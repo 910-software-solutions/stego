@@ -1,0 +1,248 @@
+package delivery
+
+import (
+	"fmt"
+	"maps"
+	"path"
+	"regexp"
+	"slices"
+	"strings"
+
+	"github.com/jsell-rh/stego/internal/appbuild"
+)
+
+// ContainerFile is the path, in the project folder, of the offline Containerfile (ST-DLV-INV07). The build context
+// is the project folder.
+const ContainerFile = "Containerfile"
+
+// BuilderImage is the image of the build stage: the official Go image of the Go SDK release that the application
+// build pins (appbuild.GoVersion), named by the digest of its image index, so that a tag that moves does not change
+// the build.
+const BuilderImage = "docker.io/library/golang:1.26.11-trixie@sha256:fa340cb59ebeb1d53ac1cccfc334201d938fe5f3458003cccb767096d8e032b8"
+
+// PrefetchedModules is the module cache that the build stage reads: the folder where the Go module prefetch of
+// Konflux puts the modules (prefetch-input gomod). A local build mounts a module cache that stego build download
+// wrote at the same path.
+const PrefetchedModules = "/cachi2/output/deps/gomod/pkg/mod"
+
+// ImageExecutable is the path of the executable in the image, which the container starts.
+const ImageExecutable = "/service"
+
+// ImageUser is the numeric user and group of the image, so that the restricted pod settings (runAsNonRoot) of the
+// base accept it with no runAsUser.
+const ImageUser = "65532:65532"
+
+// buildPaths are the settings of the build stage that name a folder of the stage. The module cache is the
+// prefetched one, and every other folder is under /tmp, so that no setting of the caller or of the image is used.
+var buildPaths = map[string]string{
+	"PATH": "/usr/local/go/bin:/usr/bin:/bin", "GOROOT": "/usr/local/go", "HOME": "/tmp/home", "GOPATH": "/tmp/gopath",
+	"GOMODCACHE": PrefetchedModules, "GOCACHE": "/tmp/go-cache", "TMPDIR": "/tmp",
+}
+
+// containerHeader is the first lines of the Containerfile.
+const containerHeader = "# The offline Containerfile of the service. stego apply writes this file from the declaration. Do not edit it.\n" +
+	"# It builds with the network off: the build stage reads only the Go modules at " + PrefetchedModules + ",\n" +
+	"# where the Go module prefetch of Konflux puts them (prefetch-input gomod, hermetic build), and go mod verify\n" +
+	"# holds them to go.sum. For a local build, mount a copy of the module cache folder that stego build download\n" +
+	"# wrote at that path, writable, because go extracts the modules from it.\n" +
+	"# The build has the settings and the arguments of stego build, with the Go SDK that it pins, so the executable is\n" +
+	"# the one that the build record names. The image is scratch with the executable and the CA certificates, and it\n" +
+	"# runs as the user " + ImageUser + ": it writes no file, so it runs with a read-only root file system and an\n" +
+	"# emptyDir at /tmp, as the Kubernetes base sets them.\n"
+
+// ContainerSource is what the build stage copies from the project folder: the folder of the generated output, the
+// entry point of the build, and whether the fills folder holds a fill, which the generated code then imports.
+type ContainerSource struct {
+	OutputDir string
+	Fills     bool
+}
+
+// sourceFolder is a folder of the project that the Containerfile names: a relative path of plain names, so that no
+// text of it can change an instruction.
+var sourceFolder = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
+
+// WriteContainerfile writes the offline Containerfile of the service (ST-DLV-CMD03): a build stage on the pinned Go
+// image that copies the module files and the source folders, checks the Go version and the prefetched modules, and
+// builds with the settings and the arguments of the application build and the network off; then a scratch stage
+// with the executable, the CA certificates and a numeric user that is not root. It reads the file back with
+// LoadContainerfile before it gives it (ST-DLV-INV07).
+func WriteContainerfile(service string, source ContainerSource) ([]byte, error) {
+	if !serviceLabel.MatchString(service) {
+		return nil, fmt.Errorf("the service name %q is not a DNS label", service)
+	}
+	if !sourceFolder.MatchString(source.OutputDir) || slices.Contains(strings.Split(source.OutputDir, "/"), "..") {
+		return nil, fmt.Errorf("the output folder %q is not a relative path of plain names", source.OutputDir)
+	}
+	folders := []string{source.OutputDir}
+	if source.Fills {
+		folders = append(folders, "fills")
+	}
+	var out strings.Builder
+	out.WriteString(containerHeader)
+	fmt.Fprintf(&out, "FROM %s AS build\nWORKDIR /src\nCOPY go.mod go.sum ./\n", BuilderImage)
+	for _, folder := range folders {
+		fmt.Fprintf(&out, "COPY %s/ ./%s/\n", folder, folder)
+	}
+	// env -i drops each setting that the image or the build host gives, the environment file of the prefetch too,
+	// so the build has the settings of the build record alone.
+	out.WriteString("RUN env -i")
+	for _, setting := range buildSettings() {
+		if strings.ContainsAny(setting, "'\\\n") {
+			return nil, fmt.Errorf("the build setting %q cannot be quoted in the Containerfile", setting)
+		}
+		fmt.Fprintf(&out, " \\\n    '%s'", setting)
+	}
+	fmt.Fprintf(&out, " \\\n    /bin/sh -ec 'test \"$(go env GOVERSION)\" = %s && go mod verify && go %s'\n",
+		appbuild.GoVersion, strings.Join(appbuild.BuildFlags(ImageExecutable, source.OutputDir), " "))
+	fmt.Fprintf(&out, "FROM scratch\nCOPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n"+
+		"COPY --from=build --chmod=0555 %s %s\nUSER %s\nENTRYPOINT [%q]\n", ImageExecutable, ImageExecutable, ImageUser, ImageExecutable)
+	data := []byte(out.String())
+	if _, err := LoadContainerfile(data); err != nil {
+		return nil, fmt.Errorf("the Containerfile of %s does not read back: %w", service, err)
+	}
+	return data, nil
+}
+
+// buildSettings gives each setting of the build stage as name=value, in name order: the fixed settings of the
+// application build and the folders of the stage.
+func buildSettings() []string {
+	settings := appbuild.BuildEnvironment()
+	maps.Copy(settings, buildPaths)
+	var lines []string
+	for _, name := range slices.Sorted(maps.Keys(settings)) {
+		lines = append(lines, name+"="+settings[name])
+	}
+	return lines
+}
+
+// Instruction is one instruction of a Containerfile: its keyword in upper case and the rest of its logical line.
+type Instruction struct {
+	Keyword string
+	Args    string
+}
+
+// Containerfile is a Containerfile read back: its build stage and its final stage, each with its instructions
+// after its FROM.
+type Containerfile struct {
+	Builder string
+	Build   []Instruction
+	Final   []Instruction
+}
+
+// digestImage is an image named by a sha256 digest.
+var digestImage = regexp.MustCompile(`^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$`)
+
+// keywords are the instructions that the offline Containerfile may hold: no ADD, which can fetch from the network,
+// and no instruction that changes the shell or the build arguments.
+var keywords = []string{"FROM", "WORKDIR", "COPY", "RUN", "USER", "ENTRYPOINT"}
+
+// LoadContainerfile reads a Containerfile back and holds it to the offline shape (ST-DLV-INV07): two stages, the
+// first on an image named by digest, which runs the application build with the module proxy off, the module
+// checks and the settings of the build record, and the last on scratch, which runs nothing, sets a numeric user
+// that is not root and starts the executable by its absolute path in exec form.
+func LoadContainerfile(data []byte) (Containerfile, error) {
+	var file Containerfile
+	var stages [][]Instruction
+	var froms []string
+	for _, instruction := range logicalLines(string(data)) {
+		if !slices.Contains(keywords, instruction.Keyword) {
+			return Containerfile{}, fmt.Errorf("the instruction %s is not one of %s", instruction.Keyword, strings.Join(keywords, ", "))
+		}
+		if instruction.Keyword == "FROM" {
+			froms = append(froms, instruction.Args)
+			stages = append(stages, nil)
+			continue
+		}
+		if len(stages) == 0 {
+			return Containerfile{}, fmt.Errorf("the instruction %s comes before the first FROM", instruction.Keyword)
+		}
+		stages[len(stages)-1] = append(stages[len(stages)-1], instruction)
+	}
+	if len(froms) != 2 {
+		return Containerfile{}, fmt.Errorf("the Containerfile has %d stages, not a build stage and a final stage", len(froms))
+	}
+	builder, alias, ok := strings.Cut(froms[0], " AS ")
+	if !ok || alias != "build" || !digestImage.MatchString(builder) {
+		return Containerfile{}, fmt.Errorf("the build stage is not FROM an image named by its sha256 digest AS build")
+	}
+	if froms[1] != "scratch" {
+		return Containerfile{}, fmt.Errorf("the final stage is FROM %s, not scratch", froms[1])
+	}
+	file.Builder, file.Build, file.Final = builder, stages[0], stages[1]
+	var runs []string
+	for _, instruction := range file.Build {
+		switch instruction.Keyword {
+		case "RUN":
+			runs = append(runs, instruction.Args)
+		case "COPY":
+			if strings.HasPrefix(instruction.Args, "--from") {
+				return Containerfile{}, fmt.Errorf("the build stage copies from another image: %s", instruction.Args)
+			}
+		}
+	}
+	if len(runs) != 1 {
+		return Containerfile{}, fmt.Errorf("the build stage has %d RUN instructions, not the one build", len(runs))
+	}
+	if !strings.HasPrefix(runs[0], "env -i ") {
+		return Containerfile{}, fmt.Errorf("the build does not start from an empty environment (env -i)")
+	}
+	for _, setting := range buildSettings() {
+		if !strings.Contains(runs[0], "'"+setting+"'") {
+			return Containerfile{}, fmt.Errorf("the build does not set %s", setting)
+		}
+	}
+	if !strings.Contains(runs[0], "go mod verify && go build -mod=readonly -trimpath -buildvcs=false -pgo=off -p=2 -o "+ImageExecutable+" ./") {
+		return Containerfile{}, fmt.Errorf("the build does not verify the modules and build with the arguments of the application build")
+	}
+	var user, entrypoint string
+	for _, instruction := range file.Final {
+		switch instruction.Keyword {
+		case "RUN":
+			return Containerfile{}, fmt.Errorf("the final stage runs %s; a scratch stage runs nothing", instruction.Args)
+		case "COPY":
+			if !strings.HasPrefix(instruction.Args, "--from=build ") {
+				return Containerfile{}, fmt.Errorf("the final stage copies from the build context: %s", instruction.Args)
+			}
+		case "USER":
+			user = instruction.Args
+		case "ENTRYPOINT":
+			entrypoint = instruction.Args
+		}
+	}
+	if !nonRootUser.MatchString(user) {
+		return Containerfile{}, fmt.Errorf("the final stage sets the user %q, not a numeric user and group that is not root", user)
+	}
+	if entrypoint != fmt.Sprintf("[%q]", ImageExecutable) || !path.IsAbs(ImageExecutable) {
+		return Containerfile{}, fmt.Errorf("the final stage does not start %s in exec form", ImageExecutable)
+	}
+	return file, nil
+}
+
+// nonRootUser is a numeric user and group, neither of them 0.
+var nonRootUser = regexp.MustCompile(`^[1-9][0-9]*:[1-9][0-9]*$`)
+
+// logicalLines gives the instructions of a Containerfile: comment and blank lines are dropped, and a line that
+// ends with a backslash continues on the next line.
+func logicalLines(text string) []Instruction {
+	var instructions []Instruction
+	var current strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if current.Len() == 0 && (trimmed == "" || strings.HasPrefix(trimmed, "#")) {
+			continue
+		}
+		if continued, ok := strings.CutSuffix(trimmed, "\\"); ok {
+			current.WriteString(strings.TrimSpace(continued) + " ")
+			continue
+		}
+		current.WriteString(trimmed)
+		keyword, args, _ := strings.Cut(current.String(), " ")
+		instructions = append(instructions, Instruction{Keyword: strings.ToUpper(keyword), Args: strings.TrimSpace(args)})
+		current.Reset()
+	}
+	if current.Len() > 0 {
+		keyword, args, _ := strings.Cut(strings.TrimSpace(current.String()), " ")
+		instructions = append(instructions, Instruction{Keyword: strings.ToUpper(keyword), Args: strings.TrimSpace(args)})
+	}
+	return instructions
+}

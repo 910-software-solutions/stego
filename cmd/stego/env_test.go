@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/jsell-rh/stego/internal/delivery"
 )
 
@@ -442,6 +444,58 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		c.change(t, "dev.yaml", configBlock, "configuration:\n  LOG_LEVEL: warn\n  GOMAXPROCS: 4\n  JWK_CERT_URL: https://keys.example.com/certs\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectPassed(t, stdout, stderr, passed)
+	})
+	t.Run("ST-DLV-UC02-R02-T07 A port outside 1 to 65535 fails the check, and every variable that is a port states that range", func(t *testing.T) {
+		for _, bad := range []struct{ line, parts string }{
+			{"  PORT: 70000\n", "configuration PORT|more than 65535"},
+			{"  PORT: 0\n", "configuration PORT|less than 1"},
+		} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", configBlock, configBlock+bad.line)
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, append([]string{"wrong type"}, strings.Split(bad.parts, "|")...)...)
+		}
+		for _, port := range []string{"1", "8443", "65535"} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", configBlock, configBlock+"  PORT: "+port+"\n")
+			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectPassed(t, stdout, stderr, passed)
+		}
+		// Each environment variable of a shipped component that is an integer port, PORT or a name that ends in
+		// _PORT, states the range of a TCP port, so that the check of every service refuses a port out of it.
+		files, err := filepath.Glob(filepath.Join("..", "..", "registry", "components", "*", "component.yaml"))
+		if err != nil || len(files) == 0 {
+			t.Fatalf("no component of the registry: %v", err)
+		}
+		ports := 0
+		for _, file := range files {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var component struct {
+				Environment []struct {
+					Name    string            `yaml:"name"`
+					Type    string            `yaml:"type"`
+					Allowed map[string]any `yaml:"allowed"`
+				} `yaml:"environment"`
+			}
+			if err := yaml.Unmarshal(data, &component); err != nil {
+				t.Fatalf("%s: %v", file, err)
+			}
+			for _, variable := range component.Environment {
+				if variable.Type != "integer" || (variable.Name != "PORT" && !strings.HasSuffix(variable.Name, "_PORT")) {
+					continue
+				}
+				ports++
+				if variable.Allowed["min"] != "1" || variable.Allowed["max"] != "65535" || len(variable.Allowed) != 2 {
+					t.Errorf("%s: the port variable %s states the range %v, not 1 to 65535", file, variable.Name, variable.Allowed)
+				}
+			}
+		}
+		if ports == 0 {
+			t.Fatal("no component of the registry states a port variable; the test checks nothing")
+		}
 	})
 	t.Run("ST-DLV-UC02-R02-T06 Each entry has the shape of its requirement kind", func(t *testing.T) {
 		for _, bad := range []struct{ old, new, parts string }{
