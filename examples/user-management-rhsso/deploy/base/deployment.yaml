@@ -97,6 +97,12 @@ spec:
                   key: GRPC_GO_LOG_VERBOSITY_LEVEL
                   name: user-management-config
                   optional: true
+            - name: HOME
+              valueFrom:
+                configMapKeyRef:
+                  key: HOME
+                  name: user-management-config
+                  optional: true
             - name: JWK_CA_FILE
               valueFrom:
                 configMapKeyRef:
