@@ -328,6 +328,7 @@
 {"source_id":"ST-DLV-EV03-ET","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-DLV-EV04-ET","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-DLV-EV05-ET","target_id":"ST-PAT-GO-CODE-SL02"}
+{"source_id":"ST-DLV-INV07-RL","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DLV-QRY01-H","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DLV-REPO01","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-DLV-REPO02","target_id":"ST-PAT-GO-CODE-SL02"}
