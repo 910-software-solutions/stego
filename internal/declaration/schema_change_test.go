@@ -417,7 +417,9 @@ func TestSchemaStepShapeRandom(t *testing.T) {
 					service.SchemaHistory = append(service.SchemaHistory, types.SchemaStep{Change: change.ID, Phase: phase})
 				}
 			}
-			random.Shuffle(len(service.SchemaHistory), func(i, j int) { service.SchemaHistory[i], service.SchemaHistory[j] = service.SchemaHistory[j], service.SchemaHistory[i] })
+			random.Shuffle(len(service.SchemaHistory), func(i, j int) {
+				service.SchemaHistory[i], service.SchemaHistory[j] = service.SchemaHistory[j], service.SchemaHistory[i]
+			})
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
