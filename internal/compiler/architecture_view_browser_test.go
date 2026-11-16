@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -877,6 +878,7 @@ type cdpBrowser struct {
 	exited  chan struct{} // closed when the browser process has exited; exit then holds what Wait gave
 	exit    error
 	drained chan struct{} // closed when all of stderr is in browser.log
+	stderr  *os.File      // the read end of the browser's stderr pipe
 	blocked []string
 	errors  []string
 }
@@ -956,7 +958,7 @@ func startBrowser(t *testing.T) *cdpBrowser {
 	}
 	_ = w.Close()
 	b := &cdpBrowser{t: t, cmd: cmd, log: log, waiting: map[int]chan cdpReply{}, exited: make(chan struct{}),
-		drained: make(chan struct{})}
+		drained: make(chan struct{}), stderr: stderr}
 	go func() {
 		b.exit = cmd.Wait()
 		close(b.exited)
@@ -993,24 +995,75 @@ func (b *cdpBrowser) stop() {
 	if b.conn != nil {
 		_ = b.conn.CloseNow()
 	}
-	_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGTERM)
+	b.signal(syscall.SIGTERM)
 	select {
 	case <-b.exited:
 	case <-time.After(5 * time.Second):
 	}
-	// SIGKILL to the whole group also stops a child that holds stderr open, so the copy to browser.log ends.
-	_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGKILL)
-	<-b.exited
-	<-b.drained
+	b.release()
 	if b.log != nil {
 		_ = b.log.Close()
 	}
 }
 
+// signal sends sig to the process group of the browser, only while the browser has not exited: after Wait reaped
+// it, its process group ID may belong to another group.
+func (b *cdpBrowser) signal(sig syscall.Signal) {
+	select {
+	case <-b.exited:
+	default:
+		_ = syscall.Kill(-b.cmd.Process.Pid, sig)
+	}
+}
+
+// release kills the browser group, waits until the browser exited and no process of its group is left, and then
+// closes the read end of the stderr pipe, so the copy to browser.log ends even when a helper that left the group
+// holds the pipe open. No timer bounds it.
+func (b *cdpBrowser) release() {
+	b.signal(syscall.SIGKILL)
+	<-b.exited
+	for groupAlive(b.cmd.Process.Pid) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	select {
+	case <-b.drained:
+	default:
+		_ = b.stderr.Close()
+		<-b.drained
+	}
+}
+
+// groupAlive tells whether a process of the process group pgid is left, from the process group field of each
+// /proc/<pid>/stat.
+func groupAlive(pgid int) bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("/proc", e.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		// The command name is in parentheses and may hold spaces; the fields after its ")" are state, ppid and pgrp.
+		rest := string(data)
+		if i := strings.LastIndexByte(rest, ')'); i >= 0 {
+			rest = rest[i+1:]
+		}
+		if fields := strings.Fields(rest); len(fields) >= 3 && fields[2] == strconv.Itoa(pgid) {
+			return true
+		}
+	}
+	return false
+}
+
 // devToolsAddress reads the browser's stderr until the line "DevTools listening on ws://..." comes, and gives that
 // address. It has no time limit: a slow start on a loaded runner is not a failure. When the browser exits or closes
 // stderr first, the test fails and shows the exit status and browser.log. Each line before the address goes to the
-// test log as it comes, so a start that does not end is diagnosable from the test output.
+// test log and to stderr as it comes, so a start that does not end is diagnosable from the test output.
 func (b *cdpBrowser) devToolsAddress(stderr *os.File, logPath string) string {
 	b.t.Helper()
 	lines := make(chan string)
@@ -1048,6 +1101,9 @@ func (b *cdpBrowser) devToolsAddress(stderr *os.File, logPath string) string {
 			}
 			if line != "" {
 				b.t.Logf("browser: %s", line)
+				// A run without -v keeps the test log until the test ends, and a timeout panic loses it: each line
+				// also goes to stderr at once, so a start that does not end is in the CI log.
+				fmt.Fprintf(os.Stderr, "%s: chrome: %s\n", b.t.Name(), line)
 			}
 		case <-b.exited:
 			b.startFailed("the browser exited before it wrote its DevTools address", logPath, lines)
@@ -1063,9 +1119,7 @@ func (b *cdpBrowser) startFailed(reason, logPath string, lines <-chan string) {
 		for range lines {
 		}
 	}()
-	_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGKILL)
-	<-b.exited
-	<-b.drained
+	b.release()
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		data = []byte("(cannot read browser.log: " + err.Error() + ")")
