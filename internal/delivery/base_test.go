@@ -395,6 +395,7 @@ func TestBaseEnvironment(t *testing.T) {
 			"an init container with an environment": {"      containers:\n", "      initContainers:\n        - name: init\n          image: x\n          env:\n            - {name: PGHOST, value: x}\n      containers:\n"},
 			"an ephemeral container with envFrom":   {"      containers:\n", "      ephemeralContainers:\n        - name: debug\n          envFrom:\n            - secretRef: {name: orders-database}\n      containers:\n"},
 			"a ConfigMap that is no name":           {"                  key: STEGO_ISSUER\n                  name: orders-config\n", "                  key: STEGO_ISSUER\n                  name: Orders_Config\n"},
+			"a hostPath volume":                     {"      volumes:\n", "      volumes:\n        - name: h\n          hostPath:\n            path: /\n"},
 		} {
 			files := maps.Clone(base.Files)
 			text := string(files[DeploymentFile])
@@ -778,6 +779,9 @@ func TestMigrationJob(t *testing.T) {
 			"another argument":            {"            - migrate\n", "            - serve\n"},
 			"a restart in place":          {"      restartPolicy: Never\n", "      restartPolicy: OnFailure\n"},
 			"no time to live":             {"  ttlSecondsAfterFinished: 600\n", ""},
+			"no limits":                   {"            limits:\n", "            nolimits:\n"},
+			"no cpu limit":                {"            limits:\n              cpu: \"1\"\n", "            limits:\n"},
+			"no memory request":           {"              memory: 128Mi\n", ""},
 			"no sync wave":                {"    argocd.argoproj.io/sync-wave: \"0\"\n", ""},
 			"no name label on the Job":    {"    app.kubernetes.io/name: orders\n", ""},
 			"no time limit":               {"  activeDeadlineSeconds: 7200\n", ""},
@@ -932,8 +936,9 @@ func TestMigrationKeyFiles(t *testing.T) {
 			}
 			var component struct {
 				Environment []struct {
-					Name       string `yaml:"name"`
-					ReadByMode string `yaml:"read_by_mode"`
+					Name         string        `yaml:"name"`
+					ReadByMode   string        `yaml:"read_by_mode"`
+					SecretSource *SecretSource `yaml:"secret_source"`
 				} `yaml:"environment"`
 			}
 			if err := yaml.Unmarshal(data, &component); err != nil {
@@ -942,6 +947,11 @@ func TestMigrationKeyFiles(t *testing.T) {
 			for _, variable := range component.Environment {
 				if variable.ReadByMode == MigrateMode {
 					own[variable.Name] = true
+				}
+				// The Secret and the key of each key file of the Job are those that the registry states for it, which
+				// LoadBase holds the mount patch of the Job to.
+				if want, keyFile := MigrationKeyFiles[variable.Name]; keyFile && (variable.SecretSource == nil || *variable.SecretSource != want) {
+					t.Errorf("%s states the secret source %+v of %s; MigrationKeyFiles states %+v", file, variable.SecretSource, variable.Name, want)
 				}
 			}
 		}
@@ -955,7 +965,7 @@ func TestMigrationKeyFiles(t *testing.T) {
 		if len(own) == 0 || !read["STEGO_MIGRATION_DATABASE_URL_FILE"] {
 			t.Fatalf("the test does not find the own variables of the migrate mode: read %v, own %v", read, own)
 		}
-		if got := slices.Sorted(slices.Values(MigrationKeyFiles)); !slices.Equal(got, want) {
+		if got := slices.Sorted(maps.Keys(MigrationKeyFiles)); !slices.Equal(got, want) {
 			t.Errorf("MigrationKeyFiles is %v, but ReadMigrationSettings of the runtime reads the key files %v besides its own", got, want)
 		}
 	})
@@ -983,6 +993,14 @@ func TestOwnerSecret(t *testing.T) {
 				return nil
 			}
 		}
+		// jobMount gives the key file of SpiceDB in the Job patch another Secret and key.
+		jobMount := func(secret, key string) func(map[string][]byte) error {
+			return func(files map[string][]byte) error {
+				text := strings.ReplaceAll(string(files[SecretFilesJobMounts]), "orders-spicedb", secret)
+				files[SecretFilesJobMounts] = []byte(strings.ReplaceAll(text, "preshared-key", key))
+				return nil
+			}
+		}
 		for name, change := range map[string]func(map[string][]byte) error{
 			"a Deployment that takes a variable from the owner Secret": replace(DeploymentFile,
 				"                  key: url\n                  name: orders-database\n", "                  key: url\n                  name: orders-database-owner\n"),
@@ -994,6 +1012,16 @@ func TestOwnerSecret(t *testing.T) {
 			},
 			"a Job that takes a variable from the Secret of the runtime role": replace(MigrationJobFile,
 				"                  name: orders-database-owner\n", "                  name: orders-database\n"),
+			// The probes of the security review of #373 (M1, M2, L2).
+			"a Deployment secret volume of the owner Secret": replace(DeploymentFile, "      volumes:\n",
+				"      volumes:\n        - name: own\n          secret:\n            secretName: orders-database-owner\n"),
+			"a Deployment projected volume of the owner Secret": replace(DeploymentFile, "      volumes:\n",
+				"      volumes:\n        - name: own\n          projected:\n            sources:\n              - secret: {name: orders-database-owner}\n"),
+			"a Job that takes another key of the owner Secret": replace(MigrationJobFile,
+				"                  key: url\n                  name: orders-database-owner\n", "                  key: password\n                  name: orders-database-owner\n"),
+			"a Job patch that mounts the cursor key":          jobMount("orders-cursor", "key"),
+			"a Job patch that mounts a foreign Secret":        jobMount("payments-database", "url"),
+			"a Job patch that mounts the Secret of the relay": jobMount("orders-database-relay", "url"),
 			"a Job patch that mounts the Secret of the runtime role": func(files map[string][]byte) error {
 				text := strings.ReplaceAll(string(files[SecretFilesJobMounts]), "orders-database-owner", "orders-database")
 				files[SecretFilesJobMounts] = []byte(text)

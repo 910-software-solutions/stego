@@ -113,6 +113,23 @@ and `<service>-database-owner` with the key `url`. The Deployment, the Component
 projections never reference `<service>-database-owner`. `stego apply` refuses a base where they do. The Job
 references no Secret that the Deployment takes a variable from.
 
+### Upgrade from a release before the owner Secret
+
+A release before this one read the owner credential from the key `migration-url` of `<service>-database`. To move:
+
+1. Make the Secret `<service>-database-owner` with the key `url`, which holds the value of `migration-url`, for
+   example with your secret operator.
+2. Deploy the release, and wait until its migration Job completes.
+3. Remove the key `migration-url` from `<service>-database`, so that no Secret that the serving pod references
+   holds the owner credential:
+
+   ```sh
+   kubectl patch secret -n <namespace> <service>-database --type=json -p='[{"op":"remove","path":"/data/migration-url"}]'
+   ```
+
+   When an operator makes the Secret, such as the External Secrets Operator or Sealed Secrets, remove the key from
+   its source instead, or the operator writes it again.
+
 ### What the Job holds
 
 - The name `<service>-migrate-<release>`, where `<release>` is the first ten hex digits of the digest of the schema

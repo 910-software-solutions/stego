@@ -84,7 +84,7 @@ func renderSecretSources(out *bytes.Buffer, list []AcceptedVariable) {
 		switch {
 		case variable.ReadByMode == MigrateMode:
 			reader = "the migration Job only (mode migrate)"
-		case slices.Contains(MigrationKeyFiles, variable.Name):
+		case MigrationKeyFiles[variable.Name] != (SecretSource{}):
 			reader = "the Deployment and the migration Job"
 		}
 		fmt.Fprintf(out, "| %s | %s | %s | %s |\n", code(variable.Name), code(variable.SecretSource.Name), code(variable.SecretSource.Key), reader)

@@ -69,7 +69,20 @@ func OwnerSecret(service string) string {
 // MigrationKeyFiles are the path variables of a secret file that the migrate mode reads besides its own variables:
 // the preshared key of SpiceDB, to which the migration job writes the authorization schema (ReadMigrationSettings of
 // the service runtime). The Job gets no path of another secret file, so the Component mounts no other key in it.
-var MigrationKeyFiles = []string{"STEGO_SPICEDB_KEY_FILE"}
+//
+// Each has the secret need and the key of its file, with {service}: LoadBase holds the mount patch of the Job to them
+// and to the key url of the owner Secret alone (ST-DLV-INV13).
+var MigrationKeyFiles = map[string]SecretSource{"STEGO_SPICEDB_KEY_FILE": {Name: "{service}-spicedb", Key: "preshared-key"}}
+
+// migrationKeyFile gives the Secret and the key of a key file of MigrationKeyFiles for the service, and whether the
+// variable is one.
+func migrationKeyFile(service, variable string) (SecretSource, bool) {
+	source, ok := MigrationKeyFiles[variable]
+	if !ok {
+		return SecretSource{}, false
+	}
+	return SecretSource{Name: strings.ReplaceAll(source.Name, "{service}", service), Key: source.Key}, true
+}
 
 // The settings of the migration Job (ST-DLV-UC07-R06). The job runs its schema steps within 10 minutes and its
 // backfills within one hour (MigrationTimeout and BackfillTimeout of the service runtime), so two hours hold one run
@@ -529,8 +542,11 @@ func jobEnvironment(service string, list []AcceptedVariable) ([]any, []secretFil
 				switched = append(switched, secretFile{Removed: variable.Name, Variable: variable.Name + "_FILE", Source: *variable.SecretSource})
 			}
 			continue
-		case variable.SecretSource != nil && !slices.Contains(MigrationKeyFiles, variable.Name):
-			continue
+		case variable.SecretSource != nil:
+			// A key file that the migrate mode reads, from its own Secret and key alone.
+			if source, ok := migrationKeyFile(service, variable.Name); !ok || source != *variable.SecretSource {
+				continue
+			}
 		}
 		reference := map[string]any{"name": ConfigMapName(service), "key": variable.Name}
 		if !variable.Required {
@@ -830,11 +846,18 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 				return nil, fmt.Errorf("%s holds a second Deployment, or a Deployment out of %s", file, DeploymentFile)
 			}
 			service, _ = metadata["name"].(string)
-			secrets, _, err := checkEnvironmentEntries(content)
+			references, _, err := checkEnvironmentEntries(content)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", file, err)
 			}
-			servingSecrets = secrets
+			for _, reference := range references {
+				if !slices.Contains(servingSecrets, reference.Name) {
+					servingSecrets = append(servingSecrets, reference.Name)
+				}
+			}
+			if err := checkDeploymentVolumes(content); err != nil {
+				return nil, fmt.Errorf("%s: %w", file, err)
+			}
 		case "Job":
 			if job != "" || file != MigrationJobFile {
 				return nil, fmt.Errorf("%s holds a second Job, or a Job out of %s", file, MigrationJobFile)
@@ -887,9 +910,9 @@ type containerVariable struct {
 // checkEnvironmentEntries holds each environment entry of the Deployment of a base to names only (ST-DLV-UC07-R02,
 // ST-DLV-Q18): a variable name and one reference to a key of a Secret or of a ConfigMap, with no value and no other
 // field. A secret reference has no optional flag, because the secret need requires each of its keys; a ConfigMap
-// reference may be optional. No variable has two entries. It gives the names of the Secrets and of the ConfigMaps
-// that the entries reference, each once.
-func checkEnvironmentEntries(content []byte) (secrets, configMaps []string, err error) {
+// reference may be optional. No variable has two entries. It gives the references to the keys of the Secrets, and
+// the names of the ConfigMaps, that the entries take, each once.
+func checkEnvironmentEntries(content []byte) (secrets []keyReference, configMaps []string, err error) {
 	type container struct {
 		Name    string      `yaml:"name"`
 		Env     []yaml.Node `yaml:"env"`
@@ -952,8 +975,8 @@ func checkEnvironmentEntries(content []byte) (secrets, configMaps []string, err 
 			if reference.Optional != nil && !*reference.Optional {
 				return nil, nil, fmt.Errorf("the environment entry %s states optional: false; a required entry states no optional flag", entry.Name)
 			}
-			if from.SecretKeyRef != nil && !slices.Contains(secrets, reference.Name) {
-				secrets = append(secrets, reference.Name)
+			if from.SecretKeyRef != nil {
+				secrets = append(secrets, *reference)
 			}
 			if from.ConfigMapKeyRef != nil && !slices.Contains(configMaps, reference.Name) {
 				configMaps = append(configMaps, reference.Name)
@@ -961,6 +984,45 @@ func checkEnvironmentEntries(content []byte) (secrets, configMaps []string, err 
 		}
 	}
 	return secrets, configMaps, nil
+}
+
+// checkDeploymentVolumes holds the volumes of the pod of the Deployment of a base to the one emptyDir tmp, which the
+// base writes (#373 security review M1): a secret, projected, CSI or hostPath volume in the base itself is refused,
+// so that no volume of the base mounts the owner Secret or a file of the node. The Component secret-files adds the
+// secret volumes, under the checks of loadPatchPair.
+func checkDeploymentVolumes(content []byte) error {
+	var deployment struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Volumes []yaml.Node `yaml:"volumes"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(content, &deployment); err != nil {
+		return err
+	}
+	volumes := deployment.Spec.Template.Spec.Volumes
+	for _, node := range volumes {
+		text, err := yaml.Marshal(&node)
+		if err != nil {
+			return err
+		}
+		var volume struct {
+			Name     string `yaml:"name"`
+			EmptyDir *struct {
+				SizeLimit string `yaml:"sizeLimit"`
+			} `yaml:"emptyDir"`
+		}
+		if err := decodeStrict(text, MaxRequirementsBytes, &volume); err != nil || volume.Name != "tmp" || volume.EmptyDir == nil {
+			return fmt.Errorf("the pod holds a volume that is not the emptyDir tmp, such as a secret, projected, CSI or hostPath volume; the Component secret-files adds the secret volumes (ST-DLV-INV13): %s", strings.TrimSpace(string(text)))
+		}
+	}
+	if len(volumes) != 1 {
+		return fmt.Errorf("the pod holds %d volumes, not the one emptyDir tmp", len(volumes))
+	}
+	return nil
 }
 
 // isOwnerSecret tells whether a Secret is the Secret of the owner credential: the one of the service, or any whose
@@ -997,10 +1059,13 @@ type migrationJobShape struct {
 					} `yaml:"seccompProfile"`
 				} `yaml:"securityContext"`
 				Containers []struct {
-					Name            string    `yaml:"name"`
-					Image           string    `yaml:"image"`
-					Args            []string  `yaml:"args"`
-					Resources       yaml.Node `yaml:"resources"`
+					Name      string   `yaml:"name"`
+					Image     string   `yaml:"image"`
+					Args      []string `yaml:"args"`
+					Resources struct {
+						Requests map[string]string `yaml:"requests"`
+						Limits   map[string]string `yaml:"limits"`
+					} `yaml:"resources"`
 					SecurityContext struct {
 						AllowPrivilegeEscalation *bool `yaml:"allowPrivilegeEscalation"`
 						Capabilities             struct {
@@ -1073,13 +1138,20 @@ func checkMigrationJob(content []byte, service, name string) error {
 	case len(container.VolumeMounts) != 1 || container.VolumeMounts[0].Name != "tmp" || container.VolumeMounts[0].MountPath != "/tmp":
 		return fmt.Errorf("the container of the Job %s mounts more than the emptyDir tmp at /tmp", name)
 	}
+	// The Job has bounded resources, as the Deployment has (#373 security review L1).
+	for _, resource := range []string{"cpu", "memory"} {
+		if container.Resources.Requests[resource] == "" || container.Resources.Limits[resource] == "" {
+			return fmt.Errorf("the container of the Job %s does not set a request and a limit of %s", name, resource)
+		}
+	}
 	secrets, configMaps, err := checkEnvironmentEntries(content)
 	if err != nil {
 		return err
 	}
 	for _, secret := range secrets {
-		if secret != OwnerSecret(service) {
-			return fmt.Errorf("the Job %s takes a variable from the Secret %s; it may take one from %s alone (ST-DLV-INV13)", name, secret, OwnerSecret(service))
+		if secret.Name != OwnerSecret(service) || secret.Key != "url" {
+			return fmt.Errorf("the Job %s takes a variable from the key %s of the Secret %s; it may take one from the key url of %s alone (ST-DLV-INV13)",
+				name, secret.Key, secret.Name, OwnerSecret(service))
 		}
 	}
 	for _, configMap := range configMaps {
@@ -1191,9 +1263,24 @@ func loadSecretFiles(files map[string][]byte, service, job string, servingSecret
 		if !held[pair.removal] {
 			continue
 		}
-		mounted, err := loadPatchPair(files, pair.removal, pair.mounts, pair.apiVersion, pair.kind, pair.name, service)
+		mounted, set, err := loadPatchPair(files, pair.removal, pair.mounts, pair.apiVersion, pair.kind, pair.name, service)
 		if err != nil {
 			return err
+		}
+		// The Job mounts the key url of the owner Secret for the *_FILE form of its own credential, and the Secret
+		// and key of each key file of MigrationKeyFiles, and nothing else (#373 security review M2).
+		for variable, source := range set {
+			if pair.kind != "Job" {
+				continue
+			}
+			want, keyFile := migrationKeyFile(service, variable)
+			if !keyFile {
+				want = SecretSource{Name: OwnerSecret(service), Key: "url"}
+			}
+			if source != want || (!keyFile && !strings.HasSuffix(variable, "_FILE")) {
+				return fmt.Errorf("%s gives the Job %s from the key %s of the Secret %s; the Job may mount only the key url of %s and the key files that the migrate mode reads (ST-DLV-INV13)",
+					pair.mounts, variable, source.Key, source.Name, OwnerSecret(service))
+			}
 		}
 		for _, secret := range mounted {
 			if pair.kind == "Deployment" && isOwnerSecret(service, secret) {
@@ -1212,27 +1299,28 @@ func loadSecretFiles(files map[string][]byte, service, job string, servingSecret
 // patch only deletes environment entries. The mount patch only sets each *_FILE variable to the path of a file under
 // SecretFilesRoot, mounts each secret read-only at its folder there, and adds a secret volume with the mode 0400 for
 // each mount, with only the keys that a set variable reads. No patch names a variable twice, and the mount patch
-// sets no variable that the removal patch keeps. It gives the mounted secrets.
-func loadPatchPair(files map[string][]byte, removalFile, mountsFile, apiVersion, kind, name, service string) ([]string, error) {
+// sets no variable that the removal patch keeps. It gives the mounted secrets, and the Secret and key of each set
+// variable.
+func loadPatchPair(files map[string][]byte, removalFile, mountsFile, apiVersion, kind, name, service string) ([]string, map[string]SecretSource, error) {
 	var patches [2]secretFilesPatch
 	for i, file := range []string{removalFile, mountsFile} {
 		if err := decodeStrict(files[file], MaxRequirementsBytes, &patches[i]); err != nil {
-			return nil, fmt.Errorf("%s: %w", file, err)
+			return nil, nil, fmt.Errorf("%s: %w", file, err)
 		}
 		patch := patches[i]
 		if patch.APIVersion != apiVersion || patch.Kind != kind || patch.Metadata.Name != name || len(patch.Spec.Template.Spec.Containers) != 1 ||
 			patch.Spec.Template.Spec.Containers[0].Name != service {
-			return nil, fmt.Errorf("%s is not a patch of the one container of the %s %s", file, kind, name)
+			return nil, nil, fmt.Errorf("%s is not a patch of the one container of the %s %s", file, kind, name)
 		}
 	}
 	removal, mount := patches[0].Spec.Template.Spec, patches[1].Spec.Template.Spec
 	removed := map[string]bool{}
 	if len(removal.Volumes) > 0 || len(removal.Containers[0].VolumeMounts) > 0 || len(removal.Containers[0].Env) == 0 {
-		return nil, fmt.Errorf("%s does more than remove environment entries", removalFile)
+		return nil, nil, fmt.Errorf("%s does more than remove environment entries", removalFile)
 	}
 	for _, entry := range removal.Containers[0].Env {
 		if entry.Patch != "delete" || entry.Value != nil || !variableName.MatchString(entry.Name) || removed[entry.Name] {
-			return nil, fmt.Errorf("%s does more than remove each environment entry once: %q", removalFile, entry.Name)
+			return nil, nil, fmt.Errorf("%s does more than remove each environment entry once: %q", removalFile, entry.Name)
 		}
 		removed[entry.Name] = true
 	}
@@ -1243,11 +1331,11 @@ func loadPatchPair(files map[string][]byte, removalFile, mountsFile, apiVersion,
 	for _, volume := range mount.Volumes {
 		if !serviceLabel.MatchString(volume.Name) || volume.Name == "tmp" || volumes[volume.Name] || volume.Secret == nil || volume.Secret.SecretName != volume.Name ||
 			volume.Secret.DefaultMode == nil || *volume.Secret.DefaultMode != SecretFileMode || len(volume.Secret.Items) == 0 {
-			return nil, fmt.Errorf("%s holds the volume %q, which is not one secret volume of the mode 0400 named by its secret, with its keys", mountsFile, volume.Name)
+			return nil, nil, fmt.Errorf("%s holds the volume %q, which is not one secret volume of the mode 0400 named by its secret, with its keys", mountsFile, volume.Name)
 		}
 		for _, item := range volume.Secret.Items {
 			if item.Path != item.Key || !shapeWord.MatchString(item.Key) || projected[volume.Name+"/"+item.Key] {
-				return nil, fmt.Errorf("%s projects %q of %s, which is not one key at the path of its name", mountsFile, item.Key, volume.Name)
+				return nil, nil, fmt.Errorf("%s projects %q of %s, which is not one key at the path of its name", mountsFile, item.Key, volume.Name)
 			}
 			projected[volume.Name+"/"+item.Key] = true
 		}
@@ -1257,37 +1345,39 @@ func loadPatchPair(files map[string][]byte, removalFile, mountsFile, apiVersion,
 	mounted := map[string]bool{}
 	for _, volumeMount := range mount.Containers[0].VolumeMounts {
 		if !volumes[volumeMount.Name] || mounted[volumeMount.Name] || volumeMount.MountPath != SecretFilesRoot+"/"+volumeMount.Name || !volumeMount.ReadOnly {
-			return nil, fmt.Errorf("%s mounts %q, which is not one read-only secret volume at its folder under %s", mountsFile, volumeMount.Name, SecretFilesRoot)
+			return nil, nil, fmt.Errorf("%s mounts %q, which is not one read-only secret volume at its folder under %s", mountsFile, volumeMount.Name, SecretFilesRoot)
 		}
 		mounted[volumeMount.Name] = true
 	}
 	if len(mounted) != len(volumes) || len(mount.Containers[0].Env) == 0 {
-		return nil, fmt.Errorf("%s does not mount each volume it adds, or sets no variable", mountsFile)
+		return nil, nil, fmt.Errorf("%s does not mount each volume it adds, or sets no variable", mountsFile)
 	}
 	set, used := map[string]bool{}, map[string]bool{}
+	sources := map[string]SecretSource{}
 	for _, entry := range mount.Containers[0].Env {
 		if entry.Patch != "" || entry.Value == nil || !variableName.MatchString(entry.Name) || set[entry.Name] {
-			return nil, fmt.Errorf("%s does more than set each file variable once: %q", mountsFile, entry.Name)
+			return nil, nil, fmt.Errorf("%s does more than set each file variable once: %q", mountsFile, entry.Name)
 		}
 		folder, key := path.Split(*entry.Value)
 		if !mounted[path.Base(folder)] || path.Clean(folder) != SecretFilesRoot+"/"+path.Base(folder) || !shapeWord.MatchString(key) ||
 			!projected[path.Base(folder)+"/"+key] {
-			return nil, fmt.Errorf("%s sets %s to a path that is not a projected key of a mounted secret", mountsFile, entry.Name)
+			return nil, nil, fmt.Errorf("%s sets %s to a path that is not a projected key of a mounted secret", mountsFile, entry.Name)
 		}
 		set[entry.Name] = true
+		sources[entry.Name] = SecretSource{Name: path.Base(folder), Key: key}
 		used[path.Base(folder)+"/"+key] = true
 	}
 	for key := range projected {
 		if !used[key] {
-			return nil, fmt.Errorf("%s projects the key %s, which no variable that it sets reads", mountsFile, key)
+			return nil, nil, fmt.Errorf("%s projects the key %s, which no variable that it sets reads", mountsFile, key)
 		}
 	}
 	for name := range set {
 		// The mount patch sets the *_FILE form of a removed secret variable, or a removed path variable itself: a
 		// path variable that the base wires from the ConfigMap must be removed first, or the two entries merge.
 		if !removed[name] && !removed[strings.TrimSuffix(name, "_FILE")] {
-			return nil, fmt.Errorf("%s sets %s, but %s does not remove the environment form", mountsFile, name, removalFile)
+			return nil, nil, fmt.Errorf("%s sets %s, but %s does not remove the environment form", mountsFile, name, removalFile)
 		}
 	}
-	return secrets, nil
+	return secrets, sources, nil
 }
