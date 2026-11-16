@@ -455,9 +455,16 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 	return want, nil
 }
 
-// runtimeGrant reads a GRANT statement of the runtime role on a table, without its grantee:
-// GRANT <privileges> ON TABLE "<schema>"."<table>".
-var runtimeGrant = regexp.MustCompile(`^GRANT ([A-Z]+(?:, [A-Z]+)*) ON TABLE "([^"]+)"\."([^"]+)"$`)
+// runtimeGrant reads a GRANT statement of the runtime role, without its grantee: its privileges, the kind of its
+// object and the quoted object. grantedTable reads the schema and the name of a table from its object. The manifest
+// of the entity tables reads the grants on a table only.
+var (
+	runtimeGrant = regexp.MustCompile(`^GRANT ([A-Z]+(?:, [A-Z]+)*) ON (TABLE|SEQUENCE|SCHEMA) ("[^"]+"(?:\."[^"]+")?)$`)
+	grantedTable = regexp.MustCompile(`^"([^"]+)"\."([^"]+)"$`)
+)
+
+// tableKind is the kind of the object of a grant on a table.
+const tableKind = "TABLE"
 
 // The columns of the grants of the worker role on the table of an entity with a resource type, which the
 // authorization migration gives so the worker stores the token of each row (ST-SUP-RC29).
@@ -474,14 +481,18 @@ var (
 func entityGrants(want *manifest.Manifest, p Parts, runtimeRole string) error {
 	granted := map[[2]string][]string{}
 	for _, statement := range p.Grants {
-		if !strings.Contains(statement, " ON TABLE ") {
+		match := runtimeGrant.FindStringSubmatch(statement)
+		var table []string
+		if match != nil && match[2] == tableKind {
+			table = grantedTable.FindStringSubmatch(match[3])
+		}
+		if match != nil && match[2] != tableKind {
 			continue
 		}
-		match := runtimeGrant.FindStringSubmatch(statement)
-		if match == nil {
-			return fmt.Errorf("service: the runtime grant %q of the parts is not GRANT <privileges> ON TABLE \"<schema>\".\"<table>\", so the schema manifest cannot check it (Parts.Grants)", statement)
+		if table == nil {
+			return fmt.Errorf("service: the runtime grant %q of the parts is not of the form that the generated code writes, with each table named with its schema, so the schema manifest cannot check it (Parts.Grants)", statement)
 		}
-		key := [2]string{match[2], match[3]}
+		key := [2]string{table[1], table[2]}
 		granted[key] = append(granted[key], strings.Split(match[1], ", ")...)
 	}
 	for i := range want.Tables {
