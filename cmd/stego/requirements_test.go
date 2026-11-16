@@ -1206,8 +1206,44 @@ func TestStrictSecretSources(t *testing.T) {
 			if strings.Contains(stderr, "WARNING: the environment variable") {
 				t.Errorf("stego %s warns and refuses the same source:\n%s", strings.Join(args, " "), stderr)
 			}
-			if _, err := os.Stat(filepath.Join(dir, "deploy")); !os.IsNotExist(err) {
-				t.Fatalf("stego %s writes deploy/ although it refuses: %v", strings.Join(args, " "), err)
+			// A refused run writes no file: no deploy/, no saved plan or state in .stego/ and no out/ (#375 security
+			// review, test gaps).
+			for _, folder := range []string{"deploy", ".stego", "out"} {
+				if _, err := os.Stat(filepath.Join(dir, folder)); !os.IsNotExist(err) {
+					t.Fatalf("stego %s writes %s/ although it refuses: %v", strings.Join(args, " "), folder, err)
+				}
+			}
+		}
+		// With add steps pending, plan --strict and apply --strict run the same check, refuse, and change no file;
+		// before, plan ran only the declaration checks there (#375 security review L1).
+		steps := requirementsProject(t)
+		mustRunInProjectStderr(t, steps, env, "apply")
+		git(t, steps, "add", "-A")
+		git(t, steps, "commit", "-q", "-m", "the applied service orders")
+		declaration := strings.Replace(requirementsDeclaration, "fields: [{name: item, type: string}]",
+			"fields: [{name: item, type: string}, {name: note, type: string, optional: true}]", 1)
+		if err := os.WriteFile(filepath.Join(steps, "service.yaml"), []byte(declaration), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if stdout, stderr := mustRunInProjectStderr(t, steps, env, "plan", "--base", "HEAD"); !strings.Contains(stdout, "Apply writes the") ||
+			!strings.Contains(stderr, "WARNING: the environment variable STEGO_WORKER_DATABASE_URL") {
+			t.Fatalf("stego plan without --strict does not list the add steps and warn of the secret source:\n%s\n%s", stdout, stderr)
+		}
+		before := tree(t, steps)
+		for _, args := range [][]string{{"plan", "--strict", "--base", "HEAD"}, {"apply", "--strict", "--base", "HEAD"}} {
+			stdout, stderr, err := runInProject(t, steps, env, args...)
+			text := stdout + stderr
+			if err == nil || !strings.Contains(text, "--strict refuses ") || !strings.Contains(text, "secret source orders-database key worker-url") {
+				t.Errorf("stego %s with add steps pending: %v, want the refusal of --strict that names the secret source:\n%s", strings.Join(args, " "), err, text)
+			}
+			if strings.Contains(stdout, "Apply writes the") {
+				t.Errorf("stego %s lists the add steps although --strict refuses:\n%s", strings.Join(args, " "), stdout)
+			}
+			if args[0] == "apply" && !strings.Contains(stderr, "apply wrote the old service.yaml back, without the add steps") {
+				t.Errorf("stego %s does not say that it wrote the old service.yaml back:\n%s", strings.Join(args, " "), text)
+			}
+			if after := tree(t, steps); !maps.Equal(before, after) {
+				t.Errorf("stego %s changed a file of the service folder although --strict refuses", strings.Join(args, " "))
 			}
 		}
 		// Without --strict, the same run warns and goes on (ST-DLV-UC01-R06-T03).

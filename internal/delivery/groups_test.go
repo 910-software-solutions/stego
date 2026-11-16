@@ -87,6 +87,7 @@ func TestGroupsOfOneOf(t *testing.T) {
 		for _, want := range []string{
 			"| `DATABASE_URL` | string | one of `database-url` |", "| `DATABASE_URL_FILE` | path | one of `database-url` |", "| `BROKERS` | list | no |",
 			"## Groups of one of", "The service needs exactly one variable of each group", "| `database-url` | `DATABASE_URL`, `DATABASE_URL_FILE` |",
+			"The key of the Secret of each of these variables is the one value of its group:\n`DATABASE_URL`.\n", "never the *_FILE variable",
 		} {
 			if !strings.Contains(reference, want) {
 				t.Errorf("the reference does not hold %q:\n%s", want, reference)
@@ -96,44 +97,29 @@ func TestGroupsOfOneOf(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(files.Reference), "Groups of one of") {
+		if strings.Contains(string(files.Reference), "Groups of one of") || strings.Contains(string(files.Reference), "The key of the Secret of") {
 			t.Errorf("the reference of a list with no group has a section of groups:\n%s", files.Reference)
 		}
 	})
 
 	t.Run("ST-DLV-UC02-R06-T03 The environment check fails for a group of one of with no value or more than one, and names the group and how to give each variable", func(t *testing.T) {
-		files, err := WriteRequirements("orders", groupComponents())
-		if err != nil {
-			t.Fatal(err)
-		}
-		requirements, err := LoadRequirements(files.Requirements)
-		if err != nil {
-			t.Fatal(err)
-		}
-		head := "version: 1\nservice: orders\nenvironment: dev\nimage: quay.io/example/orders@sha256:" + strings.Repeat("ab", 32) + "\n" +
-			"destination: {cluster: https://api.example.com:6443, namespace: orders-dev, overlay_path: overlays/dev}\n"
+		requirements := groupRequirements(t)
 		for name, tc := range map[string]struct {
 			sections string
+			group    string
 			status   FitStatus
 			want     []string
 		}{
-			"the Secret of the source": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}}\n", Met, nil},
-			"the file form":            {"secrets: {orders-database: {password: CANARY-SECRET-VALUE}}\nconfiguration: {DATABASE_URL_FILE: /etc/orders/url}\n", Met, nil},
-			"no variable of the group": {"secrets: {orders-database: {password: CANARY-SECRET-VALUE}}\nconfiguration: {DATABASE_URL_FILE: \"\"}\n", Missing,
-				[]string{"group of one of database-url", "give exactly one of", "the key url of the secret orders-database (DATABASE_URL)", "a configuration value DATABASE_URL_FILE"}},
-			"the two variables": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}}\nconfiguration: {DATABASE_URL_FILE: /etc/orders/url}\n", WrongType,
-				[]string{"more than one variable of the group of one of database-url", "DATABASE_URL, DATABASE_URL_FILE", "refuses them together"}},
+			"the Secret of the source": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}}\nconfiguration: {BROKERS: kafka-0:9093}\n", "database-url", Met, nil},
+			"no variable of the group": {"secrets: {orders-database: {password: CANARY-SECRET-VALUE}}\nconfiguration: {DATABASE_URL_FILE: \"\", BROKERS: kafka-0:9093}\n", "database-url", Missing,
+				[]string{"group of one of database-url", "give exactly one of", "the key url of the secret orders-database (DATABASE_URL, or DATABASE_URL_FILE when the overlay lists the Component deploy/components/secret-files)"}},
+			"one variable of a pair with no source": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}}\nconfiguration: {BROKERS_FILE: /etc/orders/brokers}\n", "brokers", Met, nil},
+			"no variable of a pair with no source": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}}\nconfiguration: {BROKERS: \"\"}\n", "brokers", Missing,
+				[]string{"group of one of brokers", "a configuration value BROKERS; a configuration value BROKERS_FILE"}},
+			"the two variables": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}}\nconfiguration: {BROKERS: kafka-0:9093, BROKERS_FILE: /etc/orders/brokers}\n", "brokers", WrongType,
+				[]string{"more than one variable of the group of one of brokers", "BROKERS, BROKERS_FILE", "refuses them together"}},
 		} {
-			fit, err := CheckEnvironment(requirements, []byte(head+tc.sections))
-			if err != nil {
-				t.Fatalf("%s: %v", name, err)
-			}
-			var row *FitRow
-			for i := range fit.Rows {
-				if fit.Rows[i].Requirement == "group database-url" {
-					row = &fit.Rows[i]
-				}
-			}
+			row, _ := groupRow(t, requirements, tc.sections, tc.group)
 			if row == nil || row.Status != tc.status {
 				t.Errorf("%s: the group row is %+v, want the status %s", name, row, tc.status)
 				continue
@@ -148,4 +134,110 @@ func TestGroupsOfOneOf(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ST-DLV-UC02-R06-T04 The environment check counts a value of a group as the base wires it: the key of the secret source in both forms, never a *_FILE value or a Secret named like the variable", func(t *testing.T) {
+		requirements := groupRequirements(t)
+		const brokers = "configuration: {BROKERS: kafka-0:9093}\n"
+		for name, tc := range map[string]struct {
+			sections string
+			status   FitStatus
+			notice   []string
+		}{
+			// The Component secret-files gives the key of the Secret as DATABASE_URL_FILE, so the Secret is the one
+			// value of the pair, and a DATABASE_URL_FILE of the file is never wired: a notice, not a second value.
+			"the Secret and the file form": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}}\nconfiguration: {DATABASE_URL_FILE: orders/url, BROKERS: kafka-0:9093}\n", Met,
+				[]string{"configuration DATABASE_URL_FILE: the base never wires DATABASE_URL_FILE from the environment file", "the key url of the secret orders-database",
+					"as DATABASE_URL, or as the file DATABASE_URL_FILE when the overlay lists the Component deploy/components/secret-files", "remove DATABASE_URL_FILE"}},
+			"the file form alone": {"secrets: {orders-database: {password: CANARY-SECRET-VALUE}}\nconfiguration: {DATABASE_URL_FILE: /etc/orders/url, BROKERS: kafka-0:9093}\n", Missing,
+				[]string{"configuration DATABASE_URL_FILE: the base never wires"}},
+			"the file form as a Secret": {"secrets: {orders-database: {url: CANARY-SECRET-VALUE}, DATABASE_URL_FILE: {DATABASE_URL_FILE: CANARY-SECRET-VALUE}}\n" + brokers, Met,
+				[]string{"secret DATABASE_URL_FILE: the base never wires"}},
+			// A Secret named like a variable with a source is not its value, with any key (#375 security review L2).
+			"a Secret named like the variable":         {"secrets: {orders-database: {password: CANARY-SECRET-VALUE}, DATABASE_URL: {url: CANARY-SECRET-VALUE, DATABASE_URL: CANARY-SECRET-VALUE}}\n" + brokers, Missing, nil},
+			"the Secret of the source without the key": {"secrets: {orders-database: {password: CANARY-SECRET-VALUE}}\n" + brokers, Missing, nil},
+		} {
+			row, fit := groupRow(t, requirements, tc.sections, "database-url")
+			if row == nil || row.Status != tc.status {
+				t.Errorf("%s: the group row is %+v, want the status %s", name, row, tc.status)
+				continue
+			}
+			// A value that the base never wires does not fail the check, even of a wrong type.
+			if tc.status == Met && !fit.Met() {
+				t.Errorf("%s: the check fails: %+v", name, fit.Rows)
+			}
+			notices := strings.Join(fit.Notices, "\n")
+			for _, want := range tc.notice {
+				if !strings.Contains(notices, want) {
+					t.Errorf("%s: the notices do not say %q:\n%s", name, want, notices)
+				}
+			}
+			if len(tc.notice) == 0 && strings.Contains(notices, "never wires") {
+				t.Errorf("%s: the check gives a notice of a value that the file does not give:\n%s", name, notices)
+			}
+			if strings.Contains(notices+row.Detail, "CANARY") {
+				t.Errorf("%s: the check shows a secret value: %s\n%s", name, row.Detail, notices)
+			}
+		}
+		// A secret variable with no source has a value when a Secret of its name holds the key of its name, as envFrom
+		// of that Secret gives it; a Secret of its name with another key or with no key is not a value.
+		components := groupComponents()
+		components[0].Variables[0].SecretSource = nil
+		files, err := WriteRequirements("orders", components)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unsourced, err := LoadRequirements(files.Requirements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for secret, status := range map[string]FitStatus{
+			"{DATABASE_URL: CANARY-SECRET-VALUE}": Met,
+			"{url: CANARY-SECRET-VALUE}":          Missing,
+			"{}":                                  Missing,
+			"{DATABASE_URL: \"\"}":                Missing,
+		} {
+			row, _ := groupRow(t, unsourced, "secrets: {orders-database: {url: CANARY-SECRET-VALUE}, DATABASE_URL: "+secret+"}\n", "database-url")
+			if row == nil || row.Status != status {
+				t.Errorf("the Secret DATABASE_URL %s: the group row is %+v, want the status %s", secret, row, status)
+			}
+		}
+	})
+}
+
+// groupRequirements are the platform requirements of the service orders with the components of groupComponents and
+// the pair BROKERS and BROKERS_FILE of the group brokers, which has no secret source.
+func groupRequirements(t *testing.T) Requirements {
+	t.Helper()
+	components := groupComponents()
+	components[1].Variables = []Variable{
+		{Name: "BROKERS", Type: "list", Description: "The brokers.", OneOf: "brokers"},
+		{Name: "BROKERS_FILE", Type: "path", Description: "The file of the brokers.", OneOf: "brokers"},
+	}
+	files, err := WriteRequirements("orders", components)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements, err := LoadRequirements(files.Requirements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return requirements
+}
+
+// groupRow checks an environment file of the service orders with the sections and gives the row of the group, or nil,
+// and the fit.
+func groupRow(t *testing.T, requirements Requirements, sections, group string) (*FitRow, EnvironmentFit) {
+	t.Helper()
+	head := "version: 1\nservice: orders\nenvironment: dev\nimage: quay.io/example/orders@sha256:" + strings.Repeat("ab", 32) + "\n" +
+		"destination: {cluster: https://api.example.com:6443, namespace: orders-dev, overlay_path: overlays/dev}\n"
+	fit, err := CheckEnvironment(requirements, []byte(head+sections))
+	if err != nil {
+		t.Fatalf("%s: %v", sections, err)
+	}
+	for i := range fit.Rows {
+		if fit.Rows[i].Requirement == "group "+group {
+			return &fit.Rows[i], fit
+		}
+	}
+	return nil, fit
 }
