@@ -98,7 +98,13 @@ type Runtime struct {
 	logFailures      atomic.Uint64
 	shutdownFailures atomic.Uint64
 	shutdownErr      error
+	deadline         deadline
 }
+
+// deadline gives a context that ends d after it is made. The runtime uses context.WithTimeout, which reads the real
+// clock. A test gives a clock that it moves itself, so it proves the export and shutdown bounds of
+// ST-SUP-RP03-LC10 with no wall-clock limit.
+type deadline func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
 
 // settings are the telemetry settings of the process environment, checked (ST-SUP-RP03-LC09).
 type settings struct {
@@ -119,6 +125,11 @@ type settings struct {
 // verified TLS gRPC connection and does not wait for the collector (ST-SUP-RP03-LC02). operations is the closed set
 // of operation span names that other runtime packages may start (ST-SUP-RP03-LC15); a name outside it is refused.
 func New(service string, operations ...string) (*Runtime, error) {
+	return newRuntime(service, context.WithTimeout, operations...)
+}
+
+// newRuntime is New with the clock of the export and shutdown bounds.
+func newRuntime(service string, bound deadline, operations ...string) (*Runtime, error) {
 	values, err := readSettings(service, os.Environ())
 	if err != nil {
 		return nil, err
@@ -127,7 +138,7 @@ func New(service string, operations ...string) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &Runtime{service: values.service, instance: instance, resource: serviceResource(values.service, instance)}
+	r := &Runtime{service: values.service, instance: instance, resource: serviceResource(values.service, instance), deadline: bound}
 	if err := r.register(operations); err != nil {
 		return nil, err
 	}
@@ -144,7 +155,7 @@ func New(service string, operations ...string) (*Runtime, error) {
 		_ = connection.Close()
 		return nil, errors.New("cannot create the trace exporter")
 	}
-	r.spans = newSpanQueue(&safeSpanExporter{SpanExporter: traces, failures: &r.traceFailures})
+	r.spans = newSpanQueue(&safeSpanExporter{SpanExporter: traces, failures: &r.traceFailures}, bound)
 	r.startTraces(values.ratio, r.spans)
 	var reader sdkmetric.Reader
 	if values.metrics {
@@ -223,7 +234,11 @@ func (r *Runtime) startTraces(ratio float64, processor sdktrace.SpanProcessor) {
 func (r *Runtime) Shutdown(ctx context.Context) error {
 	r.once.Do(func() {
 		r.closed.Store(true)
-		ctx, cancel := context.WithTimeout(ctx, ShutdownTimeout)
+		bound := r.deadline
+		if bound == nil {
+			bound = context.WithTimeout
+		}
+		ctx, cancel := bound(ctx, ShutdownTimeout)
 		defer cancel()
 		var group sync.WaitGroup
 		var failed atomic.Bool
@@ -558,6 +573,7 @@ func cumulative(sdkmetric.InstrumentKind) metricdata.Temporality {
 // when shutdown ends all count.
 type spanQueue struct {
 	exporter sdktrace.SpanExporter
+	deadline deadline
 	queue    chan sdktrace.ReadOnlySpan
 	flushes  chan chan struct{}
 	stop     chan struct{}
@@ -570,9 +586,9 @@ type spanQueue struct {
 	dropped  atomic.Uint64
 }
 
-func newSpanQueue(exporter sdktrace.SpanExporter) *spanQueue {
+func newSpanQueue(exporter sdktrace.SpanExporter, bound deadline) *spanQueue {
 	base, cancel := context.WithCancel(context.Background())
-	q := &spanQueue{exporter: exporter, queue: make(chan sdktrace.ReadOnlySpan, QueueSize), flushes: make(chan chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), base: base, cancel: cancel}
+	q := &spanQueue{exporter: exporter, deadline: bound, queue: make(chan sdktrace.ReadOnlySpan, QueueSize), flushes: make(chan chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), base: base, cancel: cancel}
 	go q.run()
 	return q
 }
@@ -607,7 +623,7 @@ func (q *spanQueue) run() {
 		if len(batch) == 0 {
 			return
 		}
-		export, cancel := context.WithTimeout(q.base, ExportTimeout)
+		export, cancel := q.deadline(q.base, ExportTimeout)
 		if err := q.exporter.ExportSpans(export, batch); err != nil {
 			q.dropped.Add(uint64(len(batch)))
 		}
