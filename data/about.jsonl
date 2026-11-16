@@ -107,6 +107,10 @@
 {"source_id":"ST-GEN-Q28","target_id":"ST-GEN-UC16-R04"}
 {"source_id":"ST-GEN-Q28","target_id":"ST-GEN-UC17-FL-S02"}
 {"source_id":"ST-GEN-Q28","target_id":"ST-GEN-UC17-R03"}
+{"source_id":"ST-GEN-Q36","target_id":"ST-BLD-INV07"}
+{"source_id":"ST-GEN-Q36","target_id":"ST-GEN-EN04"}
+{"source_id":"ST-GEN-Q36","target_id":"ST-GEN-INV23"}
+{"source_id":"ST-GEN-Q36","target_id":"ST-GEN-UC01-R01"}
 {"source_id":"ST-SUP-Q110","target_id":"ST-SUP-RC20"}
 {"source_id":"ST-SUP-Q110","target_id":"ST-SUP-RP10-LC25"}
 {"source_id":"ST-SUP-Q118","target_id":"ST-DECL-UC06-R04"}
@@ -177,3 +181,6 @@
 {"source_id":"ST-SUP-Q141","target_id":"ST-SUP-RP10-LC18"}
 {"source_id":"ST-SUP-Q141","target_id":"ST-SUP-RP12-LC21"}
 {"source_id":"ST-SUP-Q141","target_id":"ST-SUP-RP14-LC03"}
+{"source_id":"ST-SUP-Q146","target_id":"ST-GEN-INV16"}
+{"source_id":"ST-SUP-Q146","target_id":"ST-SUP-RP14-LC01"}
+{"source_id":"ST-SUP-Q146","target_id":"ST-SUP-RP14-LC05"}
