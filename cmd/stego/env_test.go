@@ -475,8 +475,8 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 			}
 			var component struct {
 				Environment []struct {
-					Name    string            `yaml:"name"`
-					Type    string            `yaml:"type"`
+					Name    string         `yaml:"name"`
+					Type    string         `yaml:"type"`
 					Allowed map[string]any `yaml:"allowed"`
 				} `yaml:"environment"`
 			}
