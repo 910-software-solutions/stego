@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	core "github.com/authzed/spicedb/pkg/proto/core/v1"
 
@@ -117,7 +116,7 @@ func TestTenantProvisioning(t *testing.T) {
 
 	// A chain of diamonds made each level double the work of a search that does not keep its answers (security
 	// review of PR 253, L3). The fixed point answers it at once, so a crafted schema cannot hang checking.
-	t.Run(inv78+": a chain of 60 diamonds is checked in well under a second", func(t *testing.T) {
+	t.Run(inv78+": a chain of 60 diamonds is checked with work that grows with its size", func(t *testing.T) {
 		chain := func(last string) string {
 			var text strings.Builder
 			fmt.Fprintf(&text, "definition user {}\ndefinition node60 {\n relation anyone: %s\n permission perm = anyone\n}\n", last)
@@ -128,19 +127,22 @@ func TestTenantProvisioning(t *testing.T) {
 		}
 		// With no wildcard at the end, a search that does not keep its answers walks 2^60 paths.
 		for last, want := range map[string]bool{"user": false, "user:*": true} {
-			start := time.Now()
-			if got := compileTD03(t, chain(last)).reachesWildcard("node0", "perm"); got != want {
+			text := chain(last)
+			compiled := compileTD03(t, text)
+			if got := compiled.reachesWildcard("node0", "perm"); got != want {
 				t.Errorf("a chain that ends in %s: want %v, got %v", last, want, got)
 			}
-			if elapsed := time.Since(start); elapsed > time.Second {
-				t.Errorf("a chain that ends in %s took %v", last, elapsed)
+			if _, work := compiled.wildcardReachWork(); work > reachWorkBound(text) {
+				t.Errorf("a chain that ends in %s took %d steps, more than the bound %d of its %d bytes", last, work, reachWorkBound(text), len(text))
+			} else {
+				t.Logf("a chain that ends in %s: %d steps for %d bytes", last, work, len(text))
 			}
 		}
 	})
 	// A long chain of arrows made the fixed point quadratic: each pass over the schema set one more node, so 12000
 	// links took about 48 s (security review of PR 253, L4). The worklist sets each node once, when a node it reads
-	// changes, so the time grows with the size of the schema.
-	t.Run(inv78+": a chain of 12000 arrows is checked in linear time", func(t *testing.T) {
+	// changes, so the work grows with the size of the schema.
+	t.Run(inv78+": a chain of 12000 arrows is checked with work that grows with its size", func(t *testing.T) {
 		const links = 12000
 		var text strings.Builder
 		fmt.Fprintf(&text, "definition user {}\ndefinition node%d {\n relation anyone: user:*\n permission perm = anyone\n}\n", links)
@@ -148,14 +150,14 @@ func TestTenantProvisioning(t *testing.T) {
 			fmt.Fprintf(&text, "definition node%d {\n relation next: node%d\n permission perm = next->perm\n}\n", i, i+1)
 		}
 		compiled := compileUnbounded(t, text.String())
-		start := time.Now()
-		reach := compiled.wildcardReach()
-		elapsed := time.Since(start)
+		reach, work := compiled.wildcardReachWork()
 		if !reach["node0#perm"] || reach["node0#next"] {
 			t.Errorf("node0#perm reaches a wildcard %v and node0#next %v, want true and false", reach["node0#perm"], reach["node0#next"])
 		}
-		if elapsed > 2*time.Second {
-			t.Errorf("the wildcard reach of a chain of %d arrows took %v, want well under 2 s", links, elapsed)
+		if work > reachWorkBound(text.String()) {
+			t.Errorf("the wildcard reach of a chain of %d arrows took %d steps, more than the bound %d of its %d bytes", links, work, reachWorkBound(text.String()), text.Len())
+		} else {
+			t.Logf("a chain of %d arrows: %d steps for %d bytes", links, work, text.Len())
 		}
 	})
 	// A wide intersection whose parts repeat made the worklist quadratic in the fan-in of a node: it kept each
@@ -203,20 +205,20 @@ func TestTenantProvisioning(t *testing.T) {
 			return b.String()
 		}, "doc#xxx", false},
 	} {
-		t.Run(inv78+": a wide intersection is checked in linear time: "+c.name, func(t *testing.T) {
+		t.Run(inv78+": a wide intersection is checked with work that grows with its size: "+c.name, func(t *testing.T) {
 			text := c.text()
 			if len(text) > MaxSchemaBytes {
 				t.Fatalf("the schema has %d bytes, more than MaxSchemaBytes", len(text))
 			}
 			compiled := compileUnbounded(t, text)
-			start := time.Now()
-			reach := compiled.wildcardReach()
-			elapsed := time.Since(start)
+			reach, work := compiled.wildcardReachWork()
 			if reach[c.node] != c.want {
 				t.Errorf("%s reaches a wildcard %v, want %v", c.node, reach[c.node], c.want)
 			}
-			if elapsed > 2*time.Second {
-				t.Errorf("the wildcard reach took %v, want well under 2 s", elapsed)
+			if work > reachWorkBound(text) {
+				t.Errorf("the wildcard reach took %d steps, more than the bound %d of its %d bytes", work, reachWorkBound(text), len(text))
+			} else {
+				t.Logf("%d steps for %d bytes", work, len(text))
 			}
 		})
 	}
@@ -429,3 +431,10 @@ func TestOwnRoutes(t *testing.T) {
 		}
 	})
 }
+
+// reachWorkBound is the most work (AuthzSchema.wildcardReachWork) that the wildcard reach of a schema text may take:
+// one step for each byte. Each input and each edge of the graph comes from at least a few bytes of the text, so a
+// reach that follows each edge once stays under it, and a reach that decides a gate again at each input, or that
+// passes over the schema once for each node it sets, goes far over it on the long and wide schemas of these cases.
+// The test counts the work and does not time it, so it does not fail on a slow or loaded runner.
+func reachWorkBound(text string) int { return len(text) }
