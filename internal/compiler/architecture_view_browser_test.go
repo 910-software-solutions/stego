@@ -293,6 +293,20 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		if !cell.Found || strings.Count(cell.Text, value) < 3 || !strings.Contains(cell.Cut, value) || cell.Images != 0 || cell.Ran != 0 {
 			t.Errorf("the details of a nested cell do not show the hostile ancestor names as text only: %+v", cell)
 		}
+		// The details of a cell that may hold an incomplete permission show its hostile resource type as text
+		// (security review of PR #383, L1).
+		var may struct {
+			Found       bool
+			Text        string
+			Images, Ran int
+		}
+		b.eval(`(function(){ var btn = document.querySelector("#view button.cell.may-hold");
+			if (!btn) return {Found: false};
+			btn.click();
+			return {Found: true, Text: (document.getElementById("cellMayHold")||{}).textContent || "", Images: document.querySelectorAll("img").length, Ran: window.__ran}; })()`, &may)
+		if !may.Found || !strings.Contains(may.Text, value) || may.Images != 0 || may.Ran != 0 {
+			t.Errorf("the details of a cell that may hold do not show the hostile resource type as text only: %+v", may)
+		}
 		// The index of the elements by ID has no prototype: an ID of the address that names a property of Object
 		// selects nothing, and a model element with the ID __proto__ is an element like any other.
 		for _, sel := range []string{"constructor", "toString", "__proto__"} {
@@ -682,6 +696,69 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		got = read("file://"+complete, "check:operation:org-users.read", owner)
 		if len(got.Items) != 1 || strings.Contains(got.Items[0], "incomplete") || !strings.Contains(got.Items[0], "this role alone does not grant it, so the caller also needs it") || got.Note != "" {
 			t.Errorf("the cell of a complete ancestor read shows %+v", got)
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R14-T08 The details of a cell that may hold its permission say may hold, and a permission with no key complete reads as cut short", func(t *testing.T) {
+		type details struct {
+			Items   []string
+			Note    string
+			Own     string
+			MayHold string
+			Paths   int
+		}
+		read := func(address, check, role string) details {
+			b.open(address + "#view=trust")
+			var got details
+			b.eval(`(function(){ document.querySelector('#view button.cell[data-check="`+check+`"][data-role="`+role+`"]').click();
+				function text(id){ return (document.getElementById(id)||{}).textContent || ""; }
+				return {Items: Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.textContent; }),
+					Note: text("cellAncestorIncomplete"), Own: text("cellIncomplete"), MayHold: text("cellMayHold"),
+					Paths: document.querySelectorAll("#details li[data-grant]").length}; })()`, &got)
+			return got
+		}
+		owner, viewer, top := "role:member#owner@user", "role:organization#viewer@user", "check:operation:organizations.read"
+		// A role with no named path of organization#view, whose paths a limit cut short, may hold it.
+		got := read(access, top, owner)
+		if !strings.Contains(got.Own, "Incomplete: a limit was reached, so organization#view may grant more roles") ||
+			!strings.Contains(got.MayHold, "May hold: no path that the model names gives member#owner@user the permission organization#view") ||
+			!strings.Contains(got.MayHold, "so this role may hold it") || got.Paths != 0 {
+			t.Errorf("the cell of a role that may hold an incomplete permission shows %+v", got)
+		}
+		// A role with a named path holds it: the note of the cut paths and no may hold.
+		if got = read(access, top, viewer); got.Own == "" || got.MayHold != "" || got.Paths == 0 {
+			t.Errorf("the cell of a role that holds an incomplete permission shows %+v", got)
+		}
+		// The same model with no key complete in organization#view and member#view (security review of PR #383, L3):
+		// the script reads each as cut short, as the Go view does.
+		data, err := os.ReadFile("testdata/architecture/access.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		for _, perm := range raw["access"].(map[string]any)["permissions"].([]any) {
+			if id := perm.(map[string]any)["id"]; id == "permission:organization#view" || id == "permission:member#view" {
+				delete(perm.(map[string]any), "complete")
+			}
+		}
+		if data, err = json.Marshal(raw); err != nil {
+			t.Fatal(err)
+		}
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		missing := filepath.Join(t.TempDir(), "index.html")
+		if err := os.WriteFile(missing, view, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got = read("file://"+missing, "check:operation:org-users.read", "role:organization#auditor@user")
+		if !strings.Contains(got.Own, "member#view may grant more roles") || !strings.Contains(got.MayHold, "the permission member#view") ||
+			len(got.Items) != 1 || !strings.Contains(got.Items[0], "organization#view ⚠ incomplete: a limit was reached") || got.Note == "" {
+			t.Errorf("the cell of permissions with no key complete shows %+v", got)
 		}
 	})
 

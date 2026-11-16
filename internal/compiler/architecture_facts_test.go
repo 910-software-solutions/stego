@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 // These tests prove the list of the compliance facts of a topic (ST-GEN-UC16, ST-GEN-QRY06) on models that
@@ -213,6 +215,96 @@ func TestComplianceFactList(t *testing.T) {
 		line := strings.Index(block, "a limit cut a path of the ancestor read permission:folder#view short (checks ancestor 2 Folder), so it can grant more roles than its paths name")
 		if checks < 0 || line < checks || strings.Index(block, "checks ancestor 1 Shelf") < line {
 			t.Fatalf("the text does not mark the incomplete ancestor read at the checks fact of folder-docs.update:\n%s", block)
+		}
+	})
+
+	t.Run("ST-GEN-UC16-R01-T06 The checks fact of an operation whose grant paths a limit cut short names the roles that may hold it, as the cells of the access matrix do", func(t *testing.T) {
+		// mayHoldCells gives, for each check of the view, the roles whose cell of the access matrix says may hold.
+		mayHoldCells := func(data []byte) map[string][]string {
+			view, err := RenderArchitectureView(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := map[string][]string{}
+			for _, b := range parseView(t, view).all(func(n *html.Node) bool {
+				return n.Data == "button" && strings.Contains(attrOf(n, "class"), "may-hold")
+			}) {
+				out[attrOf(b, "data-check")] = append(out[attrOf(b, "data-check")], attrOf(b, "data-role"))
+			}
+			for k := range out {
+				slices.Sort(out[k])
+			}
+			return out
+		}
+		// agree lists the facts of the model and compares the roles that may hold the permission of each checks fact
+		// with the cells of the matrix; it gives the number of checks facts with such roles.
+		agree := func(name string, data []byte) (int, string) {
+			text, list, out := factsOf(t, archProject(t, data), "access")
+			cells := mayHoldCells(data)
+			n := 0
+			for _, f := range list.Facts {
+				if f.Name != "checks" {
+					continue
+				}
+				var got []string
+				if f.Grants != nil {
+					got = slices.Sorted(slices.Values(f.Grants.MayHold))
+					if len(got) > 0 && f.Grants.Complete {
+						t.Errorf("%s: the checks fact of %s names roles that may hold a complete permission: %v", name, f.About, got)
+					}
+				}
+				if want := cells["check:"+f.About]; !slices.Equal(got, want) {
+					t.Errorf("%s: the checks fact of %s names the roles that may hold it %v; the matrix says %v", name, f.About, got, want)
+				}
+				if len(got) > 0 {
+					n++
+					if !strings.Contains(text, "no path that the model names gives it to "+strings.Join(f.Grants.MayHold, ", ")+", but each may hold it by a path past the limit") {
+						t.Errorf("%s: the text does not name the roles that may hold %s", name, f.About)
+					}
+				}
+			}
+			if n > 0 && !bytes.Contains(out, []byte(`"may_hold"`)) {
+				t.Errorf("%s: the JSON list does not name the roles that may hold", name)
+			}
+			return n, text
+		}
+		data, err := os.ReadFile("testdata/architecture/access.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := agree("access.json", data); n == 0 {
+			t.Fatal("the fixture proves too little: no checks fact of a permission whose paths a limit cut short")
+		}
+		// variant gives access.json with the key complete of each named permission set to the value, or deleted
+		// when the value is nil.
+		variant := func(complete map[string]any) []byte {
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatal(err)
+			}
+			for _, perm := range raw["access"].(map[string]any)["permissions"].([]any) {
+				obj := perm.(map[string]any)
+				if v, ok := complete[obj["id"].(string)]; ok && v != nil {
+					obj["complete"] = v
+				} else if ok {
+					delete(obj, "complete")
+				}
+			}
+			out, err := json.MarshalIndent(raw, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return append(out, '\n')
+		}
+		// With the paths complete, no role may hold, and the text says no more than the paths.
+		if n, text := agree("complete", variant(map[string]any{"permission:organization#view": true})); n != 0 || strings.Contains(text, "may hold") {
+			t.Errorf("the facts of a complete model name %d checks with roles that may hold", n)
+		}
+		// The list refuses a model with no key complete in a permission, which the view reads as cut short (security
+		// review of PR #383, L3): neither tells a reader that the paths are complete.
+		if _, err := ListComplianceFacts(archProject(t, variant(map[string]any{"permission:member#view": nil})), "access", true); err == nil ||
+			!strings.Contains(err.Error(), "complete") {
+			t.Errorf("the list of a model with no key complete gives %v, not a refusal", err)
 		}
 	})
 

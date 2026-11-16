@@ -533,8 +533,9 @@ function cellDetails(d, id){
       // A grant that names no permission, in a model that the reader edited, shows as not held (security review of PR #374, L1).
       var q = a.grants && byId[a.grants], held = !!(q && Array.isArray(q.paths) && q.paths.some(function(g){ return (g.role || "") === role; }));
       // A limit cut the grant paths of the ancestor read short: more roles may hold it than the paths name, so the cell
-      // never shows that set as complete (security review of PR #374, L2).
-      var partial = !!(a.permission && q && Array.isArray(q.paths) && q.complete === false);
+      // never shows that set as complete (security review of PR #374, L2). A permission that does not say it is
+      // complete counts as cut short, as in the Go view (security review of PR #383, L3).
+      var partial = !!(q && q.complete !== true);
       var what = a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public"+(a.reason ? ": "+a.reason : "") : "no permission: "+(a.reason || ""));
       var who = !a.permission || !role ? "" : (held ? "; this role grants it" : (partial ? "; no path that the model names gives it to this role alone, but a limit cut its paths short, so this role may hold it" : "; this role alone does not grant it, so the caller also needs it"));
       var by = a.scope_source ? srcText(a.scope_source) : "";
@@ -545,10 +546,16 @@ function cellDetails(d, id){
     if (cut.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellAncestorIncomplete", text:"⚠ Incomplete: a limit was reached in the grant paths of the ancestor read "+cut.join(", ")+", so it may grant more roles than its paths name."}));
     d.appendChild(h("p", {"class":"k", text:"A missing, denied or wrong ancestor answers 404, before the row is read or written."}));
   }
-  if (p && p.complete === false) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: a limit was reached, so "+c.resource_type+"#"+c.permission+" may grant more roles than its paths name."}));
+  var own = (p && Array.isArray(p.paths) ? p.paths : []).filter(function(g){ return (g.role || "") === role; });
+  if (p && p.complete !== true){
+    d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: a limit was reached, so "+c.resource_type+"#"+c.permission+" may grant more roles than its paths name."}));
+    // No named path gives the role the permission, but a limit cut its paths short: the role may hold it, and the
+    // cell never reads as a definite no (security review of PR #383, L1).
+    if (role && !own.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellMayHold", text:"⚠ May hold: no path that the model names gives "+short(role)+" the permission "+c.resource_type+"#"+c.permission+", but a limit cut its grant paths short, so this role may hold it."}));
+  }
   d.appendChild(h("strong", {text:"Grant paths"}));
   var ul = h("ul");
-  (p && Array.isArray(p.paths) ? p.paths : []).filter(function(g){ return (g.role || "") === role; }).forEach(function(g){
+  own.forEach(function(g){
     ul.appendChild(h("li", {"data-grant":g.id}, [g.kinds.map(function(k){ return GLYPH[k] || ""; }).join("")+" "+grantSentence(p, g)]));
   });
   d.appendChild(ul);

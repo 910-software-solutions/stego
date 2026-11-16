@@ -71,6 +71,23 @@ type FactGrants struct {
 	Permission string      `json:"permission"`
 	Complete   bool        `json:"complete"`
 	Paths      []ArchGrant `json:"paths"`
+	// MayHold names, when a limit cut the paths short, each role of the access matrix that no path names: the role
+	// may hold the permission by a path past the limit, as the matrix cell of that role says (security review of PR
+	// #383, L1).
+	MayHold []string `json:"may_hold,omitempty"`
+}
+
+// factGrants gives who the permission grants, with the roles of the model that may hold it past a limit.
+func factGrants(m *ArchitectureModel, p ArchPermission) *FactGrants {
+	g := &FactGrants{Permission: p.ID, Complete: p.Complete, Paths: p.Paths}
+	if permissionIncomplete(&p) {
+		for _, r := range m.Access.Roles {
+			if len(matrixCell(&p, r.ID)) == 0 {
+				g.MayHold = append(g.MayHold, r.ID)
+			}
+		}
+	}
+	return g
 }
 
 // ListComplianceFacts answers ST-GEN-QRY06: it reads the architecture model of the project folder through
@@ -131,7 +148,7 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 						item.Quoted = append(item.Quoted, QuotedText{Name: "reason", Text: c.Reason, Source: c.Source})
 					}
 					if p, ok := permissions[c.Grants]; ok {
-						item.Grants = &FactGrants{Permission: p.ID, Complete: p.Complete, Paths: p.Paths}
+						item.Grants = factGrants(m, p)
 					} else if !c.Public && c.Permission != "" {
 						item.GrantsUnknown = true
 					}
@@ -148,7 +165,7 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 					item.Quoted = append(item.Quoted, QuotedText{Name: "reason", Text: a.Reason, Source: a.Source})
 				}
 				if p, ok := permissions[a.Grants]; ok {
-					item.Grants = &FactGrants{Permission: p.ID, Complete: p.Complete, Paths: p.Paths}
+					item.Grants = factGrants(m, p)
 				} else if a.Permission != "" {
 					item.GrantsUnknown = true
 				}
@@ -209,7 +226,7 @@ func factListText(list FactList) string {
 
 // writeGrants writes who the permission of a check grants, one line for each grant path with the source of its schema.
 func writeGrants(b *strings.Builder, g *FactGrants) {
-	if len(g.Paths) == 0 {
+	if len(g.Paths) == 0 && g.Complete {
 		fmt.Fprintf(b, "    %s has no grant path, so no role holds it\n", nameText(g.Permission))
 	}
 	for _, p := range g.Paths {
@@ -234,6 +251,9 @@ func writeGrants(b *strings.Builder, g *FactGrants) {
 	}
 	if !g.Complete {
 		fmt.Fprintf(b, "    a limit cut a path of %s short, so it can grant more roles than these\n", nameText(g.Permission))
+		if len(g.MayHold) > 0 {
+			fmt.Fprintf(b, "    no path that the model names gives it to %s, but each may hold it by a path past the limit\n", nameText(strings.Join(g.MayHold, ", ")))
+		}
 	}
 }
 
