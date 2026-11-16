@@ -65,6 +65,32 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
+// clockView is a view of a fake clock that sends the duration of each wait that it gives on asks, after the wait is
+// armed, so a test knows which part of which ticker waits now and for how long.
+type clockView struct {
+	*fakeClock
+	asks chan time.Duration
+}
+
+func (c *fakeClock) view() clockView {
+	return clockView{fakeClock: c, asks: make(chan time.Duration, 256)}
+}
+
+func (v clockView) After(d time.Duration) <-chan time.Time {
+	ch := v.fakeClock.After(d)
+	v.asks <- d
+	return ch
+}
+
+// asked reads the next wait that the view gave and fails when it is not of want. The caller knows that the code
+// under test asks for the wait: it is the next step of a lease or a schedule that the test released.
+func (v clockView) asked(t *testing.T, what string, want time.Duration) {
+	t.Helper()
+	if d := <-v.asks; d != want {
+		t.Fatalf("%s waits %s, want %s", what, d, want)
+	}
+}
+
 // observed records the built-in worker observations of a ticker.
 type observed struct {
 	mu         sync.Mutex
@@ -145,9 +171,16 @@ func startTicker(t *testing.T, e *env, clock *fakeClock, interval time.Duration,
 func startTickerOver(t *testing.T, e *env, clock *fakeClock, interval time.Duration, client *lease.Client,
 	list func(context.Context) ([]tenant.Tenant, error), body func(ctx context.Context, tenant string, h *Handle[testProbe]) error) *tickerFixture {
 	t.Helper()
+	return startTickerOn(t, e, clock, clock, interval, client, list, body)
+}
+
+// startTickerOn is startTickerOver with the ticker on tickClock, a view of clock.
+func startTickerOn(t *testing.T, e *env, clock *fakeClock, tickClock Clock, interval time.Duration, client *lease.Client,
+	list func(context.Context) ([]tenant.Tenant, error), body func(ctx context.Context, tenant string, h *Handle[testProbe]) error) *tickerFixture {
+	t.Helper()
 	w := e.worker("sync-partner-orders", "sync", func(s *WorkerSpec[testProbe]) { s.Interval = interval }, e.orders)
 	f := &tickerFixture{t: t, e: e, clock: clock, observe: &observed{}, runs: make(chan tickerRun, 64), done: make(chan struct{})}
-	ticker, err := NewTicker(e.rt, TickerSpec[testProbe]{Worker: w, Lease: client, Observe: f.observe, Clock: clock,
+	ticker, err := NewTicker(e.rt, TickerSpec[testProbe]{Worker: w, Lease: client, Observe: f.observe, Clock: tickClock,
 		Tenants: list,
 		Fill: func(ctx context.Context, due time.Time, h *Handle[testProbe]) error {
 			run := tickerRun{tenant: h.Tenant().ID(), due: due}
@@ -590,39 +623,59 @@ func TestTicker(t *testing.T) {
 			t.Fatal(err)
 		}
 		// RunWorker bounds a run under a lease by the lease's expiry on the lease clock and by the system clock, so
-		// this fake clock starts at the system time.
+		// this fake clock starts at the system time. A is the due time before it: the clock starts at A + 1 s.
 		now := time.Now()
-		clock := newFakeClock(time.Unix(0, (now.UnixNano()/interval.Nanoseconds())*interval.Nanoseconds()).Add(time.Second))
-		settings := lease.Settings{TTL: 15 * time.Second, Renew: 10 * time.Second, Clock: clock}
-		c1, err := lease.New(e.pool, name, "h1", settings)
+		a := time.Unix(0, (now.UnixNano()/interval.Nanoseconds())*interval.Nanoseconds())
+		clock := newFakeClock(a.Add(time.Second))
+		// Each lease client and each ticker waits on its own view of the clock, so the test reads which one waits
+		// and for how long, and moves the clock only when each is in its wait.
+		lease1, lease2, tick1, tick2 := clock.view(), clock.view(), clock.view(), clock.view()
+		const ttl, renew, retry = 15 * time.Second, 10 * time.Second, lease.DefaultRetry
+		c1, err := lease.New(e.pool, name, "h1", lease.Settings{TTL: ttl, Renew: renew, Clock: lease1})
 		if err != nil {
 			t.Fatal(err)
 		}
-		c2, err := lease.New(e.pool, name, "h2", settings)
+		c2, err := lease.New(e.pool, name, "h2", lease.Settings{TTL: ttl, Renew: renew, Clock: lease2})
 		if err != nil {
 			t.Fatal(err)
 		}
-		f1 := startTicker(t, e, clock, interval, c1, []string{"t1"}, nil)
-		f1.waitArms(1)
-		f2 := startTicker(t, e, clock, interval, c2, []string{"t1"}, nil)
-		time.Sleep(200 * time.Millisecond)
+		tenants := func(context.Context) ([]tenant.Tenant, error) { return []tenant.Tenant{mustTenant(t, "t1")}, nil }
+		// h1 acquires the lease: it waits to renew it, and its ticker waits for A + 10 s.
+		f1 := startTickerOn(t, e, clock, tick1, interval, c1, tenants, nil)
+		tick1.asked(t, "the ticker of h1", interval-time.Second)
+		// h2 finds the lease taken: its first wait is the retry of its lease, not a due time of its ticker.
+		f2 := startTickerOn(t, e, clock, tick2, interval, c2, tenants, nil)
+		select {
+		case d := <-lease2.asks:
+			if d != retry {
+				t.Fatalf("the lease of h2 waits %s, want the retry %s", d, retry)
+			}
+		case d := <-tick2.asks:
+			t.Fatalf("the ticker of h2 waits %s for a due time with no lease", d)
+		}
+		// h1 waits to renew its lease; it is read only now, because a ticker with no lease has no renew to wait for.
+		lease1.asked(t, "the lease of h1", renew)
+		// A + 10 s: the tick runs on h1 only; h2 tries again, finds the lease taken, and waits to retry.
 		clock.advance(interval - time.Second)
 		f1.next()
-		f2.none()
+		lease2.asked(t, "the lease of h2", retry)
 		f1.waitTickDone()
-		// h2 takes the row while it is not expired: the renew of h1 fails, so h1 stops, and h2 acquires the lease
-		// that it holds now at its next retry.
+		// The ticker of h1 waits for A + 20 s, and the run of t1 had its bound at A + 20 s too.
+		tick1.asked(t, "the ticker of h1", interval)
+		tick1.asked(t, "the ticker of h1", interval)
+		f2.none()
+		// h2 takes the row while it is not expired: the renew of h1 at A + 11 s fails, so h1 stops its ticks and
+		// waits to retry. At A + 12 s h2 acquires the lease that it holds now, and its ticker waits for A + 20 s.
 		e.exec(`UPDATE leases SET holder = 'h2', token = token + 1, expires_at = now() + interval '1 minute' WHERE name = 'stego.worker.sync-partner-orders'`)
-		for i := 0; i < 8; i++ {
-			clock.advance(2 * time.Second)
-			time.Sleep(100 * time.Millisecond)
-		}
-		for len(f1.runs) > 0 {
-			<-f1.runs
-		}
-		f2.waitArms(1)
-		clock.advance(interval)
+		clock.advance(time.Second)
+		tick1.asked(t, "the ticker of h1 after the renew of its lease failed", retry)
+		clock.advance(time.Second)
+		lease2.asked(t, "the lease of h2 after it acquired", renew)
+		tick2.asked(t, "the ticker of h2", interval-2*time.Second)
+		// A + 20 s: the tick runs on h2 only; h1 tries again at A + 13 s and finds the lease taken.
+		clock.advance(interval - 2*time.Second)
 		f2.next()
+		lease1.asked(t, "the lease of h1", retry)
 		f1.none()
 	})
 }

@@ -115,13 +115,14 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		if held.Err() != nil {
 			return fmt.Errorf("command: %s: %w", w.spec.Name, lease.ErrStopped)
 		}
-		notAfter = time.Now().Add(held.TTL() - held.RenewEvery())
+		clock := rt.clock()
+		notAfter = clock.Now().Add(held.TTL() - held.RenewEvery())
 		if expires := held.Expires(); expires.Before(notAfter) {
 			notAfter = expires
 		}
 		var cancel context.CancelFunc
 		// The transaction's context ends at the deadline, and database/sql then rolls the transaction back.
-		ctx, cancel = context.WithDeadline(ctx, notAfter)
+		ctx, cancel = clock.WithDeadline(ctx, notAfter)
 		defer cancel()
 	}
 	// The tenant gate before the transaction: a tenant that was retired after the tick read the tenant list gets no
@@ -137,11 +138,11 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 	}
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
-		return workerBegin(ctx, notAfter, err)
+		return workerBegin(ctx, rt, notAfter, err)
 	}
 	if err := rt.markStep(ctx, tx); err != nil {
 		_ = tx.Rollback()
-		return workerBegin(ctx, notAfter, err)
+		return workerBegin(ctx, rt, notAfter, err)
 	}
 	committed := false
 	defer func() {
@@ -159,7 +160,7 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		return s.failRun(ctx, notAfter, "lock timeout", err)
 	}
 	if err := s.checkIsolation(ctx); err != nil {
-		return deadlineOr(ctx, notAfter, err)
+		return deadlineOr(ctx, rt, notAfter, err)
 	}
 	if held != nil {
 		if _, err := held.Fence(ctx, tx); err != nil {
@@ -183,7 +184,7 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		if errors.As(err, &failure) {
 			err = failure.err
 		}
-		return deadlineOr(ctx, notAfter, err)
+		return deadlineOr(ctx, rt, notAfter, err)
 	}
 	// The transaction's context ends at the deadline, so database/sql refuses a COMMIT after it
 	// (ST-SUP-RP10-LC22). An outcome of COMMIT that is not known stays one: it is never a deadline to run again.
@@ -191,7 +192,7 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		if errors.Is(err, ErrCommitUnknown) {
 			return err
 		}
-		return deadlineOr(ctx, notAfter, err)
+		return deadlineOr(ctx, rt, notAfter, err)
 	}
 	committed = true
 	call.Commit()
@@ -220,21 +221,21 @@ func spanOutcome(err error) otel.Outcome {
 }
 
 // workerBegin maps an error of tenant.Begin in a worker run.
-func workerBegin(ctx context.Context, notAfter time.Time, err error) error {
+func workerBegin(ctx context.Context, rt *Runtime, notAfter time.Time, err error) error {
 	if isConflict(ctx, err) {
-		return deadlineOr(ctx, notAfter, &conflictError{text: "the transaction did not begin before the deadline"})
+		return deadlineOr(ctx, rt, notAfter, &conflictError{text: "the transaction did not begin before the deadline"})
 	}
 	return internalf("the transaction did not begin")
 }
 
 // failRun maps a statement error of a worker run.
 func (s *state) failRun(ctx context.Context, notAfter time.Time, step string, err error) error {
-	return deadlineOr(ctx, notAfter, s.fail(ctx, step, err))
+	return deadlineOr(ctx, s.rt, notAfter, s.fail(ctx, step, err))
 }
 
 // deadlineOr gives ErrDeadline for an error of a run under a lease that reached its deadline, and err otherwise.
-func deadlineOr(ctx context.Context, notAfter time.Time, err error) error {
-	if !notAfter.IsZero() && errors.Is(ctx.Err(), context.DeadlineExceeded) && !time.Now().Before(notAfter) {
+func deadlineOr(ctx context.Context, rt *Runtime, notAfter time.Time, err error) error {
+	if !notAfter.IsZero() && errors.Is(ctx.Err(), context.DeadlineExceeded) && !rt.clock().Now().Before(notAfter) {
 		return errDeadline
 	}
 	return err

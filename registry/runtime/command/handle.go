@@ -1046,7 +1046,7 @@ func (s *state) breakWith(err error) error {
 func (s *state) setLockTimeout(ctx context.Context) error {
 	d := s.lockTimeout
 	if !s.deadline.IsZero() {
-		if left := time.Until(s.deadline) - 50*time.Millisecond; left < d {
+		if left := s.deadline.Sub(s.rt.clock().Now()) - LockMargin; left < d {
 			d = left
 		}
 	}

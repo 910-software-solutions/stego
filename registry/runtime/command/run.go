@@ -133,6 +133,36 @@ type Runtime struct {
 	// step, when set by a test, runs right after lock_timeout is set before a statement of the wrapper, the enqueue,
 	// the audit record and COMMIT.
 	step func(name string, tx *sql.Tx)
+	// runClock, when set by a test, is the clock of the lock timeouts, of the waits before a rerun and of the deadline
+	// of a run under a lease, which the test moves itself. Nil is the real clock.
+	runClock runClock
+}
+
+// runClock is the clock of the time left before a deadline: the lock timeouts (ST-SUP-RP10-LC28), the waits before
+// a rerun (ST-SUP-RP10-LC25, ST-SUP-RP10-LC28) and the deadline of a run under a lease (ST-SUP-RP10-LC22).
+type runClock interface {
+	Now() time.Time
+	After(d time.Duration) <-chan time.Time
+	WithDeadline(parent context.Context, at time.Time) (context.Context, context.CancelFunc)
+}
+
+// realRunClock is the real clock: time.Now, time.After and context.WithDeadline.
+type realRunClock struct{}
+
+func (realRunClock) Now() time.Time { return time.Now() }
+
+func (realRunClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+func (realRunClock) WithDeadline(parent context.Context, at time.Time) (context.Context, context.CancelFunc) {
+	return context.WithDeadline(parent, at)
+}
+
+// clock is the clock of the time left before a deadline: the clock that a test set, else the real clock.
+func (rt *Runtime) clock() runClock {
+	if rt.runClock != nil {
+		return rt.runClock
+	}
+	return realRunClock{}
 }
 
 // New checks cfg and returns the command runtime. It refuses a configuration that lacks a part, a main pool or an
@@ -460,29 +490,28 @@ func Run[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], req Requ
 // after the wait (ST-SUP-RP10-LC28).
 func waitRerun(ctx context.Context, rt *Runtime, n int) bool {
 	wait := rand.N(time.Duration(n)*RerunStep + 1)
+	clock := rt.clock()
 	deadline, hasDeadline := ctx.Deadline()
 	if hasDeadline {
-		room := time.Until(deadline) - RerunRoom
+		room := deadline.Sub(clock.Now()) - RerunRoom
 		if room <= 0 {
 			return false
 		}
 		wait = min(wait, room)
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
-	case <-timer.C:
+	case <-clock.After(wait):
 	}
 	if rt.rerun != nil {
 		left := time.Duration(-1)
 		if hasDeadline {
-			left = time.Until(deadline)
+			left = deadline.Sub(clock.Now())
 		}
 		rt.rerun(n, wait, left)
 	}
-	return !hasDeadline || time.Until(deadline) >= RerunRoom
+	return !hasDeadline || deadline.Sub(clock.Now()) >= RerunRoom
 }
 
 // fillFailure is the error of the wrapper's handler, which Wrap returns as it is: the outcome of the attempt.

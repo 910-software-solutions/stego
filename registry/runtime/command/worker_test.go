@@ -39,6 +39,94 @@ func (e *env) worker(name, permission string, change func(*WorkerSpec[testProbe]
 }
 
 // tickFill adapts a tick fill to RunWorker.
+// handRunClock is a clock of the time left before a deadline that the test moves itself (ST-SUP-RP10-LC22,
+// ST-SUP-RP10-LC28). Each deadline that it gives is sent on made and ends with context.DeadlineExceeded when the test
+// moves the clock to it. A wait that the runtime asks of it passes at once: it moves the clock by the wait.
+type handRunClock struct {
+	mu   sync.Mutex
+	now  time.Time
+	ends []*handDeadline
+	made chan *handDeadline
+}
+
+func newHandRunClock(start time.Time) *handRunClock {
+	return &handRunClock{now: start, made: make(chan *handDeadline, 64)}
+}
+
+func (c *handRunClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *handRunClock) WithDeadline(parent context.Context, at time.Time) (context.Context, context.CancelFunc) {
+	d := &handDeadline{Context: parent, at: at, done: make(chan struct{})}
+	stop := context.AfterFunc(parent, func() { d.end(parent.Err()) })
+	c.mu.Lock()
+	c.ends = append(c.ends, d)
+	reached := !c.now.Before(at)
+	c.mu.Unlock()
+	if reached {
+		d.end(context.DeadlineExceeded)
+	}
+	select {
+	case c.made <- d:
+	default:
+	}
+	return d, func() { stop(); d.end(context.Canceled) }
+}
+
+// After moves the clock by d and gives a channel that holds the time then.
+func (c *handRunClock) After(d time.Duration) <-chan time.Time {
+	now := c.Now().Add(d)
+	c.advance(now)
+	ch := make(chan time.Time, 1)
+	ch <- now
+	return ch
+}
+
+// add moves the clock by d.
+func (c *handRunClock) add(d time.Duration) { c.advance(c.Now().Add(d)) }
+
+// advance moves the clock to now and ends each deadline that it reached.
+func (c *handRunClock) advance(now time.Time) {
+	c.mu.Lock()
+	c.now = now
+	ends := append([]*handDeadline(nil), c.ends...)
+	c.mu.Unlock()
+	for _, d := range ends {
+		if !now.Before(d.at) {
+			d.end(context.DeadlineExceeded)
+		}
+	}
+}
+
+// handDeadline is a context of the hand clock: it ends at its deadline on the clock, or when its parent ends.
+type handDeadline struct {
+	context.Context
+	at   time.Time
+	mu   sync.Mutex
+	err  error
+	done chan struct{}
+}
+
+func (d *handDeadline) end(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.err == nil {
+		d.err = err
+		close(d.done)
+	}
+}
+
+func (d *handDeadline) Deadline() (time.Time, bool) { return d.at, true }
+func (d *handDeadline) Done() <-chan struct{}       { return d.done }
+func (d *handDeadline) Err() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.err
+}
+
 func tickFill(fill func(ctx context.Context, h *Handle[testProbe]) error) TickFill[testProbe] {
 	return func(ctx context.Context, _ time.Time, h *Handle[testProbe]) error { return fill(ctx, h) }
 }
@@ -454,47 +542,76 @@ func TestWorkers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var expires time.Time
-		if err := e.admin.QueryRowContext(e.ctx, `SELECT expires_at FROM leases WHERE name = $1`, name).Scan(&expires); err != nil {
-			t.Fatal(err)
-		}
 		rt := e.runtime(nil)
-		commitAttempted := false
-		rt.beforeCommit = func(context.Context, *sql.Tx) error { commitAttempted = true; return nil }
+		clock := newHandRunClock(time.Now())
+		rt.runClock = clock
+		var commitAttempted atomic.Bool
+		rt.beforeCommit = func(context.Context, *sql.Tx) error { commitAttempted.Store(true); return nil }
 		w := e.worker("long-run", "sync", nil, e.reservationE)
-		start := time.Now()
-		ended := make(chan time.Duration, 1)
-		go func() {
-			// The transaction's session leaves 'idle in transaction' when the transaction ends.
-			for time.Since(start) < 8*time.Second {
-				if time.Since(start) > 500*time.Millisecond && e.count(`SELECT count(*) FROM pg_stat_activity
- WHERE datname = current_database() AND usename = $1 AND state LIKE 'idle in transaction%'`, e.roles[0]) == 0 {
-					ended <- time.Since(start)
-					return
-				}
-				time.Sleep(20 * time.Millisecond)
+		// holdRun runs RunWorker with a fill that writes the reservation id and then holds until its context ends. It
+		// gives the deadline of the run and the fill's context, or fails when the run ends first.
+		holdRun := func(id string) (*handDeadline, context.Context, <-chan error) {
+			t.Helper()
+			wrote := make(chan context.Context, 1)
+			result := make(chan error, 1)
+			go func() {
+				result <- RunWorker(e.ctx, rt, w, tick, mustTenant(t, "t1"), held, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+					if _, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: id, OrderID: "o-1", SKU: "s"}, nil); err != nil {
+						return err
+					}
+					wrote <- ctx
+					<-ctx.Done()
+					return ctx.Err()
+				}))
+			}()
+			var d *handDeadline
+			select {
+			case d = <-clock.made:
+			case err := <-result:
+				t.Fatalf("the run of %s ended with %v and asked for no deadline", id, err)
 			}
-			ended <- -1
-		}()
-		err = RunWorker(e.ctx, rt, w, tick, mustTenant(t, "t1"), held, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
-			if _, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: "r-long", OrderID: "o-1", SKU: "s"}, nil); err != nil {
-				return err
+			select {
+			case ctx := <-wrote:
+				return d, ctx, result
+			case err := <-result:
+				t.Fatalf("the run of %s ended with %v before its fill wrote", id, err)
 			}
-			time.Sleep(6 * time.Second)
-			return nil
-		}))
-		took := <-ended
-		if !errors.Is(err, ErrDeadline) || commitAttempted || took < 4800*time.Millisecond || took > 5600*time.Millisecond ||
-			!start.Add(took).Before(expires) || e.count(`SELECT count(*) FROM reservations WHERE id = 'r-long'`) != 0 {
-			t.Fatalf("the long run gave %v, ended its transaction after %s (expires %s), commit attempted %t",
-				err, took, expires.Sub(start), commitAttempted)
+			return nil, nil, nil
+		}
+		// The deadline is the lease TTL less the renew interval after the transaction starts, 5 s, which is before
+		// expires_at. The run does not end 1 ns before it and rolls back at it.
+		start := clock.Now()
+		d, fillCtx, result := holdRun("r-long")
+		if want := start.Add(5 * time.Second); !d.at.Equal(want) || !d.at.Before(held.Expires()) {
+			t.Fatalf("the run's deadline is %s after the start, want 5 s and before expires_at %s", d.at.Sub(start), held.Expires().Sub(start))
+		}
+		clock.advance(d.at.Add(-time.Nanosecond))
+		if fillCtx.Err() != nil {
+			t.Fatal("the run ended 1 ns before its deadline")
+		}
+		clock.advance(d.at)
+		err = <-result
+		if !errors.Is(err, ErrDeadline) || commitAttempted.Load() || e.count(`SELECT count(*) FROM reservations WHERE id = 'r-long'`) != 0 {
+			t.Fatalf("the long run gave %v at its deadline, commit attempted %t", err, commitAttempted.Load())
 		}
 		err = RunWorker(e.ctx, rt, w, tick.Add(time.Minute), mustTenant(t, "t1"), held, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
 			_, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: "r-long", OrderID: "o-1", SKU: "s"}, nil)
 			return err
 		}))
-		if err != nil || e.count(`SELECT count(*) FROM reservations WHERE id = 'r-long'`) != 1 {
+		if err != nil || !commitAttempted.Load() || e.count(`SELECT count(*) FROM reservations WHERE id = 'r-long'`) != 1 {
 			t.Fatalf("the next tick of t1 gave %v", err)
+		}
+		// A run that starts 1 s before expires_at has the deadline expires_at, not 5 s after its start.
+		<-clock.made
+		commitAttempted.Store(false)
+		clock.advance(held.Expires().Add(-time.Second))
+		d, _, result = holdRun("r-expiry")
+		if !d.at.Equal(held.Expires()) {
+			t.Fatalf("a run 1 s before expires_at has its deadline %s after expires_at", d.at.Sub(held.Expires()))
+		}
+		clock.advance(d.at)
+		if err := <-result; !errors.Is(err, ErrDeadline) || commitAttempted.Load() || e.count(`SELECT count(*) FROM reservations WHERE id = 'r-expiry'`) != 0 {
+			t.Fatalf("the run at expires_at gave %v, commit attempted %t", err, commitAttempted.Load())
 		}
 	})
 
