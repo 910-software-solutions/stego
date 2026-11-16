@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115225538-50a399f0af37
+        module_version: v0.0.0-20261116013951-5a083efd160a
         vcs: git
-        revision: 50a399f0af3706e63335d9ce43f606fac26e17d1
+        revision: 5a083efd160a562cff222e6ac41d9b51d1857bc1
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: b73cb6f0f9b20455073f89f3733d62fbb442361a85a0b9cabb134290f19c87de
+    registry_content_sha256: 7b2e5472bbe2b84cb8d64e16fdb6d824480b803e6fe860641a2abeb7e236217d
     components:
         audit-log:
             version: 1.1.1
@@ -54,7 +54,7 @@ last_applied:
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
         health-check:
             version: 1.1.0
-            sha: 7950e3a8f48b6eb2460b5259dd004581d4c6bdee80f97891138532b39cbae49c
+            sha: 9336c79178caf803db7222bedd34244d99241ea4bbb3cf5298fd7e87029aad1d
         jwt-auth:
             version: 2.5.0
             sha: 2a86d2ba707e3924781b35bb5009380f623f907f2836e71098cb9fc978f6c1d5
@@ -208,14 +208,15 @@ last_applied:
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
+        Containerfile: 01d5575c57f82450c770b969a86dd3815804140b933374b11fb0474b490bf34b
         architecture/architecture.json: 6762353bc4124f6672204aa169c5e5d2789a554b6ecb7d663ce33577ccbea3e6
-        architecture/index.html: b82d3cd39d81305b617bfe4e816d517a88b35d98cb7a74712daa9fc43dd461bf
+        architecture/index.html: 9be9cd40454428b7fa8e10d1b7683d4d3ba8c0f0aa20fd4590346f945072b71d
         deploy/base/deployment.yaml: c70fcb432dc7f6d6d6c65ecbf8937cad8e56c71a47fb75c92b662a3235416420
         deploy/base/kustomization.yaml: b2db76dd596305ad0ef173ea7cf702fe9144cda5be1516c0a579f0e8f10e8ab0
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
-        deploy/environment-variables.md: 6e5f67a4f33f49fbb69e450d26c5b05351054b4628d10982b7577fd6d47779f4
-        deploy/platform-requirements.yaml: c62f46bbec3e65e3aa67d005bbf6d16aa492b9d348aae90183741214bb7122c6
+        deploy/environment-variables.md: 67ab340b783122e815eae3d88347686d6d5a02e41ee4537c78d37bbef9b8db3f
+        deploy/platform-requirements.yaml: fab119764533677c04638eedd44f6680e409b2de00798340e1f9722cf77060f3
     archetype:
         name: rest-crud
         version: 3.123.2

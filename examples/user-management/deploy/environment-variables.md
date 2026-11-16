@@ -42,7 +42,7 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
-| `PORT` | integer | no | `8080` | no | - | `8443` | The TCP port where the HTTP server listens. When it has no value, the server listens on port 8080. |
+| `PORT` | integer | no | `8080` | no | 1 to 65535 | `8443` | The TCP port where the HTTP server listens. When it has no value, the server listens on port 8080. |
 | `STEGO_HTTP_REQUIRE_TLS` | boolean | no | `0` | no | 0, 1 | - | Set to 1 to make the HTTP server use TLS. When it has no value, the server uses TLS only when it has a certificate and a key. |
 | `STEGO_HTTP_TLS_CERT` | path | no | none | no | - | `/etc/stego/tls/tls.crt` | The file of the PEM TLS certificate of the HTTP server. When it and STEGO_HTTP_TLS_KEY have no value, the server uses plain HTTP. |
 | `STEGO_HTTP_TLS_KEY` | path | no | none | no | - | `/etc/stego/tls/tls.key` | The file of the PEM TLS private key of the HTTP server. When it and STEGO_HTTP_TLS_CERT have no value, the server uses plain HTTP. |
