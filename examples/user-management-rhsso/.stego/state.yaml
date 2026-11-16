@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261116163059-ae2c1b62ffe1
+        module_version: v0.0.0-20261116170050-48f04276f1a5
         vcs: git
-        revision: ae2c1b62ffe186db567ca6776e123381d06e3d3f
+        revision: 48f04276f1a513617fab9c10ea77b86fa2f116e1
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -209,7 +209,7 @@ last_applied:
         deploy/components/secret-files/mount-job-files.yaml: f795fea8c79e0c7a4e9c219e9f1fb23989e1c8cf43e3fd7ef37367aac1f94a66
         deploy/components/secret-files/remove-env.yaml: a243baeae3309873606fb81e1556b5f922fc23b6c504191261e2cea7dfdc4ab6
         deploy/components/secret-files/remove-job-env.yaml: 447fe224508096a95b37e74cd6c91015b1c183b05e86ae1f6d7b2a1de7233e5b
-        deploy/environment-variables.md: 248615992a265d4b168185110e354498cac828485f0b3650f46c1d77edb7e4c9
+        deploy/environment-variables.md: aef249f8db333820a5ea5071ccf851de3d594d3b8253b8d2290f4008c6220e41
         deploy/platform-requirements.yaml: aa1ced20cfc52b365fcaf000d60520eacabf91723f0c7be479ec021232427e0d
     archetype:
         name: rest-crud
