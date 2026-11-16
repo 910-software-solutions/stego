@@ -137,3 +137,47 @@ func TestSchemaConversions(t *testing.T) {
 		}
 	})
 }
+
+// A chain of retypes is checked step by step: each retype from its From to the type that its own step gives the
+// field, with each later step undone (decision on ST-DECL-Q17 (a), orchestrator under the owner's delegation,
+// 2026-11-14).
+func TestSchemaConversionChain(t *testing.T) {
+	conversions := databaseConversions(t)
+	first := types.SchemaChange{ID: "todo-priority-retype", Kind: "retype", Entity: "Todo", Field: "priority", From: "int32", Conversion: "integer_to_text", InverseConversion: "text_to_integer"}
+	second := types.SchemaChange{ID: "todo-priority-retype-2", Kind: "retype", Entity: "Todo", Field: "priority", From: "string", Definition: "string, pattern ^-?[0-9]{1,9}$",
+		Conversion: "text_to_int64", InverseConversion: "int64_to_text"}
+	chain := func(first, second types.SchemaChange, head types.Field) *types.ServiceDeclaration {
+		return &types.ServiceDeclaration{
+			Entities:      []types.Entity{{Name: "Todo", Fields: []types.Field{head}}},
+			SchemaChanges: []types.SchemaChange{first, second},
+			SchemaHistory: []types.SchemaStep{{Change: first.ID, Phase: "expand"}, {Change: first.ID, Phase: "contract"}, {Change: second.ID, Phase: "expand"}},
+		}
+	}
+	int64Field := types.Field{Name: "priority", Type: types.FieldTypeInt64}
+	t.Run("ST-DECL-INV63-T Two retypes, int32 to string and then string to int64, are each checked at their own step and accepted", func(t *testing.T) {
+		if faults := ValidateSchemaConversions(chain(first, second, int64Field), conversions, true); len(faults) != 0 {
+			t.Errorf("checking refuses the chain: %v", faults)
+		}
+	})
+	t.Run("ST-DECL-INV63-T A first retype whose conversions go to the declared type and not to the type at its step is refused, naming the step and the shape", func(t *testing.T) {
+		wrong := first
+		wrong.Conversion, wrong.InverseConversion = "integer_to_int64", "int64_to_integer"
+		faults := ValidateSchemaConversions(chain(wrong, second, int64Field), conversions, true)
+		want := "integer_to_int64 is not one that the database component declares from int32 to string (the field after the step schema_history[0] is Todo.priority: string, pattern ^-?[0-9]{1,9}$, with each later step undone)"
+		if len(faults) != 2 || !strings.Contains(faults[0].Message, want) || !strings.Contains(faults[1].Message, "int64_to_integer is not one") {
+			t.Errorf("checking gives %v, want the conversion and the inverse conversion of todo-priority-retype refused, the first saying %q", faults, want)
+		}
+	})
+	t.Run("ST-DECL-INV63-T A middle step whose From is not the type that the step before gives refuses the step before, at the shape that the middle step leaves", func(t *testing.T) {
+		wrong := second
+		wrong.From, wrong.Definition, wrong.Conversion, wrong.InverseConversion = "int32", "", "integer_to_int64", "int64_to_integer"
+		faults := ValidateSchemaConversions(chain(first, wrong, types.Field{Name: "priority", Type: types.FieldTypeInt64}), conversions, true)
+		named := false
+		for _, fault := range faults {
+			named = named || strings.Contains(fault.Message, "integer_to_text is not one that the database component declares from int32 to int32")
+		}
+		if !named || !strings.Contains(faults[0].Message, `"todo-priority-retype"`) {
+			t.Errorf("checking gives %v, want todo-priority-retype refused from int32 to int32, the shape that the middle step leaves", faults)
+		}
+	})
+}

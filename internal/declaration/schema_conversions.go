@@ -2,7 +2,6 @@ package declaration
 
 import (
 	"fmt"
-	"slices"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/types"
@@ -34,8 +33,8 @@ func conversionTotal(c types.Conversion, field types.Field) bool {
 }
 
 // ValidateSchemaConversions checks the conversions of each retype against the database component (ST-DECL-INV62,
-// ST-DECL-INV63): the conversion and the inverse conversion are ones that it declares from From to the field's type
-// and back; the conversion is total over the constraints of the field before the change, or the change declares a
+// ST-DECL-INV63): the conversion and the inverse conversion are ones that it declares from From to the type of the
+// field as the change's own step leaves it, and back; the conversion is total over the constraints of the field before the change, or the change declares a
 // fill value; and the inverse conversion is total over the constraints of the field after the change.
 func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions map[string]types.Conversion, declared bool) []ValidationError {
 	var faults []ValidationError
@@ -47,15 +46,16 @@ func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions ma
 		fault := func(rule, where, found, message string) {
 			faults = append(faults, ValidationError{Category: "schema-change", Rule: rule, Path: path + where, Found: found, Message: fmt.Sprintf("schema change %q: %s", change.ID, message)})
 		}
-		entity := slices.IndexFunc(service.Entities, func(e types.Entity) bool { return e.Name == change.Entity })
-		if entity < 0 {
+		// The field after the change is the field as its own step leaves it, so that each retype of a chain is checked
+		// from its own From to the type that its step gives (decision on ST-DECL-Q17 (a), orchestrator under the
+		// owner's delegation, 2026-11-14). A change whose shape is not known is refused by the check of the later
+		// change that cannot be undone.
+		shape := shapeAtStep(service, change)
+		after, found := shape.field(change.Field)
+		if shape.reason != "" || !found {
 			continue
 		}
-		at := slices.IndexFunc(service.Entities[entity].Fields, func(f types.Field) bool { return f.Name == change.Field })
-		if at < 0 {
-			continue
-		}
-		after, before := service.Entities[entity].Fields[at], gen.RetypeField(change)
+		before, at := gen.RetypeField(change), shape.of(change.Entity, after)
 		if !declared {
 			fault("schema-change-value", ".conversion", change.Conversion, "no database component of the service declares conversions, so the retype has none to use")
 			continue
@@ -64,18 +64,18 @@ func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions ma
 		inverse, okInverse := conversions[change.InverseConversion]
 		switch {
 		case !okForward || forward.From != before.Type || forward.To != after.Type:
-			fault("schema-change-value", ".conversion", change.Conversion, fmt.Sprintf("the conversion %s is not one that the database component declares from %s to %s", change.Conversion, before.Type, after.Type))
+			fault("schema-change-value", ".conversion", change.Conversion, fmt.Sprintf("the conversion %s is not one that the database component declares from %s to %s%s", change.Conversion, before.Type, after.Type, at))
 		case !conversionTotal(forward, before) && change.FillValue == nil:
 			fault("schema-change-total", ".conversion", change.Conversion, fmt.Sprintf("the conversion %s is not total over the field %s.%s before the change, so a value can fail it; declare a fill value, or give the field before the change, in its Definition, a constraint under which the conversion is total", change.Conversion, change.Entity, change.Field))
 		}
 		switch {
 		case !okInverse || inverse.From != after.Type || inverse.To != before.Type:
-			fault("schema-change-value", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not one that the database component declares from %s to %s", change.InverseConversion, after.Type, before.Type))
+			fault("schema-change-value", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not one that the database component declares from %s to %s%s", change.InverseConversion, after.Type, before.Type, at))
 		case !conversionTotal(inverse, after):
-			fault("schema-change-total", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not total over the field %s.%s after the change, so a write of the release of the change could fail it; give the field a constraint under which it is total", change.InverseConversion, change.Entity, change.Field))
+			fault("schema-change-total", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not total over the field %s.%s after the change, so a write of the release of the change could fail it; give the field a constraint under which it is total%s", change.InverseConversion, change.Entity, change.Field, at))
 		}
 		if reason := checksKept(before, after); reason != "" && okForward && okInverse {
-			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused", change.Entity, change.Field, reason))
+			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused%s", change.Entity, change.Field, reason, at))
 		}
 	}
 	return faults

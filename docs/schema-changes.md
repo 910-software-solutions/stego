@@ -24,6 +24,19 @@ The release with the expand step adds. The release after it, with the contract
 step, removes what only the old release needed. The declaration keeps every
 schema change, also a finished one.
 
+Checking holds each schema change against its field as its own step leaves
+it: the declared field with each later step undone, the last first
+(ST-DECL-Q17). So one field can change more than once. A retype from `int32`
+to `string` and then a retype from `string` to `int64` are each checked from
+their own `from` to the type that their own step gives, and a relax before a
+retype or a rename names the field as it is at the relax. A change that does
+not suit the shape at its step is refused, and the fault names the step, such
+as `schema_history[2]`, and the shape of the field after it. Only one change
+that moves the rows of a field can be at expand at one time, so put the
+contract step of the first change before the expand step of the next. An add
+finishes at its expand step, so a later change of the field that it adds is
+not refused for that reason.
+
 ## Add steps
 
 `stego apply` writes the add steps for you. Before it plans, it puts one

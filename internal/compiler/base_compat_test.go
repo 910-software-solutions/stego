@@ -519,3 +519,21 @@ func TestBaseRelax(t *testing.T) {
 		}
 	})
 }
+
+// The base check of a relax reads the field at the relax's step (declaration.FieldAtStep); a later retype with no
+// field cannot be undone, and the check names it and does not stop (security review of PR #372, M1).
+func TestBaseRelaxLaterNoField(t *testing.T) {
+	t.Run("ST-GEN-INV33-T A relax and then a retype with no field are refused, naming the retype", func(t *testing.T) {
+		max := 500
+		head := &types.ServiceDeclaration{
+			Entities: []types.Entity{{Name: "Todo", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString, MaxLength: &max}}}},
+			SchemaChanges: []types.SchemaChange{{ID: "a", Kind: "relax", Entity: "Todo", Field: "title", Definition: "max_length 255"},
+				{ID: "b", Kind: "retype", Entity: "Todo", From: "int64", Conversion: "int64_to_text", InverseConversion: "text_to_int64"}},
+			SchemaHistory: []types.SchemaStep{{Change: "a", Phase: "expand"}, {Change: "b", Phase: "expand"}},
+		}
+		faults := relaxFaults(&types.ServiceDeclaration{}, head)
+		if len(faults) != 1 || !strings.Contains(faults[0].Message, `"b"`) || !strings.Contains(faults[0].Message, "names no field") {
+			t.Errorf("the check gives %+v, want one fault that names the retype b as one that cannot be undone", faults)
+		}
+	})
+}
