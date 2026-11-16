@@ -315,7 +315,8 @@ func ancestorFactName(n int, a ArchAncestor) string {
 }
 
 // ancestorFact gives the fact of the ancestor check at place n: the permission it decides, public, or none with the
-// rule that gives it none (an entity with no resource type), or unstated when no authorization is bound.
+// rule that gives it none (an entity that the declaration does not state), or unstated when no authorization is
+// bound.
 func ancestorFact(subject string, n int, a ArchAncestor) ArchFact {
 	name := ancestorFactName(n, a)
 	switch {
@@ -340,10 +341,12 @@ func hasCheckedAncestor(check ArchCheck) bool {
 }
 
 // ancestorChecks gives the checks of the parent chain of an operation, the top ancestor first, as the handler reads
-// them (ST-SUP-RC20-OC24): each ancestor with the read permission of its entity, or no permission when its entity has
-// no resource type or no authorization is bound. It refuses an ancestor whose entity has a resource type and a public
-// read or no read permission: the generators refuse that declaration (the command runtime plans each entity of the
-// path with a read permission), so the model states no check that no handler makes (security review of PR #374, L3).
+// them (ST-SUP-RC20-OC24): each ancestor with the read permission of its entity, or no permission when no
+// authorization is bound. It refuses an ancestor whose entity has a resource type and a public read or no read
+// permission: the generators refuse that declaration (the command runtime plans each entity of the path with a read
+// permission), so the model states no check that no handler makes (security review of PR #374, L3). It refuses an
+// ancestor whose entity has no resource type too: the rest-api generator refuses it, and the declaration check
+// refuses it for the entity of a collection (security review of PR #383).
 func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entities map[string]int) ([]ArchAncestor, error) {
 	svc := d.in.Service
 	var out []ArchAncestor
@@ -361,7 +364,8 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 		case svc.Authorization == nil:
 			a.Reason, a.Source = "No authorization is bound, so no permission is checked.", ArchSource{Rule: "ST-DECL-UC06-R01"}
 		case svc.Entities[i].ResourceType == "":
-			a.Reason, a.Source = "The entity has no resource type, so no permission is checked.", ArchSource{Rule: "ST-SUP-RC20-OC24"}
+			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and entities[%d] has no resource type; the handler decides the read permission of each ancestor in the path (ST-SUP-RC20-OC24), so declare entities[%d].resource_type and entities[%d].permissions.read",
+				level.By, level.Entity, shortID(subject), i, i, i)}
 		case svc.Entities[i].Permissions[types.OpRead] == types.PermissionPublic || svc.Entities[i].Permissions[types.OpRead] == "":
 			e := svc.Entities[i]
 			read := "no read permission"
@@ -379,6 +383,63 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// plannedReads refuses each entity that the command runtime plans with a resource type and a public read or no read
+// permission, as command.planEntity does (security review of PR #383, L2): the entity of each collection and each
+// entity with a resource type that a ref field of one names (the rest-api data path), and each entity that a command
+// or a worker writes. The generators refuse that declaration also with no bound authorization, so the derivation
+// builds no model of a declaration that does not generate.
+func (d *deriver) plannedReads() error {
+	svc := d.in.Service
+	index := map[string]int{}
+	for i, e := range svc.Entities {
+		index[e.Name] = i
+	}
+	type use struct{ entity, why string }
+	var uses []use
+	for i, c := range svc.Collections {
+		uses = append(uses, use{c.Entity, fmt.Sprintf("collections[%d] (%s) serves it", i, c.Name)})
+	}
+	for i, c := range svc.Collections {
+		j, ok := index[c.Entity]
+		if !ok {
+			continue
+		}
+		for k, f := range svc.Entities[j].Fields {
+			if t, ok := index[f.To]; ok && f.Type == types.FieldTypeRef && svc.Entities[t].ResourceType != "" {
+				uses = append(uses, use{f.To, fmt.Sprintf("the ref field entities[%d].fields[%d] of %s, which collections[%d] serves, names it", j, k, svc.Entities[j].Name, i)})
+			}
+		}
+	}
+	for i, c := range svc.Commands {
+		for _, name := range c.Writes {
+			uses = append(uses, use{name, fmt.Sprintf("commands[%d] (%s) writes it", i, c.Name)})
+		}
+	}
+	for i, w := range svc.Workers {
+		for _, name := range w.Writes {
+			uses = append(uses, use{name, fmt.Sprintf("workers[%d] (%s) writes it", i, w.Name)})
+		}
+	}
+	for _, u := range uses {
+		i, ok := index[u.entity]
+		if !ok {
+			continue
+		}
+		e := svc.Entities[i]
+		read := e.Permissions[types.OpRead]
+		if e.ResourceType == "" || (read != "" && read != types.PermissionPublic) {
+			continue
+		}
+		what := "no read permission"
+		if read == types.PermissionPublic {
+			what = "the read permission public"
+		}
+		return &ArchitectureRefusal{fmt.Errorf("entities[%d] (%s) has the resource type %s and %s, and %s; the command runtime decides the read permission of each row that it loads (ST-SUP-RP10-LC13), so declare entities[%d].permissions.read as a permission of %s",
+			i, e.Name, e.ResourceType, what, u.why, i, e.ResourceType)}
+	}
+	return nil
 }
 
 // defaultRule gives the rule that sets the default of a setting at the path.

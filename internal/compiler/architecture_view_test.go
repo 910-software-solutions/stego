@@ -376,6 +376,19 @@ func TestArchitectureView(t *testing.T) {
 		if cut == 0 {
 			t.Fatal("the hostile model has no head with an incomplete ancestor read")
 		}
+		// The head of an operation whose permission a limit cut short shows its hostile resource type as text, and its
+		// cells of the roles that may hold it are buttons that say so (security review of PR #383, L1).
+		if heads := p.all(func(n *html.Node) bool {
+			return n.Data == "th" && attrOf(n, "data-id") == "check:operation:organizations.read"
+		}); len(heads) != 1 ||
+			!strings.Contains(textOf(heads[0]), value+"#view") || !strings.Contains(attrOf(heads[0], "title"), value+"#view (incomplete: a limit was reached)") {
+			t.Error("the head of organizations.read does not show its hostile resource type as text")
+		}
+		if may := p.all(func(n *html.Node) bool {
+			return n.Data == "button" && attrOf(n, "data-check") == "check:operation:organizations.read" && strings.Contains(attrOf(n, "class"), "may-hold")
+		}); len(may) == 0 || textOf(may[0]) != mayHoldGlyph {
+			t.Error("the hostile model has no cell of organizations.read that says may hold")
+		}
 		// Each role head of the turned access matrix shows the role name as text, with a break only between its parts.
 		var model ArchitectureModel
 		if err := json.Unmarshal(hostile, &model); err != nil {
@@ -521,7 +534,8 @@ func TestArchitectureView(t *testing.T) {
 			{"role:organization#public@user:*", "check:operation:organizations.read", "−*"},
 			{"role:organization#owner@user", "check:operation:org-users.read", "↑"},
 			{"role:organization#viewer@user", "check:operation:org-users.read", "↑?"},
-			{"role:member#owner@user", "check:operation:organizations.read", "· no grant"},
+			{"role:member#owner@user", "check:operation:organizations.read", "⚠"},
+			{"role:service#operator@user", "check:operation:organizations.delete", "· no grant"},
 			{"role:service#operator@user", "check:operation:organizations.create", "◇ public"},
 			{"role:organization#guest@user(expiration)", "check:operation:organizations.read", "⌛"},
 		} {
@@ -683,6 +697,114 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R14-T07 A cell of a role that no named path gives a permission whose grant paths a limit cut short says may hold, never no grant", func(t *testing.T) {
+		// check reads each cell of the matrix and gives the number of cells that say may hold.
+		check := func(name string, view []byte, m *ArchitectureModel) int {
+			p := parseView(t, view)
+			perms := map[string]ArchPermission{}
+			for _, perm := range m.Access.Permissions {
+				perms[perm.ID] = perm
+			}
+			cells := map[string]*html.Node{}
+			for _, td := range p.all(func(n *html.Node) bool { return n.Data == "td" && attrOf(n, "data-check") != "" }) {
+				cells[attrOf(td, "data-role")+"|"+attrOf(td, "data-check")] = td
+			}
+			may := 0
+			for _, c := range m.Access.Checks {
+				perm, ok := perms[c.Grants]
+				for _, r := range m.Access.Roles {
+					named := false
+					for _, g := range perm.Paths {
+						named = named || g.Role == r.ID
+					}
+					td := cells[r.ID+"|"+c.ID]
+					if td == nil {
+						t.Fatalf("%s: no cell for %s and %s", name, r.ID, c.ID)
+					}
+					buttons := within(td, func(n *html.Node) bool { return n.Data == "button" })
+					want := !c.Public && ok && !perm.Complete && !named
+					if !want {
+						if strings.Contains(textOf(td), mayHoldGlyph) || (len(buttons) == 1 && strings.Contains(attrOf(buttons[0], "class"), "may-hold")) {
+							t.Errorf("%s: the cell of %s and %s says may hold: %q", name, r.ID, c.ID, textOf(td))
+						}
+						continue
+					}
+					may++
+					if strings.Contains(textOf(td), "no grant") || len(buttons) != 1 {
+						t.Errorf("%s: the cell of %s and %s reads %q, not may hold", name, r.ID, c.ID, textOf(td))
+						continue
+					}
+					b := buttons[0]
+					if !strings.HasPrefix(textOf(b), mayHoldGlyph) || !strings.Contains(attrOf(b, "class"), "may-hold") ||
+						!strings.Contains(attrOf(b, "title"), mayHoldText) || attrOf(b, "aria-label") != shortID(c.Subject)+": "+attrOf(b, "title") {
+						t.Errorf("%s: the cell of %s and %s does not say may hold in its mark, title and screen reader text: %q, title %q, label %q",
+							name, r.ID, c.ID, textOf(b), attrOf(b, "title"), attrOf(b, "aria-label"))
+					}
+				}
+			}
+			return may
+		}
+		if n := check("access.json", accessView, am); n == 0 {
+			t.Fatal("the fixture proves too little: no cell of a role with no named path of an incomplete permission")
+		}
+		// variant renders access.json with the key complete of each named permission changed: true sets it, false
+		// deletes it.
+		variant := func(complete map[string]bool) ([]byte, *ArchitectureModel) {
+			model, err := os.ReadFile("testdata/architecture/access.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(model, &raw); err != nil {
+				t.Fatal(err)
+			}
+			for _, perm := range raw["access"].(map[string]any)["permissions"].([]any) {
+				obj := perm.(map[string]any)
+				if set, ok := complete[obj["id"].(string)]; ok && set {
+					obj["complete"] = true
+				} else if ok {
+					delete(obj, "complete")
+				}
+			}
+			if model, err = json.Marshal(raw); err != nil {
+				t.Fatal(err)
+			}
+			view, err := RenderArchitectureView(model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m ArchitectureModel
+			if err := json.Unmarshal(model, &m); err != nil {
+				t.Fatal(err)
+			}
+			return view, &m
+		}
+		// With the paths of organization#view complete, no cell says may hold, and the role reads no grant.
+		view, m := variant(map[string]bool{"permission:organization#view": true})
+		if n := check("complete", view, m); n != 0 {
+			t.Errorf("the complete matrix has %d cells that say may hold", n)
+		}
+		p := parseView(t, view)
+		if cells := p.all(func(n *html.Node) bool {
+			return n.Data == "td" && attrOf(n, "data-role") == "role:member#owner@user" && attrOf(n, "data-check") == "check:operation:organizations.read"
+		}); len(cells) != 1 || textOf(cells[0]) != "· no grant" {
+			t.Error("the cell of a role with no path of a complete permission does not read no grant")
+		}
+		// A permission whose model has no key complete counts as cut short (security review of PR #383, L3): its head
+		// is marked, and each role with no named path of it may hold it.
+		view, m = variant(map[string]bool{"permission:member#view": false})
+		if n := check("no key complete", view, m); n <= check("access.json", accessView, am) {
+			t.Errorf("the matrix of a permission with no key complete has %d cells that say may hold, no more than the fixture", n)
+		}
+		p = parseView(t, view)
+		if heads := p.all(func(n *html.Node) bool {
+			return n.Data == "th" && attrOf(n, "data-id") == "check:operation:all-users.list"
+		}); len(heads) != 1 ||
+			!strings.Contains(textOf(heads[0]), "⚠ incomplete: a limit was reached") {
+			t.Error("the head of a check whose permission has no key complete is not marked incomplete")
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R15-T01 The matrix of the data model is titled Operations each collection offers", func(t *testing.T) {
 		data := page.byID("form-data")
 		tables := within(data, func(n *html.Node) bool { return n.Data == "table" && attrOf(n, "class") == "matrix" })
@@ -809,6 +931,13 @@ func hostileModel(t *testing.T) ([]byte, string) {
 	for _, perm := range m["access"].(map[string]any)["permissions"].([]any) {
 		if perm.(map[string]any)["id"] == "permission:organization#view" {
 			perm.(map[string]any)["complete"] = false
+		}
+	}
+	// Each check of organization#view, whose grant paths a limit cut short, gets a hostile resource type, which the
+	// cells of the roles that may hold it and their details write (security review of PR #383, L1).
+	for _, c := range m["access"].(map[string]any)["checks"].([]any) {
+		if c.(map[string]any)["grants"] == "permission:organization#view" {
+			c.(map[string]any)["resource_type"] = hostileValue
 		}
 	}
 	for _, f := range m["flows"].([]any) {

@@ -17,6 +17,7 @@ import (
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/command"
+	"github.com/jsell-rh/stego/internal/generator/restapi"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
 )
@@ -106,20 +107,37 @@ func archFixture(t *testing.T) ArchitectureInput {
 		Components: components, Names: []string{"api", "auth", "store", "outbox", "events"}, Wirings: []ComponentWiring{{Name: "api", Wiring: wiring}}, Schema: schema}
 }
 
-// nestedFixture gives the inputs of archFixture with a chain of three levels: a shelf, whose entity has no resource
-// type and no collection of its own, the folders of a shelf, whose read permission is view, and the docs of a folder
-// (ST-SUP-RC20-OC24).
+// nestedFixtureSchema is the schema of archFixture with a shelf, whose keeper may view it.
+const nestedFixtureSchema = archFixtureSchema + `
+definition shelf {
+	relation keeper: user
+	permission view = keeper
+}
+`
+
+// nestedFixture gives the inputs of archFixture with a chain of three levels: the shelves, whose read permission is
+// view, the folders of a shelf, whose read permission is view, and the docs of a folder (ST-SUP-RC20-OC24).
 func nestedFixture(t *testing.T) ArchitectureInput {
 	t.Helper()
 	in := archFixture(t)
+	schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(nestedFixtureSchema))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Schema = schema
 	svc := in.Service
 	svc.Entities = append(svc.Entities[:1:1],
 		types.Entity{Name: "Folder", Fields: []types.Field{{Name: "name", Type: "string"}, {Name: "shelf_id", Type: types.FieldTypeRef, To: "Shelf"}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "folder", Permissions: map[types.Operation]string{"read": "view", "list": "view"}}},
-		types.Entity{Name: "Shelf", Fields: []types.Field{{Name: "name", Type: "string"}}})
+		types.Entity{Name: "Shelf", Fields: []types.Field{{Name: "name", Type: "string"}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "shelf", Permissions: map[types.Operation]string{"read": "view", "list": "view"}}})
+	// The query runtime reads each entity of the data path on a declared read and list permission.
+	svc.Entities[0].Permissions = maps.Clone(svc.Entities[0].Permissions)
+	svc.Entities[0].Permissions[types.OpList] = "read"
 	svc.Entities[0].Fields = append(slices.Clone(svc.Entities[0].Fields), types.Field{Name: "folder_id", Type: types.FieldTypeRef, To: "Folder"})
 	svc.Collections = []types.Collection{
 		{Name: "docs", Entity: "Doc", Operations: []types.Operation{"create", "read", "update"}},
+		{Name: "shelves", Entity: "Shelf", Operations: []types.Operation{"read"}},
 		{Name: "shelf-folders", Entity: "Folder", Scope: map[string]string{"shelf_id": "Shelf"}, Operations: []types.Operation{"read", "list"}},
 		{Name: "folder-docs", Entity: "Doc", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{"read", "update"}},
 	}
@@ -270,17 +288,17 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 		for _, a := range checks["operation:folder-docs.update"].Ancestors {
 			got = append(got, line(a))
 		}
-		// The top ancestor first, as the handler reads them: the shelf, which has no resource type and so no
-		// permission check, then the folder, whose read permission is view.
+		// The top ancestor first, as the handler reads them: the shelf, then the folder, each with its read
+		// permission view.
 		want := []string{
-			"entity:Shelf param=shelf_id link= # public=false grants= source=ST-SUP-RC20-OC24 scope=collections.shelf-folders.scope",
+			"entity:Shelf param=shelf_id link= shelf#view public=false grants=permission:shelf#view source=entities[2].permissions.read scope=collections.shelf-folders.scope",
 			"entity:Folder param=folder_id link=field:Folder.shelf_id folder#view public=false grants=permission:folder#view source=entities[1].permissions.read scope=collections.folder-docs.scope",
 		}
 		if !slices.Equal(got, want) {
 			t.Fatalf("the ancestors of folder-docs.update are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
-		if a := checks["operation:folder-docs.update"].Ancestors[0]; a.Reason == "" || a.ID != "ancestor:folder-docs.update/Shelf" {
-			t.Fatalf("the shelf check gives no reason or the wrong ID: %+v", a)
+		if a := checks["operation:folder-docs.update"].Ancestors[0]; a.ID != "ancestor:folder-docs.update/Shelf" {
+			t.Fatalf("the shelf check has the wrong ID: %+v", a)
 		}
 		if n := len(checks["operation:shelf-folders.list"].Ancestors); n != 1 {
 			t.Fatalf("shelf-folders.list has %d ancestor checks, want 1", n)
@@ -413,11 +431,11 @@ func TestArchitectureRefusals(t *testing.T) {
 }
 
 func TestArchitectureAncestorRefusals(t *testing.T) {
-	t.Run("ST-GEN-UC08-R12-T03 The derivation and the generators refuse the same ancestor with a public read or no read permission", func(t *testing.T) {
-		// entityNames gives the entities whose rows the rest-api data path plans with the command runtime, as
-		// generateRuntimeHandlers does: the entity of each collection, and each entity with a resource type that a ref
-		// field of one names. Each ancestor of a path is the entity of a collection, so it is one of them.
-		entityNames := func(svc *types.ServiceDeclaration) []string {
+	t.Run("ST-GEN-UC08-R12-T03 The derivation and the generators refuse the same declarations: each planned entity with a resource type and a public read or no read permission, and each ancestor with no resource type", func(t *testing.T) {
+		// planned gives the entities whose rows the command runtime plans, as the generators do: for the rest-api data
+		// path (generateRuntimeHandlers) the entity of each collection and each entity with a resource type that a ref
+		// field of one names; for the command and the worker generators each entity that a command or a worker writes.
+		planned := func(svc *types.ServiceDeclaration) [][]string {
 			byName := map[string]types.Entity{}
 			for _, e := range svc.Entities {
 				byName[e.Name] = e
@@ -435,50 +453,139 @@ func TestArchitectureAncestorRefusals(t *testing.T) {
 					}
 				}
 			}
-			return names
+			sets := [][]string{names}
+			for _, c := range svc.Commands {
+				sets = append(sets, c.Writes)
+			}
+			for _, w := range svc.Workers {
+				sets = append(sets, w.Writes)
+			}
+			return sets
 		}
-		// generate runs the entity planning of the command runtime that the rest-api and the worker generators
-		// share (command.EntityFile).
+		// generate runs the entity planning of the command runtime that the rest-api, the command and the worker
+		// generators share (command.EntityFile, whose planEntity refuses the read), on each planned set.
 		generate := func(svc *types.ServiceDeclaration) error {
-			_, err := command.EntityFile("data", entityNames(svc), svc.Entities, "tenant_id", command.Relations{})
-			return err
+			for _, names := range planned(svc) {
+				if _, err := command.EntityFile("data", names, svc.Entities, "tenant_id", command.Relations{}); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
-		// The nested fixture with a read permission of the folder: both accept it.
-		in := nestedFixture(t)
-		if err := generate(in.Service); err != nil {
-			t.Fatalf("the generators refuse the nested fixture: %v", err)
+		folder := func(read string) func(in *ArchitectureInput) {
+			return func(in *ArchitectureInput) {
+				e := &in.Service.Entities[1]
+				e.Permissions = maps.Clone(e.Permissions)
+				if read == "" {
+					delete(e.Permissions, types.OpRead)
+					return
+				}
+				e.Permissions[types.OpRead] = read
+				e.PublicReasons = map[types.Operation]string{types.OpRead: "Anyone may see a folder."}
+			}
 		}
-		if _, err := WriteArchitecture(in); err != nil {
-			t.Fatalf("the derivation refuses the nested fixture: %v", err)
+		// extra adds an entity Log with the resource type log and the read permission (none when empty).
+		extra := func(in *ArchitectureInput, read string) {
+			permissions := map[types.Operation]string{}
+			if read != "" {
+				permissions[types.OpRead] = read
+			}
+			in.Service.Entities = append(in.Service.Entities, types.Entity{Name: "Log", Fields: []types.Field{{Name: "line", Type: "string"}},
+				EntityAuthorization: types.EntityAuthorization{ResourceType: "log", Permissions: permissions, PublicReasons: map[types.Operation]string{types.OpRead: "Anyone may see a log."}}})
+		}
+		parts := func(more ...string) []string {
+			return append([]string{"has the resource type", "ST-SUP-RP10-LC13", "permissions.read as a permission of"}, more...)
 		}
 		for _, tc := range []struct {
-			name, read, want string
+			name   string
+			change func(in *ArchitectureInput)
+			want   []string // the parts of the refusal of the derivation, or none when both accept
 		}{
-			{"public read", types.PermissionPublic, "the read permission public"},
-			{"no read", "", "no read permission"},
+			{"the nested fixture", func(in *ArchitectureInput) {}, nil},
+			{"an ancestor with the read public", folder(types.PermissionPublic), []string{"collections.folder-docs.scope", "entity Folder", "entities[1]", "resource type folder", "the read permission public", "entities[1].permissions.read", "ST-SUP-RC20-OC24"}},
+			{"an ancestor with no read", folder(""), []string{"collections.folder-docs.scope", "entity Folder", "entities[1]", "resource type folder", "no read permission", "entities[1].permissions.read", "ST-SUP-RC20-OC24"}},
+			{"the entity of a collection with the read public", func(in *ArchitectureInput) {
+				in.Service.Entities[0].Permissions = maps.Clone(in.Service.Entities[0].Permissions)
+				in.Service.Entities[0].Permissions[types.OpRead] = types.PermissionPublic
+			}, parts("entities[0] (Doc)", "the read permission public", "collections[0] (docs) serves it")},
+			{"the entity of a collection with no read and no authorization", func(in *ArchitectureInput) {
+				in.Service.Authorization, in.Schema = nil, nil
+				in.Service.Entities[0].Permissions = maps.Clone(in.Service.Entities[0].Permissions)
+				delete(in.Service.Entities[0].Permissions, types.OpRead)
+			}, parts("entities[0] (Doc)", "no read permission", "collections[0] (docs) serves it")},
+			{"the entity that a ref field names with no read", func(in *ArchitectureInput) {
+				extra(in, "")
+				in.Service.Entities[0].Fields = append(slices.Clone(in.Service.Entities[0].Fields), types.Field{Name: "log_id", Type: types.FieldTypeRef, To: "Log"})
+			}, parts("entities[3] (Log)", "no read permission", "the ref field entities[0].fields[3] of Doc, which collections[0] serves, names it")},
+			{"an entity that a command writes with the read public", func(in *ArchitectureInput) {
+				extra(in, types.PermissionPublic)
+				in.Service.Commands[0].Writes = []string{"Log"}
+			}, parts("entities[3] (Log)", "the read permission public", "commands[0] (archive) writes it")},
+			{"an entity that a worker writes with no read", func(in *ArchitectureInput) {
+				extra(in, "")
+				in.Service.Workers = []types.Worker{{Name: "sweeper", Writes: []string{"Log"}, ResourceType: "log", Permission: "view"}}
+			}, parts("entities[3] (Log)", "no read permission", "workers[0] (sweeper) writes it")},
+			{"an entity with no read that nothing plans", func(in *ArchitectureInput) { extra(in, "") }, nil},
 		} {
 			in := nestedFixture(t)
-			folder := &in.Service.Entities[1]
-			folder.Permissions = maps.Clone(folder.Permissions)
-			if tc.read == "" {
-				delete(folder.Permissions, types.OpRead)
+			tc.change(&in)
+			genErr := generate(in.Service)
+			_, err := WriteArchitecture(in)
+			if tc.want == nil {
+				if genErr != nil || err != nil {
+					t.Errorf("%s: the generators give %v and the derivation %v, want both to accept", tc.name, genErr, err)
+				}
+				continue
+			}
+			if genErr == nil {
+				t.Errorf("%s: the generators accept the declaration", tc.name)
 			} else {
-				folder.Permissions[types.OpRead] = tc.read
-				folder.PublicReasons = map[types.Operation]string{types.OpRead: "Anyone may see a folder."}
+				read := "no read permission"
+				if slices.Contains(tc.want, "the read permission public") {
+					read = "the read permission public"
+				}
+				if !strings.Contains(genErr.Error(), read) {
+					t.Errorf("%s: the generators do not name %q: %v", tc.name, read, genErr)
+				}
 			}
-			err := generate(in.Service)
-			if err == nil || !strings.Contains(err.Error(), "entity Folder") || !strings.Contains(err.Error(), "no read permission") {
-				t.Fatalf("%s: the generators do not refuse the ancestor Folder: %v", tc.name, err)
-			}
-			_, err = WriteArchitecture(in)
 			var refusal *ArchitectureRefusal
 			if !errors.As(err, &refusal) {
-				t.Fatalf("%s: the derivation gives %v, want a refusal", tc.name, err)
+				t.Errorf("%s: the derivation gives %v, want a refusal", tc.name, err)
+				continue
 			}
-			for _, part := range []string{"collections.folder-docs.scope", "entity Folder", "entities[1]", "resource type folder", tc.want, "entities[1].permissions.read", "ST-SUP-RC20-OC24"} {
+			for _, part := range tc.want {
 				if !strings.Contains(err.Error(), part) {
 					t.Errorf("%s: the refusal does not name %q: %v", tc.name, part, err)
 				}
+			}
+		}
+		// An ancestor with no resource type: the rest-api generator refuses it, because each ancestor is the entity of
+		// a collection (it refuses a parent that no collection exposes), and the data path decides each operation of a
+		// collection; the declaration check refuses it too when authorization is bound. So the derivation refuses it
+		// (security review of PR #383).
+		restContext := func(in ArchitectureInput) gen.Context {
+			return gen.Context{ModuleName: "example.com/docs", OutDirName: "out", OutputNamespace: "api", ServiceName: "docs", BasePath: "/v1",
+				ErrorTypeBase: "https://errors.example.com/docs/", Entities: in.Service.Entities, Collections: in.Service.Collections, Authorization: in.Service.Authorization,
+				PeerNamespaces: map[string]string{"command": "command", "query": "query"}, Tenancy: &gen.Tenancy{Key: "tenant_id"},
+				Inputs: map[string][]byte{"authz/schema.zed": []byte(nestedFixtureSchema)}}
+		}
+		if _, _, err := new(restapi.Generator).Generate(restContext(nestedFixture(t))); err != nil {
+			t.Fatalf("the rest-api generator refuses the nested fixture: %v", err)
+		}
+		in := nestedFixture(t)
+		in.Service.Entities[2].EntityAuthorization = types.EntityAuthorization{}
+		ctx := restContext(in)
+		if _, _, err := new(restapi.Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "collection shelves reads the entity Shelf, which has no resource type") {
+			t.Errorf("the rest-api generator does not refuse an ancestor with no resource type: %v", err)
+		}
+		_, err := WriteArchitecture(in)
+		var refusal *ArchitectureRefusal
+		if !errors.As(err, &refusal) {
+			t.Fatalf("an ancestor with no resource type: the derivation gives %v, want a refusal", err)
+		}
+		for _, part := range []string{"collections.shelf-folders.scope", "entity Shelf", "entities[2] has no resource type", "ST-SUP-RC20-OC24", "entities[2].resource_type"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("an ancestor with no resource type: the refusal does not name %q: %v", part, err)
 			}
 		}
 	})
