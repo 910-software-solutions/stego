@@ -472,7 +472,7 @@ type libraryRead struct {
 // a module, each name of its pattern in its source at the version that the runtime module requires.
 func libraryReads(t *testing.T, root string) []libraryRead {
 	t.Helper()
-	moduleNames := func(module, sub, pattern string, skip ...string) []string {
+	moduleDir := func(module string) string {
 		command := exec.Command("go", "mod", "download", "-json", module)
 		command.Dir = filepath.Join(root, "registry", "runtime")
 		output, err := command.Output()
@@ -483,6 +483,11 @@ func libraryReads(t *testing.T, root string) []libraryRead {
 		if err := json.Unmarshal(output, &download); err != nil || download.Dir == "" {
 			t.Fatalf("go mod download %s gives no folder: %v", module, err)
 		}
+		return download.Dir
+	}
+	moduleNames := func(module, sub, pattern string, skip ...string) []string {
+		download := struct{ Dir string }{moduleDir(module)}
+		var err error
 		literal := regexp.MustCompile(`"(` + pattern + `)"`)
 		found := map[string]bool{}
 		err = filepath.WalkDir(filepath.Join(download.Dir, sub), func(path string, entry os.DirEntry, err error) error {
@@ -512,8 +517,18 @@ func libraryReads(t *testing.T, root string) []libraryRead {
 		}
 		return slices.Sorted(maps.Keys(found))
 	}
+	// pgconn reads HOME through os.UserHomeDir for its default pass file, service file and certificate files
+	// (#353 security review L2). The opener and the client give each of those settings themselves.
+	homeRead := func(module, file string) []string {
+		data, err := os.ReadFile(filepath.Join(moduleDir(module), file))
+		if err != nil || !strings.Contains(string(data), "os.UserHomeDir") {
+			t.Fatalf("the module %s no longer reads the home folder in %s, or the file is gone: %v", module, file, err)
+		}
+		return []string{"HOME"}
+	}
 	return []libraryRead{
 		{label: "pgx", owners: []string{"postgres-adapter", "postgres-client"}, names: moduleNames("github.com/jackc/pgx/v5", "pgconn", `PG[A-Z_]+`)},
+		{label: "pgx (the home folder)", owners: []string{"postgres-adapter", "postgres-client"}, names: homeRead("github.com/jackc/pgx/v5", "pgconn/defaults.go")},
 		{label: "grpc-go", owners: []string{"otel-tracing"}, names: moduleNames("google.golang.org/grpc", "", `GRPC_[A-Z0-9_]+`,
 			"grpctest", "testutils", "interop", "examples", "benchmark", "/test/")},
 		{label: "the Go runtime and standard library", owners: []string{"command"},

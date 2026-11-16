@@ -196,7 +196,7 @@ func TestArchitectureView(t *testing.T) {
 				name, value, _ := strings.Cut(strings.TrimSpace(d), " ")
 				directives[name] = value
 			}
-			for name, want := range map[string]string{"default-src": "'none'", "style-src": "'unsafe-inline'", "img-src": "data:", "base-uri": "'none'", "form-action": "'none'"} {
+			for name, want := range map[string]string{"default-src": "'none'", "style-src": "'unsafe-inline'", "img-src": "data:", "base-uri": "'none'", "form-action": "'none'", "require-trusted-types-for": "'script'"} {
 				if directives[name] != want {
 					t.Errorf("the policy gives %s %q, not %q", name, directives[name], want)
 				}

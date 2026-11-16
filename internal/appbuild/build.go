@@ -600,7 +600,7 @@ func Build(ctx context.Context, options Options) (*Record, error) {
 			return nil, fmt.Errorf("module content verification: %w", err)
 		}
 		binary := filepath.Join(root, "application")
-		flags := []string{"build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-pgo=off", "-p=2", "-o", binary, "./" + o.Target}
+		flags := BuildFlags(binary, o.Target)
 		if _, err = capture(ctx, module, env, append([]string{o.Go}, flags...)...); err != nil {
 			return nil, fmt.Errorf("application compilation: %w", err)
 		}
@@ -776,4 +776,15 @@ func buildEnvironmentRecord() map[string]string {
 	result := fixedEnvironment()
 	result["GOPROXY"] = "off"
 	return result
+}
+
+// BuildEnvironment gives the fixed settings of the offline application build, which the build record names
+// (ST-BLD-INV07), with no path of the build host. Delivering's offline Containerfile builds with the same settings
+// (ST-DLV-INV07).
+func BuildEnvironment() map[string]string { return buildEnvironmentRecord() }
+
+// BuildFlags gives the arguments of the go command of the application build, with output as the executable and
+// target as the entry point in the module.
+func BuildFlags(output, target string) []string {
+	return []string{"build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-pgo=off", "-p=2", "-o", output, "./" + target}
 }

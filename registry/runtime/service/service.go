@@ -300,6 +300,19 @@ func checkSchema(ctx context.Context, db *sql.DB, p Parts) ([]string, error) {
 	if err := db.QueryRowContext(ctx, "SELECT current_user").Scan(&runtimeRole); err != nil {
 		return nil, fmt.Errorf("service: read the runtime role: %w", err)
 	}
+	// The runtime role is not the owner role and is no member of it (ST-SUP-RC01-OC21), which New refuses and does not
+	// alert: the owner role owns the tables, so it is not held by their row-level security, and it runs the backfill,
+	// whose sync trigger passes the writes of a transaction that names the change in stego.backfill_change, a setting
+	// that any role can set (security review of PR #348). A role is a member of itself, and a superuser of each role,
+	// so the one test refuses the owner role, each member of it and a superuser.
+	var owner bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
+WHERE r.rolname = $1::pg_catalog.text AND pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER'))`, p.OwnerRole).Scan(&owner); err != nil {
+		return nil, fmt.Errorf("service: read the membership of the runtime role: %w", err)
+	}
+	if owner {
+		return nil, fmt.Errorf("service: the runtime role %s is the owner role %s or a member of it; give DATABASE_URL the login of the runtime role", runtimeRole, p.OwnerRole)
+	}
 	want, err := joinedManifest(p, runtimeRole)
 	if err != nil {
 		return nil, err

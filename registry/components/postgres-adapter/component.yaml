@@ -127,6 +127,11 @@ environment:
     description: "Set to 1 to let a loopback database connection go without TLS, for a local test only. When it has no value, each connection needs TLS."
     secret: false
     allowed: {values: ["0", "1"]}
+  - name: HOME
+    type: path
+    required: false
+    description: "Read by the pgx driver for its default pass, service and certificate files. The database opener gives each of those settings itself, so no file under HOME changes the connection."
+    secret: false
   - name: PGAPPNAME
     type: string
     required: false
