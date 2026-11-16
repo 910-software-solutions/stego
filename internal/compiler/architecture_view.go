@@ -622,13 +622,57 @@ func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchP
 	if strings.HasPrefix(c.Subject, "operation:") {
 		name = strings.TrimPrefix(name, group+".")
 	}
-	w.raw("<th" + attrs + attr("data-id", c.ID) + attr("title", shortID(c.Subject)+": "+what) + ">")
+	title := shortID(c.Subject) + ": " + what
+	if len(c.Ancestors) > 0 {
+		title += "; " + ancestorsText(c)
+	}
+	w.raw("<th" + attrs + attr("data-id", c.ID) + attr("title", title) + ">")
 	w.text(name)
 	w.tag("span", " class=\"sub\"", what)
+	if len(c.Ancestors) > 0 {
+		w.tag("span", " class=\"sub ancestors\"", "⤒ "+ancestorsShort(c))
+	}
 	if p := perms[c.Grants]; p != nil && !p.Complete {
 		w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: a limit was reached")
 	}
 	w.raw("</th>")
+}
+
+// ancestorText gives what the check of one ancestor decides: its permission, public, or none.
+func ancestorText(a ArchAncestor) string {
+	switch {
+	case a.Permission != "":
+		return a.ResourceType + "#" + a.Permission
+	case a.Public:
+		return "public"
+	}
+	return "no permission"
+}
+
+// ancestorsShort gives the ancestors of a check, the top one first, each with what it decides.
+func ancestorsShort(c ArchCheck) string {
+	var parts []string
+	for _, a := range c.Ancestors {
+		parts = append(parts, shortID(a.Entity)+" "+ancestorText(a))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ancestorsText says in words what the handler of a nested operation checks first (ST-SUP-RC20-OC24).
+func ancestorsText(c ArchCheck) string {
+	return "first reads each ancestor in the path, the top one first, and answers 404 when one is missing, denied or of another parent: " + ancestorsShort(c)
+}
+
+// missingAncestors gives the ancestors whose read permission the role alone does not hold: a caller with only that
+// role passes the check of the operation, and still gets 404 from the parent chain check.
+func missingAncestors(c ArchCheck, role string, perms map[string]*ArchPermission) []string {
+	var out []string
+	for _, a := range c.Ancestors {
+		if a.Grants != "" && len(matrixCell(perms[a.Grants], role)) == 0 {
+			out = append(out, shortID(a.Entity)+" ("+ancestorText(a)+")")
+		}
+	}
+	return out
 }
 
 // roleName gives the name of a role of the access matrix, with its conditions.
@@ -681,6 +725,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	for _, g := range grantGlyphs {
 		keys = append(keys, g.glyph+" "+g.meaning)
 	}
+	keys = append(keys, "⤒ under a head: the ancestors in the path that the operation reads first; in a cell: this role alone does not grant the read of an ancestor, so the caller also needs that read")
 	w.key(keys...)
 	perms := map[string]*ArchPermission{}
 	for i := range m.Access.Permissions {
@@ -736,7 +781,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 				w.raw("<tr>")
 				accessHead(w, c, g.name, perms, " scope=\"row\"")
 				for _, l := range lines {
-					matrixTD(w, c, l.id, perms[c.Grants])
+					matrixTD(w, c, l.id, perms)
 				}
 				w.raw("</tr>")
 			}
@@ -765,7 +810,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 			w.tag("th", " scope=\"row\"", l.name)
 			for _, g := range groups {
 				for _, c := range g.checks {
-					matrixTD(w, c, l.id, perms[c.Grants])
+					matrixTD(w, c, l.id, perms)
 				}
 			}
 			w.raw("</tr>")
@@ -773,13 +818,13 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		w.raw("</tbody></table></div>")
 	}
 	w.h3("What each operation checks")
-	w.head("Operation", "Resource type", "Permission", "Source")
+	w.head("Operation", "Resource type", "Permission", "Ancestors read first, the top one first", "Source")
 	for _, c := range checks {
 		perm := c.Permission
 		if c.Public {
 			perm = "public: " + c.Reason
 		}
-		w.row(c.ID, shortID(c.Subject), c.ResourceType, perm, sourceText(c.Source))
+		w.row(c.ID, shortID(c.Subject), c.ResourceType, perm, ancestorsShort(c), sourceText(c.Source))
 	}
 	w.end()
 	w.h3("Grant paths")
@@ -799,25 +844,43 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	w.raw("</ul>")
 }
 
-// matrixTD writes one cell of the access matrix, which names its check and its role.
-func matrixTD(w formWriter, c ArchCheck, role string, p *ArchPermission) {
+// matrixTD writes one cell of the access matrix, which names its check and its role. A cell whose role holds the
+// operation, but not the read of each ancestor in its path, has the mark ⤒ too.
+func matrixTD(w formWriter, c ArchCheck, role string, perms map[string]*ArchPermission) {
 	cell := attr("data-check", c.ID) + attr("data-role", role)
+	var missing []string
+	if role != "" {
+		missing = missingAncestors(c, role, perms)
+	}
 	if c.Public {
 		if role == "" {
 			w.raw("<td" + cell + "></td>")
 			return
 		}
-		w.raw("<td class=\"public\"" + cell + ">◇<span class=\"sr\"> public</span></td>")
-		return
+		if len(missing) == 0 {
+			w.raw("<td class=\"public\"" + cell + ">◇<span class=\"sr\"> public</span></td>")
+			return
+		}
 	}
-	paths := matrixCell(p, role)
-	if len(paths) == 0 {
+	paths := matrixCell(perms[c.Grants], role)
+	if !c.Public && len(paths) == 0 {
 		w.raw("<td" + cell + ">·<span class=\"sr\"> no grant</span></td>")
 		return
 	}
 	glyphs, names := cellGlyphs(paths)
+	if c.Public {
+		glyphs, names = "◇", []string{"public"}
+	}
+	if len(missing) > 0 {
+		glyphs += "⤒"
+		names = append(names, "also needs the read of "+strings.Join(missing, ", "))
+	}
 	label := strings.Join(names, ", ")
-	w.raw("<td" + cell + "><button type=\"button\" class=\"cell\"" + attr("data-check", c.ID) + attr("data-role", role) + attr("aria-label", shortID(c.Subject)+": "+label) + attr("title", label) + ">")
+	class := "cell"
+	if c.Public {
+		class += " public"
+	}
+	w.raw("<td" + cell + "><button type=\"button\"" + attr("class", class) + attr("data-check", c.ID) + attr("data-role", role) + attr("aria-label", shortID(c.Subject)+": "+label) + attr("title", label) + ">")
 	w.text(glyphs)
 	w.raw("</button></td>")
 }

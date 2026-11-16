@@ -348,14 +348,38 @@ type ArchAccess struct {
 
 // ArchCheck is what one operation or action checks: a resource type and a permission, or public with its reason.
 type ArchCheck struct {
-	ID           string     `json:"id"`
-	Subject      string     `json:"subject"`
-	ResourceType string     `json:"resource_type,omitempty"`
-	Permission   string     `json:"permission,omitempty"`
-	Public       bool       `json:"public"`
-	Reason       string     `json:"reason,omitempty"`
-	Grants       string     `json:"grants,omitempty"`
-	Source       ArchSource `json:"source"`
+	ID           string `json:"id"`
+	Subject      string `json:"subject"`
+	ResourceType string `json:"resource_type,omitempty"`
+	Permission   string `json:"permission,omitempty"`
+	Public       bool   `json:"public"`
+	Reason       string `json:"reason,omitempty"`
+	Grants       string `json:"grants,omitempty"`
+	// Ancestors are the checks of the parent chain of an operation of a scoped collection, in the order the handler
+	// reads them, the top ancestor first (ST-SUP-RC20-OC24): the handler reads each ancestor of the path before the
+	// row, and answers 404 when one is missing, denied or of another parent. An operation with no scope has none.
+	Ancestors []ArchAncestor `json:"ancestors,omitempty"`
+	Source    ArchSource     `json:"source"`
+}
+
+// ArchAncestor is the check of one ancestor in the path of an operation: the entity of the row that the path
+// parameter names, the field of that row that names the ancestor above it, and the read permission of the entity,
+// which the handler decides on the row. An entity with no resource type, or no bound authorization, gets no
+// permission check, and Reason says why; the row must still exist in the tenant and be of the ancestor above it.
+type ArchAncestor struct {
+	ID           string `json:"id"`
+	Entity       string `json:"entity"`
+	Param        string `json:"param"`
+	Link         string `json:"link,omitempty"`
+	ResourceType string `json:"resource_type,omitempty"`
+	Permission   string `json:"permission,omitempty"`
+	Public       bool   `json:"public"`
+	Reason       string `json:"reason,omitempty"`
+	Grants       string `json:"grants,omitempty"`
+	// Source is what sets the check: the read permission of the entity, or the rule that gives it none. ScopeSource
+	// is the scope entry of the collection that puts the ancestor in the path.
+	Source      ArchSource `json:"source"`
+	ScopeSource ArchSource `json:"scope_source"`
 }
 
 // ArchPermission is one permission of a resource type with its grant paths.

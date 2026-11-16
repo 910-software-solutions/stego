@@ -136,6 +136,9 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 	}
 	for _, e := range m.Access.Checks {
 		declare(e.ID)
+		for _, a := range e.Ancestors {
+			declare(a.ID)
+		}
 	}
 	for _, e := range m.Access.Permissions {
 		declare(e.ID)
@@ -159,6 +162,16 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 		for _, ref := range refs {
 			if ref != "" && !ids[ref] && fault == nil {
 				fault = fmt.Errorf("%s names %s, which is no element of the model", owner, ref)
+			}
+		}
+	}
+	// referKind checks that each reference names an element of the model of its kind, so a grant that names a role
+	// or a field in place of a permission is not valid (security review of PR #374, L1).
+	referKind := func(owner, kind string, refs ...string) {
+		refer(owner, refs...)
+		for _, ref := range refs {
+			if ref != "" && !strings.HasPrefix(ref, kind+":") && fault == nil {
+				fault = fmt.Errorf("%s names %s, which is no %s of the model", owner, ref, kind)
 			}
 		}
 	}
@@ -223,7 +236,15 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 		refer(p.ID, p.Element)
 	}
 	for _, c := range m.Access.Checks {
-		refer(c.ID, c.Subject, c.Grants)
+		refer(c.ID, c.Subject)
+		referKind(c.ID, "permission", c.Grants)
+		// Each ancestor check names an entity of the model, the field that links it up the path, and the
+		// permission whose grant paths the model holds (ST-SUP-RC20-OC24).
+		for _, a := range c.Ancestors {
+			referKind(a.ID, "entity", a.Entity)
+			referKind(a.ID, "field", a.Link)
+			referKind(a.ID, "permission", a.Grants)
+		}
 	}
 	for _, p := range m.Access.Permissions {
 		for _, g := range p.Paths {

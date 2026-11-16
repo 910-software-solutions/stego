@@ -1429,6 +1429,64 @@
         },
         "grants": {
           "$ref": "#/$defs/id"
+        },
+        "ancestors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ancestor"
+          }
+        }
+      }
+    },
+    "ancestor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "entity",
+        "param",
+        "public",
+        "source",
+        "scope_source"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "entity": {
+          "$ref": "#/$defs/id"
+        },
+        "param": {
+          "type": "string",
+          "minLength": 1
+        },
+        "link": {
+          "$ref": "#/$defs/id"
+        },
+        "resource_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "permission": {
+          "type": "string",
+          "minLength": 1
+        },
+        "public": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "grants": {
+          "$ref": "#/$defs/id"
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "scope_source": {
+          "$ref": "#/$defs/source"
         }
       }
     },

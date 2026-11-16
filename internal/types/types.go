@@ -286,6 +286,45 @@ func (c Collection) ParentEntity() string {
 	return ""
 }
 
+// ScopeLevel is one ancestor of the parent chain of a scoped collection (ST-SUP-RC20-OC24): the entity of the row
+// that the path parameter Param names, Link, the field of that row that names the next ancestor, or empty for the
+// top ancestor, and By, the collection whose scope puts the ancestor in the path.
+type ScopeLevel struct {
+	Entity, Param, Link, By string
+}
+
+// FirstCollections gives the first declared collection of each entity, which the path of a child follows.
+func FirstCollections(collections []Collection) map[string]Collection {
+	first := map[string]Collection{}
+	for _, c := range collections {
+		if _, ok := first[c.Entity]; !ok {
+			first[c.Entity] = c
+		}
+	}
+	return first
+}
+
+// ParentChain gives the ancestors of the collection c, the parent first. Each ancestor follows the first collection
+// of its entity (first, from FirstCollections), as the path does: its scope field links it to the ancestor above it.
+// A chain that meets an entity again stops there. The handler of the collection checks each ancestor, and the
+// architecture model states each check, from this one rule.
+func ParentChain(c Collection, first map[string]Collection) []ScopeLevel {
+	var chain []ScopeLevel
+	seen := map[string]bool{c.Entity: true}
+	param, entity, by := c.ScopeField(), c.ParentEntity(), c.Name
+	for entity != "" && !seen[entity] {
+		seen[entity] = true
+		level := ScopeLevel{Entity: entity, Param: param, By: by}
+		next, nextBy := "", ""
+		if parent, ok := first[entity]; ok && len(parent.Scope) > 0 {
+			level.Link, next, nextBy = parent.ScopeField(), parent.ParentEntity(), parent.Name
+		}
+		chain = append(chain, level)
+		param, entity, by = level.Link, next, nextBy
+	}
+	return chain
+}
+
 // CreatesTopLevel tells whether a collection of collections serves the create of entity with no scope: the create
 // of an entity with no parent. No row names it, so it is decided on the service-level resource of the tenant
 // provisioning, <resource type>:<service name> (ST-SUP-RC29-OC01, ST-SUP-RC27-OC09).

@@ -104,6 +104,26 @@ func archFixture(t *testing.T) ArchitectureInput {
 		Components: components, Names: []string{"api", "auth", "store", "outbox", "events"}, Wirings: []ComponentWiring{{Name: "api", Wiring: wiring}}, Schema: schema}
 }
 
+// nestedFixture gives the inputs of archFixture with a chain of three levels: a shelf, whose entity has no resource
+// type and no collection of its own, the folders of a shelf, whose read permission is view, and the docs of a folder
+// (ST-SUP-RC20-OC24).
+func nestedFixture(t *testing.T) ArchitectureInput {
+	t.Helper()
+	in := archFixture(t)
+	svc := in.Service
+	svc.Entities = append(svc.Entities[:1:1],
+		types.Entity{Name: "Folder", Fields: []types.Field{{Name: "name", Type: "string"}, {Name: "shelf_id", Type: types.FieldTypeRef, To: "Shelf"}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "folder", Permissions: map[types.Operation]string{"read": "view", "list": "view"}}},
+		types.Entity{Name: "Shelf", Fields: []types.Field{{Name: "name", Type: "string"}}})
+	svc.Entities[0].Fields = append(slices.Clone(svc.Entities[0].Fields), types.Field{Name: "folder_id", Type: types.FieldTypeRef, To: "Folder"})
+	svc.Collections = []types.Collection{
+		{Name: "docs", Entity: "Doc", Operations: []types.Operation{"create", "read", "update"}},
+		{Name: "shelf-folders", Entity: "Folder", Scope: map[string]string{"shelf_id": "Shelf"}, Operations: []types.Operation{"read", "list"}},
+		{Name: "folder-docs", Entity: "Doc", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{"read", "update"}},
+	}
+	return in
+}
+
 func deriveFixture(t *testing.T, in ArchitectureInput) (*ArchitectureModel, []byte) {
 	t.Helper()
 	files, err := WriteArchitecture(in)
@@ -230,6 +250,97 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 		for subject, line := range want {
 			if got[subject] != line {
 				t.Fatalf("%s checks %q, want %q", subject, got[subject], line)
+			}
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R12-T02 The model holds the check of each ancestor in the path of a nested operation, the top one first, with its permission or why it has none, traced to the declaration", func(t *testing.T) {
+		model, _ := deriveFixture(t, nestedFixture(t))
+		checks := map[string]ArchCheck{}
+		for _, c := range model.Access.Checks {
+			checks[c.Subject] = c
+		}
+		line := func(a ArchAncestor) string {
+			return fmt.Sprintf("%s param=%s link=%s %s#%s public=%v grants=%s source=%s%s scope=%s", a.Entity, a.Param, a.Link, a.ResourceType, a.Permission,
+				a.Public, a.Grants, a.Source.Declaration, a.Source.Rule, a.ScopeSource.Declaration)
+		}
+		var got []string
+		for _, a := range checks["operation:folder-docs.update"].Ancestors {
+			got = append(got, line(a))
+		}
+		// The top ancestor first, as the handler reads them: the shelf, which has no resource type and so no
+		// permission check, then the folder, whose read permission is view.
+		want := []string{
+			"entity:Shelf param=shelf_id link= # public=false grants= source=ST-SUP-RC20-OC24 scope=collections.shelf-folders.scope",
+			"entity:Folder param=folder_id link=field:Folder.shelf_id folder#view public=false grants=permission:folder#view source=entities[1].permissions.read scope=collections.folder-docs.scope",
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("the ancestors of folder-docs.update are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		if a := checks["operation:folder-docs.update"].Ancestors[0]; a.Reason == "" || a.ID != "ancestor:folder-docs.update/Shelf" {
+			t.Fatalf("the shelf check gives no reason or the wrong ID: %+v", a)
+		}
+		if n := len(checks["operation:shelf-folders.list"].Ancestors); n != 1 {
+			t.Fatalf("shelf-folders.list has %d ancestor checks, want 1", n)
+		}
+		if n := len(checks["operation:docs.read"].Ancestors); n != 0 {
+			t.Fatalf("a collection with no scope has %d ancestor checks", n)
+		}
+		// The read permission of the folder has its grant paths, and the authorization point names the ancestor.
+		if paths := pathsOf(model, "permission:folder#view"); len(paths) == 0 {
+			t.Fatal("the model holds no grant path of the ancestor permission folder#view")
+		}
+		var point string
+		for _, p := range model.AuthzPoints {
+			if p.Element == "operation:folder-docs.update" {
+				point = p.Text
+			}
+		}
+		if !strings.Contains(point, "folder#view on Folder") {
+			t.Fatalf("the authorization point does not name the ancestor check: %q", point)
+		}
+		// With no bound authorization, no ancestor gets a permission, and the rule says why.
+		in := nestedFixture(t)
+		in.Service.Authorization, in.Schema = nil, nil
+		unbound, _ := deriveFixture(t, in)
+		for _, c := range unbound.Access.Checks {
+			for _, a := range c.Ancestors {
+				if a.Permission != "" || a.Source.Rule != "ST-DECL-UC06-R01" {
+					t.Fatalf("with no authorization, %s checks %+v", c.Subject, a)
+				}
+			}
+		}
+		// A model whose ancestor check names an entity that is not in it is not valid.
+		for i := range model.Access.Checks {
+			if len(model.Access.Checks[i].Ancestors) > 0 {
+				model.Access.Checks[i].Ancestors[0].Entity = "entity:Nowhere"
+				break
+			}
+		}
+		if err := checkArchitectureRules(model); err == nil || !strings.Contains(err.Error(), "entity:Nowhere") {
+			t.Fatalf("a model with an ancestor of no entity is valid: %v", err)
+		}
+		// The grants of an ancestor check and of a check must name a permission of the model, not another element
+		// such as a role or a field (security review of PR #374, L1).
+		for _, mutate := range []func(m *ArchitectureModel) string{
+			func(m *ArchitectureModel) string {
+				for i := range m.Access.Checks {
+					if len(m.Access.Checks[i].Ancestors) > 1 {
+						m.Access.Checks[i].Ancestors[1].Grants = m.Access.Roles[0].ID
+						return m.Access.Roles[0].ID
+					}
+				}
+				return ""
+			},
+			func(m *ArchitectureModel) string {
+				m.Access.Checks[0].Grants = "field:Doc.title"
+				return "field:Doc.title"
+			},
+		} {
+			fresh, _ := deriveFixture(t, nestedFixture(t))
+			ref := mutate(fresh)
+			if err := checkArchitectureRules(fresh); ref == "" || err == nil || !strings.Contains(err.Error(), ref+", which is no permission") {
+				t.Fatalf("a model whose grants name %q is valid, or fails for another reason: %v", ref, err)
 			}
 		}
 	})
