@@ -578,7 +578,8 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		b.open(access)
 		var policy string
 		b.eval(`(document.querySelector('meta[http-equiv="Content-Security-Policy"]')||{}).content || ""`, &policy)
-		if !strings.HasPrefix(policy, "default-src 'none'; script-src 'sha256-") || strings.Contains(policy, "unsafe-eval") || strings.Contains(policy, "script-src 'unsafe-inline'") {
+		if !strings.HasPrefix(policy, "default-src 'none'; script-src 'sha256-") || strings.Contains(policy, "unsafe-eval") || strings.Contains(policy, "script-src 'unsafe-inline'") ||
+			!strings.HasSuffix(policy, "; require-trusted-types-for 'script'") {
 			t.Fatalf("the view states no strict policy: %q", policy)
 		}
 		b.eval(`document.getElementById("tourStart").click(); for (var i = 0; i < 5 && document.getElementById("tour"); i++){ var r = document.getElementById("tourReveal"); if (r) r.click(); document.getElementById("tourNext").click(); }`, nil)
@@ -596,6 +597,13 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		if blocked, errors := b.problems(); len(blocked)+len(errors) > 0 {
 			t.Fatalf("requests %v or errors %v under the policy", blocked, errors)
 		}
+		// The browser holds the view to trusted types: a write of a text as HTML is refused.
+		var refused string
+		b.eval(`(function(){ try { document.body.insertAdjacentHTML("beforeend", "<b id=tt>x</b>"); return "accepted"; } catch (e) { return e.name; } })()`, &refused)
+		if refused != "TypeError" {
+			t.Fatalf("a write of a text as HTML under the policy gives %q, want a TypeError of trusted types", refused)
+		}
+		b.problems()
 		b.eval(`localStorage.setItem("stego-arch-tour", "seen")`, nil)
 	})
 
