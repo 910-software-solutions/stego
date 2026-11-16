@@ -2001,10 +2001,14 @@ func (f *fixture) migration(calls *int) Migration {
 			return err
 		},
 		Definitions: []string{"user", "service", "order", "stego_floor"},
-		Grants: []string{`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "public"."orders"`,
-			`GRANT SELECT, INSERT, UPDATE ON TABLE "public"."idempotency_keys"`},
+		Grants:      fixtureGrants,
 	}
 }
+
+// fixtureGrants are the GRANT statements of the runtime role of the fixture, without the grantee, which the
+// migration job grants and the parts give the schema manifest (ST-SUP-RP14-LC06).
+var fixtureGrants = []string{`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "public"."orders"`,
+	`GRANT SELECT, INSERT, UPDATE ON TABLE "public"."idempotency_keys"`}
 
 // The wait for the schema is a no-op in a test with no SpiceDB, as WriteSchema of the fixture is.
 func init() {

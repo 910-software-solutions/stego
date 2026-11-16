@@ -184,8 +184,14 @@ func Manifest(c Config) (manifest.Manifest, error) {
 	maintain := manifest.Function{Name: s + "." + MaintainFunction, Language: "plpgsql", Source: source, SecurityDefiner: true,
 		Config: []string{"search_path=pg_catalog, pg_temp", "lock_timeout=2s"}, Execute: []string{c.RuntimeRole},
 		Returns: "TABLE(step_left boolean, checkpoint_tenant text, checkpoint_seq bigint, checkpoint_hash bytea)"}
+	// The grants of the DDL to the runtime role, and nothing more: the manifest of the service adds the grants of the
+	// worker role for its consuming workers (ST-SUP-RP14-LC06).
+	granted := func(privileges ...string) []manifest.Grant {
+		return []manifest.Grant{{Role: c.RuntimeRole, Privileges: privileges}}
+	}
 	return manifest.Manifest{Functions: []manifest.Function{maintain}, Tables: []manifest.Table{
 		{Schema: s, Name: EventsTable, Partitioned: true, RowSecurity: true, Policies: wall, Triggers: rejecting(EventsTable),
+			CheckGrants: true, Grants: granted("SELECT", "INSERT"),
 			// The primary key of the DDL: on a table with row-level security, each unique index is the manifest's.
 			Indexes: []manifest.Index{{Name: EventsTable + "_pkey", Columns: []string{"tenant_id", "seq", "recorded_at"}}},
 			// The check constraints of the DDL: on a table with row-level security, each one is the manifest's.
@@ -203,11 +209,13 @@ func Manifest(c Config) (manifest.Manifest, error) {
 			// audit_create_partition gives each partition a statement trigger of its own; the row triggers are clones.
 			PartitionTriggers: []manifest.Trigger{{Name: "_reject_statement", Timing: "BEFORE", Events: []string{"UPDATE", "DELETE", "TRUNCATE"},
 				Function: reject}}},
-		{Schema: s, Name: HeadsTable, RowSecurity: true, Policies: wall, Indexes: []manifest.Index{{Name: HeadsTable + "_pkey", Columns: []string{"tenant_id"}}}},
+		{Schema: s, Name: HeadsTable, RowSecurity: true, Policies: wall, Indexes: []manifest.Index{{Name: HeadsTable + "_pkey", Columns: []string{"tenant_id"}}},
+			CheckGrants: true, Grants: granted("SELECT", "INSERT", "UPDATE")},
 		{Schema: s, Name: BoundariesTable, RowSecurity: true, Policies: wall, Indexes: []manifest.Index{{Name: BoundariesTable + "_pkey", Columns: []string{"tenant_id"}}},
+			CheckGrants: true, Grants: granted("SELECT", "INSERT", "UPDATE"),
 			Triggers: []manifest.Trigger{
 				{Name: BoundariesTable + "_guard", Timing: "BEFORE", Row: true, Events: []string{"INSERT", "UPDATE"}, Function: guard}}},
-		{Schema: s, Name: CheckpointsTable, RowSecurity: true, Policies: wall, Triggers: rejecting(CheckpointsTable),
+		{Schema: s, Name: CheckpointsTable, RowSecurity: true, Policies: wall, Triggers: rejecting(CheckpointsTable), CheckGrants: true, Grants: granted("SELECT"),
 			Indexes: []manifest.Index{{Name: CheckpointsTable + "_pkey", Columns: []string{"tenant_id", "seq"}}},
 			Columns: []manifest.Column{{Name: "written_at", Type: "timestamp with time zone", Default: "now()"}}},
 	}}, nil

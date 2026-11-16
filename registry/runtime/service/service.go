@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -87,6 +88,10 @@ type Parts struct {
 	// PurgeRole is the role that owns the purge function of the key table, which the manifest of the key table names
 	// (ST-SUP-RP14-LC06).
 	PurgeRole string
+	// Grants are the GRANT statements of the runtime role, each without its grantee, which the migration job grants
+	// (Migration.Grants): the manifest checks that the table of each declared entity grants the runtime role exactly
+	// these privileges (ST-SUP-RP14-LC06).
+	Grants []string
 	// Schema is the schema manifest of the tables of the declaration, which the PostgreSQL adapter emits
 	// (ST-SUP-RC01-OC12). New adds the manifest of the audit record to it, for the anchor period of Workers
 	// (ST-SUP-RP14-LC06).
@@ -108,6 +113,8 @@ func (p Parts) check() error {
 		return errors.New("service: the parts need the owner role, which owns the tables of the schema manifest")
 	case p.WorkerRole == "" || p.OutboxRelayRole == "" || p.RelayRole == "" || p.AuthzSchema == "" || p.PurgeRole == "":
 		return errors.New("service: the parts need the worker, outbox relay, relay and purge roles and the authorization schema, which the manifests of the outbox, the authorization runtime and the key table name")
+	case len(p.Grants) == 0:
+		return errors.New("service: the parts give no GRANT statement of the runtime role (Parts.Grants), so the schema manifest cannot check the grants of the entity tables; generate the service again, which gives the statements that its migration job grants")
 	case p.TenantConfig == nil || p.NewQueue == nil || p.AuditQueue == nil || p.NewAuthz == nil:
 		return errors.New("service: the parts need the adapter's connection configuration, the outbox queue, the audit queue and the authorization runtime")
 	case len(p.SchemaSteps) > 0 && p.Release == "":
@@ -432,6 +439,9 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 	}
 	want := manifest.Join(p.Schema, record, queue, revocations, keys)
 	want.Owner = p.OwnerRole
+	if err := entityGrants(&want, p, runtimeRole); err != nil {
+		return manifest.Manifest{}, err
+	}
 	// The grants of a consuming worker on a table whose grants the manifest checks; the key table names its
 	// consumer roles itself (ST-SUP-Q136).
 	for _, g := range consumerGrants(&p) {
@@ -443,6 +453,52 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 		}
 	}
 	return want, nil
+}
+
+// runtimeGrant reads a GRANT statement of the runtime role on a table, without its grantee:
+// GRANT <privileges> ON TABLE "<schema>"."<table>".
+var runtimeGrant = regexp.MustCompile(`^GRANT ([A-Z]+(?:, [A-Z]+)*) ON TABLE "([^"]+)"\."([^"]+)"$`)
+
+// The columns of the grants of the worker role on the table of an entity with a resource type, which the
+// authorization migration gives so the worker stores the token of each row (ST-SUP-RC29).
+var (
+	tokenReadColumns  = []string{"tenant_id", "id"}
+	tokenWriteColumns = []string{"authz_token"}
+)
+
+// entityGrants makes the manifest check the grants of the table of each declared entity (ST-SUP-RP14-LC06): the
+// privileges of the runtime role that the GRANT statements of the parts give on it, and, on a table with the
+// authorization token, SELECT of the tenant and the key and UPDATE of the token for the worker role. The worker's
+// grants of a consuming worker follow. So a grant that the migration job did not give, and one that it gave and that
+// is gone, is a fault. It refuses a statement on a table that is not of the form that the generated code writes.
+func entityGrants(want *manifest.Manifest, p Parts, runtimeRole string) error {
+	granted := map[[2]string][]string{}
+	for _, statement := range p.Grants {
+		if !strings.Contains(statement, " ON TABLE ") {
+			continue
+		}
+		match := runtimeGrant.FindStringSubmatch(statement)
+		if match == nil {
+			return fmt.Errorf("service: the runtime grant %q of the parts is not GRANT <privileges> ON TABLE \"<schema>\".\"<table>\", so the schema manifest cannot check it (Parts.Grants)", statement)
+		}
+		key := [2]string{match[2], match[3]}
+		granted[key] = append(granted[key], strings.Split(match[1], ", ")...)
+	}
+	for i := range want.Tables {
+		t := &want.Tables[i]
+		if !t.Entity {
+			continue
+		}
+		t.CheckGrants = true
+		if privileges := granted[[2]string{t.Schema, t.Name}]; len(privileges) > 0 {
+			t.Grants = append(t.Grants, manifest.Grant{Role: runtimeRole, Privileges: privileges})
+		}
+		if slices.ContainsFunc(t.Columns, func(c manifest.Column) bool { return c.Name == tokenWriteColumns[0] }) {
+			t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: []string{"SELECT"}, Columns: tokenReadColumns},
+				manifest.Grant{Role: p.WorkerRole, Privileges: []string{"UPDATE"}, Columns: tokenWriteColumns})
+		}
+	}
+	return nil
 }
 
 // consumerRoles are the roles that run a consuming worker's fill: the worker role, whose outbox worker runs it in
