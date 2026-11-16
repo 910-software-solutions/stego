@@ -1108,6 +1108,23 @@ func TestRefusedVariables(t *testing.T) {
 		if !named {
 			t.Errorf("the check does not refuse a value for PGHOST, without the value: %+v", fit.Rows)
 		}
+		// The start guard refuses each value that is not "", so a value of white space only is refused too; an empty
+		// or null value is no value (#380 security review L2).
+		for value, refused := range map[string]bool{`" "`: true, `"\t"`: true, `""`: false, "null": false} {
+			fit, err = CheckEnvironment(requirements, file("  PGHOST: "+value+"\n"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			named = false
+			for _, row := range fit.Rows {
+				if row.Requirement == "configuration PGHOST" && row.Status == WrongType && strings.Contains(row.Detail, "the service refuses the environment variable PGHOST at start") {
+					named = true
+				}
+			}
+			if named != refused {
+				t.Errorf("the value %s of PGHOST: the check refuses it %v, want %v: %+v", value, named, refused, fit.Rows)
+			}
+		}
 	})
 }
 
