@@ -471,6 +471,51 @@ func templateLiterals(src string) []string {
 	return out
 }
 
+// withoutComments gives the SQL text with each comment, -- to the end of its line and /* to */, as a space. A
+// comment marker in a string literal, '...' or "...", is no comment, so the literal is kept; the body of a
+// dollar-quoted string is SQL, such as the body of a function, so its comments are removed too (security review of
+// PR #266, L5).
+func withoutComments(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); {
+		switch c := text[i]; {
+		case c == '\'' || c == '"':
+			j := i + 1
+			for j < len(text) {
+				if text[j] == c {
+					if j+1 < len(text) && text[j+1] == c {
+						j += 2
+						continue
+					}
+					break
+				}
+				j++
+			}
+			end := min(j+1, len(text))
+			b.WriteString(text[i:end])
+			i = end
+		case strings.HasPrefix(text[i:], "--"):
+			j := strings.IndexByte(text[i:], '\n')
+			if j < 0 {
+				return b.String()
+			}
+			b.WriteByte(' ')
+			i += j
+		case strings.HasPrefix(text[i:], "/*"):
+			j := strings.Index(text[i+2:], "*/")
+			if j < 0 {
+				return b.String()
+			}
+			b.WriteByte(' ')
+			i += j + 4
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return b.String()
+}
+
 // unqualifiedSQL gives each statement text of a file of tree, in the runtime library, in the generated code of an
 // example, or in a template of a generator, that names a table or a function of a schema manifest with no schema,
 // or a table that a format argument or another value names. It reads the Go files that are not tests, with their
@@ -478,7 +523,7 @@ func templateLiterals(src string) []string {
 // action of a template as an argument, and matches across lines. A .sql or .tmpl file is a statement with no
 // comments. A text that starts as a statement starts, after SQL comments, or that starts with a word that names a
 // table after it, such as the FROM of a part, is matched in any case; in another text, such as prose, only the
-// keywords in upper case count. A common table expression with the name of a table of a manifest is that table,
+// keywords in upper case count, but for a table of a manifest after FROM, JOIN, INTO or UPDATE, in any case. A common table expression with the name of a table of a manifest is that table,
 // and the cursor that a FETCH at the start of a statement reads is no table. A text that ends with a table keyword
 // is a statement whose table another value names, and the role list of a GRANT or a REVOKE is no table. The files
 // of ownerDDL give their constants to the fold, and are not read for statements.
@@ -537,6 +582,9 @@ func unqualifiedSQL(tree Tree) []string {
 			forms: []*regexp.Regexp{
 				// A table after a keyword that names one.
 				regexp.MustCompile(flags + keyword + names + end),
+				// A table of a manifest after FROM, JOIN, INTO or UPDATE, in any case in any text: prose seldom names
+				// one there, and a part of a statement may start with any word (security review of PR #266, L6).
+				regexp.MustCompile(`(?is)\b(?:FROM|JOIN|INTO|UPDATE)\s+(?:ONLY\s+)?` + names + end),
 				// A table after a comma of a FROM list.
 				regexp.MustCompile(flags + `\bFROM\s+[a-z0-9_."]+(?:\s+(?:AS\s+)?[a-z_]+)?(?:\s*,\s*[a-z0-9_."]+(?:\s+(?:AS\s+)?[a-z_]+)?)*\s*,\s*` + names + end),
 				// A table in a regclass cast.
@@ -552,8 +600,6 @@ func unqualifiedSQL(tree Tree) []string {
 	// statement starts with a word that names a table after it.
 	head := regexp.MustCompile(`(?is)^[\s(]*(?:SELECT|INSERT|UPDATE|DELETE|WITH|LOCK|TRUNCATE|COPY|TABLE|CREATE|ALTER|DROP|GRANT|REVOKE|CALL|PERFORM|DO|VALUES|MERGE|DECLARE|EXPLAIN|FETCH|SET|RESET|BEGIN|START|EXECUTE|PREPARE|REFRESH|VACUUM|ANALYZE|CLUSTER|REINDEX|COMMENT|IMPORT|FROM|INTO|JOIN|USING)\b`)
 	leadingComments := regexp.MustCompile(`(?s)^(?:\s*(?:--[^\n]*(?:\n|$)|/\*.*?\*/))+`)
-	// The comments of a .sql or .tmpl file: a line comment on a line of its own, and a block comment.
-	fileComments := regexp.MustCompile(`(?ms)^[ \t]*--[^\n]*$|/\*.*?\*/`)
 	// The words FROM and UPDATE where they name no table: the FROM of a FETCH at the start of a statement names a
 	// cursor, after the direction and the count of the FETCH.
 	notTable := regexp.MustCompile(`(?is)(?:^|;)[\s(]*FETCH\s+(?:(?:NEXT|PRIOR|FIRST|LAST|ABSOLUTE|RELATIVE|FORWARD|BACKWARD|ALL|[+-]?[0-9]+|[\x00\x01])\s+){0,2}(?:FROM|IN)\b|\bFOR\s+(?:NO\s+KEY\s+)?UPDATE\b|\bFOR\s+(?:KEY\s+)?SHARE\b|\bDO\s+UPDATE\b|\bDISTINCT\s+FROM\b`)
@@ -583,7 +629,7 @@ func unqualifiedSQL(tree Tree) []string {
 		for _, text := range texts {
 			text = action.ReplaceAllString(text, argument)
 			if whole {
-				text = fileComments.ReplaceAllString(text, " ")
+				text = withoutComments(text)
 			}
 			statement := whole || head.MatchString(leadingComments.ReplaceAllString(text, ""))
 			s := searches[statement]
@@ -672,19 +718,25 @@ func TestQualifiedSQL(t *testing.T) {
 			"cteouter":     "const a = `SELECT * FROM (WITH leases AS (SELECT 1) SELECT * FROM leases) s JOIN leases l ON true`",
 			"cterecursive": "const a = `WITH RECURSIVE leases AS (SELECT * FROM leases) SELECT 1`",
 			// Lower-case SQL after a comment, after a head word such as SET, and in a part of a statement (M2).
-			"lowercomment": "const a = `-- note\nselect * from leases`",
-			"lowerset":     "const a = `SET LOCAL lock_timeout = 1; delete from leases`",
-			"lowerpart":    "func f() string {\n\tq := \"SELECT 1\"\n\tfor i := 0; i < 2; i++ {\n\t\tq += \" from leases\"\n\t}\n\treturn q\n}",
+			"lowercomment": "const a = `-- note\nlock table leases`",
+			"lowerset":     "const a = `SET LOCAL lock_timeout = 1; truncate leases`",
+			"lowerpart":    "func f() string {\n\tq := \"SELECT 1\"\n\tfor i := 0; i < 2; i++ {\n\t\tq += \" using leases\"\n\t}\n\treturn q\n}",
 			// The word grant in a value, a FETCH that is an alias, and the object of a REVOKE (L1, L3).
 			"grantword":  "func f(t string) string { return \"SELECT 'grant' AS k, x FROM \" + t }",
 			"fetchalias": "func f(n, t string) string { return \"SELECT x.fetch \" + n + \" FROM \" + t }",
 			"revoked":    "func f(t, r string) string { return \"REVOKE ALL ON TABLE \" + t + \" FROM \" + r }",
-			"fetched":    "func f(n, c, t string) string { return \"FETCH FORWARD \" + n + \" FROM \" + c + \"; DELETE FROM \" + t }",
-			"field":      "type e struct{ table string }\n\nfunc f() string {\n\tx := e{table: \"leases\"}\n\treturn \"SELECT 1 FROM \" + x.table\n}",
+			// Lower-case SQL in a part that starts with no head word, and a table after FROM in prose, as main reads
+			// them (security review of PR #266, L6).
+			"lowwhere": "func f() string {\n\tq := \"SELECT 1 \"\n\tq += \"where x in (select 1 from leases)\"\n\treturn q\n}",
+			"lowand":   "func f() string {\n\tq := \"SELECT 1 \"\n\tq += \"and exists (select 1 from leases)\"\n\treturn q\n}",
+			"lowcomma": "func f() string {\n\tq := \"SELECT a\"\n\tq += \", b from leases\"\n\treturn q\n}",
+			"prose":    "import \"errors\"\n\nvar e = errors.New(\"cannot read from leases\")",
+			"fetched":  "func f(n, c, t string) string { return \"FETCH FORWARD \" + n + \" FROM \" + c + \"; DELETE FROM \" + t }",
+			"field":    "type e struct{ table string }\n\nfunc f() string {\n\tx := e{table: \"leases\"}\n\treturn \"SELECT 1 FROM \" + x.table\n}",
 			// The forms that are no unqualified statement: a common table expression, prose, a function name in prose,
 			// a field that is always a schema and a table, FOR UPDATE, the roles of a REVOKE, and the cursor of a FETCH.
 			"clean": "import \"errors\"\n\ntype q struct{ table string }\n\nfunc g(schema, name string) q { return q{table: schema + \".\" + name} }\n\n" +
-				"func f(v q, role string) []any {\n\tstep := \"lock \" + role\n\treturn []any{step, errors.New(\"cannot read from leases\"), \"move (the key), claim (the row)\",\n" +
+				"func f(v q, role string) []any {\n\tstep := \"lock \" + role\n\treturn []any{step, errors.New(\"cannot read the leases\"), \"move (the key), claim (the row)\",\n" +
 				"\t\t\"WITH rows AS (SELECT 1) SELECT * FROM rows\", \"SELECT 1 FROM \" + v.table + \" WHERE x\",\n" +
 				"\t\t\"SELECT x FROM public.leases WHERE k = $1 FOR UPDATE \", \"REVOKE ALL ON public.leases FROM \" + role,\n" +
 				"\t\t\"FETCH FORWARD \" + role + \" FROM \" + role, \"FETCH NEXT IN \" + role, \"FETCH 10 FROM \" + role}\n}",
@@ -697,12 +749,16 @@ func TestQualifiedSQL(t *testing.T) {
 			"internal/generator/g/query.go.tmpl":        []byte("const q = `SELECT 1 FROM leases WHERE {{.Key}}`\n"),
 			"internal/generator/g/low.go.tmpl":          []byte("var q = \"SELECT 1\" + \" from leases\"\n"),
 			"internal/generator/g/c.sql.tmpl":           []byte("-- header\ndelete from leases;\n"),
+			// A comment marker in a string literal is no comment (L5).
+			"internal/generator/g/strcomment.sql.tmpl": []byte("SELECT '/*';\nDELETE FROM leases;\nSELECT '*/';\n"),
+			"internal/generator/g/strdash.sql.tmpl":    []byte("SELECT 'a\n-- DELETE FROM leases\n';\n"),
 			// A file that starts with no head word is still a statement.
-			"internal/generator/g/w.sql.tmpl":   []byte("{{.Prelude}}\ndelete from leases;\n"),
+			"internal/generator/g/w.sql.tmpl":   []byte("{{.Prelude}}\ntruncate leases;\n"),
 			"internal/generator/g/cte.sql.tmpl": []byte("WITH leases AS (SELECT 1) SELECT * FROM public.x;\nDELETE FROM leases;\n"),
 			// The comments of a .sql file are no statement.
-			"internal/generator/g/clean.sql.tmpl": []byte("-- the rows from leases\n/* and into leases */\nSELECT 1 FROM public.leases WHERE {{.Key}};\n"),
-			"registry/runtime/alias/alias.go":     []byte("package alias\n\nimport \"github.com/jsell-rh/stego/registry/runtime/names\"\n\nconst Leases = names.Leases\n"),
+			"internal/generator/g/clean.sql.tmpl": []byte("-- the rows from leases\n/* and into leases */\nSELECT 1 FROM public.leases WHERE {{.Key}};\n" +
+				"DO $do$ BEGIN -- reads from leases\n\tPERFORM 1 FROM public.leases; END $do$;\nSELECT '--', \"a--b\" FROM public.leases;\n"),
+			"registry/runtime/alias/alias.go": []byte("package alias\n\nimport \"github.com/jsell-rh/stego/registry/runtime/names\"\n\nconst Leases = names.Leases\n"),
 			// A template whose Go comments and Go code, and its text outside a literal, name a table or a function.
 			"internal/generator/g/clean.go.tmpl": []byte("// SELECT 1 FROM leases\nfunc f() { _ = move(1); _ = x(claim(2)) }\n{{if .X}}FROM leases{{end}}\nvar s = \"LOCK TABLE \" + name\n"),
 		}
@@ -726,7 +782,8 @@ func TestQualifiedSQL(t *testing.T) {
 			"fprintf": "table leases", "field": "table leases", "fetched": "table that another value names",
 			"ctebody": "table leases", "cteouter": "table leases", "cterecursive": "table leases", "lowercomment": "table leases",
 			"lowerset": "table leases", "lowerpart": "table leases", "grantword": "table that another value names",
-			"fetchalias": "table that another value names", "revoked": "table that another value names"} {
+			"fetchalias": "table that another value names", "revoked": "table that another value names",
+			"lowwhere": "table leases", "lowand": "table leases", "lowcomma": "table leases", "prose": "table leases"} {
 			want = append(want, "registry/runtime/"+name+"/"+name+".go: the "+what+" with no schema")
 		}
 		want = append(want, "examples/e/out/internal/tenancy/migrations/x.sql: the table leases with no schema",
@@ -734,6 +791,8 @@ func TestQualifiedSQL(t *testing.T) {
 			"internal/generator/g/low.go.tmpl: the table leases with no schema",
 			"internal/generator/g/c.sql.tmpl: the table leases with no schema",
 			"internal/generator/g/w.sql.tmpl: the table leases with no schema",
+			"internal/generator/g/strcomment.sql.tmpl: the table leases with no schema",
+			"internal/generator/g/strdash.sql.tmpl: the table leases with no schema",
 			"internal/generator/g/cte.sql.tmpl: the table leases with no schema")
 		slices.Sort(want)
 		slices.Sort(got)
