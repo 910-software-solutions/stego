@@ -880,6 +880,8 @@ func TestStoppedHolder(t *testing.T) {
 				t.Fatalf("the transaction timeout is %s in the write and %s after it (%v), want a bound in the write and 0 after it", inside, after, err)
 			}
 		}
+		// The bound of the transaction is the time left on the process clock, and the server ends the transaction at
+		// that bound, whether it runs a statement or waits. The process clock is a hand clock, so the bound is exact.
 		for _, work := range []string{"0", "1.5", "4"} {
 			t.Run("work "+work+" s then stop", func(t *testing.T) {
 				d := openDatabase(t)
@@ -887,7 +889,10 @@ func TestStoppedHolder(t *testing.T) {
 				if err := Declare(ctx, d.other, "stego.stop"); err != nil {
 					t.Fatal(err)
 				}
-				a := acquire(t, newClient(t, d.db, "stego.stop", "a", Settings{TTL: 2 * time.Second, Renew: time.Second}))
+				clock := newFakeClock()
+				a := acquire(t, newClient(t, d.db, "stego.stop", "a", Settings{TTL: 2 * time.Second, Renew: time.Second, Clock: clock}))
+				// 300 ms pass on the process clock: 1700 ms of the lease are left.
+				clock.Advance(300 * time.Millisecond)
 				tx, err := d.db.BeginTx(ctx, nil)
 				if err != nil {
 					t.Fatal(err)
@@ -896,26 +901,21 @@ func TestStoppedHolder(t *testing.T) {
 				if _, err := a.Fence(ctx, tx); err != nil {
 					t.Fatal(err)
 				}
-				// The work: a statement of 4 s runs past the expiry, and the server ends it.
+				var statement, idle bool
+				if err := tx.QueryRowContext(ctx, "SELECT current_setting('transaction_timeout')::interval = interval '1700 milliseconds', current_setting('idle_in_transaction_session_timeout')::interval = interval '1700 milliseconds'").Scan(&statement, &idle); err != nil || !statement || !idle {
+					t.Fatalf("the transaction timeout is the time left %v and the idle timeout %v (%v), want both 1700 ms", statement, idle, err)
+				}
+				// The work: a statement of 4 s runs past the bound, and the server ends it.
 				_, _ = tx.ExecContext(ctx, "SELECT pg_catalog.pg_sleep("+work+")")
-				// The process "stops": no statement and no timer of the holder.
-				_, _, expires := d.leaseRow(t, "stego.stop")
+				// The process "stops": no statement and no timer of the holder. The row is expired as the database
+				// clock would make it; the update waits on the row lock of Fence until the server ends the transaction.
+				d.expire(t, "stego.stop")
 				b := newClient(t, d.other, "stego.stop", "b", Settings{TTL: 2 * time.Second, Renew: time.Second})
-				var got time.Time
-				for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-					actx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-					_, err := b.Acquire(actx)
-					cancel()
-					if err == nil {
-						got = time.Now()
-						break
-					}
+				if _, err := b.Acquire(ctx); err != nil {
+					t.Fatalf("the other holder did not take the expired lease: %v", err)
 				}
-				if got.IsZero() {
-					t.Fatal("the other holder never took the lease")
-				}
-				if late := got.Sub(expires); late > 500*time.Millisecond {
-					t.Fatalf("the other holder took the lease %v after the expiry, want at most 500 ms", late)
+				if _, err := tx.ExecContext(ctx, "SELECT 1"); err == nil {
+					t.Fatal("the transaction of the stopped holder still runs after the other holder took the lease")
 				}
 			})
 		}
