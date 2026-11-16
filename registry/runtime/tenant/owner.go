@@ -276,13 +276,16 @@ ORDER BY r.rolname`)
 	return nil
 }
 
-// tableNameStatement gives the schema and the name of a table that SQL text names.
-const tableNameStatement = `SELECT n.nspname, c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+// tableNameStatement gives the count of the parts of the SQL text of a table name, and the schema and the name of
+// the table that it names.
+const tableNameStatement = `SELECT pg_catalog.cardinality(pg_catalog.parse_ident($1::pg_catalog.text)), n.nspname, c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE c.oid = pg_catalog.to_regclass($1::pg_catalog.text)`
 
 // ValidateForeignKey validates the foreign key key of table, which the table holds NOT VALID, in the transaction tx
 // of the migration job, as the role that owns table (ST-SUP-RP04-LC10). table is the name of the table as SQL text,
-// qualified with its schema, and key the name of the key with no quotes. It reads the schema and the name of table
+// qualified with its schema, and key the name of the key with no quotes. It refuses a table name with no schema
+// before it runs a statement on the table, since PostgreSQL would find such a name through the search path, temporary
+// tables first (ST-SUP-RP04-LC10-T07; security review of PR #266, L4). It reads the schema and the name of table
 // from the catalog and quotes each, so each statement that it runs names the table with its schema
 // (ST-STD-TXN-R19).
 //
@@ -307,13 +310,17 @@ func ValidateForeignKey(ctx context.Context, tx *sql.Tx, table, key string) erro
 // PostgreSQL would run the validation that takes its one query in spite of the revoke, which the test of the second
 // guard needs.
 func validateForeignKey(ctx context.Context, tx *sql.Tx, table, key string, revoke bool) error {
+	var parts int
 	var schema, name string
-	err := tx.QueryRowContext(ctx, tableNameStatement, table).Scan(&schema, &name)
+	err := tx.QueryRowContext(ctx, tableNameStatement, table).Scan(&parts, &schema, &name)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("tenant: %s has no foreign key %s", table, key)
 	}
 	if err != nil {
 		return err
+	}
+	if parts != 2 {
+		return fmt.Errorf("tenant: the table %s of the foreign key %s names no schema", table, key)
 	}
 	qualified := pgx.Identifier{schema}.Sanitize() + "." + pgx.Identifier{name}.Sanitize()
 	var setting string

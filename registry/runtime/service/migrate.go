@@ -747,10 +747,11 @@ func workerGrants(m Migration) (tables, floor string, err error) {
 	if m.Parts == nil {
 		return text.String(), "", nil
 	}
-	fixed := []string{quote(audit.RecordSchema) + "." + quote(audit.EventsTable), quote(audit.RecordSchema) + "." + quote(audit.HeadsTable),
-		quote(idempotency.KeySchema) + "." + quote("idempotency_keys")}
-	for _, name := range fixed {
-		text.WriteString("REVOKE ALL ON TABLE " + name + " FROM " + role + ";\n")
+	// Each fixed table is a schema and a name, which the statement quotes, so it names the table with its schema
+	// (ST-STD-TXN-R19).
+	fixed := [][2]string{{audit.RecordSchema, audit.EventsTable}, {audit.RecordSchema, audit.HeadsTable}, {idempotency.KeySchema, "idempotency_keys"}}
+	for _, table := range fixed {
+		text.WriteString("REVOKE ALL ON TABLE " + quote(table[0]) + "." + quote(table[1]) + " FROM " + role + ";\n")
 	}
 	var floorText strings.Builder
 	if m.Parts.AuthzSchema != "" {
