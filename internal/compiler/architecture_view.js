@@ -552,6 +552,9 @@ function cellDetails(d, id){
     // No named path gives the role the permission, but a limit cut its paths short: the role may hold it, and the
     // cell never reads as a definite no (security review of PR #383, L1).
     if (role && !own.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellMayHold", text:"⚠ May hold: no path that the model names gives "+short(role)+" the permission "+c.resource_type+"#"+c.permission+", but a limit cut its grant paths short, so this role may hold it."}));
+    // The line of the paths that stop, when the model names no path of the permission that stops: a role may hold it
+    // past the limit, and the cell never reads as no grant (security review of PR #385, L2).
+    else if (!own.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellMayHold", text:"⚠ May hold: the model names no path of the permission "+c.resource_type+"#"+c.permission+" that stops, but a limit cut its grant paths short, so a role may hold it by a path past the limit."}));
   }
   d.appendChild(h("strong", {text:"Grant paths"}));
   var ul = h("ul");

@@ -75,11 +75,15 @@ type FactGrants struct {
 	// may hold the permission by a path past the limit, as the matrix cell of that role says (security review of PR
 	// #383, L1).
 	MayHold []string `json:"may_hold,omitempty"`
+	// Limits names, when a limit cut the paths short, each limit that cut them: the depth limit, the work limit or
+	// the path limit, as the paths that stop name them, or a limit that the model does not name (security review of
+	// PR #385, L2).
+	Limits []string `json:"limits,omitempty"`
 }
 
 // factGrants gives who the permission grants, with the roles of the model that may hold it past a limit.
 func factGrants(m *ArchitectureModel, p ArchPermission) *FactGrants {
-	g := &FactGrants{Permission: p.ID, Complete: p.Complete, Paths: p.Paths}
+	g := &FactGrants{Permission: p.ID, Complete: p.Complete, Paths: p.Paths, Limits: permissionLimits(&p)}
 	if permissionIncomplete(&p) {
 		for _, r := range m.Access.Roles {
 			if len(matrixCell(&p, r.ID)) == 0 {
@@ -256,13 +260,22 @@ func writeGrants(b *strings.Builder, g *FactGrants) {
 	if !g.Complete && !named {
 		// Every path stopped before it reached a role: the model names none, and that is no statement that no role
 		// holds the permission (security review of PR #384, L1).
-		fmt.Fprintf(b, "    a limit cut the paths of %s short before they reached a role, so the model names no role that holds it, and a role may hold it by a path past the limit\n", nameText(g.Permission))
+		// The line names each limit that stopped the paths (security review of PR #385, L2).
+		fmt.Fprintf(b, "    no path of %s reached a role before a limit stopped it (%s), so the model names no role that holds it, and a role may hold it by a path past the limit\n", nameText(g.Permission), limitsText(g))
 	} else if !g.Complete {
-		fmt.Fprintf(b, "    a limit cut a path of %s short, so it can grant more roles than these\n", nameText(g.Permission))
+		fmt.Fprintf(b, "    a limit cut a path of %s short (%s), so it can grant more roles than these\n", nameText(g.Permission), limitsText(g))
 	}
 	if !g.Complete && len(g.MayHold) > 0 {
 		fmt.Fprintf(b, "    no path that the model names gives it to %s, but each may hold it by a path past the limit\n", nameText(strings.Join(g.MayHold, ", ")))
 	}
+}
+
+// limitsText names the limits that cut the paths of the permission short, or a limit that the model does not name.
+func limitsText(g *FactGrants) string {
+	if len(g.Limits) == 0 {
+		return unnamedLimit
+	}
+	return nameText(strings.Join(g.Limits, " and "))
 }
 
 // factSourceText names the source of a fact in words.
