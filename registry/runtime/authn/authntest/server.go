@@ -59,6 +59,7 @@ type Server struct {
 	redirect  string
 	hang      bool
 	delay     time.Duration
+	held      chan struct{}
 	arrived   chan struct{}
 }
 
@@ -103,7 +104,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.requests.Add(1)
 	}
 	s.mu.Lock()
-	document, status, redirect, hang, delay := s.document, s.status, s.redirect, s.hang, s.delay
+	document, status, redirect, hang, delay, held := s.document, s.status, s.redirect, s.hang, s.delay, s.held
 	if discovery && s.moved != "" && s.server.URL+r.URL.Path != s.moved {
 		redirect = s.moved
 	}
@@ -117,6 +118,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	select {
 	case s.arrived <- struct{}{}:
 	default:
+	}
+	if held != nil {
+		select {
+		case <-held:
+		case <-r.Context().Done():
+			return
+		case <-s.closing:
+			return
+		}
 	}
 	if delay > 0 {
 		select {
@@ -198,6 +208,26 @@ func (s *Server) Delay(d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.delay = d
+}
+
+// Hold makes the server hold each answer until the test calls the release function that Hold gives, so a test
+// orders the steps of a load with no time limit. A repeat release is safe.
+func (s *Server) Hold() (release func()) {
+	held := make(chan struct{})
+	s.mu.Lock()
+	s.held = held
+	s.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.mu.Lock()
+			if s.held == held {
+				s.held = nil
+			}
+			s.mu.Unlock()
+			close(held)
+		})
+	}
 }
 
 // Requests is the number of requests that the server got, other than those for a discovery document.

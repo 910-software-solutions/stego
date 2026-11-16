@@ -482,27 +482,76 @@ func TestKeysStale(t *testing.T) {
 		k1, k2 := authntest.NewKey(t, "k1"), authntest.NewKey(t, "k2")
 		server.Publish(k1)
 		c := newClock()
-		v, set := remoteVerifier(t, server, c)
+		// read receives one value each time the key set reads its clock, so the test knows when a lookup holds the
+		// lock and has read the state of the cache.
+		read := make(chan struct{}, 64)
+		now := func() time.Time {
+			at := c.now()
+			select {
+			case read <- struct{}{}:
+			default:
+			}
+			return at
+		}
+		set, err := newKeySet(context.Background(), KeySource{URL: server.URL()}, keyOptions{now: now, roots: rootsOf(server)})
+		if err != nil {
+			t.Fatalf("newKeySet: %v", err)
+		}
+		v, err := newVerifier(Settings{Issuer: testIssuer, Audience: testAudience, ProblemCode: "SVC", Keys: set}, time.Now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(v.Stop)
 		server.Publish(k1, k2)
-		server.Delay(2 * time.Second)
+		// The server holds the refresh until the test releases it: no answer comes on a time limit.
+		release := server.Hold()
+		t.Cleanup(release)
 		c.add(MaxAge)
 		requests := server.Requests()
-
-		start := time.Now()
-		expectAccepted(t, v, tokenOf(t, k1, "k1"))
-		if waited := time.Since(start); waited > time.Second {
-			t.Errorf("the known key ID waited %v for the refresh", waited)
+		// The first load reached the server already; only the arrival of the refresh may end the context below.
+		for len(server.Arrived()) > 0 {
+			<-server.Arrived()
 		}
-		waitFor(t, func() bool { return server.Requests() == requests+1 }, "the refresh that the known key ID started")
-		start = time.Now()
-		expectAccepted(t, v, tokenOf(t, k2, "k2"))
-		if waited := time.Since(start); waited < time.Second {
-			t.Errorf("the unknown key ID waited only %v, want it to wait for the refresh", waited)
+
+		// The request of the known key ID ends when the refresh reaches the server. A lookup that waits for the
+		// refresh gets the end of its context and refuses the token, so the test fails and does not hang.
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() {
+			select {
+			case <-server.Arrived():
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		if _, err := v.Verify(ctx, tokenOf(t, k1, "k1")); err != nil {
+			t.Fatalf("the known key ID was refused while the refresh was held: %v", err)
+		}
+		if set.idle() {
+			t.Fatal("the known key ID of a stale cache started no refresh")
+		}
+		// The unknown key ID waits for that same refresh: the test releases the refresh only after the lookup of
+		// k2 has read the cache, so a lookup that does not wait finds no k2.
+		for len(read) > 0 {
+			<-read
+		}
+		result := make(chan error, 1)
+		go func() {
+			_, err := v.Verify(context.Background(), tokenOf(t, k2, "k2"))
+			result <- err
+		}()
+		<-read
+		release()
+		if err := <-result; err != nil {
+			t.Errorf("the unknown key ID did not get the key of the refresh: %v", err)
+		}
+		// The lookup of k2 returns after the load ended, so the key set is idle.
+		if !set.idle() {
+			t.Error("the refresh still runs after the unknown key ID got its answer")
 		}
 		if n := server.Requests() - requests; n != 1 {
 			t.Errorf("the two tokens made %d requests, want the one refresh", n)
 		}
-		waitFor(t, set.idle, "the end of the refresh")
 	})
 }
 
