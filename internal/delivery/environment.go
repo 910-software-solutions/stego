@@ -290,7 +290,7 @@ func readEntry(section string, kind RequirementKind, known []string, name string
 			return nil, err
 		}
 		// The values of the keys are not kept: the decoder sees only whether a key has a value. A key whose value is
-		// null or empty counts as missing.
+		// null, white space only, an empty map or an empty list counts as missing.
 		for _, key := range keys.order {
 			if !emptyValue(keys.nodes[key]) {
 				entry.keys = append(entry.keys, key)
@@ -323,9 +323,16 @@ func readEntry(section string, kind RequirementKind, known []string, name string
 	return entry, nil
 }
 
-// emptyValue tells whether a value is null or the empty text, without keeping the value.
+// emptyValue tells whether a value is null, a text of white space only, an empty map or an empty list, without
+// keeping the value. Such a value gives the service nothing, so it counts as missing (#378 security review L3).
 func emptyValue(node *yaml.Node) bool {
-	return node.Kind == yaml.ScalarNode && (node.Tag == "!!null" || node.Value == "")
+	switch node.Kind {
+	case yaml.ScalarNode:
+		return node.Tag == "!!null" || strings.TrimSpace(node.Value) == ""
+	case yaml.MappingNode, yaml.SequenceNode:
+		return len(node.Content) == 0
+	}
+	return false
 }
 
 // typeFault gives why a field of an entry does not have the type that the environment schema states for it, or "".

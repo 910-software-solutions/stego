@@ -377,9 +377,12 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		if strings.Contains(stdout, "PORT") {
 			t.Fatalf("the check names the optional variable PORT:\n%s", stdout)
 		}
-		c.change(t, "dev.yaml", cursorLine, "  STEGO_QUERY_CURSOR_KEY_FILE: \"\"\n")
-		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
-		expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE", "empty")
+		for _, empty := range []string{"\"\"", "\"  \"", "\"\\t\""} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", cursorLine, "  STEGO_QUERY_CURSOR_KEY_FILE: "+empty+"\n")
+			stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE", "empty")
+		}
 	})
 	t.Run("ST-DLV-UC02-R05-T03 An unknown environment variable is listed as unused, and a value of a listed variable is not", func(t *testing.T) {
 		c := newEnvCase(t)
@@ -421,7 +424,8 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		}
 	})
 	t.Run("ST-DLV-UC02-R02-T03 A secret key with an empty or null value counts as missing", func(t *testing.T) {
-		for _, empty := range []string{" \"\"", "", " null"} {
+		// A text of white space only, an empty map and an empty list are empty too (#378 security review L3).
+		for _, empty := range []string{" \"\"", "", " null", " \" \"", " \"\\t \\n\"", " {}", " []"} {
 			c := newEnvCase(t)
 			c.change(t, "dev.yaml", passwordLine, "    password:"+empty+"\n")
 			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")

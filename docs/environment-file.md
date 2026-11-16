@@ -47,6 +47,8 @@ A port is a number from 1 to 65535. The verbs are `get`, `list`, `watch`, `creat
   and be one of its allowed values or inside its range. A `url` must be an HTTPS URL. A `path` is an absolute file
   path. An `address` is a host and a port, such as `spicedb.example.com:50051`. A `duration` is a Go duration, such
   as `30s`.
+- A value that is null, white space only, an empty map or an empty list is no value: a secret key with such a value
+  is missing, and so is a configuration value.
 - A required environment variable must have a value, as the base wires it. A variable that is not secret has a value
   under `configuration`. A secret variable with a `secret_source` has a value when the secret of its source has that
   key. A secret of the variable's name is not a value. A secret variable with no `secret_source` never has a value:
