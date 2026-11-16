@@ -168,13 +168,13 @@ func quoteIdentifier(name string) string {
 func RegisterValidateStep(name, body string, constraints ...ValidateConstraint) {
 	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: []string{}, StatementTimeout: longStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
 		for _, c := range constraints {
+			table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
 			if c.Foreign {
-				if err := runtimetenant.ValidateForeignKey(ctx, tx, c.Schema, c.Table, c.Name); err != nil {
+				if err := runtimetenant.ValidateForeignKey(ctx, tx, table, c.Name); err != nil {
 					return err
 				}
 				continue
 			}
-			table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
 			if _, err := tx.ExecContext(ctx, "ALTER TABLE "+table+" VALIDATE CONSTRAINT "+quoteIdentifier(c.Name)); err != nil {
 				return err
 			}
