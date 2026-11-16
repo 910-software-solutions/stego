@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -110,6 +111,8 @@ type clock struct {
 	now     time.Time
 	waiters []wait
 	waits   atomic.Int64
+	// changed is closed and made again at each new wait, so a check can wait for a wait with no deadline.
+	changed chan struct{}
 }
 
 type wait struct {
@@ -133,7 +136,53 @@ func (c *clock) After(d time.Duration) <-chan time.Time {
 	}
 	c.waiters = append(c.waiters, wait{at: c.now.Add(d), ch: ch})
 	c.waits.Add(1)
+	if c.changed != nil {
+		close(c.changed)
+	}
+	c.changed = make(chan struct{})
 	return ch
+}
+
+// waitedAt tells whether a wait ends exactly at at, and gives the channel that the next new wait closes.
+func (c *clock) waitedAt(at time.Time) (bool, <-chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.changed == nil {
+		c.changed = make(chan struct{})
+	}
+	for _, w := range c.waiters {
+		if w.at.Equal(at) {
+			return true, c.changed
+		}
+	}
+	return false, c.changed
+}
+
+// first blocks until one of the clocks has a wait that ends at its time, and gives the index of the first such
+// clock in the order given. It has no deadline: a party that never waits ends the check at the timeout of go test,
+// and a missing result is not a pass.
+func first(waits ...clockWait) int {
+	for {
+		var signals []<-chan struct{}
+		for i, w := range waits {
+			found, changed := w.clock.waitedAt(w.at)
+			if found {
+				return i
+			}
+			signals = append(signals, changed)
+		}
+		cases := make([]reflect.SelectCase, len(signals))
+		for i, ch := range signals {
+			cases[i] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ch)}
+		}
+		reflect.Select(cases)
+	}
+}
+
+// clockWait is a wait of a party on a clock that ends at a time.
+type clockWait struct {
+	clock *clock
+	at    time.Time
 }
 
 // advance moves the clock on by d and fires each wait that is due, the earliest first.
@@ -184,6 +233,12 @@ func newClock() *clock {
 	step := interval.Nanoseconds()
 	return &clock{now: time.Unix(0, (time.Now().UnixNano()/step+1)*step).Add(-time.Second)}
 }
+
+// newLeaseClock is the process clock of the lease clients of a check, apart from the clock of the ticks: it stands
+// still at the system time until the check moves it, so a holder renews, and a holder that waits for the lease tries
+// again, only when the check says so. A lease's expiry on this clock is never before the system time while the check
+// runs, so the deadline of a run under the lease is the one that the lease TTL gives.
+func newLeaseClock() *clock { return &clock{now: time.Now()} }
 
 // nextDue is the next due time of the worker after the clock's time.
 func (c *clock) nextDue() time.Time {
@@ -386,6 +441,36 @@ func bodyFor(tenantID string) body {
 // holds the lease row and is bounded by the system clock, which the test clock does not move.
 func start(t *testing.T, e *env, c *clock, holder string) *instance {
 	t.Helper()
+	return startWith(t, e, c, func(name string, ttl time.Duration) (*lease.Client, error) {
+		if holder == "" {
+			return nil, nil
+		}
+		return lease.New(e.pool, service.WorkerLeasePrefix+name, holder, lease.Settings{TTL: ttl, Renew: ttl * 2 / 3, Clock: c})
+	})
+}
+
+// leaseTTL, leaseRenew and leaseRetry are the lease settings of a holder of startLeased: a lease that the database
+// holds for an hour, so it never expires while a check runs, and a renew and a retry that happen only when the check
+// moves the lease clock.
+const (
+	leaseTTL   = time.Hour
+	leaseRenew = 2 * time.Second
+	leaseRetry = time.Second
+)
+
+// startLeased starts one instance whose ticker of sync-partner-orders runs under the lease
+// stego.worker.sync-partner-orders as holder, with the ticks on the clock tick and the lease on the clock leaseClock.
+func startLeased(t *testing.T, e *env, tick, leaseClock *clock, holder string) *instance {
+	t.Helper()
+	return startWith(t, e, tick, func(name string, _ time.Duration) (*lease.Client, error) {
+		return lease.New(e.pool, service.WorkerLeasePrefix+name, holder, lease.Settings{TTL: leaseTTL, Renew: leaseRenew, Retry: leaseRetry, Clock: leaseClock})
+	})
+}
+
+// startWith starts one instance of the worker mode's tickers on e with the clock c and the lease clients of
+// leaseOf, as service.Start builds the TickerEnv, and gives the ticker of sync-partner-orders.
+func startWith(t *testing.T, e *env, c *clock, leaseOf func(name string, ttl time.Duration) (*lease.Client, error)) *instance {
+	t.Helper()
 	bindOnce.Do(func() {
 		syncorders.Behavior = func(ctx context.Context, tick time.Time, h *workers.SyncPartnerOrdersHandle) error {
 			id := h.Tenant().ID()
@@ -398,12 +483,7 @@ func start(t *testing.T, e *env, c *clock, holder string) *instance {
 	})
 	env := service.TickerEnv{Runtime: e.rt, Clock: c,
 		Tenants: func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, e.pool, "public") },
-		Lease: func(name string, ttl time.Duration) (*lease.Client, error) {
-			if holder == "" {
-				return nil, nil
-			}
-			return lease.New(e.pool, service.WorkerLeasePrefix+name, holder, lease.Settings{TTL: ttl, Renew: ttl * 2 / 3, Clock: c})
-		},
+		Lease:   leaseOf,
 	}
 	rec := newRecorder(t)
 	env.Observe = func(name string) command.WorkerObserver { return rec.Worker(name) }
@@ -477,6 +557,24 @@ func none(t *testing.T) {
 	case c := <-calls:
 		t.Fatalf("the fill was called for %s at %v", c.tenant, c.due)
 	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// committed waits until the order of the tenant has the status that a committed run wrote. It has no deadline.
+func committed(t *testing.T, e *env, tenantID, status string) {
+	t.Helper()
+	for e.status(tenantID) != status {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// noCall checks that no call of the fill is waiting to be read: a check calls it when no party can call the fill.
+func noCall(t *testing.T) {
+	t.Helper()
+	select {
+	case c := <-calls:
+		t.Fatalf("the fill was called for %s at %v", c.tenant, c.due)
+	default:
 	}
 }
 
@@ -676,32 +774,64 @@ func TestWorker(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RC35-OC05-T01 Of two instances only the lease holder runs a single worker", func(t *testing.T) {
-		prefix, _ := e.tenants(t, 1)
-		setBody(prefix, nil)
-		c := newClock()
-		first := start(t, e, c, "h1")
-		first.armed()
-		start(t, e, c, "h2")
-		time.Sleep(200 * time.Millisecond)
-		c.move(interval)
-		next(t)
-		none(t)
+		// The check does not depend on time: the ticks of each instance are on a clock of its own, which the check
+		// moves, and the lease of both instances is on one more clock, which only the check moves, so no renew, retry
+		// or expiry happens between two steps of the check. Each step waits for the wait that the next one needs,
+		// with no deadline (ST-SUP-RC35-OC05).
+		prefix, ids := e.tenants(t, 1)
+		setBody(prefix, func(ctx context.Context, _ string, h *workers.SyncPartnerOrdersHandle) error {
+			return write(ctx, h, "synced")
+		})
+		ticks1, ticks2, leases := newClock(), newClock(), newLeaseClock()
+		both := func(d time.Duration) {
+			ticks1.advance(d)
+			ticks2.advance(d)
+		}
+		startLeased(t, e, ticks1, leases, "h1")
+		// h1 holds the lease: its scheduler waits for the due time only after h1 took the lease row.
+		due, renew := ticks1.nextDue(), leases.Now().Add(leaseRenew)
+		first(clockWait{ticks1, due})
 		var holder string
 		must(t, e.admin.QueryRow(`SELECT holder FROM leases WHERE name = $1`, service.WorkerLeasePrefix+worker).Scan(&holder))
 		if holder != "h1" {
-			t.Fatalf("the lease stego.worker.%s is held by %q, want h1", worker, holder)
+			t.Fatalf("the lease stego.worker.%s is held by %q while h1 waits for a tick, want h1", worker, holder)
 		}
-		// h2 takes the row: the renew of h1 fails, so h1 stops ticking, and h2 acquires the lease at its next retry.
-		e.exec(`UPDATE leases SET holder = 'h2', token = token + 1, expires_at = now() + interval '1 minute' WHERE name = $1`, service.WorkerLeasePrefix+worker)
-		for range 8 {
-			c.move(2 * time.Second)
-			time.Sleep(100 * time.Millisecond)
+		// h2 cannot take the lease: it waits for its retry on the lease clock, and it never waits for a tick. A
+		// single worker that ticked without its lease would wait for the due time instead.
+		startLeased(t, e, ticks2, leases, "h2")
+		if got := first(clockWait{leases, leases.Now().Add(leaseRetry)}, clockWait{ticks2, due}); got != 0 {
+			t.Fatal("the instance h2 waits for a tick without the lease")
 		}
-		drain()
-		eventually(t, "an instance waits for the next due time", func() bool { return c.due(c.nextDue()) })
-		c.move(c.nextDue().Sub(c.Now()))
-		next(t)
-		none(t)
+		both(due.Sub(ticks1.Now()))
+		if r := <-calls; r.tenant != ids[0] || !r.due.Equal(due) {
+			t.Fatalf("the fill was called for %s at %v, want %s at %v", r.tenant, r.due, ids[0], due)
+		}
+		// The run of h1 commits; no other call follows, since h2 holds no lease and h1's next tick is not due.
+		committed(t, e, ids[0], "synced")
+		if waits, _ := ticks2.waitedAt(due.Add(interval)); waits {
+			t.Fatal("the instance h2 waits for the next tick without the lease")
+		}
+		noCall(t)
+
+		// h2 takes the row: when the lease clock moves, the renew of h1 fails, so h1 stops ticking and waits to take
+		// the lease again, and h2 takes the lease at its retry and waits for the next due time.
+		e.reset(prefix)
+		e.exec(`UPDATE leases SET holder = 'h2', token = token + 1, expires_at = now() + interval '1 hour' WHERE name = $1`, service.WorkerLeasePrefix+worker)
+		first(clockWait{leases, renew})
+		leases.advance(leaseRenew)
+		next := due.Add(interval)
+		first(clockWait{ticks1, ticks1.Now().Add(leaseRetry)})
+		first(clockWait{ticks2, next})
+		must(t, e.admin.QueryRow(`SELECT holder FROM leases WHERE name = $1`, service.WorkerLeasePrefix+worker).Scan(&holder))
+		if holder != "h2" {
+			t.Fatalf("the lease stego.worker.%s is held by %q after the renew of h1 failed, want h2", worker, holder)
+		}
+		both(next.Sub(ticks1.Now()))
+		if r := <-calls; r.tenant != ids[0] || !r.due.Equal(next) {
+			t.Fatalf("the fill was called for %s at %v, want %s at %v", r.tenant, r.due, ids[0], next)
+		}
+		committed(t, e, ids[0], "synced")
+		noCall(t)
 	})
 
 	t.Run("ST-SUP-RC35-OC07-T01 A slow tenant ends at its own deadline and the next tenant gets its own", func(t *testing.T) {
