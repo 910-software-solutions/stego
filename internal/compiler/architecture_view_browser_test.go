@@ -278,7 +278,7 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		b.open("file://" + path + "#view=trust")
 		var cell struct {
 			Found       bool
-			Text        string
+			Text, Cut   string
 			Images, Ran int
 		}
 		b.eval(`(function(){ var M = JSON.parse(document.getElementById("model").textContent), nested = {};
@@ -286,10 +286,11 @@ func TestArchitectureViewBrowser(t *testing.T) {
 			var btn = Array.prototype.filter.call(document.querySelectorAll("#view button.cell"), function(x){ return nested[x.getAttribute("data-check")]; })[0];
 			if (!btn) return {Found: false};
 			btn.click();
-			var list = document.getElementById("cellAncestors");
-			return {Found: true, Text: list ? list.textContent : "", Images: document.querySelectorAll("img").length, Ran: window.__ran}; })()`, &cell)
-		// The list shows the parameter, the reason and the scope source as text: three times the hostile text.
-		if !cell.Found || strings.Count(cell.Text, value) < 3 || cell.Images != 0 || cell.Ran != 0 {
+			var list = document.getElementById("cellAncestors"), cut = document.getElementById("cellAncestorIncomplete");
+			return {Found: true, Text: list ? list.textContent : "", Cut: cut ? cut.textContent : "", Images: document.querySelectorAll("img").length, Ran: window.__ran}; })()`, &cell)
+		// The list shows the parameter, the reason and the scope source as text: three times the hostile text. The
+		// note of the ancestor read that a limit cut short shows the hostile ancestor name as text too.
+		if !cell.Found || strings.Count(cell.Text, value) < 3 || !strings.Contains(cell.Cut, value) || cell.Images != 0 || cell.Ran != 0 {
 			t.Errorf("the details of a nested cell do not show the hostile ancestor names as text only: %+v", cell)
 		}
 		// The index of the elements by ID has no prototype: an ID of the address that names a property of Object
@@ -610,14 +611,77 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		var chain []string
 		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:member#owner@user"]').click();
 			return Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.getAttribute("data-ancestor")+" "+l.textContent; }); })()`, &chain)
+		// A limit cut the grant paths of organization#view short, so the role may hold it by a path past the limit.
 		if len(chain) != 1 || !strings.HasPrefix(chain[0], "ancestor:org-users.read/Organization Organization (org_id): organization#view") ||
-			!strings.Contains(chain[0], "this role alone does not grant it") {
+			!strings.Contains(chain[0], "no path that the model names gives it to this role alone") {
 			t.Fatalf("the cell of a nested operation lists the ancestors %q", chain)
 		}
 		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:organization#viewer@user"]').click();
 			return Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.textContent; }); })()`, &chain)
 		if len(chain) != 1 || !strings.Contains(chain[0], "this role grants it") {
 			t.Fatalf("the cell of a role that may view the organization lists the ancestors %q", chain)
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R14-T06 The details of a cell mark an ancestor read whose grant paths a limit cut short as incomplete", func(t *testing.T) {
+		// The same matrix with the grant paths of organization#view complete: no mark, and the role that holds no path
+		// of the read does not get it.
+		data, err := os.ReadFile("testdata/architecture/access.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		for _, perm := range raw["access"].(map[string]any)["permissions"].([]any) {
+			if perm.(map[string]any)["id"] == "permission:organization#view" {
+				perm.(map[string]any)["complete"] = true
+			}
+		}
+		data, err = json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete := filepath.Join(t.TempDir(), "index.html")
+		if err := os.WriteFile(complete, view, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		type details struct {
+			Items []string
+			Note  string
+		}
+		read := func(address, check, role string) details {
+			b.open(address + "#view=trust")
+			var got details
+			b.eval(`(function(){ document.querySelector('#view button.cell[data-check="`+check+`"][data-role="`+role+`"]').click();
+				return {Items: Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.textContent; }),
+					Note: (document.getElementById("cellAncestorIncomplete")||{}).textContent || ""}; })()`, &got)
+			return got
+		}
+		owner, viewer, top := "role:member#owner@user", "role:organization#viewer@user", "check:operation:organizations.read"
+		got := read(access, "check:operation:org-users.read", owner)
+		if len(got.Items) != 1 || !strings.Contains(got.Items[0], "organization#view ⚠ incomplete: a limit was reached") ||
+			!strings.Contains(got.Items[0], "a limit cut its paths short, so this role may hold it") || strings.Contains(got.Items[0], "this role alone does not grant it") {
+			t.Errorf("the cell of a role with no path of the incomplete ancestor read lists %q", got.Items)
+		}
+		if !strings.Contains(got.Note, "Incomplete: a limit was reached in the grant paths of the ancestor read Organization (organization#view)") {
+			t.Errorf("the cell of a nested operation does not note the incomplete ancestor read: %q", got.Note)
+		}
+		got = read(access, "check:operation:org-users.read", viewer)
+		if len(got.Items) != 1 || !strings.Contains(got.Items[0], "⚠ incomplete: a limit was reached") || !strings.Contains(got.Items[0], "this role grants it") || got.Note == "" {
+			t.Errorf("the cell of a role that holds the incomplete ancestor read shows %+v", got)
+		}
+		if got = read(access, top, viewer); len(got.Items) != 0 || got.Note != "" {
+			t.Errorf("the cell of an operation with no ancestor shows %+v", got)
+		}
+		got = read("file://"+complete, "check:operation:org-users.read", owner)
+		if len(got.Items) != 1 || strings.Contains(got.Items[0], "incomplete") || !strings.Contains(got.Items[0], "this role alone does not grant it, so the caller also needs it") || got.Note != "" {
+			t.Errorf("the cell of a complete ancestor read shows %+v", got)
 		}
 	})
 

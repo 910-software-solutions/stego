@@ -528,16 +528,21 @@ function cellDetails(d, id){
   if (c.ancestors && c.ancestors.length){
     // The parent chain check (ST-SUP-RC20-OC24): the handler reads each ancestor first, the top one first.
     d.appendChild(h("strong", {text:"Ancestors read first, the top one first"}));
-    var al = h("ol", {id:"cellAncestors"});
+    var al = h("ol", {id:"cellAncestors"}), cut = [];
     c.ancestors.forEach(function(a){
       // A grant that names no permission, in a model that the reader edited, shows as not held (security review of PR #374, L1).
       var q = a.grants && byId[a.grants], held = !!(q && Array.isArray(q.paths) && q.paths.some(function(g){ return (g.role || "") === role; }));
+      // A limit cut the grant paths of the ancestor read short: more roles may hold it than the paths name, so the cell
+      // never shows that set as complete (security review of PR #374, L2).
+      var partial = !!(a.permission && q && Array.isArray(q.paths) && q.complete === false);
       var what = a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public"+(a.reason ? ": "+a.reason : "") : "no permission: "+(a.reason || ""));
-      var who = !a.permission || !role ? "" : (held ? "; this role grants it" : "; this role alone does not grant it, so the caller also needs it");
+      var who = !a.permission || !role ? "" : (held ? "; this role grants it" : (partial ? "; no path that the model names gives it to this role alone, but a limit cut its paths short, so this role may hold it" : "; this role alone does not grant it, so the caller also needs it"));
       var by = a.scope_source ? srcText(a.scope_source) : "";
-      al.appendChild(h("li", {"data-ancestor":a.id}, [nameOf(a.entity)+" ("+a.param+"): "+what+who+(by ? "; in the path by "+by : "")]));
+      if (partial) cut.push(nameOf(a.entity)+" ("+what+")");
+      al.appendChild(h("li", {"data-ancestor":a.id}, [nameOf(a.entity)+" ("+a.param+"): "+what+(partial ? " ⚠ incomplete: a limit was reached" : "")+who+(by ? "; in the path by "+by : "")]));
     });
     d.appendChild(al);
+    if (cut.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellAncestorIncomplete", text:"⚠ Incomplete: a limit was reached in the grant paths of the ancestor read "+cut.join(", ")+", so it may grant more roles than its paths name."}));
     d.appendChild(h("p", {"class":"k", text:"A missing, denied or wrong ancestor answers 404, before the row is read or written."}));
   }
   if (p && p.complete === false) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: a limit was reached, so "+c.resource_type+"#"+c.permission+" may grant more roles than its paths name."}));

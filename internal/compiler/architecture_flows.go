@@ -192,7 +192,7 @@ func slotText(slot ArchSlot) string {
 
 // access builds what each operation and action checks, and the grant paths of each permission (ST-GEN-UC08-R12,
 // R13).
-func (d *deriver) access() {
+func (d *deriver) access() error {
 	svc, m := d.in.Service, d.model
 	m.Access = ArchAccess{Checks: []ArchCheck{}, Permissions: []ArchPermission{}, Roles: []ArchRole{}, RolesComplete: true}
 	bound := svc.Authorization != nil
@@ -232,7 +232,11 @@ func (d *deriver) access() {
 			if check.Public {
 				check.Reason = e.PublicReasons[op]
 			}
-			check.Ancestors = d.ancestorChecks(subject, chain, entities)
+			ancestors, err := d.ancestorChecks(subject, chain, entities)
+			if err != nil {
+				return err
+			}
+			check.Ancestors = ancestors
 			d.checks[subject] = check
 			m.Access.Checks[len(m.Access.Checks)-1] = check
 		}
@@ -301,6 +305,7 @@ func (d *deriver) access() {
 		}
 		m.AuthzPoints = append(m.AuthzPoints, ArchPoint{ID: "authz:" + check.Subject, Element: check.Subject, Text: text, Source: check.Source})
 	}
+	return nil
 }
 
 // ancestorFactName gives the name of the fact of the ancestor check at place n of an operation, 1 for the top
@@ -335,9 +340,11 @@ func hasCheckedAncestor(check ArchCheck) bool {
 }
 
 // ancestorChecks gives the checks of the parent chain of an operation, the top ancestor first, as the handler reads
-// them (ST-SUP-RC20-OC24): each ancestor with the read permission of its entity, or public with its reason, or no
-// permission when its entity has no resource type or no authorization is bound.
-func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entities map[string]int) []ArchAncestor {
+// them (ST-SUP-RC20-OC24): each ancestor with the read permission of its entity, or no permission when its entity has
+// no resource type or no authorization is bound. It refuses an ancestor whose entity has a resource type and a public
+// read or no read permission: the generators refuse that declaration (the command runtime plans each entity of the
+// path with a read permission), so the model states no check that no handler makes (security review of PR #374, L3).
+func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entities map[string]int) ([]ArchAncestor, error) {
 	svc := d.in.Service
 	var out []ArchAncestor
 	for n := len(chain) - 1; n >= 0; n-- {
@@ -355,12 +362,14 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 			a.Reason, a.Source = "No authorization is bound, so no permission is checked.", ArchSource{Rule: "ST-DECL-UC06-R01"}
 		case svc.Entities[i].ResourceType == "":
 			a.Reason, a.Source = "The entity has no resource type, so no permission is checked.", ArchSource{Rule: "ST-SUP-RC20-OC24"}
-		case svc.Entities[i].Permissions[types.OpRead] == types.PermissionPublic:
+		case svc.Entities[i].Permissions[types.OpRead] == types.PermissionPublic || svc.Entities[i].Permissions[types.OpRead] == "":
 			e := svc.Entities[i]
-			a.Public, a.ResourceType, a.Reason = true, e.ResourceType, e.PublicReasons[types.OpRead]
-			a.Source = ArchSource{Declaration: fmt.Sprintf("entities[%d].permissions.read", i)}
-		case svc.Entities[i].Permissions[types.OpRead] == "":
-			a.Reason, a.Source = "The entity declares no read permission, so no permission is checked.", ArchSource{Rule: "ST-SUP-RC20-OC24"}
+			read := "no read permission"
+			if e.Permissions[types.OpRead] == types.PermissionPublic {
+				read = "the read permission public"
+			}
+			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and entities[%d] has the resource type %s and %s; the handler decides the read permission of each ancestor in the path (ST-SUP-RC20-OC24), so declare entities[%d].permissions.read as a permission of %s",
+				level.By, e.Name, shortID(subject), i, e.ResourceType, read, i, e.ResourceType)}
 		default:
 			e := svc.Entities[i]
 			a.ResourceType, a.Permission = e.ResourceType, e.Permissions[types.OpRead]
@@ -369,7 +378,7 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 		}
 		out = append(out, a)
 	}
-	return out
+	return out, nil
 }
 
 // defaultRule gives the rule that sets the default of a setting at the path.

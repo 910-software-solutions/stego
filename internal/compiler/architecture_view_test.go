@@ -364,6 +364,12 @@ func TestArchitectureView(t *testing.T) {
 		if len(heads) == 0 || !strings.Contains(textOf(heads[0]), value) {
 			t.Fatal("the matrix head does not show the hostile ancestor name as text")
 		}
+		cut := p.all(func(n *html.Node) bool {
+			return n.Data == "span" && attrOf(n, "class") == "sub incomplete ancestor-incomplete"
+		})
+		if len(cut) == 0 || !strings.Contains(textOf(cut[0]), value) {
+			t.Fatal("the mark of an incomplete ancestor read does not show the hostile ancestor name as text")
+		}
 		// Each role head of the turned access matrix shows the role name as text, with a break only between its parts.
 		var model ArchitectureModel
 		if err := json.Unmarshal(hostile, &model); err != nil {
@@ -532,7 +538,13 @@ func TestArchitectureView(t *testing.T) {
 				incomplete = incomplete || (perm.ID == c.Grants && !perm.Complete)
 			}
 			head := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == c.ID })
-			if len(head) != 1 || strings.Contains(textOf(head[0]), "incomplete: a limit was reached") != incomplete {
+			own := 0
+			if len(head) == 1 {
+				own = len(within(head[0], func(n *html.Node) bool {
+					return n.Data == "span" && attrOf(n, "class") == "sub incomplete" && textOf(n) == "⚠ incomplete: a limit was reached"
+				}))
+			}
+			if len(head) != 1 || (own == 1) != incomplete || own > 1 {
 				t.Errorf("the column of %s does not show whether its permission is complete (%v)", c.ID, !incomplete)
 			}
 		}
@@ -601,6 +613,67 @@ func TestArchitectureView(t *testing.T) {
 		})
 		if len(checks) != 1 || !strings.Contains(textOf(checks[0]), "Organization organization#view") {
 			t.Error("the table of what each operation checks does not name the ancestor of org-users.read")
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R14-T05 The access matrix marks each ancestor read whose grant paths a limit cut short as incomplete", func(t *testing.T) {
+		p := parseView(t, accessView)
+		perms := map[string]ArchPermission{}
+		for _, perm := range am.Access.Permissions {
+			perms[perm.ID] = perm
+		}
+		withCut, without := 0, 0
+		for _, c := range am.Access.Checks {
+			var cut []ArchAncestor
+			for _, a := range c.Ancestors {
+				if perm, ok := perms[a.Grants]; ok && !perm.Complete {
+					cut = append(cut, a)
+				}
+			}
+			head := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == c.ID })
+			if len(head) != 1 {
+				t.Fatalf("the matrix has no head for %s", c.ID)
+			}
+			marks := within(head[0], func(n *html.Node) bool {
+				return n.Data == "span" && attrOf(n, "class") == "sub incomplete ancestor-incomplete"
+			})
+			names := within(head[0], func(n *html.Node) bool { return n.Data == "span" && attrOf(n, "class") == "sub ancestors" })
+			row := p.all(func(n *html.Node) bool { return n.Data == "tr" && attrOf(n, "data-id") == c.ID })
+			if len(row) != 1 {
+				t.Fatalf("the table of what each operation checks has no row for %s", c.ID)
+			}
+			if len(cut) == 0 {
+				without++
+				if len(marks) != 0 || strings.Contains(attrOf(head[0], "title"), "ancestor") && strings.Contains(attrOf(head[0], "title"), "(incomplete") ||
+					strings.Contains(textOf(row[0]), "incomplete") {
+					t.Errorf("the head or the check row of %s marks an ancestor read as incomplete, and none is", c.ID)
+				}
+				continue
+			}
+			withCut++
+			if len(marks) != 1 || len(names) != 1 {
+				t.Fatalf("the head of %s has %d marks of an incomplete ancestor read, not 1", c.ID, len(marks))
+			}
+			for _, a := range cut {
+				want := shortID(a.Entity) + " " + a.ResourceType + "#" + a.Permission
+				if !strings.Contains(textOf(marks[0]), shortID(a.Entity)+" ("+a.ResourceType+"#"+a.Permission+")") || !strings.Contains(textOf(marks[0]), "incomplete: a limit was reached") {
+					t.Errorf("the mark in the head of %s does not name %s: %q", c.ID, want, textOf(marks[0]))
+				}
+				for _, text := range []string{textOf(names[0]), attrOf(head[0], "title"), textOf(row[0])} {
+					if !strings.Contains(text, want+" (incomplete: a limit was reached)") {
+						t.Errorf("the ancestors of %s do not mark %s as incomplete: %q", c.ID, want, text)
+					}
+				}
+			}
+			// Each cell that names the ancestor read as missing says that its paths are incomplete.
+			for _, b := range p.all(func(n *html.Node) bool { return n.Data == "button" && attrOf(n, "data-check") == c.ID }) {
+				if strings.Contains(textOf(b), "⤒") && !strings.Contains(attrOf(b, "title"), "whose grant paths are incomplete: a limit was reached") {
+					t.Errorf("the cell of %s and %s names a missing ancestor read and not that its paths are incomplete: %q", attrOf(b, "data-role"), c.ID, attrOf(b, "title"))
+				}
+			}
+		}
+		if withCut == 0 || without == 0 {
+			t.Fatalf("the fixture proves too little: %d checks with an incomplete ancestor read and %d without", withCut, without)
 		}
 	})
 
@@ -718,6 +791,18 @@ func hostileModel(t *testing.T) ([]byte, string) {
 			a["scope_source"] = map[string]any{"declaration": hostileValue}
 			delete(a, "permission")
 			a["grants"] = m["access"].(map[string]any)["roles"].([]any)[0].(map[string]any)["id"]
+		}
+		// One more ancestor with a hostile name reads organization#view, whose grant paths a limit cut short, so the
+		// view writes the name in the marks of an incomplete ancestor read too (security review of PR #374, L2).
+		if len(ancestors) > 0 {
+			c.(map[string]any)["ancestors"] = append(ancestors, map[string]any{"id": "ancestor:" + hostileValue + "/cut", "entity": "entity:" + hostileValue,
+				"param": hostileValue, "resource_type": "organization", "permission": "view", "public": false, "grants": "permission:organization#view",
+				"source": map[string]any{"declaration": "entities[0].permissions.read"}, "scope_source": map[string]any{"declaration": hostileValue}})
+		}
+	}
+	for _, perm := range m["access"].(map[string]any)["permissions"].([]any) {
+		if perm.(map[string]any)["id"] == "permission:organization#view" {
+			perm.(map[string]any)["complete"] = false
 		}
 	}
 	for _, f := range m["flows"].([]any) {
