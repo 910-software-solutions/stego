@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115231705-babd9158c30c
+        module_version: v0.0.0-20261116010812-3235452ff541
         vcs: git
-        revision: babd9158c30c0004fdeabac2af844e4f0566ff73
+        revision: 3235452ff5418d9bb243126efd32b4acc44fe56d
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -208,6 +208,7 @@ last_applied:
         tracing/signals.go: 3adee95980b02c32284916b7e46083f2cc0d0dc8394ca402c49177290ec163cb
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
+        Containerfile: 01d5575c57f82450c770b969a86dd3815804140b933374b11fb0474b490bf34b
         architecture/architecture.json: 6762353bc4124f6672204aa169c5e5d2789a554b6ecb7d663ce33577ccbea3e6
         architecture/index.html: 9be9cd40454428b7fa8e10d1b7683d4d3ba8c0f0aa20fd4590346f945072b71d
         deploy/base/deployment.yaml: c70fcb432dc7f6d6d6c65ecbf8937cad8e56c71a47fb75c92b662a3235416420
