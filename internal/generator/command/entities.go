@@ -30,6 +30,9 @@ type entity struct {
 	// schemaRelations are the relations that the schema declares on the entity's resource type, which the generated
 	// Relations list holds; a delete of a row clears each of them (ST-SUP-Q118).
 	schemaRelations []string
+	// tenant is true when the schema gives the entity's resource type the relation tenant of the subject type
+	// tenant, which the runtime writes on each create (ST-SUP-RP10-LC05, ST-SUP-Q132).
+	tenant bool
 }
 
 // relationship is one declared relationship: the relation, the subject type, the field that holds the subject or
@@ -66,27 +69,49 @@ var goTypes = map[types.FieldType]string{
 	types.FieldTypeBytes: "[]byte", types.FieldTypeJsonb: "[]byte",
 }
 
-// SchemaRelations gives, for each resource type that the service's schema defines, the names of the relations that
-// the schema declares on it (ST-SUP-Q118): the runtime clears each of them on the resource of a deleted row. It reads
-// the schema that the authorization setting names among the generator's inputs, and gives none for a service with no
-// authorization.
-func SchemaRelations(ctx gen.Context) (map[string][]string, error) {
+// Relations are what the service's schema declares on the resource type of each entity: the names of its relations
+// (ST-SUP-Q118), and whether it has the relation tenant of the subject type tenant (ST-SUP-Q132). The zero value is
+// a service with no authorization.
+type Relations struct {
+	names  map[string][]string
+	tenant map[string]bool
+}
+
+// Of gives the names of the relations that the schema declares on the resource type.
+func (r Relations) Of(resourceType string) []string { return r.names[resourceType] }
+
+// Tenant tells whether the schema gives the resource type the relation tenant of the subject type tenant.
+func (r Relations) Tenant(resourceType string) bool { return r.tenant[resourceType] }
+
+// tenantRelation is the relation of a resource type to the tenant of its rows, and tenantSubject its subject type
+// (ST-SUP-Q132).
+const (
+	tenantRelation = "tenant"
+	tenantSubject  = "tenant"
+)
+
+// SchemaRelations gives, for each resource type of an entity of the service, the relations that the schema declares
+// on it (ST-SUP-Q118): the runtime clears each of them on the resource of a deleted row, and it writes the relation
+// tenant on each create when the schema gives it the subject type tenant (ST-SUP-Q132). It reads the schema that the
+// authorization setting names among the generator's inputs, and gives none for a service with no authorization.
+func SchemaRelations(ctx gen.Context) (Relations, error) {
 	setting := ctx.Authorization
 	if setting == nil || setting.SchemaPath == "" {
-		return nil, nil
+		return Relations{}, nil
 	}
 	source, ok := ctx.Inputs[setting.SchemaPath]
 	if !ok {
-		return nil, fmt.Errorf("command: the schema %q that the authorization setting names is not among the inputs of the generator", setting.SchemaPath)
+		return Relations{}, fmt.Errorf("command: the schema %q that the authorization setting names is not among the inputs of the generator", setting.SchemaPath)
 	}
 	schema, err := authzschema.CompileAuthzSchema(setting.SchemaPath, source)
 	if err != nil {
-		return nil, fmt.Errorf("command: the schema %q does not compile: %w", setting.SchemaPath, err)
+		return Relations{}, fmt.Errorf("command: the schema %q does not compile: %w", setting.SchemaPath, err)
 	}
-	relations := map[string][]string{}
+	relations := Relations{names: map[string][]string{}, tenant: map[string]bool{}}
 	for _, e := range ctx.Entities {
 		if e.ResourceType != "" {
-			relations[e.ResourceType] = schema.Relations(e.ResourceType)
+			relations.names[e.ResourceType] = schema.Relations(e.ResourceType)
+			relations.tenant[e.ResourceType] = schema.RelationAdmits(e.ResourceType, tenantRelation, tenantSubject)
 		}
 	}
 	return relations, nil
@@ -94,7 +119,7 @@ func SchemaRelations(ctx gen.Context) (map[string][]string, error) {
 
 // planEntity checks one entity that a command writes and builds its repository declaration; relations are the
 // schema relations of each resource type (SchemaRelations).
-func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string, relations map[string][]string) (*entity, error) {
+func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string, relations Relations) (*entity, error) {
 	if e.Tenant != "" && e.Tenant != "owned" {
 		return nil, fmt.Errorf("the entity is %s; a command writes only entities that a tenant owns", e.Tenant)
 	}
@@ -102,7 +127,7 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 		return nil, fmt.Errorf("the entity is of kind %s; a command writes only data entities", e.Kind)
 	}
 	p := &entity{decl: e, goName: e.Name, table: tableName(e.Name), resourceType: e.ResourceType,
-		schemaRelations: relations[e.ResourceType]}
+		schemaRelations: relations.Of(e.ResourceType), tenant: e.ResourceType != "" && relations.Tenant(e.ResourceType)}
 	if !sqlName.MatchString(p.table) || !token.IsIdentifier(e.Name) || !token.IsExported(e.Name) {
 		return nil, fmt.Errorf("the entity name %s does not give a plain table name and an exported Go name", e.Name)
 	}
@@ -354,6 +379,10 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 			quoted[i] = fmt.Sprintf("%q", name)
 		}
 		w.f("\tRelations: []string{%s},\n", strings.Join(quoted, ", "))
+	}
+	if e.tenant {
+		// The runtime relates each new row to its tenant (ST-SUP-RP10-LC05, ST-SUP-Q132).
+		w.f("\tTenant: true,\n")
 	}
 	if len(e.relationships) > 0 {
 		w.f("\tRelationships: []command.Relationship[%s]{\n", e.goName)

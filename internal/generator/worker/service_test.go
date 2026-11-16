@@ -38,6 +38,33 @@ func New() workers.SyncPartnerOrdersFill {
 }
 `)
 
+// serviceApplyFill is the fill apply-replies of the generated service for the checks: it does what Behavior does,
+// which a check sets, and nothing when it is nil. It imports the worker slot contract and the standard library fill
+// allow list only.
+var serviceApplyFill = []byte(`// Package applyreplies is the fill apply-replies of the generated test service.
+package applyreplies
+
+import (
+	"context"
+	"encoding/json"
+
+	workers "example.com/orders/out/workers"
+)
+
+// Behavior is what the fill does; a check of the service sets it.
+var Behavior workers.ApplyPartnerRepliesFill
+
+// New gives the fill of the worker apply-partner-replies.
+func New() workers.ApplyPartnerRepliesFill {
+	return func(ctx context.Context, message json.RawMessage, effect string, h *workers.ApplyPartnerRepliesHandle) error {
+		if Behavior == nil {
+			return nil
+		}
+		return Behavior(ctx, message, effect, h)
+	}
+}
+`)
+
 // tablesMigration is the migration 001_initial that the PostgreSQL adapter creates for the declaration on the
 // runtime data path (ST-SUP-RC01-OC41).
 func tablesMigration(t *testing.T, ctx gen.Context) []byte {
@@ -98,14 +125,16 @@ func ownPass(output, parent, id string) bool {
 func TestService(t *testing.T) {
 	ctx := workerContext(workerSlot)
 	p := newProject(t, ctx, map[string][]byte{
-		"fills/sync-orders/fill.go": serviceSyncFill,
-		"check/worker_test.go":      serviceChecks,
-		"check/tables.sql":          tablesMigration(t, ctx),
+		"fills/sync-orders/fill.go":   serviceSyncFill,
+		"fills/apply-replies/fill.go": serviceApplyFill,
+		"check/worker_test.go":        serviceChecks,
+		"check/tables.sql":            tablesMigration(t, ctx),
 	})
 	p.mustGo("vet", "./...")
 	run := &checkRun{}
 	t.Run("ST-SUP-RC35-OC04-T01 An interval worker runs once for each tenant a tick and skips an overlapping tick", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC04-T01") })
 	t.Run("ST-SUP-RC35-OC05-T01 Of two instances only the lease holder runs a single worker", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC05-T01") })
+	t.Run("ST-SUP-RC35-OC06-T01 A staged message reaches its consuming worker once, and a failed run is retried", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC06-T01") })
 	t.Run("ST-SUP-RC35-OC07-T01 A slow tenant ends at its own deadline and the next tenant gets its own", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC07-T01") })
 	t.Run("ST-SUP-RC35-OC08-T01 A panic in one worker run does not stop the service or the next run", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC08-T01") })
 	t.Run("ST-SUP-RC35-OC09-T01 A worker run is one span with a fixed outcome, and a failure is one built-in event", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC09-T01") })

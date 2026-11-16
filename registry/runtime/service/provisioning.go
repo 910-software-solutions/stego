@@ -74,8 +74,10 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	tp.marker = &exemptRoute{}
 	tp.exempt.Handle(p.ProvisionRoute, tp.marker)
 	tp.exempt.Handle(p.RetireRoute, tp.marker)
+	// Provision writes the tuple of each declared worker's relation on the new tenant, and Retire deletes it
+	// (ST-SUP-RC35-OC13).
 	spec := command.TenantSpec{ResourceType: p.ResourceType, Schema: schema, SubjectType: svc.parts.SubjectType,
-		Changed: gate.Forget, Active: gate.Active}
+		Changed: gate.Forget, Active: gate.Active, Workers: svc.parts.WorkerNames}
 	var err error
 	spec.Action, spec.Permission = tenant.ProvisionAction, p.Provision
 	if tp.provision, err = command.ServeTenant(rt, spec); err != nil {

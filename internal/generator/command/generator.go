@@ -114,7 +114,7 @@ type model struct {
 	probeImport    string // the domain probes package, or empty when the service has none
 	tenantKey      string
 	// relations are the schema relations of each resource type (SchemaRelations).
-	relations   map[string][]string
+	relations   Relations
 	subjectType string
 	basePath    string
 	messages    *messages
@@ -331,6 +331,11 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 		}
 		cmd.relations = append(cmd.relations, text)
 		resourceType, relation, _ := strings.Cut(text, "#")
+		// The tenant resource and the worker relations on it are written by the tenant provisioning alone
+		// (ST-SUP-RC35-OC13, ST-SUP-Q132).
+		if resourceType == authzschema.TenantResourceType || strings.HasPrefix(relation, authzschema.WorkerRelationPrefix) {
+			return nil, fmt.Errorf("command: the command %s writes the relation %s, which only the tenant provisioning writes: the resource type %s and each relation that starts with %s hold the grants of the workers", decl.Name, text, authzschema.TenantResourceType, authzschema.WorkerRelationPrefix)
+		}
 		h := relationHelper{resourceType: resourceType, relation: relation,
 			relate: cmd.goName + "Relate" + mixedCase(relation), unrelate: cmd.goName + "Unrelate" + mixedCase(relation)}
 		for _, e := range cmd.writes {

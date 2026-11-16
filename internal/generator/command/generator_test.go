@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -378,6 +379,38 @@ func TestContract(t *testing.T) {
 			if !strings.Contains(contract, want) {
 				t.Errorf("the Parent list of Hold with two references does not hold %s:\n%s", want, contract)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC05-T25 An entity whose schema type has the relation tenant of the subject type tenant is marked Tenant", func(t *testing.T) {
+		ctx := commandContext(t, declaration(t), commandSlot)
+		schema := strings.Replace(schemaZed, "definition hold {\n", "definition tenant {}\n\ndefinition hold {\n\trelation tenant: tenant\n", 1)
+		schema = strings.Replace(schema, "\trelation holder: user\n", "\trelation holder: user\n\trelation tenant: user\n", 1)
+		ctx.Inputs = map[string][]byte{"proto/orders.proto": []byte(ordersProto), "authz/schema.zed": []byte(schema)}
+		contract := string(generated(t, ctx)["commands/commands.go"])
+		hold := contract[strings.Index(contract, "HoldEntity = "):]
+		hold = hold[:strings.Index(hold, "}))")]
+		marked := regexp.MustCompile(`\n\tTenant:\s+true,\n`)
+		if !marked.MatchString(hold) {
+			t.Errorf("the entity Hold, whose type has the relation tenant: tenant, is not marked Tenant:\n%s", hold)
+		}
+		// The relation tenant of another subject type writes no tuple to the tenant.
+		if order := contract[strings.Index(contract, "OrderEntity = "):]; marked.MatchString(order[:strings.Index(order, "}))")]) {
+			t.Errorf("the entity Order, whose relation tenant takes a user, is marked Tenant:\n%s", order)
+		}
+		// No command may relate the tenant relation, a worker relation or the tenant resource: the generator refuses
+		// each, so it emits no Relate or Unrelate helper for it (ST-SUP-RC35-OC13).
+		for relation, why := range map[string]string{"order#tenant": "the runtime writes it alone",
+			"order#worker_sync": "only the tenant provisioning writes", "tenant#worker_sync": "only the tenant provisioning writes"} {
+			svc := declaration(t)
+			svc.Commands[0].RelationshipsWritten = []string{relation}
+			if _, _, err := new(Generator).Generate(commandContext(t, svc, commandSlot)); err == nil || !strings.Contains(err.Error(), relation) || !strings.Contains(err.Error(), why) {
+				t.Errorf("a command that writes %s gave %v, want a refusal that names it and says %q", relation, err, why)
+			}
+		}
+		// With the schema of the test declaration, no entity is marked.
+		if marked.Match(generated(t, commandContext(t, declaration(t), commandSlot))["commands/commands.go"]) {
+			t.Error("an entity is marked Tenant with a schema that has no relation tenant")
 		}
 	})
 

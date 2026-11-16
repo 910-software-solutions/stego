@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -73,6 +74,64 @@ type TenantSpec struct {
 	// tenant cannot be read, writes no audit row: it writes a counted log line instead (ST-SUP-RC27-OC10), so the
 	// claim of a verified token never starts the audit chain of a tenant that the list does not hold.
 	Active func(ctx context.Context, t tenant.Tenant) (bool, error)
+	// Workers are the names of the declared workers, which the generated code gives (Parts.WorkerNames). A Provision
+	// stages, in its transaction and inside the idempotency wrapper of the call, the tuple
+	// tenant:<tenant resource ID>#worker_<name in snake case>@service_account:<name> of each, and a Retire stages the
+	// delete of each, so no worker holds another's relation and none acts in a retired tenant (ST-SUP-RC35-OC13).
+	Workers []string
+}
+
+// WorkerTenantRelation is the relation of the type tenant that holds the tuple of the worker name in each tenant:
+// worker_<name in snake case> (ST-SUP-RC35-OC13).
+func WorkerTenantRelation(name string) string { return "worker_" + strings.ReplaceAll(name, "-", "_") }
+
+// workerTuples gives the tuple of each worker's relation on the tenant resource of t (ST-SUP-RC35-OC13): the subject
+// is the worker's own service account, never a wildcard, and the resource is of t only.
+func (s TenantSpec) workerTuples(t tenant.Tenant) ([]authz.Tuple, error) {
+	if len(s.Workers) == 0 {
+		return nil, nil
+	}
+	resource, err := authz.TenantResource(t)
+	if err != nil {
+		return nil, err
+	}
+	tuples := make([]authz.Tuple, 0, len(s.Workers))
+	for _, name := range s.Workers {
+		subject, err := authz.ServiceAccount(name)
+		if err != nil {
+			return nil, fmt.Errorf("command: the worker %q is no service account of a tuple: %w", name, err)
+		}
+		tuples = append(tuples, authz.Tuple{Resource: resource, Relation: WorkerTenantRelation(name), Subject: subject})
+	}
+	return tuples, nil
+}
+
+// relateWorkers stages, through an authorization handle bound to the caller in the transaction tx of the change of
+// t, a touch of each worker's tuple for a Provision and a delete of each for a Retire, joined to the revocation of the
+// transaction (ST-SUP-RC35-OC13).
+func relateWorkers(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx, req Request, t tenant.Tenant) error {
+	tuples, err := spec.workerTuples(t)
+	if err != nil || len(tuples) == 0 {
+		return err
+	}
+	allowed := make([]authz.Relation, len(tuples))
+	for i, tuple := range tuples {
+		allowed[i] = authz.Relation{ResourceType: tuple.Resource.Type, Name: tuple.Relation}
+	}
+	handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, allowed)
+	if err != nil {
+		return fmt.Errorf("command: the authorization handle of the worker tuples was not bound: %w", err)
+	}
+	write := handle.Relate
+	if spec.Action == tenant.RetireAction {
+		write = handle.Unrelate
+	}
+	for _, tuple := range tuples {
+		if _, err := write(ctx, tuple); err != nil {
+			return fmt.Errorf("command: the tuple %s#%s of the worker %s was not staged: %w", tuple.Resource.Type, tuple.Relation, tuple.Subject.ID, err)
+		}
+	}
+	return nil
 }
 
 func (s TenantSpec) command() string {
@@ -90,6 +149,20 @@ func (s TenantSpec) check(rt *Runtime) error {
 		return errors.New("command: the tenant provisioning serves provision and retire only")
 	case s.ResourceType == "" || s.Permission == "" || s.Schema == "" || s.SubjectType == "":
 		return errors.New("command: the tenant provisioning needs the resource type, the permission, the schema of the tenant list and the subject type")
+	}
+	relations := map[string]string{}
+	for _, name := range s.Workers {
+		// Two workers with one relation would hold each other's grant (ST-SUP-RC35-OC13).
+		if other, taken := relations[WorkerTenantRelation(name)]; taken {
+			return fmt.Errorf("command: the workers %q and %q of the tenant provisioning both give the relation tenant#%s, so each would hold the other's grant", other, name, WorkerTenantRelation(name))
+		}
+		relations[WorkerTenantRelation(name)] = name
+		if _, err := authz.ServiceAccount(name); err != nil {
+			return fmt.Errorf("command: the worker %q of the tenant provisioning is no service account that a tuple can hold: %w", name, err)
+		}
+		if _, err := authz.ParseRelation(authz.TenantType + "#" + WorkerTenantRelation(name)); err != nil {
+			return fmt.Errorf("command: the worker %q of the tenant provisioning gives no relation of the type tenant: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -297,6 +370,11 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (
 		}
 		wrapped, err := idempotency.Wrap(ctx, hookTx{q: q}, keyRequest, func(ctx context.Context) (idempotency.Response, error) {
 			if _, err := rt.cfg.Audit.Record(ctx, tx, t, []audit.Event{tenantEvent(ctx, rt, spec, req, t)}); err != nil {
+				return idempotency.Response{}, err
+			}
+			// The tuples of the workers commit with the change of the tenant list, or not at all; a replay of the
+			// key stages none again (ST-SUP-RC35-OC13).
+			if err := relateWorkers(ctx, rt, spec, tx, req, t); err != nil {
 				return idempotency.Response{}, err
 			}
 			return tenantResponse(spec.Action, t.ID())
