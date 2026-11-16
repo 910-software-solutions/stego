@@ -455,6 +455,23 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		b.media("screen", "light", "no-preference")
 	})
 
+	t.Run("ST-GEN-UC08-R08-T07 At 400 px the details sheet of a selected matrix cell shows above the sticky heads of the access matrix", func(t *testing.T) {
+		b.viewport(400, 800)
+		defer b.viewport(1280, 900)
+		b.open(access + "#view=trust")
+		var hidden []string
+		b.eval(`(function(){ var btn = document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:member#owner@user"]');
+			btn.scrollIntoView({block:"end"}); btn.click();
+			var d = document.getElementById("details").getBoundingClientRect(), out = [];
+			// Each point of the sheet that is on the screen shows the sheet, not a head of the matrix behind it.
+			for (var y = Math.max(d.top, 0) + 8; y < Math.min(d.bottom, innerHeight) - 4; y += 24) for (var x = d.left + 8; x < d.right - 4; x += 40){
+				var e = document.elementFromPoint(x, y); if (e && !e.closest("aside")) out.push(Math.round(x)+","+Math.round(y)+" "+e.tagName); }
+			return out; })()`, &hidden)
+		if len(hidden) > 0 {
+			t.Fatalf("the access matrix shows over the details sheet at %v", hidden)
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R09-T01 The guided tour can be skipped and started again, names the key terms, walks one flow and ends with a self-check question", func(t *testing.T) {
 		b.eval(`localStorage.clear()`, nil)
 		b.open(plain)
