@@ -341,9 +341,28 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		c.write(t, "platform-requirements.yaml", strings.ReplaceAll(c.read(t, "platform-requirements.yaml"), "    one_of: database-url\n", ""))
 		c.change(t, "platform-requirements.yaml", "  - name: DATABASE_URL\n    read_by:\n      - postgres-adapter\n    type: string\n    required: false\n",
 			"  - name: DATABASE_URL\n    read_by:\n      - postgres-adapter\n    type: string\n    required: true\n")
+		// The variable has the secret source orders-database, key url: the key of that Secret gives it a value, as
+		// the base wires it.
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectPassed(t, stdout, stderr, passed)
+		c.change(t, "dev.yaml", "    url: CANARY-SECRET-VALUE\n", "")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
+		// A Secret named like the variable is not a value of it: the base reads only the Secret of the source
+		// (#375 security review L2).
+		c.change(t, "dev.yaml", "secrets:\n", "secrets:\n  DATABASE_URL:\n    url: CANARY-SECRET-VALUE\n    DATABASE_URL: CANARY-SECRET-VALUE\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
+		// A secret variable with no source has a value when a Secret of its name holds the key of its name, as
+		// envFrom of that Secret gives it; another key is not a value.
+		c = newEnvCase(t)
+		c.write(t, "platform-requirements.yaml", strings.ReplaceAll(c.read(t, "platform-requirements.yaml"), "    one_of: database-url\n", ""))
+		c.change(t, "platform-requirements.yaml", "    required: false\n    description: The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.\n    secret: true\n    secret_source:\n      name: orders-database\n      key: url\n",
+			"    required: true\n    description: The PostgreSQL connection string of the runtime role.\n    secret: true\n")
 		c.change(t, "dev.yaml", "secrets:\n", "secrets:\n  DATABASE_URL:\n    value: CANARY-SECRET-VALUE\n")
+		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
+		c.change(t, "dev.yaml", "    value: CANARY-SECRET-VALUE\n", "    DATABASE_URL: CANARY-SECRET-VALUE\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectPassed(t, stdout, stderr, passed)
 		if strings.Contains(stdout+stderr, "CANARY") {

@@ -1220,9 +1220,16 @@ func TestFSGroupComponent(t *testing.T) {
 			"a Kustomization in place of a Component": replace(FSGroupKustomization, "kind: Component", "kind: Kustomization"),
 			"the patches in the other order":          replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n  - path: job-fs-group.yaml\n", "  - path: job-fs-group.yaml\n  - path: deployment-fs-group.yaml\n"),
 			"a resource in the Component":             replace(FSGroupKustomization, "patches:", "resources: [x.yaml]\npatches:"),
-			"no patch of the Job":                     remove(FSGroupJob),
-			"no patch of the Deployment":              remove(FSGroupDeployment),
-			"no kustomization":                        remove(FSGroupKustomization),
+			// The probes of the #375 security review: each is refused by the strict decoder, and stays refused.
+			"a hostPath volume":          replace(FSGroupDeployment, "      securityContext:", "      volumes: [{name: host, hostPath: {path: /}}]\n      securityContext:"),
+			"a hostNetwork":              replace(FSGroupJob, "      securityContext:", "      hostNetwork: true\n      securityContext:"),
+			"a namespace":                replace(FSGroupDeployment, "  name: orders\n", "  name: orders\n  namespace: kube-system\n"),
+			"a patch target":             replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n", "  - path: deployment-fs-group.yaml\n    target: {kind: Deployment}\n"),
+			"an inline patch":            replace(FSGroupKustomization, "  - path: job-fs-group.yaml\n", "  - path: job-fs-group.yaml\n  - patch: '{\"spec\": {}}'\n"),
+			"a patch with options":       replace(FSGroupKustomization, "  - path: deployment-fs-group.yaml\n", "  - path: deployment-fs-group.yaml\n    options: {allowNameChange: true}\n"),
+			"no patch of the Job":        remove(FSGroupJob),
+			"no patch of the Deployment": remove(FSGroupDeployment),
+			"no kustomization":           remove(FSGroupKustomization),
 			"the Component fs-group without the Component secret-files": func(files map[string][]byte) error {
 				for _, file := range []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts} {
 					delete(files, file)

@@ -303,12 +303,14 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 	if len(name) > maxWord || !requirementName.MatchString(name) {
 		return Requirement{}, fault(name, "name", "the name is not a name of at most %d letters, digits, '-' or '_', so it can hold a value of an environment, such as a host name or an address", maxWord)
 	}
-	if !kubernetesName.MatchString(name) {
-		return Requirement{}, fault(name, "name", "%s", kubernetesNameFault(name))
-	}
 	kind, err := ParseRequirementKind(need.Kind)
 	if err != nil {
 		return Requirement{}, fault(name, "kind", "%s", err)
+	}
+	// The name of a configuration need is an environment variable name, such as LOG_LEVEL, which the base never
+	// uses as a Kubernetes name; LoadRequirements exempts it in the same way (#375 security review L4).
+	if kind != Configuration && !kubernetesName.MatchString(name) {
+		return Requirement{}, fault(name, "name", "%s", kubernetesNameFault(name))
 	}
 	var resourceNames []string
 	for _, resourceName := range need.ResourceNames {
