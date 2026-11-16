@@ -169,7 +169,7 @@ shows its name only: give its value through a secret of the platform.
 | `STEGO_DATABASE_MAX_IDLE_CONNECTIONS` | integer | no | none | no | 0 to 1024 | `8` | The largest number of idle connections in the database pool, at most the open limit. When it has no value, the limit is 4, or the open limit when it is less. |
 | `STEGO_DATABASE_MAX_OPEN_CONNECTIONS` | integer | no | `16` | no | 1 to 1024 | `32` | The largest number of open connections in the database pool. When it has no value, the pool opens at most 16 connections. |
 | `STEGO_MIGRATION_DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
-| `STEGO_MIGRATION_DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database/migration-url` | The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two. |
+| `STEGO_MIGRATION_DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database-owner/url` | The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two. |
 | `STEGO_RELAY_DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
 | `STEGO_RELAY_DATABASE_URL_FILE` | path | no | none | no | - | `/etc/stego/database/relay-url` | The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two. |
 | `STEGO_WORKER_DATABASE_URL` | string | no | - | yes | - | - | The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value. |
@@ -196,3 +196,17 @@ shows its name only: give its value through a secret of the platform.
 | `STEGO_SPICEDB_ENDPOINT` | address | yes | none | no | - | `spicedb.example.svc:50051` | The host and port of SpiceDB. The service does not start when it has no value. |
 | `STEGO_SPICEDB_INSECURE_LOOPBACK` | boolean | no | `0` | no | 0, 1 | - | Set to 1 to let a loopback SpiceDB address go without TLS, for a local test only. When it has no value, the connection needs TLS. |
 | `STEGO_SPICEDB_KEY_FILE` | path | yes | none | no | - | `/etc/stego/spicedb/key` | The file of the preshared key of SpiceDB. The service does not start when it has no value. |
+
+## Secrets
+
+The Secret and the key that give each secret variable, or the file of a path variable, names only. The migration Job
+alone reads a variable of the mode migrate; the serving Deployment never references its Secret.
+
+| Variable | Secret | Key | Read by |
+|---|---|---|---|
+| `DATABASE_URL` | `user-management-database` | `url` | the Deployment |
+| `STEGO_MIGRATION_DATABASE_URL` | `user-management-database-owner` | `url` | the migration Job only (mode migrate) |
+| `STEGO_QUERY_CURSOR_KEY_FILE` | `user-management-query-cursor` | `key` | the Deployment |
+| `STEGO_RELAY_DATABASE_URL` | `user-management-database-relay` | `url` | the Deployment |
+| `STEGO_SPICEDB_KEY_FILE` | `user-management-spicedb` | `preshared-key` | the Deployment and the migration Job |
+| `STEGO_WORKER_DATABASE_URL` | `user-management-database` | `worker-url` | the Deployment |

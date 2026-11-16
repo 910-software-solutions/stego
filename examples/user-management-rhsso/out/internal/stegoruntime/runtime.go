@@ -112,6 +112,7 @@ var grants = []string{
 	"GRANT SELECT ON TABLE \"stego_schema\".\"generation\"",
 	"GRANT SELECT ON TABLE \"stego_schema\".\"identity\"",
 	"GRANT SELECT, USAGE ON SEQUENCE \"stego_schema\".\"epoch_seq\"",
+	"GRANT SELECT ON TABLE \"stego_schema\".\"migrations\"",
 	"GRANT INSERT, SELECT ON TABLE \"public\".\"audit_event\"",
 	"GRANT INSERT, SELECT, UPDATE ON TABLE \"public\".\"audit_chain_heads\"",
 	"GRANT INSERT, SELECT, UPDATE ON TABLE \"public\".\"audit_anchor_boundaries\"",

@@ -7,9 +7,14 @@ requirements:
   - kind: secret
     name: user-management-database
     keys:
-      - migration-url
       - url
       - worker-url
+    components:
+      - postgres-adapter
+  - kind: secret
+    name: user-management-database-owner
+    keys:
+      - url
     components:
       - postgres-adapter
   - kind: secret
@@ -1076,8 +1081,8 @@ environment:
     description: The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
     secret_source:
-      name: user-management-database
-      key: migration-url
+      name: user-management-database-owner
+      key: url
     read_by_mode: migrate
   - name: STEGO_MIGRATION_DATABASE_URL_FILE
     read_by:
