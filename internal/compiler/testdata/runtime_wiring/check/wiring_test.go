@@ -91,9 +91,8 @@ type service struct {
 	broker                                                                                             *kafkatest.Broker
 	foreignDB, legacyDB                                                                                *sql.DB
 	schemaBeforeNext                                                                                   string
-	// preTenant is a tenant that the tenant list held before the service started with no tuple of the declared
-	// workers and the tuple of the removed worker retired-export, as after a release that added and removed workers.
-	preTenant string
+	// restart stops the service process and starts it again.
+	restart func(t *testing.T)
 }
 
 // runResult is the outcome of one run of the binary.
@@ -349,51 +348,56 @@ func start(t *testing.T) *service {
 	}
 	s.noKafka = run(binary, append(unset, kafkaoutbox.BrokersSetting+"=", kafkaoutbox.TopicSetting+"=", kafkaoutbox.InsecureLoopbackSetting+"="), "--mode=worker")
 
-	// A tenant of an earlier release: listed with no tuple of the declared workers and with the tuple of the removed
-	// worker retired-export. The reconcile of the controller mode, which runs at start, mends both (ST-SUP-RC35-OC13).
-	s.preTenant = "org-pre-" + uuid.NewString()[:8]
-	execAll(t, s.admin, "INSERT INTO stego_tenants (tenant_id) VALUES ('"+s.preTenant+"')")
-	_, err = v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
-		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
-		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "tenant", ObjectId: s.tenantResource(t, s.preTenant)},
-			Relation: "worker_retired_export",
-			Subject:  &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "retired-export"}}}}}})
-	must(t, err)
-
-	process := exec.Command(binary)
-	process.Env = append(append(os.Environ(), serviceEnv("verify-full")...), noTestMode)
-	process.Stdout, process.Stderr = s.log, s.log
-	must(t, process.Start())
-	exited := make(chan struct{})
-	go func() { _ = process.Wait(); close(exited) }()
-	t.Cleanup(func() {
-		_ = process.Process.Signal(os.Interrupt)
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
-			_ = process.Process.Kill()
+	// start starts the service process in all modes and waits until it answers /livez; stop stops it and waits.
+	var stop func()
+	start := func(t *testing.T) {
+		t.Helper()
+		process := exec.Command(binary)
+		process.Env = append(append(os.Environ(), serviceEnv("verify-full")...), noTestMode)
+		process.Stdout, process.Stderr = s.log, s.log
+		must(t, process.Start())
+		exited := make(chan struct{})
+		go func() { _ = process.Wait(); close(exited) }()
+		stop = func() {
+			_ = process.Process.Signal(os.Interrupt)
+			select {
+			case <-exited:
+			case <-time.After(10 * time.Second):
+				_ = process.Process.Kill()
+				<-exited
+			}
 		}
+		for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+			response, err := http.Get(s.base + "/livez")
+			status := 0
+			if err == nil {
+				response.Body.Close()
+				if status = response.StatusCode; status == http.StatusOK {
+					break
+				}
+			}
+			select {
+			case <-exited:
+				t.Fatalf("the service stopped before it answered /livez:\n%s", s.log)
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the service does not answer /livez with 200: %d %v\n%s", status, err, s.log)
+			}
+		}
+	}
+	t.Cleanup(func() {
+		stop()
 		if t.Failed() {
 			t.Logf("service log:\n%s", s.log)
 		}
 	})
-	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		response, err := http.Get(s.base + "/livez")
-		status := 0
-		if err == nil {
-			response.Body.Close()
-			if status = response.StatusCode; status == http.StatusOK {
-				break
-			}
-		}
-		select {
-		case <-exited:
-			t.Fatalf("the service stopped before it answered /livez:\n%s", s.log)
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the service does not answer /livez with 200: %d %v\n%s", status, err, s.log)
-		}
+	start(t)
+	// restart stops the service and starts it again, as the rollout of a release does.
+	s.restart = func(t *testing.T) {
+		t.Helper()
+		stop()
+		start(t)
 	}
 	schema, err := v1.NewSchemaServiceClient(s.spice).ReadSchema(s.ctx, &v1.ReadSchemaRequest{})
 	must(t, err)
@@ -1495,27 +1499,46 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 	})
 	t.Run("ST-SUP-RC35-OC13-T06 The reconcile at start gives a tenant of an earlier release each worker's tuple and deletes the tuple of a removed worker", func(t *testing.T) {
 		s.t = t
-		resource := s.tenantResource(t, s.preTenant)
+		// A tenant of an earlier release: listed with no tuple of the declared workers and with the tuple of the
+		// removed worker retired-export. The service starts again, as at the rollout of a release, and the reconcile
+		// of the controller mode, which runs at start, mends both.
+		preTenant := "org-pre-" + uuid.NewString()[:8]
+		resource := s.tenantResource(t, preTenant)
+		execAll(t, s.admin, "INSERT INTO stego_tenants (tenant_id) VALUES ('"+preTenant+"')")
+		_, err := v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+			Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+			Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: "tenant", ObjectId: resource},
+				Relation: "worker_retired_export",
+				Subject:  &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: "retired-export"}}}}}})
+		must(t, err)
+		s.restart(t)
 		want := []string{
 			"tenant:" + resource + "#worker_apply_note_replies@service_account:apply-note-replies",
 			"tenant:" + resource + "#worker_sync_partner_orders@service_account:sync-partner-orders",
 		}
 		got := s.awaitTuples(t, resource, want)
 		if strings.Join(got, "\n") != strings.Join(want, "\n") {
-			t.Fatalf("SpiceDB holds on the tenant resource of %s:\n%s\nwant each worker's own tuple and no tuple of retired-export:\n%s", s.preTenant, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			t.Fatalf("SpiceDB holds on the tenant resource of %s:\n%s\nwant each worker's own tuple and no tuple of retired-export:\n%s", preTenant, strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 		// One audit row in the tenant's own chain, of the actor kind system.
 		if n := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1 AND action = 'reconcile-worker-tuples'
- AND actor_kind = 'system' AND resource_type = 'tenant' AND resource_id = $1 AND outcome = 'ok'`, s.preTenant); n != 1 {
-			t.Fatalf("%d audit rows of the reconcile in %s, want 1", n, s.preTenant)
+ AND actor_kind = 'system' AND resource_type = 'tenant' AND resource_id = $1 AND outcome = 'ok'`, preTenant); n != 1 {
+			t.Fatalf("%d audit rows of the reconcile in %s, want 1", n, preTenant)
 		}
-		// The job worker-tuples is healthy, so the controller mode is ready.
-		response, err := http.Get(s.base + "/readyz/modes")
-		must(t, err)
-		body, _ := io.ReadAll(response.Body)
-		response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			t.Fatalf("the readiness of the modes answered %d %s after the reconcile, want 200", response.StatusCode, body)
+		// The job worker-tuples is healthy, so the modes become ready; a readiness that names the job fails the check
+		// at once. The wait has no deadline of its own.
+		for {
+			response, err := http.Get(s.base + "/readyz/modes")
+			must(t, err)
+			body, _ := io.ReadAll(response.Body)
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				break
+			}
+			if strings.Contains(string(body), "worker-tuples") {
+				t.Fatalf("the readiness of the modes answered %d %s after the reconcile, want the job worker-tuples healthy", response.StatusCode, body)
+			}
+			time.Sleep(200 * time.Millisecond)
 		}
 	})
 }
