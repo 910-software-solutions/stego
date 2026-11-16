@@ -778,6 +778,28 @@ func TestValidateForeignKey(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP04-LC10-T07 A table name with no schema is refused before any statement on the table, with the key not validated and the grants unchanged", func(t *testing.T) {
+		k := newKeyTable(t, 100, false)
+		before := k.acl(t)
+		for _, table := range []string{"orders", `"orders"`} {
+			err := k.validate(context.Background(), func(ctx context.Context, tx *sql.Tx) error {
+				if _, err := tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', 'public', true)"); err != nil {
+					return err
+				}
+				return ValidateForeignKey(ctx, tx, table, ordersKey)
+			})
+			if err == nil || !strings.Contains(err.Error(), "names no schema") {
+				t.Errorf("the validation of %s gave %v, want the refusal of a name with no schema", table, err)
+			}
+		}
+		if k.validated(t) {
+			t.Error("the key is validated through a name with no schema")
+		}
+		if after := k.acl(t); after != before {
+			t.Errorf("after the refusals the grants of orders are %q, before %q", after, before)
+		}
+	})
+
 	t.Run("ST-SUP-RP04-LC10-T06 A key that refers to its own table is checked past row-level security, and leaves no column grant", func(t *testing.T) {
 		k := newKeyTable(t, 100, true)
 		// Each order of tenant-a and tenant-b refers to the order two before it of its tenant, and order 7 to an

@@ -276,9 +276,18 @@ ORDER BY r.rolname`)
 	return nil
 }
 
+// tableNameStatement gives the count of the parts of the SQL text of a table name, and the schema and the name of
+// the table that it names.
+const tableNameStatement = `SELECT pg_catalog.cardinality(pg_catalog.parse_ident($1::pg_catalog.text)), n.nspname, c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid = pg_catalog.to_regclass($1::pg_catalog.text)`
+
 // ValidateForeignKey validates the foreign key key of table, which the table holds NOT VALID, in the transaction tx
 // of the migration job, as the role that owns table (ST-SUP-RP04-LC10). table is the name of the table as SQL text,
-// qualified with its schema, and key the name of the key with no quotes.
+// qualified with its schema, and key the name of the key with no quotes. It refuses a table name with no schema
+// before it runs a statement on the table, since PostgreSQL would find such a name through the search path, temporary
+// tables first (ST-SUP-RP04-LC10-T07; security review of PR #266, L4). It reads the schema and the name of table
+// from the catalog and quotes each, so each statement that it runs names the table with its schema
+// (ST-STD-TXN-R19).
 //
 // PostgreSQL 17 validates a foreign key with one query as the current role when that role can read the columns of
 // the key in both tables and owns each table that has row-level security. Under FORCE ROW LEVEL SECURITY that query
@@ -301,6 +310,19 @@ func ValidateForeignKey(ctx context.Context, tx *sql.Tx, table, key string) erro
 // PostgreSQL would run the validation that takes its one query in spite of the revoke, which the test of the second
 // guard needs.
 func validateForeignKey(ctx context.Context, tx *sql.Tx, table, key string, revoke bool) error {
+	var parts int
+	var schema, name string
+	err := tx.QueryRowContext(ctx, tableNameStatement, table).Scan(&parts, &schema, &name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("tenant: %s has no foreign key %s", table, key)
+	}
+	if err != nil {
+		return err
+	}
+	if parts != 2 {
+		return fmt.Errorf("tenant: the table %s of the foreign key %s names no schema", table, key)
+	}
+	qualified := pgx.Identifier{schema}.Sanitize() + "." + pgx.Identifier{name}.Sanitize()
 	var setting string
 	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('row_security')").Scan(&setting); err != nil {
 		return err
@@ -310,11 +332,11 @@ func validateForeignKey(ctx context.Context, tx *sql.Tx, table, key string, revo
 	}
 	var secured, self bool
 	var referenced string
-	err := tx.QueryRowContext(ctx, `SELECT f.relrowsecurity OR r.relrowsecurity, k.conrelid = k.confrelid,
+	err = tx.QueryRowContext(ctx, `SELECT f.relrowsecurity OR r.relrowsecurity, k.conrelid = k.confrelid,
   (SELECT pg_catalog.string_agg(pg_catalog.quote_ident(a.attname), ', ' ORDER BY c.n) FROM pg_catalog.unnest(k.confkey) WITH ORDINALITY AS c (attnum, n)
     JOIN pg_catalog.pg_attribute a ON a.attrelid = k.confrelid AND a.attnum = c.attnum)
 FROM pg_catalog.pg_constraint k JOIN pg_catalog.pg_class f ON f.oid = k.conrelid JOIN pg_catalog.pg_class r ON r.oid = k.confrelid
-WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $2 AND k.contype = 'f'`, table, key).Scan(&secured, &self, &referenced)
+WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $2 AND k.contype = 'f'`, qualified, key).Scan(&secured, &self, &referenced)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("tenant: %s has no foreign key %s", table, key)
 	}
@@ -323,9 +345,9 @@ WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $
 	}
 	revoked := secured && revoke
 	if revoked {
-		statements := []string{"REVOKE SELECT ON TABLE " + table + " FROM CURRENT_USER"}
+		statements := []string{"REVOKE SELECT ON TABLE " + qualified + " FROM CURRENT_USER"}
 		if self {
-			statements = append(statements, "GRANT SELECT ("+referenced+") ON TABLE "+table+" TO CURRENT_USER")
+			statements = append(statements, "GRANT SELECT ("+referenced+") ON TABLE "+qualified+" TO CURRENT_USER")
 		}
 		for _, statement := range statements {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -336,19 +358,19 @@ WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $
 		var reads bool
 		if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.bool_and(pg_catalog.has_column_privilege(k.conrelid, c.attnum, 'SELECT'))
 FROM pg_catalog.pg_constraint k, pg_catalog.unnest(k.conkey) AS c (attnum)
-WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $2 AND k.contype = 'f'`, table, key).Scan(&reads); err != nil {
+WHERE k.conrelid = pg_catalog.to_regclass($1::pg_catalog.text) AND k.conname = $2 AND k.contype = 'f'`, qualified, key).Scan(&reads); err != nil {
 			return err
 		}
 		if reads {
 			return fmt.Errorf("tenant: the current role reads the columns of the foreign key %s of %s after its SELECT is revoked, so the validation would not read every row", key, table)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "ALTER TABLE "+table+" VALIDATE CONSTRAINT "+pgx.Identifier{key}.Sanitize()); err != nil {
+	if _, err := tx.ExecContext(ctx, "ALTER TABLE "+qualified+" VALIDATE CONSTRAINT "+pgx.Identifier{key}.Sanitize()); err != nil {
 		return err
 	}
 	if revoked {
 		// The revoke of SELECT on the table also takes back a SELECT on its columns.
-		for _, statement := range []string{"REVOKE SELECT ON TABLE " + table + " FROM CURRENT_USER", "GRANT SELECT ON TABLE " + table + " TO CURRENT_USER"} {
+		for _, statement := range []string{"REVOKE SELECT ON TABLE " + qualified + " FROM CURRENT_USER", "GRANT SELECT ON TABLE " + qualified + " TO CURRENT_USER"} {
 			if _, err := tx.ExecContext(ctx, statement); err != nil {
 				return err
 			}
