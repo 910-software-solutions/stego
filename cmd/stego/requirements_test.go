@@ -1184,6 +1184,47 @@ func TestEnvironmentGuardAndSecretSources(t *testing.T) {
 	})
 }
 
+func TestStrictSecretSources(t *testing.T) {
+	t.Run("ST-DLV-UC01-R06-T04 With --strict, validate, plan and apply refuse a secret source that they do not keep, and write nothing", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		dir := requirementsProject(t)
+		env := requirementsEnv(registry)
+		// The registry copy states the secret orders-database with the keys url and password only (as in
+		// ST-DLV-UC01-R06-T03), and it leaves out some components of the needs, so several secret sources are not kept.
+		for _, args := range [][]string{{"validate", "--strict"}, {"validate", "--json", "--strict"}, {"plan", "--strict"}, {"apply", "--strict"}} {
+			stdout, stderr, err := runInProject(t, dir, env, args...)
+			text := stdout + stderr
+			if err == nil {
+				t.Errorf("stego %s passes with secret sources that it does not keep:\n%s", strings.Join(args, " "), text)
+			}
+			for _, want := range []string{"--strict refuses ", "secret source(s) that the run does not keep", "STEGO_MIGRATION_DATABASE_URL", "secret source orders-database-owner key url",
+				"STEGO_WORKER_DATABASE_URL", "secret source orders-database key worker-url", "run without --strict"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("stego %s does not name %q:\n%s", strings.Join(args, " "), want, text)
+				}
+			}
+			if strings.Contains(stderr, "WARNING: the environment variable") {
+				t.Errorf("stego %s warns and refuses the same source:\n%s", strings.Join(args, " "), stderr)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "deploy")); !os.IsNotExist(err) {
+				t.Fatalf("stego %s writes deploy/ although it refuses: %v", strings.Join(args, " "), err)
+			}
+		}
+		// Without --strict, the same run warns and goes on (ST-DLV-UC01-R06-T03).
+		_, stderr := mustRunInProjectStderr(t, dir, env, "validate")
+		if !strings.Contains(stderr, "WARNING: the environment variable STEGO_WORKER_DATABASE_URL") {
+			t.Errorf("stego validate without --strict does not warn:\n%s", stderr)
+		}
+		// With the shipped registry, every source is kept, so --strict passes.
+		shipped := shippedRegistryCopy(t)
+		other := requirementsProject(t)
+		_, stderr = mustRunInProjectStderr(t, other, requirementsEnv(shipped), "apply", "--strict")
+		if strings.Contains(stderr, "WARNING: the environment variable") {
+			t.Errorf("stego apply --strict with the shipped registry warns:\n%s", stderr)
+		}
+	})
+}
+
 // mustRunInProjectStderr runs the stego binary in the project folder and fails the test when it exits non-zero; it
 // gives standard output and standard error.
 func mustRunInProjectStderr(t *testing.T, dir string, env []string, args ...string) (string, string) {

@@ -396,6 +396,7 @@ func runPlan(args []string) error {
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
 	show := fs.Bool("show", false, "print the saved plan and whether it still applies, and save no plan")
 	baseRef := fs.String("base", "", "the commit or branch of the version that runs now; the default branch when left out")
+	fs.BoolVar(&strictSecretSources, "strict", false, strictUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -485,6 +486,7 @@ func runApply(args []string) error {
 	replaceHandEdits := fs.Bool("replace-hand-edits", false, "let this apply replace generated files that were edited by hand")
 	savedPlan := fs.Bool("saved-plan", false, "carry out the plan that stego plan saved, or refuse it when it is stale")
 	baseRef := fs.String("base", "", "the commit or branch of the version that runs now; the default branch when left out")
+	fs.BoolVar(&strictSecretSources, "strict", false, strictUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -618,6 +620,7 @@ func applyPlanned(replaceHandEdits, savedPlan bool) (started bool, err error) {
 func runValidate(args []string) error {
 	fs := flag.NewFlagSet("validate", flag.ContinueOnError)
 	structured := fs.Bool("json", false, "print the faults as one JSON document")
+	fs.BoolVar(&strictSecretSources, "strict", false, strictUsage)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1131,6 +1134,14 @@ func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, 
 	return compiler.DeploymentFiles{Files: files, Notes: written.Notes}, nil
 }
 
+// strictSecretSources is the flag --strict of stego validate, plan and apply: a secret source of an environment
+// variable that names a secret need that the service does not state with that key is a fault, not a warning
+// (ST-DLV-UC01-R06).
+var strictSecretSources bool
+
+// strictUsage is the help of the flag --strict.
+const strictUsage = "refuse a secret source of an environment variable whose secret need the service does not state with that key, in place of a warning"
+
 // writeRequirements gives the compiler's port for the platform requirements to Delivering
 // (delivery.WriteRequirements, ST-DLV-CMD01): the needs, the environment variables that each component declares,
 // and those that the declaration gives it. A setting that is not one scalar value gives no value to a need name.
@@ -1179,7 +1190,12 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) (co
 		return compiler.RequirementsFiles{}, err
 	}
 	// A secret source that the run does not keep is named on standard error, by validate, plan and apply alike
-	// (ST-DLV-Q19).
+	// (ST-DLV-Q19). With --strict, the run refuses it and writes nothing (ST-DLV-UC01-R06, #370 security re-review
+	// L3).
+	if strictSecretSources && len(files.Warnings) > 0 {
+		return compiler.RequirementsFiles{}, fmt.Errorf("--strict refuses %d secret source(s) that the run does not keep; state the secret need with that key in a component of the active set, or run without --strict to go on with a warning:\n  %s",
+			len(files.Warnings), strings.Join(files.Warnings, "\n  "))
+	}
 	for _, warning := range files.Warnings {
 		fmt.Fprintf(os.Stderr, "WARNING: %s\n", warning)
 	}

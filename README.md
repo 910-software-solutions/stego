@@ -396,7 +396,7 @@ hand; see [Specification checks](#specification-checks).
 <!-- stego:generated cli-commands -->
 | Command | Usage |
 |---|---|
-| `stego apply` | `stego apply [--saved-plan] [--replace-hand-edits] [--base <ref>]` |
+| `stego apply` | `stego apply [--saved-plan] [--replace-hand-edits] [--base <ref>] [--strict]` |
 | `stego architecture export` | `stego architecture export --format structurizr\|mermaid [--view <view>]` |
 | `stego architecture facts` | `stego architecture facts --topic personal-data\|tenant-isolation\|access\|audit\|data-protection\|owner-code\|retention\|configuration [--json]` |
 | `stego assets` | `stego assets --directory <folder> --output <zip>` |
@@ -422,7 +422,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego init` | `stego init --archetype <name>` |
 | `stego lifecycle supersede` | `stego lifecycle supersede --registry <folder> (--component <name> \| --runtime <module>) --digest <digest> --successor <digest> [--successor-component <name>] --fails-after <YYYY-MM-DD> --needs-declaration-change yes\|no --needs-fill-change yes\|no --summary <text> [--reference <url>]...` |
 | `stego lifecycle withdraw` | `stego lifecycle withdraw --registry <folder> (--component <name> \| --runtime <module>) --digest <digest> --fails-after <YYYY-MM-DD> --reason <text> [--reference <url>]...` |
-| `stego plan` | `stego plan [--show] [--base <ref>]` |
+| `stego plan` | `stego plan [--show] [--base <ref>] [--strict]` |
 | `stego recover` | `stego recover` |
 | `stego registry compose` | `stego registry compose` |
 | `stego registry consumers` | `stego registry consumers <component> <checkout>...` |
@@ -431,7 +431,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego registry search` | `stego registry search [--provides <port>] [--requires <port>] [--slot <slot>]` |
 | `stego registry sunsets` | `stego registry sunsets <checkout>...` |
 | `stego test` | `stego test [--] [<test arguments>...]` |
-| `stego validate` | `stego validate [--json]` |
+| `stego validate` | `stego validate [--json] [--strict]` |
 | `stego version` | `stego version [--json]` |
 <!-- stego:end -->
 

@@ -80,7 +80,13 @@ environment file against them.
 
 When a component names a secret source that the service does not state, such as a key that its secret need does
 not have, `stego validate`, `stego plan` and `stego apply` write a `WARNING` with the variable, the need and the
-key, and the base gets no entry for that variable.
+key, and the base gets no entry for that variable. With `--strict`, each of the three commands refuses such a source,
+names each variable, need and key, and writes nothing. Use `--strict` in CI, so that a source that the base does not
+wire stops the change.
+
+A need name is a Kubernetes name: lower-case letters, digits and `-`, which starts and ends with a letter or a digit,
+of at most 63 characters, also after `{service}` and the settings fill it. `stego apply` refuses a need name with a
+capital letter or `_`, and names the component and the need.
 
 When a required key is not there, the pod does not start. The kubelet does not start the container, and the pod
 stays in `CreateContainerConfigError`. The pod event names the Secret or the ConfigMap and the key, for example
