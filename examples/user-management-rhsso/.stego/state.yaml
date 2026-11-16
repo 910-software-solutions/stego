@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261116000404-59e5f652c86a
+        module_version: v0.0.0-20261116004542-218398ac4129
         vcs: git
-        revision: 59e5f652c86ab8fde3725b06dbad94817a6b9a0d
+        revision: 218398ac41291fd246d7be26d1c490c07a5a57b5
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -195,7 +195,7 @@ last_applied:
     project_files:
         architecture/architecture.json: adadc9c2467e3a18431b0c2c6f42b7d00ae4b7b44ae044f6a8d5ac7a40439a3a
         architecture/index.html: 670b2e3c5d4b111aeabe26ad9edf68a8408b609ecbac05025ac542be4319c5d8
-        deploy/base/deployment.yaml: f8d6f8dcc832a79e61bcfc5e6e0321000f516f736266f03cff355880fbfa8bc1
+        deploy/base/deployment.yaml: 468d1f6643b6cd306dae13a11659cad23e2a90dc5cbb022ba9b8e56da00a5a04
         deploy/base/kustomization.yaml: b2db76dd596305ad0ef173ea7cf702fe9144cda5be1516c0a579f0e8f10e8ab0
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
@@ -203,7 +203,7 @@ last_applied:
         deploy/components/secret-files/mount-files.yaml: 7555a2abce97fa9d41d7ca59a4ce4a52519a99bd1dd6097aa755b98c0a83bbcb
         deploy/components/secret-files/remove-env.yaml: 5b0552bffd6e3f52ceb98dc55bf10e2018385ab48d97edceb7d07ac8de0bd892
         deploy/environment-variables.md: d46826cb1f2ad23de313a7a6ec2e31dfbdd980efcc7005aa41566509cebbda7b
-        deploy/platform-requirements.yaml: ea4f552b41788e6c924bd9a2a1168c9d51698af99115c47e7d9306bed0d30cfd
+        deploy/platform-requirements.yaml: aca0e7c923cea928a249a56db8a65fdaed3b6d7904cd4d2ec10ef9f1d2064fca
     archetype:
         name: rest-crud
         version: 3.123.2
