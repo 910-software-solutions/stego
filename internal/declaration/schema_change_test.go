@@ -2,8 +2,11 @@ package declaration
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 // todoFields gives ST-DECL-TD02 with the fields of Todo given, the modes given (none when empty), the schema
@@ -341,5 +344,94 @@ func TestSchemaStepShape(t *testing.T) {
 		memo := "{id: note-rename, kind: rename, entity: Todo, field: memo, from: note}"
 		fields := append(append([]string(nil), renamed...), "{name: memo, type: string, optional: true}")
 		wantNoFault(t, schemaFaults(t, todoFields(fields, "", []string{add, memo}, "note-add expand", "note-rename expand")))
+	})
+}
+
+// A later rename, retype or relax with no field cannot be undone; checking refuses it by its own check and does not
+// stop (security review of PR #372, M1).
+func TestSchemaStepShapeNoField(t *testing.T) {
+	fields := append(append([]string(nil), renamed...), "{name: owner, type: string, optional: true}")
+	for _, later := range []string{
+		"{id: b, kind: retype, entity: Todo, from: int64, conversion: text_to_int64, inverse_conversion: int64_to_text}",
+		"{id: b, kind: relax, entity: Todo, definition: max_length 3}",
+		"{id: b, kind: rename, entity: Todo, from: zz}",
+	} {
+		t.Run("ST-DECL-INV58-T An add and then a "+strings.Fields(later)[3]+" with no field: the later change is refused for its missing field", func(t *testing.T) {
+			service := todoFields(fields, "", []string{"{id: a, kind: add, entity: Todo, field: owner}", later}, "a expand", "b expand")
+			wantFault(t, schemaFaults(t, service, "schema-change-kind"), `"b"`, "no field")
+			for _, fault := range schemaFaults(t, service, "schema-change-entity") {
+				if strings.Contains(fault.Message, `"a"`) {
+					t.Errorf("checking refuses the add, whose shape is not known: %v", fault)
+				}
+			}
+		})
+	}
+	t.Run("ST-DECL-INV63-T A retype and then a relax with no field: the conversion check skips the retype and does not stop", func(t *testing.T) {
+		service := priorityRetype(types.FieldTypeInt32, "", "text_to_integer", "integer_to_text", "", 0)
+		service.SchemaChanges = append(service.SchemaChanges, types.SchemaChange{ID: "b", Kind: "relax", Entity: "Todo", Definition: "max_length 3"})
+		service.SchemaHistory = append(service.SchemaHistory, types.SchemaStep{Change: "b", Phase: "expand"})
+		if faults := ValidateSchemaConversions(service, nil, true); len(faults) != 0 {
+			t.Errorf("checking gives %v, want none", faults)
+		}
+		if _, found, reason := FieldAtStep(service, service.SchemaChanges[0]); found || !strings.Contains(reason, "names no field") {
+			t.Errorf("FieldAtStep gives found %v and %q, want the later relax named as one that cannot be undone", found, reason)
+		}
+	})
+}
+
+// An add of the field that an open rename renames from, after the rename's expand step, is refused: the old column
+// still holds the field (security review of PR #372, L1).
+func TestSchemaAddAfterOpenRename(t *testing.T) {
+	fields := append(append([]string(nil), renamed...), "{name: title, type: string, optional: true}")
+	add := "{id: title-add, kind: add, entity: Todo, field: title}"
+	t.Run("ST-DECL-INV60-T An add of title after the expand step of the open rename of title to summary is refused", func(t *testing.T) {
+		service := todoFields(fields, "", []string{rename, add}, "todo-title-rename expand", "title-add expand")
+		wantFault(t, schemaFaults(t, service, "schema-change-open"), `"title-add"`, `"todo-title-rename"`)
+	})
+	t.Run("ST-DECL-INV60-T The same add after the contract step of the rename is accepted", func(t *testing.T) {
+		service := todoFields(fields, "", []string{rename, add}, "todo-title-rename expand", "todo-title-rename contract", "title-add expand")
+		wantNoFault(t, schemaFaults(t, service, "schema-change-open"))
+	})
+}
+
+// Short random schema histories never stop checking (security review of PR #372, M1). The seed is fixed, so each run
+// checks the same histories, and the test counts histories, not time.
+func TestSchemaStepShapeRandom(t *testing.T) {
+	t.Run("ST-DECL-INV58-T 3000 random short schema histories are checked with no panic", func(t *testing.T) {
+		random := rand.New(rand.NewSource(372))
+		kinds := []string{"add", "rename", "retype", "require", "drop", "unique", "relax", "move"}
+		names := []string{"", "title", "summary", "owner", "zz"}
+		values := []string{"", "string", "int64", "max_length 3", "required", "no default", "values a b", "string, max_length 500", "x: string"}
+		pick := func(list []string) string { return list[random.Intn(len(list))] }
+		conversions := map[string]types.Conversion{"text_to_int64": {Name: "text_to_int64", From: types.FieldTypeString, To: types.FieldTypeInt64}, "int64_to_text": {Name: "int64_to_text", From: types.FieldTypeInt64, To: types.FieldTypeString, Total: true}}
+		for n := 0; n < 3000; n++ {
+			service := &types.ServiceDeclaration{Entities: []types.Entity{{Name: "Todo", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}, {Name: "owner", Type: types.FieldTypeInt64, Optional: true}}}}}
+			for i := 0; i < 1+random.Intn(5); i++ {
+				change := types.SchemaChange{ID: fmt.Sprintf("c%d", i), Kind: pick(kinds), Entity: "Todo", Field: pick(names), From: pick(append(names, "string", "int64")),
+					Conversion: pick([]string{"", "text_to_int64", "int64_to_text"}), InverseConversion: pick([]string{"", "text_to_int64", "int64_to_text"}), Definition: pick(values)}
+				if random.Intn(3) == 0 {
+					change.FillValue = pick([]string{"x", "7"})
+				}
+				service.SchemaChanges = append(service.SchemaChanges, change)
+				for _, phase := range []string{"expand", "contract"}[:1+random.Intn(2)] {
+					service.SchemaHistory = append(service.SchemaHistory, types.SchemaStep{Change: change.ID, Phase: phase})
+				}
+			}
+			random.Shuffle(len(service.SchemaHistory), func(i, j int) { service.SchemaHistory[i], service.SchemaHistory[j] = service.SchemaHistory[j], service.SchemaHistory[i] })
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("checking stops on %+v %+v: %v", service.SchemaChanges, service.SchemaHistory, r)
+					}
+				}()
+				validateSchemaChangeEntity(service)
+				validateSchemaChangeOpen(service)
+				validateSchemaChangeValues(service)
+				ValidateSchemaConversions(service, conversions, true)
+				for _, change := range service.SchemaChanges {
+					FieldAtStep(service, change)
+				}
+			}()
+		}
 	})
 }

@@ -247,6 +247,12 @@ func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) s
 			shape.reason = fmt.Sprintf("the later %s %q at %s cannot be undone: %s", other.Kind, other.ID, schemaStepPath(first[other.ID]), message)
 			return shape
 		}
+		// A rename, a retype and a relax need their field: one with no field cannot be undone, and its own check
+		// (ST-DECL-INV57) refuses it (security review of PR #372, M1). The index of a field is never read when the
+		// shape has no such field.
+		if other.Field == "" && (other.Kind == "rename" || other.Kind == "retype" || other.Kind == "relax") {
+			return cannot("it names no field")
+		}
 		if found < 0 && other.Field != "" && other.Kind != "drop" {
 			return cannot(fmt.Sprintf("the entity %s after that step has no field %s", other.Entity, other.Field))
 		}
@@ -276,6 +282,9 @@ func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) s
 			}
 			fields[found] = before
 		case "drop":
+			// Generation does not carry out a drop yet, so gen.Context.AtSchemaStep refuses it. When drop generation
+			// lands, AtSchemaStep must build the dropped field again from its Definition as this does (security
+			// review of PR #372, L2).
 			if other.Field == "" {
 				return cannot(fmt.Sprintf("the entity %s after that step is still declared", other.Entity))
 			}
@@ -622,26 +631,24 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 	return faults
 }
 
-// relaxOpenFaults refuses a relax whose step comes after the expand step of an open schema change that names the
-// same field, as Field or as From (ST-DECL-INV60).
+// relaxOpenFaults refuses a relax or an add whose step comes after the expand step of an open schema change that
+// names the same field, as Field or, for a rename, as From (ST-DECL-INV60): the two columns of that change hold the field until its
+// contract step. An add is never open itself (openOnField), but an add of the field that an open rename renames
+// from, or that an open retype retypes, meets the old column, which still exists (security review of PR #372, L1).
 func relaxOpenFaults(service *types.ServiceDeclaration) []ValidationError {
-	first := map[string]int{}
-	for i, step := range service.SchemaHistory {
-		if _, seen := first[step.Change]; !seen {
-			first[step.Change] = i
-		}
-	}
+	first := firstSteps(service.SchemaHistory)
+	open := openOnField(service)
 	var faults []ValidationError
-	for _, relax := range service.SchemaChanges {
-		at, stepped := first[relax.ID]
-		if relax.Kind != "relax" || !stepped {
+	for _, change := range service.SchemaChanges {
+		at, stepped := first[change.ID]
+		if (change.Kind != "relax" && change.Kind != "add") || change.Field == "" || !stepped {
 			continue
 		}
-		for _, open := range openOnField(service) {
-			if open.Entity != relax.Entity || (open.Field != relax.Field && open.From != relax.Field) || first[open.ID] > at {
+		for _, other := range open {
+			if other.Entity != change.Entity || (other.Field != change.Field && (other.Kind == "retype" || other.From != change.Field)) || first[other.ID] > at {
 				continue
 			}
-			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-open", Path: "schema_changes", Found: relax.Field, Message: fmt.Sprintf("the relax %q of %s.%s comes after the expand step of %q, which is open on the same field; finish %q with its contract step first", relax.ID, relax.Entity, relax.Field, open.ID, open.ID)})
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-open", Path: "schema_changes", Found: change.Field, Message: fmt.Sprintf("the %s %q of %s.%s comes after the expand step of %q, which is open on the same field; finish %q with its contract step first", change.Kind, change.ID, change.Entity, change.Field, other.ID, other.ID)})
 		}
 	}
 	return faults
