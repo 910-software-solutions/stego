@@ -921,6 +921,9 @@ func TestWiring(t *testing.T) {
 		listedOp := s.as("op-"+short(), "org-ops-"+short())
 		s.provisioned(t, listedOp.tenant.ID())
 		s.grantOperator(listedOp)
+		// The worker tuples of each provision move the revocation floor, so the decision sees the grant only when
+		// SpiceDB serves it at its quantized revision (ST-SUP-RC35-OC13).
+		s.canProvision(t, listedOp)
 		failing := "org-d-" + short()
 		execAll(t, s.admin, `CREATE FUNCTION public.wiring_fail_hook() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN
 	IF NEW.tenant_id = '`+failing+`' THEN RAISE EXCEPTION 'the hook of the check fails'; END IF; RETURN NEW; END $f$`,
@@ -978,8 +981,8 @@ func TestWiring(t *testing.T) {
 		if n := count(t, s.admin, `SELECT count(*) FROM orders WHERE tenant_id = $1 AND id = $2`, u1.tenant.ID(), order); n != 1 {
 			t.Errorf("the retired tenant holds %d of its orders, want its one order kept", n)
 		}
-		// The command of u2 of a provisioned tenant runs as usual: the create of an order, which stages no tuple, so
-		// the revocation floor that the later checks start from stays as it was.
+		// The command of u2 of a provisioned tenant runs as usual: the create of an order, which stages the tuple of
+		// the order to its tenant (ST-SUP-Q132).
 		u2 := s.as("u2-"+short(), "org-b-"+short())
 		s.provisioned(t, u2.tenant.ID())
 		if got := s.send(&u2, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"b1","qty":1}`); got.status != http.StatusCreated {
@@ -1014,6 +1017,9 @@ func TestWiring(t *testing.T) {
 		}
 		order = created.member(t, "id")
 		s.own(owner, order)
+		// The tuples of the provision and of the create to its tenant move the revocation floor: the read is decided
+		// at least as fresh as it, so the check waits until SpiceDB serves the owner tuple (ST-SUP-RC35-OC13).
+		s.canEdit(t, owner, order)
 		read := s.send(&owner, http.MethodGet, "/orders/"+order, "", "")
 		if read.status != http.StatusOK || read.member(t, "sku") != "a1" {
 			t.Fatalf("the read answered %d %s, want 200 with sku a1", read.status, read.body)
@@ -1560,6 +1566,19 @@ func (s *service) canEdit(t *testing.T, c caller, id string) {
 		answer, err := v1.NewPermissionsServiceClient(s.spice).CheckPermission(s.ctx, &v1.CheckPermissionRequest{
 			Consistency: &v1.Consistency{Requirement: &v1.Consistency_MinimizeLatency{MinimizeLatency: true}},
 			Resource:    &v1.ObjectReference{ObjectType: "order", ObjectId: resourceID}, Permission: "edit",
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}})
+		return err == nil && answer.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
+	})
+}
+
+// canProvision waits until SpiceDB answers, at its quantized revision, that the caller may provision on the
+// service-level resource service:wiring-shop, as the service asks it on a Provision at the revocation floor.
+func (s *service) canProvision(t *testing.T, c caller) {
+	t.Helper()
+	s.eventually(t, "SpiceDB answers that the operator may provision", func() bool {
+		answer, err := v1.NewPermissionsServiceClient(s.spice).CheckPermission(s.ctx, &v1.CheckPermissionRequest{
+			Consistency: &v1.Consistency{Requirement: &v1.Consistency_MinimizeLatency{MinimizeLatency: true}},
+			Resource:    &v1.ObjectReference{ObjectType: "service", ObjectId: serviceName}, Permission: "provision",
 			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}})
 		return err == nil && answer.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
 	})
