@@ -76,6 +76,19 @@ func unmetRows(fit EnvironmentFit) []FitRow {
 	return UnmetRequirements(NewEnvironmentReader(fit))
 }
 
+// unmetRequirementRows gives the unmet rows of the fit without the rows of the groups of one of, which
+// ST-DLV-UC02-R06-T03 proves: a missing secret also leaves a group with no value when it is the source of a variable
+// of the group.
+func unmetRequirementRows(fit EnvironmentFit) []FitRow {
+	var rows []FitRow
+	for _, row := range unmetRows(fit) {
+		if !strings.HasPrefix(row.Requirement, "group ") {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
 // replaceOnce gives the text with old replaced by new, and fails the test unless old is in it once.
 func replaceOnce(t *testing.T, data []byte, old, new string) []byte {
 	t.Helper()
@@ -95,8 +108,8 @@ func TestCheckEnvironment(t *testing.T) {
 		if !fit.Met() || len(unmetRows(fit)) != 0 {
 			t.Fatalf("the check refused the environment file of the test data set: %+v", fit.Rows)
 		}
-		if len(fit.Rows) != len(requirements.Requirements) {
-			t.Fatalf("the fit holds %d rows, want one for each of the %d requirements", len(fit.Rows), len(requirements.Requirements))
+		if groups := len(Groups(requirements.Environment)); len(fit.Rows) != len(requirements.Requirements)+groups {
+			t.Fatalf("the fit holds %d rows, want one for each of the %d requirements and of the %d groups of one of", len(fit.Rows), len(requirements.Requirements), groups)
 		}
 		for _, requirement := range requirements.Requirements {
 			changed := withoutEntry(t, data, sectionOf(t, requirement.Kind), requirement.Name)
@@ -104,7 +117,7 @@ func TestCheckEnvironment(t *testing.T) {
 			if err != nil {
 				t.Fatalf("without %s: %v", requirement.Name, err)
 			}
-			unmet := unmetRows(fit)
+			unmet := unmetRequirementRows(fit)
 			want := string(requirement.Kind) + " " + requirement.Name
 			if fit.Met() || len(unmet) != 1 || unmet[0].Requirement != want || unmet[0].Status != Missing {
 				t.Errorf("without the entry %s the check gives %+v, want only %s as missing", requirement.Name, unmet, want)
@@ -134,7 +147,7 @@ func TestCheckEnvironment(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: %v", c.name, err)
 			}
-			unmet := unmetRows(fit)
+			unmet := unmetRequirementRows(fit)
 			if fit.Met() || len(unmet) != 1 || unmet[0].Requirement != c.row || unmet[0].Status != WrongType {
 				t.Errorf("with %s the check gives %+v, want only %s as wrong type", c.name, unmet, c.row)
 				continue
