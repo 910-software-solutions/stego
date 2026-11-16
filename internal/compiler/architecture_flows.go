@@ -198,6 +198,13 @@ func (d *deriver) access() error {
 	bound := svc.Authorization != nil
 	if bound {
 		m.Access.Schema = svc.Authorization.SchemaPath
+		// With no compiled schema the grant paths of a permission are not known, and an empty role list would read
+		// as a definite no; the reconciler always gives the schema of a bound authorization, so the derivation
+		// refuses a model without it (security review of PR #384, L2).
+		if d.in.Schema == nil {
+			return &ArchitectureRefusal{fmt.Errorf("authorization is bound with the schema %s, and the input holds no compiled schema; the grant paths of each permission come from it (ST-GEN-UC08-R13), so give the compiled schema of authorization.schema_path",
+				svc.Authorization.SchemaPath)}
+		}
 	}
 	add := func(subject, resourceType, permission, path string) {
 		check := ArchCheck{ID: "check:" + subject, Subject: subject, Source: ArchSource{Declaration: path}}
@@ -314,9 +321,9 @@ func ancestorFactName(n int, a ArchAncestor) string {
 	return fmt.Sprintf("checks ancestor %d %s", n, shortID(a.Entity))
 }
 
-// ancestorFact gives the fact of the ancestor check at place n: the permission it decides, public, or none with the
-// rule that gives it none (an entity that the declaration does not state), or unstated when no authorization is
-// bound.
+// ancestorFact gives the fact of the ancestor check at place n: the permission it decides, public, or unstated when
+// no authorization is bound. The derivation refuses an ancestor that the declaration does not state, so no fact says
+// that an ancestor checks no permission.
 func ancestorFact(subject string, n int, a ArchAncestor) ArchFact {
 	name := ancestorFactName(n, a)
 	switch {
@@ -324,8 +331,6 @@ func ancestorFact(subject string, n int, a ArchAncestor) ArchFact {
 		return fact("access", subject, name, a.ResourceType+"#"+a.Permission, "stated", a.Source)
 	case a.Public:
 		return fact("access", subject, name, "public", "stated", a.Source)
-	case a.Source.Rule == "ST-SUP-RC20-OC24":
-		return fact("access", subject, name, "none", "stated", a.Source)
 	}
 	return fact("access", subject, name, nil, "unstated", a.Source)
 }
@@ -360,7 +365,10 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 		i, known := entities[level.Entity]
 		switch {
 		case !known:
-			a.Reason, a.Source = "The declaration states no entity "+level.Entity+", so no permission is checked.", ArchSource{Rule: "ST-SUP-RC20-OC24"}
+			// The declaration check refuses a scope that names no entity, and no generator builds it, so the model
+			// never says that such an ancestor checks no permission (security review of PR #384, L3).
+			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and the declaration states no entity %s; the handler decides the read permission of each ancestor in the path (ST-SUP-RC20-OC24), so declare the entity %s",
+				level.By, level.Entity, shortID(subject), level.Entity, level.Entity)}
 		case svc.Authorization == nil:
 			a.Reason, a.Source = "No authorization is bound, so no permission is checked.", ArchSource{Rule: "ST-DECL-UC06-R01"}
 		case svc.Entities[i].ResourceType == "":
@@ -385,41 +393,58 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 	return out, nil
 }
 
-// plannedReads refuses each entity that the command runtime plans with a resource type and a public read or no read
-// permission, as command.planEntity does (security review of PR #383, L2): the entity of each collection and each
-// entity with a resource type that a ref field of one names (the rest-api data path), and each entity that a command
-// or a worker writes. The generators refuse that declaration also with no bound authorization, so the derivation
-// builds no model of a declaration that does not generate.
+// plannedReads refuses each entity that the generators plan and that a runtime cannot read, as they refuse it, so the
+// derivation builds no model of a declaration that does not generate (security review of PR #383, L2, and of PR #384):
+//   - the command runtime (command.planEntity) refuses an entity with a resource type and a public read or no read
+//     permission: the entity of each collection and each entity with a resource type that a ref field of one names
+//     (the rest-api data path), and each entity that a command or a worker writes, also with no bound authorization;
+//   - the query runtime (query.ViewFile, on the same rest-api data path) refuses such an entity also with a public or
+//     no list permission.
+//
+// The rest-api component is the one generator of the collections (restAPIComponent). The derivation refuses
+// collections that another component serves, because it does not know what that component plans; with no component
+// that serves the collections, no generator plans their entities.
 func (d *deriver) plannedReads() error {
 	svc := d.in.Service
 	index := map[string]int{}
 	for i, e := range svc.Entities {
 		index[e.Name] = i
 	}
-	type use struct{ entity, why string }
-	var uses []use
-	for i, c := range svc.Collections {
-		uses = append(uses, use{c.Entity, fmt.Sprintf("collections[%d] (%s) serves it", i, c.Name)})
+	// use is one planned entity: why it is planned, and whether the query runtime plans it too (the rest-api data
+	// path), which also needs its list permission.
+	type use struct {
+		entity, why string
+		view        bool
 	}
-	for i, c := range svc.Collections {
-		j, ok := index[c.Entity]
-		if !ok {
-			continue
+	var uses []use
+	if d.handler != nil && len(svc.Collections) > 0 {
+		if d.handler.Name != restAPIComponent {
+			return &ArchitectureRefusal{fmt.Errorf("the component %s serves the collections, and the derivation knows the data path of the component %s alone; it cannot state which entities %s plans and reads, so it builds no model",
+				d.handler.Name, restAPIComponent, d.handler.Name)}
 		}
-		for k, f := range svc.Entities[j].Fields {
-			if t, ok := index[f.To]; ok && f.Type == types.FieldTypeRef && svc.Entities[t].ResourceType != "" {
-				uses = append(uses, use{f.To, fmt.Sprintf("the ref field entities[%d].fields[%d] of %s, which collections[%d] serves, names it", j, k, svc.Entities[j].Name, i)})
+		for i, c := range svc.Collections {
+			uses = append(uses, use{c.Entity, fmt.Sprintf("collections[%d] (%s) serves it", i, c.Name), true})
+		}
+		for i, c := range svc.Collections {
+			j, ok := index[c.Entity]
+			if !ok {
+				continue
+			}
+			for k, f := range svc.Entities[j].Fields {
+				if t, ok := index[f.To]; ok && f.Type == types.FieldTypeRef && svc.Entities[t].ResourceType != "" {
+					uses = append(uses, use{f.To, fmt.Sprintf("the ref field entities[%d].fields[%d] of %s, which collections[%d] serves, names it", j, k, svc.Entities[j].Name, i), true})
+				}
 			}
 		}
 	}
 	for i, c := range svc.Commands {
 		for _, name := range c.Writes {
-			uses = append(uses, use{name, fmt.Sprintf("commands[%d] (%s) writes it", i, c.Name)})
+			uses = append(uses, use{name, fmt.Sprintf("commands[%d] (%s) writes it", i, c.Name), false})
 		}
 	}
 	for i, w := range svc.Workers {
 		for _, name := range w.Writes {
-			uses = append(uses, use{name, fmt.Sprintf("workers[%d] (%s) writes it", i, w.Name)})
+			uses = append(uses, use{name, fmt.Sprintf("workers[%d] (%s) writes it", i, w.Name), false})
 		}
 	}
 	for _, u := range uses {
@@ -428,16 +453,29 @@ func (d *deriver) plannedReads() error {
 			continue
 		}
 		e := svc.Entities[i]
-		read := e.Permissions[types.OpRead]
-		if e.ResourceType == "" || (read != "" && read != types.PermissionPublic) {
+		if e.ResourceType == "" {
 			continue
 		}
-		what := "no read permission"
-		if read == types.PermissionPublic {
-			what = "the read permission public"
+		ops := []types.Operation{types.OpRead}
+		if u.view {
+			ops = append(ops, types.OpList)
 		}
-		return &ArchitectureRefusal{fmt.Errorf("entities[%d] (%s) has the resource type %s and %s, and %s; the command runtime decides the read permission of each row that it loads (ST-SUP-RP10-LC13), so declare entities[%d].permissions.read as a permission of %s",
-			i, e.Name, e.ResourceType, what, u.why, i, e.ResourceType)}
+		for _, op := range ops {
+			permission := e.Permissions[op]
+			if permission != "" && permission != types.PermissionPublic {
+				continue
+			}
+			what := "no " + string(op) + " permission"
+			if permission == types.PermissionPublic {
+				what = "the " + string(op) + " permission public"
+			}
+			rule := "the command runtime decides the read permission of each row that it loads (ST-SUP-RP10-LC13)"
+			if op == types.OpList {
+				rule = "the query runtime reads each entity of the data path on a declared read and list permission (ST-SUP-RC33-OC01)"
+			}
+			return &ArchitectureRefusal{fmt.Errorf("entities[%d] (%s) has the resource type %s and %s, and %s; %s, so declare entities[%d].permissions.%s as a permission of %s",
+				i, e.Name, e.ResourceType, what, u.why, rule, i, op, e.ResourceType)}
+		}
 	}
 	return nil
 }

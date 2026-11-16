@@ -17,6 +17,7 @@ import (
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/command"
+	"github.com/jsell-rh/stego/internal/generator/query"
 	"github.com/jsell-rh/stego/internal/generator/restapi"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
@@ -67,22 +68,22 @@ func archComponent(name, layer string, requires, provides []string, slots ...reg
 	return c
 }
 
-// archFixture gives the inputs of a small service: a handler api that serves the collection docs, an auth provider,
+// archFixture gives the inputs of a small service: a handler rest-api that serves the collection docs, an auth provider,
 // a store, an outbox and an event publisher, the slots before_create and after_create, a command, and the schema
 // above.
 func archFixture(t *testing.T) ArchitectureInput {
 	t.Helper()
-	api := archComponent("api", "handler", []string{"auth-provider", "storage-adapter"}, []string{"http-server"},
+	api := archComponent("rest-api", "handler", []string{"auth-provider", "storage-adapter"}, []string{"http-server"},
 		registry.SlotDefinition{Name: "before_create", Phase: "before_store", Operations: []string{"create"}},
 		registry.SlotDefinition{Name: "after_create", Phase: "after_store", Operations: []string{"create"}},
 		registry.SlotDefinition{Name: "validate", Phase: "before_store", Operations: []string{"create", "update"}})
 	api.Config = map[string]types.ConfigField{"expose": {Type: "list"}}
 	components := map[string]*registry.Component{
-		"api":    api,
-		"auth":   archComponent("auth", "authentication", nil, []string{"auth-provider"}),
-		"store":  archComponent("store", "repository", nil, []string{"storage-adapter"}),
-		"outbox": archComponent("outbox", "repository", nil, []string{"durable-outbox"}),
-		"events": archComponent("events", "outside call", []string{"durable-outbox"}, []string{"event-publisher"}),
+		"rest-api": api,
+		"auth":     archComponent("auth", "authentication", nil, []string{"auth-provider"}),
+		"store":    archComponent("store", "repository", nil, []string{"storage-adapter"}),
+		"outbox":   archComponent("outbox", "repository", nil, []string{"durable-outbox"}),
+		"events":   archComponent("events", "outside call", []string{"durable-outbox"}, []string{"event-publisher"}),
 	}
 	schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(archFixtureSchema))
 	if err != nil {
@@ -92,7 +93,7 @@ func archFixture(t *testing.T) ArchitectureInput {
 		Authorization: &types.Authorization{Provider: "spicedb", SchemaPath: "authz/schema.zed", SubjectFromIdentity: "user"},
 		Overrides:     map[string]any{"storage-adapter": "store"},
 		Entities: []types.Entity{{Name: "Doc", Fields: []types.Field{{Name: "title", Type: "string"}, {Name: "email", Type: "string", Sensitivity: "pii"}},
-			EntityAuthorization: types.EntityAuthorization{ResourceType: "doc", Permissions: map[types.Operation]string{"create": "public", "read": "read", "update": "write"},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "doc", Permissions: map[types.Operation]string{"create": "public", "read": "read", "list": "read", "update": "write"},
 				PublicReasons: map[types.Operation]string{"create": "a new doc has no resource before it exists"}}}},
 		Collections: []types.Collection{{Name: "docs", Entity: "Doc", Operations: []types.Operation{"create", "read", "update"}}},
 		Slots: []types.SlotDeclaration{
@@ -104,7 +105,7 @@ func archFixture(t *testing.T) ArchitectureInput {
 	wiring := &gen.Wiring{Constructors: []string{"api.NewDocsHandler(store)"}, ConstructorCollections: map[int]string{0: "docs"},
 		Routes: []string{`mux.HandleFunc("POST /v1/docs", docsHandler.Create)`, `mux.HandleFunc("GET /v1/docs/{id}", docsHandler.Read)`}}
 	return ArchitectureInput{Service: service, Archetype: &registry.Archetype{Name: "arch", Version: "2.0.0", Bindings: map[string]string{"auth-provider": "auth"}},
-		Components: components, Names: []string{"api", "auth", "store", "outbox", "events"}, Wirings: []ComponentWiring{{Name: "api", Wiring: wiring}}, Schema: schema}
+		Components: components, Names: []string{"rest-api", "auth", "store", "outbox", "events"}, Wirings: []ComponentWiring{{Name: "rest-api", Wiring: wiring}}, Schema: schema}
 }
 
 // nestedFixtureSchema is the schema of archFixture with a shelf, whose keeper may view it.
@@ -131,9 +132,6 @@ func nestedFixture(t *testing.T) ArchitectureInput {
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "folder", Permissions: map[types.Operation]string{"read": "view", "list": "view"}}},
 		types.Entity{Name: "Shelf", Fields: []types.Field{{Name: "name", Type: "string"}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "shelf", Permissions: map[types.Operation]string{"read": "view", "list": "view"}}})
-	// The query runtime reads each entity of the data path on a declared read and list permission.
-	svc.Entities[0].Permissions = maps.Clone(svc.Entities[0].Permissions)
-	svc.Entities[0].Permissions[types.OpList] = "read"
 	svc.Entities[0].Fields = append(slices.Clone(svc.Entities[0].Fields), types.Field{Name: "folder_id", Type: types.FieldTypeRef, To: "Folder"})
 	svc.Collections = []types.Collection{
 		{Name: "docs", Entity: "Doc", Operations: []types.Operation{"create", "read", "update"}},
@@ -196,7 +194,7 @@ func TestArchitectureDeterminism(t *testing.T) {
 			// The maps of the declaration and of the registry parts are given anew, so they iterate in another
 			// order; the registry parts are also given as new values.
 			reordered := map[string]*registry.Component{}
-			for _, name := range []string{"events", "outbox", "store", "auth", "api"} {
+			for _, name := range []string{"events", "outbox", "store", "auth", "rest-api"} {
 				reordered[name] = in.Components[name]
 			}
 			in.Components = reordered
@@ -224,7 +222,7 @@ func TestArchitectureFlows(t *testing.T) {
 		for _, s := range create.Steps {
 			got = append(got, s.Kind+" "+s.Element+" "+s.Mode)
 		}
-		want := []string{"operation operation:docs.create sync", "authenticate component:auth sync", "handle component:api sync",
+		want := []string{"operation operation:docs.create sync", "authenticate component:auth sync", "handle component:rest-api sync",
 			"slot slot:docs.before_create sync", "repository component:store sync", "store component:store sync", "outbox component:outbox sync",
 			"slot slot:docs.after_create async", "event component:events async"}
 		if !slices.Equal(got, want) {
@@ -438,8 +436,8 @@ func TestArchitectureRefusals(t *testing.T) {
 			{"no role", func(in ArchitectureInput) { in.Components["store"].Architecture = nil }, []string{"component store", "architecture"}},
 			{"no layer", func(in ArchitectureInput) { in.Components["store"].Architecture.Layer = "" }, []string{"component store", "architecture.layer"}},
 			{"no flow part", func(in ArchitectureInput) { in.Components["auth"].Architecture.Flow = "" }, []string{"component auth", "architecture.flow"}},
-			{"no port side", func(in ArchitectureInput) { delete(in.Components["api"].Architecture.Ports, "storage-adapter") }, []string{"component api", "architecture.ports.storage-adapter"}},
-			{"no slot phase", func(in ArchitectureInput) { in.Components["api"].Slots[1].Phase = "" }, []string{"component api", "slots[after_create].phase"}},
+			{"no port side", func(in ArchitectureInput) { delete(in.Components["rest-api"].Architecture.Ports, "storage-adapter") }, []string{"component rest-api", "architecture.ports.storage-adapter"}},
+			{"no slot phase", func(in ArchitectureInput) { in.Components["rest-api"].Slots[1].Phase = "" }, []string{"component rest-api", "slots[after_create].phase"}},
 			{"no mixin slot phase", func(in ArchitectureInput) {
 				in.Mixins[0].AddsSlots[0].Phase = ""
 			}, []string{"mixin extra", "slots[on_change].phase"}},
@@ -622,6 +620,172 @@ func TestArchitectureAncestorRefusals(t *testing.T) {
 	})
 }
 
+func TestArchitectureViewRefusals(t *testing.T) {
+	t.Run("ST-GEN-UC08-R12-T04 The derivation and the query runtime refuse the same declarations: each entity of the rest-api data path with a resource type and a public or no list permission", func(t *testing.T) {
+		// generate gives the refusal of the generators: the read-only values of the query runtime on the rest-api data
+		// path (query.ViewFile in generateRuntimeHandlers: the entity of each collection and each entity with a
+		// resource type that a ref field of one names), and the entity planning of the command runtime on each set
+		// that the rest-api, the command and the worker generators plan.
+		generate := func(svc *types.ServiceDeclaration) error {
+			byName := map[string]types.Entity{}
+			for _, e := range svc.Entities {
+				byName[e.Name] = e
+			}
+			var names []string
+			for _, c := range svc.Collections {
+				if !slices.Contains(names, c.Entity) {
+					names = append(names, c.Entity)
+				}
+			}
+			for _, c := range svc.Collections {
+				for _, f := range byName[c.Entity].Fields {
+					if f.Type == types.FieldTypeRef && byName[f.To].ResourceType != "" && !slices.Contains(names, f.To) {
+						names = append(names, f.To)
+					}
+				}
+			}
+			if _, err := query.ViewFile("data", names, svc.Entities); err != nil {
+				return err
+			}
+			sets := [][]string{names}
+			for _, c := range svc.Commands {
+				sets = append(sets, c.Writes)
+			}
+			for _, w := range svc.Workers {
+				sets = append(sets, w.Writes)
+			}
+			for _, set := range sets {
+				if _, err := command.EntityFile("data", set, svc.Entities, "tenant_id", command.Relations{}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		// list sets the list permission of the entity at i, or deletes it when it is empty.
+		list := func(i int, permission string) func(in *ArchitectureInput) {
+			return func(in *ArchitectureInput) {
+				e := &in.Service.Entities[i]
+				e.Permissions = maps.Clone(e.Permissions)
+				if permission == "" {
+					delete(e.Permissions, types.OpList)
+					return
+				}
+				e.Permissions[types.OpList] = permission
+				e.PublicReasons = map[types.Operation]string{types.OpList: "Anyone may list them."}
+			}
+		}
+		// extra adds an entity Log with the resource type log, the read permission view and no list permission.
+		extra := func(in *ArchitectureInput) {
+			in.Service.Entities = append(in.Service.Entities, types.Entity{Name: "Log", Fields: []types.Field{{Name: "line", Type: "string"}},
+				EntityAuthorization: types.EntityAuthorization{ResourceType: "log", Permissions: map[types.Operation]string{types.OpRead: "view"}}})
+		}
+		parts := func(more ...string) []string {
+			return append([]string{"has the resource type", "ST-SUP-RC33-OC01", "permissions.list as a permission of"}, more...)
+		}
+		for _, tc := range []struct {
+			name   string
+			change func(in *ArchitectureInput)
+			want   []string // the parts of the refusal of the derivation, or none when both accept
+		}{
+			{"the nested fixture", func(in *ArchitectureInput) {}, nil},
+			{"the entity of a collection with the list public", list(0, types.PermissionPublic), parts("entities[0] (Doc)", "the list permission public", "collections[0] (docs) serves it", "entities[0].permissions.list")},
+			{"the entity of a collection with no list", list(2, ""), parts("entities[2] (Shelf)", "no list permission", "collections[1] (shelves) serves it", "entities[2].permissions.list")},
+			{"the entity of a collection with no list and no authorization", func(in *ArchitectureInput) {
+				in.Service.Authorization, in.Schema = nil, nil
+				list(0, "")(in)
+			}, parts("entities[0] (Doc)", "no list permission", "collections[0] (docs) serves it")},
+			{"the entity that a ref field names with no list", func(in *ArchitectureInput) {
+				extra(in)
+				in.Service.Entities[0].Fields = append(slices.Clone(in.Service.Entities[0].Fields), types.Field{Name: "log_id", Type: types.FieldTypeRef, To: "Log"})
+			}, parts("entities[3] (Log)", "no list permission", "the ref field entities[0].fields[3] of Doc, which collections[0] serves, names it")},
+			{"an entity with no list that only a command writes", func(in *ArchitectureInput) {
+				extra(in)
+				in.Service.Commands[0].Writes = []string{"Log"}
+			}, nil},
+			{"an entity with no list that only a worker writes", func(in *ArchitectureInput) {
+				extra(in)
+				in.Service.Workers = []types.Worker{{Name: "sweeper", Writes: []string{"Log"}, ResourceType: "log", Permission: "view"}}
+			}, nil},
+		} {
+			in := nestedFixture(t)
+			tc.change(&in)
+			genErr := generate(in.Service)
+			_, err := WriteArchitecture(in)
+			if tc.want == nil {
+				if genErr != nil || err != nil {
+					t.Errorf("%s: the generators give %v and the derivation %v, want both to accept", tc.name, genErr, err)
+				}
+				continue
+			}
+			if genErr == nil || !strings.Contains(genErr.Error(), "its list permission is") {
+				t.Errorf("%s: the query runtime does not refuse the list permission: %v", tc.name, genErr)
+			}
+			var refusal *ArchitectureRefusal
+			if !errors.As(err, &refusal) {
+				t.Errorf("%s: the derivation gives %v, want a refusal", tc.name, err)
+				continue
+			}
+			for _, part := range tc.want {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("%s: the refusal does not name %q: %v", tc.name, part, err)
+				}
+			}
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R12-T05 The derivation refuses a bound authorization with no compiled schema, an ancestor that the declaration does not state, and collections that a component other than rest-api serves", func(t *testing.T) {
+		refused := func(name string, in ArchitectureInput, parts ...string) {
+			t.Helper()
+			_, err := WriteArchitecture(in)
+			var refusal *ArchitectureRefusal
+			if !errors.As(err, &refusal) {
+				t.Errorf("%s: the derivation gives %v, want a refusal", name, err)
+				return
+			}
+			for _, part := range parts {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("%s: the refusal does not name %q: %v", name, part, err)
+				}
+			}
+		}
+		// A bound authorization with no compiled schema: no grant path is known, so an empty role list would read as
+		// a definite no (security review of PR #384, L2).
+		in := archFixture(t)
+		in.Schema = nil
+		refused("no compiled schema", in, "authorization is bound", "authz/schema.zed", "no compiled schema", "ST-GEN-UC08-R13")
+		// An ancestor that the declaration does not state: the rest-api generator refuses it too (security review of
+		// PR #384, L3).
+		in = nestedFixture(t)
+		in.Service.Collections[3].Scope = map[string]string{"folder_id": "Binder"}
+		ctx := gen.Context{ModuleName: "example.com/docs", OutDirName: "out", OutputNamespace: "api", ServiceName: "docs", BasePath: "/v1",
+			ErrorTypeBase: "https://errors.example.com/docs/", Entities: in.Service.Entities, Collections: in.Service.Collections, Authorization: in.Service.Authorization,
+			PeerNamespaces: map[string]string{"command": "command", "query": "query"}, Tenancy: &gen.Tenancy{Key: "tenant_id"},
+			Inputs: map[string][]byte{"authz/schema.zed": []byte(nestedFixtureSchema)}}
+		if _, _, err := new(restapi.Generator).Generate(ctx); err == nil {
+			t.Error("the rest-api generator accepts an ancestor that the declaration does not state")
+		}
+		refused("an undeclared ancestor", in, "collections.folder-docs.scope", "entity Binder", "the declaration states no entity Binder", "ST-SUP-RC20-OC24")
+		// Collections that a component other than rest-api serves: the derivation does not know what it plans.
+		in = archFixture(t)
+		api := in.Components["rest-api"]
+		delete(in.Components, "rest-api")
+		api.Name = "other-api"
+		in.Components["other-api"] = api
+		in.Names[slices.Index(in.Names, "rest-api")] = "other-api"
+		in.Wirings[0].Name = "other-api"
+		refused("another component", in, "the component other-api serves the collections", "the component rest-api alone")
+		// With no component that serves the collections, no generator plans their entities, so the derivation does
+		// not refuse a list that the query runtime would refuse.
+		in = archFixture(t)
+		in.Components["rest-api"].Config = nil
+		in.Service.Entities[0].Permissions = maps.Clone(in.Service.Entities[0].Permissions)
+		delete(in.Service.Entities[0].Permissions, types.OpList)
+		if _, err := WriteArchitecture(in); err != nil {
+			t.Errorf("with no component that serves the collections, the derivation refuses: %v", err)
+		}
+	})
+}
+
 func TestArchitectureEmptyAspects(t *testing.T) {
 	t.Run("ST-GEN-UC08-R06-T02 An aspect with no element is empty with its reason, and the others are present", func(t *testing.T) {
 		model, _ := deriveFixture(t, archFixture(t))
@@ -645,7 +809,7 @@ func TestArchitectureEmptyAspects(t *testing.T) {
 			t.Fatalf("with no entity and no operation the aspects are %+v %+v", model.Aspects.DataModel, model.Aspects.RequestFlows)
 		}
 		in = archFixture(t)
-		in.Components["api"].Config = nil
+		in.Components["rest-api"].Config = nil
 		model, _ = deriveFixture(t, in)
 		if model.Aspects.RequestFlows != (ArchAspect{State: "empty", Reason: reasonNoServer}) {
 			t.Fatalf("with no component that serves the collections the request flows are %+v", model.Aspects.RequestFlows)
@@ -665,7 +829,7 @@ func TestArchitectureValidation(t *testing.T) {
 			{"no phase", `"phase": "before_store",`, ``, "phase"},
 			{"an empty aspect with no reason", `"reason": "No component of the active set states a platform need or an environment variable."`, `"x": 1`, "platform_edges"},
 			{"an extra field", `"schema_version": 1,`, `"schema_version": 1, "notes": "hand-written",`, "notes"},
-			{"a dangling ID", `"offered_by": "component:api"`, `"offered_by": "component:gone"`, "component:gone"},
+			{"a dangling ID", `"offered_by": "component:rest-api"`, `"offered_by": "component:gone"`, "component:gone"},
 			{"a step out of order", `"n": 2,`, `"n": 3,`, "numbered"},
 		} {
 			changed := strings.Replace(string(data), tc.from, tc.to, 1)
@@ -1016,7 +1180,7 @@ environment:
     description: The connection string.
     secret: true
   - name: STORE_TIMEOUT
-    read_by: [api, store]
+    read_by: [rest-api, store]
     type: duration
     required: false
     default: 5m
@@ -1043,8 +1207,8 @@ func TestArchitectureVariables(t *testing.T) {
 		if secret.ID != "variable:DATABASE_URL" || !secret.Secret || secret.Default != nil || secret.Type != "string" {
 			t.Fatalf("DATABASE_URL is %+v", secret)
 		}
-		if !slices.Equal(timeout.ReadBy, []string{"component:api", "component:store"}) || timeout.Type != "duration" || timeout.Required ||
-			timeout.Default == nil || *timeout.Default != "5m" || timeout.Source.Registry == nil || timeout.Source.Registry.Name != "api" {
+		if !slices.Equal(timeout.ReadBy, []string{"component:rest-api", "component:store"}) || timeout.Type != "duration" || timeout.Required ||
+			timeout.Default == nil || *timeout.Default != "5m" || timeout.Source.Registry == nil || timeout.Source.Registry.Name != "rest-api" {
 			t.Fatalf("STORE_TIMEOUT is %+v", timeout)
 		}
 		if !slices.Equal(limit.ReadBy, []string{"component:store/Worker"}) || !limit.Required || limit.Source.Declaration != "overrides.store" {
@@ -1074,7 +1238,7 @@ func TestArchitectureConfigurationFacts(t *testing.T) {
 		required, _ := complianceFact(model, "fact:configuration/variable:WIDGET_LIMIT/required")
 		defaults, _ := complianceFact(model, "fact:configuration/variable:STORE_TIMEOUT/default")
 		secret, _ := complianceFact(model, "fact:configuration/variable:DATABASE_URL/secret")
-		if readBy.Value != "component:api, component:store" || readBy.State != "stated" || readBy.Source.Registry == nil {
+		if readBy.Value != "component:rest-api, component:store" || readBy.State != "stated" || readBy.Source.Registry == nil {
 			t.Fatalf("the readers of STORE_TIMEOUT are %+v", readBy)
 		}
 		if required.Value != true || defaults.Value != "5m" || secret.Value != true {
@@ -1109,7 +1273,7 @@ func TestArchitectureContext(t *testing.T) {
 			t.Fatalf("the actors are\n%s\nwant\n%s", strings.Join(actors, "\n"), strings.Join(want, "\n"))
 		}
 		wantRelations := []string{
-			"actor:caller calls 3 operations container:docs through component:api sync <service.yaml collections>",
+			"actor:caller calls 3 operations container:docs through component:rest-api sync <service.yaml collections>",
 			"container:docs asks for permission decisions actor:authorization.spicedb through  sync <service.yaml authorization.provider>",
 			"container:docs sends change messages, later actor:outside.events through component:events async <registry component events 1.0.0, field architecture.layer>",
 			"container:docs keeps rows actor:store.store through component:store sync <registry component store 1.0.0, field architecture.layer>",
@@ -1203,7 +1367,7 @@ func TestArchitectureContext(t *testing.T) {
 		if err := ValidateArchitecture(moved); err == nil || !strings.Contains(err.Error(), "is in the layer slot, not handler") {
 			t.Fatalf("a step in another layer is valid: %v", err)
 		}
-		loose := bytes.Replace(data, []byte(`"to": "container:docs"`), []byte(`"to": "component:api"`), 1)
+		loose := bytes.Replace(data, []byte(`"to": "container:docs"`), []byte(`"to": "component:rest-api"`), 1)
 		if err := ValidateArchitecture(loose); err == nil || !strings.Contains(err.Error(), "joins only containers and actors") {
 			t.Fatalf("a relation to a component is valid: %v", err)
 		}
