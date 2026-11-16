@@ -1119,7 +1119,10 @@ func TestWiring(t *testing.T) {
 		var last string
 		for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
 			pending := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'audit-sink' AND state <> 'done'`, owner.tenant.ID())
-			done := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'audit-sink' AND state = 'done'`, owner.tenant.ID())
+			// The anchor job publishes an anchor at each period, also of a chain with no new event; the anchors of one
+			// chain head are one message body and one entry of the table, so the done messages count once for each
+			// body (ST-SUP-RP05-LC09).
+			done := count(t, s.admin, `SELECT count(DISTINCT payload) FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'audit-sink' AND state = 'done'`, owner.tenant.ID())
 			events := count(t, s.admin, `SELECT count(*) FROM stego_audit_sink.entries e JOIN audit_event a ON a.id::text = e.entry_id WHERE e.tenant_id = $1 AND e.kind = 'event'`, owner.tenant.ID())
 			anchors := count(t, s.admin, `SELECT count(*) FROM stego_audit_sink.entries WHERE tenant_id = $1 AND kind = 'anchor'`, owner.tenant.ID())
 			audited := count(t, s.admin, `SELECT count(*) FROM audit_event WHERE tenant_id = $1`, owner.tenant.ID())
