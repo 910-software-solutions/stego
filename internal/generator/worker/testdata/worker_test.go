@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net"
@@ -38,6 +39,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/command"
+	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -45,6 +47,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/service"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 
+	applyreplies "example.com/orders/fills/apply-replies"
 	syncorders "example.com/orders/fills/sync-orders"
 	workers "example.com/orders/out/workers"
 	"example.com/orders/out/workers/runners"
@@ -255,6 +258,8 @@ type env struct {
 	admin *sql.DB
 	pool  *sql.DB
 	rt    *command.Runtime
+	// workerDB is a pool of the worker role, the role of the outbox worker that runs the consuming workers.
+	workerDB *sql.DB
 }
 
 // newEnv makes a database of its own and starts the command runtime of the workers on it, with the telemetry
@@ -293,6 +298,9 @@ func newEnv(t *testing.T, telemetry *otel.Runtime) *env {
 	must(t, err)
 	tenantsDDL, err := tenant.Migration("public", roles[0])
 	must(t, err)
+	// The key table of the idempotency runtime, which RunConsumer writes the message identity to.
+	keysDDL, err := idempotency.Migration("wk_purge_"+tag, roles[0])
+	must(t, err)
 	setup := []string{
 		queueDDL,
 		"CREATE SCHEMA authz",
@@ -308,12 +316,20 @@ func newEnv(t *testing.T, telemetry *otel.Runtime) *env {
 		"ALTER TABLE orders ENABLE ROW LEVEL SECURITY",
 		"ALTER TABLE orders FORCE ROW LEVEL SECURITY",
 		"CREATE POLICY orders_tenant ON orders USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
+		keysDDL,
+		"GRANT SELECT, INSERT, UPDATE ON idempotency_keys TO " + roles[0],
+		// The outbox worker runs the consumers in its own transactions, as the worker role, with the runtime role's
+		// grants; the grants of the worker role itself are proved by the runtime wiring test (ST-SUP-Q141).
+		"GRANT " + roles[0] + " TO " + roles[1],
 	}
 	for _, statement := range setup {
 		if _, err := e.admin.ExecContext(e.ctx, statement); err != nil {
 			t.Fatalf("%.80s: %v", statement, err)
 		}
 	}
+	u.User = url.UserPassword(roles[1], password)
+	e.workerDB, err = sql.Open("pgx", u.String())
+	must(t, err)
 	u.User = url.UserPassword(roles[0], password)
 	runtimeDSN := u.String()
 	e.pool, err = tenant.Open(e.ctx, tenant.Config{InsecureLoopback: true, DSN: runtimeDSN})
@@ -334,6 +350,7 @@ func newEnv(t *testing.T, telemetry *otel.Runtime) *env {
 	t.Cleanup(func() {
 		e.pool.Close()
 		auditDB.Close()
+		e.workerDB.Close()
 		e.admin.Close()
 	})
 	return e
@@ -560,6 +577,67 @@ func none(t *testing.T) {
 	}
 }
 
+// stageReply runs the command reserve as a caller of the tenant, whose fill stages the message payload for
+// partner-replies on the order of the tenant, as the command reserve of the declaration does, and gives the ID of
+// the message.
+func stageReply(t *testing.T, e *env, tenantID, payload string) uuid.UUID {
+	t.Helper()
+	var target tenant.Tenant
+	tenants, err := tenant.List(e.ctx, e.pool, "public")
+	must(t, err)
+	for _, tn := range tenants {
+		if tn.ID() == tenantID {
+			target = tn
+		}
+	}
+	if target.IsZero() {
+		t.Fatalf("the tenant list does not hold %s", tenantID)
+	}
+	caller, err := authz.System("reserve-caller")
+	must(t, err)
+	reserve, err := command.NewCommand(command.CommandSpec[struct{}]{Name: "reserve", Permission: "reserve",
+		Resource: &command.Resource{Type: "service", Service: "orders"}, Writes: []command.Declared{workers.OrderEntity},
+		Probe:        func(*probe.Probe) struct{} { return struct{}{} },
+		Destinations: []command.Destination{{Name: "partner-replies", MustLand: true, Idempotent: true, Consumed: true, Effects: []string{"reserved"}}}})
+	must(t, err)
+	_, err = command.Run(e.ctx, e.rt, reserve, command.Request{Tenant: target, Principal: caller, RequestID: uuid.NewString()},
+		func([]byte) (struct{}, error) { return struct{}{}, nil },
+		func(ctx context.Context, _ struct{}, h *command.Handle[struct{}]) (idempotency.Response, error) {
+			orders, err := command.Repo(h, workers.OrderEntity)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			loaded, err := orders.Get(ctx, order)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			return idempotency.Response{Status: http.StatusOK}, h.Effects().Stage(ctx, "partner-replies", "reserved", loaded, json.RawMessage(payload))
+		})
+	must(t, err)
+	var id uuid.UUID
+	must(t, e.admin.QueryRow(`SELECT id FROM stego_outbox.messages WHERE destination = 'partner-replies' AND tenant_id = $1
+ ORDER BY sequence DESC LIMIT 1`, tenantID).Scan(&id))
+	return id
+}
+
+// awaitMessage waits until the message has the state and the attempts, with no deadline; a state that is neither
+// on the way nor the one awaited fails the check at once.
+func awaitMessage(t *testing.T, e *env, id uuid.UUID, state string, attempts int64) {
+	t.Helper()
+	for {
+		var got string
+		var n int64
+		must(t, e.admin.QueryRow(`SELECT state, attempts FROM stego_outbox.messages WHERE id = $1`, id).Scan(&got, &n))
+		switch {
+		case got == state && n == attempts:
+			return
+		case got != "pending" && got != "dispatching" && got != state:
+			t.Fatalf("the message %s is %s after %d attempts, want %s after %d", id, got, n, state, attempts)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // committed waits until the order of the tenant has the status that a committed run wrote. It has no deadline.
 func committed(t *testing.T, e *env, tenantID, status string) {
 	t.Helper()
@@ -607,8 +685,8 @@ func (in *instance) counted(name string) int {
 	return len(in.rec.Emissions(name))
 }
 
-// write sets the status of the order of the tenant through the handle of the fill.
-func write(ctx context.Context, h *workers.SyncPartnerOrdersHandle, status string) error {
+// write sets the status of the order of the tenant through the handle of a fill of either worker.
+func write[P any](ctx context.Context, h *command.Handle[P], status string) error {
 	orders, err := workers.OrderRepository(h)
 	if err != nil {
 		return err
@@ -832,6 +910,113 @@ func TestWorker(t *testing.T) {
 		}
 		committed(t, e, ids[0], "synced")
 		noCall(t)
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T01 A staged message reaches its consuming worker once, and a failed run is retried", func(t *testing.T) {
+		prefix, ids := e.tenants(t, 2)
+		setBody(prefix, nil)
+		// The queue of the outbox worker is on a test clock a minute after the system time, so each staged message is
+		// due; a retry is due only when the check moves the clock.
+		queueClock := &clock{now: time.Now().Add(time.Minute)}
+		queue, err := outbox.New(e.workerDB, outbox.Options{Clock: queueClock})
+		must(t, err)
+		config := outbox.DefaultWorkerConfig()
+		config.Concurrency, config.PollInterval = 1, 10*time.Millisecond
+		config.RetryMin, config.RetryMax, config.AttemptTimeout, config.LeaseDuration = time.Second, 2*time.Second, 10*time.Second, time.Minute
+		worker, err := outbox.NewWorker(queue, config)
+		must(t, err)
+		rec := newRecorder(t)
+		must(t, runners.Consumers(runners.BoundFills())(e.rt, worker, func(name string) command.WorkerObserver { return rec.Worker(name) }))
+		// The generated code registers one handler of partner-replies, idempotent and must land.
+		var registered []outbox.Registration
+		for _, r := range worker.Registrations() {
+			if r.Name == "partner-replies" {
+				registered = append(registered, r)
+			}
+		}
+		if len(registered) != 1 || !registered[0].Idempotent || !registered[0].MustLand {
+			t.Fatalf("the consumers register %+v for partner-replies, want one handler, idempotent and must land", registered)
+		}
+		// The other destinations of the check's commands complete at once.
+		for _, name := range []string{"audit-sink", "authz"} {
+			must(t, worker.Register(outbox.Destination{Name: name, Idempotent: true,
+				Handler: func(context.Context, *sql.Tx, outbox.Delivery) error { return nil }}))
+		}
+		type applied struct{ tenant, message string }
+		got := make(chan applied, 16)
+		var failing atomic.Bool
+		applyreplies.Behavior = func(ctx context.Context, message json.RawMessage, _ string, h *workers.ApplyPartnerRepliesHandle) error {
+			id := h.Tenant().ID()
+			if !strings.HasPrefix(id, prefix) {
+				return nil
+			}
+			got <- applied{tenant: id, message: string(message)}
+			if err := write(ctx, h, "applied "+string(message)); err != nil {
+				return err
+			}
+			if failing.Load() {
+				return errors.New("the partner refused the reply")
+			}
+			return nil
+		}
+		defer func() { applyreplies.Behavior = nil }()
+		ctx, cancel := context.WithCancel(e.ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); _ = worker.Run(ctx) }()
+		defer func() { cancel(); <-done }()
+
+		// The command reserve stages one message for partner-replies in t1.
+		first := stageReply(t, e, ids[0], `{"n":1}`)
+		if r := <-got; r.tenant != ids[0] || r.message != `{"n":1}` {
+			t.Fatalf("the consumer got %+v, want the message of t1", r)
+		}
+		awaitMessage(t, e, first, "done", 1)
+		if e.status(ids[0]) != `applied {"n":1}` || e.status(ids[1]) != "new" {
+			t.Fatalf("the orders hold %q and %q, want the write of the run in t1 only", e.status(ids[0]), e.status(ids[1]))
+		}
+		noApply := func() {
+			t.Helper()
+			select {
+			case r := <-got:
+				t.Fatalf("the consumer got %+v again", r)
+			default:
+			}
+		}
+		noApply()
+
+		// A run that fails rolls back: the message is pending again, not acted and never outcome unknown, and it is
+		// not delivered before its retry is due on the queue clock.
+		failing.Store(true)
+		second := stageReply(t, e, ids[0], `{"n":2}`)
+		if r := <-got; r.message != `{"n":2}` {
+			t.Fatalf("the consumer got %+v, want the second message", r)
+		}
+		awaitMessage(t, e, second, "pending", 1)
+		var due time.Time
+		must(t, e.admin.QueryRow(`SELECT available_at FROM stego_outbox.messages WHERE id = $1`, second).Scan(&due))
+		if !due.After(queueClock.Now()) {
+			t.Fatalf("the failed message is due again at %v, not after the queue time %v: no backoff", due, queueClock.Now())
+		}
+		if e.status(ids[0]) != `applied {"n":1}` {
+			t.Fatalf("the failed run left the order at %q, want the write of the first run only", e.status(ids[0]))
+		}
+		noApply()
+		// When its retry is due, the run commits and the message is delivered.
+		failing.Store(false)
+		queueClock.advance(due.Sub(queueClock.Now()))
+		if r := <-got; r.message != `{"n":2}` {
+			t.Fatalf("the retry got %+v, want the second message", r)
+		}
+		awaitMessage(t, e, second, "done", 2)
+		if e.status(ids[0]) != `applied {"n":2}` {
+			t.Fatalf("the retried run left the order at %q, want its write", e.status(ids[0]))
+		}
+		var unknown int
+		must(t, e.admin.QueryRow(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'partner-replies' AND state = 'outcome_unknown'`).Scan(&unknown))
+		if unknown != 0 {
+			t.Fatalf("%d messages of partner-replies are in outcome unknown, want none", unknown)
+		}
+		noApply()
 	})
 
 	t.Run("ST-SUP-RC35-OC07-T01 A slow tenant ends at its own deadline and the next tenant gets its own", func(t *testing.T) {
