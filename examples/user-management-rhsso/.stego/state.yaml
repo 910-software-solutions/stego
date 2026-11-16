@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261115221243-14fb268b0c03
+        module_version: v0.0.0-20261115231705-babd9158c30c
         vcs: git
-        revision: 14fb268b0c03813badeec735c429eff2170cf64f
+        revision: babd9158c30c0004fdeabac2af844e4f0566ff73
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: b73cb6f0f9b20455073f89f3733d62fbb442361a85a0b9cabb134290f19c87de
+    registry_content_sha256: 7b2e5472bbe2b84cb8d64e16fdb6d824480b803e6fe860641a2abeb7e236217d
     components:
         audit-log:
             version: 1.1.1
@@ -54,7 +54,7 @@ last_applied:
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
         health-check:
             version: 1.1.0
-            sha: 7950e3a8f48b6eb2460b5259dd004581d4c6bdee80f97891138532b39cbae49c
+            sha: 9336c79178caf803db7222bedd34244d99241ea4bbb3cf5298fd7e87029aad1d
         kafka-producer:
             version: 3.0.0
             sha: 2948192b1f913b330c2ae480688f309611820774cee403c157b8809cc8f6e0de
@@ -199,8 +199,8 @@ last_applied:
         deploy/base/kustomization.yaml: b2db76dd596305ad0ef173ea7cf702fe9144cda5be1516c0a579f0e8f10e8ab0
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
-        deploy/environment-variables.md: d46826cb1f2ad23de313a7a6ec2e31dfbdd980efcc7005aa41566509cebbda7b
-        deploy/platform-requirements.yaml: 370bf5733578df49caf1428a0fabd223e0b368d783109a7dad69d5c6d71f55c7
+        deploy/environment-variables.md: a2ffddddea40db7a58ffdb9285befd1416efbc43ca557c9f3bc0a01d4d162b60
+        deploy/platform-requirements.yaml: 1c6dd9a93dfe3f6dfa885fd4dccff4f1f9b53d1db7d1fe3f204d282f210b50c3
     archetype:
         name: rest-crud
         version: 3.123.2
