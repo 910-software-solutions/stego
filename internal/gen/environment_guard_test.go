@@ -37,7 +37,7 @@ func TestEnvironmentGuard(t *testing.T) {
 			output, err := command.CombinedOutput()
 			return string(output), err
 		}
-		for _, refused := range []string{"PGSSLROOTCERT=/CANARY", "PGPASSWORD=CANARY", "SSL_CERT_FILE=/CANARY", "GRPC_ENFORCE_ALPN_ENABLED=CANARY", "GODEBUG=panicnil=1,tlsrsakex=1", "GODEBUG=x509sha1=1"} {
+		for _, refused := range []string{"PGSSLROOTCERT=/CANARY", "PGPASSWORD=CANARY", "SSL_CERT_FILE=/CANARY", "GRPC_ENFORCE_ALPN_ENABLED=CANARY", "GODEBUG=panicnil=1,tlsrsakex=1", "GODEBUG=x509sha1=1", "GODEBUG=http2debug=2", "GODEBUG=panicnil=1, http2debug=1"} {
 			output, err := run(refused)
 			name, _, _ := strings.Cut(refused, "=")
 			if err == nil || !strings.Contains(output, name) || strings.Contains(output, "CANARY") || strings.Contains(output, "started") {

@@ -8,7 +8,8 @@ import "slices"
 // GRPC_ variables, and the Go standard library reads SSL_CERT_FILE and SSL_CERT_DIR, which can change TLS trust, and
 // GODEBUG. The guard stops the process when one of those has a value, so that only the declared variables configure
 // the service (#344 security review M2). The log settings of grpc-go stay allowed, and so does a GODEBUG with no
-// tls or x509 setting, such as panicnil=1: a tls or x509 setting can turn a TLS or certificate check off. The guard names the
+// tls, x509 or http2debug setting, such as panicnil=1: a tls or x509 setting can turn a TLS or certificate check off,
+// and http2debug logs the HTTP/2 header fields, with the bearer tokens in them (#370 security review L3). The guard names the
 // variable, never its value, and uses only the package os, which each main imports.
 const EnvironmentGuardSource = `
 // stegoRefuseEnvironment stops the process when the environment gives a value to a variable that a library would
@@ -49,7 +50,8 @@ func stegoRefusedVariable(name string) bool {
 	return len(name) >= 5 && name[:5] == "GRPC_"
 }
 
-// stegoWeakensTLS tells whether a GODEBUG value holds a tls or an x509 setting.
+// stegoWeakensTLS tells whether a GODEBUG value holds a tls or an x509 setting, which can turn a TLS check off, or
+// an http2debug setting, which logs the header fields of each HTTP/2 request.
 func stegoWeakensTLS(value string) bool {
 	start := 0
 	for i := 0; i <= len(value); i++ {
@@ -58,7 +60,7 @@ func stegoWeakensTLS(value string) bool {
 			for len(key) > 0 && key[0] == ' ' {
 				key = key[1:]
 			}
-			if len(key) >= 3 && key[:3] == "tls" || len(key) >= 4 && key[:4] == "x509" {
+			if len(key) >= 3 && key[:3] == "tls" || len(key) >= 4 && key[:4] == "x509" || len(key) >= 10 && key[:10] == "http2debug" {
 				return true
 			}
 			start = i + 1
@@ -69,7 +71,7 @@ func stegoWeakensTLS(value string) bool {
 `
 
 // RefusedVariable is stegoRefusedVariable for a test of the release scan: whether the guard refuses a variable by its
-// name. GODEBUG is refused only with a tls or x509 setting.
+// name. GODEBUG is refused only with a tls, x509 or http2debug setting.
 func RefusedVariable(name string) bool {
 	switch name {
 	case "SSL_CERT_FILE", "SSL_CERT_DIR":

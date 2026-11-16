@@ -375,8 +375,9 @@ type secretFile struct {
 // secret variable gets no entry, because the two forms are exclusive and the base wires the environment form. Each
 // other variable takes its value from the key of its name in the ConfigMap <service>-config, optional when the
 // variable is optional, so that the code keeps its default when the key is not there. The console sink of the
-// domain probes gets no entry (ST-STD-OBS-R03), and a variable that the start guard refuses gets none, because a
-// value of it stops the service (ST-SUP-UC01-R10).
+// domain probes gets no entry (ST-STD-OBS-R03); a variable that the start guard refuses gets none, because a value
+// of it stops the service (ST-SUP-UC01-R10); and a variable that only the migration job reads gets none, so that the
+// serving pod never holds the credential of the owner role (ST-DLV-Q19, least privilege).
 func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFile) {
 	sourced := map[string]SecretSource{}
 	for _, variable := range list {
@@ -391,7 +392,7 @@ func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFi
 	var entries []any
 	var switched []secretFile
 	for _, variable := range list {
-		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart {
+		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode != "" {
 			continue
 		}
 		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile {
@@ -435,19 +436,25 @@ func SecretFilePath(source SecretSource) string {
 // the file in place. The forms are exclusive, so the first patch removes what the second replaces.
 func secretFilesComponent(service string, switched []secretFile) (map[string][]byte, error) {
 	var removed, set, mounts, volumes []any
-	mounted := map[string]bool{}
+	// The keys of each secret that a switched variable reads: the volume projects only these keys, so that no other
+	// key of the Secret, such as the credential of the migration job, is a file of the pod (ST-DLV-Q19).
+	keys := map[string][]any{}
+	var secrets []string
 	for _, file := range switched {
 		removed = append(removed, map[string]any{"name": file.Removed, "$patch": "delete"})
 		set = append(set, map[string]any{"name": file.Variable, "value": SecretFilePath(file.Source)})
-		if mounted[file.Source.Name] {
-			continue
+		if _, seen := keys[file.Source.Name]; !seen {
+			secrets = append(secrets, file.Source.Name)
 		}
-		if !serviceLabel.MatchString(file.Source.Name) || file.Source.Name == "tmp" {
-			return nil, fmt.Errorf("the secret %s is not a Kubernetes volume name: a DNS label that is not tmp", file.Source.Name)
+		keys[file.Source.Name] = append(keys[file.Source.Name], map[string]any{"key": file.Source.Key, "path": file.Source.Key})
+	}
+	for _, secret := range secrets {
+		if !serviceLabel.MatchString(secret) || secret == "tmp" {
+			return nil, fmt.Errorf("the secret %s is not a Kubernetes volume name: a DNS label of at most 63 characters that is not tmp; use a shorter service name", secret)
 		}
-		mounted[file.Source.Name] = true
-		mounts = append(mounts, map[string]any{"name": file.Source.Name, "mountPath": SecretFilesRoot + "/" + file.Source.Name, "readOnly": true})
-		volumes = append(volumes, map[string]any{"name": file.Source.Name, "secret": map[string]any{"secretName": file.Source.Name, "defaultMode": SecretFileMode}})
+		mounts = append(mounts, map[string]any{"name": secret, "mountPath": SecretFilesRoot + "/" + secret, "readOnly": true})
+		volumes = append(volumes, map[string]any{"name": secret, "secret": map[string]any{"secretName": secret, "defaultMode": SecretFileMode,
+			"items": keys[secret]}})
 	}
 	patch := func(container map[string]any, pod map[string]any) map[string]any {
 		container["name"] = service
@@ -474,7 +481,8 @@ func secretFilesComponent(service string, switched []secretFile) (map[string][]b
 // secretFilesHeader is the first lines of each file of the Component secret-files.
 const secretFilesHeader = "# The opt-in kustomize Component secret-files of the service. stego apply writes this file from the platform\n" +
 	"# requirements. An overlay that lists this folder under components gets each secret as a read-only file under\n" +
-	"# " + SecretFilesRoot + " in place of an environment variable. Do not edit it.\n"
+	"# " + SecretFilesRoot + " in place of an environment variable. Each file has the mode 0400: give the pod an\n" +
+	"# fsGroup, as the restricted SCC of OpenShift does, and do not widen the mode. Do not edit it.\n"
 
 // probePort is the port of the probes: the default of the variable that the probes' component states for it, from
 // the environment list of the platform requirements.
@@ -631,13 +639,18 @@ type containerVariable struct {
 // field. A secret reference has no optional flag, because the secret need requires each of its keys; a ConfigMap
 // reference may be optional. No variable has two entries.
 func checkEnvironmentEntries(content []byte) error {
+	type container struct {
+		Name    string      `yaml:"name"`
+		Env     []yaml.Node `yaml:"env"`
+		EnvFrom []yaml.Node `yaml:"envFrom"`
+	}
 	var deployment struct {
 		Spec struct {
 			Template struct {
 				Spec struct {
-					Containers []struct {
-						Env []yaml.Node `yaml:"env"`
-					} `yaml:"containers"`
+					Containers          []container `yaml:"containers"`
+					InitContainers      []container `yaml:"initContainers"`
+					EphemeralContainers []container `yaml:"ephemeralContainers"`
 				} `yaml:"spec"`
 			} `yaml:"template"`
 		} `yaml:"spec"`
@@ -645,7 +658,18 @@ func checkEnvironmentEntries(content []byte) error {
 	if err := yaml.Unmarshal(content, &deployment); err != nil {
 		return err
 	}
-	for _, container := range deployment.Spec.Template.Spec.Containers {
+	// The base writes no envFrom, which takes every key of a ConfigMap or a Secret, also a name that the service
+	// refuses, and no environment of an init or an ephemeral container (#370 security review L2).
+	pod := deployment.Spec.Template.Spec
+	for _, other := range append(slices.Clone(pod.InitContainers), pod.EphemeralContainers...) {
+		if len(other.Env) > 0 || len(other.EnvFrom) > 0 {
+			return fmt.Errorf("the container %q is an init or an ephemeral container with an environment, which the base never writes", other.Name)
+		}
+	}
+	for _, container := range pod.Containers {
+		if len(container.EnvFrom) > 0 {
+			return fmt.Errorf("the container %q takes its environment from envFrom, which the base never writes; each variable is one env entry", container.Name)
+		}
 		seen := map[string]bool{}
 		for _, node := range container.Env {
 			text, err := yaml.Marshal(&node)
@@ -720,6 +744,10 @@ type secretFilesPatch struct {
 					Secret *struct {
 						SecretName  string `yaml:"secretName"`
 						DefaultMode *int   `yaml:"defaultMode"`
+						Items       []struct {
+							Key  string `yaml:"key"`
+							Path string `yaml:"path"`
+						} `yaml:"items"`
 					} `yaml:"secret"`
 				} `yaml:"volumes"`
 			} `yaml:"spec"`
@@ -781,10 +809,18 @@ func loadSecretFiles(files map[string][]byte) error {
 		removed[entry.Name] = true
 	}
 	volumes := map[string]bool{}
+	// projected holds each key that a volume projects, as secret/key; each must be the file of one set variable.
+	projected := map[string]bool{}
 	for _, volume := range mount.Volumes {
 		if !serviceLabel.MatchString(volume.Name) || volume.Name == "tmp" || volumes[volume.Name] || volume.Secret == nil || volume.Secret.SecretName != volume.Name ||
-			volume.Secret.DefaultMode == nil || *volume.Secret.DefaultMode != SecretFileMode {
-			return fmt.Errorf("%s holds the volume %q, which is not one secret volume of the mode 0400 named by its secret", SecretFilesMounts, volume.Name)
+			volume.Secret.DefaultMode == nil || *volume.Secret.DefaultMode != SecretFileMode || len(volume.Secret.Items) == 0 {
+			return fmt.Errorf("%s holds the volume %q, which is not one secret volume of the mode 0400 named by its secret, with its keys", SecretFilesMounts, volume.Name)
+		}
+		for _, item := range volume.Secret.Items {
+			if item.Path != item.Key || !shapeWord.MatchString(item.Key) || projected[volume.Name+"/"+item.Key] {
+				return fmt.Errorf("%s projects %q of %s, which is not one key at the path of its name", SecretFilesMounts, item.Key, volume.Name)
+			}
+			projected[volume.Name+"/"+item.Key] = true
 		}
 		volumes[volume.Name] = true
 	}
@@ -798,16 +834,23 @@ func loadSecretFiles(files map[string][]byte) error {
 	if len(mounted) != len(volumes) || len(mount.Containers[0].Env) == 0 {
 		return fmt.Errorf("%s does not mount each volume it adds, or sets no variable", SecretFilesMounts)
 	}
-	set := map[string]bool{}
+	set, used := map[string]bool{}, map[string]bool{}
 	for _, entry := range mount.Containers[0].Env {
 		if entry.Patch != "" || entry.Value == nil || !variableName.MatchString(entry.Name) || set[entry.Name] {
 			return fmt.Errorf("%s does more than set each file variable once: %q", SecretFilesMounts, entry.Name)
 		}
 		folder, key := path.Split(*entry.Value)
-		if !mounted[path.Base(folder)] || path.Clean(folder) != SecretFilesRoot+"/"+path.Base(folder) || !shapeWord.MatchString(key) {
-			return fmt.Errorf("%s sets %s to a path that is not a key of a mounted secret", SecretFilesMounts, entry.Name)
+		if !mounted[path.Base(folder)] || path.Clean(folder) != SecretFilesRoot+"/"+path.Base(folder) || !shapeWord.MatchString(key) ||
+			!projected[path.Base(folder)+"/"+key] {
+			return fmt.Errorf("%s sets %s to a path that is not a projected key of a mounted secret", SecretFilesMounts, entry.Name)
 		}
 		set[entry.Name] = true
+		used[path.Base(folder)+"/"+key] = true
+	}
+	for key := range projected {
+		if !used[key] {
+			return fmt.Errorf("%s projects the key %s, which no variable that it sets reads", SecretFilesMounts, key)
+		}
 	}
 	for name := range set {
 		// The mount patch sets the *_FILE form of a removed secret variable, or a removed path variable itself: a

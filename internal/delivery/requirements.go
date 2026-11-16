@@ -291,6 +291,11 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 	if err != nil {
 		return Requirement{}, fault(need.Name, "name", "%s", err)
 	}
+	if len(name) > maxWord && requirementName.MatchString(name) {
+		// The name of a Secret, and of the volume that mounts it, is a Kubernetes name of at most 63 characters
+		// (#370 security review L5).
+		return Requirement{}, fault(name, "name", "the name has %d characters, more than the %d of a Kubernetes name; use a shorter service name", len(name), maxWord)
+	}
 	if len(name) > maxWord || !requirementName.MatchString(name) {
 		return Requirement{}, fault(name, "name", "the name is not a name of at most %d letters, digits, '-' or '_', so it can hold a value of an environment, such as a host name or an address", maxWord)
 	}

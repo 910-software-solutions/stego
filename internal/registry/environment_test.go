@@ -190,6 +190,8 @@ func TestSecretSource(t *testing.T) {
 			{"a source on a duration", "    secret: false\n    example: \"2m\"\n", "    secret: false\n    secret_source: {name: \"{service}-database\", key: url}\n    example: \"2m\"\n", "ENV_A_TIMEOUT", "secret_source"},
 			{"a source of a secret setting", "    secret: true\n", "    secret: true\n    secret_source: {name: \"{settings.key}\", key: url}\n", "ENV_A_DATABASE_URL", "secret_source"},
 			{"a source with a bad key", "    secret: true\n", "    secret: true\n    secret_source: {name: \"{service}-database\", key: \"a/b\"}\n", "ENV_A_DATABASE_URL", "secret_source"},
+			{"a mode that is not migrate", "    secret: true\n", "    secret: true\n    read_by_mode: api\n", "ENV_A_DATABASE_URL", "read_by_mode"},
+			{"a required variable of one mode", "    required: false\n    description: \"The connection", "    required: true\n    read_by_mode: migrate\n    description: \"The connection", "ENV_A_DATABASE_URL", "read_by_mode"},
 		})
 		component, err := parseEnv(t, "    secret: true\n", source)
 		if err != nil {
@@ -221,6 +223,18 @@ func TestSecretSource(t *testing.T) {
 				if variable.SecretSource != nil {
 					sources++
 				}
+			}
+		}
+		// Only the migration job reads the credential of the owner role, so the serving Deployment never wires it.
+		for _, name := range []string{"STEGO_MIGRATION_DATABASE_URL", "STEGO_MIGRATION_DATABASE_URL_FILE"} {
+			found := false
+			for _, variable := range shipped.Component("postgres-adapter").Variables() {
+				if variable.Name == name {
+					found = variable.ReadByMode == "migrate"
+				}
+			}
+			if !found {
+				t.Errorf("postgres-adapter does not state %s as read by the migrate mode", name)
 			}
 		}
 		if sources < 14 {

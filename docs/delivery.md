@@ -55,12 +55,16 @@ environment file against them.
 - A variable with a `*_FILE` form, such as `DATABASE_URL` and `DATABASE_URL_FILE`, gets the environment form only.
   The service refuses the two together.
 - A secret variable that no secret need gives, such as `PGPASSWORD`, gets no entry.
+- A variable that only the migration job reads (`read_by_mode: migrate` in the platform requirements), such as
+  `STEGO_MIGRATION_DATABASE_URL`, gets no entry. The Deployment serves, and it never holds the credential of the
+  owner role. The secret need still has the key, for the migration job: run the job with its own manifest
+  (`<binary> migrate`), and give it the key there.
 - `STEGO_PROBE_CONSOLE` gets no entry, so the domain probes stay off the console. An overlay that wants them on
   the console sets the variable itself.
 - A variable that the service refuses at start gets no entry: the `PG` names that the pgx driver reads, the
   `GRPC_` names except the three log settings, `SSL_CERT_FILE` and `SSL_CERT_DIR`. The platform requirements mark
   each of them `refused_at_start: true`, and `stego env check` fails when the environment file gives one a value.
-  `GODEBUG` keeps its entry, but the service does not start when it holds a `tls` or `x509` setting.
+  `GODEBUG` keeps its entry, but the service does not start when it holds a `tls`, `x509` or `http2debug` setting.
 
 When a component names a secret source that the service does not state, such as a key that its secret need does
 not have, `stego validate`, `stego plan` and `stego apply` write a `WARNING` with the variable, the need and the
@@ -72,8 +76,8 @@ stays in `CreateContainerConfigError`. The pod event names the Secret or the Con
 tries again, and the pod starts when the key is there. The process never runs without a required value. Argo CD
 shows the Application as Progressing or Degraded.
 
-A new value of a Secret or of the ConfigMap reaches the process only after a restart of the pod. Use a tool such as
-Reloader, or a rollout from your secret operator, if you need that.
+A new value of a Secret or of the ConfigMap reaches the process only after a restart of the pod, also with the
+Component. Use a tool such as Reloader, or a rollout from your secret operator, to restart the pods.
 
 When the platform uses other names, the overlay must patch them. A `namePrefix` or a `nameSuffix` of the overlay
 does not rename a Secret that the overlay does not make, such as one that an operator makes on the cluster.
@@ -81,8 +85,9 @@ does not rename a Secret that the overlay does not make, such as one that an ope
 ## Secrets as files
 
 The Component `deploy/components/secret-files/` gives each secret to the service as a file, in place of an
-environment variable. A file does not go to child processes, logs or process dumps, and a new value of the Secret
-reaches the file in place. List the Component in the overlay, next to the base, at the same commit:
+environment variable. A file does not go to child processes, logs or process dumps. Kubernetes writes a new value
+of the Secret to the file in place, but the service reads each file once at start, so a new value reaches the
+process only after a restart of the pod, as with an environment variable. List the Component in the overlay, next to the base, at the same commit:
 
 ```yaml
 resources:
@@ -95,13 +100,34 @@ The Component has two patches of the Deployment. The forms are exclusive, so the
 environment entry of each secret variable, and of each path variable that names the file of a secret. The second
 patch then:
 
-- mounts each Secret read-only at `/var/run/secrets/stego/<secret>`, with no `subPath`, and with the mode 0400;
+- mounts each Secret read-only at `/var/run/secrets/stego/<secret>`, with no `subPath`, and with the mode 0400,
+  with only the keys that the switched variables read;
 - sets the `*_FILE` variable, or the path variable, to the path of the file of its key, for example
   `DATABASE_URL_FILE=/var/run/secrets/stego/orders-database/url`.
 
 The files have the mode 0400 and the owner root, so that no other user can read them. The process runs as a user
 that is not root, so give the pod an `fsGroup`: Kubernetes then gives the files to that group with read access.
-The restricted SCC of OpenShift sets an `fsGroup` for each namespace. On another cluster, set it in the overlay.
+The restricted SCC of OpenShift sets an `fsGroup` for each namespace, and it refuses a pod that sets another one,
+so the base sets none. On another cluster, set `fsGroup` in the overlay, for example to the user of the image.
+Do not widen the mode of the files, and do not run the process as root.
+
+The Component switches only the variables that state a secret source. With the shipped registry, these are:
+
+| Variable that the Component sets | Environment entry that it removes | Secret and key |
+|---|---|---|
+| `DATABASE_URL_FILE` | `DATABASE_URL` | `<service>-database`, `url` |
+| `STEGO_WORKER_DATABASE_URL_FILE` | `STEGO_WORKER_DATABASE_URL` | `<service>-database`, `worker-url` |
+| `STEGO_RELAY_DATABASE_URL_FILE` | `STEGO_RELAY_DATABASE_URL` | `<service>-database-relay`, `url` |
+| `STEGO_SPICEDB_KEY_FILE` | `STEGO_SPICEDB_KEY_FILE` | `<service>-spicedb`, `preshared-key` |
+| `STEGO_QUERY_CURSOR_KEY_FILE` | `STEGO_QUERY_CURSOR_KEY_FILE` | `<service>-query-cursor`, `key` |
+| `STEGO_HTTP_TLS_CERT`, `STEGO_HTTP_TLS_KEY` | the same | `<service>-tls`, `tls-crt` and `tls-key` (browser-backend) |
+| `STEGO_BROWSER_CLIENT_SECRET_FILE`, `STEGO_BROWSER_SESSION_KEY_FILE` | the same | `<service>-browser`, `client-secret` and `session-keys` |
+| `STEGO_GRPC_TLS_CERT`, `STEGO_GRPC_TLS_KEY` | the same | `<service>-grpc-tls`, `tls-crt` and `tls-key` |
+
+The Component writes a row only when the service has that variable and states that secret need. It does not
+switch a credential file that has no secret source, such as `STEGO_KAFKA_PASSWORD_FILE`,
+`STEGO_AUDIT_SINK_TOKEN_FILE` or `STEGO_OTEL_TOKEN_FILE`: the base wires its path from the ConfigMap, and the
+overlay mounts the file.
 
 When a Secret is not there, the pod stays in `ContainerCreating`, and the pod event `FailedMount` names the Secret.
 When a key is not there, the service does not start and names the variable of the file.

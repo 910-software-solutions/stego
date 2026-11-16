@@ -193,11 +193,14 @@ func secretsFixture() []ComponentNeeds {
 	port := "8080"
 	return []ComponentNeeds{
 		{Component: "store", Settings: map[string]string{"connection_string": canary},
-			Needs: []Need{{Kind: "secret", Name: "{service}-database", Keys: []string{"url"}}},
+			Needs: []Need{{Kind: "secret", Name: "{service}-database", Keys: []string{"url", "migration-url"}}},
 			Variables: []Variable{
 				{Name: "DATABASE_URL", Type: "string", Description: "The connection string.", Secret: true, SecretSource: &SecretSource{Name: "{service}-database", Key: "url"}},
 				{Name: "DATABASE_URL_FILE", Type: "path", Description: "The file of the connection string.", Example: &canary},
 				{Name: "PGPASSWORD", Type: "string", Description: "Read by the driver.", Secret: true},
+				{Name: "STEGO_MIGRATION_URL", Type: "string", Description: "The connection string of the migration job.", Secret: true, ReadByMode: "migrate",
+					SecretSource: &SecretSource{Name: "{service}-database", Key: "migration-url"}},
+				{Name: "STEGO_MIGRATION_URL_FILE", Type: "path", Description: "The file of it.", ReadByMode: "migrate"},
 				{Name: "STEGO_STORE_TIMEOUT", Type: "string", Default: &canary, Description: "The time of a call."},
 			}},
 		{Component: "cursor", Needs: []Need{{Kind: "secret", Name: "{service}-cursor", Keys: []string{"key"}}},
@@ -298,6 +301,11 @@ func TestBaseEnvironment(t *testing.T) {
 		if requirement := requirementOfKind(requirements, Secret, "orders-database"); !slices.Contains(requirement.Keys, "url") {
 			t.Errorf("the platform requirements state no secret orders-database with the key url: %+v", requirements.Requirements)
 		}
+		// A service name that makes a Secret name longer than a Kubernetes name is refused with a clear message.
+		long := strings.Repeat("o", 60)
+		if _, err := WriteRequirements(long, secretsFixture()); err == nil || !strings.Contains(err.Error(), "use a shorter service name") {
+			t.Errorf("a Secret name of more than 63 characters is not refused with a clear message: %v", err)
+		}
 		// A secret source that names no key of a secret need of the service is not kept, so the base wires no
 		// entry from a Secret or a key that no need gives.
 		bad := secretsFixture()
@@ -327,6 +335,10 @@ func TestBaseEnvironment(t *testing.T) {
 			if strings.Contains(string(data), secretsCanary) {
 				t.Errorf("%s holds the canary text of a setting, a default or an example:\n%s", file, data)
 			}
+			// The credential of the migration job stays out of the serving pod (ST-DLV-Q19, least privilege).
+			if strings.Contains(string(data), "migration-url") || strings.Contains(string(data), "STEGO_MIGRATION_URL") {
+				t.Errorf("%s names the credential of the migration job:\n%s", file, data)
+			}
 		}
 		for name, entry := range envByName(t, containerOf(t, string(base.Files[DeploymentFile]))) {
 			if _, set := entry["value"]; set {
@@ -334,14 +346,17 @@ func TestBaseEnvironment(t *testing.T) {
 			}
 		}
 		for name, change := range map[string][2]string{
-			"a value":                     {"            - name: PORT\n              valueFrom:\n", "            - name: PORT\n              value: " + secretsCanary + "\n              valueFrom:\n"},
-			"a value in place of a ref":   {"            - name: PORT\n              valueFrom:\n                configMapKeyRef:\n                  key: PORT\n                  name: orders-config\n                  optional: true\n", "            - name: PORT\n              value: " + secretsCanary + "\n"},
-			"a field reference":           {"                configMapKeyRef:\n                  key: PORT\n                  name: orders-config\n                  optional: true\n", "                fieldRef:\n                  fieldPath: metadata.name\n"},
-			"an optional secret":          {"                  key: url\n                  name: orders-database\n", "                  key: url\n                  name: orders-database\n                  optional: true\n"},
-			"optional false":              {"                  key: STEGO_ISSUER\n                  name: orders-config\n", "                  key: STEGO_ISSUER\n                  name: orders-config\n                  optional: false\n"},
-			"two refs in one entry":       {"                secretKeyRef:\n", "                configMapKeyRef: {name: orders-config, key: X}\n                secretKeyRef:\n"},
-			"one variable twice":          {"            - name: STEGO_ISSUER\n", "            - name: PORT\n"},
-			"a ConfigMap that is no name": {"                  key: STEGO_ISSUER\n                  name: orders-config\n", "                  key: STEGO_ISSUER\n                  name: Orders_Config\n"},
+			"a value":                               {"            - name: PORT\n              valueFrom:\n", "            - name: PORT\n              value: " + secretsCanary + "\n              valueFrom:\n"},
+			"a value in place of a ref":             {"            - name: PORT\n              valueFrom:\n                configMapKeyRef:\n                  key: PORT\n                  name: orders-config\n                  optional: true\n", "            - name: PORT\n              value: " + secretsCanary + "\n"},
+			"a field reference":                     {"                configMapKeyRef:\n                  key: PORT\n                  name: orders-config\n                  optional: true\n", "                fieldRef:\n                  fieldPath: metadata.name\n"},
+			"an optional secret":                    {"                  key: url\n                  name: orders-database\n", "                  key: url\n                  name: orders-database\n                  optional: true\n"},
+			"optional false":                        {"                  key: STEGO_ISSUER\n                  name: orders-config\n", "                  key: STEGO_ISSUER\n                  name: orders-config\n                  optional: false\n"},
+			"two refs in one entry":                 {"                secretKeyRef:\n", "                configMapKeyRef: {name: orders-config, key: X}\n                secretKeyRef:\n"},
+			"one variable twice":                    {"            - name: STEGO_ISSUER\n", "            - name: PORT\n"},
+			"an envFrom":                            {"          image: stego.invalid/orders:set-by-overlay\n", "          image: stego.invalid/orders:set-by-overlay\n          envFrom:\n            - configMapRef: {name: orders-config}\n"},
+			"an init container with an environment": {"      containers:\n", "      initContainers:\n        - name: init\n          image: x\n          env:\n            - {name: PGHOST, value: x}\n      containers:\n"},
+			"an ephemeral container with envFrom":   {"      containers:\n", "      ephemeralContainers:\n        - name: debug\n          envFrom:\n            - secretRef: {name: orders-database}\n      containers:\n"},
+			"a ConfigMap that is no name":           {"                  key: STEGO_ISSUER\n                  name: orders-config\n", "                  key: STEGO_ISSUER\n                  name: Orders_Config\n"},
 		} {
 			files := maps.Clone(base.Files)
 			text := string(files[DeploymentFile])
@@ -426,6 +441,11 @@ func TestBaseEnvironment(t *testing.T) {
 			if source["secretName"] != secret || source["defaultMode"] != SecretFileMode {
 				t.Errorf("the volume of %s is not the secret with the mode 0400: %v", secret, volumes[secret])
 			}
+			// The volume projects only the key that the switched variable reads.
+			key := map[string]string{"orders-database": "url", "orders-cursor": "key"}[secret]
+			if items, _ := source["items"].([]any); len(items) != 1 || !reflect.DeepEqual(items[0], map[string]any{"key": key, "path": key}) {
+				t.Errorf("the volume of %s projects %v, want only the key %s", secret, source["items"], key)
+			}
 		}
 		if mounts["tmp"] == nil || volumes["tmp"] == nil || len(mounts) != 3 || len(volumes) != 3 {
 			t.Errorf("the build with the Component has the mounts %v and the volumes %v, want tmp and the two secrets", mounts, volumes)
@@ -457,7 +477,10 @@ func TestBaseEnvironment(t *testing.T) {
 			"a mount that is not read-only":        replace(SecretFilesMounts, "              readOnly: true\n", "              readOnly: false\n"),
 			"a subPath":                            replace(SecretFilesMounts, "              readOnly: true\n", "              readOnly: true\n              subPath: url\n"),
 			"the mode 0644":                        replace(SecretFilesMounts, "defaultMode: 256", "defaultMode: 420"),
-			"a volume of another kind":             replace(SecretFilesMounts, "          secret:\n            defaultMode: 256\n            secretName: orders-cursor\n", "          emptyDir: {}\n"),
+			"a volume of another kind":             replace(SecretFilesMounts, "          secret:\n            defaultMode: 256\n            items:\n              - key: key\n                path: key\n            secretName: orders-cursor\n", "          emptyDir: {}\n"),
+			"a volume with every key":              replace(SecretFilesMounts, "            items:\n              - key: key\n                path: key\n", ""),
+			"a key at another path":                replace(SecretFilesMounts, "              - key: key\n                path: key\n", "              - key: key\n                path: other\n"),
+			"a key that no variable reads":         replace(SecretFilesMounts, "              - key: key\n                path: key\n", "              - key: key\n                path: key\n              - key: migration-url\n                path: migration-url\n"),
 			"a file out of the secret folder":      replace(SecretFilesMounts, "value: /var/run/secrets/stego/orders-cursor/key", "value: /etc/passwd"),
 			"a variable that is not removed first": replace(SecretFilesMounts, "            - name: STEGO_CURSOR_KEY_FILE\n", "            - name: STEGO_ISSUER\n"),
 			"a Component with a file left out": func(files map[string][]byte) error {

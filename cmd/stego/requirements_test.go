@@ -566,7 +566,7 @@ func expectOnlyRequirementFields(t *testing.T, data []byte) {
 	for _, item := range variables {
 		entry, _ := item.(map[string]any)
 		for field := range entry {
-			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed", "secret_source", "refused_at_start"}, field) {
+			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed", "secret_source", "refused_at_start", "read_by_mode"}, field) {
 				t.Errorf("the environment variable %v holds the field %s", entry["name"], field)
 			}
 		}
@@ -1192,4 +1192,48 @@ func mustRunInProjectStderr(t *testing.T, dir string, env []string, args ...stri
 		t.Fatalf("stego %s: %v\n%s\n%s", strings.Join(args, " "), err, stdout, stderr)
 	}
 	return stdout, stderr
+}
+
+func TestMigrationCredentialStaysOutOfTheBase(t *testing.T) {
+	t.Run("ST-DLV-UC07-R03-T10 No file of the base or of the Component names the credential of the migration job", func(t *testing.T) {
+		registry := shippedRegistryCopy(t)
+		dir := requirementsProject(t)
+		mustRunInProject(t, dir, requirementsEnv(registry), "apply")
+		requirements, _ := readRequirements(t, dir)
+		migration := 0
+		for _, variable := range requirements.Environment {
+			if variable.ReadByMode == "migrate" {
+				migration++
+			}
+		}
+		if migration != 2 {
+			t.Errorf("the platform requirements mark %d variables as read by the migration job, want STEGO_MIGRATION_DATABASE_URL and its _FILE form", migration)
+		}
+		written := 0
+		for _, folder := range []string{filepath.Join(dir, "deploy", "base"), filepath.Join(dir, "deploy", "components")} {
+			err := filepath.WalkDir(folder, func(file string, entry os.DirEntry, err error) error {
+				if err != nil || entry.IsDir() {
+					return err
+				}
+				data, err := os.ReadFile(file)
+				if err != nil {
+					return err
+				}
+				written++
+				for _, banned := range []string{"migration-url", "STEGO_MIGRATION_DATABASE_URL"} {
+					if strings.Contains(string(data), banned) {
+						t.Errorf("%s names %s, the credential of the migration job:\n%s", file, banned, data)
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The Component exists, so the check reads its patches too.
+		if _, err := os.Stat(filepath.Join(dir, "deploy", "components", "secret-files", "mount-files.yaml")); err != nil || written < 5 {
+			t.Fatalf("apply wrote %d files of the base and the Component: %v", written, err)
+		}
+	})
 }

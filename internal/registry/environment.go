@@ -84,7 +84,14 @@ type EnvironmentVariable struct {
 	// SecretSource is the secret need and the key that give the value of a secret variable, or the file of a path
 	// variable (ST-SUP-EN14 field Secret source, ST-DLV-Q19), so that the Kubernetes base can name them.
 	SecretSource *SecretSource `yaml:"secret_source,omitempty"`
+	// ReadByMode is the one mode of the process that reads the variable, when no other mode reads it: migrate, the
+	// migration job (ST-SUP-EN14 field Read by mode, ST-DLV-Q19). The Deployment of the base, which serves, wires no
+	// such variable.
+	ReadByMode string `yaml:"read_by_mode,omitempty"`
 }
+
+// ReadByModes are the modes that a variable may state as its one reader: the migration job.
+var ReadByModes = []string{"migrate"}
 
 // SecretSource is one key of one secret need: the need name, which may hold the placeholders of a need name, and
 // the key.
@@ -196,6 +203,12 @@ func declaresVariables(component *Component) error {
 		}
 		if _, err := ParseVariableDescription(variable.Description); err != nil {
 			return fault("description", "%s; give one or two sentences of ASD-STE100 Simplified Technical English", err)
+		}
+		if variable.ReadByMode != "" && !slices.Contains(ReadByModes, variable.ReadByMode) {
+			return fault("read_by_mode", "the mode %q is not one of %s", variable.ReadByMode, strings.Join(ReadByModes, ", "))
+		}
+		if variable.ReadByMode != "" && variable.IsRequired() {
+			return fault("read_by_mode", "a variable that one mode reads is not required by the service")
 		}
 		if source := variable.SecretSource; source != nil {
 			if !variable.IsSecret() && variable.Type != "path" {

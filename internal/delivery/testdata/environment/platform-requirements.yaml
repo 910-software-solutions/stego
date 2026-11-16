@@ -1053,6 +1053,7 @@ environment:
     required: false
     description: The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    read_by_mode: migrate
   - name: STEGO_MIGRATION_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1060,6 +1061,7 @@ environment:
     required: false
     description: The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two.
     secret: false
+    read_by_mode: migrate
   - name: STEGO_MODE
     read_by:
       - command

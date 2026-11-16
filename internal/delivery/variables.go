@@ -32,6 +32,8 @@ type Variable struct {
 	// RefusedAtStart marks a variable that a library reads and that the start guard of the service refuses when it
 	// has a value, such as PGHOST (ST-SUP-UC01-R10): the service never takes it.
 	RefusedAtStart bool
+	// ReadByMode is the one mode that reads the variable, migrate for the migration job, or "" (ST-DLV-Q19).
+	ReadByMode string
 }
 
 // SecretSource is one key of one secret need: the need name and the key (ST-DLV-EN08 field Secret source,
@@ -67,6 +69,9 @@ type AcceptedVariable struct {
 	// RefusedAtStart marks a variable that the start guard refuses when it has a value (ST-SUP-UC01-R10): the base
 	// never wires it, and the environment check refuses a value for it.
 	RefusedAtStart bool `yaml:"refused_at_start,omitempty"`
+	// ReadByMode is the one mode of the process that reads the variable, migrate for the migration job, when no other
+	// mode reads it. The serving Deployment of the base never wires such a variable (ST-DLV-Q19).
+	ReadByMode string `yaml:"read_by_mode,omitempty"`
 	// example is the example of the first reader, for the reference alone: the platform requirements never hold
 	// it, because an example is often a host name (ST-DLV-INV02).
 	example *string
@@ -209,6 +214,8 @@ func conflict(a, b AcceptedVariable) string {
 		return "secret source"
 	case a.RefusedAtStart != b.RefusedAtStart:
 		return "refused at start flag"
+	case a.ReadByMode != b.ReadByMode:
+		return "mode that reads it"
 	}
 	return ""
 }
@@ -221,7 +228,8 @@ func acceptedOf(service string, settings map[string]string, variable Variable) (
 		return AcceptedVariable{}, err
 	}
 	accepted := AcceptedVariable{Name: name, Type: variable.Type, Required: variable.Required, Description: variable.Description,
-		Secret: variable.Secret, Allowed: variable.Allowed, RefusedAtStart: variable.RefusedAtStart}
+		Secret: variable.Secret, Allowed: variable.Allowed, RefusedAtStart: variable.RefusedAtStart,
+		ReadByMode: variable.ReadByMode}
 	if source := variable.SecretSource; source != nil {
 		if !variable.Secret && variable.Type != "path" {
 			return AcceptedVariable{}, fmt.Errorf("only a secret variable, or a path variable that names the file of a secret, states a secret source")
@@ -278,6 +286,9 @@ func checkAccepted(v AcceptedVariable) error {
 	}
 	if v.Default != nil && (len(*v.Default) > maxVariableValue || strings.ContainsAny(*v.Default, "\n\r")) {
 		return fmt.Errorf("the default is not one line of at most %d characters", maxVariableValue)
+	}
+	if v.ReadByMode != "" && (v.ReadByMode != "migrate" || v.Required) {
+		return fmt.Errorf("the mode that reads the variable is migrate, and such a variable is not required")
 	}
 	if v.RefusedAtStart && v.Required {
 		return fmt.Errorf("a variable that the service refuses at start is not required")
