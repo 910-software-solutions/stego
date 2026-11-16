@@ -359,6 +359,11 @@ func TestArchitectureView(t *testing.T) {
 		if !strings.Contains(textOf(p.byID("form-platform")), value) {
 			t.Fatal("the text forms do not show the hostile reason as text")
 		}
+		// The ancestor names of a nested operation show as text in the matrix head and in the check table.
+		heads := p.all(func(n *html.Node) bool { return n.Data == "span" && attrOf(n, "class") == "sub ancestors" })
+		if len(heads) == 0 || !strings.Contains(textOf(heads[0]), value) {
+			t.Fatal("the matrix head does not show the hostile ancestor name as text")
+		}
 		// Each role head of the turned access matrix shows the role name as text, with a break only between its parts.
 		var model ArchitectureModel
 		if err := json.Unmarshal(hostile, &model); err != nil {
@@ -539,6 +544,66 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R14-T04 The access matrix names the ancestors that a nested operation reads first, and marks each role that alone does not grant the read of one", func(t *testing.T) {
+		p := parseView(t, accessView)
+		perms := map[string]map[string]bool{}
+		for _, perm := range am.Access.Permissions {
+			perms[perm.ID] = map[string]bool{}
+			for _, g := range perm.Paths {
+				perms[perm.ID][g.Role] = true
+			}
+		}
+		cells := map[string]*html.Node{}
+		for _, td := range p.all(func(n *html.Node) bool { return n.Data == "td" && attrOf(n, "data-check") != "" }) {
+			cells[attrOf(td, "data-role")+"|"+attrOf(td, "data-check")] = td
+		}
+		marked, clear := 0, 0
+		for _, c := range am.Access.Checks {
+			head := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == c.ID })
+			if len(head) != 1 {
+				t.Fatalf("the matrix has no head for %s", c.ID)
+			}
+			names := within(head[0], func(n *html.Node) bool { return n.Data == "span" && attrOf(n, "class") == "sub ancestors" })
+			if (len(names) == 1) != (len(c.Ancestors) > 0) {
+				t.Errorf("the head of %s names the ancestors %d times; the check has %d", c.ID, len(names), len(c.Ancestors))
+			}
+			for _, a := range c.Ancestors {
+				if len(names) == 1 && !strings.Contains(textOf(names[0]), shortID(a.Entity)+" "+a.ResourceType+"#"+a.Permission) {
+					t.Errorf("the head of %s does not name the ancestor %s and its permission: %q", c.ID, a.Entity, textOf(names[0]))
+				}
+			}
+			for _, r := range am.Access.Roles {
+				held := c.Public || perms[c.Grants][r.ID]
+				missing := false
+				for _, a := range c.Ancestors {
+					missing = missing || (a.Grants != "" && !perms[a.Grants][r.ID])
+				}
+				text := textOf(cells[r.ID+"|"+c.ID])
+				if want := held && missing; strings.Contains(text, "⤒") != want {
+					t.Errorf("the cell of %s and %s is %q; the mark of an ancestor read that the role does not grant is wanted: %v", r.ID, c.ID, text, want)
+				}
+				if held && missing {
+					marked++
+				} else if held && len(c.Ancestors) > 0 {
+					clear++
+				}
+			}
+		}
+		if marked == 0 || clear == 0 {
+			t.Fatalf("the fixture proves too little: %d marked and %d clear cells of nested operations", marked, clear)
+		}
+		if got := textOf(cells["role:member#owner@user|check:operation:org-users.read"]); got != "●⤒" {
+			t.Errorf("the owner of a member who may not view its organization has the cell %q, not ●⤒", got)
+		}
+		// The table of what each operation checks names the ancestors too.
+		checks := p.all(func(n *html.Node) bool {
+			return n.Data == "tr" && attrOf(n, "data-id") == "check:operation:org-users.read"
+		})
+		if len(checks) != 1 || !strings.Contains(textOf(checks[0]), "Organization organization#view") {
+			t.Error("the table of what each operation checks does not name the ancestor of org-users.read")
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R15-T01 The matrix of the data model is titled Operations each collection offers", func(t *testing.T) {
 		data := page.byID("form-data")
 		tables := within(data, func(n *html.Node) bool { return n.Data == "table" && attrOf(n, "class") == "matrix" })
@@ -621,8 +686,8 @@ const hostileValue = "</script><img src=x onerror=alert(1)><!-- \u2028 & end"
 
 // hostileModel gives the model of user-management with the hostile text in the reason of its empty aspect, the
 // reason of each public check, the first step of each flow, the name of the system, and the name and the ID of a
-// component, an entity, a collection and an actor; one fill takes the ID __proto__, which an index of the elements
-// by ID must hold as a plain key (#342 F5, F6).
+// component, an entity, a collection and an actor, and the path parameter, the entity and the ID of each ancestor
+// check; one fill takes the ID __proto__, which an index of the elements by ID must hold as a plain key (#342 F5, F6).
 func hostileModel(t *testing.T) ([]byte, string) {
 	t.Helper()
 	data, err := os.ReadFile("testdata/architecture/user-management.json")
@@ -637,6 +702,14 @@ func hostileModel(t *testing.T) ([]byte, string) {
 	for _, c := range m["access"].(map[string]any)["checks"].([]any) {
 		if c.(map[string]any)["public"] == true {
 			c.(map[string]any)["reason"] = hostileValue
+		}
+		// The names of the parent chain check: the path parameter, the entity and the ID of each ancestor
+		// (ST-SUP-RC20-OC24), as the view shows them in the matrix head, the check table and the cell details.
+		ancestors, _ := c.(map[string]any)["ancestors"].([]any)
+		for _, a := range ancestors {
+			a.(map[string]any)["param"] = hostileValue
+			a.(map[string]any)["entity"] = "entity:" + hostileValue
+			a.(map[string]any)["id"] = "ancestor:" + hostileValue
 		}
 	}
 	for _, f := range m["flows"].([]any) {

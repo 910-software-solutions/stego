@@ -85,21 +85,13 @@ type ancestorLevel struct {
 	entity, param, link string
 }
 
-// parentChain gives the ancestors of the collection c, the parent first. Each ancestor follows the first collection
-// of its entity, as the path does (collectionBasePath): its scope field links it to the ancestor above it.
+// parentChain gives the ancestors of the collection c, the parent first, by the one rule types.ParentChain, from
+// which the architecture model states the checks too. Each ancestor follows the first collection of its entity, as
+// the path does (collectionBasePath): its scope field links it to the ancestor above it.
 func parentChain(c types.Collection, collectionMap map[string]types.Collection) []ancestorLevel {
 	var chain []ancestorLevel
-	seen := map[string]bool{c.Entity: true}
-	param, entity := c.ScopeField(), c.ParentEntity()
-	for entity != "" && !seen[entity] {
-		seen[entity] = true
-		level := ancestorLevel{entity: entity, param: param}
-		next := ""
-		if parent, ok := collectionMap[entity]; ok && len(parent.Scope) > 0 {
-			level.link, next = parent.ScopeField(), parent.ParentEntity()
-		}
-		chain = append(chain, level)
-		param, entity = level.link, next
+	for _, level := range types.ParentChain(c, collectionMap) {
+		chain = append(chain, ancestorLevel{entity: level.Entity, param: level.Param, link: level.Link})
 	}
 	return chain
 }

@@ -119,6 +119,47 @@ func TestComplianceFactList(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC16-R01-T04 The access list gives each ancestor check of a nested operation, with its permission and who it grants, or the rule that gives it none", func(t *testing.T) {
+		model, data := deriveFixture(t, nestedFixture(t))
+		text, list, _ := factsOf(t, archProject(t, data), "access")
+		facts := map[string]FactOfList{}
+		for _, f := range list.Facts {
+			facts[f.About+"|"+f.Name] = f
+		}
+		folder, ok := facts["operation:folder-docs.update|checks ancestor 2 Folder"]
+		permission := pathsOf(model, "permission:folder#view")
+		if !ok || folder.Value != "folder#view" || folder.State != "stated" || folder.Source.Declaration != "entities[1].permissions.read" ||
+			folder.Grants == nil || folder.Grants.Permission != "permission:folder#view" || len(folder.Grants.Paths) != len(permission) || len(permission) == 0 {
+			t.Fatalf("the ancestor check of the folder is %+v", folder)
+		}
+		shelf, ok := facts["operation:folder-docs.update|checks ancestor 1 Shelf"]
+		if !ok || shelf.Value != "none" || shelf.Source.Rule != "ST-SUP-RC20-OC24" || shelf.Grants != nil || len(shelf.Quoted) != 0 {
+			t.Fatalf("the ancestor check of the shelf is %+v", shelf)
+		}
+		if _, ok := facts["operation:shelf-folders.read|checks ancestor 1 Shelf"]; !ok {
+			t.Fatal("the list holds no ancestor check of shelf-folders.read")
+		}
+		for _, f := range list.Facts {
+			if f.About == "operation:docs.read" && strings.HasPrefix(f.Name, "checks ancestor") {
+				t.Fatalf("an operation with no scope has an ancestor check: %+v", f)
+			}
+		}
+		// The text gives the shelf before the folder, the order the handler reads them, and who folder#view grants.
+		at := strings.Index(text, "operation:folder-docs.update\n")
+		if at < 0 {
+			t.Fatalf("the text names no operation:folder-docs.update:\n%s", text)
+		}
+		block := text[at:]
+		if s, f := strings.Index(block, "checks ancestor 1 Shelf: none"), strings.Index(block, "checks ancestor 2 Folder: folder#view"); s < 0 || f < s {
+			t.Fatalf("the text does not give the shelf, then the folder:\n%s", block)
+		}
+		for _, p := range folder.Grants.Paths {
+			if p.Role != "" && !strings.Contains(block, "granted to "+p.Role) {
+				t.Fatalf("the text does not name the role %s of the folder check:\n%s", p.Role, block)
+			}
+		}
+	})
+
 	t.Run("ST-GEN-UC16-R02-T01 Each fact of a list names its one source, in the text and in the JSON", func(t *testing.T) {
 		_, project := claimFixtureProject(t, "a new doc has no resource before it exists")
 		for _, topic := range ComplianceTopics {

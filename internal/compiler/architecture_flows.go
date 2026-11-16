@@ -7,6 +7,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 // The request flows, the access matrix, the trust boundaries, the settings and the compliance facts of the
@@ -216,20 +217,24 @@ func (d *deriver) access() {
 	for i, e := range svc.Entities {
 		entities[e.Name] = i
 	}
+	first := types.FirstCollections(svc.Collections)
 	for _, c := range svc.Collections {
 		i, ok := entities[c.Entity]
 		if !ok {
 			continue
 		}
 		e := svc.Entities[i]
+		chain := types.ParentChain(c, first)
 		for _, op := range c.Operations {
 			subject := "operation:" + c.Name + "." + string(op)
 			add(subject, e.ResourceType, e.Permissions[op], fmt.Sprintf("entities[%d].permissions.%s", i, op))
-			if check := d.checks[subject]; check.Public {
+			check := d.checks[subject]
+			if check.Public {
 				check.Reason = e.PublicReasons[op]
-				d.checks[subject] = check
-				m.Access.Checks[len(m.Access.Checks)-1] = check
 			}
+			check.Ancestors = d.ancestorChecks(subject, chain, entities)
+			d.checks[subject] = check
+			m.Access.Checks[len(m.Access.Checks)-1] = check
 		}
 	}
 	for i, c := range svc.Commands {
@@ -247,16 +252,18 @@ func (d *deriver) access() {
 	}
 	permissions := map[string]bool{}
 	roles := map[string]ArchRole{}
-	for _, check := range m.Access.Checks {
-		if check.Grants == "" || permissions[check.Grants] {
-			continue
+	// The permission of each check, and the read permission of each ancestor that a check reads, get their grant
+	// paths.
+	expand := func(grants, resourceType, name string) {
+		if grants == "" || permissions[grants] {
+			return
 		}
-		permissions[check.Grants] = true
-		permission := ArchPermission{ID: check.Grants, ResourceType: check.ResourceType, Name: check.Permission, Paths: []ArchGrant{},
+		permissions[grants] = true
+		permission := ArchPermission{ID: grants, ResourceType: resourceType, Name: name, Paths: []ArchGrant{},
 			Complete: d.in.Schema != nil, Source: ArchSource{Declaration: "authorization.schema_path"}}
 		if d.in.Schema != nil {
 			var granted []ArchRole
-			permission.Paths, granted, permission.Complete = grantPaths(d.in.Schema, check.ResourceType, check.Permission)
+			permission.Paths, granted, permission.Complete = grantPaths(d.in.Schema, resourceType, name)
 			m.Access.RolesComplete = m.Access.RolesComplete && permission.Complete
 			for _, role := range granted {
 				roles[role.ID] = role
@@ -264,15 +271,105 @@ func (d *deriver) access() {
 		}
 		m.Access.Permissions = append(m.Access.Permissions, permission)
 	}
+	for _, check := range m.Access.Checks {
+		expand(check.Grants, check.ResourceType, check.Permission)
+	}
+	for _, check := range m.Access.Checks {
+		for _, a := range check.Ancestors {
+			expand(a.Grants, a.ResourceType, a.Permission)
+		}
+	}
 	for _, role := range roles {
 		m.Access.Roles = append(m.Access.Roles, role)
 	}
 	for _, check := range m.Access.Checks {
-		if check.Permission != "" {
-			m.AuthzPoints = append(m.AuthzPoints, ArchPoint{ID: "authz:" + check.Subject, Element: check.Subject,
-				Text: fmt.Sprintf("Decides the permission %s on the %s for the verified caller.", check.Permission, check.ResourceType), Source: check.Source})
+		if check.Permission == "" && !hasCheckedAncestor(check) {
+			continue
+		}
+		text := fmt.Sprintf("Decides the permission %s on the %s for the verified caller.", check.Permission, check.ResourceType)
+		if check.Permission == "" {
+			text = "Decides no permission on the row itself."
+		}
+		var reads []string
+		for _, a := range check.Ancestors {
+			if a.Permission != "" {
+				reads = append(reads, fmt.Sprintf("%s#%s on %s", a.ResourceType, a.Permission, shortID(a.Entity)))
+			}
+		}
+		if len(reads) > 0 {
+			text += " First it decides the read permission of each ancestor in the path, the top one first: " + strings.Join(reads, ", ") + "."
+		}
+		m.AuthzPoints = append(m.AuthzPoints, ArchPoint{ID: "authz:" + check.Subject, Element: check.Subject, Text: text, Source: check.Source})
+	}
+}
+
+// ancestorFactName gives the name of the fact of the ancestor check at place n of an operation, 1 for the top
+// ancestor: the place keeps the facts, which the model sorts by ID, in the order the handler reads the ancestors.
+func ancestorFactName(n int, a ArchAncestor) string {
+	return fmt.Sprintf("checks ancestor %d %s", n, shortID(a.Entity))
+}
+
+// ancestorFact gives the fact of the ancestor check at place n: the permission it decides, public, or none with the
+// rule that gives it none (an entity with no resource type), or unstated when no authorization is bound.
+func ancestorFact(subject string, n int, a ArchAncestor) ArchFact {
+	name := ancestorFactName(n, a)
+	switch {
+	case a.Permission != "":
+		return fact("access", subject, name, a.ResourceType+"#"+a.Permission, "stated", a.Source)
+	case a.Public:
+		return fact("access", subject, name, "public", "stated", a.Source)
+	case a.Source.Rule == "ST-SUP-RC20-OC24":
+		return fact("access", subject, name, "none", "stated", a.Source)
+	}
+	return fact("access", subject, name, nil, "unstated", a.Source)
+}
+
+// hasCheckedAncestor says whether a check reads an ancestor with a permission.
+func hasCheckedAncestor(check ArchCheck) bool {
+	for _, a := range check.Ancestors {
+		if a.Permission != "" {
+			return true
 		}
 	}
+	return false
+}
+
+// ancestorChecks gives the checks of the parent chain of an operation, the top ancestor first, as the handler reads
+// them (ST-SUP-RC20-OC24): each ancestor with the read permission of its entity, or public with its reason, or no
+// permission when its entity has no resource type or no authorization is bound.
+func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entities map[string]int) []ArchAncestor {
+	svc := d.in.Service
+	var out []ArchAncestor
+	for n := len(chain) - 1; n >= 0; n-- {
+		level := chain[n]
+		a := ArchAncestor{ID: "ancestor:" + shortID(subject) + "/" + level.Entity, Entity: "entity:" + level.Entity, Param: level.Param,
+			ScopeSource: ArchSource{Declaration: "collections." + level.By + ".scope"}}
+		if level.Link != "" {
+			a.Link = "field:" + level.Entity + "." + level.Link
+		}
+		i, known := entities[level.Entity]
+		switch {
+		case !known:
+			a.Reason, a.Source = "The declaration states no entity "+level.Entity+", so no permission is checked.", ArchSource{Rule: "ST-SUP-RC20-OC24"}
+		case svc.Authorization == nil:
+			a.Reason, a.Source = "No authorization is bound, so no permission is checked.", ArchSource{Rule: "ST-DECL-UC06-R01"}
+		case svc.Entities[i].ResourceType == "":
+			a.Reason, a.Source = "The entity has no resource type, so no permission is checked.", ArchSource{Rule: "ST-SUP-RC20-OC24"}
+		case svc.Entities[i].Permissions[types.OpRead] == types.PermissionPublic:
+			e := svc.Entities[i]
+			a.Public, a.ResourceType, a.Reason = true, e.ResourceType, e.PublicReasons[types.OpRead]
+			a.Source = ArchSource{Declaration: fmt.Sprintf("entities[%d].permissions.read", i)}
+		case svc.Entities[i].Permissions[types.OpRead] == "":
+			a.Reason, a.Source = "The entity declares no read permission, so no permission is checked.", ArchSource{Rule: "ST-SUP-RC20-OC24"}
+		default:
+			e := svc.Entities[i]
+			a.ResourceType, a.Permission = e.ResourceType, e.Permissions[types.OpRead]
+			a.Grants = "permission:" + e.ResourceType + "#" + a.Permission
+			a.Source = ArchSource{Declaration: fmt.Sprintf("entities[%d].permissions.read", i)}
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // defaultRule gives the rule that sets the default of a setting at the path.
@@ -513,6 +610,10 @@ func (d *deriver) compliance() {
 			value, state = c.ResourceType+"#"+c.Permission, "stated"
 		}
 		put("access", fact("access", c.Subject, "checks", value, state, c.Source))
+		// Each ancestor in the path of the operation, which the handler reads first (ST-SUP-RC20-OC24).
+		for n, a := range c.Ancestors {
+			put("access", ancestorFact(c.Subject, n+1, a))
+		}
 	}
 	for _, path := range []string{"audit.enabled", "audit.level", "audit.chain", "audit.anchor", "audit.sink", "audit.pii"} {
 		put("audit", setting("audit", strings.TrimPrefix(path, "audit."), path))

@@ -272,6 +272,23 @@ func TestArchitectureViewBrowser(t *testing.T) {
 				t.Errorf("view %s does not show the system name as text: %q", v, got.Title)
 			}
 		}
+		// The details of a cell of a nested operation show the names of its ancestors as text (ST-SUP-RC20-OC24).
+		b.open("file://" + path + "#view=trust")
+		var cell struct {
+			Found       bool
+			Text        string
+			Images, Ran int
+		}
+		b.eval(`(function(){ var M = JSON.parse(document.getElementById("model").textContent), nested = {};
+			M.access.checks.forEach(function(c){ if (c.ancestors && c.ancestors.length) nested[c.id] = 1; });
+			var btn = Array.prototype.filter.call(document.querySelectorAll("#view button.cell"), function(x){ return nested[x.getAttribute("data-check")]; })[0];
+			if (!btn) return {Found: false};
+			btn.click();
+			var list = document.getElementById("cellAncestors");
+			return {Found: true, Text: list ? list.textContent : "", Images: document.querySelectorAll("img").length, Ran: window.__ran}; })()`, &cell)
+		if !cell.Found || !strings.Contains(cell.Text, value) || cell.Images != 0 || cell.Ran != 0 {
+			t.Errorf("the details of a nested cell do not show the hostile ancestor names as text only: %+v", cell)
+		}
 		// The index of the elements by ID has no prototype: an ID of the address that names a property of Object
 		// selects nothing, and a model element with the ID __proto__ is an element like any other.
 		for _, sel := range []string{"constructor", "toString", "__proto__"} {
@@ -567,6 +584,20 @@ func TestArchitectureViewBrowser(t *testing.T) {
 			return (document.getElementById("cellIncomplete")||{}).textContent || ""; })()`, &notice)
 		if !strings.Contains(notice, "Incomplete: a limit was reached") {
 			t.Fatalf("the cell of an incomplete permission does not say so: %q", notice)
+		}
+		// A cell of a nested operation lists the ancestors that the handler reads first, and says whether the role
+		// grants the read of each (ST-SUP-RC20-OC24).
+		var chain []string
+		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:member#owner@user"]').click();
+			return Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.getAttribute("data-ancestor")+" "+l.textContent; }); })()`, &chain)
+		if len(chain) != 1 || !strings.HasPrefix(chain[0], "ancestor:org-users.read/Organization Organization (org_id): organization#view") ||
+			!strings.Contains(chain[0], "this role alone does not grant it") {
+			t.Fatalf("the cell of a nested operation lists the ancestors %q", chain)
+		}
+		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:organization#viewer@user"]').click();
+			return Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.textContent; }); })()`, &chain)
+		if len(chain) != 1 || !strings.Contains(chain[0], "this role grants it") {
+			t.Fatalf("the cell of a role that may view the organization lists the ancestors %q", chain)
 		}
 	})
 

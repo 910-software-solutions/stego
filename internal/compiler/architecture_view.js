@@ -87,7 +87,9 @@ function connections(id){
     if (b.crossed_by.indexOf(id) >= 0) push("crosses boundary", b.id);
   });
   (M.authn_points||[]).concat(M.authz_points||[]).forEach(function(p){ if (p.element === id) push(kindOf(p.id) === "authn" ? "authenticates at" : "authorization at", p.id); if (p.id === id) push("at", p.element); });
-  M.access.checks.forEach(function(c){ if (c.subject === id) push("checks", c.id); if (c.id === id){ push("subject", c.subject); push("grants", c.grants); } if (c.grants === id) push("checked by", c.subject); });
+  M.access.checks.forEach(function(c){ if (c.subject === id) push("checks", c.id); if (c.id === id){ push("subject", c.subject); push("grants", c.grants); } if (c.grants === id) push("checked by", c.subject);
+    // The parent chain check: each ancestor that the operation reads first, its link field and its permission (ST-SUP-RC20-OC24).
+    (c.ancestors || []).forEach(function(a){ [a.entity, a.link, a.grants].forEach(function(x){ if (!x) return; if (c.id === id) push("reads ancestor", x); if (x === id) push("read as an ancestor by", c.id); }); }); });
   M.access.permissions.forEach(function(p){ p.paths.forEach(function(g){ if (p.id === id) push("grant path", g.id); if (g.id === id){ push("of permission", p.id); push("role", g.role); } if (g.role === id) push("gets", p.id); }); });
   return out;
 }
@@ -521,8 +523,21 @@ function cellDetails(d, id){
   d.appendChild(h("h3", {text:(role ? short(role) : "Paths that stop")+" · "+short(c.subject)}));
   var dl = h("dl");
   var point = (M.authz_points||[]).filter(function(x){ return x.element === c.subject; })[0];
-  [["Operation", nameOf(c.subject)], ["Checks", c.resource_type+"#"+c.permission], ["Decided", point ? point.text : ""], ["Source", srcText(c.source)]].forEach(function(r){ if (!r[1]) return; dl.appendChild(h("dt", {text:r[0]})); dl.appendChild(h("dd", {text:r[1]})); });
+  [["Operation", nameOf(c.subject)], ["Checks", c.public ? "public" : c.resource_type+"#"+c.permission], ["Decided", point ? point.text : ""], ["Source", srcText(c.source)]].forEach(function(r){ if (!r[1]) return; dl.appendChild(h("dt", {text:r[0]})); dl.appendChild(h("dd", {text:r[1]})); });
   d.appendChild(dl);
+  if (c.ancestors && c.ancestors.length){
+    // The parent chain check (ST-SUP-RC20-OC24): the handler reads each ancestor first, the top one first.
+    d.appendChild(h("strong", {text:"Ancestors read first, the top one first"}));
+    var al = h("ol", {id:"cellAncestors"});
+    c.ancestors.forEach(function(a){
+      var q = a.grants && byId[a.grants], held = q && q.paths.some(function(g){ return (g.role || "") === role; });
+      var what = a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public" : "no permission: "+(a.reason || ""));
+      var who = !a.permission || !role ? "" : (held ? "; this role grants it" : "; this role alone does not grant it, so the caller also needs it");
+      al.appendChild(h("li", {"data-ancestor":a.id}, [nameOf(a.entity)+" ("+a.param+"): "+what+who]));
+    });
+    d.appendChild(al);
+    d.appendChild(h("p", {"class":"k", text:"A missing, denied or wrong ancestor answers 404, before the row is read or written."}));
+  }
   if (p && p.complete === false) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: a limit was reached, so "+c.resource_type+"#"+c.permission+" may grant more roles than its paths name."}));
   d.appendChild(h("strong", {text:"Grant paths"}));
   var ul = h("ul");

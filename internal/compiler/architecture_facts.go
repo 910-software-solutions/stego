@@ -94,8 +94,13 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 		list.Scope = accessScope
 	}
 	checks := map[string]ArchCheck{}
+	// ancestors gives each ancestor check by its operation and the name of its fact.
+	ancestors := map[string]ArchAncestor{}
 	for _, c := range m.Access.Checks {
 		checks[c.Subject] = c
+		for n, a := range c.Ancestors {
+			ancestors[c.Subject+"|"+ancestorFactName(n+1, a)] = a
+		}
 	}
 	permissions := map[string]ArchPermission{}
 	for _, p := range m.Access.Permissions {
@@ -120,6 +125,17 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 					} else if !c.Public && c.Permission != "" {
 						item.GrantsUnknown = true
 					}
+				}
+			}
+			if a, ok := ancestors[f.About+"|"+f.Name]; ok && topic == "access" {
+				// Only the reason of a public read is free text of the declaration; the other reasons are STEGO's.
+				if a.Public && a.Reason != "" {
+					item.Quoted = append(item.Quoted, QuotedText{Name: "reason", Text: a.Reason, Source: a.Source})
+				}
+				if p, ok := permissions[a.Grants]; ok {
+					item.Grants = &FactGrants{Permission: p.ID, Complete: p.Complete, Paths: p.Paths}
+				} else if a.Permission != "" {
+					item.GrantsUnknown = true
 				}
 			}
 			list.Facts = append(list.Facts, item)

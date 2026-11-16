@@ -136,6 +136,9 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 	}
 	for _, e := range m.Access.Checks {
 		declare(e.ID)
+		for _, a := range e.Ancestors {
+			declare(a.ID)
+		}
 	}
 	for _, e := range m.Access.Permissions {
 		declare(e.ID)
@@ -224,6 +227,11 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 	}
 	for _, c := range m.Access.Checks {
 		refer(c.ID, c.Subject, c.Grants)
+		// Each ancestor check names an entity of the model, the field that links it up the path, and the
+		// permission whose grant paths the model holds (ST-SUP-RC20-OC24).
+		for _, a := range c.Ancestors {
+			refer(a.ID, a.Entity, a.Link, a.Grants)
+		}
 	}
 	for _, p := range m.Access.Permissions {
 		for _, g := range p.Paths {
