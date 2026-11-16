@@ -136,8 +136,9 @@ type Service struct {
 
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
 // main pool of the runtime role through tenant.Open with the adapter's connection configuration, reports the
-// process under its release (Parts.Release) until Close, refuses a database
-// that does not hold the schema manifest (ST-SUP-RP14-LC06), opens the audit pool,
+// process under its release (Parts.Release) until Close, refuses a database whose migration ledger does not hold
+// that release (ST-SUP-RP14-LC07), alerts a database that does not hold the schema manifest (ST-SUP-RP14-LC06),
+// opens the audit pool,
 // connects to SpiceDB with the preshared key and checks that it answers, starts the telemetry and the probes, and
 // gives the verifier, the authorization runtime, the audit writer, the outbox queue and the command and query
 // runtimes. It refuses settings or parts that lack a part, and closes what it opened when a step fails.
@@ -158,6 +159,14 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	if svc.pool, err = tenant.Open(ctx, pools); err != nil {
 		return nil, &databaseError{err}
+	}
+	// A database whose migration ledger does not hold the last migration of this release has not had the migration
+	// Job of the release: the process stops, and starts again until the Job is done (ST-SUP-RP14-LC07). The check
+	// runs before the release report, so a process that stops never reports its release.
+	if p.Release != "" {
+		if err := checkRelease(ctx, svc.pool, p.Service, p.Release); err != nil {
+			return nil, err
+		}
 	}
 	// The process reports its release before the schema check, so a contract step sees it even while the check
 	// alerts (decision on finding F8, owner, 2026-11-13).
@@ -278,6 +287,54 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		return nil, err
 	}
 	return svc, nil
+}
+
+// LedgerTable is the migration ledger of the PostgreSQL adapter: one row for each migration that a migration job
+// applied, with its name in the column version.
+const LedgerTable = "stego_schema.migrations"
+
+// ErrMigrationPending is the refusal of a start on a database whose migration ledger does not hold the last
+// migration of the release (ST-SUP-RP14-LC07).
+var ErrMigrationPending = errors.New("the migration Job of this release has not finished")
+
+// checkRelease reads the migration ledger as the runtime role and refuses a database whose ledger is not there, that
+// the runtime role cannot read, or that does not hold the migration release, the last migration of this release
+// (ST-SUP-RP14-LC07). On plain Kubernetes nothing runs the migration Job before the rollout, so the pod of a new
+// release can start first: it stops, and Kubernetes starts it again until the Job is done. The refusal names the
+// ledger, the migration and what to do, on a log line of the level error and in its error, because the failure record
+// of the process names the stage only. Neither holds a value of a setting.
+func checkRelease(ctx context.Context, db *sql.DB, service, release string) error {
+	// The catalog alone tells whether the ledger is there and readable, so that no name resolution in a schema
+	// without USAGE fails the read.
+	var present, readable bool
+	if err := db.QueryRowContext(ctx, `SELECT count(*) > 0, COALESCE(bool_and(pg_catalog.has_schema_privilege(n.oid, 'USAGE')
+  AND pg_catalog.has_table_privilege(c.oid, 'SELECT')), false)
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r'`).Scan(&present, &readable); err != nil {
+		return fmt.Errorf("service: read the migration ledger %s in the catalog: %w", LedgerTable, err)
+	}
+	var applied bool
+	if readable {
+		if err := db.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM "+LedgerTable+" WHERE version = $1)", release).Scan(&applied); err != nil {
+			return fmt.Errorf("service: read the migration ledger %s: %w", LedgerTable, err)
+		}
+	}
+	var state string
+	switch {
+	case applied:
+		return nil
+	case !present:
+		state = "is not in the database, so no migration Job has run on it"
+	case !readable:
+		state = "is not readable by the runtime role; the migration Job of this release grants SELECT on it"
+	default:
+		state = "does not hold the migration " + release + ", the last migration of this release"
+	}
+	text := fmt.Sprintf("the migration ledger %s %s. Run the migration Job of this release (the service binary with the argument migrate, "+
+		"in Kubernetes the Job %s-migrate-<release> of the base) and wait until it completes; this process stops, and it starts again until then",
+		LedgerTable, state, service)
+	slog.ErrorContext(ctx, "service: "+text, "migration", release, "ledger", LedgerTable, "stage", "service.start.migration")
+	return fmt.Errorf("service: %w: %s", ErrMigrationPending, text)
 }
 
 // MaxLoggedFaults is the most faults of the schema manifest check that the start of a service logs, each on its own
@@ -448,7 +505,8 @@ func (e *databaseError) Unwrap() error { return e.err }
 // such as service.start.setting.postgres-adapter.DATABASE_URL; service.start.database for a database pool that did
 // not open; service.start.authn.discovery for a discovery document that the key set refused,
 // service.start.authn.keys for another key source that it refused, service.start.schema_manifest for a database that
-// does not hold the schema manifest (ST-SUP-RP14-LC06), and empty for every other failure.
+// does not hold the schema manifest (ST-SUP-RP14-LC06), service.start.migration for a database whose migration
+// ledger does not hold the last migration of the release (ST-SUP-RP14-LC07), and empty for every other failure.
 func StartStage(err error) string {
 	var setting *SettingError
 	var database *databaseError
@@ -459,6 +517,8 @@ func StartStage(err error) string {
 		return "service.start.database"
 	case errors.Is(err, manifest.ErrNotSatisfied):
 		return "service.start.schema_manifest"
+	case errors.Is(err, ErrMigrationPending):
+		return "service.start.migration"
 	case errors.Is(err, authn.ErrDiscovery):
 		return "service.start.authn.discovery"
 	case errors.Is(err, authn.ErrKeys):

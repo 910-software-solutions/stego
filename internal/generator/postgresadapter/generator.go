@@ -193,7 +193,8 @@ func entityAccess(ctx gen.Context, wiring *gen.Wiring) {
 }
 
 // schemaGenerationAccess adds the objects of the schema generation marker and of the migration ledger to the
-// database access and to the backup manifest, when the service declares schema_generation.
+// database access and to the backup manifest, when the service declares schema_generation: SELECT on the marker and
+// on the ledger, which the runtime role reads at start.
 func schemaGenerationAccess(ctx gen.Context, wiring *gen.Wiring) {
 	if ctx.ComponentConfig["schema_generation"] == nil {
 		return
@@ -206,6 +207,11 @@ func schemaGenerationAccess(ctx gen.Context, wiring *gen.Wiring) {
 	})
 	wiring.DatabaseAccess = append(wiring.DatabaseAccess, gen.DatabaseObject{
 		Schema: "stego_schema", Name: "epoch_seq", Kind: "sequence", Privileges: []string{"SELECT", "USAGE"},
+	})
+	// The runtime role reads the migration ledger at start, and refuses a database that does not hold the last
+	// migration of the release (ST-SUP-RP14-LC07). The ledger shape allows SELECT for a role other than its owner.
+	wiring.DatabaseAccess = append(wiring.DatabaseAccess, gen.DatabaseObject{
+		Schema: "stego_schema", Name: "migrations", Kind: "table", Privileges: []string{"SELECT"},
 	})
 	wiring.BackupObjects = append(wiring.BackupObjects,
 		gen.BackupObject{Schema: "stego_schema", Name: "generation", Kind: "table"},
