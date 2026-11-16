@@ -517,3 +517,51 @@ func TestRuntimeWiring(t *testing.T) {
 	t.Run(provisionGated, func(t *testing.T) { passed(t, provisionGated) })
 	t.Run(provisionWorkers, func(t *testing.T) { passed(t, provisionWorkers) })
 }
+
+// exampleWiringFixture is the check that TestExampleWiring writes into the module of a copy of an example.
+const exampleWiringFixture = "testdata/example_wiring/check/example_test.go"
+
+// exampleWiringCheck is the check of the generated example service that TestExampleWiring runs, with the ID of the
+// test record it proves.
+const exampleWiringCheck = "ST-SUP-RC35-OC13-T13 The generated user-management example provisions a tenant, creates and reads an organization, retires the tenant, and stays ready"
+
+// TestExampleWiring builds the generated service of examples/user-management as the example holds it, with the
+// runtime library of its own pin, and runs the check of testdata/example_wiring/check in its module once: the check
+// runs the migration job and the service binary against the local PostgreSQL server of STEGO_TEST_POSTGRES_DSN, a
+// local SpiceDB container and the local Kafka broker of kafkatest, provisions a tenant, creates and reads an
+// organization, and retires the tenant (#379 gap). A missing server fails the test: a missing result is not a pass.
+func TestExampleWiring(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs a generated service")
+	}
+	t.Parallel()
+	if os.Getenv("STEGO_TEST_POSTGRES_DSN") == "" {
+		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
+	}
+	p := &wiringProject{t: t, dir: t.TempDir()}
+	if err := os.CopyFS(p.dir, os.DirFS(filepath.Join("..", "..", "examples", "user-management"))); err != nil {
+		t.Fatal(err)
+	}
+	check, err := os.ReadFile(exampleWiringFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.write("out/examplecheck/example_test.go", string(check))
+	// The check imports test support of the runtime library and drivers that the service does not link: tidy adds
+	// them to the module of the copy only.
+	p.goCommand("mod", "tidy")
+	p.goCommand("vet", "./out/examplecheck")
+	binary := filepath.Join(p.dir, "bin", "service")
+	p.goCommand("build", "-o", binary, "./out")
+	endpoint, key := startWiringSpiceDB(t)
+	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-v", "-run", "^TestExample$", "./out/examplecheck")
+	cmd.Dir = p.dir
+	cmd.Env = wiringGoEnv("GOFLAGS=-mod=mod", "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_EXAMPLE_BINARY="+binary)
+	output, runErr := cmd.CombinedOutput()
+	t.Run(exampleWiringCheck, func(t *testing.T) {
+		name := strings.ReplaceAll(exampleWiringCheck, " ", "_")
+		if !strings.Contains(string(output), "--- PASS: TestExample/"+name+" ") {
+			t.Fatalf("the check %s of the example did not run and pass (go test: %v):\n%s", strings.SplitN(exampleWiringCheck, " ", 2)[0], runErr, output)
+		}
+	})
+}
