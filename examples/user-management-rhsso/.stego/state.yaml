@@ -23,25 +23,25 @@ last_applied:
                 mode: 420
             go.sum:
                 exists: true
-                sha256: ab197bd949c3979da56ba8f92d3568173783ee7aba96fe8d67fb0f514a81d7d6
+                sha256: d2b78bf213514cfb8087280df21bd90c7ab8898b834c81f8a4773ddeebe96b35
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
                 mode: 420
-        sha256: f3ae874dd4d165d87237342bf91844df9ab8250e48b0d39400a216108281dc88
+        sha256: 0bd1de354df077e9fd86318b36aa77fd7e279ee5b3dfaf65c1ae4f7b4baa5cab
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261116152852-3b7e88ccbf85
+        module_version: v0.0.0-20261116154400-1c45ae1862f8
         vcs: git
-        revision: 3b7e88ccbf854b6f8dbad019085dea59560af27f
+        revision: 1c45ae1862f8a61f10624c1d6c7725993e3a0dcb
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: 340746aed378e4ec6ade80a4d898294793320b216c090e7ca9d32e059d8dcb37
+    registry_content_sha256: d736892740a450213c16c68250acc1ac776017e9a5ca8137465da95c63e45990
     components:
         audit-log:
             version: 1.1.1
@@ -194,25 +194,25 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: 01d5575c57f82450c770b969a86dd3815804140b933374b11fb0474b490bf34b
-        architecture/architecture.json: a5352fbb5e89d627bbe2331516834259470ce49e63b5c8f090a0507aa183d331
-        architecture/index.html: b108cbb3a5afb8c232a21d33a5fe488f28fb2682ef31fdd608467f57badef4f4
+        architecture/architecture.json: 9d899c7552ade4e28584ee54fed9d58e603e7294981852589642f6f22f83c35b
+        architecture/index.html: 87a63dfbe898cca8d6cb26d281fade7cca32ce192d4aff04076ba2bbde1e24c0
         deploy/base/deployment.yaml: 83ab77c456091f0c7a9127b57324a727beff1ae69a9ee49873e38d2f0685d6f8
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
-        deploy/base/migration-job.yaml: 3fd2d9fd11bb0fa998d945b6f9a80dfcf662eacbd19076263ea15e15cbf9a05c
+        deploy/base/migration-job.yaml: cc7720655d5bb7a5aa719c9838689bcffac129b973221206d7a04c45ac8ee3bc
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
         deploy/components/secret-files/kustomization.yaml: 2b658de48cf6ef22904381c67bfd384d2a7ff2e606b56c1a8a0de0f7cba925c8
         deploy/components/secret-files/mount-files.yaml: f477052f0f5d34d1c4d77be68025a9c8f155d4dacd23dd4d7ed1dc3583894365
-        deploy/components/secret-files/mount-job-files.yaml: 71fa2266377ba8e63bf3ef35a5c8f9462abeecd42477db4bfff956208ef0b60d
+        deploy/components/secret-files/mount-job-files.yaml: 10b361b1103575695f65132c0c6a6e7ccfe7682f39b636d9dec86466c14cc68c
         deploy/components/secret-files/remove-env.yaml: 328479c67f7a09999b5481bd84d19622f3ba1205ca6d13f4c88be4cadad2960a
-        deploy/components/secret-files/remove-job-env.yaml: f849a0ff50993bcdfd199e9b75bc9a20462a119c41fde1793ef04a1b48ca1821
+        deploy/components/secret-files/remove-job-env.yaml: 5dac812375890a95050bc445b5ff22038d23dcfd3e274463c241b822d187ec91
         deploy/environment-variables.md: d14d6c4bbb99c4b3b46d581c13b923adc9307e21ef437f4339474632af3819be
         deploy/platform-requirements.yaml: 8619a8244ea998d1591ac657dd7f113edb850d2f7c2fa5c3dbc4a372cbbf06a7
     archetype:
         name: rest-crud
-        version: 3.131.0
+        version: 3.132.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.117.0
-            sum: h1:ywSOQQp7olV+o6Z+9AF7miuK8YVK8KHauk2Nt86JSEA=
+            sum: h1:ajsUj4KbYpzp1QVJfjCtaA6ZHoUqwrh/ug2Mq4QxK/s=
         imports_runtime: true
