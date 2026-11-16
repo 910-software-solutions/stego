@@ -456,6 +456,16 @@ func BackfillLeaseName(change string) string { return "stego.backfill." + change
 // info, orchestrator under the owner's delegation, 2026-11-14). The step ends when every change is complete,
 // or at BackfillTimeout with an error, and the next run of the job resumes.
 func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
+	return runBackfillsWithin(parent, db, m, context.WithTimeout)
+}
+
+// deadline gives a context that ends d after it is made. The job uses context.WithTimeout, which reads the real
+// clock; a test gives a clock that it moves itself, so it proves the backfill time limit of ST-SUP-RP09-LC12 with
+// no wall-clock limit.
+type deadline func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
+
+// runBackfillsWithin is runBackfills with the clock of the backfill time limit.
+func runBackfillsWithin(parent context.Context, db *sql.DB, m Migration, bound deadline) error {
 	if len(m.Backfills) == 0 {
 		return nil
 	}
@@ -463,7 +473,7 @@ func runBackfills(parent context.Context, db *sql.DB, m Migration) error {
 	if timeout <= 0 {
 		timeout = BackfillTimeout
 	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := bound(parent, timeout)
 	defer cancel()
 	holder := m.Holder
 	if holder == "" {
