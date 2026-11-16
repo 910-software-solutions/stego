@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
 	"github.com/jsell-rh/stego/registry/runtime/internal/catalogfirst"
 	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
@@ -25,25 +26,13 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
-// Clock is the clock of the revocation retention. A lease.Clock satisfies it.
-type Clock interface {
-	Now() time.Time
-}
-
+// systemClock is the clock of the revocation retention of a runtime: the real clock.
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
 
-// WaitClock is the clock of the waits of WaitFor: the bound of a wait and the time between two reads
-// (ST-SUP-RP06-LC24). The runtime uses context.WithTimeout and a timer of the real clock. A test gives a clock that
-// it moves itself, so it proves the wait cap and the waiter limits with no wall-clock limit.
-type WaitClock interface {
-	// WithTimeout gives a context that ends d after it is made, or when parent ends.
-	WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
-	// After gives a channel that receives the time when d has passed.
-	After(d time.Duration) <-chan time.Time
-}
-
+// systemWaitClock is the clock of the waits of WaitFor of a runtime: the bound of a wait and the time between two
+// reads (ST-SUP-RP06-LC24) run on context.WithTimeout and a timer of the real clock.
 type systemWaitClock struct{}
 
 func (systemWaitClock) WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
@@ -75,10 +64,6 @@ type Config struct {
 	// Retention is how long Status answers for a revocation; after it, Status answers expired. Zero is
 	// MinRetention, and a shorter one is refused.
 	Retention time.Duration
-	// Clock is the clock of the retention. Nil is the system clock.
-	Clock Clock
-	// WaitClock is the clock of the waits of WaitFor. Nil is the real clock.
-	WaitClock WaitClock
 	// WaitCap is the longest wait of WaitFor (ST-SUP-RP06-LC24). Zero is DefaultWaitCap.
 	WaitCap time.Duration
 	// Waiters is the most calls of WaitFor that wait at one time; a call over it reads the status once and does not
@@ -90,6 +75,22 @@ type Config struct {
 	// Meter gives the metric of the search results that a handle drops because they name another tenant
 	// (ST-SUP-RP06-LC22). Nil records no metric; DroppedResults counts them still.
 	Meter metric.MeterProvider
+
+	// clocks are the clocks of the retention and of the waits of WaitFor. They are the real clocks, except in a
+	// test of the runtime module, which sets them through the internal package authzclock (review of PR #387, L1).
+	clocks authzclock.Clocks
+}
+
+// The authz package gives the tests of the runtime module the clocks of a configuration, through the internal
+// package authzclock, so the configuration has no clock field that the code a service generates can set.
+func init() {
+	authzclock.Register(func(cfg any, clocks authzclock.Clocks) bool {
+		c, ok := cfg.(*Config)
+		if ok {
+			c.clocks = clocks
+		}
+		return ok
+	})
 }
 
 // Runtime is the authorization runtime of one service. It binds handles and reads revocation statuses.
@@ -100,8 +101,8 @@ type Runtime struct {
 	outbox    *outbox.Queue
 	poll      time.Duration
 	retention time.Duration
-	clock     Clock
-	waitClock WaitClock
+	clock     authzclock.Clock
+	waitClock authzclock.WaitClock
 	waitCap   time.Duration
 	waiters   chan struct{}
 
@@ -152,7 +153,7 @@ func New(cfg Config) (*Runtime, error) {
 		return nil, err
 	}
 	r := &Runtime{port: port, db: cfg.DB, schema: schema, outbox: cfg.Outbox, poll: cfg.Poll,
-		retention: cfg.Retention, clock: cfg.Clock, waitClock: cfg.WaitClock}
+		retention: cfg.Retention, clock: cfg.clocks.Retention, waitClock: cfg.clocks.Wait}
 	if r.poll == 0 {
 		r.poll = 50 * time.Millisecond
 	}

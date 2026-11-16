@@ -20,6 +20,7 @@ import (
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
 	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
 	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -456,11 +457,11 @@ func newPGClock(t *testing.T, clock *testClock) *pgEnv {
 	return env
 }
 
-func (e *pgEnv) runtimeOf(t *testing.T, provider Decision, clock Clock) *Runtime {
+func (e *pgEnv) runtimeOf(t *testing.T, provider Decision, clock authzclock.Clock) *Runtime {
 	t.Helper()
 	// No Floor: the runtime builds the TableFloor of DB and Schema for Port.
 	rt, err := New(Config{Provider: provider, DB: e.runtime, Schema: e.schema, Outbox: e.queue,
-		Poll: 10 * time.Millisecond, Clock: clock})
+		Poll: 10 * time.Millisecond, clocks: authzclock.Clocks{Retention: clock}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
+	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/query"
@@ -109,13 +110,18 @@ func newRevocationEnvOf(t *testing.T, waitCap time.Duration, waiters, tenantWait
 }
 
 // newRevocationEnvClock is newRevocationEnvOf with the wait clock of the authorization runtime; nil is the real clock.
-func newRevocationEnvClock(t *testing.T, waitCap time.Duration, waiters, tenantWaiters int, clock authz.WaitClock) *revocationEnv {
+func newRevocationEnvClock(t *testing.T, waitCap time.Duration, waiters, tenantWaiters int, clock authzclock.WaitClock) *revocationEnv {
 	t.Helper()
 	e := newEnv(t)
 	r := &revocationEnv{env: e, port: &deliveredPort{}, identity: map[string]context.Context{}}
+	cfg := authz.Config{Provider: r.port, DB: e.pool, Schema: "authz", Outbox: e.queue,
+		Poll: 10 * time.Millisecond, WaitCap: waitCap, Waiters: waiters, TenantWaiters: tenantWaiters}
+	// The wait clock reaches the configuration through the internal test hook of the module (review of PR #387, L1).
+	if !authzclock.Set(&cfg, authzclock.Clocks{Wait: clock}) {
+		t.Fatal("the authz package registers no clock setter")
+	}
 	var err error
-	if r.az, err = authz.New(authz.Config{Provider: r.port, DB: e.pool, Schema: "authz", Outbox: e.queue,
-		Poll: 10 * time.Millisecond, WaitCap: waitCap, Waiters: waiters, TenantWaiters: tenantWaiters, WaitClock: clock}); err != nil {
+	if r.az, err = authz.New(cfg); err != nil {
 		t.Fatal(err)
 	}
 	r.rt = e.runtime(func(c *Config) { c.Authz = r.az })
