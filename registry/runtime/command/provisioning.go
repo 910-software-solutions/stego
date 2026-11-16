@@ -114,6 +114,11 @@ func relateWorkers(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx
 	if err != nil || len(tuples) == 0 {
 		return err
 	}
+	// The lock of the worker tuples of t, which the reconcile takes too: it waits for this change to commit, and
+	// then reads whether t is active (ST-SUP-RC35-OC13).
+	if _, err := tx.ExecContext(ctx, workerTuplesLock, t.ID()); err != nil {
+		return fmt.Errorf("command: the lock of the worker tuples of the tenant was not taken: %w", err)
+	}
 	allowed := make([]authz.Relation, len(tuples))
 	for i, tuple := range tuples {
 		allowed[i] = authz.Relation{ResourceType: tuple.Resource.Type, Name: tuple.Relation}

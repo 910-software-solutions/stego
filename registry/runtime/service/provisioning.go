@@ -58,6 +58,9 @@ type tenantProvisioning struct {
 	provision   http.Handler
 	retire      http.Handler
 	problemType string
+	// rt is the command runtime of Provision and Retire, on which the controller mode reconciles the worker tuples
+	// (ST-SUP-RC35-OC13).
+	rt *command.Runtime
 }
 
 // newProvisioning makes the handlers of the declared provisioning p on the command runtime rt, whose tenant list in
@@ -69,7 +72,7 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	if gate == nil {
 		return nil, errors.New("service: the tenant provisioning needs the gate of the tenant list")
 	}
-	tp := &tenantProvisioning{gate: gate, exempt: http.NewServeMux(), problemType: svc.parts.ProblemType,
+	tp := &tenantProvisioning{gate: gate, exempt: http.NewServeMux(), problemType: svc.parts.ProblemType, rt: rt,
 		patterns: map[string]bool{p.ProvisionRoute: true, p.RetireRoute: true}}
 	tp.marker = &exemptRoute{}
 	tp.exempt.Handle(p.ProvisionRoute, tp.marker)

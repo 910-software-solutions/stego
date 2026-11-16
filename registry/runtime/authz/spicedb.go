@@ -29,6 +29,7 @@ const spiceDBName = "spicedb"
 // has no exact-snapshot path, and it uses the ZedTokens of every datastore as they are, without parsing them.
 type SpiceDB struct {
 	permissions v1.PermissionsServiceClient
+	schema      v1.SchemaServiceClient
 }
 
 // NewSpiceDB returns the SpiceDB provider on conn.
@@ -36,7 +37,60 @@ func NewSpiceDB(conn grpc.ClientConnInterface) (*SpiceDB, error) {
 	if conn == nil {
 		return nil, errors.New("authz: no SpiceDB connection")
 	}
-	return &SpiceDB{permissions: v1.NewPermissionsServiceClient(conn)}, nil
+	return &SpiceDB{permissions: v1.NewPermissionsServiceClient(conn), schema: v1.NewSchemaServiceClient(conn)}, nil
+}
+
+// RelationsOf gives the names of the relations of the definition that the schema SpiceDB serves declares, at full
+// consistency, in name order, through one ReflectSchema call. A definition that the schema does not declare is an
+// error that names it, so a reader never takes an unknown type for one with no relation.
+func (s *SpiceDB) RelationsOf(ctx context.Context, definition string) ([]string, error) {
+	if err := validType("resource", definition); err != nil {
+		return nil, err
+	}
+	response, err := s.schema.ReflectSchema(ctx, &v1.ReflectSchemaRequest{
+		Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+	})
+	if err != nil {
+		return nil, spiceError("read the schema", err)
+	}
+	for _, d := range response.GetDefinitions() {
+		if d.GetName() != definition {
+			continue
+		}
+		names := make([]string, 0, len(d.GetRelations()))
+		for _, r := range d.GetRelations() {
+			names = append(names, r.GetName())
+		}
+		sort.Strings(names)
+		return names, nil
+	}
+	return nil, fmt.Errorf("authz: the schema that SpiceDB serves declares no definition %s", definition)
+}
+
+// Exists tells whether SpiceDB holds a relationship that the filter matches, at full consistency, through one
+// ReadRelationships call with a limit of one. The filter must name one resource type, one resource ID and one
+// relation, so a read never scans the relationships of other resources or of another tenant.
+func (s *SpiceDB) Exists(ctx context.Context, filter Filter) (bool, error) {
+	if filter.ResourceType == "" || filter.ResourceID == "" || filter.Relation == "" {
+		return false, Refused(errors.New("authz: a read of relationships must name one resource type, one resource ID and one relation"))
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := s.permissions.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
+		Consistency:        &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+		RelationshipFilter: spiceFilter(filter),
+		OptionalLimit:      1,
+	})
+	if err != nil {
+		return false, spiceError("read the relationships", err)
+	}
+	if _, err := stream.Recv(); err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		return false, spiceError("read the relationships", err)
+	}
+	return true, nil
 }
 
 // Searches reports that SpiceDB offers a resource search, through LookupResources.

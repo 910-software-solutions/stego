@@ -125,6 +125,63 @@ func List(ctx context.Context, db *sql.DB, schema string) ([]Tenant, error) {
 	return tenants, nil
 }
 
+// MaxListPage is the most tenants that one call of ListAfter gives.
+const MaxListPage = 1000
+
+// ListAfter gives at most limit active tenants of the tenant list of schema whose IDs come after the ID after, in
+// tenant ID order (byte order), so a job that visits the list in pages holds one page at a time and resumes after the
+// last tenant of the page before (ST-SUP-RC35-OC13). An empty after starts at the first tenant. It refuses a limit
+// that is not from 1 to MaxListPage.
+func ListAfter(ctx context.Context, db *sql.DB, schema, after string, limit int) ([]Tenant, error) {
+	if db == nil {
+		return nil, errors.New("tenant: no database")
+	}
+	if limit < 1 || limit > MaxListPage {
+		return nil, fmt.Errorf("tenant: the page of the tenant list must hold from 1 to %d tenants, not %d", MaxListPage, limit)
+	}
+	quotedSchema, err := quoteName("schema", schema)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, "SELECT tenant_id FROM "+quotedSchema+
+		".stego_tenants WHERE retired_at IS NULL AND tenant_id COLLATE \"C\" > $1 ORDER BY tenant_id COLLATE \"C\" LIMIT $2", after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("tenant: read a page of the tenant list: %w", err)
+	}
+	defer rows.Close()
+	var tenants []Tenant
+	for rows.Next() {
+		t, err := ScanRows(rows)
+		if err != nil {
+			return nil, fmt.Errorf("tenant: read a page of the tenant list: %w", err)
+		}
+		tenants = append(tenants, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tenant: read a page of the tenant list: %w", err)
+	}
+	return tenants, nil
+}
+
+// ActiveIn tells, through q, an open transaction, whether the tenant list of schema holds t as active: listed and
+// not retired. A job that read t from an earlier page reads it again so in the transaction of its write, after it
+// took the lock that a Provision or Retire of t holds, so it never writes for a tenant that was retired since.
+func ActiveIn(ctx context.Context, q Querier, schema string, t Tenant) (bool, error) {
+	if t.IsZero() {
+		return false, ErrZero
+	}
+	quotedSchema, err := quoteName("schema", schema)
+	if err != nil {
+		return false, err
+	}
+	var active bool
+	if err := q.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM "+quotedSchema+
+		".stego_tenants WHERE tenant_id = $1 AND retired_at IS NULL)", t.ID()).Scan(&active); err != nil {
+		return false, fmt.Errorf("tenant: read whether the tenant is active: %w", err)
+	}
+	return active, nil
+}
+
 // Hook is the work that the generated code registers for a tenant's provisioning or retirement. It runs in the
 // transaction that writes the tenant list, with that tenant set, so its writes commit with the change of the tenant
 // list or not at all. It gets the transaction as a Querier, so it cannot commit; Provision and Retire commit.

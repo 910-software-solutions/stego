@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -480,6 +481,42 @@ func TestSpiceDBProvider(t *testing.T) {
 		// The provider holds only the gRPC client of the connection it was given: it opens no transport of its own.
 		if got := exportedFields(reflectType(db.provider)); len(got) != 0 {
 			t.Errorf("the provider has the exported fields %v", got)
+		}
+	})
+
+	t.Run("ST-SUP-RP06-LC05-T08 The provider reads the relations of a definition and whether a relationship exists, at full consistency", func(t *testing.T) {
+		db := startSpiceDB(t, fixtureSchema)
+		relations, err := db.provider.RelationsOf(ctx, "document")
+		if err != nil || !slices.Equal(relations, []string{"banned", "owner", "reader", "viewer"}) {
+			t.Fatalf("the relations of document are %v (%v), want banned, owner, reader and viewer, without the permissions", relations, err)
+		}
+		if _, err := db.provider.RelationsOf(ctx, "invoice"); err == nil || !strings.Contains(err.Error(), "invoice") {
+			t.Errorf("the relations of a type the schema does not declare gave %v, want an error that names it", err)
+		}
+		other := Tuple{Resource: doc("2"), Relation: "viewer", Subject: user("bob")}
+		if held, err := db.provider.Exists(ctx, FilterOf(viewer)); err != nil || held {
+			t.Fatalf("before the write, Exists gave %v and %v, want false", held, err)
+		}
+		// A write and then a read with no token: the read is fully consistent, so it sees the write at once.
+		if _, err := db.provider.Touch(ctx, []Tuple{viewer}, nil); err != nil {
+			t.Fatal(err)
+		}
+		relation := Filter{ResourceType: viewer.Resource.Type, ResourceID: viewer.Resource.ID, Relation: "viewer"}
+		for _, c := range []struct {
+			filter Filter
+			want   bool
+		}{{FilterOf(viewer), true}, {relation, true}, {FilterOf(other), false},
+			{Filter{ResourceType: viewer.Resource.Type, ResourceID: viewer.Resource.ID, Relation: "owner"}, false},
+			{Filter{ResourceType: viewer.Resource.Type, ResourceID: viewer.Resource.ID, Relation: "viewer", SubjectType: "user", SubjectID: "carol"}, false}} {
+			if held, err := db.provider.Exists(ctx, c.filter); err != nil || held != c.want {
+				t.Errorf("Exists(%+v) gave %v and %v, want %v", c.filter, held, err, c.want)
+			}
+		}
+		// A read must name one resource and one relation, so it never scans other resources.
+		for _, filter := range []Filter{{ResourceType: "document"}, {ResourceType: "document", ResourceID: viewer.Resource.ID}} {
+			if _, err := db.provider.Exists(ctx, filter); !IsRefused(err) {
+				t.Errorf("Exists(%+v) gave %v, want a refusal", filter, err)
+			}
 		}
 	})
 
