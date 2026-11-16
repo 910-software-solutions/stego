@@ -125,6 +125,9 @@ environment:
     required: false
     description: The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    secret_source:
+      name: user-management-database
+      key: url
   - name: DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1004,6 +1007,9 @@ environment:
     required: false
     description: The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    secret_source:
+      name: user-management-database
+      key: migration-url
   - name: STEGO_MIGRATION_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1043,6 +1049,9 @@ environment:
     required: true
     description: The file of the key of the list cursors, at least 32 bytes, the same in each replica. The service does not start when it has no value.
     secret: false
+    secret_source:
+      name: user-management-query-cursor
+      key: key
   - name: STEGO_RELAY_DATABASE_URL
     read_by:
       - postgres-adapter
@@ -1050,6 +1059,9 @@ environment:
     required: false
     description: The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    secret_source:
+      name: user-management-database-relay
+      key: url
   - name: STEGO_RELAY_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
@@ -1087,6 +1099,9 @@ environment:
     required: true
     description: The file of the preshared key of SpiceDB. The service does not start when it has no value.
     secret: false
+    secret_source:
+      name: user-management-spicedb
+      key: preshared-key
   - name: STEGO_WORKER_DATABASE_URL
     read_by:
       - postgres-adapter
@@ -1094,6 +1109,9 @@ environment:
     required: false
     description: The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.
     secret: true
+    secret_source:
+      name: user-management-database
+      key: worker-url
   - name: STEGO_WORKER_DATABASE_URL_FILE
     read_by:
       - postgres-adapter
