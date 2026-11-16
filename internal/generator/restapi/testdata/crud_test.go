@@ -2146,17 +2146,22 @@ func TestCrud(t *testing.T) {
 		ids := map[string]string{"folder": f, "rack": r, "card": c, "mark": m}
 		// poison makes each read of a row of the tenant in the tables fail, with no change to the rows of other
 		// tenants: a check that reads such a row answers 500, and not 404.
+		// The cure drops each policy of the poison; the test runs it again when it ends, so a failure part way never
+		// leaves a policy behind.
 		poison := func(tables ...string) func() {
+			cure := func() {
+				for _, table := range tables {
+					if _, err := e.admin.ExecContext(e.ctx, "DROP POLICY IF EXISTS t13_poison ON "+table); err != nil {
+						t.Errorf("drop the poison of %s: %v", table, err)
+					}
+				}
+			}
+			t.Cleanup(cure)
 			for _, table := range tables {
 				_, err := e.admin.ExecContext(e.ctx, "CREATE POLICY t13_poison ON "+table+" AS RESTRICTIVE USING (CASE WHEN tenant_id = '"+tn+"' THEN 1 / (length(tenant_id) - length(tenant_id)) = 1 ELSE true END)")
 				must(t, err)
 			}
-			return func() {
-				for _, table := range tables {
-					_, err := e.admin.ExecContext(e.ctx, "DROP POLICY IF EXISTS t13_poison ON "+table)
-					must(t, err)
-				}
-			}
+			return cure
 		}
 		for _, c := range []struct {
 			without string
@@ -2184,7 +2189,31 @@ func TestCrud(t *testing.T) {
 					t.Errorf("a caller that may not read the %s listed the marks under the rack %s with %d %s, want 404 and no read below the %s", c.without, rack, list.status, list.body, c.without)
 				}
 			}
+			// The writes check the chain from the top down too: a caller that owns the card, so may edit the mark
+			// and create one, gets 404 for each write, and no row below the ancestor is read.
+			e.own(b, "card", ids["card"])
+			for _, rack := range []string{r, other} {
+				base := under(rack)
+				for _, w := range []struct{ name, method, path, key, body string }{
+					{"update", http.MethodPut, base + "/" + m, "", `{"label":"l","note":"updated"}`},
+					{"patch", http.MethodPatch, base + "/" + m, "k-" + uuid.NewString(), `{"note":"patched"}`},
+					{"upsert", http.MethodPut, base, "", `{"label":"l","note":"upserted"}`},
+					{"delete", http.MethodDelete, base + "/" + m, "", ""},
+					{"create", http.MethodPost, base, "k-" + uuid.NewString(), `{"label":"new","note":"created"}`},
+				} {
+					got := e.send(b, w.method, w.path, w.key, w.body)
+					if got.status != http.StatusNotFound || got.member(t, "title") != missing.member(t, "title") {
+						t.Errorf("the %s by a caller that may not read the %s, under the rack %s, answered %d %s, want 404 and no read below the %s", w.name, c.without, rack, got.status, got.body, c.without)
+					}
+				}
+			}
 			cure()
+			if n := e.count(`SELECT count(*) FROM marks WHERE tenant_id = $1`, tn); n != 1 {
+				t.Errorf("%d marks in the tenant after the refused writes by a caller that may not read the %s, want 1", n, c.without)
+			}
+			if n := e.count(`SELECT count(*) FROM marks WHERE id = $1::uuid AND note = 'n'`, m); n != 1 {
+				t.Errorf("the mark changed after the refused writes by a caller that may not read the %s", c.without)
+			}
 		}
 		if got := e.send(a, http.MethodGet, under(r)+"/"+m, "", ""); got.status != http.StatusOK {
 			t.Errorf("after the poison, the owner's read answered %d %s, want 200", got.status, got.body)
