@@ -182,6 +182,80 @@ func TestDeclaredRelationships(t *testing.T) {
 			t.Error("an entity with a schema relation that is not a relation name was accepted")
 		}
 	})
+	t.Run("ST-SUP-RP10-LC05-T24 A create relates the row to its tenant when the schema has the relation tenant, and only the runtime writes it", func(t *testing.T) {
+		e := newEnv(t)
+		_, orders, _ := referenceEntities(e)
+		s := orders.spec
+		s.Parent, s.Relationships, s.Relations, s.Tenant = nil, nil, []string{"tenant"}, true
+		entity, err := NewEntity(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tenantRelation := authz.Relation{ResourceType: "order", Name: "tenant"}
+		// The command declares order#tenant, so the handle is bound with it, but it stays the runtime's own.
+		cmd := e.command("place", func(c *CommandSpec[testProbe]) {
+			c.Permission, c.Resource, c.Relations = "place", &Resource{Type: "service", Service: "orders"}, []authz.Relation{tenantRelation}
+		}, entity)
+		before := e.tuples()
+		if _, err := e.run(cmd, e.request("t1", u7(t), "k-t24-create", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			_, err := repo(t, h, entity).Create(ctx, placedOrder{ID: "r7", CustomerID: "c1", ProductID: "p1"})
+			return err
+		})); err != nil {
+			t.Fatal(err)
+		}
+		// The subject is the tenant resource of t1: its ID is the tenant-qualified form with the tenant ID as the key.
+		if added, want := e.tuples()[len(before):], []string{"touch order:r7#tenant@tenant:t1"}; !slices.Equal(added, want) {
+			t.Fatalf("the create enqueued %v, want %v", added, want)
+		}
+		// A fill cannot write the relation to the tenant: a row of t1 never relates to another tenant.
+		before = e.tuples()
+		_, err = e.run(cmd, e.request("t1", u7(t), "k-t24-fill", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			row, err := repo(t, h, entity).GetForUpdate(ctx, "r7")
+			if err != nil {
+				return err
+			}
+			resource, err := authz.NewResource(h.Tenant(), "order", "r7")
+			if err != nil {
+				return err
+			}
+			other, err := authz.TenantResource(h.Tenant())
+			if err != nil {
+				return err
+			}
+			_, err = h.Authz().Unrelate(ctx, row, authz.Tuple{Resource: resource, Relation: "tenant", Subject: authz.Subject{Type: other.Type, ID: other.ID}})
+			return err
+		}))
+		if err == nil || !strings.Contains(err.Error(), "order#tenant") {
+			t.Fatalf("a fill that unrelates order#tenant gave %v, want a refusal that names the relation", err)
+		}
+		if added := e.tuples()[len(before):]; len(added) != 0 {
+			t.Fatalf("the refused fill enqueued %v", added)
+		}
+		// A delete clears it.
+		before = e.tuples()
+		if _, err := e.run(cmd, e.request("t1", u7(t), "k-t24-delete", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			r := repo(t, h, entity)
+			from, err := r.GetForDelete(ctx, "r7")
+			if err != nil {
+				return err
+			}
+			return r.Delete(ctx, from)
+		})); err != nil {
+			t.Fatal(err)
+		}
+		if added, want := e.tuples()[len(before):], []string{"delete_relation order:r7#tenant@:UNQUALIFIED()"}; !slices.Equal(added, want) {
+			t.Fatalf("the delete enqueued %v, want %v", added, want)
+		}
+		// The relation needs a resource type, and no relationship or reference may write it.
+		s.ResourceType, s.Relations = "", nil
+		if _, err := NewEntity(s); err == nil {
+			t.Error("an entity with the tenant relation and no resource type was accepted")
+		}
+		s.ResourceType, s.Relationships = "order", []Relationship[placedOrder]{{Relation: "tenant", SubjectType: "user"}}
+		if _, err := NewEntity(s); err == nil {
+			t.Error("an entity whose declared relationship writes the tenant relation was accepted")
+		}
+	})
 	t.Run("ST-SUP-RP10-LC05-T14 A create whose caller is not of the relationship's subject type is refused and writes nothing", func(t *testing.T) {
 		e := newEnv(t)
 		orders := relationshipEntity(e, "group")

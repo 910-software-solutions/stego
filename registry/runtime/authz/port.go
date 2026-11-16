@@ -84,6 +84,25 @@ func NewResource(t tenant.Tenant, resourceType, key string) (Resource, error) {
 	return resource, nil
 }
 
+// TenantType is the resource type of a tenant in the schema, and TenantRelation the relation of a resource type to
+// the tenant of its rows, which the command runtime writes on each create (ST-SUP-RP10-LC05, ST-SUP-Q132).
+const (
+	TenantType     = "tenant"
+	TenantRelation = "tenant"
+)
+
+// TenantResource returns the resource tenant:<ID> of tenant t, on which the tuple of each worker's relation in t is
+// written (ST-SUP-RC35-OC13) and to which each row of t relates by the relation tenant (ST-SUP-RP10-LC05). Its ID is
+// the tenant-qualified form of ResourceID with the tenant ID as the key, so the handle and the relay take it as a
+// resource of t, as they take a row of t, and the tenant resource of t never names another tenant
+// (ST-SUP-RP06-LC22, ST-SUP-Q132).
+func TenantResource(t tenant.Tenant) (Resource, error) {
+	if t.IsZero() {
+		return Resource{}, tenant.ErrZero
+	}
+	return NewResource(t, TenantType, t.ID())
+}
+
 // ErrQualifiedService is the error of a service-level resource whose ID is a tenant-qualified resource ID
 // (ST-SUP-RP06-LC22): the resource of the tenant provisioning is of the whole service, never of one tenant.
 var ErrQualifiedService = errors.New("authz: the service-level resource has a tenant-qualified ID")

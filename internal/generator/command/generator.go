@@ -114,7 +114,7 @@ type model struct {
 	probeImport    string // the domain probes package, or empty when the service has none
 	tenantKey      string
 	// relations are the schema relations of each resource type (SchemaRelations).
-	relations   map[string][]string
+	relations   Relations
 	subjectType string
 	basePath    string
 	messages    *messages

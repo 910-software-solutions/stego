@@ -138,7 +138,7 @@ func renderRelationHelper(w *writer, c *command, h relationHelper) {
 // repository accessor, with the helpers that they use. Each statement takes the tenant column tenantKey as $1. It is
 // for a generator that declares commands of its own, such as the rest-api generator for generated CRUD
 // (ST-SUP-RC20-OC37), so the entity code has one source. It refuses an entity that a command cannot write.
-func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey string, relations map[string][]string) ([]byte, error) {
+func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey string, relations Relations) ([]byte, error) {
 	byName := map[string]types.Entity{}
 	for _, e := range entities {
 		byName[e.Name] = e
@@ -387,7 +387,7 @@ func KeyListRead(name string, entities []types.Entity, tenantKey string, keys []
 	if !ok {
 		return "", fmt.Errorf("command: the entity %s is not declared", name)
 	}
-	e, err := planEntity(decl, byName, tenantKey, nil)
+	e, err := planEntity(decl, byName, tenantKey, Relations{})
 	if err != nil {
 		return "", fmt.Errorf("command: the entity %s: %w", name, err)
 	}

@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1385,6 +1386,163 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 			t.Errorf("the topic holds %d records after the refused create, want the %d of before", after, before)
 		}
 	})
+
+	// The tuples of the workers in each tenant (ST-SUP-RC35-OC13, ST-SUP-Q132): Provision writes one tuple for each
+	// worker on the tenant resource, the runtime relates each new order to its tenant, and Retire deletes the
+	// tuples. These checks run last: each waits on the state of SpiceDB with no deadline of its own, so only the
+	// timeout of go test bounds them.
+	t.Run("ST-DECL-UC10-R03-T01 A provisioned tenant gives each worker its tuple", func(t *testing.T) {
+		s.t = t
+		id := "org-c-" + short()
+		s.provisioned(t, id)
+		resource := s.tenantResource(t, id)
+		want := []string{
+			"tenant:" + resource + "#worker_apply_note_replies@service_account:apply-note-replies",
+			"tenant:" + resource + "#worker_sync_partner_orders@service_account:sync-partner-orders",
+		}
+		got := s.awaitTuples(t, resource, want)
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Fatalf("SpiceDB holds on the tenant resource of %s:\n%s\nwant each worker's own tuple and no other:\n%s", id, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+	t.Run("ST-SUP-RC35-OC13-T01 Provisioning a tenant writes one tuple for each worker in that tenant only", func(t *testing.T) {
+		s.t = t
+		first, second := "org-t1-"+short(), "org-t2-"+short()
+		s.provisioned(t, first)
+		s.provisioned(t, second)
+		orderOf := func(tenantID string) (caller, string) {
+			c := s.as("u-"+uuid.NewString()[:8], tenantID)
+			created := s.send(&c, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"tenant","qty":1}`)
+			if created.status != http.StatusCreated {
+				t.Fatalf("the create in %s answered %d %s, want 201", tenantID, created.status, created.body)
+			}
+			return c, created.member(t, "id")
+		}
+		c1, o1 := orderOf(first)
+		c2, o2 := orderOf(second)
+		r1, err := authz.ResourceID(c1.tenant, o1)
+		must(t, err)
+		r2, err := authz.ResourceID(c2.tenant, o2)
+		must(t, err)
+		// The order relates to the tenant resource of its own tenant (ST-SUP-RP10-LC05).
+		for _, o := range []struct{ resource, tenantID string }{{r1, first}, {r2, second}} {
+			want := []string{"order:" + o.resource + "#tenant@tenant:" + s.tenantResource(t, o.tenantID)}
+			if got := s.awaitRelation(t, "order", o.resource, "tenant", want); strings.Join(got, "\n") != want[0] {
+				t.Fatalf("the order of %s relates to %v, want %v", o.tenantID, got, want)
+			}
+		}
+		// Each worker may act on the orders of a provisioned tenant by its own relation only: the schema's
+		// tenant_sync is tenant->worker_sync_partner_orders and tenant_apply is tenant->worker_apply_note_replies.
+		cases := []struct {
+			resource, permission, account string
+			allowed                       bool
+		}{
+			{r1, "tenant_sync", "sync-partner-orders", true}, {r1, "tenant_apply", "apply-note-replies", true},
+			{r1, "tenant_sync", "apply-note-replies", false}, {r1, "tenant_apply", "sync-partner-orders", false},
+			{r2, "tenant_sync", "sync-partner-orders", true}, {r2, "tenant_apply", "apply-note-replies", true},
+		}
+		for _, c := range cases {
+			s.awaitPermission(t, "order", c.resource, c.permission, c.account, c.allowed)
+		}
+		// Retire deletes the tuples of the retired tenant only: the same account is then denied on the order of the
+		// retired tenant and still allowed in the other.
+		if got := s.retire(&s.operator, second, "k-"+uuid.NewString()); got.status != http.StatusOK {
+			t.Fatalf("the retire of %s answered %d %s, want 200", second, got.status, got.body)
+		}
+		if got := s.awaitTuples(t, s.tenantResource(t, second), nil); len(got) != 0 {
+			t.Fatalf("SpiceDB still holds the tuples of the retired tenant: %v", got)
+		}
+		s.awaitPermission(t, "order", r2, "tenant_sync", "sync-partner-orders", false)
+		s.awaitPermission(t, "order", r2, "tenant_apply", "apply-note-replies", false)
+		s.awaitPermission(t, "order", r1, "tenant_sync", "sync-partner-orders", true)
+		if got := s.awaitTuples(t, s.tenantResource(t, first), []string{
+			"tenant:" + s.tenantResource(t, first) + "#worker_apply_note_replies@service_account:apply-note-replies",
+			"tenant:" + s.tenantResource(t, first) + "#worker_sync_partner_orders@service_account:sync-partner-orders",
+		}); len(got) != 2 {
+			t.Fatalf("the retire of %s changed the tuples of %s: %v", second, first, got)
+		}
+		// No tuple of the workers has a wildcard subject or resource.
+		for _, tenantID := range []string{first, second} {
+			for _, line := range s.relations(t, "tenant", s.tenantResource(t, tenantID), "") {
+				if strings.Contains(line, "*") {
+					t.Fatalf("the tuple %s holds a wildcard", line)
+				}
+			}
+		}
+	})
+}
+
+// tenantResource gives the ID of the tenant resource of tenantID, the tenant-qualified form with the tenant ID as
+// the key (authz.TenantResource, ST-SUP-Q132).
+func (s *service) tenantResource(t *testing.T, tenantID string) string {
+	t.Helper()
+	resource, err := authz.TenantResource(s.as("u-resource", tenantID).tenant)
+	must(t, err)
+	return resource.ID
+}
+
+// relations reads, fully consistent, the relationships of the resource in SpiceDB, of the relation or of every
+// relation when relation is empty, each as type:id#relation@type:id, in order.
+func (s *service) relations(t *testing.T, resourceType, resourceID, relation string) []string {
+	t.Helper()
+	stream, err := v1.NewPermissionsServiceClient(s.spice).ReadRelationships(s.ctx, &v1.ReadRelationshipsRequest{
+		Consistency:        &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+		RelationshipFilter: &v1.RelationshipFilter{ResourceType: resourceType, OptionalResourceId: resourceID, OptionalRelation: relation}})
+	must(t, err)
+	var out []string
+	for {
+		answer, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		must(t, err)
+		r := answer.GetRelationship()
+		out = append(out, r.GetResource().GetObjectType()+":"+r.GetResource().GetObjectId()+"#"+r.GetRelation()+"@"+
+			r.GetSubject().GetObject().GetObjectType()+":"+r.GetSubject().GetObject().GetObjectId())
+	}
+	slices.Sort(out)
+	return out
+}
+
+// awaitRelation waits until SpiceDB holds exactly want as the relationships of the relation on the resource, which
+// the relay delivers after the commit, and gives them. It has no deadline of its own: the timeout of go test ends a
+// wait that never ends, and a missing result is not a pass.
+func (s *service) awaitRelation(t *testing.T, resourceType, resourceID, relation string, want []string) []string {
+	t.Helper()
+	for {
+		got := s.relations(t, resourceType, resourceID, relation)
+		if slices.Equal(got, want) {
+			return got
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// awaitTuples waits until SpiceDB holds exactly want on the tenant resource, and gives it.
+func (s *service) awaitTuples(t *testing.T, resource string, want []string) []string {
+	t.Helper()
+	return s.awaitRelation(t, "tenant", resource, "", want)
+}
+
+// awaitPermission waits until SpiceDB answers, fully consistent, the permission of the service account on the
+// resource as allowed says. It has no deadline of its own.
+func (s *service) awaitPermission(t *testing.T, resourceType, resourceID, permission, account string, allowed bool) {
+	t.Helper()
+	want := v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION
+	if allowed {
+		want = v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
+	}
+	for {
+		answer, err := v1.NewPermissionsServiceClient(s.spice).CheckPermission(s.ctx, &v1.CheckPermissionRequest{
+			Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+			Resource:    &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Permission: permission,
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "service_account", ObjectId: account}}})
+		must(t, err)
+		if answer.GetPermissionship() == want {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // kafkaMessages counts the outbox messages of the destination kafka.
