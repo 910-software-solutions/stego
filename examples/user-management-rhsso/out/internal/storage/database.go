@@ -15,6 +15,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -119,7 +120,7 @@ func databaseConfiguration(dsn string) (*pgx.ConnConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	config, err := pgx.ParseConfig(dsn)
+	config, err := pgx.ParseConfig(databaseWithoutHomeFiles(dsn))
 	if err != nil {
 		return nil, errors.New("invalid database configuration")
 	}
@@ -136,6 +137,30 @@ func databaseConfiguration(dsn string) (*pgx.ConnConfig, error) {
 	}
 	config.Tracer = databaseTracer{}
 	return config, nil
+}
+
+// databaseWithoutHomeFiles gives the pass file, the service file, the root certificate and the client certificate
+// and key empty before the settings of dsn, so that pgx takes none of them from the files under HOME (~/.pgpass,
+// ~/.pg_service.conf and ~/.postgresql). A setting that dsn gives comes later and wins.
+func databaseWithoutHomeFiles(dsn string) string {
+	rest, isURL := strings.CutPrefix(dsn, "postgresql://")
+	if !isURL {
+		rest, isURL = strings.CutPrefix(dsn, "postgres://")
+	}
+	if !isURL {
+		return "passfile='' servicefile='' sslrootcert='' sslcert='' sslkey='' " + dsn
+	}
+	// As pgx reads a URL, a '@' before the first '/' ends the user info, and the query starts at the first '?' after it.
+	start := len(dsn) - len(rest)
+	if i := strings.IndexAny(rest, "@/"); i >= 0 && rest[i] == '@' {
+		start += i + 1
+		rest = rest[i+1:]
+	}
+	const settings = "passfile=&servicefile=&sslrootcert=&sslcert=&sslkey="
+	if i := strings.IndexByte(rest, '?'); i >= 0 {
+		return dsn[:start+i+1] + settings + "&" + dsn[start+i+1:]
+	}
+	return dsn + "?" + settings
 }
 
 func databaseLoopbackTestMode() (bool, error) {

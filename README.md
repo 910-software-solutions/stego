@@ -129,6 +129,10 @@ go test ./...
 ```
 This produces a `stego` binary in the repo root.
 
+`stego version --json` reports the commit only for a build from a clone. In a git worktree, `.git` is a file and
+not a folder, and the Go toolchain (1.26) then records no version control data, so `vcs` and `revision` are
+`unknown`. The CI and the release builds run in a clone with `-buildvcs=true`, and they record the commit.
+
 ## Quick start
 
 Set up environment and initialize a new project:

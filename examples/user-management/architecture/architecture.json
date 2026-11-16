@@ -5930,6 +5930,24 @@
       }
     },
     {
+      "id": "variable:HOME",
+      "name": "HOME",
+      "read_by": [
+        "component:postgres-adapter"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "postgres-adapter",
+          "version": "6.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
       "id": "variable:OTEL_EXPORTER_OTLP_CERTIFICATE",
       "name": "OTEL_EXPORTER_OTLP_CERTIFICATE",
       "read_by": [
@@ -11149,6 +11167,51 @@
               "part": "component",
               "name": "otel-tracing",
               "version": "1.19.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:HOME/read-by",
+          "about": "variable:HOME",
+          "name": "read by",
+          "value": "component:postgres-adapter",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:HOME/required",
+          "about": "variable:HOME",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:HOME/secret",
+          "about": "variable:HOME",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "postgres-adapter",
+              "version": "6.6.0",
               "field": "environment"
             }
           }
