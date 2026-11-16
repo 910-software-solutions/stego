@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"os"
@@ -873,6 +874,9 @@ type cdpBrowser struct {
 	mu      sync.Mutex
 	next    int
 	waiting map[int]chan cdpReply
+	exited  chan struct{} // closed when the browser process has exited; exit then holds what Wait gave
+	exit    error
+	drained chan struct{} // closed when all of stderr is in browser.log
 	blocked []string
 	errors  []string
 }
@@ -919,9 +923,12 @@ func startBrowser(t *testing.T) *cdpBrowser {
 		t.Skip("set STEGO_BROWSER to a Chrome or Chromium executable to run the browser tests of the architecture view")
 	}
 	dir := t.TempDir()
+	// The flags after --disable-sync remove start work that needs no page: the key store over D-Bus, the component
+	// updater and the crash reporter. A slow start on a loaded runner then has less to do.
 	args := []string{"--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + dir, "--no-first-run",
 		"--no-default-browser-check", "--disable-background-networking", "--disable-gpu", "--disable-dev-shm-usage",
-		"--disable-extensions", "--disable-sync", "--mute-audio", "--window-size=1280,900", "about:blank"}
+		"--disable-extensions", "--disable-sync", "--password-store=basic", "--use-mock-keychain",
+		"--disable-component-update", "--disable-breakpad", "--mute-audio", "--window-size=1280,900", "about:blank"}
 	// The browser runs with its sandbox, except on a GitHub-hosted runner, whose throwaway machine cannot start it
 	// (#342 F2). No variable turns the sandbox off anywhere else.
 	if hostedRunner() {
@@ -934,24 +941,28 @@ func startBrowser(t *testing.T) *cdpBrowser {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.Stdout, cmd.Stderr = log, log
+	// The browser writes its DevTools address to stderr. The test reads stderr through a pipe and copies each line to
+	// browser.log; stdout goes to browser.log directly.
+	stderr, w, err := os.Pipe()
+	if err != nil {
+		_ = log.Close()
+		t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = log, w
 	if err := cmd.Start(); err != nil {
+		_, _ = stderr.Close(), w.Close()
 		_ = log.Close()
 		t.Fatalf("cannot start the browser: %v", err)
 	}
-	b := &cdpBrowser{t: t, cmd: cmd, log: log, waiting: map[int]chan cdpReply{}}
+	_ = w.Close()
+	b := &cdpBrowser{t: t, cmd: cmd, log: log, waiting: map[int]chan cdpReply{}, exited: make(chan struct{}),
+		drained: make(chan struct{})}
+	go func() {
+		b.exit = cmd.Wait()
+		close(b.exited)
+	}()
 	t.Cleanup(b.stop)
-	var ws string
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		data, err := os.ReadFile(filepath.Join(dir, "DevToolsActivePort"))
-		if lines := strings.Split(strings.TrimSpace(string(data)), "\n"); err == nil && len(lines) == 2 {
-			ws = "ws://127.0.0.1:" + lines[0] + lines[1]
-			break
-		}
-	}
-	if ws == "" {
-		t.Fatal("the browser wrote no DevTools port")
-	}
+	ws := b.devToolsAddress(stderr, filepath.Join(dir, "browser.log"))
 	b.ctx, b.cancel = context.WithTimeout(context.Background(), 3*time.Minute)
 	b.conn, _, err = websocket.Dial(b.ctx, ws, nil)
 	if err != nil {
@@ -983,17 +994,89 @@ func (b *cdpBrowser) stop() {
 		_ = b.conn.CloseNow()
 	}
 	_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGTERM)
-	done := make(chan error, 1)
-	go func() { done <- b.cmd.Wait() }()
 	select {
-	case <-done:
+	case <-b.exited:
 	case <-time.After(5 * time.Second):
-		_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGKILL)
-		<-done
 	}
+	// SIGKILL to the whole group also stops a child that holds stderr open, so the copy to browser.log ends.
+	_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGKILL)
+	<-b.exited
+	<-b.drained
 	if b.log != nil {
 		_ = b.log.Close()
 	}
+}
+
+// devToolsAddress reads the browser's stderr until the line "DevTools listening on ws://..." comes, and gives that
+// address. It has no time limit: a slow start on a loaded runner is not a failure. When the browser exits or closes
+// stderr first, the test fails and shows the exit status and browser.log. Each line before the address goes to the
+// test log as it comes, so a start that does not end is diagnosable from the test output.
+func (b *cdpBrowser) devToolsAddress(stderr *os.File, logPath string) string {
+	b.t.Helper()
+	lines := make(chan string)
+	go func() {
+		defer close(b.drained)
+		defer stderr.Close()
+		defer close(lines)
+		reader := bufio.NewReader(stderr)
+		for {
+			line, err := reader.ReadString('\n')
+			if line != "" {
+				_, _ = b.log.WriteString(line)
+				lines <- strings.TrimRight(line, "\r\n")
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	started := time.Now()
+	for {
+		select {
+		case line, open := <-lines:
+			if !open {
+				b.startFailed("the browser closed stderr before it wrote its DevTools address", logPath, lines)
+			}
+			if _, ws, found := strings.Cut(line, "DevTools listening on "); found && strings.HasPrefix(ws, "ws://") {
+				b.t.Logf("the browser started in %s", time.Since(started).Round(time.Millisecond))
+				// The rest of stderr goes on to browser.log only, so that the browser never stops on a full pipe.
+				go func() {
+					for range lines {
+					}
+				}()
+				return ws
+			}
+			if line != "" {
+				b.t.Logf("browser: %s", line)
+			}
+		case <-b.exited:
+			b.startFailed("the browser exited before it wrote its DevTools address", logPath, lines)
+		}
+	}
+}
+
+// startFailed stops the browser group, waits until browser.log has all of stderr, and fails the test with the exit
+// status and the log.
+func (b *cdpBrowser) startFailed(reason, logPath string, lines <-chan string) {
+	b.t.Helper()
+	go func() {
+		for range lines {
+		}
+	}()
+	_ = syscall.Kill(-b.cmd.Process.Pid, syscall.SIGKILL)
+	<-b.exited
+	<-b.drained
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		data = []byte("(cannot read browser.log: " + err.Error() + ")")
+	}
+	status := "no exit status"
+	if b.cmd.ProcessState != nil {
+		status = b.cmd.ProcessState.String()
+	} else if b.exit != nil {
+		status = b.exit.Error()
+	}
+	b.t.Fatalf("%s (%s)\nbrowser.log:\n%s", reason, status, data)
 }
 
 // hostedRunner says whether the test runs on a GitHub-hosted runner: GITHUB_ACTIONS and RUNNER_ENVIRONMENT both
