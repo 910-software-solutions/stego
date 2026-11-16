@@ -428,7 +428,6 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC20-OC40-T02 A change event of a generated write arrives once with its key and headers, waits out a broker outage in the outbox, and keeps the order of its entity",
 	"ST-SUP-RC20-OC40-T03 A replay of a write with its idempotency key stages no second event",
 	"ST-SUP-RC20-OC40-T04 A write that rolls back after it staged its event leaves no outbox message and no record",
-	"ST-DECL-UC10-R03-T01 A provisioned tenant gives each worker its tuple",
 	"ST-SUP-RC35-OC13-T01 Provisioning a tenant writes one tuple for each worker in that tenant only",
 }
 
@@ -439,6 +438,7 @@ const (
 	provisionDecided    = "ST-DECL-UC10-R01-T01 A caller without the provision permission cannot provision a tenant"
 	provisionAudited    = "ST-DECL-UC10-R02-T01 A provision and a retire each leave one audit row in their transaction"
 	provisionGated      = "ST-DECL-UC10-R04-T01 A request for an unknown or retired tenant is refused before any handler"
+	provisionWorkers    = "ST-DECL-UC10-R03-T01 A provisioned tenant gives each worker its tuple"
 )
 
 // TestRuntimeWiring generates the test service with stego apply, builds it with the pinned Go, and runs the check of
@@ -514,4 +514,5 @@ func TestRuntimeWiring(t *testing.T) {
 	t.Run(provisionDecided, func(t *testing.T) { passed(t, provisionDecided) })
 	t.Run(provisionAudited, func(t *testing.T) { passed(t, provisionAudited) })
 	t.Run(provisionGated, func(t *testing.T) { passed(t, provisionGated) })
+	t.Run(provisionWorkers, func(t *testing.T) { passed(t, provisionWorkers) })
 }
