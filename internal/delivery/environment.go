@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"net/url"
@@ -502,6 +503,7 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 				Detail: fmt.Sprintf("the environment file gives the required environment variable %s no value", variable.Name)})
 		}
 	}
+	fit.Rows = append(fit.Rows, groupRows(requirements.Environment, env)...)
 	for _, entry := range env.entries {
 		if named[string(entry.kind)+" "+entry.name] {
 			if requirement := requirementOfKind(requirements, entry.kind, entry.name); requirement.Kind == Secret {
@@ -547,6 +549,61 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 		}
 	}
 	return fit, nil
+}
+
+// groupRows checks each group of one of of the variable list against the environment file (ST-DLV-UC02-R06,
+// ST-DLV-Q09): a group is met when the file gives exactly one of its variables a value. A variable has a value when
+// the file gives a configuration value of its name that is not empty, a secret of its name with a key, or, for a
+// variable with a secret source, that key of that Secret. It reads names and keys only, never a secret value.
+func groupRows(list []AcceptedVariable, env environment) []FitRow {
+	var rows []FitRow
+	groups := Groups(list)
+	for _, name := range slices.Sorted(maps.Keys(groups)) {
+		var given, ways []string
+		for _, variable := range groups[name] {
+			way := "a configuration value " + variable.Name
+			if variable.Secret {
+				way = "a secret " + variable.Name
+			}
+			if source := variable.SecretSource; source != nil {
+				way = fmt.Sprintf("the key %s of the secret %s (%s)", source.Key, source.Name, variable.Name)
+			}
+			ways = append(ways, way)
+			if variableGiven(variable, env) {
+				given = append(given, variable.Name)
+			}
+		}
+		requirement := "group " + name
+		switch {
+		case len(given) == 0:
+			rows = append(rows, FitRow{Requirement: requirement, Status: Missing,
+				Detail: fmt.Sprintf("the environment file gives no variable of the group of one of %s a value; give exactly one of: %s", name, strings.Join(ways, "; "))})
+		case len(given) > 1:
+			rows = append(rows, FitRow{Requirement: requirement, Status: WrongType,
+				Detail: fmt.Sprintf("the environment file gives more than one variable of the group of one of %s a value: %s; the service refuses them together, so give exactly one of: %s",
+					name, strings.Join(given, ", "), strings.Join(ways, "; "))})
+		default:
+			rows = append(rows, FitRow{Requirement: requirement, Status: Met})
+		}
+	}
+	return rows
+}
+
+// variableGiven tells whether the environment file gives a variable a value: a configuration value of its name that
+// is not empty, a secret of its name with a key, or the key of its secret source.
+func variableGiven(variable AcceptedVariable, env environment) bool {
+	if entry := env.lookup(Configuration, variable.Name); entry != nil && !entry.empty {
+		return true
+	}
+	if entry := env.lookup(Secret, variable.Name); entry != nil && len(entry.keys) > 0 {
+		return true
+	}
+	if source := variable.SecretSource; source != nil {
+		if entry := env.lookup(Secret, source.Name); entry != nil && slices.Contains(entry.keys, source.Key) {
+			return true
+		}
+	}
+	return false
 }
 
 // requirementOfKind gives the requirement of the kind with the name.

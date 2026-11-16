@@ -2,6 +2,7 @@ package registry
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -281,6 +282,58 @@ func TestShippedEnvironment(t *testing.T) {
 		}
 		if declared < 50 {
 			t.Fatalf("the shipped components declare %d variables, fewer than the code reads", declared)
+		}
+	})
+}
+
+func TestOneOfGroups(t *testing.T) {
+	t.Run("ST-SUP-UC01-R09-T03 The registry refuses a group of one of with one variable, a required variable or a bad name, and the shipped pairs are groups", func(t *testing.T) {
+		pair := "  - name: ENV_A_DATABASE_URL\n    type: string\n    required: false\n    description: \"The connection string of the database.\"\n    secret: true\n    one_of: database-url\n" +
+			"  - name: ENV_A_DATABASE_URL_FILE\n    type: path\n    required: false\n    description: \"The file of the connection string.\"\n    secret: false\n    one_of: database-url\n"
+		whole := "  - name: ENV_A_DATABASE_URL\n    type: string\n    required: false\n    description: \"The connection string of the database.\"\n    secret: true\n"
+		component, err := parseEnv(t, whole, pair)
+		if err != nil {
+			t.Fatalf("a group of two variables is refused: %v", err)
+		}
+		if got := component.Variables()[1].OneOf; got != "database-url" {
+			t.Errorf("the group of ENV_A_DATABASE_URL is %q, want database-url", got)
+		}
+		expectRefused(t, []refusal{
+			{"a group of one variable", "    secret: true\n", "    secret: true\n    one_of: database-url\n", "ENV_A_DATABASE_URL", "one_of"},
+			{"a required variable in a group", whole, strings.Replace(pair, "    required: false\n    description: \"The file", "    required: true\n    description: \"The file", 1), "ENV_A_DATABASE_URL_FILE", "one_of"},
+			{"a group name with a capital letter", whole, strings.ReplaceAll(pair, "one_of: database-url", "one_of: Database_URL"), "ENV_A_DATABASE_URL", "one_of"},
+		})
+		_, err = parseEnv(t, "    secret: true\n", "    secret: true\n    one_of: database-url\n")
+		if err == nil || !strings.Contains(err.Error(), "at least two variables") {
+			t.Errorf("the refusal of a group of one variable does not say that a group has at least two: %v", err)
+		}
+		// Each pair of the shipped registry whose process needs one of the two is a group of two.
+		shipped, err := Load(filepath.Join("..", "..", "registry"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string][]string{
+			"postgres-adapter/database-url":           {"DATABASE_URL", "DATABASE_URL_FILE"},
+			"postgres-adapter/migration-database-url": {"STEGO_MIGRATION_DATABASE_URL", "STEGO_MIGRATION_DATABASE_URL_FILE"},
+			"postgres-adapter/worker-database-url":    {"STEGO_WORKER_DATABASE_URL", "STEGO_WORKER_DATABASE_URL_FILE"},
+			"postgres-adapter/relay-database-url":     {"STEGO_RELAY_DATABASE_URL", "STEGO_RELAY_DATABASE_URL_FILE"},
+			"kafka-producer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
+		}
+		got := map[string][]string{}
+		for _, component := range shipped.Components() {
+			for _, variable := range component.Variables() {
+				if variable.OneOf != "" {
+					got[component.Name+"/"+variable.OneOf] = append(got[component.Name+"/"+variable.OneOf], variable.Name)
+				}
+			}
+		}
+		for key, names := range want {
+			if !slices.Equal(got[key], names) {
+				t.Errorf("the shipped group %s holds %v, want %v", key, got[key], names)
+			}
+		}
+		if len(got) != len(want) {
+			t.Errorf("the shipped registry states the groups %v, want only %v", got, want)
 		}
 	})
 }

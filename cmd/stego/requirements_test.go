@@ -567,7 +567,7 @@ func expectOnlyRequirementFields(t *testing.T, data []byte) {
 	for _, item := range variables {
 		entry, _ := item.(map[string]any)
 		for field := range entry {
-			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed", "secret_source", "refused_at_start", "read_by_mode"}, field) {
+			if !slices.Contains([]string{"name", "read_by", "type", "required", "default", "description", "secret", "allowed", "secret_source", "refused_at_start", "read_by_mode", "one_of"}, field) {
 				t.Errorf("the environment variable %v holds the field %s", entry["name"], field)
 			}
 		}

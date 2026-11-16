@@ -541,6 +541,9 @@ func LoadRequirements(data []byte) (Requirements, error) {
 			return Requirements{}, fmt.Errorf("platform requirements: requirement %s: field %s: %s", requirement.Name, field, reason)
 		}
 	}
+	if err := checkGroups(requirements.Environment); err != nil {
+		return Requirements{}, fmt.Errorf("platform requirements: %w", err)
+	}
 	listed := map[string]bool{}
 	for i, variable := range requirements.Environment {
 		if err := checkAccepted(variable); err != nil {

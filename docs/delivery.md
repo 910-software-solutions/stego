@@ -65,7 +65,10 @@ environment file against them.
   required variable has no `optional` flag. An optional variable has `optional: true`: when the key is not there,
   the service uses the default in its code. The base writes no default.
 - A variable with a `*_FILE` form, such as `DATABASE_URL` and `DATABASE_URL_FILE`, gets the environment form only.
-  The service refuses the two together.
+  The service refuses the two together. When the service needs one of the two, the pair is a group of one of
+  (`one_of`), and `stego env check` fails when the environment file gives none or both. The Secret of the
+  environment form counts as its value, so with the Component secret-files give the Secret and not the `*_FILE`
+  variable.
 - A secret variable that no secret need gives, such as `PGPASSWORD`, gets no entry.
 - A variable that only the migration job reads (`read_by_mode: migrate` in the platform requirements), such as
   `STEGO_MIGRATION_DATABASE_URL`, gets no entry in the Deployment. Only the migration Job takes it, from its own
