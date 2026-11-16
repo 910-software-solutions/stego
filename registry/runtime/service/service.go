@@ -154,10 +154,10 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}()
 	pools, err := p.TenantConfig(s.DatabaseURL)
 	if err != nil {
-		return nil, err
+		return nil, &databaseError{err}
 	}
 	if svc.pool, err = tenant.Open(ctx, pools); err != nil {
-		return nil, err
+		return nil, &databaseError{err}
 	}
 	// The process reports its release before the schema check, so a contract step sees it even while the check
 	// alerts (decision on finding F8, owner, 2026-11-13).
@@ -171,7 +171,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		return nil, err
 	}
 	if svc.auditDB, err = tenant.Open(ctx, pools); err != nil {
-		return nil, err
+		return nil, &databaseError{err}
 	}
 	if svc.queue, err = p.NewQueue(svc.pool); err != nil {
 		return nil, err
@@ -432,12 +432,31 @@ func (k presharedKey) GetRequestMetadata(context.Context, ...string) (map[string
 
 func (k presharedKey) RequireTransportSecurity() bool { return !k.plaintext }
 
-// StartStage gives the stage of a start that New refused, for the failure record of the process, which holds no
-// error text (ST-SUP-RP14-LC05): service.start.authn.discovery for a discovery document that the key set refused,
+// databaseError is a start whose database pool did not open: the connection configuration of the adapter, the
+// connection, or the checks of the runtime role refused it.
+type databaseError struct{ err error }
+
+func (e *databaseError) Error() string {
+	return "service: the database pool did not open: " + e.err.Error()
+}
+
+func (e *databaseError) Unwrap() error { return e.err }
+
+// StartStage gives the stage of a start that ReadSettings or New refused, for the failure record of the process,
+// which holds no error text and no value (ST-SUP-RP14-LC05): service.start.setting.<component>.<variable> for a
+// setting that ReadSettings refused, with the fixed name of the setting and the registry component that reads it,
+// such as service.start.setting.postgres-adapter.DATABASE_URL; service.start.database for a database pool that did
+// not open; service.start.authn.discovery for a discovery document that the key set refused,
 // service.start.authn.keys for another key source that it refused, service.start.schema_manifest for a database that
 // does not hold the schema manifest (ST-SUP-RP14-LC06), and empty for every other failure.
 func StartStage(err error) string {
+	var setting *SettingError
+	var database *databaseError
 	switch {
+	case errors.As(err, &setting) && setting.Component != "" && setting.Variable != "":
+		return "service.start.setting." + setting.Component + "." + setting.Variable
+	case errors.As(err, &database):
+		return "service.start.database"
 	case errors.Is(err, manifest.ErrNotSatisfied):
 		return "service.start.schema_manifest"
 	case errors.Is(err, authn.ErrDiscovery):

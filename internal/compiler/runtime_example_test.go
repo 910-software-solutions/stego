@@ -16,7 +16,8 @@ const exampleFixture = "testdata/runtime_example"
 // testdata/runtime_example/check in its module once: the check runs the migration job and the service binary
 // against the local PostgreSQL server of STEGO_TEST_POSTGRES_DSN and a local SpiceDB container, and calls the
 // example's collections over HTTP; then it changes the migrated database once for each kind of object of the schema
-// manifest and sees each start refused. A missing server fails the test: a missing result is not a pass.
+// manifest and sees each start refused, and starts the service with no DATABASE_URL and on a closed database port and
+// reads the stage of each failure record. A missing server fails the test: a missing result is not a pass.
 func TestRuntimeExample(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds and runs the example service")
@@ -43,7 +44,7 @@ func TestRuntimeExample(t *testing.T) {
 	binary := filepath.Join(p.dir, "bin", "service")
 	p.goCommand("build", "-o", binary, "./out")
 	endpoint, key := startWiringSpiceDB(t)
-	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=480s", "-v", "-run", "^(TestExample|TestSchemaManifest)$", "./out/examplecheck")
+	cmd := exec.Command(wiringPinnedGo(), "test", "-count=1", "-timeout=480s", "-v", "-run", "^(TestExample|TestSchemaManifest|TestStartFailure)$", "./out/examplecheck")
 	cmd.Dir = p.dir
 	cmd.Env = wiringGoEnv("STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key, "STEGO_EXAMPLE_BINARY="+binary)
 	output, runErr := cmd.CombinedOutput()
@@ -57,6 +58,12 @@ func TestRuntimeExample(t *testing.T) {
 		name := "ST-SUP-RC01-OC12-T08_A_start_on_a_database_that_does_not_satisfy_the_schema_manifest_alerts,_and_the_migration_job_refuses_it"
 		if !strings.Contains(string(output), "--- PASS: TestSchemaManifest/"+name+" ") {
 			t.Fatalf("the schema manifest check of the example did not run and pass (go test: %v):\n%s", runErr, output)
+		}
+	})
+	t.Run("ST-SUP-RP14-LC05-T04 The service binary of the example names the missing setting or the database in its failure record, with no value", func(t *testing.T) {
+		name := "ST-SUP-RP14-LC05-T04_The_service_binary_of_the_example_names_the_missing_setting_or_the_database_in_its_failure_record,_with_no_value"
+		if !strings.Contains(string(output), "--- PASS: TestStartFailure/"+name+" ") {
+			t.Fatalf("the start failure check of the example did not run and pass (go test: %v):\n%s", runErr, output)
 		}
 	})
 }

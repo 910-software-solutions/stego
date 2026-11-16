@@ -60,6 +60,9 @@ type Auth struct {
 	// gives the verifier's own default, RS256 and sub (ST-SUP-RP13-LC03, LC13).
 	Algorithms   []string
 	SubjectClaim string
+	// Component is the registry component of the auth provider, such as jwt-auth, oidc-auth or rh-sso-auth, which
+	// the stage of a refused verifier setting names; empty is jwt-auth.
+	Component string
 }
 
 // SpiceDB is how the service reaches SpiceDB: its address, its preshared key and whether a loopback address goes
@@ -104,15 +107,71 @@ type MigrationSettings struct {
 	SpiceDB SpiceDB
 }
 
-// settingError is a missing or malformed setting: it names the setting and never its value.
-func settingError(name, problem string) error {
-	return fmt.Errorf("service: the setting %s %s", name, problem)
+// SettingError is a missing or malformed setting that ReadSettings or ReadMigrationSettings refused. It names the
+// setting and never its value. Variable is the fixed name of the setting at fault, such as DATABASE_URL, and
+// Component the registry component that reads it, such as postgres-adapter; StartStage gives the stage
+// service.start.setting.<component>.<variable> from them (ST-SUP-RP14-LC05).
+type SettingError struct {
+	Component, Variable string
+	// names are the names that the message gives, such as "DATABASE_URL or DATABASE_URL_FILE", and problem what is
+	// wrong with the setting.
+	names, problem string
+}
+
+func (e *SettingError) Error() string { return "service: the setting " + e.names + " " + e.problem }
+
+// settingError is a missing or malformed setting: it names the setting and never its value. names is one fixed name,
+// or two joined by " or ", of which the first is the variable at fault.
+func settingError(names, problem string) error {
+	variable, _, _ := strings.Cut(names, " or ")
+	return &SettingError{Component: settingComponent(variable, ""), Variable: variable, names: names, problem: problem}
+}
+
+// settingComponent is the registry component that reads the setting variable (ST-SUP-RP14-LC05): postgres-adapter
+// for the connection strings, the auth provider for the verifier settings, spicedb-authz for SpiceDB and query for
+// the key of the list cursors. auth is the auth provider that the declaration states, or empty.
+func settingComponent(variable, auth string) string {
+	switch variable {
+	case DatabaseURLSetting, DatabaseURLFileSetting, MigrationDatabaseURLSetting, MigrationDatabaseURLFileSetting,
+		WorkerDatabaseURLSetting, WorkerDatabaseURLFileSetting, RelayDatabaseURLSetting, RelayDatabaseURLFileSetting:
+		return "postgres-adapter"
+	case IssuerSetting, AudienceSetting, KeysURLSetting, KeysFileSetting, CAFileSetting:
+		if auth == "" {
+			return DefaultAuthComponent
+		}
+		return auth
+	case SpiceDBEndpointSetting, SpiceDBKeyFileSetting, SpiceDBInsecureLoopbackSetting:
+		return "spicedb-authz"
+	case CursorKeyFileSetting:
+		return "query"
+	}
+	return ""
+}
+
+// DefaultAuthComponent is the auth provider of the verifier settings when the declaration names none in
+// Auth.Component.
+const DefaultAuthComponent = "jwt-auth"
+
+// ofComponent gives err with the auth provider of the declaration as the component of a verifier setting at fault.
+func ofComponent(err error, stated Auth) error {
+	var setting *SettingError
+	if errors.As(err, &setting) && stated.Component != "" {
+		setting.Component = settingComponent(setting.Variable, stated.Component)
+	}
+	return err
 }
 
 // ReadSettings reads the settings of a running service from the process environment by their fixed names, with the
 // verifier settings that the declaration states (ST-SUP-RP14-LC01). It refuses a missing or malformed setting, and a
-// setting that differs from the stated one, with an error that names the setting and not its value.
+// setting that differs from the stated one, with a *SettingError that names the setting and the component that reads
+// it, and not its value (ST-SUP-RP14-LC05).
 func ReadSettings(stated Auth) (Settings, error) {
+	s, err := readSettings(stated)
+	return s, ofComponent(err, stated)
+}
+
+// readSettings is ReadSettings before the auth provider of the declaration is set on a refused verifier setting.
+func readSettings(stated Auth) (Settings, error) {
 	var s Settings
 	var err error
 	if s.DatabaseURL, err = connectionString(DatabaseURLSetting, DatabaseURLFileSetting); err != nil {
