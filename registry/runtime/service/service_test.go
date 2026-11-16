@@ -565,3 +565,109 @@ func TestNew(t *testing.T) {
 		})
 	})
 }
+
+func TestStartRelease(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC07-T01 New refuses a database whose migration ledger does not hold the last migration of the release, until the migration job ran", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		spice := SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}
+		ctx := context.Background()
+		signing := authntest.NewKey(t, "k1")
+		settings := Settings{DatabaseURL: f.runtimeURL(), Issuer: "https://issuer.example", Audience: "todo",
+			KeysFile: writeFile(t, "keys.json", authntest.Document(signing.JWK())), SpiceDB: spice,
+			CursorKey: []byte(strings.Repeat("k", 32)), ServiceVersion: "1.0.0"}
+		declared := parts(nil, nil)
+		declared.Release = "002_release"
+		// start runs New with the log captured, and gives the refusal and the log.
+		start := func() (string, error) {
+			var err error
+			logs, _ := startCaptured(t, func() {
+				var svc *Service
+				if svc, err = New(ctx, settings, declared); err == nil {
+					_ = svc.Close()
+				}
+			})
+			return logs, err
+		}
+		refused := func(what, state string) {
+			t.Helper()
+			logs, err := start()
+			if !errors.Is(err, ErrMigrationPending) || StartStage(err) != "service.start.migration" {
+				t.Fatalf("%s: New gave %v at the stage %q, want the refusal of a pending migration at service.start.migration", what, err, StartStage(err))
+			}
+			for _, text := range []string{err.Error(), logs} {
+				for _, want := range []string{LedgerTable, state, "the argument migrate", "todo-svc-migrate-<release>", "wait until it completes"} {
+					if !strings.Contains(text, want) {
+						t.Errorf("%s: the refusal does not say %q:\n%s", what, want, text)
+					}
+				}
+			}
+			if !strings.Contains(logs, `"migration":"002_release"`) || strings.Contains(logs, rolePassword) {
+				t.Errorf("%s: the log line does not name the migration, or holds the password:\n%s", what, logs)
+			}
+		}
+		// A database on which no migration job ran.
+		refused("a database with no ledger", "is not in the database")
+
+		// A catalog that cannot be read is an error of the check, not a pending migration (#373 security review L5).
+		closed, err := sql.Open("pgx", f.runtimeURL())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = closed.Close()
+		if err := checkRelease(ctx, closed, "todo-svc", "002_release"); err == nil || errors.Is(err, ErrMigrationPending) ||
+			!strings.Contains(err.Error(), "read the migration ledger "+LedgerTable+" in the catalog") {
+			t.Errorf("the check on a closed pool gave %v, want an error of the catalog read that is not ErrMigrationPending", err)
+		}
+
+		// Parts with schema steps and no release fail closed before the database opens (#373 security review L3).
+		stepped := parts(nil, nil)
+		stepped.SchemaSteps = []string{"orders-status-rename"}
+		if _, err := New(ctx, settings, stepped); err == nil || !strings.Contains(err.Error(), "no release") || !strings.Contains(err.Error(), LedgerTable) {
+			t.Errorf("New with schema steps and no release gave %v, want a refusal that names the release and the ledger", err)
+		}
+
+		// The migration job of a release before this one: it makes the ledger, as the adapter does, with its own last
+		// migration, and grants nothing on it.
+		ledger := func(versions ...string) func(context.Context, *sql.Conn) error {
+			return func(ctx context.Context, conn *sql.Conn) error {
+				if _, err := conn.ExecContext(ctx, ordersDDL+`;
+CREATE SCHEMA IF NOT EXISTS stego_schema;
+CREATE TABLE IF NOT EXISTS stego_schema.migrations (version text PRIMARY KEY, digest text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
+					return err
+				}
+				for _, version := range versions {
+					if _, err := conn.ExecContext(ctx, "INSERT INTO stego_schema.migrations (version, digest) VALUES ($1, 'd') ON CONFLICT DO NOTHING", version); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+		}
+		job := MigrationSettings{DatabaseURL: f.database, SpiceDB: spice}
+		older := f.migration(nil)
+		older.Ledger = ledger("001_initial")
+		if err := Migrate(ctx, job, older); err != nil {
+			t.Fatal(err)
+		}
+		refused("a ledger that the runtime role cannot read", "is not readable by the runtime role")
+
+		// The same job with the grant of this release on the ledger, which the adapter's database access gives.
+		older.Grants = append(older.Grants, `GRANT USAGE ON SCHEMA "stego_schema"`, `GRANT SELECT ON TABLE "stego_schema"."migrations"`)
+		if err := Migrate(ctx, job, older); err != nil {
+			t.Fatal(err)
+		}
+		refused("a ledger without the migration of the release", "does not hold the migration 002_release")
+
+		// The migration job of this release: the start passes the check.
+		current := f.migration(nil)
+		current.Ledger = ledger("001_initial", "002_release")
+		current.Grants = older.Grants
+		if err := Migrate(ctx, job, current); err != nil {
+			t.Fatal(err)
+		}
+		if logs, err := start(); err != nil {
+			t.Fatalf("New after the migration job of the release gave %v:\n%s", err, logs)
+		}
+	})
+}

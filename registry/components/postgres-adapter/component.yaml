@@ -1,6 +1,6 @@
 kind: component
 name: postgres-adapter
-version: 6.6.0
+version: 6.7.0
 stage: ga
 output_namespace: internal/storage
 
@@ -62,7 +62,7 @@ environment:
     required: false
     description: "The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
     secret: true
-    secret_source: {name: "{service}-database", key: migration-url}
+    secret_source: {name: "{service}-database-owner", key: url}
     read_by_mode: migrate
   - name: STEGO_MIGRATION_DATABASE_URL_FILE
     type: path
@@ -70,7 +70,7 @@ environment:
     description: "The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two."
     secret: false
     read_by_mode: migrate
-    example: "/etc/stego/database/migration-url"
+    example: "/etc/stego/database-owner/url"
   - name: STEGO_WORKER_DATABASE_URL
     type: string
     required: false
@@ -262,5 +262,8 @@ environment:
 # setting, so no secret setting can reach a name (#331 security review F1).
 needs:
   - {kind: backing store, name: "{service}-db", engine: postgres}
-  - {kind: secret, name: "{service}-database", keys: [url, migration-url, worker-url]}
+  - {kind: secret, name: "{service}-database", keys: [url, worker-url]}
+  # The credential of the owner role, which only the migration Job reads, is in a Secret of its own that no serving
+  # pod references (ST-DLV-Q20).
+  - {kind: secret, name: "{service}-database-owner", keys: [url]}
   - {kind: egress, name: "{service}-db-network", port: 5432}

@@ -30,6 +30,7 @@ var objects = []object{
 	{"stego_schema", "epoch_seq", "sequence", "SELECT,USAGE"},
 	{"stego_schema", "generation", "table", "SELECT"},
 	{"stego_schema", "identity", "table", "SELECT"},
+	{"stego_schema", "migrations", "table", "SELECT"},
 }
 var schemas = []string{"public", "stego_schema"}
 
