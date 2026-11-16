@@ -21,8 +21,8 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
-// testConfig is a worker configuration for tests: one step at a time, short waits, and an attempt deadline that a
-// test reaches in real time.
+// testConfig is a worker configuration for tests: one step at a time and short waits. newWorker puts the attempt
+// deadline on a hand clock, so no attempt of a test ends by the real clock.
 func testConfig() WorkerConfig {
 	config := DefaultWorkerConfig()
 	config.Concurrency = 1
@@ -44,7 +44,139 @@ func newWorker(t testing.TB, q *Queue, edit func(*WorkerConfig)) *Worker {
 	if err != nil {
 		t.Fatal(err)
 	}
+	useHandClock(t, w)
 	return w
+}
+
+// useHandClock gives the attempts and status lookups of w their deadlines from a new hand clock, and returns it. The
+// lease left stays on the real clock unless the test also sets w.now to the clock's now.
+func useHandClock(t testing.TB, w *Worker) *handClock {
+	t.Helper()
+	clock := newHandClock(t)
+	w.deadline = clock.deadline
+	return clock
+}
+
+// handClock is a clock that the test moves itself, for the attempt deadline and the lease left of
+// ST-SUP-RP01-LC02. Its time starts at the real time when it is made, with the monotonic reading, so a lease end
+// that a claim measured on the real clock after that is not short on it. Each attempt context it gives ends when
+// the clock reaches the attempt's bound, with context.DeadlineExceeded as a timeout context does, or when its parent
+// ends. The fake destination that holds a request moves the clock to the bound of the attempt that sent it.
+type handClock struct {
+	mu       sync.Mutex
+	base     time.Time
+	offset   time.Duration
+	attempts []*handAttempt
+	made     chan *handAttempt
+}
+
+func newHandClock(t testing.TB) *handClock {
+	c := &handClock{base: time.Now(), made: make(chan *handAttempt, 64)}
+	t.Cleanup(func() {
+		c.mu.Lock()
+		attempts := c.attempts
+		c.mu.Unlock()
+		for _, a := range attempts {
+			a.end(context.Canceled)
+		}
+	})
+	return c
+}
+
+func (c *handClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.base.Add(c.offset)
+}
+
+// deadline gives an attempt context that ends at the clock's time plus d. It sends the attempt on made when the
+// buffer holds it, so a test can read the bound that the worker asked for.
+func (c *handClock) deadline(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	c.mu.Lock()
+	a := &handAttempt{clock: c, parent: parent, d: d, at: c.base.Add(c.offset + d), done: make(chan struct{})}
+	c.attempts = append(c.attempts, a)
+	c.mu.Unlock()
+	a.stop = context.AfterFunc(parent, func() { a.end(parent.Err()) })
+	select {
+	case c.made <- a:
+	default:
+	}
+	return a, func() {
+		a.stop()
+		a.end(context.Canceled)
+	}
+}
+
+// advance moves the clock and ends each attempt whose bound it reached.
+func (c *handClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.offset += d
+	now := c.base.Add(c.offset)
+	var due []*handAttempt
+	for _, a := range c.attempts {
+		if !a.at.After(now) {
+			due = append(due, a)
+		}
+	}
+	c.mu.Unlock()
+	for _, a := range due {
+		a.end(context.DeadlineExceeded)
+	}
+}
+
+// next returns the attempt that the clock gave first and that the test did not read yet. The worker asks for the
+// bound before it calls the handler, so a missing bound fails the test and does not wait.
+func (c *handClock) next(t testing.TB) *handAttempt {
+	t.Helper()
+	select {
+	case a := <-c.made:
+		return a
+	default:
+		t.Fatal("the attempt has no bound on the hand clock")
+		return nil
+	}
+}
+
+// handAttempt is one attempt context of the hand clock.
+type handAttempt struct {
+	clock  *handClock
+	parent context.Context
+	d      time.Duration
+	at     time.Time
+	stop   func() bool
+	once   sync.Once
+	done   chan struct{}
+	mu     sync.Mutex
+	err    error
+}
+
+// Deadline gives the parent's deadline: the bound is on the hand clock, and a deadline here would put it back on
+// the real clock of the network and database code that reads it.
+func (a *handAttempt) Deadline() (time.Time, bool) { return a.parent.Deadline() }
+func (a *handAttempt) Done() <-chan struct{}       { return a.done }
+func (a *handAttempt) Value(key any) any           { return a.parent.Value(key) }
+func (a *handAttempt) Err() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.err
+}
+
+func (a *handAttempt) end(err error) {
+	a.once.Do(func() {
+		a.mu.Lock()
+		a.err = err
+		a.mu.Unlock()
+		close(a.done)
+	})
+}
+
+// expire moves the clock to the bound of the attempt.
+func (a *handAttempt) expire() {
+	if left := a.at.Sub(a.clock.now()); left > 0 {
+		a.clock.advance(left)
+		return
+	}
+	a.clock.advance(0)
 }
 
 func register(t testing.TB, w *Worker, d Destination) {
@@ -131,14 +263,54 @@ func TestWorkerDelivery(t *testing.T) {
 		m := message("audit", "one")
 		enqueue(t, db, q, m)
 		w := newWorker(t, q, nil)
+		clock := useHandClock(t, w)
 		var calls atomic.Int32
+		entered := make(chan context.Context, 1)
+		release := make(chan struct{})
 		register(t, w, Destination{Name: "audit", Idempotent: true, Handler: func(ctx context.Context, _ *sql.Tx, d Delivery) error {
 			if calls.Add(1) == 1 {
-				<-ctx.Done()
+				entered <- ctx
+				select {
+				case <-ctx.Done():
+				case <-release:
+				}
 			}
 			return nil
 		}})
-		cycle(t, w)
+		var cycleErr error
+		cycled := make(chan struct{})
+		go func() {
+			defer close(cycled)
+			_, cycleErr = w.cycle(context.Background(), context.Background())
+		}()
+		// If the test fails while the handler waits, the handler is let go and the cycle ends before the database
+		// is dropped.
+		t.Cleanup(func() {
+			close(release)
+			<-cycled
+		})
+		var ctx context.Context
+		select {
+		case ctx = <-entered:
+		case <-cycled:
+			t.Fatalf("the handler was not called: %v", cycleErr)
+		}
+		attempt := clock.next(t)
+		if attempt.d != w.config.AttemptTimeout || ctx != context.Context(attempt) {
+			t.Fatalf("the handler got a bound of %v, want the attempt deadline %v, or not the attempt context", attempt.d, w.config.AttemptTimeout)
+		}
+		clock.advance(w.config.AttemptTimeout - time.Nanosecond)
+		if ctx.Err() != nil {
+			t.Fatal("the attempt ended one nanosecond before its deadline")
+		}
+		clock.advance(time.Nanosecond)
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("the attempt did not end at its deadline: %v", ctx.Err())
+		}
+		<-cycled
+		if cycleErr != nil {
+			t.Fatal(cycleErr)
+		}
 		row := readRow(t, db, m.ID)
 		if w.Stats().Delivered != 0 || row.State != OutcomeUnknown || row.FailureCode != "delivery-timeout" {
 			t.Fatalf("a late success counted: delivered %d, row %+v", w.Stats().Delivered, row)
@@ -146,6 +318,20 @@ func TestWorkerDelivery(t *testing.T) {
 		cycle(t, w)
 		if calls.Load() != 2 || readRow(t, db, m.ID).State != Done || w.Stats().Delivered != 1 {
 			t.Fatalf("the message was not sent again: calls %d, row %+v", calls.Load(), readRow(t, db, m.ID))
+		}
+		// NewWorker puts the attempt deadline and the lease left on the real clock.
+		real, err := NewWorker(q, testConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := time.Now()
+		bounded, stop := real.deadline(context.Background(), time.Hour)
+		read := real.now()
+		after := time.Now()
+		defer stop()
+		end, ok := bounded.Deadline()
+		if !ok || end.Before(before.Add(time.Hour)) || end.After(after.Add(time.Hour)) || read.Before(before) || read.After(after) {
+			t.Fatalf("NewWorker does not use the real clock: deadline %v %v, now %v, between %v and %v", end, ok, read, before, after)
 		}
 	})
 
@@ -937,17 +1123,19 @@ func TestWorkerDrain(t *testing.T) {
 }
 
 func TestWorkerLease(t *testing.T) {
-	t.Run("ST-SUP-RP01-LC02-T03 A handler is not called when the lease left is short", func(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC02-T04 A handler is not called when the lease left is short", func(t *testing.T) {
 		db, _ := testDatabase(t)
 		q := newQueue(t, db, nil)
 		m := message("audit", "one")
 		enqueue(t, db, q, m)
 		w := newWorker(t, q, nil)
+		clock := useHandClock(t, w)
+		w.now = clock.now
 		var calls atomic.Int32
-		var deadline time.Time
+		var handled context.Context
 		reg := Destination{Name: "audit", Handler: func(ctx context.Context, _ *sql.Tx, _ Delivery) error {
 			calls.Add(1)
-			deadline, _ = ctx.Deadline()
+			handled = ctx
 			return nil
 		}}
 		register(t, w, reg)
@@ -956,28 +1144,32 @@ func TestWorkerLease(t *testing.T) {
 			t.Fatalf("claim: %v %v", claimed, err)
 		}
 		d := claimed[0]
-		// The lease on the local clock holds less than the attempt and the two statements after it.
-		d.leaseEnd = time.Now().Add(w.config.AttemptTimeout + 2*operationTimeout - time.Second)
+		// The lease on the local clock holds one nanosecond less than the attempt and the two statements after it.
+		need := w.config.AttemptTimeout + 2*operationTimeout
+		d.leaseEnd = clock.now().Add(need - time.Nanosecond)
 		w.step(context.Background(), d)
 		if row := readRow(t, db, m.ID); calls.Load() != 0 || row.State != Pending || row.Attempts != 0 || row.FailureCode != "lease-short" {
 			t.Fatalf("a short lease gave %d calls and %+v", calls.Load(), row)
 		}
-		// With a lease that holds the attempt, the handler's deadline is the attempt deadline or the lease left less
-		// the two statements, whichever comes first.
+		// A lease that holds exactly the attempt and the two statements calls the handler, with the attempt
+		// deadline as its bound: the lease left less the two statements is not shorter.
 		claimed, err = q.Claim(context.Background(), 1, time.Minute)
 		if err != nil || len(claimed) != 1 {
 			t.Fatalf("claim: %v %v", claimed, err)
 		}
 		d = claimed[0]
-		d.leaseEnd = time.Now().Add(w.config.AttemptTimeout + 2*operationTimeout + 200*time.Millisecond)
-		end := d.leaseEnd
+		d.leaseEnd = clock.now().Add(need)
 		w.step(context.Background(), d)
-		if calls.Load() != 1 || deadline.After(end.Add(-2*operationTimeout)) || readRow(t, db, m.ID).State != Done {
-			t.Fatalf("the handler ran %d times with the deadline %v for a lease to %v", calls.Load(), deadline, end)
+		if calls.Load() != 1 || readRow(t, db, m.ID).State != Done {
+			t.Fatalf("a lease of the attempt and two statements gave %d calls and %+v", calls.Load(), readRow(t, db, m.ID))
+		}
+		attempt := clock.next(t)
+		if attempt.d != w.config.AttemptTimeout || handled != context.Context(attempt) {
+			t.Fatalf("the handler got a bound of %v for a lease of %v, want %v", attempt.d, need, w.config.AttemptTimeout)
 		}
 	})
 
-	t.Run("ST-SUP-RP01-LC02-T03 A message that another holder finished is a lost lease", func(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC02-T05 A message that another holder finished is a lost lease", func(t *testing.T) {
 		db, _ := testDatabase(t)
 		q := newQueue(t, db, nil)
 		m := message("audit", "one")
@@ -1002,7 +1194,7 @@ func TestWorkerLease(t *testing.T) {
 }
 
 func TestWorkerPool(t *testing.T) {
-	t.Run("ST-SUP-RP01-LC05-T01 A pool with fewer than Concurrency + 2 connections is refused", func(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC05-T05 A pool with fewer than Concurrency + 2 connections is refused", func(t *testing.T) {
 		q := lazyQueue(t)
 		q.db.SetMaxOpenConns(3)
 		config := testConfig()

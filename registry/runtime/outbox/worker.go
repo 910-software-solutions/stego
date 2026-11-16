@@ -150,6 +150,13 @@ type Worker struct {
 	hookFailures        atomic.Uint64
 	donePurged          atomic.Uint64
 	purgeBatches        atomic.Uint64
+
+	// now reads the local monotonic clock of the lease left, and deadline gives the context of each attempt and
+	// status lookup, ended at its bound. NewWorker sets time.Now and context.WithTimeout. A test sets a clock that
+	// it moves itself, so it proves the attempt deadline and the lease left of ST-SUP-RP01-LC02 with no wall-clock
+	// limit.
+	now      func() time.Time
+	deadline func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // NewWorker builds a worker on queue with config. It refuses a limit outside its bounds, and a pool of the queue
@@ -179,7 +186,7 @@ func NewWorker(queue *Queue, config WorkerConfig) (*Worker, error) {
 	}
 	w := &Worker{queue: queue, config: config, decider: config.Decider, auditor: config.Auditor,
 		destinations: map[string]Destination{}, stop: make(chan struct{}), drain: make(chan struct{}),
-		finished: make(chan struct{})}
+		finished: make(chan struct{}), now: time.Now, deadline: context.WithTimeout}
 	m, err := newMetrics(config.Meter, config.Logger, w)
 	if err != nil {
 		return nil, err
