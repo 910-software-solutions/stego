@@ -50,8 +50,9 @@ type EnvironmentFit struct {
 	// Unused are the values of the environment file that no platform requirement and no listed environment variable
 	// names, by kind and name.
 	Unused []string
-	// Notices are the grants of the environment file that are wider than a requirement asks for: a less strict pod
-	// security level or extra cluster verbs. They meet the requirement and do not fail the check.
+	// Notices are the grants of the environment file that are wider than a requirement asks for, a less strict pod
+	// security level or extra cluster verbs, and the values of the *_FILE form of a variable with a secret source,
+	// which the base never wires. They do not fail the check.
 	Notices []string
 }
 
@@ -488,23 +489,22 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 		if !variable.Required || variable.RefusedAtStart || named[string(Configuration)+" "+variable.Name] {
 			continue
 		}
-		given := false
-		kinds := []RequirementKind{Configuration, Secret}
-		if variable.Secret {
-			kinds = []RequirementKind{Secret}
-		}
-		for _, kind := range kinds {
-			if entry := env.lookup(kind, variable.Name); entry != nil && !(entry.kind == Configuration && entry.empty) && !(entry.kind == Secret && len(entry.keys) == 0) {
-				given = true
-			}
-		}
-		if !given {
+		if !variableGiven(variable, env) {
 			fit.Rows = append(fit.Rows, FitRow{Requirement: "variable " + variable.Name, Status: Missing,
 				Detail: fmt.Sprintf("the environment file gives the required environment variable %s no value", variable.Name)})
 		}
 	}
 	fit.Rows = append(fit.Rows, groupRows(requirements.Environment, env)...)
 	for _, entry := range env.entries {
+		if form, wired := fileFormOf(entry.name, variables); wired && (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] {
+			// The base never wires the *_FILE form of a secret variable with a secret source from the environment
+			// file: the key of that Secret gives the value, as the environment form, or as the file when the overlay
+			// lists the Component secret-files (#375 security review L3). The value does not reach the service.
+			fit.Notices = append(fit.Notices, fmt.Sprintf("%s %s: the base never wires %s from the environment file; the key %s of the secret %s gives its value, "+
+				"as %s, or as the file %s when the overlay lists the Component %s; remove %s from the environment file",
+				entry.kind, entry.name, entry.name, form.SecretSource.Key, form.SecretSource.Name, form.Name, entry.name, SecretFilesFolder, entry.name))
+			continue
+		}
 		if named[string(entry.kind)+" "+entry.name] {
 			if requirement := requirementOfKind(requirements, entry.kind, entry.name); requirement.Kind == Secret {
 				for _, key := range entry.keys {
@@ -552,21 +552,34 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 }
 
 // groupRows checks each group of one of of the variable list against the environment file (ST-DLV-UC02-R06,
-// ST-DLV-Q09): a group is met when the file gives exactly one of its variables a value. A variable has a value when
-// the file gives a configuration value of its name that is not empty, a secret of its name with a key, or, for a
-// variable with a secret source, that key of that Secret. It reads names and keys only, never a secret value.
+// ST-DLV-Q09): a group is met when the file gives exactly one of its variables a value, by variableGiven. The *_FILE
+// form of a secret variable with a secret source is never a value of its own: the base wires that variable from the
+// key of its Secret only, as the environment form, or as the file when the overlay lists the Component secret-files,
+// so the key of the Secret is the one value of the two forms (#375 security review L3). It reads names and keys only,
+// never a secret value.
 func groupRows(list []AcceptedVariable, env environment) []FitRow {
+	byName := map[string]AcceptedVariable{}
+	for _, variable := range list {
+		byName[variable.Name] = variable
+	}
 	var rows []FitRow
 	groups := Groups(list)
 	for _, name := range slices.Sorted(maps.Keys(groups)) {
 		var given, ways []string
 		for _, variable := range groups[name] {
+			if _, wired := fileFormOf(variable.Name, byName); wired {
+				continue
+			}
 			way := "a configuration value " + variable.Name
 			if variable.Secret {
 				way = "a secret " + variable.Name
 			}
 			if source := variable.SecretSource; source != nil {
 				way = fmt.Sprintf("the key %s of the secret %s (%s)", source.Key, source.Name, variable.Name)
+				if file, paired := byName[variable.Name+"_FILE"]; paired && file.OneOf == name && variable.Secret {
+					way = fmt.Sprintf("the key %s of the secret %s (%s, or %s when the overlay lists the Component %s)",
+						source.Key, source.Name, variable.Name, file.Name, SecretFilesFolder)
+				}
 			}
 			ways = append(ways, way)
 			if variableGiven(variable, env) {
@@ -589,21 +602,37 @@ func groupRows(list []AcceptedVariable, env environment) []FitRow {
 	return rows
 }
 
-// variableGiven tells whether the environment file gives a variable a value: a configuration value of its name that
-// is not empty, a secret of its name with a key, or the key of its secret source.
+// fileFormOf gives the environment form of a *_FILE variable when that form is a secret variable with a secret
+// source in the list: the base wires neither form from the environment file, only from the key of that Secret
+// (baseEnvironment, jobEnvironment).
+func fileFormOf(name string, list map[string]AcceptedVariable) (AcceptedVariable, bool) {
+	form, isFile := strings.CutSuffix(name, "_FILE")
+	if !isFile {
+		return AcceptedVariable{}, false
+	}
+	variable, listed := list[form]
+	if !listed || !variable.Secret || variable.SecretSource == nil {
+		return AcceptedVariable{}, false
+	}
+	return variable, true
+}
+
+// variableGiven tells whether the environment file gives a variable a value, as the base wires it (ST-DLV-UC02-R06).
+// A secret variable with a secret source has a value only when the Secret of the source holds its key: the base reads
+// no other Secret for it (#375 security review L2). Another secret variable has a value when a secret of its name
+// holds a key of its name. A variable that is not secret has a value when the configuration value of its name is not
+// empty. It reads names and keys only, never a secret value.
 func variableGiven(variable AcceptedVariable, env environment) bool {
-	if entry := env.lookup(Configuration, variable.Name); entry != nil && !entry.empty {
-		return true
-	}
-	if entry := env.lookup(Secret, variable.Name); entry != nil && len(entry.keys) > 0 {
-		return true
-	}
-	if source := variable.SecretSource; source != nil {
-		if entry := env.lookup(Secret, source.Name); entry != nil && slices.Contains(entry.keys, source.Key) {
-			return true
+	if variable.Secret {
+		if source := variable.SecretSource; source != nil {
+			entry := env.lookup(Secret, source.Name)
+			return entry != nil && slices.Contains(entry.keys, source.Key)
 		}
+		entry := env.lookup(Secret, variable.Name)
+		return entry != nil && slices.Contains(entry.keys, variable.Name)
 	}
-	return false
+	entry := env.lookup(Configuration, variable.Name)
+	return entry != nil && !entry.empty
 }
 
 // requirementOfKind gives the requirement of the kind with the name.

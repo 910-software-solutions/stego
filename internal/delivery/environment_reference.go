@@ -88,6 +88,23 @@ func renderGroups(out *bytes.Buffer, list []AcceptedVariable) {
 		}
 		fmt.Fprintf(out, "| %s | %s |\n", code(name), strings.Join(names, ", "))
 	}
+	// The pair of a secret variable with a secret source and its *_FILE form gets its one value from the key of the
+	// Secret, as the base wires it (#375 security review L3).
+	byName := map[string]AcceptedVariable{}
+	for _, variable := range list {
+		byName[variable.Name] = variable
+	}
+	var sourced []string
+	for _, variable := range list {
+		if form, wired := fileFormOf(variable.Name, byName); wired && variable.OneOf != "" && variable.OneOf == form.OneOf {
+			sourced = append(sourced, code(form.Name))
+		}
+	}
+	if len(sourced) > 0 {
+		fmt.Fprintf(out, "\nThe key of the Secret of %s is the one value of its group: the base gives it as that variable, and the\n"+
+			"Component secret-files gives it as the file of the *_FILE form. Give the Secret in the environment file, with or\n"+
+			"without the Component, and never the *_FILE variable: the base never wires it.\n", strings.Join(sourced, ", "))
+	}
 }
 
 // renderSecretSources renders, from the list alone, the Secret and the key of each variable with a secret source,

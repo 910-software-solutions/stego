@@ -47,13 +47,21 @@ A port is a number from 1 to 65535. The verbs are `get`, `list`, `watch`, `creat
   and be one of its allowed values or inside its range. A `url` must be an HTTPS URL. A `path` is an absolute file
   path. An `address` is a host and a port, such as `spicedb.example.com:50051`. A `duration` is a Go duration, such
   as `30s`.
-- A required environment variable must have a value under `configuration`, or a secret of its name when the variable
-  is secret.
+- A required environment variable must have a value, as the base wires it. A variable that is not secret has a value
+  under `configuration`. A secret variable with a `secret_source` has a value when the secret of its source has that
+  key. Another secret variable has a value when a secret of its name has the key of its name, as `envFrom` gives it.
+  A secret of the variable's name with another key is not a value.
 - A secret environment variable under `configuration` is the wrong type: give it as a secret.
-- The variables of a group of one of (`one_of` in the `environment` list), such as `DATABASE_URL` and
-  `DATABASE_URL_FILE`, need exactly one value. A variable has a value when `configuration` gives it one that is not
-  empty, when a secret of its name has a key, or when the secret of its `secret_source` has that key. The check names
-  the group as missing when no variable of it has a value, and as the wrong type when more than one has.
+- The variables of a group of one of (`one_of` in the `environment` list), such as `STEGO_KAFKA_BROKERS` and
+  `STEGO_KAFKA_BROKERS_FILE`, need exactly one value, with the same rules. The check names the group as missing when
+  no variable of it has a value, and as the wrong type when more than one has.
+- A pair of a secret variable with a `secret_source` and its `*_FILE` form, such as `DATABASE_URL` and
+  `DATABASE_URL_FILE`, gets its one value from the key of the secret of the source: the base gives it as
+  `DATABASE_URL`, and as the file `DATABASE_URL_FILE` when the overlay lists the Component
+  `deploy/components/secret-files`. Give that secret and key in both cases. The base never wires the `*_FILE` form
+  from the environment file, so a value of it under `configuration` or `secrets` is not a second value of the group:
+  the check prints a notice that tells you to remove it. The same applies to `STEGO_WORKER_DATABASE_URL`,
+  `STEGO_RELAY_DATABASE_URL` and `STEGO_MIGRATION_DATABASE_URL`.
 - An entry that no requirement and no listed variable names is listed as unused. It does not fail the check.
 
 `deploy/environment-variables.md` lists each environment variable with its type, its default, its allowed values and
