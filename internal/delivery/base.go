@@ -73,12 +73,13 @@ var MigrationKeyFiles = []string{"STEGO_SPICEDB_KEY_FILE"}
 
 // The settings of the migration Job (ST-DLV-UC07-R06). The job runs its schema steps within 10 minutes and its
 // backfills within one hour (MigrationTimeout and BackfillTimeout of the service runtime), so two hours hold one run
-// and its retries. A finished Job stays one day, so that an operator or an agent can read its pods and logs, and
-// then Kubernetes deletes it, so that a later apply of the same base makes it again.
+// and its retries. A finished Job stays ten minutes and then Kubernetes deletes it, so that the next plain apply of a
+// new image makes it again and does not fail on its pod template; its logs stay in the logging of the cluster, and
+// Argo CD deletes it by its hook policy.
 const (
 	MigrationBackoffLimit = 2
 	MigrationDeadline     = 7200
-	MigrationTimeToLive   = 86400
+	MigrationTimeToLive   = 600
 )
 
 // releaseSuffixLength is the length of the suffix of the name of the migration Job: the first hex digits of the
@@ -438,21 +439,26 @@ func migrates(list []AcceptedVariable) bool {
 	return false
 }
 
-// The labels of the migration Job and its pods. They have no app.kubernetes.io/name, so that the selector of the
-// Deployment and of the Service never takes a pod of the Job.
+// The labels of the migration Job and its pods. The Job has the name of the service, so that one stable selector,
+// app.kubernetes.io/component=migration,app.kubernetes.io/name=<service>, finds it for kubectl delete. Its pods have
+// no app.kubernetes.io/name, so that the selector of the Deployment and of the Service never takes a pod of the Job.
 const (
+	nameLabel      = "app.kubernetes.io/name"
 	partOfLabel    = "app.kubernetes.io/part-of"
 	componentLabel = "app.kubernetes.io/component"
 	migrationLabel = "migration"
 )
 
-// The Argo CD annotations of the migration Job: it runs as a PreSync hook, before Argo CD syncs the Deployment, a new
-// sync deletes the Job of the sync before, and a Job that passed is deleted. Plain Kubernetes ignores them.
+// The Argo CD annotations of the migration Job: it runs as a PreSync hook in the sync wave 0, before Argo CD syncs
+// the Deployment, so that an overlay can give its Secrets and its ConfigMap an earlier PreSync wave, such as -1; a
+// new sync deletes the Job of the sync before, and a Job that passed is deleted. Plain Kubernetes ignores them.
 const (
 	HookAnnotation       = "argocd.argoproj.io/hook"
 	HookDeleteAnnotation = "argocd.argoproj.io/hook-delete-policy"
+	SyncWaveAnnotation   = "argocd.argoproj.io/sync-wave"
 	HookPhase            = "PreSync"
 	HookDeletePolicy     = "BeforeHookCreation,HookSucceeded"
+	MigrationSyncWave    = "0"
 )
 
 // migrationJob writes the migration Job of the release (ST-DLV-UC07-R06, ST-DLV-Q20): a batch/v1 Job that runs the
@@ -463,6 +469,7 @@ const (
 // secret-files gives the Job as files.
 func migrationJob(service, name string, list []AcceptedVariable) (map[string]any, []secretFile) {
 	labels := map[string]any{partOfLabel: service, componentLabel: migrationLabel}
+	jobLabels := map[string]any{nameLabel: service, partOfLabel: service, componentLabel: migrationLabel}
 	container := map[string]any{
 		"name":      service,
 		"image":     ImagePlaceholder(service),
@@ -480,8 +487,8 @@ func migrationJob(service, name string, list []AcceptedVariable) (map[string]any
 		"securityContext": map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
 		"volumes":         []any{map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": TmpSizeLimit}}}}
 	return map[string]any{"apiVersion": "batch/v1", "kind": "Job",
-		"metadata": map[string]any{"name": name, "labels": labels,
-			"annotations": map[string]any{HookAnnotation: HookPhase, HookDeleteAnnotation: HookDeletePolicy}},
+		"metadata": map[string]any{"name": name, "labels": jobLabels,
+			"annotations": map[string]any{HookAnnotation: HookPhase, HookDeleteAnnotation: HookDeletePolicy, SyncWaveAnnotation: MigrationSyncWave}},
 		"spec": map[string]any{"backoffLimit": MigrationBackoffLimit, "activeDeadlineSeconds": MigrationDeadline,
 			"ttlSecondsAfterFinished": MigrationTimeToLive,
 			"template":                map[string]any{"metadata": map[string]any{"labels": labels}, "spec": pod}}}, switched
@@ -1019,8 +1026,8 @@ type migrationJobShape struct {
 }
 
 // checkMigrationJob holds the migration Job of a base to its exact shape (ST-DLV-UC07-R06, ST-DLV-INV13): a batch/v1
-// Job of the name of the release with the labels of the migration and no app.kubernetes.io/name, the two Argo CD hook
-// annotations, a retry limit, a time limit and a time to live; a pod that never restarts in place, with no service
+// Job of the name of the release with the labels of the migration and the service, pods with no
+// app.kubernetes.io/name, the Argo CD hook annotations with the sync wave 0, a retry limit, a time limit and a time to live; a pod that never restarts in place, with no service
 // account token, that runs as non-root with the seccomp profile RuntimeDefault and no fsGroup, and has only the
 // emptyDir at /tmp; and one container of the service that runs the binary with migrate alone, with no privilege
 // escalation, every capability dropped and a read-only root file system. Its environment entries name only keys,
@@ -1031,15 +1038,18 @@ func checkMigrationJob(content []byte, service, name string) error {
 		return fmt.Errorf("the migration Job has a field that the base never writes: %w", err)
 	}
 	labels := map[string]string{partOfLabel: service, componentLabel: migrationLabel}
-	annotations := map[string]string{HookAnnotation: HookPhase, HookDeleteAnnotation: HookDeletePolicy}
+	jobLabels := map[string]string{nameLabel: service, partOfLabel: service, componentLabel: migrationLabel}
+	annotations := map[string]string{HookAnnotation: HookPhase, HookDeleteAnnotation: HookDeletePolicy, SyncWaveAnnotation: MigrationSyncWave}
 	spec, pod := job.Spec, job.Spec.Template.Spec
 	switch {
 	case job.APIVersion != "batch/v1" || job.Kind != "Job" || !strings.HasPrefix(name, service+"-migrate-") || len(name) > 63 || !serviceLabel.MatchString(name):
 		return fmt.Errorf("the Job %q is not the batch/v1 migration Job <service>-migrate-<release> of %s", name, service)
-	case !maps.Equal(job.Metadata.Labels, labels) || !maps.Equal(spec.Template.Metadata.Labels, labels):
-		return fmt.Errorf("the Job %s and its pods do not have exactly the labels %s: %s and %s: %s", name, partOfLabel, service, componentLabel, migrationLabel)
+	case !maps.Equal(job.Metadata.Labels, jobLabels) || !maps.Equal(spec.Template.Metadata.Labels, labels):
+		return fmt.Errorf("the Job %s does not have exactly the labels %s, %s and %s: %s, or its pods not exactly the last two, with no %s",
+			name, nameLabel, partOfLabel, componentLabel, migrationLabel, nameLabel)
 	case !maps.Equal(job.Metadata.Annotations, annotations):
-		return fmt.Errorf("the Job %s does not have exactly the annotations %s: %s and %s: %s", name, HookAnnotation, HookPhase, HookDeleteAnnotation, HookDeletePolicy)
+		return fmt.Errorf("the Job %s does not have exactly the annotations %s: %s, %s: %s and %s: %q", name, HookAnnotation, HookPhase,
+			HookDeleteAnnotation, HookDeletePolicy, SyncWaveAnnotation, MigrationSyncWave)
 	case spec.BackoffLimit == nil || *spec.BackoffLimit < 0 || spec.ActiveDeadlineSeconds == nil || *spec.ActiveDeadlineSeconds <= 0 ||
 		spec.TTLSecondsAfterFinished == nil || *spec.TTLSecondsAfterFinished <= 0:
 		return fmt.Errorf("the Job %s does not set backoffLimit, activeDeadlineSeconds and ttlSecondsAfterFinished", name)

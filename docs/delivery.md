@@ -120,18 +120,21 @@ references no Secret that the Deployment takes a variable from.
   template of a Job, so each release that changes the schema gets a Job of a new name. The name is at most 63
   characters, so the service name is at most 44 characters. A release that does not change the schema keeps the
   Job name; see "Plain kubectl".
-- The annotations `argocd.argoproj.io/hook: PreSync` and
-  `argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded`. Plain Kubernetes ignores them.
+- The annotations `argocd.argoproj.io/hook: PreSync`,
+  `argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded` and `argocd.argoproj.io/sync-wave: "0"`.
+  Plain Kubernetes ignores them.
 - `backoffLimit: 2`, `activeDeadlineSeconds: 7200` (two hours: the schema steps have 10 minutes and the backfills
-  one hour) and `ttlSecondsAfterFinished: 86400`. A finished Job stays one day, so that you can read its pods and
-  logs, and then Kubernetes deletes it.
+  one hour) and `ttlSecondsAfterFinished: 600`. Kubernetes deletes a finished Job after ten minutes. Read the logs of
+  an older Job in the logging of the cluster.
 - `restartPolicy: Never`, no service account token, and the default service account of the namespace. Argo CD runs
   the PreSync hook before it syncs the service account of the base, so the Job cannot use that account. When the
   image needs a pull secret, give it to the default service account, or patch the Job in the overlay.
 - The pod security of the Deployment: non-root, the seccomp profile `RuntimeDefault`, no privilege escalation, every
   capability dropped, a read-only root file system and the emptyDir `/tmp`. It sets no `fsGroup`, for the same
   reason as the Deployment (see "Secrets as files").
-- The labels `app.kubernetes.io/part-of: <service>` and `app.kubernetes.io/component: migration`, and no
+- On the Job, the labels `app.kubernetes.io/name: <service>`, `app.kubernetes.io/part-of: <service>` and
+  `app.kubernetes.io/component: migration`. They do not change between releases, so one selector finds the Job of
+  any release. On its pods, only `app.kubernetes.io/part-of` and `app.kubernetes.io/component`, with no
   `app.kubernetes.io/name`, so that the selectors of the Deployment and the Service never take a pod of the Job.
 - An `env` entry, names only, for each variable that is not secret, from the ConfigMap `<service>-config`, as in
   the Deployment, and `STEGO_MIGRATION_DATABASE_URL` from `<service>-database-owner`. It has no credential of a
@@ -147,39 +150,56 @@ Argo CD runs the Job as a PreSync hook: before it syncs the Deployment, it delet
 (`HookSucceeded`). A Job that failed stops the sync, and stays until the next sync or its time to live, so that you
 can read its logs.
 
-The Job runs before Argo CD syncs the other resources of the Application. So the Secret `<service>-database-owner`,
-the Secret `<service>-spicedb` and the ConfigMap `<service>-config` must be on the cluster before the sync, for
-example from an operator or another Application. When the overlay itself makes them, the first sync waits on the
-Job until its time limit, because the Job cannot start without them.
+The Job runs in the PreSync phase, in the sync wave `0`, before Argo CD syncs the other resources of the
+Application. So the Secret `<service>-database-owner`, the Secret `<service>-spicedb` and the ConfigMap
+`<service>-config` (or the resource that makes each of them, such as an ExternalSecret) must be on the cluster
+before the Job, outside the Sync phase. Do one of these:
+
+- Make them in a separate Application that syncs before the service, for example an Application of the
+  platform's secrets.
+- Make them in the overlay as PreSync resources of an earlier wave, with the annotations
+  `argocd.argoproj.io/hook: PreSync` and `argocd.argoproj.io/sync-wave: "-1"`, and no hook delete policy, so that
+  Argo CD keeps them.
+
+If the overlay makes them as normal resources, the first sync waits on the Job until its time limit, because the
+pod of the Job cannot start without them (`CreateContainerConfigError`, or `FailedMount` with the Component).
 
 ### Plain kubectl
 
 `kubectl apply -k <overlay>` makes the Job and the Deployment at the same time, and nothing runs the Job first.
-The serving process checks this at start: it reads the migration ledger `stego_schema.migrations`, and when the
-ledger does not hold the last migration of its release, the process stops with the stage
-`service.start.migration` and an error line that names the ledger and the migration, and says to run the migration
-Job of the release and to wait until it completes. The pod restarts, with the back-off of Kubernetes, until the Job
-is done, and then starts. To wait in a script:
+Deploy each release with these two commands, in this order:
 
 ```sh
-kubectl delete job -l app.kubernetes.io/part-of=orders,app.kubernetes.io/component=migration --field-selector status.successful=1
-kubectl apply -k overlays/test
-kubectl wait --for=condition=complete job -l app.kubernetes.io/part-of=orders,app.kubernetes.io/component=migration --timeout=2h
-kubectl rollout status deployment/orders
+kubectl delete job -n <namespace> -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --ignore-not-found
+kubectl apply -k <overlay>
+```
+
+The first command deletes the migration Job of the release before, if Kubernetes did not delete it yet. Without
+it, a release that does not change the schema keeps the name of the Job but gets a new image, and the apply fails
+with an error such as:
+
+```text
+The Job "orders-migrate-0123456789" is invalid: spec.template: Invalid value: ...: field is immutable
+```
+
+Kubernetes does not change the pod template of a Job that exists. The fix is the first command and then the apply
+again: the Job of the release before has finished its work, because the pods of that release started only after
+it did (see the start check below). A Job finishes within two hours, so do not delete a Job while it runs; `kubectl get job -n <namespace> -l
+app.kubernetes.io/component=migration,app.kubernetes.io/name=<service>` shows its state.
+
+The serving process checks the order at start: it reads the migration ledger `stego_schema.migrations`, and when
+the ledger does not hold the last migration of its release, the process stops with the stage
+`service.start.migration` and an error line that names the ledger and the migration, and says to run the migration
+Job of the release and to wait until it completes. The pod restarts, with the back-off of Kubernetes, until the Job
+is done, and then starts. To wait in a script, after the two commands:
+
+```sh
+kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h
+kubectl rollout status -n <namespace> deployment/<service>
 ```
 
 A database whose ledger holds the migration of the release, but that does not hold the schema manifest, still
 starts, with an alert for each fault. The migration Job refuses such a database.
-
-A second apply of the same release changes nothing in a Job that is still there. After its time to live, the Job is
-gone, and the next apply makes it again; the job then finds nothing to do. A release that does not change the
-schema keeps the Job name but gets a new image, and the apply fails with `field is immutable` while the Job of the
-release before is still there. So, before each apply, delete the migration Jobs that completed; their work is
-done:
-
-```sh
-kubectl delete job -l app.kubernetes.io/part-of=orders,app.kubernetes.io/component=migration --field-selector status.successful=1
-```
 
 ### In local tests
 

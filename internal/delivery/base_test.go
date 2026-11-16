@@ -2,11 +2,15 @@ package delivery
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -602,9 +606,15 @@ func TestMigrationJob(t *testing.T) {
 		if job["apiVersion"] != "batch/v1" || job["kind"] != "Job" || metadata["name"] != testJob {
 			t.Errorf("the Job is %v %v %v, want the batch/v1 Job %s", job["apiVersion"], job["kind"], metadata["name"], testJob)
 		}
-		wantAnnotations := map[string]any{"argocd.argoproj.io/hook": "PreSync", "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded"}
+		wantAnnotations := map[string]any{"argocd.argoproj.io/hook": "PreSync", "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded",
+			"argocd.argoproj.io/sync-wave": "0"}
 		if !reflect.DeepEqual(metadata["annotations"], wantAnnotations) {
 			t.Errorf("the annotations of the Job are %v, want %v", metadata["annotations"], wantAnnotations)
+		}
+		// One stable selector finds the Job of any release for kubectl delete.
+		wantLabels := map[string]any{"app.kubernetes.io/name": "orders", "app.kubernetes.io/part-of": "orders", "app.kubernetes.io/component": "migration"}
+		if !reflect.DeepEqual(metadata["labels"], wantLabels) {
+			t.Errorf("the labels of the Job are %v, want %v", metadata["labels"], wantLabels)
 		}
 		spec := job["spec"].(map[string]any)
 		for key, want := range map[string]int{"backoffLimit": MigrationBackoffLimit, "activeDeadlineSeconds": MigrationDeadline, "ttlSecondsAfterFinished": MigrationTimeToLive} {
@@ -767,7 +777,9 @@ func TestMigrationJob(t *testing.T) {
 			"no seccomp profile":          {"          type: RuntimeDefault\n", "          type: Unconfined\n"},
 			"another argument":            {"            - migrate\n", "            - serve\n"},
 			"a restart in place":          {"      restartPolicy: Never\n", "      restartPolicy: OnFailure\n"},
-			"no time to live":             {"  ttlSecondsAfterFinished: 86400\n", ""},
+			"no time to live":             {"  ttlSecondsAfterFinished: 600\n", ""},
+			"no sync wave":                {"    argocd.argoproj.io/sync-wave: \"0\"\n", ""},
+			"no name label on the Job":    {"    app.kubernetes.io/name: orders\n", ""},
 			"no time limit":               {"  activeDeadlineSeconds: 7200\n", ""},
 			"no retry limit":              {"  backoffLimit: 2\n", ""},
 			"another hook":                {"argocd.argoproj.io/hook: PreSync", "argocd.argoproj.io/hook: Sync"},
@@ -827,6 +839,124 @@ func TestMigrationJobRequirements(t *testing.T) {
 			if !strings.Contains(reference, row) {
 				t.Errorf("the reference does not hold the row %s:\n%s", row, reference)
 			}
+		}
+	})
+}
+
+func TestMigrationKeyFiles(t *testing.T) {
+	t.Run("ST-DLV-UC07-R06-T07 The key files that the Job gets are the file settings that the migrate mode of the runtime reads, apart from its own", func(t *testing.T) {
+		// The runtime module does not import internal, and this module does not import the runtime: the test reads
+		// the source of the service runtime. It takes every function of the package that ReadMigrationSettings
+		// calls, at any depth, by its name, and each constant of the package that those functions give a call as an
+		// argument, such as os.Getenv or connectionString, whose value is a *_FILE variable. A constant in a case of
+		// a switch, such as the table of settingComponent, is not a read.
+		folder := filepath.Join("..", "..", "registry", "runtime", "service")
+		set := token.NewFileSet()
+		functions := map[string]*ast.FuncDecl{}
+		constants := map[string]string{}
+		entries, err := os.ReadDir(folder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			file, err := parser.ParseFile(set, filepath.Join(folder, entry.Name()), nil, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, declaration := range file.Decls {
+				switch d := declaration.(type) {
+				case *ast.FuncDecl:
+					if d.Recv == nil {
+						functions[d.Name.Name] = d
+					}
+				case *ast.GenDecl:
+					for _, spec := range d.Specs {
+						value, ok := spec.(*ast.ValueSpec)
+						if !ok || d.Tok != token.CONST {
+							continue
+						}
+						for i, name := range value.Names {
+							if i < len(value.Values) {
+								if literal, ok := value.Values[i].(*ast.BasicLit); ok && literal.Kind == token.STRING {
+									constants[name.Name], _ = strconv.Unquote(literal.Value)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		if functions["ReadMigrationSettings"] == nil {
+			t.Fatal("the service runtime has no function ReadMigrationSettings")
+		}
+		read := map[string]bool{}
+		seen := map[string]bool{}
+		var walk func(name string)
+		walk = func(name string) {
+			if seen[name] || functions[name] == nil {
+				return
+			}
+			seen[name] = true
+			ast.Inspect(functions[name].Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if callee, ok := call.Fun.(*ast.Ident); ok {
+					walk(callee.Name)
+				}
+				for _, argument := range call.Args {
+					if identifier, ok := argument.(*ast.Ident); ok {
+						if value, isConstant := constants[identifier.Name]; isConstant && strings.HasSuffix(value, "_FILE") {
+							read[value] = true
+						}
+					}
+				}
+				return true
+			})
+		}
+		walk("ReadMigrationSettings")
+		// The variables that only the migrate mode reads are the Job's own; the registry states them.
+		own := map[string]bool{}
+		components, err := filepath.Glob(filepath.Join("..", "..", "registry", "components", "*", "component.yaml"))
+		if err != nil || len(components) == 0 {
+			t.Fatalf("no component of the registry: %v", err)
+		}
+		for _, file := range components {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var component struct {
+				Environment []struct {
+					Name       string `yaml:"name"`
+					ReadByMode string `yaml:"read_by_mode"`
+				} `yaml:"environment"`
+			}
+			if err := yaml.Unmarshal(data, &component); err != nil {
+				t.Fatalf("%s: %v", file, err)
+			}
+			for _, variable := range component.Environment {
+				if variable.ReadByMode == MigrateMode {
+					own[variable.Name] = true
+				}
+			}
+		}
+		var want []string
+		for name := range read {
+			if !own[name] {
+				want = append(want, name)
+			}
+		}
+		slices.Sort(want)
+		if len(own) == 0 || !read["STEGO_MIGRATION_DATABASE_URL_FILE"] {
+			t.Fatalf("the test does not find the own variables of the migrate mode: read %v, own %v", read, own)
+		}
+		if got := slices.Sorted(slices.Values(MigrationKeyFiles)); !slices.Equal(got, want) {
+			t.Errorf("MigrationKeyFiles is %v, but ReadMigrationSettings of the runtime reads the key files %v besides its own", got, want)
 		}
 	})
 }
