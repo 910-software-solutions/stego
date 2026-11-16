@@ -49,6 +49,10 @@ and saves no plan until they are in the declaration. Apply writes no other
 kind of step: declare a rename, a retype, a require, a drop or a unique
 yourself.
 
+The other flags of plan and apply, such as `--strict`, do not change this
+check: `--strict` holds the secret sources of the environment variables, as
+[delivery](delivery.md) tells.
+
 Plan and apply check the declaration against the base before they plan: the
 ref that `--base` names, or the default branch of the repository. The default
 branch is the branch of `origin` that `refs/remotes/origin/HEAD` names, else a
