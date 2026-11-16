@@ -697,7 +697,9 @@ func TestQualifiedSQL(t *testing.T) {
 			"internal/generator/g/query.go.tmpl":        []byte("const q = `SELECT 1 FROM leases WHERE {{.Key}}`\n"),
 			"internal/generator/g/low.go.tmpl":          []byte("var q = \"SELECT 1\" + \" from leases\"\n"),
 			"internal/generator/g/c.sql.tmpl":           []byte("-- header\ndelete from leases;\n"),
-			"internal/generator/g/cte.sql.tmpl":         []byte("WITH leases AS (SELECT 1) SELECT * FROM public.x;\nDELETE FROM leases;\n"),
+			// A file that starts with no head word is still a statement.
+			"internal/generator/g/w.sql.tmpl":   []byte("{{.Prelude}}\ndelete from leases;\n"),
+			"internal/generator/g/cte.sql.tmpl": []byte("WITH leases AS (SELECT 1) SELECT * FROM public.x;\nDELETE FROM leases;\n"),
 			// The comments of a .sql file are no statement.
 			"internal/generator/g/clean.sql.tmpl": []byte("-- the rows from leases\n/* and into leases */\nSELECT 1 FROM public.leases WHERE {{.Key}};\n"),
 			"registry/runtime/alias/alias.go":     []byte("package alias\n\nimport \"github.com/jsell-rh/stego/registry/runtime/names\"\n\nconst Leases = names.Leases\n"),
@@ -731,6 +733,7 @@ func TestQualifiedSQL(t *testing.T) {
 			"internal/generator/g/query.go.tmpl: the table leases with no schema",
 			"internal/generator/g/low.go.tmpl: the table leases with no schema",
 			"internal/generator/g/c.sql.tmpl: the table leases with no schema",
+			"internal/generator/g/w.sql.tmpl: the table leases with no schema",
 			"internal/generator/g/cte.sql.tmpl: the table leases with no schema")
 		slices.Sort(want)
 		slices.Sort(got)
