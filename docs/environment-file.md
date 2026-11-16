@@ -49,8 +49,9 @@ A port is a number from 1 to 65535. The verbs are `get`, `list`, `watch`, `creat
   as `30s`.
 - A required environment variable must have a value, as the base wires it. A variable that is not secret has a value
   under `configuration`. A secret variable with a `secret_source` has a value when the secret of its source has that
-  key. Another secret variable has a value when a secret of its name has the key of its name, as `envFrom` gives it.
-  A secret of the variable's name with another key is not a value.
+  key. A secret of the variable's name is not a value. A secret variable with no `secret_source` never has a value:
+  the base wires no entry for it and writes no `envFrom`, so the check names it as missing, and a secret of its name
+  gets a notice. State a `secret_source` for it in the component that reads it.
 - A secret environment variable under `configuration` is the wrong type: give it as a secret.
 - The variables of a group of one of (`one_of` in the `environment` list), such as `STEGO_KAFKA_BROKERS` and
   `STEGO_KAFKA_BROKERS_FILE`, need exactly one value, with the same rules. The check names the group as missing when

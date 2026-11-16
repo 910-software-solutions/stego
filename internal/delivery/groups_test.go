@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -178,8 +179,9 @@ func TestGroupsOfOneOf(t *testing.T) {
 				t.Errorf("%s: the check shows a secret value: %s\n%s", name, row.Detail, notices)
 			}
 		}
-		// A secret variable with no source has a value when a Secret of its name holds the key of its name, as envFrom
-		// of that Secret gives it; a Secret of its name with another key or with no key is not a value.
+		// A secret variable with no source never has a value: the base writes no entry for it and no envFrom, so a
+		// Secret of its name, with any key or none, does not reach the service (#378 security review L2). The group
+		// row and a notice say so; the other variable of the group still gives the group its value.
 		components := groupComponents()
 		components[0].Variables[0].SecretSource = nil
 		files, err := WriteRequirements("orders", components)
@@ -190,16 +192,23 @@ func TestGroupsOfOneOf(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for secret, status := range map[string]FitStatus{
-			"{DATABASE_URL: CANARY-SECRET-VALUE}": Met,
-			"{url: CANARY-SECRET-VALUE}":          Missing,
-			"{}":                                  Missing,
-			"{DATABASE_URL: \"\"}":                Missing,
-		} {
-			row, _ := groupRow(t, unsourced, "secrets: {orders-database: {url: CANARY-SECRET-VALUE}, DATABASE_URL: "+secret+"}\n", "database-url")
-			if row == nil || row.Status != status {
-				t.Errorf("the Secret DATABASE_URL %s: the group row is %+v, want the status %s", secret, row, status)
+		for _, secret := range []string{"{DATABASE_URL: CANARY-SECRET-VALUE}", "{url: CANARY-SECRET-VALUE}", "{}", "{DATABASE_URL: \"\"}"} {
+			row, fit := groupRow(t, unsourced, "secrets: {orders-database: {url: CANARY-SECRET-VALUE}, DATABASE_URL: "+secret+"}\n", "database-url")
+			if row == nil || row.Status != Missing || !strings.Contains(row.Detail, "none for DATABASE_URL, which the base does not wire because it has no secret source") {
+				t.Errorf("the Secret DATABASE_URL %s: the group row is %+v, want missing with the reason", secret, row)
 			}
+			notices := strings.Join(fit.Notices, "\n")
+			if !strings.Contains(notices, "secret DATABASE_URL: the base wires no value for the secret environment variable DATABASE_URL: it has no secret source, and the base writes no envFrom") ||
+				!strings.Contains(notices, "state a secret source for it in the component that reads it (store)") {
+				t.Errorf("the Secret DATABASE_URL %s: the notices do not say that the base does not wire it:\n%s", secret, notices)
+			}
+			if strings.Contains(notices, "CANARY") || slices.Contains(fit.Unused, "secret DATABASE_URL") {
+				t.Errorf("the Secret DATABASE_URL %s: the check shows a secret value or lists the Secret as unused: %v %v", secret, fit.Notices, fit.Unused)
+			}
+		}
+		row, fit := groupRow(t, unsourced, "configuration: {DATABASE_URL_FILE: /etc/orders/database-url}\n", "database-url")
+		if row == nil || row.Status != Met || strings.Contains(strings.Join(fit.Notices, "\n"), "no secret source") {
+			t.Errorf("DATABASE_URL_FILE does not give the group its value, or the check gives a notice of a Secret that the file does not give: %+v %v", row, fit.Notices)
 		}
 	})
 }

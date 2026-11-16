@@ -353,8 +353,8 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		c.change(t, "dev.yaml", "secrets:\n", "secrets:\n  DATABASE_URL:\n    url: CANARY-SECRET-VALUE\n    DATABASE_URL: CANARY-SECRET-VALUE\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
-		// A secret variable with no source has a value when a Secret of its name holds the key of its name, as
-		// envFrom of that Secret gives it; another key is not a value.
+		// A secret variable with no source never has a value: the base writes no entry for it and no envFrom, so a
+		// Secret of its name does not reach the service, with any key (#378 security review L2).
 		c = newEnvCase(t)
 		c.write(t, "platform-requirements.yaml", strings.ReplaceAll(c.read(t, "platform-requirements.yaml"), "    one_of: database-url\n", ""))
 		c.change(t, "platform-requirements.yaml", "    required: false\n    description: The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.\n    secret: true\n    secret_source:\n      name: orders-database\n      key: url\n",
@@ -364,7 +364,8 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
 		c.change(t, "dev.yaml", "    value: CANARY-SECRET-VALUE\n", "    DATABASE_URL: CANARY-SECRET-VALUE\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
-		expectPassed(t, stdout, stderr, passed)
+		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL: the base wires no value for the secret environment variable DATABASE_URL: it has no secret source",
+			"so a Secret named DATABASE_URL does not reach the service; state a secret source for it in the component that reads it (postgres-adapter)")
 		if strings.Contains(stdout+stderr, "CANARY") {
 			t.Fatalf("the check shows the value of a secret variable:\n%s\n%s", stdout, stderr)
 		}

@@ -490,8 +490,11 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 			continue
 		}
 		if !variableGiven(variable, env) {
-			fit.Rows = append(fit.Rows, FitRow{Requirement: "variable " + variable.Name, Status: Missing,
-				Detail: fmt.Sprintf("the environment file gives the required environment variable %s no value", variable.Name)})
+			detail := fmt.Sprintf("the environment file gives the required environment variable %s no value", variable.Name)
+			if unwired(variable) {
+				detail = unwiredDetail(variable)
+			}
+			fit.Rows = append(fit.Rows, FitRow{Requirement: "variable " + variable.Name, Status: Missing, Detail: detail})
 		}
 	}
 	fit.Rows = append(fit.Rows, groupRows(requirements.Environment, env)...)
@@ -520,6 +523,12 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 			// A value of a variable that the start guard refuses stops the service (ST-SUP-UC01-R10).
 			fit.Rows = append(fit.Rows, FitRow{Requirement: fmt.Sprintf("%s %s", entry.kind, entry.name), Status: WrongType,
 				Detail: fmt.Sprintf("the service refuses the environment variable %s at start; give its setting through a declared variable", entry.name)})
+			continue
+		}
+		if entry.kind == Secret && listed[entry.name] && unwired(variables[entry.name]) {
+			// The base wires no secret variable with no secret source, and writes no envFrom (#378 security review L2):
+			// a Secret named like the variable does not reach the service.
+			fit.Notices = append(fit.Notices, fmt.Sprintf("%s %s: %s", entry.kind, entry.name, unwiredDetail(variables[entry.name])))
 			continue
 		}
 		if (entry.kind == Configuration || entry.kind == Secret) && listed[entry.name] {
@@ -571,8 +580,8 @@ func groupRows(list []AcceptedVariable, env environment) []FitRow {
 				continue
 			}
 			way := "a configuration value " + variable.Name
-			if variable.Secret {
-				way = "a secret " + variable.Name
+			if unwired(variable) {
+				way = fmt.Sprintf("none for %s, which the base does not wire because it has no secret source", variable.Name)
 			}
 			if source := variable.SecretSource; source != nil {
 				way = fmt.Sprintf("the key %s of the secret %s (%s)", source.Key, source.Name, variable.Name)
@@ -619,20 +628,35 @@ func fileFormOf(name string, list map[string]AcceptedVariable) (AcceptedVariable
 
 // variableGiven tells whether the environment file gives a variable a value, as the base wires it (ST-DLV-UC02-R06).
 // A secret variable with a secret source has a value only when the Secret of the source holds its key: the base reads
-// no other Secret for it (#375 security review L2). Another secret variable has a value when a secret of its name
-// holds a key of its name. A variable that is not secret has a value when the configuration value of its name is not
-// empty. It reads names and keys only, never a secret value.
+// no other Secret for it (#375 security review L2). A secret variable with no secret source never has a value: the
+// base writes no entry for it and no envFrom, so no Secret reaches it (#378 security review L2). A variable that is
+// not secret has a value when the configuration value of its name is not empty. It reads names and keys only, never
+// a secret value.
 func variableGiven(variable AcceptedVariable, env environment) bool {
 	if variable.Secret {
-		if source := variable.SecretSource; source != nil {
-			entry := env.lookup(Secret, source.Name)
-			return entry != nil && slices.Contains(entry.keys, source.Key)
+		source := variable.SecretSource
+		if source == nil {
+			return false
 		}
-		entry := env.lookup(Secret, variable.Name)
-		return entry != nil && slices.Contains(entry.keys, variable.Name)
+		entry := env.lookup(Secret, source.Name)
+		return entry != nil && slices.Contains(entry.keys, source.Key)
 	}
 	entry := env.lookup(Configuration, variable.Name)
 	return entry != nil && !entry.empty
+}
+
+// unwired tells whether a variable is secret with no secret source: the base writes no entry for it (baseEnvironment)
+// and no envFrom, so the environment file cannot give it a value.
+func unwired(variable AcceptedVariable) bool {
+	return variable.Secret && variable.SecretSource == nil
+}
+
+// unwiredDetail tells why the environment file cannot give a secret variable with no secret source a value, and what
+// to change.
+func unwiredDetail(variable AcceptedVariable) string {
+	return fmt.Sprintf("the base wires no value for the secret environment variable %s: it has no secret source, and the base writes no envFrom, "+
+		"so a Secret named %s does not reach the service; state a secret source for it in the component that reads it (%s)",
+		variable.Name, variable.Name, strings.Join(variable.ReadBy, ", "))
 }
 
 // requirementOfKind gives the requirement of the kind with the name.
