@@ -8,10 +8,12 @@ metadata:
   annotations:
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "0"
   labels:
     app.kubernetes.io/component: migration
+    app.kubernetes.io/name: user-management
     app.kubernetes.io/part-of: user-management
-  name: user-management-migrate-1f336600ac
+  name: user-management-migrate-17561c5e55
 spec:
   activeDeadlineSeconds: 7200
   backoffLimit: 2
@@ -478,4 +480,4 @@ spec:
         - emptyDir:
             sizeLimit: 64Mi
           name: tmp
-  ttlSecondsAfterFinished: 86400
+  ttlSecondsAfterFinished: 600
