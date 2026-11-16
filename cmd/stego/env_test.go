@@ -353,8 +353,8 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		c.change(t, "dev.yaml", "secrets:\n", "secrets:\n  DATABASE_URL:\n    url: CANARY-SECRET-VALUE\n    DATABASE_URL: CANARY-SECRET-VALUE\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
 		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
-		// A secret variable with no source has a value when a Secret of its name holds the key of its name, as
-		// envFrom of that Secret gives it; another key is not a value.
+		// A secret variable with no source never has a value: the base writes no entry for it and no envFrom, so a
+		// Secret of its name does not reach the service, with any key (#378 security review L2).
 		c = newEnvCase(t)
 		c.write(t, "platform-requirements.yaml", strings.ReplaceAll(c.read(t, "platform-requirements.yaml"), "    one_of: database-url\n", ""))
 		c.change(t, "platform-requirements.yaml", "    required: false\n    description: The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value.\n    secret: true\n    secret_source:\n      name: orders-database\n      key: url\n",
@@ -364,7 +364,8 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL")
 		c.change(t, "dev.yaml", "    value: CANARY-SECRET-VALUE\n", "    DATABASE_URL: CANARY-SECRET-VALUE\n")
 		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
-		expectPassed(t, stdout, stderr, passed)
+		expectFailed(t, stdout, stderr, passed, "variable DATABASE_URL: the base wires no value for the secret environment variable DATABASE_URL: it has no secret source",
+			"so a Secret named DATABASE_URL does not reach the service; state a secret source for it in the component that reads it (postgres-adapter)")
 		if strings.Contains(stdout+stderr, "CANARY") {
 			t.Fatalf("the check shows the value of a secret variable:\n%s\n%s", stdout, stderr)
 		}
@@ -376,9 +377,12 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		if strings.Contains(stdout, "PORT") {
 			t.Fatalf("the check names the optional variable PORT:\n%s", stdout)
 		}
-		c.change(t, "dev.yaml", cursorLine, "  STEGO_QUERY_CURSOR_KEY_FILE: \"\"\n")
-		stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
-		expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE", "empty")
+		for _, empty := range []string{"\"\"", "\"  \"", "\"\\t\""} {
+			c := newEnvCase(t)
+			c.change(t, "dev.yaml", cursorLine, "  STEGO_QUERY_CURSOR_KEY_FILE: "+empty+"\n")
+			stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
+			expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE", "empty")
+		}
 	})
 	t.Run("ST-DLV-UC02-R05-T03 An unknown environment variable is listed as unused, and a value of a listed variable is not", func(t *testing.T) {
 		c := newEnvCase(t)
@@ -420,7 +424,8 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		}
 	})
 	t.Run("ST-DLV-UC02-R02-T03 A secret key with an empty or null value counts as missing", func(t *testing.T) {
-		for _, empty := range []string{" \"\"", "", " null"} {
+		// A text of white space only, an empty map and an empty list are empty too (#378 security review L3).
+		for _, empty := range []string{" \"\"", "", " null", " \" \"", " \"\\t \\n\"", " {}", " []"} {
 			c := newEnvCase(t)
 			c.change(t, "dev.yaml", passwordLine, "    password:"+empty+"\n")
 			stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
