@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -520,7 +521,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		if component := reg.Component(registry.PipelineComponent); component != nil {
 			pipelines = component.Pipelines
 		}
-		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, releaseDigest(allFiles))
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, schemaDigest(allFiles, runtime))
 		if err != nil {
 			return nil, err
 		}
@@ -734,8 +735,8 @@ type DeploymentInput struct {
 	// Containerfile copies both (ST-DLV-INV07).
 	OutputDir  string
 	HoldsFills bool
-	// Release is the digest of the release, in hex: the SHA-256 of the path and the content of each file of the run
-	// before the deployment files, which names the migration Job of the base (ST-DLV-UC07-R06).
+	// Release is the digest of the schema of the release, in hex (schemaDigest), which names the migration Job of
+	// the base (ST-DLV-UC07-R06).
 	Release string
 }
 
@@ -778,19 +779,35 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 	return written.Files, written.Notes, nil
 }
 
-// releaseDigest is the digest of the release that a run writes: the SHA-256, in hex, of the path and the content of
-// each file in path order. The files of a run are the generated code, its migrations, go.mod and go.sum, and the
-// platform requirements, so a release that changes the image or the schema gets a new digest, and the same inputs
-// give the same digest (ST-DLV-UC07-R06).
-func releaseDigest(files []gen.File) string {
-	sorted := slices.Clone(files)
-	slices.SortFunc(sorted, func(a, b gen.File) int { return strings.Compare(a.Path, b.Path) })
+// schemaDigest is the digest of the schema version of a run, which names the migration Job of the base
+// (ST-DLV-UC07-R06): the SHA-256, in hex, of the path and the content of each schema file of the run in path order
+// (isSchemaFile), and of the runtime pin, whose module gives the migration texts of the outbox, the audit record and
+// the authorization tables. A release that changes the schema gets a Job of a new name. The module files and the
+// other generated code are not in it, so stego deps, which writes go.sum, and a fix that changes no schema keep the
+// name, and the same inputs give the same digest.
+func schemaDigest(files []gen.File, runtime *registry.RuntimePin) string {
+	var schema []gen.File
+	for _, file := range files {
+		if isSchemaFile(file.Path) {
+			schema = append(schema, file)
+		}
+	}
+	slices.SortFunc(schema, func(a, b gen.File) int { return strings.Compare(a.Path, b.Path) })
 	sum := sha256.New()
-	for _, file := range sorted {
+	if runtime != nil {
+		fmt.Fprintf(sum, "runtime %s %s %s\n", runtime.Module, runtime.Version, runtime.Sum)
+	}
+	for _, file := range schema {
 		fmt.Fprintf(sum, "%d:%s\n%d:", len(file.Path), file.Path, len(file.Content))
 		sum.Write(file.Content)
 	}
 	return hex.EncodeToString(sum.Sum(nil))
+}
+
+// isSchemaFile tells whether a generated file states the schema: a migration of a folder named migrations, or the
+// schema manifest, which also names the last migration of the release.
+func isSchemaFile(name string) bool {
+	return slices.Contains(strings.Split(path.Dir(name), "/"), "migrations") || path.Base(name) == "schema_manifest.go"
 }
 
 // ReferenceFile is the path, in the project folder, of the environment variable reference that apply writes: the

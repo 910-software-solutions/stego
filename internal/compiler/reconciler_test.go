@@ -3194,28 +3194,42 @@ slots: []
 	}
 }
 
-func TestReleaseDigest(t *testing.T) {
-	t.Run("ST-DLV-UC07-R06-T06 The digest of the release that names the migration Job is the same for the same files and changes with any file", func(t *testing.T) {
-		files := []gen.File{{Path: "out/main.go", Content: []byte("package main\n")}, {Path: "out/internal/storage/migrations/001_initial.sql", Content: []byte("CREATE TABLE t ();\n")},
-			{Path: "go.sum", Content: []byte("x v1 h1:a\n")}}
-		digest := releaseDigest(files)
+func TestSchemaDigest(t *testing.T) {
+	t.Run("ST-DLV-UC07-R06-T06 The schema digest that names the migration Job is the same for the same schema and changes with a migration or the runtime", func(t *testing.T) {
+		pin := &registry.RuntimePin{Module: "github.com/jsell-rh/stego/registry/runtime", Version: "v0.116.0", Sum: "h1:a"}
+		files := []gen.File{{Path: "main.go", Content: []byte("package main\n")}, {Path: "internal/storage/migrations/001_initial.sql", Content: []byte("CREATE TABLE t ();\n")},
+			{Path: "internal/storage/schema_manifest.go", Content: []byte("const SchemaRelease = \"001_initial\"\n")}, {Path: "go.sum", Content: []byte("x v1 h1:a\n")}}
+		digest := schemaDigest(files, pin)
 		if len(digest) != 64 || strings.Trim(digest, "0123456789abcdef") != "" {
 			t.Fatalf("the digest %q is not 64 lower-case hex digits", digest)
 		}
-		reversed := []gen.File{files[2], files[1], files[0]}
-		if releaseDigest(reversed) != digest {
+		if schemaDigest([]gen.File{files[3], files[2], files[1], files[0]}, pin) != digest {
 			t.Error("the digest depends on the order of the files")
 		}
-		for name, changed := range map[string][]gen.File{
-			"a new migration":  append(append([]gen.File{}, files...), gen.File{Path: "out/internal/storage/migrations/002_add.sql", Content: []byte("ALTER TABLE t ADD c int;\n")}),
-			"a changed source": {{Path: "out/main.go", Content: []byte("package main // v2\n")}, files[1], files[2]},
-			"a changed go.sum": {files[0], files[1], {Path: "go.sum", Content: []byte("x v2 h1:b\n")}},
-			"a moved content":  {{Path: "out/main.go", Content: []byte("package main\nCREATE TABLE t ();\n")}, {Path: "out/internal/storage/migrations/001_initial.sql", Content: nil}, files[2]},
-			"a renamed file":   {{Path: "out/main2.go", Content: files[0].Content}, files[1], files[2]},
+		// The module files and the other code are not the schema: stego deps and a fix that changes no schema keep
+		// the name of the Job.
+		for name, same := range map[string][]gen.File{
+			"a changed go.sum":   {files[0], files[1], files[2], {Path: "go.sum", Content: []byte("x v2 h1:b\n")}},
+			"a changed source":   {{Path: "main.go", Content: []byte("package main // v2\n")}, files[1], files[2], files[3]},
+			"a new handler file": append(append([]gen.File{}, files...), gen.File{Path: "internal/api/notes_handler.go", Content: []byte("package api\n")}),
 		} {
-			if releaseDigest(changed) == digest {
-				t.Errorf("%s keeps the digest of the release", name)
+			if schemaDigest(same, pin) != digest {
+				t.Errorf("%s changes the digest of the schema", name)
 			}
+		}
+		for name, changed := range map[string][]gen.File{
+			"a new migration":     append(append([]gen.File{}, files...), gen.File{Path: "internal/storage/migrations/002_add.sql", Content: []byte("ALTER TABLE t ADD c int;\n")}),
+			"a changed migration": {files[0], {Path: files[1].Path, Content: []byte("CREATE TABLE u ();\n")}, files[2], files[3]},
+			"a changed manifest":  {files[0], files[1], {Path: files[2].Path, Content: []byte("const SchemaRelease = \"002_add\"\n")}, files[3]},
+			"a tenancy migration": append(append([]gen.File{}, files...), gen.File{Path: "internal/tenancy/migrations/row_security.sql", Content: []byte("ALTER TABLE t ENABLE ROW LEVEL SECURITY;\n")}),
+			"a renamed migration": {files[0], {Path: "internal/storage/migrations/001_first.sql", Content: files[1].Content}, files[2], files[3]},
+		} {
+			if schemaDigest(changed, pin) == digest {
+				t.Errorf("%s keeps the digest of the schema", name)
+			}
+		}
+		if schemaDigest(files, &registry.RuntimePin{Module: pin.Module, Version: "v0.117.0", Sum: "h1:b"}) == digest || schemaDigest(files, nil) == digest {
+			t.Error("another runtime pin keeps the digest of the schema")
 		}
 	})
 }

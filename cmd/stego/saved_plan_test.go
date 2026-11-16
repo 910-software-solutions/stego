@@ -54,8 +54,11 @@ func changedOutput(before, after map[string]string) map[string]string {
 func plannedOutput(files []savedPlanFile) map[string]string {
 	planned := map[string]string{}
 	for _, file := range files {
-		// The module files and the project files of STEGO, such as the architecture model, are not under out.
-		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile || file.Path == compiler.ArchitectureViewFile {
+		// The module files and the project files of STEGO, such as the architecture model and the files of the
+		// Kubernetes base, whose migration Job takes a new name when the schema changes (ST-DLV-UC07-R06), are not
+		// under out.
+		if file.Path == "go.mod" || file.Path == "go.sum" || file.Path == compiler.ArchitectureFile || file.Path == compiler.RequirementsFile || file.Path == compiler.ArchitectureViewFile ||
+			strings.HasPrefix(file.Path, "deploy/") {
 			continue
 		}
 		planned[file.Path] = file.SHA256

@@ -115,10 +115,11 @@ references no Secret that the Deployment takes a variable from.
 
 ### What the Job holds
 
-- The name `<service>-migrate-<release>`, where `<release>` is the first ten hex digits of the digest of the files
-  that `stego apply` generates. A new apply cannot change the pod template of a Job, so each release that changes
-  the generated code or the schema gets a Job of a new name. The name is at most 63 characters, so the service
-  name is at most 44 characters. A release that changes only a fill keeps the Job name; see "Plain kubectl".
+- The name `<service>-migrate-<release>`, where `<release>` is the first ten hex digits of the digest of the schema
+  of the release: its migrations, its schema manifest and its runtime version. A new apply cannot change the pod
+  template of a Job, so each release that changes the schema gets a Job of a new name. The name is at most 63
+  characters, so the service name is at most 44 characters. A release that does not change the schema keeps the
+  Job name; see "Plain kubectl".
 - The annotations `argocd.argoproj.io/hook: PreSync` and
   `argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded`. Plain Kubernetes ignores them.
 - `backoffLimit: 2`, `activeDeadlineSeconds: 7200` (two hours: the schema steps have 10 minutes and the backfills
@@ -161,6 +162,7 @@ Job of the release and to wait until it completes. The pod restarts, with the ba
 is done, and then starts. To wait in a script:
 
 ```sh
+kubectl delete job -l app.kubernetes.io/part-of=orders,app.kubernetes.io/component=migration --field-selector status.successful=1
 kubectl apply -k overlays/test
 kubectl wait --for=condition=complete job -l app.kubernetes.io/part-of=orders,app.kubernetes.io/component=migration --timeout=2h
 kubectl rollout status deployment/orders
@@ -170,10 +172,14 @@ A database whose ledger holds the migration of the release, but that does not ho
 starts, with an alert for each fault. The migration Job refuses such a database.
 
 A second apply of the same release changes nothing in a Job that is still there. After its time to live, the Job is
-gone, and the next apply makes it again; the job then finds nothing to do. When a release changes only a fill, the
-Job keeps its name but gets a new image, and the apply fails with `field is immutable` while the Job of the release
-before is still there. Then delete that Job (`kubectl delete job <service>-migrate-<release>`) and apply again: it
-has finished its work.
+gone, and the next apply makes it again; the job then finds nothing to do. A release that does not change the
+schema keeps the Job name but gets a new image, and the apply fails with `field is immutable` while the Job of the
+release before is still there. So, before each apply, delete the migration Jobs that completed; their work is
+done:
+
+```sh
+kubectl delete job -l app.kubernetes.io/part-of=orders,app.kubernetes.io/component=migration --field-selector status.successful=1
+```
 
 ### In local tests
 

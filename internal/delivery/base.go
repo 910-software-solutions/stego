@@ -89,8 +89,8 @@ const releaseSuffixLength = 10
 var releaseDigest = regexp.MustCompile(`^[0-9a-f]{10,}$`)
 
 // MigrationJobName is the name of the migration Job of a release: the service, -migrate- and the first ten hex
-// digits of the digest of the release. A new apply cannot change the pod template of a Job, so each release that
-// changes the generated code or the schema gets a Job of a new name. Kubernetes also writes the name as the value of
+// digits of the digest of the schema of the release (its migrations, its schema manifest and its runtime pin). A new
+// apply cannot change the pod template of a Job, so each release that changes the schema gets a Job of a new name. Kubernetes also writes the name as the value of
 // the label job-name on each pod of the Job, so the name is a DNS label of at most 63 characters.
 func MigrationJobName(service, release string) (string, error) {
 	if !releaseDigest.MatchString(release) {
@@ -188,7 +188,7 @@ const noProbePort = "no Kubernetes base is written: the platform requirements gi
 // When the stanza names no provider, or the component states no pins for it (ST-DLV-Q13 (C)), the run writes no
 // CI file and says so in the plan.
 //
-// release is the digest of the release, in hex, which names the migration Job (MigrationJobName).
+// release is the digest of the schema of the release, in hex, which names the migration Job (MigrationJobName).
 func WriteDelivery(service, release string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
 	if provider != "" && provider != GitHubActions && provider != Konflux {
 		return DeploymentFiles{}, &StanzaError{Path: "delivery.ci", Reason: fmt.Sprintf("the CI provider %q is not %s or %s", provider, GitHubActions, Konflux)}
