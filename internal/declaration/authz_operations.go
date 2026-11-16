@@ -122,12 +122,27 @@ func operationsAuthorization(service *types.ServiceDeclaration, schema *AuthzSch
 	return append(faults, validateWorkerAuthorization(service.Workers, schema)...)
 }
 
+// TenantResourceType is the resource type of the tenant resource, on which provisioning writes the tuple of each
+// worker's relation (ST-SUP-RC35-OC13); TenantRelation is the relation of a row to its tenant, which the runtime
+// writes on create; and WorkerRelationPrefix starts the relation of each worker on the tenant resource
+// (ST-SUP-Q132). No entity takes the resource type, and no command or slot binding writes these relations.
+const (
+	TenantResourceType   = "tenant"
+	TenantRelation       = "tenant"
+	WorkerRelationPrefix = "worker_"
+)
+
 // RuntimeRelations gives the relations that the runtime writes alone for the rows of the entity, each with what
-// declares it: the relation of each declared relationship, of the subject source field or caller, and the relation
-// of each reference (ST-DECL-EN02, ST-DECL-EN12). No command lists one of them in Relationships written
+// declares it: the relation of each declared relationship, of the subject source field or caller, the relation
+// of each reference (ST-DECL-EN02, ST-DECL-EN12), and the relation tenant of the row to its tenant (ST-SUP-Q132). No command lists one of them in Relationships written
 // (ST-DECL-INV41).
 func RuntimeRelations(e types.Entity) map[string]string {
 	relations := map[string]string{}
+	// The relation of each row to its tenant, which the runtime writes on create when the schema gives the resource
+	// type the relation tenant of the subject type tenant (ST-SUP-RP10-LC05, ST-SUP-Q132).
+	if e.ResourceType != "" {
+		relations[TenantRelation] = fmt.Sprintf("the relation of each row of the entity %s to its tenant", e.Name)
+	}
 	for _, r := range e.Relationships {
 		if r.Relation != "" && relations[r.Relation] == "" {
 			relations[r.Relation] = fmt.Sprintf("the relationship %s of the entity %s, with the subject source %s", r.Relation, e.Name, r.SubjectSource)

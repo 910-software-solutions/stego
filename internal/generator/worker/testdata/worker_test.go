@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net"
@@ -19,6 +20,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +40,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/command"
+	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -44,6 +48,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/service"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 
+	applyreplies "example.com/orders/fills/apply-replies"
 	syncorders "example.com/orders/fills/sync-orders"
 	workers "example.com/orders/out/workers"
 	"example.com/orders/out/workers/runners"
@@ -110,6 +115,8 @@ type clock struct {
 	now     time.Time
 	waiters []wait
 	waits   atomic.Int64
+	// changed is closed and made again at each new wait, so a check can wait for a wait with no deadline.
+	changed chan struct{}
 }
 
 type wait struct {
@@ -133,7 +140,57 @@ func (c *clock) After(d time.Duration) <-chan time.Time {
 	}
 	c.waiters = append(c.waiters, wait{at: c.now.Add(d), ch: ch})
 	c.waits.Add(1)
+	if c.changed != nil {
+		close(c.changed)
+	}
+	c.changed = make(chan struct{})
 	return ch
+}
+
+// waitedAt tells whether a wait ends exactly at at, and gives the channel that the next new wait closes.
+func (c *clock) waitedAt(at time.Time) (bool, <-chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.changed == nil {
+		c.changed = make(chan struct{})
+	}
+	for _, w := range c.waiters {
+		if w.at.Equal(at) {
+			return true, c.changed
+		}
+	}
+	return false, c.changed
+}
+
+// first blocks until one of the clocks has a wait that ends at its time, and gives the index of each wait that is
+// there then, in the order given, so a check that both waits are there sees both. It has no deadline: a party that
+// never waits ends the check at the timeout of go test, and a missing result is not a pass.
+func first(waits ...clockWait) []int {
+	for {
+		var signals []<-chan struct{}
+		var present []int
+		for i, w := range waits {
+			found, changed := w.clock.waitedAt(w.at)
+			if found {
+				present = append(present, i)
+			}
+			signals = append(signals, changed)
+		}
+		if len(present) > 0 {
+			return present
+		}
+		cases := make([]reflect.SelectCase, len(signals))
+		for i, ch := range signals {
+			cases[i] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ch)}
+		}
+		reflect.Select(cases)
+	}
+}
+
+// clockWait is a wait of a party on a clock that ends at a time.
+type clockWait struct {
+	clock *clock
+	at    time.Time
 }
 
 // advance moves the clock on by d and fires each wait that is due, the earliest first.
@@ -185,6 +242,12 @@ func newClock() *clock {
 	return &clock{now: time.Unix(0, (time.Now().UnixNano()/step+1)*step).Add(-time.Second)}
 }
 
+// newLeaseClock is the process clock of the lease clients of a check, apart from the clock of the ticks: it stands
+// still at the system time until the check moves it, so a holder renews, and a holder that waits for the lease tries
+// again, only when the check says so. A lease's expiry on this clock is never before the system time while the check
+// runs, so the deadline of a run under the lease is the one that the lease TTL gives.
+func newLeaseClock() *clock { return &clock{now: time.Now()} }
+
 // nextDue is the next due time of the worker after the clock's time.
 func (c *clock) nextDue() time.Time {
 	n := c.Now().UnixNano()
@@ -200,6 +263,8 @@ type env struct {
 	admin *sql.DB
 	pool  *sql.DB
 	rt    *command.Runtime
+	// workerDB is a pool of the worker role, the role of the outbox worker that runs the consuming workers.
+	workerDB *sql.DB
 }
 
 // newEnv makes a database of its own and starts the command runtime of the workers on it, with the telemetry
@@ -238,6 +303,9 @@ func newEnv(t *testing.T, telemetry *otel.Runtime) *env {
 	must(t, err)
 	tenantsDDL, err := tenant.Migration("public", roles[0])
 	must(t, err)
+	// The key table of the idempotency runtime, which RunConsumer writes the message identity to.
+	keysDDL, err := idempotency.Migration("wk_purge_"+tag, roles[0])
+	must(t, err)
 	setup := []string{
 		queueDDL,
 		"CREATE SCHEMA authz",
@@ -253,12 +321,20 @@ func newEnv(t *testing.T, telemetry *otel.Runtime) *env {
 		"ALTER TABLE orders ENABLE ROW LEVEL SECURITY",
 		"ALTER TABLE orders FORCE ROW LEVEL SECURITY",
 		"CREATE POLICY orders_tenant ON orders USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
+		keysDDL,
+		"GRANT SELECT, INSERT, UPDATE ON idempotency_keys TO " + roles[0],
+		// The outbox worker runs the consumers in its own transactions, as the worker role, with the runtime role's
+		// grants; the grants of the worker role itself are proved by the runtime wiring test (ST-SUP-Q141).
+		"GRANT " + roles[0] + " TO " + roles[1],
 	}
 	for _, statement := range setup {
 		if _, err := e.admin.ExecContext(e.ctx, statement); err != nil {
 			t.Fatalf("%.80s: %v", statement, err)
 		}
 	}
+	u.User = url.UserPassword(roles[1], password)
+	e.workerDB, err = sql.Open("pgx", u.String())
+	must(t, err)
 	u.User = url.UserPassword(roles[0], password)
 	runtimeDSN := u.String()
 	e.pool, err = tenant.Open(e.ctx, tenant.Config{InsecureLoopback: true, DSN: runtimeDSN})
@@ -279,6 +355,7 @@ func newEnv(t *testing.T, telemetry *otel.Runtime) *env {
 	t.Cleanup(func() {
 		e.pool.Close()
 		auditDB.Close()
+		e.workerDB.Close()
 		e.admin.Close()
 	})
 	return e
@@ -386,6 +463,36 @@ func bodyFor(tenantID string) body {
 // holds the lease row and is bounded by the system clock, which the test clock does not move.
 func start(t *testing.T, e *env, c *clock, holder string) *instance {
 	t.Helper()
+	return startWith(t, e, c, func(name string, ttl time.Duration) (*lease.Client, error) {
+		if holder == "" {
+			return nil, nil
+		}
+		return lease.New(e.pool, service.WorkerLeasePrefix+name, holder, lease.Settings{TTL: ttl, Renew: ttl * 2 / 3, Clock: c})
+	})
+}
+
+// leaseTTL, leaseRenew and leaseRetry are the lease settings of a holder of startLeased: a lease that the database
+// holds for an hour, so it never expires while a check runs, and a renew and a retry that happen only when the check
+// moves the lease clock.
+const (
+	leaseTTL   = time.Hour
+	leaseRenew = 2 * time.Second
+	leaseRetry = time.Second
+)
+
+// startLeased starts one instance whose ticker of sync-partner-orders runs under the lease
+// stego.worker.sync-partner-orders as holder, with the ticks on the clock tick and the lease on the clock leaseClock.
+func startLeased(t *testing.T, e *env, tick, leaseClock *clock, holder string) *instance {
+	t.Helper()
+	return startWith(t, e, tick, func(name string, _ time.Duration) (*lease.Client, error) {
+		return lease.New(e.pool, service.WorkerLeasePrefix+name, holder, lease.Settings{TTL: leaseTTL, Renew: leaseRenew, Retry: leaseRetry, Clock: leaseClock})
+	})
+}
+
+// startWith starts one instance of the worker mode's tickers on e with the clock c and the lease clients of
+// leaseOf, as service.Start builds the TickerEnv, and gives the ticker of sync-partner-orders.
+func startWith(t *testing.T, e *env, c *clock, leaseOf func(name string, ttl time.Duration) (*lease.Client, error)) *instance {
+	t.Helper()
 	bindOnce.Do(func() {
 		syncorders.Behavior = func(ctx context.Context, tick time.Time, h *workers.SyncPartnerOrdersHandle) error {
 			id := h.Tenant().ID()
@@ -398,12 +505,7 @@ func start(t *testing.T, e *env, c *clock, holder string) *instance {
 	})
 	env := service.TickerEnv{Runtime: e.rt, Clock: c,
 		Tenants: func(ctx context.Context) ([]tenant.Tenant, error) { return tenant.List(ctx, e.pool, "public") },
-		Lease: func(name string, ttl time.Duration) (*lease.Client, error) {
-			if holder == "" {
-				return nil, nil
-			}
-			return lease.New(e.pool, service.WorkerLeasePrefix+name, holder, lease.Settings{TTL: ttl, Renew: ttl * 2 / 3, Clock: c})
-		},
+		Lease:   leaseOf,
 	}
 	rec := newRecorder(t)
 	env.Observe = func(name string) command.WorkerObserver { return rec.Worker(name) }
@@ -480,6 +582,87 @@ func none(t *testing.T) {
 	}
 }
 
+// stageReply runs the command reserve as a caller of the tenant, whose fill stages the message payload for
+// partner-replies on the order of the tenant, as the command reserve of the declaration does, and gives the ID of
+// the message.
+func stageReply(t *testing.T, e *env, tenantID, payload string) uuid.UUID {
+	t.Helper()
+	var target tenant.Tenant
+	tenants, err := tenant.List(e.ctx, e.pool, "public")
+	must(t, err)
+	for _, tn := range tenants {
+		if tn.ID() == tenantID {
+			target = tn
+		}
+	}
+	if target.IsZero() {
+		t.Fatalf("the tenant list does not hold %s", tenantID)
+	}
+	caller, err := authz.System("reserve-caller")
+	must(t, err)
+	reserve, err := command.NewCommand(command.CommandSpec[struct{}]{Name: "reserve", Permission: "reserve",
+		Resource: &command.Resource{Type: "service", Service: "orders"}, Writes: []command.Declared{workers.OrderEntity},
+		Probe:        func(*probe.Probe) struct{} { return struct{}{} },
+		Destinations: []command.Destination{{Name: "partner-replies", MustLand: true, Idempotent: true, Consumed: true, Effects: []string{"reserved"}}}})
+	must(t, err)
+	_, err = command.Run(e.ctx, e.rt, reserve, command.Request{Tenant: target, Principal: caller, RequestID: uuid.NewString()},
+		func([]byte) (struct{}, error) { return struct{}{}, nil },
+		func(ctx context.Context, _ struct{}, h *command.Handle[struct{}]) (idempotency.Response, error) {
+			orders, err := command.Repo(h, workers.OrderEntity)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			loaded, err := orders.Get(ctx, order)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			return idempotency.Response{Status: http.StatusOK}, h.Effects().Stage(ctx, "partner-replies", "reserved", loaded, json.RawMessage(payload))
+		})
+	must(t, err)
+	var id uuid.UUID
+	must(t, e.admin.QueryRow(`SELECT id FROM stego_outbox.messages WHERE destination = 'partner-replies' AND tenant_id = $1
+ ORDER BY sequence DESC LIMIT 1`, tenantID).Scan(&id))
+	return id
+}
+
+// awaitMessage waits until the message has the state and the attempts, with no deadline; a state that is neither
+// on the way nor the one awaited fails the check at once.
+func awaitMessage(t *testing.T, e *env, id uuid.UUID, state string, attempts int64) {
+	t.Helper()
+	for {
+		var got string
+		var n int64
+		must(t, e.admin.QueryRow(`SELECT state, attempts FROM stego_outbox.messages WHERE id = $1`, id).Scan(&got, &n))
+		switch {
+		case got == state && n == attempts:
+			return
+		case got != "pending" && got != "dispatching" && got != state:
+			t.Fatalf("the message %s is %s after %d attempts, want %s after %d", id, got, n, state, attempts)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// committed waits until the order of the tenant has the status that a committed run wrote. It has no deadline.
+func committed(t *testing.T, e *env, tenantID, status string) {
+	t.Helper()
+	for e.status(tenantID) != status {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// noCall checks that no call of the fill is waiting to be read. A check calls it only after it proved that no
+// party can call the fill: each run of the tick committed, and each other instance waits for a clock that the
+// check does not move.
+func noCall(t *testing.T) {
+	t.Helper()
+	select {
+	case c := <-calls:
+		t.Fatalf("the fill was called for %s at %v", c.tenant, c.due)
+	default:
+	}
+}
+
 // eventually waits until ok holds.
 func eventually(t *testing.T, what string, ok func() bool) {
 	t.Helper()
@@ -509,8 +692,8 @@ func (in *instance) counted(name string) int {
 	return len(in.rec.Emissions(name))
 }
 
-// write sets the status of the order of the tenant through the handle of the fill.
-func write(ctx context.Context, h *workers.SyncPartnerOrdersHandle, status string) error {
+// write sets the status of the order of the tenant through the handle of a fill of either worker.
+func write[P any](ctx context.Context, h *command.Handle[P], status string) error {
 	orders, err := workers.OrderRepository(h)
 	if err != nil {
 		return err
@@ -676,32 +859,175 @@ func TestWorker(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RC35-OC05-T01 Of two instances only the lease holder runs a single worker", func(t *testing.T) {
-		prefix, _ := e.tenants(t, 1)
-		setBody(prefix, nil)
-		c := newClock()
-		first := start(t, e, c, "h1")
-		first.armed()
-		start(t, e, c, "h2")
-		time.Sleep(200 * time.Millisecond)
-		c.move(interval)
-		next(t)
-		none(t)
+		// The check does not depend on time: the ticks of each instance are on a clock of its own, which the check
+		// moves, and the lease of both instances is on one more clock, which only the check moves, so no renew, retry
+		// or expiry happens between two steps of the check. Each step waits for the wait that the next one needs,
+		// with no deadline (ST-SUP-RC35-OC05).
+		prefix, ids := e.tenants(t, 1)
+		setBody(prefix, func(ctx context.Context, _ string, h *workers.SyncPartnerOrdersHandle) error {
+			return write(ctx, h, "synced")
+		})
+		ticks1, ticks2, leases := newClock(), newClock(), newLeaseClock()
+		both := func(d time.Duration) {
+			ticks1.advance(d)
+			ticks2.advance(d)
+		}
+		startLeased(t, e, ticks1, leases, "h1")
+		// h1 holds the lease: its scheduler waits for the due time only after h1 took the lease row.
+		due, renew := ticks1.nextDue(), leases.Now().Add(leaseRenew)
+		first(clockWait{ticks1, due})
 		var holder string
 		must(t, e.admin.QueryRow(`SELECT holder FROM leases WHERE name = $1`, service.WorkerLeasePrefix+worker).Scan(&holder))
 		if holder != "h1" {
-			t.Fatalf("the lease stego.worker.%s is held by %q, want h1", worker, holder)
+			t.Fatalf("the lease stego.worker.%s is held by %q while h1 waits for a tick, want h1", worker, holder)
 		}
-		// h2 takes the row: the renew of h1 fails, so h1 stops ticking, and h2 acquires the lease at its next retry.
-		e.exec(`UPDATE leases SET holder = 'h2', token = token + 1, expires_at = now() + interval '1 minute' WHERE name = $1`, service.WorkerLeasePrefix+worker)
-		for range 8 {
-			c.move(2 * time.Second)
-			time.Sleep(100 * time.Millisecond)
+		// h2 cannot take the lease: it waits for its retry on the lease clock, and it never waits for a tick. A
+		// single worker that ticked without its lease would wait for the due time instead.
+		startLeased(t, e, ticks2, leases, "h2")
+		if got := first(clockWait{leases, leases.Now().Add(leaseRetry)}, clockWait{ticks2, due}); !slices.Equal(got, []int{0}) {
+			t.Fatalf("the waits of h2 are %v of [its retry of the lease, a tick]: h2 waits for a tick without the lease", got)
 		}
-		drain()
-		eventually(t, "an instance waits for the next due time", func() bool { return c.due(c.nextDue()) })
-		c.move(c.nextDue().Sub(c.Now()))
-		next(t)
-		none(t)
+		both(due.Sub(ticks1.Now()))
+		if r := <-calls; r.tenant != ids[0] || !r.due.Equal(due) {
+			t.Fatalf("the fill was called for %s at %v, want %s at %v", r.tenant, r.due, ids[0], due)
+		}
+		// The run of h1 commits, and its tick of one tenant ends. h2 never waited on its tick clock, so it is still
+		// in the wait for its retry of the lease, which the lease clock has not reached, and it can call no fill.
+		committed(t, e, ids[0], "synced")
+		if n := ticks2.waits.Load(); n != 0 {
+			t.Fatalf("the instance h2 waited %d times on its tick clock without the lease", n)
+		}
+		noCall(t)
+
+		// h2 takes the row: when the lease clock moves, the renew of h1 fails, so h1 stops ticking and waits to take
+		// the lease again, and h2 takes the lease at its retry and waits for the next due time.
+		e.reset(prefix)
+		e.exec(`UPDATE leases SET holder = 'h2', token = token + 1, expires_at = now() + interval '1 hour' WHERE name = $1`, service.WorkerLeasePrefix+worker)
+		first(clockWait{leases, renew})
+		leases.advance(leaseRenew)
+		next := due.Add(interval)
+		first(clockWait{ticks1, ticks1.Now().Add(leaseRetry)})
+		first(clockWait{ticks2, next})
+		must(t, e.admin.QueryRow(`SELECT holder FROM leases WHERE name = $1`, service.WorkerLeasePrefix+worker).Scan(&holder))
+		if holder != "h2" {
+			t.Fatalf("the lease stego.worker.%s is held by %q after the renew of h1 failed, want h2", worker, holder)
+		}
+		both(next.Sub(ticks1.Now()))
+		if r := <-calls; r.tenant != ids[0] || !r.due.Equal(next) {
+			t.Fatalf("the fill was called for %s at %v, want %s at %v", r.tenant, r.due, ids[0], next)
+		}
+		// The run of h2 commits. h1 tried the lease again at its retry and waits for the next retry on the lease
+		// clock, which the check does not move, so it can call no fill.
+		committed(t, e, ids[0], "synced")
+		first(clockWait{leases, leases.Now().Add(leaseRetry)})
+		noCall(t)
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T01 A staged message reaches its consuming worker once, and a failed run is retried", func(t *testing.T) {
+		prefix, ids := e.tenants(t, 2)
+		setBody(prefix, nil)
+		// The queue of the outbox worker is on a test clock a minute after the system time, so each staged message is
+		// due; a retry is due only when the check moves the clock.
+		queueClock := &clock{now: time.Now().Add(time.Minute)}
+		queue, err := outbox.New(e.workerDB, outbox.Options{Clock: queueClock})
+		must(t, err)
+		config := outbox.DefaultWorkerConfig()
+		config.Concurrency, config.PollInterval = 1, 10*time.Millisecond
+		config.RetryMin, config.RetryMax, config.AttemptTimeout, config.LeaseDuration = time.Second, 2*time.Second, 10*time.Second, time.Minute
+		worker, err := outbox.NewWorker(queue, config)
+		must(t, err)
+		rec := newRecorder(t)
+		must(t, runners.Consumers(runners.BoundFills())(e.rt, worker, func(name string) command.WorkerObserver { return rec.Worker(name) }))
+		// The generated code registers one handler of partner-replies, idempotent and must land.
+		var registered []outbox.Registration
+		for _, r := range worker.Registrations() {
+			if r.Name == "partner-replies" {
+				registered = append(registered, r)
+			}
+		}
+		if len(registered) != 1 || !registered[0].Idempotent || !registered[0].MustLand {
+			t.Fatalf("the consumers register %+v for partner-replies, want one handler, idempotent and must land", registered)
+		}
+		// The other destinations of the check's commands complete at once.
+		for _, name := range []string{"audit-sink", "authz"} {
+			must(t, worker.Register(outbox.Destination{Name: name, Idempotent: true,
+				Handler: func(context.Context, *sql.Tx, outbox.Delivery) error { return nil }}))
+		}
+		type applied struct{ tenant, message string }
+		got := make(chan applied, 16)
+		var failing atomic.Bool
+		applyreplies.Behavior = func(ctx context.Context, message json.RawMessage, _ string, h *workers.ApplyPartnerRepliesHandle) error {
+			id := h.Tenant().ID()
+			if !strings.HasPrefix(id, prefix) {
+				return nil
+			}
+			got <- applied{tenant: id, message: string(message)}
+			if err := write(ctx, h, "applied "+string(message)); err != nil {
+				return err
+			}
+			if failing.Load() {
+				return errors.New("the partner refused the reply")
+			}
+			return nil
+		}
+		defer func() { applyreplies.Behavior = nil }()
+		ctx, cancel := context.WithCancel(e.ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); _ = worker.Run(ctx) }()
+		defer func() { cancel(); <-done }()
+
+		// The command reserve stages one message for partner-replies in t1.
+		first := stageReply(t, e, ids[0], `{"n":1}`)
+		if r := <-got; r.tenant != ids[0] || r.message != `{"n":1}` {
+			t.Fatalf("the consumer got %+v, want the message of t1", r)
+		}
+		awaitMessage(t, e, first, "done", 1)
+		if e.status(ids[0]) != `applied {"n":1}` || e.status(ids[1]) != "new" {
+			t.Fatalf("the orders hold %q and %q, want the write of the run in t1 only", e.status(ids[0]), e.status(ids[1]))
+		}
+		noApply := func() {
+			t.Helper()
+			select {
+			case r := <-got:
+				t.Fatalf("the consumer got %+v again", r)
+			default:
+			}
+		}
+		noApply()
+
+		// A run that fails rolls back: the message is pending again, not acted and never outcome unknown, and it is
+		// not delivered before its retry is due on the queue clock.
+		failing.Store(true)
+		second := stageReply(t, e, ids[0], `{"n":2}`)
+		if r := <-got; r.message != `{"n":2}` {
+			t.Fatalf("the consumer got %+v, want the second message", r)
+		}
+		awaitMessage(t, e, second, "pending", 1)
+		var due time.Time
+		must(t, e.admin.QueryRow(`SELECT available_at FROM stego_outbox.messages WHERE id = $1`, second).Scan(&due))
+		if !due.After(queueClock.Now()) {
+			t.Fatalf("the failed message is due again at %v, not after the queue time %v: no backoff", due, queueClock.Now())
+		}
+		if e.status(ids[0]) != `applied {"n":1}` {
+			t.Fatalf("the failed run left the order at %q, want the write of the first run only", e.status(ids[0]))
+		}
+		noApply()
+		// When its retry is due, the run commits and the message is delivered.
+		failing.Store(false)
+		queueClock.advance(due.Sub(queueClock.Now()))
+		if r := <-got; r.message != `{"n":2}` {
+			t.Fatalf("the retry got %+v, want the second message", r)
+		}
+		awaitMessage(t, e, second, "done", 2)
+		if e.status(ids[0]) != `applied {"n":2}` {
+			t.Fatalf("the retried run left the order at %q, want its write", e.status(ids[0]))
+		}
+		var unknown int
+		must(t, e.admin.QueryRow(`SELECT count(*) FROM stego_outbox.messages WHERE destination = 'partner-replies' AND state = 'outcome_unknown'`).Scan(&unknown))
+		if unknown != 0 {
+			t.Fatalf("%d messages of partner-replies are in outcome unknown, want none", unknown)
+		}
+		noApply()
 	})
 
 	t.Run("ST-SUP-RC35-OC07-T01 A slow tenant ends at its own deadline and the next tenant gets its own", func(t *testing.T) {

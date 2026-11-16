@@ -100,7 +100,9 @@ func parts(entities []command.Declared, calls *int) Parts {
 			return authz.New(authz.Config{Provider: provider, DB: db, Schema: "public", Outbox: q})
 		},
 		AuditSettings: audit.Settings{Level: audit.LevelChange},
-		Commands:      entities,
+		// The grants of the runtime role that the migration job of the fixture gives (ST-SUP-RP14-LC06).
+		Grants:   fixtureGrants,
+		Commands: entities,
 		// The anchor period of the audit DDL of the migration job of the fixture.
 		Workers: WorkerParts{AnchorPeriod: time.Hour, RetentionMonths: 12},
 	}
@@ -447,6 +449,84 @@ func TestNew(t *testing.T) {
 			}
 		})
 
+		t.Run("ST-SUP-RP14-LC06-T03 The start check holds the grants of the entity tables and the audit tables, and New refuses parts with no runtime grants", func(t *testing.T) {
+			// The table of a declared entity with the authorization token, as the PostgreSQL adapter gives it.
+			orders := manifest.Table{Schema: "public", Name: "orders", RowSecurity: true, Entity: true,
+				Indexes:     []manifest.Index{{Name: "orders_pkey", Columns: []string{"tenant_id", "id"}}},
+				Constraints: ordersManifest().Tables[0].Constraints, TenantKey: ordersManifest().Tables[0].TenantKey,
+				Columns: []manifest.Column{{Name: "tenant_id", Type: "text", NotNull: true}, {Name: "status", Type: "text", NotNull: true},
+					{Name: "version", Type: "bigint", Default: "1"}, {Name: "authz_token", Type: "text", Default: "''::text"}},
+				Policies: []manifest.Policy{{Name: "orders_tenant", Command: "*", Using: "(tenant_id = current_setting('app.tenant'::text, true))",
+					WithCheck: "(tenant_id = current_setting('app.tenant'::text, true))"}}}
+			declared := parts(nil, nil)
+			declared.Schema = manifest.Manifest{Tables: []manifest.Table{orders}}
+			exec := func(statement string) {
+				t.Helper()
+				if _, err := f.admin.Exec(statement); err != nil {
+					t.Fatalf("%s: %v", statement, err)
+				}
+			}
+			// grantFaults starts the service and gives the faults of the class grant that it logs: a fault alerts, and
+			// the service starts (decision on finding F10, owner, 2026-11-13).
+			grantFaults := func() []string {
+				t.Helper()
+				logs, _ := startCaptured(t, func() {
+					svc, err := New(context.Background(), settings, declared)
+					if err != nil {
+						t.Fatalf("New refused a database whose grants do not hold the manifest: %v", err)
+					}
+					_ = svc.Close()
+				})
+				var faults []string
+				for _, line := range strings.Split(logs, "\n") {
+					var record map[string]any
+					if json.Unmarshal([]byte(line), &record) == nil && record["level"] == "ERROR" && record["class"] == "grant" {
+						faults = append(faults, fmt.Sprint(record["fault"]))
+					}
+				}
+				return faults
+			}
+			// The authorization migration of a generated service gives the worker its grants on the token.
+			exec("GRANT SELECT (tenant_id, id), UPDATE (authz_token) ON public.orders TO " + f.worker)
+			defer exec("REVOKE SELECT (tenant_id, id), UPDATE (authz_token) ON public.orders FROM " + f.worker)
+			if got := grantFaults(); len(got) != 0 {
+				t.Fatalf("the database that the migration job made has the grant faults %v, want none", got)
+			}
+			for _, c := range []struct{ change, restore, fault string }{
+				{"GRANT TRUNCATE ON public.orders TO " + f.runtime, "REVOKE TRUNCATE ON public.orders FROM " + f.runtime,
+					"table public.orders: the privilege TRUNCATE to " + f.runtime + " is granted, and the manifest does not grant it"},
+				{"REVOKE DELETE ON public.orders FROM " + f.runtime, "GRANT DELETE ON public.orders TO " + f.runtime,
+					"table public.orders: the privilege DELETE to " + f.runtime + " of the manifest is not granted"},
+				{"REVOKE UPDATE (authz_token) ON public.orders FROM " + f.worker, "GRANT UPDATE (authz_token) ON public.orders TO " + f.worker,
+					"table public.orders: the privilege UPDATE (authz_token) to " + f.worker + " of the manifest is not granted"},
+				// The worker gets no grant on the audit record when the service has no consuming worker (ST-SUP-Q141).
+				{"GRANT INSERT ON public.audit_event TO " + f.worker, "REVOKE INSERT ON public.audit_event FROM " + f.worker,
+					"table public.audit_event: the privilege INSERT to " + f.worker + " is granted, and the manifest does not grant it"},
+				{"REVOKE UPDATE ON public.audit_chain_heads FROM " + f.runtime, "GRANT UPDATE ON public.audit_chain_heads TO " + f.runtime,
+					"table public.audit_chain_heads: the privilege UPDATE to " + f.runtime + " of the manifest is not granted"},
+				{"GRANT SELECT ON public.audit_retention_checkpoints TO PUBLIC", "REVOKE SELECT ON public.audit_retention_checkpoints FROM PUBLIC",
+					"table public.audit_retention_checkpoints: the privilege SELECT to PUBLIC is granted, and the manifest does not grant it"},
+			} {
+				exec(c.change)
+				got := grantFaults()
+				exec(c.restore)
+				if !slices.Contains(got, c.fault) {
+					t.Errorf("after %q the start logged the grant faults %v, want %q", c.change, got, c.fault)
+				}
+			}
+			// Parts with no GRANT statement of the runtime role, or with one that is not of the generated form, are
+			// refused before the database is read, with an error that names Parts.Grants.
+			none := declared
+			none.Grants = nil
+			if _, err := New(context.Background(), settings, none); err == nil || !strings.Contains(err.Error(), "Parts.Grants") {
+				t.Errorf("New with no runtime grants gave %v, want a refusal that names Parts.Grants", err)
+			}
+			odd := declared
+			odd.Grants = []string{`GRANT ALL ON TABLE public.orders`}
+			if _, err := New(context.Background(), settings, odd); err == nil || !strings.Contains(err.Error(), "Parts.Grants") {
+				t.Errorf("New with a runtime grant of another form gave %v, want a refusal that names Parts.Grants", err)
+			}
+		})
 		t.Run("ST-SUP-RP14-LC06-T02 The start check gives the class of a fault of a partition and of a member of a confined role, and logs at most 50 faults", func(t *testing.T) {
 			declared := parts(nil, nil)
 			declared.Schema = manifest.Manifest{Tables: []manifest.Table{{Schema: "public", Name: "orders", RowSecurity: true,

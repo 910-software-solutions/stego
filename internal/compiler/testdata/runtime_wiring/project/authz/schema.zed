@@ -19,9 +19,14 @@ definition order {
 	relation viewer: user
 	// The workers sync-partner-orders and apply-note-replies sync an order on which the check grants them.
 	relation syncer: service_account
+	// The runtime relates each new order to its tenant (ST-SUP-Q132), so each worker reaches the orders of a tenant
+	// only by its own relation on that tenant, which provisioning writes (ST-SUP-RC35-OC13).
+	relation tenant: tenant
 	permission view = owner + viewer
 	permission edit = owner
 	permission sync = syncer
+	permission tenant_sync = tenant->worker_sync_partner_orders
+	permission tenant_apply = tenant->worker_apply_note_replies
 }
 
 definition note {

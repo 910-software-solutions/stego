@@ -163,3 +163,45 @@ func td03Staging(t *testing.T, workers string, commands string) string {
 	}
 	return service
 }
+
+func TestTenantResourceReserved(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC13-T04 No entity takes the resource type tenant, and no command or slot writes the tenant relation or a worker relation", func(t *testing.T) {
+		service, schema := td03Files(t)
+		// An entity of the resource type tenant is refused, also when the schema defines it.
+		withTenant := schema + "\ndefinition tenant {\n\trelation worker_sync: service_account\n\tpermission view = worker_sync\n\tpermission edit = worker_sync\n}\n"
+		decl := readTD03(t, change(t, service, "    resource_type: document", "    resource_type: tenant"))
+		var reserved []ValidationError
+		for _, fault := range validateSchemaNames(decl, compileTD03(t, withTenant)) {
+			if strings.Contains(fault.Message, "reserved for the tenant resource") {
+				reserved = append(reserved, fault)
+			}
+		}
+		if len(reserved) != 1 || reserved[0].Path != "entities[0].resource_type" || reserved[0].Found != "tenant" {
+			t.Fatalf("an entity of the resource type tenant gave %+v, want one fault on entities[0].resource_type", reserved)
+		}
+		// A command may write neither the relation tenant of its rows, nor a worker relation, nor a relation of the
+		// tenant resource.
+		relations := func(relation string) string {
+			return td03Command(t, "resource_type: document", "permission: edit", "resource_member: documentId", "relationships_written: ["+relation+"]")
+		}
+		for relation, text := range map[string]string{
+			"document#tenant":      "relation of each row to its tenant",
+			"document#worker_sync": "holds the grant of a worker",
+			"tenant#worker_sync":   "is the tenant resource",
+		} {
+			expectNamed(t, checkOperations(t, relations(relation), operationFacts()), "command-relations", "approve", relation, text)
+		}
+		// The same check holds for a slot binding, and RuntimeRelations names the relation tenant of each entity
+		// with a resource type, so the command generator refuses it too.
+		declared := map[string]bool{"document": true, "tenant": true}
+		compiled := compileTD03(t, withTenant)
+		for _, relation := range []string{"document#tenant", "document#worker_sync", "tenant#worker_sync"} {
+			if writtenRelationUnknown(relation, declared, compiled, "the service declares") == "" {
+				t.Errorf("a slot binding may write %s", relation)
+			}
+		}
+		if why := RuntimeRelations(decl.Entities[0])["tenant"]; why == "" {
+			t.Error("RuntimeRelations does not name the relation tenant of an entity with a resource type")
+		}
+	})
+}

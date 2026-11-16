@@ -199,6 +199,11 @@ type EntitySpec[T any] struct {
 	// service's schema: a delete of a row clears each of them on the row's resource, whatever wrote the tuple
 	// (ST-SUP-Q118). The handle is bound with them, but a fill relates only its own relations.
 	Relations []string
+	// Tenant is true when the schema gives ResourceType the relation tenant of the subject type tenant: a create then
+	// touches the tuple <resource type>:<row>#tenant@tenant:<tenant resource ID> (authz.TenantResource), so a
+	// permission such as sync = tenant->worker_<name> reaches the rows of that tenant only. Only the runtime writes
+	// this relation, and a delete clears it (ST-SUP-RP10-LC05, ST-SUP-Q132). It needs a resource type on the entity.
+	Tenant bool
 }
 
 // Relationship is one declared relationship of an entity: the relation of the entity's resource type, the subject
@@ -287,6 +292,9 @@ func (e *Entity[T]) runtimeRelations() []authz.Relation {
 	for _, ref := range e.spec.Parent {
 		out = append(out, authz.Relation{ResourceType: e.spec.ResourceType, Name: ref.Relation})
 	}
+	if e.spec.Tenant {
+		out = append(out, authz.Relation{ResourceType: e.spec.ResourceType, Name: authz.TenantRelation})
+	}
 	return out
 }
 
@@ -338,6 +346,14 @@ func (r *Repository[T]) subjects(value T, create bool) ([]declaredTuple, error) 
 			}
 		}
 		tuples = append(tuples, declaredTuple{relation: rel.Relation, subject: subject})
+	}
+	// The row relates to its tenant at create, so a worker's tenant relation reaches it (ST-SUP-Q132).
+	if create && e.spec.Tenant {
+		resource, err := authz.TenantResource(s.tenant)
+		if err != nil {
+			return nil, s.breakWith(internalf("the tenant resource of a row of %s was not built", e.spec.Name))
+		}
+		tuples = append(tuples, declaredTuple{relation: authz.TenantRelation, subject: authz.Subject{Type: resource.Type, ID: resource.ID}})
 	}
 	return tuples, nil
 }
@@ -425,6 +441,9 @@ func (e *Entity[T]) relationNames() []string {
 	for _, ref := range e.spec.Parent {
 		add(ref.Relation)
 	}
+	if e.spec.Tenant {
+		add(authz.TenantRelation)
+	}
 	return names
 }
 
@@ -469,6 +488,11 @@ func (e *Entity[T]) Name() string { return e.spec.Name }
 func NewEntity[T any](spec EntitySpec[T]) (*Entity[T], error) {
 	if spec.Name == "" {
 		return nil, errors.New("command: an entity needs a name")
+	}
+	// The resource type tenant is the tenant resource of the worker tuples: a row of it whose key is its tenant's ID
+	// would be that resource, and its delete would clear the tuple of each worker (ST-SUP-RC35-OC13, ST-SUP-Q132).
+	if spec.ResourceType == authz.TenantType {
+		return nil, fmt.Errorf("command: the entity %s has the resource type %s, which is reserved for the tenant resource that holds the tuple of each worker; give it another resource type", spec.Name, authz.TenantType)
 	}
 	statements := map[string]string{"Select": spec.Select, "SelectForUpdate": spec.SelectForUpdate,
 		"SelectForDelete": spec.SelectForDelete, "Insert": spec.Insert, "Update": spec.Update, "Delete": spec.Delete}
@@ -526,6 +550,10 @@ func NewEntity[T any](spec EntitySpec[T]) (*Entity[T], error) {
 			slices.ContainsFunc(spec.Parent, func(o Reference[T]) bool { return o.Relation == r.Relation }) {
 			return nil, fmt.Errorf("command: the relationship %s of %s is given twice, also writes a reference's relation, or takes a caller as a resource", r.Relation, spec.Name)
 		}
+	}
+	if spec.Tenant && (spec.ResourceType == "" || slices.ContainsFunc(spec.Relationships, func(o Relationship[T]) bool { return o.Relation == authz.TenantRelation }) ||
+		slices.ContainsFunc(spec.Parent, func(o Reference[T]) bool { return o.Relation == authz.TenantRelation })) {
+		return nil, fmt.Errorf("command: the relation tenant of %s needs a resource type on the entity, and no relationship or reference may write it", spec.Name)
 	}
 	for _, name := range spec.Relations {
 		if spec.ResourceType == "" {

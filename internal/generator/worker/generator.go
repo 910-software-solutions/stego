@@ -104,7 +104,7 @@ type model struct {
 	contractImport string
 	probeImport    string // the domain probes package, or empty when the service has none
 	tenantKey      string
-	relations      map[string][]string
+	relations      command.Relations
 	entityNames    []string // the entities that a worker writes, in declaration order
 	workers        []*worker
 	destinations   map[string]delivery
