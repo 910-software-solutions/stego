@@ -105,6 +105,15 @@
       "privileges": [
         "SELECT"
       ]
+    },
+    {
+      "component": "postgres-adapter",
+      "schema": "stego_schema",
+      "name": "migrations",
+      "kind": "table",
+      "privileges": [
+        "SELECT"
+      ]
     }
   ]
 }

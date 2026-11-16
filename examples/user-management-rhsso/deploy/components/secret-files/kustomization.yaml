@@ -7,3 +7,5 @@ kind: Component
 patches:
   - path: remove-env.yaml
   - path: mount-files.yaml
+  - path: remove-job-env.yaml
+  - path: mount-job-files.yaml

@@ -70,8 +70,9 @@ destination:
 secrets:
   tasks-database:
     url: <the connection string of the runtime role>
-    migration-url: <the connection string of the migration job>
     worker-url: <the connection string of the worker role>
+  tasks-database-owner:
+    url: <the connection string of the owner role, which only the migration Job reads>
   tasks-database-relay:
     url: <the connection string of the relay role>
   tasks-spicedb:

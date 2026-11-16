@@ -296,7 +296,9 @@ func TestKubernetesBaseApply(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, word := range []string{"kind: ApplicationSet", "kind: Application\n", "argoproj.io", "destination:", "project:"} {
+			// The migration Job carries the annotations of an Argo CD hook (ST-DLV-UC07-R06), which name no Argo CD
+			// object: no file holds an apiVersion of Argo CD.
+			for _, word := range []string{"kind: ApplicationSet", "kind: Application\n", "apiVersion: argoproj.io", "destination:", "project:"} {
 				if bytes.Contains(data, []byte(word)) {
 					t.Errorf("the generated file %s holds %q", name, word)
 				}

@@ -59,7 +59,36 @@ func renderReference(service string, list []AcceptedVariable) []byte {
 				defaultText, yesNo(variable.Secret), allowed, example, cell(variable.Description))
 		}
 	}
+	renderSecretSources(&out, list)
 	return out.Bytes()
+}
+
+// renderSecretSources renders, from the list alone, the Secret and the key of each variable with a secret source,
+// names only, and which workload of the Kubernetes base reads it: the migration Job alone for a variable that only
+// the migrate mode reads, and else the Deployment (ST-DLV-Q20). It renders nothing when no variable has a source.
+func renderSecretSources(out *bytes.Buffer, list []AcceptedVariable) {
+	var rows []AcceptedVariable
+	for _, variable := range list {
+		if variable.SecretSource != nil {
+			rows = append(rows, variable)
+		}
+	}
+	if len(rows) == 0 {
+		return
+	}
+	out.WriteString("\n## Secrets\n\nThe Secret and the key that give each secret variable, or the file of a path variable, names only. " +
+		"The migration Job\nalone reads a variable of the mode migrate; the serving Deployment never references its Secret.\n\n")
+	out.WriteString("| Variable | Secret | Key | Read by |\n|---|---|---|---|\n")
+	for _, variable := range rows {
+		reader := "the Deployment"
+		switch {
+		case variable.ReadByMode == MigrateMode:
+			reader = "the migration Job only (mode migrate)"
+		case MigrationKeyFiles[variable.Name] != (SecretSource{}):
+			reader = "the Deployment and the migration Job"
+		}
+		fmt.Fprintf(out, "| %s | %s | %s | %s |\n", code(variable.Name), code(variable.SecretSource.Name), code(variable.SecretSource.Key), reader)
+	}
 }
 
 func yesNo(value bool) string {
