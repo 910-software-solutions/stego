@@ -245,6 +245,8 @@ var reservedTypeNames = map[string]bool{
 	"os":                       true,
 	"strconv":                  true,
 	"databaseConfiguration":    true,
+	"databaseWithoutHomeFiles": true,
+	"strings":                  true,
 	"databaseTracer":           true,
 	"databaseCallKey":          true,
 	"databaseCall":             true,
@@ -328,16 +330,18 @@ type Migration struct {
 }
 
 // ContractStep is what the contract step of a rename checks before it
-// changes the schema, and its statements in order: the change, the qualified
-// table, the completeness CHECK, its definition as pg_get_constraintdef gives
-// it and the sync trigger of its expand step, the expand migration, the name
-// of the old column, the old and the new column as quoted identifiers, and,
-// for an owned table, the tenant column and the qualified tenant list, by
-// which the check counts the rows left of each tenant.
+// changes the schema, and its statements in order: the change, the schema
+// and the name of the table with no quotes, the completeness CHECK, its
+// definition as pg_get_constraintdef gives it and the sync trigger of its
+// expand step, the expand migration, the name of the old column, the old and
+// the new column as quoted identifiers, and, for an owned table, the tenant
+// column and the schema of the tenant list stego_tenants with no quotes, by
+// which the check counts the rows left of each tenant. Each statement names
+// the table and the tenant list with their schema (ST-STD-TXN-R19).
 type ContractStep struct {
-	Change, Table, Check, Definition, Trigger, Expand string
-	From, Old, New, TenantColumn, Tenants             string
-	Statements                                        []ContractStatement
+	Change, Schema, Table, Check, Definition, Trigger, Expand string
+	From, Old, New, TenantColumn, TenantSchema                string
+	Statements                                                []ContractStatement
 }
 
 // ContractStatement is one statement of a contract step: SQL; When, a query
@@ -414,11 +418,17 @@ func RegisterStep(name, body string, compatibleWith ...string) {
 }
 
 // ValidateConstraint is one constraint that a validate migration validates:
-// the qualified table as SQL text, the name of the constraint with no quotes,
-// and Foreign for a foreign key.
+// the schema and the name of the table and the name of the constraint, each
+// with no quotes, and Foreign for a foreign key.
 type ValidateConstraint struct {
-	Table, Name string
-	Foreign     bool
+	Schema, Table, Name string
+	Foreign             bool
+}
+
+// quoteIdentifier quotes one SQL name, so a statement names a table with its
+// schema as "schema"."table" (ST-STD-TXN-R19).
+func quoteIdentifier(name string) string {
+	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
 }
 
 // RegisterValidateStep adds the migration that validates the constraints that
@@ -433,13 +443,14 @@ type ValidateConstraint struct {
 func RegisterValidateStep(name, body string, constraints ...ValidateConstraint) {
 	migrations = append(migrations, Migration{Name: name, Digest: Digest(body), Step: true, CompatibleWith: []string{}, StatementTimeout: longStatementTimeout, Body: body, Func: func(ctx context.Context, tx *sql.Tx) error {
 		for _, c := range constraints {
+			table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
 			if c.Foreign {
-				if err := runtimetenant.ValidateForeignKey(ctx, tx, c.Table, c.Name); err != nil {
+				if err := runtimetenant.ValidateForeignKey(ctx, tx, table, c.Name); err != nil {
 					return err
 				}
 				continue
 			}
-			if _, err := tx.ExecContext(ctx, "ALTER TABLE "+c.Table+" VALIDATE CONSTRAINT \""+strings.ReplaceAll(c.Name, "\"", "\"\"")+"\""); err != nil {
+			if _, err := tx.ExecContext(ctx, "ALTER TABLE "+table+" VALIDATE CONSTRAINT "+quoteIdentifier(c.Name)); err != nil {
 				return err
 			}
 		}
@@ -1091,6 +1102,7 @@ func (r *contractRefusal) Refusal() string { return r.text }
 // the search path of tx back for the statements of the step; a refusal or an
 // error rolls tx back, and the path with it.
 func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) {
+	table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
 	var path string
 	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.current_setting('search_path')").Scan(&path); err != nil {
 		return err
@@ -1104,7 +1116,7 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 		}
 	}()
 	var trigger, syncing, column bool
-	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace JOIN pg_catalog.pg_class r ON r.oid = t.tgrelid JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0 AND pg_catalog.pg_get_triggerdef(t.oid) = 'CREATE TRIGGER ' || pg_catalog.quote_ident($2) || ' BEFORE INSERT OR UPDATE ON ' || pg_catalog.quote_ident(rn.nspname) || '.' || pg_catalog.quote_ident(r.relname) || ' FOR EACH ROW EXECUTE FUNCTION stego_steps.' || pg_catalog.quote_ident($2) || '()'), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", c.Table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace JOIN pg_catalog.pg_class r ON r.oid = t.tgrelid JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0 AND pg_catalog.pg_get_triggerdef(t.oid) = 'CREATE TRIGGER ' || pg_catalog.quote_ident($2) || ' BEFORE INSERT OR UPDATE ON ' || pg_catalog.quote_ident(rn.nspname) || '.' || pg_catalog.quote_ident(r.relname) || ' FOR EACH ROW EXECUTE FUNCTION stego_steps.' || pg_catalog.quote_ident($2) || '()'), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
 		return err
 	}
 	if !trigger && !column {
@@ -1119,7 +1131,7 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 	}
 	var definition string
 	var noInherit, validated bool
-	err = tx.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_constraintdef(k.oid), k.contype <> 'c' OR k.connoinherit, k.convalidated FROM pg_catalog.pg_constraint k WHERE k.conrelid = pg_catalog.to_regclass($1) AND k.conname = $2", c.Table, c.Check).Scan(&definition, &noInherit, &validated)
+	err = tx.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_constraintdef(k.oid), k.contype <> 'c' OR k.connoinherit, k.convalidated FROM pg_catalog.pg_constraint k WHERE k.conrelid = pg_catalog.to_regclass($1) AND k.conname = $2", table, c.Check).Scan(&definition, &noInherit, &validated)
 	present := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -1167,13 +1179,14 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 // whose new column is empty: on an owned table, which has row-level security,
 // for each tenant of the tenant list in turn under its tenant setting.
 func rowsLeft(ctx context.Context, tx *sql.Tx, c ContractStep) (int64, error) {
-	count := "SELECT pg_catalog.count(*) FROM " + c.Table + " WHERE " + c.Old + " IS NOT NULL AND " + c.New + " IS NULL"
+	table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
+	count := "SELECT pg_catalog.count(*) FROM " + table + " WHERE " + c.Old + " IS NOT NULL AND " + c.New + " IS NULL"
 	if c.TenantColumn == "" {
 		var n int64
 		err := tx.QueryRowContext(ctx, count).Scan(&n)
 		return n, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT t.tenant_id FROM "+c.Tenants+" t ORDER BY t.tenant_id COLLATE \"C\"")
+	rows, err := tx.QueryContext(ctx, "SELECT t.tenant_id FROM "+quoteIdentifier(c.TenantSchema)+".stego_tenants t ORDER BY t.tenant_id COLLATE \"C\"")
 	if err != nil {
 		return 0, err
 	}
@@ -1363,13 +1376,13 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 		case step.Validate:
 			fmt.Fprintf(&buf, "\tRegisterValidateStep(%q, %q", step.Name, step.Body)
 			for _, v := range step.Validations {
-				fmt.Fprintf(&buf, ", ValidateConstraint{Table: %q, Name: %q, Foreign: %t}", v.table, v.name, v.foreign)
+				fmt.Fprintf(&buf, ", ValidateConstraint{Schema: %q, Table: %q, Name: %q, Foreign: %t}", v.schema, v.tableName, v.name, v.foreign)
 			}
 			fmt.Fprintf(&buf, ")\n")
 		case step.Contract != nil:
 			c := step.Contract
-			fmt.Fprintf(&buf, "\tRegisterContractStep(%q, %q, ContractStep{Change: %q, Table: %q, Check: %q, Definition: %q, Trigger: %q, Expand: %q, From: %q, Old: %q, New: %q, TenantColumn: %q, Tenants: %q, Statements: []ContractStatement{\n",
-				step.Name, step.Body, c.change, c.table, c.check, c.definition, c.trigger, step.Expand, c.from, c.old, c.new, c.tenant, c.tenants)
+			fmt.Fprintf(&buf, "\tRegisterContractStep(%q, %q, ContractStep{Change: %q, Schema: %q, Table: %q, Check: %q, Definition: %q, Trigger: %q, Expand: %q, From: %q, Old: %q, New: %q, TenantColumn: %q, TenantSchema: %q, Statements: []ContractStatement{\n",
+				step.Name, step.Body, c.change, c.schema, c.tableName, c.check, c.definition, c.trigger, step.Expand, c.from, c.old, c.new, c.tenant, c.tenantSchema)
 			for _, s := range c.statements {
 				also := ""
 				if len(s.also) > 0 {

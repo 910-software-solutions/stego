@@ -53,13 +53,13 @@ type schemaStep struct {
 	Expand   string
 }
 
-// contractStep is what the contract migration of a rename checks and runs: the change, the qualified table, the
-// completeness CHECK, its definition as pg_get_constraintdef gives it and the sync trigger of the expand step, the
-// name of the old column, the old and the new column as quoted identifiers, the tenant column of an owned table and
-// the qualified tenant list, and its statements in their order.
+// contractStep is what the contract migration of a rename checks and runs: the change, the qualified table, and its
+// schema and its name with no quotes, the completeness CHECK, its definition as pg_get_constraintdef gives it and the
+// sync trigger of the expand step, the name of the old column, the old and the new column as quoted identifiers, the
+// tenant column of an owned table and the schema of the tenant list stego_tenants, and its statements in their order.
 type contractStep struct {
-	change, table, check, definition, trigger, from, old, new, tenant, tenants string
-	statements                                                                 []contractStatement
+	change, table, schema, tableName, check, definition, trigger, from, old, new, tenant, tenantSchema string
+	statements                                                                                         []contractStatement
 }
 
 // contractStatement is one statement of a contract step: its SQL; when, a query that gives whether the statement
@@ -82,11 +82,11 @@ type stepAddition struct {
 	validates []validation
 }
 
-// validation is one constraint that the validate migration of a step validates: the qualified table as SQL text, the
-// name of the constraint with no quotes, and foreign for a foreign key.
+// validation is one constraint that the validate migration of a step validates: the qualified table as SQL text, its
+// schema and its name with no quotes, the name of the constraint with no quotes, and foreign for a foreign key.
 type validation struct {
-	table, name string
-	foreign     bool
+	table, schema, tableName, name string
+	foreign                        bool
 }
 
 // validateBody gives the body of the validate migration of the constraints validates, one ALTER TABLE ... VALIDATE
@@ -380,7 +380,7 @@ func addedToTable(old, next tableModel, out *stepAddition) error {
 		return fmt.Errorf("the step changes or removes a constraint or an index of the table %s, and an add step only adds", old.name)
 	}
 	validate := func(name string, foreign bool) {
-		out.validates = append(out.validates, validation{table: table, name: name, foreign: foreign})
+		out.validates = append(out.validates, validation{table: table, schema: "public", tableName: next.name, name: name, foreign: foreign})
 	}
 	for _, check := range next.checks {
 		if !slices.Contains(old.checks, check) {
@@ -645,7 +645,7 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	for _, check := range next.checks {
 		if check.name == sqlName(name, pair.u, "check") {
 			fmt.Fprintf(&out.body, "ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s) NOT VALID;\n", table, sqlIdentifier(check.name), check.expression)
-			out.validates = append(out.validates, validation{table: table, name: check.name})
+			out.validates = append(out.validates, validation{table: table, schema: "public", tableName: name, name: check.name})
 		}
 	}
 	// The sync function, its trigger and the backfill row come in a migration of their own after the indexes, so
@@ -722,10 +722,10 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 			" AND a.attnum > 0 AND NOT a.attisdropped" + test + ")"
 	}
 	constraint := "SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = " + regclass + " AND c.conname = " + sqlString(notNull)
-	out := &contractStep{change: change.ID, table: table, check: complete, definition: completeDefinitionOf(pair), trigger: trigger,
+	out := &contractStep{change: change.ID, table: table, schema: "public", tableName: name, check: complete, definition: completeDefinitionOf(pair), trigger: trigger,
 		from: k.name, old: sqlIdentifier(k.name), new: sqlIdentifier(u.name)}
 	if old.owned {
-		out.tenant, out.tenants = sqlIdentifier(tenantColumn(ctx)), "public.stego_tenants"
+		out.tenant, out.tenantSchema = sqlIdentifier(tenantColumn(ctx)), "public"
 	}
 	add := func(s contractStatement) { out.statements = append(out.statements, s) }
 	if u.notNull {
@@ -1093,7 +1093,7 @@ func requireContractSQL(before, after []tableModel, change types.SchemaChange) (
 	nullable := "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = " + regclass + " AND a.attname = " + sqlString(u.name) +
 		" AND a.attnum > 0 AND NOT a.attisdropped AND NOT a.attnotnull)"
 	constraint := "SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = " + regclass + " AND c.conname = " + sqlString(notNull)
-	out := &contractStep{change: change.ID, table: table}
+	out := &contractStep{change: change.ID, table: table, schema: "public", tableName: name}
 	out.statements = []contractStatement{
 		{sql: fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s IS NOT NULL) NOT VALID", table, sqlIdentifier(notNull), sqlIdentifier(u.name)),
 			when: nullable + " AND NOT EXISTS (" + constraint + ")"},

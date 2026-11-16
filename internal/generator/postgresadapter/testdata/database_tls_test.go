@@ -37,6 +37,57 @@ func TestDatabaseTransportPolicy(t *testing.T) {
 			t.Fatal("verified TLS configuration failed", err)
 		}
 	})
+	t.Run("ST-SUP-RC01-OC01-T02 The emitted opener takes no password, trust, client certificate or service from the files under HOME", func(t *testing.T) {
+		_, ca := databaseTestCertificate(t)
+		certificate, err := os.ReadFile(ca)
+		if err != nil {
+			t.Fatal(err)
+		}
+		home := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(home, ".postgresql"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		for name, content := range map[string][]byte{
+			".pgpass":                    []byte("*:*:*:*:HOME-CANARY\n"),
+			".pg_service.conf":           []byte("[home]\nhost=home.example.test\nsslmode=verify-full\n"),
+			".postgresql/root.crt":       certificate,
+			".postgresql/postgresql.crt": certificate,
+			".postgresql/postgresql.key": certificate,
+		} {
+			if err := os.WriteFile(filepath.Join(home, name), content, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Setenv("HOME", home)
+		for dsn, password := range map[string]string{
+			"host=db.example.test user=test dbname=test sslmode=verify-full":                   "",
+			"postgres://test@db.example.test/test?sslmode=verify-full":                         "",
+			"postgresql://db.example.test/test?user=test&sslmode=verify-full":                  "",
+			"postgres://test:p?w@db.example.test/test?sslmode=verify-full":                     "p?w",
+			"postgres://test:p%3Fw@db.example.test,db2.example.test/test?sslmode=verify-full&": "p?w",
+		} {
+			config, err := databaseConfiguration(dsn)
+			if err != nil {
+				t.Fatalf("%s: %v", dsn, err)
+			}
+			if config.Password != password || config.TLSConfig.RootCAs != nil || len(config.TLSConfig.Certificates) != 0 || config.Host != "db.example.test" {
+				t.Fatalf("%s: the opener takes a file under HOME: password %t, root certificate %t, client certificate %t, host %s", dsn, config.Password != password, config.TLSConfig.RootCAs != nil, len(config.TLSConfig.Certificates) != 0, config.Host)
+			}
+		}
+		if config, err := databaseConfiguration("service=home user=test dbname=test"); err == nil {
+			t.Fatalf("the opener reads the service file under HOME: host %s", config.Host)
+		}
+		// A file that the connection string names still counts.
+		for _, dsn := range []string{
+			"host=db.example.test user=test dbname=test sslmode=verify-full sslrootcert=" + ca,
+			"postgres://test@db.example.test/test?sslmode=verify-full&sslrootcert=" + url.QueryEscape(ca),
+		} {
+			config, err := databaseConfiguration(dsn)
+			if err != nil || config.TLSConfig.RootCAs == nil {
+				t.Fatalf("%s: the opener drops the root certificate that the connection string names: %v", dsn, err)
+			}
+		}
+	})
 	t.Run("ST-SUP-RC01-OC03-T01 The emitted opener keeps the loopback exception narrow", func(t *testing.T) {
 		t.Setenv("STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK", "1")
 		for _, host := range []string{"127.0.0.1", "::1"} {

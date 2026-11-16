@@ -449,6 +449,13 @@ environment:
     description: Read by the gRPC library. The service does not start when it has a value, because it can change how gRPC connects or what it logs.
     secret: false
     refused_at_start: true
+  - name: HOME
+    read_by:
+      - postgres-adapter
+    type: path
+    required: false
+    description: Read by the pgx driver for its default pass, service and certificate files. The database opener gives each of those settings itself, so no file under HOME changes the connection.
+    secret: false
   - name: JWK_CA_FILE
     read_by:
       - rh-sso-auth

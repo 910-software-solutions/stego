@@ -135,11 +135,11 @@ const noProbePort = "no Kubernetes base is written: the platform requirements gi
 // ci-pipeline component (ST-DLV-CMD02), and then the Kubernetes base and the delivery object (WriteDeployment).
 // When the stanza names no provider, or the component states no pins for it (ST-DLV-Q13 (C)), the run writes no
 // CI file and says so in the plan.
-func WriteDelivery(service string, requirements []byte, probes *ProbeSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
+func WriteDelivery(service string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
 	if provider != "" && provider != GitHubActions && provider != Konflux {
 		return DeploymentFiles{}, &StanzaError{Path: "delivery.ci", Reason: fmt.Sprintf("the CI provider %q is not %s or %s", provider, GitHubActions, Konflux)}
 	}
-	written, err := WriteDeployment(service, requirements, probes, stanza)
+	written, err := WriteDeployment(service, requirements, probes, source, stanza)
 	if err != nil {
 		return DeploymentFiles{}, err
 	}
@@ -161,10 +161,11 @@ func WriteDelivery(service string, requirements []byte, probes *ProbeSource, sta
 	return written, nil
 }
 
-// WriteDeployment writes the Kubernetes base of the service from its platform requirements and its probes
-// (ST-DLV-CMD03), and then, as the base is written, the delivery object from the Argo CD part of the delivery
-// stanza, or none when the declaration has no such part (ST-DLV-PO04).
-func WriteDeployment(service string, requirements []byte, probes *ProbeSource, stanza *ArgoCDStanza) (DeploymentFiles, error) {
+// WriteDeployment writes the Kubernetes base of the service from its platform requirements and its probes, and the
+// offline Containerfile of the image that the base runs (ST-DLV-CMD03), and then, as the base is written, the
+// delivery object from the Argo CD part of the delivery stanza, or none when the declaration has no such part
+// (ST-DLV-PO04).
+func WriteDeployment(service string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza) (DeploymentFiles, error) {
 	if probes == nil {
 		return DeploymentFiles{Notes: []string{NoBase}}, nil
 	}
@@ -175,6 +176,11 @@ func WriteDeployment(service string, requirements []byte, probes *ProbeSource, s
 	if err != nil {
 		return DeploymentFiles{}, err
 	}
+	containerfile, err := WriteContainerfile(service, source)
+	if err != nil {
+		return DeploymentFiles{}, err
+	}
+	base.Files[ContainerFile] = containerfile
 	application, note, err := deliveryObjectFor(written, stanza)
 	if err != nil {
 		return DeploymentFiles{}, err

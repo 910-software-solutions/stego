@@ -1,12 +1,17 @@
 package service
 
 import (
+	"context"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // secretValue is in the value of each setting of the test, so a refusal that shows a value shows it.
@@ -250,6 +255,97 @@ func TestSettingFiles(t *testing.T) {
 		set(t, map[string]string{MigrationDatabaseURLSetting: "postgres://owner@db/app", SpiceDBKeyFileSetting: bad["a file that group can write"]})
 		if _, err := ReadMigrationSettings(); err == nil || !strings.Contains(err.Error(), SpiceDBKeyFileSetting) {
 			t.Fatalf("ReadMigrationSettings took a key file that group can write: %v", err)
+		}
+	})
+}
+
+func TestStartStages(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC05-T02 A setting that ReadSettings refuses gives the stage of its component and its variable, with no value", func(t *testing.T) {
+		names := []string{DatabaseURLSetting, DatabaseURLFileSetting, IssuerSetting, AudienceSetting, KeysURLSetting, KeysFileSetting,
+			CAFileSetting, SpiceDBEndpointSetting, SpiceDBKeyFileSetting, SpiceDBInsecureLoopbackSetting, CursorKeyFileSetting, VersionSetting}
+		full := map[string]string{
+			DatabaseURLSetting:     "postgres://rt:" + secretValue + "@db/app",
+			IssuerSetting:          "https://issuer.example/" + secretValue,
+			AudienceSetting:        "orders-" + secretValue,
+			KeysURLSetting:         "https://issuer.example/keys/" + secretValue,
+			SpiceDBEndpointSetting: "127.0.0.1:50051",
+			SpiceDBKeyFileSetting:  writeFile(t, "spicedb.key", []byte(secretValue+"-key\n")),
+			CursorKeyFileSetting:   writeFile(t, "cursor.key", []byte(strings.Repeat("c", 32)+secretValue)),
+		}
+		short := writeFile(t, "short.key", []byte(secretValue))
+		for _, c := range []struct {
+			name   string
+			change map[string]string
+			auth   Auth
+			stage  string
+		}{
+			{"no DATABASE_URL and no DATABASE_URL_FILE", map[string]string{DatabaseURLSetting: ""}, Auth{},
+				"service.start.setting.postgres-adapter.DATABASE_URL"},
+			{"both DATABASE_URL and DATABASE_URL_FILE", map[string]string{DatabaseURLFileSetting: short}, Auth{},
+				"service.start.setting.postgres-adapter.DATABASE_URL"},
+			{"a DATABASE_URL_FILE that is not an absolute path", map[string]string{DatabaseURLSetting: "", DatabaseURLFileSetting: "dsn-" + secretValue}, Auth{},
+				"service.start.setting.postgres-adapter.DATABASE_URL_FILE"},
+			{"no issuer for jwt-auth", map[string]string{IssuerSetting: ""}, Auth{},
+				"service.start.setting.jwt-auth.STEGO_AUTHN_ISSUER"},
+			{"no audience for oidc-auth", map[string]string{AudienceSetting: ""}, Auth{Component: "oidc-auth"},
+				"service.start.setting.oidc-auth.STEGO_AUTHN_AUDIENCE"},
+			{"an issuer that differs from the declared one of rh-sso-auth", nil, Auth{Issuer: "https://declared.example", Component: "rh-sso-auth"},
+				"service.start.setting.rh-sso-auth.STEGO_AUTHN_ISSUER"},
+			{"no key document", map[string]string{KeysURLSetting: ""}, Auth{},
+				"service.start.setting.jwt-auth.STEGO_AUTHN_KEYS_URL"},
+			{"no SpiceDB address", map[string]string{SpiceDBEndpointSetting: ""}, Auth{},
+				"service.start.setting.spicedb-authz.STEGO_SPICEDB_ENDPOINT"},
+			{"a SpiceDB loopback mode that is not 0 or 1", map[string]string{SpiceDBInsecureLoopbackSetting: secretValue}, Auth{},
+				"service.start.setting.spicedb-authz.STEGO_SPICEDB_INSECURE_LOOPBACK"},
+			{"a cursor key that is too short", map[string]string{CursorKeyFileSetting: short}, Auth{},
+				"service.start.setting.query.STEGO_QUERY_CURSOR_KEY_FILE"},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				for _, name := range names {
+					value, changed := c.change[name]
+					if !changed {
+						value = full[name]
+					}
+					t.Setenv(name, value)
+				}
+				_, err := ReadSettings(c.auth)
+				stage := StartStage(err)
+				if err == nil || stage != c.stage {
+					t.Fatalf("ReadSettings gave %v at the stage %q, want the stage %s", err, stage, c.stage)
+				}
+				if strings.Contains(stage, secretValue) || strings.Contains(err.Error(), secretValue) {
+					t.Fatalf("the refusal shows a value: %q, %v", stage, err)
+				}
+			})
+		}
+		if stage := StartStage(errors.New("service: " + secretValue)); stage != "" {
+			t.Fatalf("StartStage named the stage %q for a failure that is not of a setting", stage)
+		}
+	})
+	t.Run("ST-SUP-RP14-LC05-T03 A database pool that does not open gives the stage service.start.database, with no value", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := listener.Addr().String()
+		_ = listener.Close()
+		settings := Settings{DatabaseURL: "postgres://rt:" + secretValue + "@" + closed + "/app?sslmode=disable"}
+		roles := func() Parts {
+			p := parts(nil, nil)
+			p.OwnerRole, p.WorkerRole, p.OutboxRelayRole, p.RelayRole, p.PurgeRole = "owner", "worker", "outbox_relay", "relay", "purge"
+			return p
+		}
+		_, err = New(context.Background(), settings, roles())
+		if stage := StartStage(err); err == nil || stage != "service.start.database" {
+			t.Fatalf("New on a closed database port gave %v at the stage %q, want service.start.database", err, stage)
+		}
+		refused := roles()
+		refused.TenantConfig = func(string) (tenant.Config, error) { return tenant.Config{}, errors.New("no configuration") }
+		if _, err := New(context.Background(), settings, refused); StartStage(err) != "service.start.database" {
+			t.Fatalf("New with a refused connection configuration gave %v at the stage %q", err, StartStage(err))
+		}
+		if strings.Contains(StartStage(err), secretValue) {
+			t.Fatalf("the stage shows a value: %q", StartStage(err))
 		}
 	})
 }

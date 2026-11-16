@@ -62,6 +62,10 @@ const (
 	declaredSubjectClaim = "sub"
 )
 
+// declaredAuthComponent is the auth provider of the declaration, which the start stage of a refused verifier setting
+// names (ST-SUP-RP14-LC05).
+const declaredAuthComponent = "rh-sso-auth"
+
 // The roles of the database, which the role migration of the tenancy component makes (ST-SUP-RC27-OC04). WorkerRole
 // is the role that the outbox worker connects as, RelayRole the role of the authorization relay, PurgeRole the
 // role of this service that owns the purge function of the idempotency key table (ST-SUP-RP07-LC11) and
@@ -129,11 +133,11 @@ type Runtime struct {
 
 // declared are the settings of the verifier that the declaration states.
 var declared = service.Auth{Issuer: declaredIssuer, Audience: declaredAudience, Header: declaredHeader, KeyFile: declaredKeyFile,
-	RoleClaim: declaredRoleClaim, Discovery: true, CAFile: declaredCAFile, SubjectClaim: declaredSubjectClaim,
+	RoleClaim: declaredRoleClaim, Component: declaredAuthComponent, Discovery: true, CAFile: declaredCAFile, SubjectClaim: declaredSubjectClaim,
 	Algorithms: []string{"RS256"}}
 
-// StartStage names the stage of a start that the key source refused, for the failure record of the process, which
-// holds no error text (ST-SUP-RP14-LC05).
+// StartStage names the stage of a start that a setting, the database pool, the key source or the schema manifest
+// refused, for the failure record of the process, which holds no error text and no value (ST-SUP-RP14-LC05).
 func StartStage(err error) string { return service.StartStage(err) }
 
 // parts are what varies with the declaration of the service, which service.New takes. The outbox worker gets the

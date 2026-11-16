@@ -941,7 +941,9 @@ func (b *Backfill) watch(ctx context.Context, held *Held) {
 // Copy is the batch of a rename at expand (ST-SUP-RC01-OC36): in the table public.Table it copies the old column
 // From into the new column To for each row after the checkpoint key whose new value is unset and whose old value is
 // set, in the order of the key. The key is (TenantColumn, id) for an owned table, a composite key of a text and a
-// uuid, and id for a shared one, a uuid key. Tenants is the qualified tenant list, such as public.stego_tenants.
+// uuid, and id for a shared one, a uuid key. Tenants is the qualified tenant list, such as public.stego_tenants: the
+// batch reads its schema and its name from the catalog and quotes each, so its statement names the list with its
+// schema (ST-STD-TXN-R19).
 //
 // The batch runs as the owner role, which row-level security binds to the tenant of the transaction, so a batch of
 // an owned table reads the rows of one tenant: it sets app.tenant to the tenant of the checkpoint key and reads the
@@ -1009,8 +1011,18 @@ moved AS (UPDATE ONLY ` + table + ` t SET ` + to + ` = ` + value + ` FROM batch 
 		`t.id = b.id AND t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL` + moves + ` RETURNING 1),
 failed AS (SELECT 1 FROM ONLY ` + table + ` t JOIN batch b ON t.id = b.id WHERE t.` + to + ` IS NULL AND t.` + from + ` IS NOT NULL AND ` + fails + `)
 SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM moved), (SELECT pg_catalog.count(*) FROM failed), (SELECT id::text FROM batch ORDER BY id DESC LIMIT 1)`
-	next := `SELECT pg_catalog.min(tenant_id) FROM ` + c.Tenants + ` WHERE $1::text IS NULL OR tenant_id > $1::text`
 	return func(ctx context.Context, tx *sql.Tx, after *Key, limit int) (Batch, error) {
+		var schema, name string
+		if c.TenantColumn != "" {
+			err := tx.QueryRowContext(ctx, tenantListStatement, c.Tenants).Scan(&schema, &name)
+			if errors.Is(err, sql.ErrNoRows) {
+				return Batch{}, fmt.Errorf("backfill: the tenant list %s is not there", c.Tenants)
+			}
+			if err != nil {
+				return Batch{}, err
+			}
+		}
+		next := `SELECT pg_catalog.min(tenant_id) FROM ` + quoteName(schema) + `.` + quoteName(name) + ` WHERE $1::text IS NULL OR tenant_id > $1::text`
 		var tenant, id sql.NullString
 		if after != nil {
 			if c.TenantColumn == "" {
@@ -1058,6 +1070,10 @@ SELECT (SELECT pg_catalog.count(*) FROM batch), (SELECT pg_catalog.count(*) FROM
 		}
 	}, nil
 }
+
+// tenantListStatement gives the schema and the name of the tenant list that SQL text names.
+const tenantListStatement = `SELECT n.nspname, c.relname FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.oid = pg_catalog.to_regclass($1::pg_catalog.text)`
 
 // quoteName quotes one SQL name.
 func quoteName(n string) string { return `"` + strings.ReplaceAll(n, `"`, `""`) + `"` }

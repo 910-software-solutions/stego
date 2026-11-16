@@ -433,11 +433,11 @@ func TestArchitectureQueries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The files of the Kubernetes base and of its Component are project files too (ST-DLV-UC07); this test looks
-		// at the others.
+		// The files of the Kubernetes base and of its Component (ST-DLV-UC07) and the Containerfile (ST-DLV-INV07) are
+		// project files too; this test looks at the others.
 		var projectFiles []string
 		for _, name := range slices.Sorted(maps.Keys(state.LastApplied.ProjectFiles)) {
-			if !strings.HasPrefix(name, "deploy/base/") && !strings.HasPrefix(name, "deploy/components/") {
+			if !strings.HasPrefix(name, "deploy/base/") && !strings.HasPrefix(name, "deploy/components/") && name != "Containerfile" {
 				projectFiles = append(projectFiles, name)
 			}
 		}

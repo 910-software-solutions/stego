@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"maps"
+	"math"
 	"net"
 	"net/url"
 	"path"
@@ -512,12 +513,12 @@ func checkType(kind VariableType, value string) error {
 			return fmt.Errorf("the value is not an integer")
 		}
 	case "number":
-		if n, err := strconv.ParseFloat(value, 64); err != nil || n != n {
-			return fmt.Errorf("the value is not a number")
+		if n, err := strconv.ParseFloat(value, 64); err != nil || n != n || math.IsInf(n, 0) {
+			return fmt.Errorf("the value is not a finite number")
 		}
 	case "duration":
-		if _, err := time.ParseDuration(value); err != nil {
-			return fmt.Errorf("the value is not a duration such as 30s or 5m")
+		if d, err := time.ParseDuration(value); err != nil || d < 0 {
+			return fmt.Errorf("the value is not a duration of zero or more, such as 30s or 5m")
 		}
 	case "boolean":
 		if !slices.Contains([]string{"true", "false", "0", "1"}, value) {
@@ -528,6 +529,10 @@ func checkType(kind VariableType, value string) error {
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			return fmt.Errorf("the value is not an absolute URL")
 		}
+		// A URL with user info holds a credential in a value that is not secret (#353 security review L1).
+		if u.User != nil {
+			return fmt.Errorf("the value holds user info; give the credential as a secret")
+		}
 	case "path":
 		if !path.IsAbs(value) {
 			return fmt.Errorf("the value is not an absolute file path")
@@ -535,7 +540,7 @@ func checkType(kind VariableType, value string) error {
 	case "address":
 		host, port, err := net.SplitHostPort(value)
 		number, portErr := strconv.Atoi(port)
-		if err != nil || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " /") {
+		if err != nil || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " /@") {
 			return fmt.Errorf("the value is not an address of a host and a port")
 		}
 	case "list":
