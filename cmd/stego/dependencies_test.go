@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -15,7 +16,9 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/jsell-rh/stego/internal/registry"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 )
 
 // These tests run stego deps in process, as a service author does, against a
@@ -323,7 +326,9 @@ func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
 		mustRun(t, runApply)
 		// A go build before stego deps asks for the go.sum entry of the runtime's go.mod, as the fifth walkthrough
 		// found. With it, go list loads the module graph, which needs more than the go.mod of the first apply holds.
+		// The download reads the runtime pin from the registry's runtime folder, so the test needs no published tag.
 		download := exec.Command("go", "mod", "download", "github.com/jsell-rh/stego/registry/runtime")
+		download.Env = append(os.Environ(), "GOPROXY="+runtimeProxy(t)+",off", "GONOSUMDB=github.com/jsell-rh/stego/registry/runtime", "GOFLAGS=-mod=mod")
 		if output, err := download.CombinedOutput(); err != nil {
 			t.Fatalf("go mod download: %v\n%s", err, output)
 		}
@@ -358,4 +363,37 @@ func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
 		}
 		mustRun(t, runValidate)
 	})
+}
+
+// runtimeProxy writes a module proxy folder that serves the archetype rest-crud's runtime pin from the shipped
+// registry's runtime folder, as stego deps stages it, and gives its file URL.
+func runtimeProxy(t *testing.T) string {
+	t.Helper()
+	reg, err := registry.LoadDirectories(shippedRegistry(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := reg.Archetype("rest-crud").Runtime
+	escaped, err := module.EscapePath(pin.Module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := t.TempDir()
+	versions := filepath.Join(proxy, filepath.FromSlash(escaped), "@v")
+	if err := os.MkdirAll(versions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.WriteRuntimeArchive(reg.RuntimeFolder(), pin.Module, pin.Version, filepath.Join(versions, pin.Version+".zip")); err != nil {
+		t.Fatal(err)
+	}
+	modData, err := os.ReadFile(filepath.Join(reg.RuntimeFolder(), "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{pin.Version + ".mod": string(modData), pin.Version + ".info": fmt.Sprintf("{\"Version\":%q}\n", pin.Version), "list": pin.Version + "\n"} {
+		if err := os.WriteFile(filepath.Join(versions, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return "file://" + filepath.ToSlash(proxy)
 }

@@ -268,6 +268,10 @@ type FillCheck struct {
 	// ModFile is the module file that the check lists the fills with in place of the project's go.mod, such as the
 	// staged go.mod of stego deps, with the go.sum beside it; empty for the project's own go.mod and go.sum.
 	ModFile string
+	// RuntimeProxy stages a module proxy folder that serves the archetype's runtime pin from the registry's runtime
+	// folder under stage, beside a copy of go.mod and go.sum there, and gives its path, as stego deps does; "" when the
+	// registry does not hold the pinned version. Nil when the archetype pins no runtime.
+	RuntimeProxy func(stage string) (string, error)
 	// FillModules are the modules that the declaration lets fills import.
 	FillModules []string
 	// CommandFills are the fills that the commands of the declaration name, with the import path of the command

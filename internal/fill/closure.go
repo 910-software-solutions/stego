@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,13 +302,13 @@ func listFills(check compiler.FillCheck, fills []string) (map[string]listedPacka
 	if len(patterns) == 0 {
 		return nil, nil
 	}
-	stdout, stderr, err := runList(check.ProjectDir, check.ModFile, "readonly", patterns)
+	stdout, stderr, err := runList(check.ProjectDir, check.ModFile, "readonly", "", patterns)
 	if err != nil && check.ModFile == "" && unresolvedModules(stderr) {
 		// The project's go.mod does not hold every module that the fills and the generated code reach yet, as
 		// after an apply that stego deps has not followed. go list then completes a copy of go.mod and go.sum, so
 		// the closure is checked all the same and no project file changes; stego deps checks the fills again with
 		// the go.mod and go.sum that it writes (ST-BLD-UC01).
-		stdout, stderr, err = listResolved(check.ProjectDir, patterns)
+		stdout, stderr, err = listResolved(check, patterns)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("go list of the fills %s failed: %w: %s", strings.Join(fills, ", "), err, strings.TrimSpace(stderr))
@@ -336,7 +337,8 @@ func unresolvedModules(stderr string) bool {
 
 // listResolved lists the packages of patterns with a copy of the project's go.mod and go.sum in a folder of its own,
 // which go list may complete with the modules that the packages reach (-mod=mod). The project's files do not change.
-func listResolved(projectDir string, patterns []string) ([]byte, string, error) {
+func listResolved(check compiler.FillCheck, patterns []string) ([]byte, string, error) {
+	projectDir := check.ProjectDir
 	// The copy goes in the temporary folder (TMPDIR), as the staged module files of stego deps do, outside the
 	// project's package tree; it holds copies only, private to the user, and goes when the listing ends.
 	stage, err := os.MkdirTemp("", "stego-fill-modules-")
@@ -356,12 +358,20 @@ func listResolved(projectDir string, patterns []string) ([]byte, string, error) 
 			return nil, "", err
 		}
 	}
-	return runList(projectDir, filepath.Join(stage, "go.mod"), "mod", patterns)
+	runtimeProxy := ""
+	if check.RuntimeProxy != nil {
+		// The runtime pin resolves from the registry's runtime folder first, as for stego deps, so an unpublished
+		// pin needs no fetch.
+		if runtimeProxy, err = check.RuntimeProxy(stage); err != nil {
+			return nil, "", err
+		}
+	}
+	return runList(projectDir, filepath.Join(stage, "go.mod"), "mod", runtimeProxy, patterns)
 }
 
 // runList runs go list -e -deps -json on patterns in the project folder, with the module mode mode and, when modFile is
 // set, that module file in place of the project's go.mod. It gives the standard output and the standard error.
-func runList(projectDir, modFile, mode string, patterns []string) ([]byte, string, error) {
+func runList(projectDir, modFile, mode, runtimeProxy string, patterns []string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), closureTimeout)
 	defer cancel()
 	args := []string{"list", "-e", "-deps", "-json=" + listedFields}
@@ -381,6 +391,9 @@ func runList(projectDir, modFile, mode string, patterns []string) ([]byte, strin
 	proxy := "https://proxy.golang.org"
 	if os.Getenv("GOPROXY") == "off" {
 		proxy = "off"
+	}
+	if runtimeProxy != "" {
+		proxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String() + "," + proxy
 	}
 	for key, value := range map[string]string{"GOPROXY": proxy, "GOSUMDB": "sum.golang.org", "GOPRIVATE": "", "GONOPROXY": "",
 		"GONOSUMDB": "", "GOINSECURE": "", "GOAUTH": "off", "GOVCS": "*:off", "GIT_TERMINAL_PROMPT": "0"} {
