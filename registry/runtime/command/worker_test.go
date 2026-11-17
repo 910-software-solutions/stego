@@ -1527,7 +1527,7 @@ func TestWorkerLists(t *testing.T) {
 		}
 		// A consumer's handle refuses it the same way.
 		r := &Repository[user]{st: &state{mode: modeConsumer, action: "apply-replies"}, entity: e.users}
-		if _, err := r.listArgs(own, nil); !errors.Is(err, ErrInternal) || !strings.Contains(err.Error(), "apply-replies reads the list own") {
+		if _, _, _, err := r.listArgs(e.ctx, own, nil); !errors.Is(err, ErrInternal) || !strings.Contains(err.Error(), "apply-replies reads the list own") {
 			t.Fatalf("a consumer handle gave %v for an undeclared list", err)
 		}
 		// A command handle refuses it the same way, and tells the fill to declare it under lists: of the command
@@ -1642,6 +1642,25 @@ func TestCommandLists(t *testing.T) {
 		if got, _, err := list(cmd, e.admins.With("org2")); got != "u3" || err != nil {
 			t.Fatalf("the list bound to org2 gave %q, %v; want u3", got, err)
 		}
+		// A nil pointer binds NULL, which equals no row (security review of PR #416, L5).
+		var none *string
+		if got, listed, err := list(cmd, e.admins.With(none)); got != "" || listed != nil || err != nil {
+			t.Fatalf("the list bound to a nil pointer gave %q, %v, %v; want no row", got, listed, err)
+		}
+		// A key parameter that the key check of the entity refuses gives an empty list and runs no statement, so the
+		// cast of the statement never fails (security review of PR #416, L1).
+		keyed, err := NewList(e.users, ListSpec{Name: "keyed", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND org_id = $3::uuid::text ORDER BY id LIMIT $2`, Values: DeclaredValues(ListValue{Param: "org_id", Key: true})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		withKey := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{keyed} }, e.users)
+		if got, listed, err := list(withKey, keyed.With("")); got != "" || listed != nil || err != nil {
+			t.Fatalf("a key that the key check refuses gave %q, %v, %v; want an empty list", got, listed, err)
+		}
+		if _, listed, err := list(withKey, keyed.With("not-a-uuid")); !errors.Is(listed, ErrInternal) || !errors.Is(err, ErrInternal) {
+			t.Fatalf("a key that the key check takes ran the statement and gave %v, %v; want the failed cast", listed, err)
+		}
 		// A pointer is the Go value of an optional field: it binds its value.
 		org := "org2"
 		if got, _, err := list(cmd, e.admins.With(&org)); got != "u3" || err != nil {
@@ -1656,11 +1675,12 @@ func TestCommandLists(t *testing.T) {
 			args []any
 			want string
 		}{
-			"not bound":         {e.admins, nil, "takes 1 parameters"},
-			"two values":        {e.admins.With("org1", "org2"), nil, "it takes 1 parameters and got 2"},
-			"an int":            {e.admins.With(7), nil, "its parameter 1 is not a bool"},
-			"a slice":           {e.admins.With([]string{"org1"}), nil, "its parameter 1 is not a bool"},
-			"fill filter value": {e.admins.With("org1"), []any{"org2"}, "declares its filter values, so the fill gives none"},
+			"not bound":           {e.admins, nil, "takes 1 parameters"},
+			"two values":          {e.admins.With("org1", "org2"), nil, "it takes 1 parameters and got 2"},
+			"an int":              {e.admins.With(7), nil, "its parameter 1 is not a bool"},
+			"a slice":             {e.admins.With([]string{"org1"}), nil, "its parameter 1 is not a bool"},
+			"a pointer to an int": {e.admins.With(new(int)), nil, "its parameter 1 is not a bool"},
+			"fill filter value":   {e.admins.With("org1"), []any{"org2"}, "declares its filter values, so the fill gives none"},
 		} {
 			got, listed, err := list(cmd, c.list, c.args...)
 			if got != "" || !errors.Is(listed, ErrInternal) || !errors.Is(err, ErrInternal) || !strings.Contains(listed.Error(), c.want) {

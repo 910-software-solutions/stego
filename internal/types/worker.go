@@ -59,4 +59,7 @@ type ListTerm struct {
 	Now   bool   `yaml:"now,omitempty"`
 	// Param is the name of a parameter in lower snake case, unique in its list.
 	Param string `yaml:"param,omitempty"`
+	// Parent tells that the value is the ID of the loaded parent row, which the fill gives at call time: the term of
+	// the reference of a list over a child entity (ST-DECL-INV94).
+	Parent bool `yaml:"parent,omitempty"`
 }

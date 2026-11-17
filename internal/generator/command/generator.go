@@ -462,6 +462,9 @@ func (m *model) planLists(cmd *command, byName map[string]types.Entity) error {
 		if err != nil {
 			return fmt.Errorf("command: the command %s: %w", cmd.decl.Name, err)
 		}
+		if err := plan.CheckChild("command: the command "+cmd.decl.Name, list.Name, list.Entity, cmd.decl.Writes); err != nil {
+			return err
+		}
 		cmd.lists = append(cmd.lists, &commandList{decl: list, goName: cmd.goName + mixedCase(list.Name), plan: plan})
 	}
 	return nil

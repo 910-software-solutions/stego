@@ -232,7 +232,8 @@ func (f *Effects) Stage(ctx context.Context, destination, effect string, entity 
 	}
 	// A command stages only the effect names that its declaration states for the destination (ST-SUP-RP10-LC07).
 	if (s.mode == modeCommand || len(d.Effects) > 0) && !slices.Contains(d.Effects, effect) {
-		return s.breakWith(internalf("%s does not declare the effect %s for the destination %s", s.action, effect, destination))
+		// The text names no effect or destination string that the fill gave (security review of PR #416, L2).
+		return s.breakWith(internalf("%s stages an effect that its declaration does not state for that destination", s.action))
 	}
 	if entity == nil {
 		return errors.New("command: an effect needs the loaded value it is for")

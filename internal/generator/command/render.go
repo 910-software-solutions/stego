@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"go/token"
+	"slices"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/types"
@@ -467,6 +468,11 @@ type ListPlan struct {
 	Read, Lock string
 	Values     []string
 	Params     []ListParam
+	// Child tells that the entity is a child: it has no resource type and References references to entities with a
+	// resource type; Parents are the referenced entities of the parent terms (ST-DECL-INV94).
+	Child      bool
+	References int
+	Parents    []string
 }
 
 // ListParam is one declared parameter of a list: its name, the Go name of its argument and the Go type of its field.
@@ -520,13 +526,26 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 			return ListPlan{}, fmt.Errorf("command: the list %s has the operator %q", list.Name, term.Op)
 		}
 		var value string
-		if term.Param != "" {
+		if term.Parent {
+			if term.Op != types.ListEquals || field.decl.Type != types.FieldTypeRef || term.Param != "" || term.Value != nil || term.Now {
+				return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: a parent term needs a reference field and equals, and no value", list.Name, term.Field)
+			}
+			value = fmt.Sprintf("command.ListValue{Parent: %q}", field.decl.To)
+			plan.Parents = append(plan.Parents, field.decl.To)
+			plan.Params = append(plan.Params, ListParam{Name: term.Field, GoName: paramName(strings.TrimSuffix(term.Field, "_id")), GoType: "Loaded" + field.decl.To})
+		} else if term.Param != "" {
 			goType, ok := paramTypes[field.decl.Type]
 			if !ok || seen[term.Param] || term.Value != nil || term.Now {
 				return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: the parameter %s is given twice, with a value, or on a field of the type %s", list.Name, term.Field, term.Param, field.decl.Type)
 			}
 			seen[term.Param] = true
-			value = fmt.Sprintf("command.ListValue{Param: %q}", term.Param)
+			if field.decl.Type == types.FieldTypeRef {
+				// A reference holds the key of a row: the handle checks it with the key check of the entity
+				// (ST-SUP-RP10-LC38).
+				value = fmt.Sprintf("command.ListValue{Param: %q, Key: true}", term.Param)
+			} else {
+				value = fmt.Sprintf("command.ListValue{Param: %q}", term.Param)
+			}
 			plan.Params = append(plan.Params, ListParam{Name: term.Param, GoName: paramName(term.Param), GoType: goType})
 		} else if value, err = listValue(field.decl, term); err != nil {
 			return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: %w", list.Name, term.Field, err)
@@ -534,6 +553,7 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 		plan.Values = append(plan.Values, value)
 		terms = append(terms, fmt.Sprintf("%s %s $%d", column, op, len(plan.Values)+2))
 	}
+	plan.Child, plan.References = e.resourceType == "" && len(e.references) > 0, len(e.references)
 	from := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s = $1", e.columns(), quote(e.table), quote(tenantKey))
 	filter := " AND " + strings.Join(terms, " AND ")
 	plan.Read = from + filter + ` ORDER BY "id" LIMIT $2`
@@ -541,6 +561,26 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 		plan.Lock = from + ` AND "id" = ANY($2::text[]::uuid[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`
 	}
 	return plan, nil
+}
+
+// CheckChild refuses a plan of a declared list of owner that does not fit its entity (ST-DECL-INV94,
+// ST-SUP-RC32-OC16): a list of a child entity needs exactly one parent term, of an entity in writes, and the child
+// one reference to an entity with a resource type; a list of any other entity takes no parent term.
+func (p ListPlan) CheckChild(owner, list, entity string, writes []string) error {
+	switch {
+	case p.Child && p.References > 1:
+		return fmt.Errorf("%s: the list %s reads the child entity %s, which refers to more than one entity with a resource type, so it has no list (ST-DECL-INV94)", owner, list, entity)
+	case p.Child && len(p.Parents) != 1:
+		return fmt.Errorf("%s: the list %s reads the child entity %s and needs exactly one parent term, which takes the decided parent row (ST-DECL-INV94)", owner, list, entity)
+	case !p.Child && len(p.Parents) > 0:
+		return fmt.Errorf("%s: the list %s has a parent term, and %s is not a child entity (ST-DECL-INV94)", owner, list, entity)
+	}
+	for _, parent := range p.Parents {
+		if !slices.Contains(writes, parent) {
+			return fmt.Errorf("%s: the list %s takes a parent row of %s, which it does not write, so its fill cannot load one", owner, list, parent)
+		}
+	}
+	return nil
 }
 
 // paramTypes are the Go types of a list parameter by the type of its field: the Go type of the entity's field, which

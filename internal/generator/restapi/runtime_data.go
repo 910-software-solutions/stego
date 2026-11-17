@@ -1081,6 +1081,10 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 		if err != nil {
 			return nil, err
 		}
+		if plan.Child {
+			// The handle lists a child entity only under its decided parent row (ST-SUP-RP10-LC38).
+			return nil, fmt.Errorf("rest-api: collection %s: an upsert of the child entity %s, which has no resource type, is not supported; give the entity a resource type", c.decl.Name, c.entity.Name)
+		}
 		w.upsertList = plan
 	}
 	if len(c.slots) > 0 {

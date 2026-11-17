@@ -433,6 +433,20 @@ func validateLists(kind, name, at string, writes []string, lists []types.WorkerL
 			fault(".filter", strconv.Itoa(len(list.Filter)), fmt.Sprintf("the filter has %d terms; give one to %d", len(list.Filter), maxListTerms))
 		}
 		params := map[string]bool{}
+		parents := 0
+		for _, term := range list.Filter {
+			if term.Parent {
+				parents++
+			}
+		}
+		switch child, refs := childEntity(entity, byName); {
+		case child && refs > 1:
+			fault(".entity", list.Entity, "the child entity "+entity.Name+" refers to more than one entity with a resource type, so it has no list (ST-DECL-INV94)")
+		case child && parents != 1:
+			fault(".filter", strconv.Itoa(parents), "a list of the child entity "+entity.Name+" needs exactly one term {field: <reference>, op: equals, parent: true}, which takes the decided parent row")
+		case !child && parents > 0:
+			fault(".filter", strconv.Itoa(parents), "a parent term fits only a list of a child entity, which has no resource type and a reference to an entity with one")
+		}
 		for k, term := range list.Filter {
 			at := fmt.Sprintf(".filter[%d]", k)
 			reason := listTermFault(entity, term)
@@ -448,6 +462,21 @@ func validateLists(kind, name, at string, writes []string, lists []types.WorkerL
 		}
 	}
 	return faults
+}
+
+// childEntity tells whether entity is a child: it has no resource type and refs references to entities with a
+// resource type, at least one (ST-SUP-RP10-LC05).
+func childEntity(entity types.Entity, byName map[string]types.Entity) (bool, int) {
+	if entity.ResourceType != "" {
+		return false, 0
+	}
+	refs := 0
+	for _, f := range entity.Fields {
+		if f.Type == types.FieldTypeRef && byName[f.To].ResourceType != "" {
+			refs++
+		}
+	}
+	return refs > 0, refs
 }
 
 // listParam is the form of a parameter name: lower snake case, at most 63 characters.
@@ -466,6 +495,15 @@ func listTermFault(entity types.Entity, term types.ListTerm) string {
 	}
 	if !contains(listOperators, term.Op) {
 		return "the operator must be one of " + strings.Join(listOperators, ", ")
+	}
+	if term.Parent {
+		if term.Op != types.ListEquals || term.Value != nil || term.Now || term.Param != "" {
+			return "a parent term takes only the operator equals and no value, now or parameter"
+		}
+		if field.Type != types.FieldTypeRef {
+			return "a parent term needs a reference field"
+		}
+		return ""
 	}
 	if term.Op == types.ListIsSet {
 		if term.Value != nil || term.Now || term.Param != "" {

@@ -347,6 +347,63 @@ func TestContract(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC32-OC16-T03 A list of a child entity takes its loaded parent row, and any other list of a child is refused", func(t *testing.T) {
+		// Reservation becomes a child of Order: it has no resource type and a reference to Order.
+		child := func(edit func(*types.ServiceDeclaration)) gen.Context {
+			svc := declaration(t)
+			for i := range svc.Entities {
+				if svc.Entities[i].Name == "Reservation" {
+					svc.Entities[i].Fields[0] = types.Field{Name: "order_id", Type: types.FieldTypeRef, To: "Order"}
+				}
+			}
+			svc.Commands[0].Lists[0].Filter[0] = types.ListTerm{Field: "order_id", Op: types.ListEquals, Parent: true}
+			if edit != nil {
+				edit(svc)
+			}
+			return commandContext(t, svc, commandSlot)
+		}
+		ctx := child(nil)
+		contract := strings.Join(strings.Fields(string(generated(t, ctx)["commands/commands.go"])), " ")
+		for _, want := range []string{
+			`Values: command.DeclaredValues(command.ListValue{Parent: "Order"}, command.ListValue{Constant: int32(0)})}))`,
+			`func ReserveAndChargeOfOrderWith(order LoadedOrder) *command.List[Reservation] { return ReserveAndChargeOfOrder.With(order) }`,
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("the contract does not hold %s:\n%s", want, contract)
+			}
+		}
+		// The contract with the parent row compiles.
+		newProject(t, ctx, map[string][]byte{"fills/reserve-and-charge/fill.go": serviceFill}).mustGo("vet", "./out/commands/...")
+		// A key parameter of a reference is checked with the key check (security review of PR #416, L1).
+		key := strings.Join(strings.Fields(string(generated(t, child(func(s *types.ServiceDeclaration) {
+			s.Commands[0].Lists = append(s.Commands[0].Lists, types.WorkerList{Name: "holds", Entity: "Hold",
+				Filter: []types.ListTerm{{Field: "order_id", Op: types.ListEquals, Param: "order_id"}}})
+		}))["commands/commands.go"])), " ")
+		if !strings.Contains(key, `command.ListValue{Param: "order_id", Key: true}`) {
+			t.Errorf("a reference parameter is not a key:\n%s", key)
+		}
+		for name, c := range map[string]struct {
+			edit func(*types.ServiceDeclaration)
+			want string
+		}{
+			"a free order ID": {func(s *types.ServiceDeclaration) {
+				s.Commands[0].Lists[0].Filter[0] = types.ListTerm{Field: "order_id", Op: types.ListEquals, Param: "order_id"}
+			}, "needs exactly one parent term"},
+			"a parent term of an entity with a resource type": {func(s *types.ServiceDeclaration) {
+				s.Commands[0].Lists = append(s.Commands[0].Lists, types.WorkerList{Name: "holds", Entity: "Hold",
+					Filter: []types.ListTerm{{Field: "order_id", Op: types.ListEquals, Parent: true}}})
+			}, "Hold is not a child entity"},
+			"a parent that the command does not write": {func(s *types.ServiceDeclaration) {
+				s.Commands[0].Writes = []string{"Reservation", "Charge", "Hold"}
+				s.Commands[0].RelationshipsWritten = nil
+			}, "does not write"},
+		} {
+			if _, _, err := new(Generator).Generate(child(c.edit)); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("%s gave %v, want a refusal that holds %q", name, err, c.want)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC32-OC01-T01 The fill gets the request and one command handle", func(t *testing.T) {
 		p := newProject(t, commandContext(t, declaration(t), commandSlot), map[string][]byte{"fills/reserve-and-charge/fill.go": serviceFill})
 		fset := token.NewFileSet()

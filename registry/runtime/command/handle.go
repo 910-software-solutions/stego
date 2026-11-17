@@ -633,19 +633,28 @@ type ListValue struct {
 	RunTime  bool
 	// Param is the declared name of a parameter, such as order_id; empty for a constant or the time of the run.
 	Param string
+	// Key tells that the parameter holds the key of a row, such as a reference: the handle checks it with the key
+	// check of the entity and gives an empty list for a value that the check refuses (ST-SUP-RP10-LC38).
+	Key bool
+	// Parent is the entity of the parent row of a list over a child entity, such as Order: the fill gives that loaded
+	// row through With, and the handle decides on it before it reads a row and binds its ID (ST-SUP-RP10-LC38).
+	Parent string
 }
 
 // List is one checked list of an entity, or that list with its parameters bound (With).
 type List[T any] struct {
 	entity *Entity[T]
 	spec   ListSpec
-	// declared is the list that NewList made, of which this list is a binding; nil for that list itself.
+	// binding is the binding that With made, or nil for the list that NewList made. A pointer keeps List comparable.
+	binding *listBinding[T]
+}
+
+// listBinding is the binding of a list: the list that NewList made, the bound parameters, and why they do not fit
+// the declared parameters.
+type listBinding[T any] struct {
 	declared *List[T]
-	// params are the bound parameters, and bad tells why they do not fit the declared parameters; a list with
-	// parameters that is not bound has bound false.
-	params []any
-	bound  bool
-	bad    string
+	params   []any
+	bad      string
 }
 
 // AnyList is a list of any entity, which CommandSpec.Lists and WorkerSpec.Lists hold. Only a *List made by NewList
@@ -659,13 +668,13 @@ type AnyList interface {
 
 func (l *List[T]) listEntity() Declared { return l.entity }
 func (l *List[T]) listName() string     { return l.spec.Name }
-func (l *List[T]) listBound() bool      { return l.declared != nil }
+func (l *List[T]) listBound() bool      { return l.binding != nil }
 func (l *List[T]) listNil() bool        { return l == nil }
 
 // root gives the list that NewList made.
 func (l *List[T]) root() *List[T] {
-	if l.declared != nil {
-		return l.declared
+	if l.binding != nil {
+		return l.binding.declared
 	}
 	return l
 }
@@ -681,23 +690,31 @@ func (l *List[T]) With(params ...any) *List[T] {
 		return nil
 	}
 	root := l.root()
-	bound := &List[T]{entity: root.entity, spec: root.spec, declared: root, params: slices.Clone(params), bound: true}
-	want := 0
+	binding := &listBinding[T]{declared: root, params: slices.Clone(params)}
+	bound := &List[T]{entity: root.entity, spec: root.spec, binding: binding}
+	var slots []ListValue
 	for _, v := range root.spec.Values.all() {
-		if v.Param != "" {
-			want++
+		if v.Param != "" || v.Parent != "" {
+			slots = append(slots, v)
 		}
 	}
-	if len(params) != want {
-		bound.bad = fmt.Sprintf("it takes %d parameters and got %d", want, len(params))
+	if len(params) != len(slots) {
+		binding.bad = fmt.Sprintf("it takes %d parameters and got %d", len(slots), len(params))
 		return bound
 	}
 	for i, p := range params {
+		if slots[i].Parent != "" {
+			if ref, ok := p.(Ref); !ok || ref == nil || refOf(ref).entity != slots[i].Parent {
+				binding.bad = fmt.Sprintf("its parameter %d is not a loaded row of %s", i+1, slots[i].Parent)
+				return bound
+			}
+			continue
+		}
 		switch p.(type) {
 		case bool, string, int32, int64, float32, float64, time.Time,
 			*bool, *string, *int32, *int64, *float32, *float64, *time.Time:
 		default:
-			bound.bad = fmt.Sprintf("its parameter %d is not a bool, a string, an int32, an int64, a float32, a float64 or a time", i+1)
+			binding.bad = fmt.Sprintf("its parameter %d is not a bool, a string, an int32, an int64, a float32, a float64 or a time", i+1)
 			return bound
 		}
 	}
@@ -727,13 +744,16 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 	params := map[string]bool{}
 	for i, v := range spec.Values.all() {
 		kinds := 0
-		for _, set := range []bool{v.Constant != nil, v.RunTime, v.Param != ""} {
+		for _, set := range []bool{v.Constant != nil, v.RunTime, v.Param != "", v.Parent != ""} {
 			if set {
 				kinds++
 			}
 		}
 		if kinds > 1 {
-			return nil, fmt.Errorf("command: the value %d of the list %s is more than one of a constant, the time of the run and a parameter", i+1, spec.Name)
+			return nil, fmt.Errorf("command: the value %d of the list %s is more than one of a constant, the time of the run, a parameter and a parent", i+1, spec.Name)
+		}
+		if v.Parent != "" && !e.isChild() {
+			return nil, fmt.Errorf("command: the list %s takes a parent row, and %s is not a child entity", spec.Name, e.spec.Name)
 		}
 		if v.Param != "" {
 			if params[v.Param] {
@@ -1524,9 +1544,14 @@ func (r *Repository[T]) List(ctx context.Context, l *List[T], limit int, args ..
 	if l == nil || l.entity != r.entity || limit < 1 {
 		return nil, fmt.Errorf("command: a list of %s needs its own list and a limit of at least 1", r.entity.spec.Name)
 	}
-	args, err := r.listArgs(l, args)
-	if err != nil {
+	args, bound, empty, err := r.listArgs(ctx, l, args)
+	if err != nil || empty {
 		return nil, err
+	}
+	// A child entity has no row decision of its own: its list reads only the rows of its decided parent
+	// (ST-SUP-RP10-LC38, security review of PR #416, M1).
+	if r.isChild() && bound == nil {
+		return nil, r.st.breakWith(internalf("the list %s of the child entity %s takes its parent row, which decides it", l.spec.Name, r.entity.spec.Name))
 	}
 	rows, err := r.readList(ctx, l, limit, args)
 	if err != nil {
@@ -1552,9 +1577,16 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 	if l == nil || l.entity != e || l.spec.Lock == "" || e.spec.LockAtMost == 0 {
 		return nil, fmt.Errorf("command: %s has no locked list of that name: the entity declares no Lock at most", e.spec.Name)
 	}
-	args, err := r.listArgs(l, args)
-	if err != nil {
+	args, bound, empty, err := r.listArgs(ctx, l, args)
+	if err != nil || empty {
 		return nil, err
+	}
+	if bound != nil {
+		// The parent of the list is the parent of the call; a fill that gives another one breaks the call.
+		if parent != nil && refOf(parent) != refOf(bound) {
+			return nil, s.breakWith(internalf("the locked list %s of %s takes the parent of its binding", l.spec.Name, e.spec.Name))
+		}
+		parent = bound
 	}
 	rows, err := r.readList(ctx, l, e.spec.LockAtMost+1, args)
 	if err != nil {
@@ -1648,17 +1680,21 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 }
 
 // listArgs gives the filter values of the list l: its declared Values in their order, with the time of the run in
-// place of each RunTime value and the bound parameters of With in place of each Param value. Every handle refuses, as
-// an internal error, a list that its CommandSpec.Lists or WorkerSpec.Lists does not declare, filter values from the
-// fill, a list with parameters that With did not bind, and a binding that does not fit (ST-SUP-RP10-LC38).
-func (r *Repository[T]) listArgs(l *List[T], args []any) ([]any, error) {
+// place of each RunTime value, the bound parameters of With in place of each Param value and the ID of the bound
+// parent row in place of a Parent value. Every handle refuses, as an internal error, a list that its CommandSpec.Lists
+// or WorkerSpec.Lists does not declare, filter values from the fill, a list with parameters that With did not bind, a
+// binding that does not fit and a parent row that this handle did not read (ST-SUP-RP10-LC38). It decides the
+// permission of the reference on the parent row before any row is read, so a caller that may act on one parent never
+// lists the rows of another; a deny is not found. empty is true when a key parameter fails the key check of the
+// entity: the list then has no row and runs no statement. bound is the parent row, or nil.
+func (r *Repository[T]) listArgs(ctx context.Context, l *List[T], args []any) (values []any, bound Ref, empty bool, err error) {
 	s := r.st
 	if !s.lists[l.root()] {
 		kind, place := "command", "command contract"
 		if s.mode == modeWorker || s.mode == modeConsumer {
 			kind, place = "worker", "worker contract"
 		}
-		return nil, s.breakWith(internalf("the %s %s reads the list %s of %s, which its declaration does not declare: since runtime "+
+		return nil, nil, false, s.breakWith(internalf("the %s %s reads the list %s of %s, which its declaration does not declare: since runtime "+
 			"v0.127.0 a fill gives no SQL text, so declare the list under lists: of the %s and use the generated "+
 			"list of the %s (ST-SUP-RP10-LC38)", kind, s.action, l.spec.Name, r.entity.spec.Name, kind, place))
 	}
@@ -1666,40 +1702,82 @@ func (r *Repository[T]) listArgs(l *List[T], args []any) ([]any, error) {
 	// is_set terms only (security review of PR #411, L3): a value that the fill gives at call time is a declared
 	// parameter, which With binds.
 	if len(args) > 0 {
-		return nil, s.breakWith(internalf("the list %s of %s declares its filter values, so the fill gives none; a declared "+
+		return nil, nil, false, s.breakWith(internalf("the list %s of %s declares its filter values, so the fill gives none; a declared "+
 			"parameter goes through the generated function of the list", l.spec.Name, r.entity.spec.Name))
 	}
 	declared := l.spec.Values.all()
 	params := 0
 	for _, v := range declared {
-		if v.Param != "" {
+		if v.Param != "" || v.Parent != "" {
 			params++
 		}
 	}
 	switch {
-	case params > 0 && !l.bound:
-		return nil, s.breakWith(internalf("the list %s of %s takes %d parameters: give them through the generated function "+
+	case params > 0 && l.binding == nil:
+		return nil, nil, false, s.breakWith(internalf("the list %s of %s takes %d parameters: give them through the generated function "+
 			"of the list, which binds them", l.spec.Name, r.entity.spec.Name, params))
-	case l.bad != "":
-		return nil, s.breakWith(internalf("the binding of the list %s of %s does not fit: %s", l.spec.Name, r.entity.spec.Name, l.bad))
+	case l.binding != nil && l.binding.bad != "":
+		return nil, nil, false, s.breakWith(internalf("the binding of the list %s of %s does not fit: %s", l.spec.Name, r.entity.spec.Name, l.binding.bad))
 	}
-	values := make([]any, len(declared))
+	values = make([]any, len(declared))
 	next := 0
 	for i, v := range declared {
 		switch {
 		case v.RunTime:
 			if s.runTime.IsZero() {
-				return nil, s.breakWith(internalf("the list %s of %s takes the time of the run, which this call does not have", l.spec.Name, r.entity.spec.Name))
+				return nil, nil, false, s.breakWith(internalf("the list %s of %s takes the time of the run, which this call does not have", l.spec.Name, r.entity.spec.Name))
 			}
 			values[i] = s.runTime
-		case v.Param != "":
-			values[i] = l.params[next]
+		case v.Parent != "":
+			parent := l.binding.params[next].(Ref)
 			next++
+			if err := r.decideListParent(ctx, l, v.Parent, parent); err != nil {
+				return nil, nil, false, err
+			}
+			bound, values[i] = parent, refOf(parent).id
+		case v.Param != "":
+			values[i] = l.binding.params[next]
+			next++
+			if v.Key && !r.validKey(values[i]) {
+				empty = true
+			}
 		default:
 			values[i] = v.Constant
 		}
 	}
-	return values, nil
+	return values, bound, empty, nil
+}
+
+// decideListParent decides the permission of the reference of a child entity on its parent row p, a loaded row of
+// the entity parent that this handle read, as a write of the child decides it (ST-SUP-RP10-LC05, ST-SUP-RP10-LC38).
+func (r *Repository[T]) decideListParent(ctx context.Context, l *List[T], parent string, p Ref) error {
+	s, e := r.st, r.entity
+	pr := refOf(p)
+	if pr.st != s || pr.entity != parent {
+		return s.breakWith(internalf("the list %s of %s takes a loaded row of %s that this handle read", l.spec.Name, e.spec.Name, parent))
+	}
+	for _, ref := range e.spec.Parent {
+		if ref.Entity == parent {
+			return s.decideReference(ctx, reference{entity: ref.Entity, resourceType: ref.ResourceType, id: pr.id,
+				permission: ref.Permission, relation: ref.Relation}, pr)
+		}
+	}
+	return s.breakWith(internalf("the list %s of %s takes a parent row of %s, which the entity does not refer to", l.spec.Name, e.spec.Name, parent))
+}
+
+// validKey checks a key parameter with the key check of the entity: a string, or a pointer to one that is set.
+func (r *Repository[T]) validKey(value any) bool {
+	valid := r.entity.spec.ValidID
+	if valid == nil {
+		return true
+	}
+	switch v := value.(type) {
+	case string:
+		return valid(v)
+	case *string:
+		return v == nil || valid(*v)
+	}
+	return false
 }
 
 // scanned is one row that a list read.

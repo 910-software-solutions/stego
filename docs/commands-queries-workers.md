@@ -489,8 +489,16 @@ stock, err := items.List(ctx, commands.PlaceOrderStockOfWarehouseWith(order.Valu
 The generator builds the statements of the list from the entity of the
 release. When a schema change adds or renames a field, the next release
 writes the list again with the new columns. The handle binds each parameter as
-a SQL parameter, never as text. A command on the service-level resource has no
-list.
+a SQL parameter, never as text. A parameter of a reference field is a key: a
+value that the key check of the entity refuses gives an empty list. A command
+on the service-level resource has no list.
+
+A list of a child entity reads only the rows of one decided parent. Its parent
+term is `{field: order_id, op: equals, parent: true}`, and its function takes the
+loaded parent row, such as `OfOrderWith(order LoadedOrder)`. The handle takes
+only a row that this handle read. Before it reads a row, it decides the
+permission of the reference on the parent, so a caller that may act on one
+order never lists the rows of another order.
 
 ## Declare a query
 
@@ -757,6 +765,7 @@ A worker fill reads a set of rows through a declared list (ST-DECL-INV94).
 | `value` | A constant of the field type. `is_set` takes no value. |
 | `now` | `true` in place of `value`: the time of the run. This is the time of the tick of an `every` worker, and the start of the run of a consuming worker. Use it only on a timestamp field. |
 | `param` | A name in lower snake case, in place of `value`: a parameter whose value the fill gives at call time, such as a field of the message. Each parameter has its own name in the list. `is_set` takes no parameter. |
+| `parent` | `true` in place of `value`, with `equals`, on the reference of a child entity: the fill gives the loaded parent row, such as a `LoadedOrder`. A child entity has no resource type and a reference to an entity with one. A list of a child needs exactly one parent term, and a list of any other entity has none. |
 | `lock` | Optional. When true, `ListForUpdate` locks the rows. The entity must declare `lock_at_most`, a whole number from 1 to 1000. |
 
 `stego apply` writes one typed list for each declared list in `out/workers`.

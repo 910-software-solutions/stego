@@ -344,6 +344,9 @@ func (m *model) planLists(p *worker) error {
 		if err != nil {
 			return fmt.Errorf("worker: the worker %s: %w", p.decl.Name, err)
 		}
+		if err := plan.CheckChild("worker: the worker "+p.decl.Name, list.Name, list.Entity, p.decl.Writes); err != nil {
+			return err
+		}
 		p.lists = append(p.lists, &workerList{decl: list, goName: p.goName + mixedCase(list.Name), plan: plan})
 	}
 	return nil
