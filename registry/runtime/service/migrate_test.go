@@ -1674,7 +1674,7 @@ func TestMigrateLocks(t *testing.T) {
 		want := map[string]string{"public.orders": "SELECT,INSERT,UPDATE", "public.audit_event": "INSERT",
 			"public.audit_chain_heads": "SELECT,INSERT,UPDATE", "public.idempotency_keys": "SELECT,INSERT,UPDATE",
 			"public.authz_floor": "SELECT", "public.audit_anchor_boundaries": "", "public.audit_retention_checkpoints": "",
-			"public.authz_revocations": "SELECT", "public.authz_revocation_tuples": "SELECT", "public.stego_tenants": ""}
+			"public.authz_revocations": "", "public.authz_revocation_tuples": "", "public.stego_tenants": ""}
 		// The job with a consuming worker that writes orders passes its schema manifest check at its end, which holds
 		// the grant of the worker role on the revocation floor and on the key table.
 		if err := Migrate(context.Background(), settings, consuming("orders")); err != nil {
@@ -1704,13 +1704,21 @@ func TestMigrateLocks(t *testing.T) {
 		if err := asWorker(`UPDATE public.orders SET status = 'synced' WHERE id = 'o1'`); err != nil {
 			t.Fatalf("the update of a declared write as the worker role gave %v, want it to pass", err)
 		}
-		// A consuming worker that creates a row with a reference records the revocation of its tuples, with the
-		// column grants of the runtime role (walkthrough 8, W8-B1).
-		if err := asWorker(`INSERT INTO public.authz_revocations (id, tenant_id, principal) VALUES (gen_random_uuid(), 't1', 'service_account:w')`); err != nil {
-			t.Fatalf("the revocation record of a worker write gave %v, want it to pass", err)
+		// A consuming worker that creates a row with a reference relates its tuple through the authorization handle
+		// in a transaction of the worker role and commits: the column INSERTs of the job are enough, and the foreign
+		// key and the deferred check of the tuple row pass (walkthrough 8, W8-B1; security review of PR #421, L2).
+		relateAsWorker(t, f, endpoint, key)
+		var tuples int
+		if err := f.admin.QueryRow(`SELECT count(*) FROM public.authz_revocation_tuples`).Scan(&tuples); err != nil || tuples != 1 {
+			t.Fatalf("the worker's relate recorded %d tuple rows (%v), want 1", tuples, err)
 		}
-		if err := asWorker(`UPDATE public.authz_revocations SET done = 1`); err == nil {
-			t.Fatal("the worker role updated the revocation counts, which only the outbox relay role may")
+		var refused interface{ SQLState() string }
+		for _, statement := range []string{`SELECT count(*) FROM public.authz_revocations`, `SELECT count(*) FROM public.authz_revocation_tuples`,
+			`UPDATE public.authz_revocations SET done = 1`,
+			`INSERT INTO public.authz_revocations (id, tenant_id, principal, tuple_count) VALUES (gen_random_uuid(), 't1', 'service_account:w', 9)`} {
+			if err := asWorker(statement); !errors.As(err, &refused) || refused.SQLState() != "42501" {
+				t.Fatalf("%s as the worker role gave %v, want SQLSTATE 42501", statement, err)
+			}
 		}
 		var coded interface{ SQLState() string }
 		if err := asWorker(`DELETE FROM public.orders WHERE id = 'o1'`); !errors.As(err, &coded) || coded.SQLState() != "42501" {
@@ -2914,4 +2922,68 @@ func TestInboxFailingReadiness(t *testing.T) {
 			t.Fatalf("a service with no inbox gives the reason %q", reason)
 		}
 	})
+}
+
+// relateAsWorker relates one tuple through the authorization handle in a transaction of tenant t1 as the worker role
+// of the fixture, and commits it, as a consuming worker that creates a row with a reference does.
+func relateAsWorker(t *testing.T, f *fixture, endpoint, key string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := f.admin.Exec("ALTER ROLE " + f.worker + " LOGIN PASSWORD '" + rolePassword + "'"); err != nil {
+		t.Fatal(err)
+	}
+	u := mustURL(t, f.database)
+	u.User = url.UserPassword(f.worker, rolePassword)
+	// The worker role runs the outbox relay functions, as the worker mode opens its pool (ST-SUP-RP01-LC19).
+	workerDB, err := tenant.Open(ctx, tenant.Config{DSN: u.String(), InsecureLoopback: true, Claims: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer workerDB.Close()
+	runtimeDB, err := tenant.Open(ctx, tenant.Config{DSN: f.runtimeURL(), InsecureLoopback: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeDB.Close()
+	queue, err := outbox.New(workerDB, outbox.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := DialSpiceDB(SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	provider, err := authz.NewSpiceDB(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	az, err := authz.New(authz.Config{Provider: provider, DB: runtimeDB, Schema: "public", Outbox: queue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tn := mustTenant(t, "t1")
+	tx, err := tenant.Begin(ctx, workerDB, tn, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	worker, err := authz.System("ship-orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := az.Bind(tx, tn, worker, []authz.Relation{{ResourceType: "order", Name: "owner"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := authz.NewResource(tn, "order", "o1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.Relate(ctx, authz.Tuple{Resource: resource, Relation: "owner", Subject: authz.Subject{Type: "user", ID: "u-7"}}); err != nil {
+		t.Fatalf("the relate of the worker role gave %v", err)
+	}
+	if err := tenant.Commit(ctx, tx, tn); err != nil {
+		t.Fatalf("the commit of the worker's relate gave %v", err)
+	}
 }

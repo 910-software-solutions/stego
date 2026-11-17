@@ -757,12 +757,12 @@ func consumerGrants(p *Parts) []tableGrant {
 		tableGrant{schema: idempotency.KeySchema, table: "idempotency_keys", privileges: []string{"SELECT", "INSERT", "UPDATE"}})
 	if p.AuthzSchema != "" {
 		grants = append(grants, tableGrant{schema: p.AuthzSchema, table: "authz_floor", privileges: []string{"SELECT"}},
-			// A consuming worker that creates a row with a reference relates its tuples and records their revocation,
-			// as the runtime role does, with the same least grants (walkthrough 8, W8-B1; ST-SUP-RP06-LC18).
-			tableGrant{schema: p.AuthzSchema, table: "authz_revocations", privileges: []string{"SELECT"}},
+			// A consuming worker that creates a row with a reference relates its tuples and records their revocation:
+			// it inserts these columns and reads neither table. The foreign key of a tuple and its deferred check run
+			// as the owner and as SECURITY DEFINER, so no SELECT is needed (walkthrough 8, W8-B1; security review of
+			// PR #421, L2).
 			tableGrant{schema: p.AuthzSchema, table: "authz_revocations", privileges: []string{"INSERT"},
-				columns: []string{"id", "tenant_id", "principal", "tuple_count"}},
-			tableGrant{schema: p.AuthzSchema, table: "authz_revocation_tuples", privileges: []string{"SELECT"}},
+				columns: []string{"id", "tenant_id", "principal"}},
 			tableGrant{schema: p.AuthzSchema, table: "authz_revocation_tuples", privileges: []string{"INSERT"},
 				columns: []string{"message_id", "revocation_id", "tenant_id"}})
 	}
