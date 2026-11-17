@@ -21,7 +21,10 @@ implements.
 ## The example service
 
 The example is the service `inventory`. It has warehouses, stock items and
-orders. It declares:
+orders. The create of a warehouse is `public`, with a reason: this is the
+choice of the example, because a new warehouse has no parent resource to
+decide on. It is not the usual setting. Give each operation the permission
+that your schema needs. The example declares:
 
 - The command `place-order`, which reserves stock for a draft order and stages
   a message for the fulfillment worker.
@@ -312,8 +315,8 @@ commands:
 | `refusals` | The refusals that the fill can return. Optional. |
 | `effects` | The messages that the fill can stage, each with a destination and a name. Optional. |
 | `relationships_written` | The SpiceDB relations that the fill can write, as `resource_type#relation`. Optional. |
-| `retry_on_conflict` | How many times the runtime runs the fill again after a write conflict. The default is 0. |
-| `lock_timeout` | How long a statement waits for a row lock. The default is `2s`. |
+| `retry_on_conflict` | How many times the runtime runs the fill again after a write conflict: 0 to 3. The default is 0. |
+| `lock_timeout` | How long a statement waits for a row lock: from `100ms` to `10s`. The default is `2s`. |
 
 ### The route and the resource member
 
@@ -348,6 +351,9 @@ Each request of a command must have the header `Idempotency-Key`.
   `idempotency-key-reused`.
 - A request with the same key while the first request runs gets 409 with the
   problem type `idempotency-key-in-progress`.
+
+The keys of each tenant and each caller are separate. Thus the same key from
+another caller, or in another tenant, is a new request.
 
 The runtime keeps each key for the time in `idempotency.retention`. The
 default is `24h`.
@@ -572,7 +578,7 @@ workers:
 | Key | What it is |
 |---|---|
 | `name` | The name, in lower case with hyphens. |
-| `trigger` | `every <interval>`, from `1s` to `24h`, or `consumes <destination>`. |
+| `trigger` | `every <interval>`, in whole seconds, minutes or hours (`s`, `m`, `h`) from `10s` to `24h`, or `consumes <destination>`. |
 | `writes` | The entities that the fill can read and write. |
 | `resource_type` | A SpiceDB type of the rows that the worker reads and writes. |
 | `permission` | The permission that the worker needs on each row that it reads or writes. |
@@ -750,8 +756,10 @@ the slot `worker.worker`.
    stego fill create place-order --slot command.command
    ```
 
-   This writes `fills/place-order/fill.yaml`, a fill that compiles against the
-   contract, and a test.
+   This is to write `fills/place-order/fill.yaml`, a fill that compiles
+   against the contract, and a test. At this time, `stego fill create` does
+   not know the slots of commands, queries and workers. Until the fix is
+   merged, write `fill.yaml` by hand. See [Known limits](#known-limits).
 
 3. Generate the contract, and resolve the dependencies:
 
@@ -790,13 +798,24 @@ The slot of a command fill is `command.command`, of a query fill
 
 ### Known limits
 
-- If `stego fill create` does not know the slot, write `fill.yaml` by hand as
-  above. Then run `stego apply`.
+- `stego fill create` does not know the slots `command.command`,
+  `query.query` and `worker.worker` at this time. It stops with `slot
+  "command.command" not found in any component`. Write `fill.yaml` by hand as
+  above. Then run `stego apply`. A fix is in progress.
 - If the project has a `go.mod` and apply says that the fill has no Go
   package, add a file `fill.go` that holds only the package clause, such as
   `package placeorder`. Then run `stego apply` again.
 - If `stego deps` stops with `updates to go.mod needed`, run `go mod tidy`
   once. Then run `stego deps` again.
-- `stego test` does not record evidence for the fills of commands, queries
-  and workers yet, and `stego fill sign` and `stego fill status` do not show
-  them. Validate, plan and apply accept these fills without a sign-off.
+
+### Security gap: these fills are not qualified
+
+**Warning:** At this time, STEGO does not qualify the fills of commands,
+queries and workers. `stego test` records no evidence for them, and
+`stego fill sign` and `stego fill status` do not show them. Validate, plan
+and apply accept these fills with no sign-off. The service then runs code
+that no listed key signed, with write access to the entities in `writes`.
+
+This is a known gap, and it is being closed: these fills must be tested and
+signed as each slot fill is (decision ST-EXT-Q30). Until then, review each
+change to these fills before you apply it.
