@@ -38,6 +38,7 @@
 {"id":"ST-DECL-INV21-RL","title":"declaration.validateAuditValues","invariant_id":"ST-DECL-INV21","file":"internal/declaration/audit.go"}
 {"id":"ST-DECL-INV22-RL","title":"declaration.validateSchemaNames","invariant_id":"ST-DECL-INV22","file":"internal/declaration/authz.go"}
 {"id":"ST-DECL-INV23-RL","title":"declaration.validateWrittenRelations","invariant_id":"ST-DECL-INV23","file":"internal/declaration/authz.go"}
+{"id":"ST-DECL-INV24-RL","title":"declaration.ValidateNoBypass","invariant_id":"ST-DECL-INV24","file":"internal/declaration/bypass.go"}
 {"id":"ST-DECL-INV25-RL","title":"declaration.validateIdempotency","invariant_id":"ST-DECL-INV25","file":"internal/declaration/idempotency.go"}
 {"id":"ST-DECL-INV26-RL","title":"declaration.validateMoney","invariant_id":"ST-DECL-INV26","file":"internal/declaration/ledger.go"}
 {"id":"ST-DECL-INV27-RL","title":"declaration.validateLedgerCollections","invariant_id":"ST-DECL-INV27","file":"internal/declaration/ledger.go"}
@@ -93,6 +94,7 @@
 {"id":"ST-DECL-INV82-RL","title":"declaration.validateIdempotencyValues","invariant_id":"ST-DECL-INV82","file":"internal/declaration/idempotency.go"}
 {"id":"ST-DECL-INV84-RL","title":"declaration.validateAuthorizationTenancy","invariant_id":"ST-DECL-INV84","file":"internal/declaration/authz.go"}
 {"id":"ST-DECL-INV85-RL","title":"declaration.validateReferences","invariant_id":"ST-DECL-INV85","file":"internal/declaration/references.go"}
+{"id":"ST-DECL-INV86-RL","title":"declaration.validateNameForms","invariant_id":"ST-DECL-INV86","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV87-RL","title":"declaration.validateSettingBounds","invariant_id":"ST-DECL-INV87","file":"internal/declaration/setting_bounds.go"}
 {"id":"ST-DECL-INV88-RL","title":"declaration.checkSchemaShape","invariant_id":"ST-DECL-INV88","file":"internal/declaration/schema_shape.go"}
 {"id":"ST-DIS-INV06-RL","title":"lifecycle.oneSuccessor","invariant_id":"ST-DIS-INV06","file":"internal/lifecycle/rules.go"}
