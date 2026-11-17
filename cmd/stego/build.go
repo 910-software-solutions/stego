@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -110,6 +111,12 @@ func runBuild(args []string) error {
 // and apply stop at such a fill (ST-GEN-INV10), and so does the build, so that no unqualified fill reaches a binary,
 // also one written after an apply that wrote its contract (decision on ST-EXT-Q30).
 func checkBuildFills(module string) error {
+	// A module that is no STEGO service, or that holds no fill, builds no fill code.
+	for _, name := range []string{"service.yaml", "fills"} {
+		if _, err := os.Lstat(filepath.Join(module, name)); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+	}
 	input, err := reconcilerInputAt(module)
 	if err != nil {
 		return err
