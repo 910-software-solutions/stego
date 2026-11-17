@@ -23,25 +23,25 @@ last_applied:
                 mode: 420
             go.sum:
                 exists: true
-                sha256: 5e2acedec0a01f28b528fef94ce577dea588efe344cc5d0a9cee261f6a4e76ec
+                sha256: f9ab4845428b5d4aaeee5f719cf2ff8b3f2b5ba451c45bad8c8340f79d2066e4
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: f4e1f09d3be5e076e0bb946c2c8378fb6c1fbd87bf22ec8cf2cd7a4074489faa
+        sha256: d80efc740071be587401e0cafe99f143a52f1811d1e509356078bae02d6363ca
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117230843-921e20b9059d
+        module_version: v0.0.0-20261117235857-e9c4cc6072b6
         vcs: git
-        revision: 921e20b9059dfde7794cf7fcd423a1d3de95ff80
+        revision: e9c4cc6072b6a2b748c7537a7384e552949ea5eb
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 3ddb0ac349ba8c2665a0ab40464598285d289bddad61c89d7fa0090578d2d1aa
+    registry_content_sha256: 5cbd74ed2378e566c08e2f5efac79b80ab8f925cc2d49a195859182933bf4909
     components:
         audit-log:
             version: 1.1.1
@@ -210,28 +210,28 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: b9f8a9595c556bfeb4862a0c28ace4342e5dc572d1227ce9c5fe8dc7ba4b1c97
-        architecture/index.html: 9befcd62b80852f25170699ce062f3cb0b4409a6a2a18972e919afd94e78f92d
+        architecture/architecture.json: 2995a521d88f623fcc3852cb381b6b5b93c8aae25fcc3fbf94515ef3a1d3e0ed
+        architecture/index.html: be0bcc3a7b077d5218ec443becec19c15653ddc3a88184e3b1ad8022e247b711
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
-        deploy/base/migration-job.yaml: c744ac0b99c1f5830da82c4035950b691d4ad9cba8a53fc1e9f85049b30414f0
+        deploy/base/migration-job.yaml: a9fa32249d51ca028d7b64e3a0dc75a9274ebe912e4660eb88af7bc770dfd64d
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
         deploy/components/fs-group/deployment-fs-group.yaml: 9a4f92991ebab2ead72ab1a3129ebf94f44fa63249b337e6e6ce8fa11944d667
-        deploy/components/fs-group/job-fs-group.yaml: 5a94ffbbdc6d39ac2414c2c9a754f76724c9709e9ebd3a6d161ab12a89f152e1
+        deploy/components/fs-group/job-fs-group.yaml: 5679ad7ec49a1562d39c9fd05f7976e339e61eb6173bfc5c20e802f0065f2f15
         deploy/components/fs-group/kustomization.yaml: cee4fb45b3d3f632d93206e074ba891e51f4151c76e88aed741a0ce7de942867
         deploy/components/secret-files/kustomization.yaml: 75234bcae3c80c007034ebfded036239d9129181bafb0e6b96aa525b3e85f443
         deploy/components/secret-files/mount-files.yaml: 388ccb04b69ad2bd7346d7579269a9b1c2e8bc27ba30b94ec5c767112c95cb32
-        deploy/components/secret-files/mount-job-files.yaml: 40b368ff1ede8cda8c893f4af186ee912204833f441bbc88e9f4e3706de59364
+        deploy/components/secret-files/mount-job-files.yaml: 2c36196bc1bb92fa8c2b8e027c7ef133b2647d7733e1a2a8934923ce79331fd7
         deploy/components/secret-files/remove-env.yaml: a243baeae3309873606fb81e1556b5f922fc23b6c504191261e2cea7dfdc4ab6
-        deploy/components/secret-files/remove-job-env.yaml: 0702f61f7f28b108df556b1f74391295f4f217a1de3ffb14b1e0b8d510bf43be
+        deploy/components/secret-files/remove-job-env.yaml: 8a723bcd4e373df2538943664dc8479ccfb9080f9e2ee3ffcd02138faf29a61b
         deploy/environment-variables.md: ea185e07ab1e339b1865bf3dddd591a93950d11298e53c7758b4c3008f390ccb
         deploy/platform-requirements.yaml: 260fab7b063ce666301fb622cf9674ea8f0c388917ab9d02eb45f0064203cb4a
     archetype:
         name: rest-crud
-        version: 3.165.0
+        version: 3.166.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.131.0
-            sum: h1:bTcuMb6EDba3zRtXxs3fTCRGrRsvQgcDcQnRqlM2WRg=
+            sum: h1:CSX5VIPI39o3RwOH9YmJwdc37n/A+AKKqTHj+SaI/nI=
         imports_runtime: true
