@@ -124,7 +124,7 @@ environment:
   - name: STEGO_BROWSER_API_URLS
     type: string
     required: false
-    description: "The HTTPS origin of each API of the setting apis, as a comma-separated list of name=origin. The backend reads it once at start. It does not start when the list does not give each declared name one time, gives another name, or gives an address that is not an HTTPS origin. The trust root is STEGO_BROWSER_API_CA_FILE."
+    description: "The HTTPS origin of each API of the setting apis, as a comma list of name=origin. The backend does not start when the list does not give each declared name one time and no other name."
     secret: false
     example: "fulfilment=https://fulfilment.example.com,billing=https://billing.example.com"
   - name: STEGO_BROWSER_API_CA_FILE
