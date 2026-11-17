@@ -61,9 +61,13 @@ const (
 // statement is true for a statement that the database failed, such as for an undefined column, a statement timeout
 // or a lost connection, which the fill did not cause: a consumer does not count it for the poison bound
 // (ST-SUP-RC35-OC06).
+//
+// data is true for a statement that fails on the values of the row, such as for a foreign key or a check (SQLSTATE
+// classes 22 and 23): a consumer counts it for the poison bound with the cause class data.
 type internalError struct {
 	text      string
 	statement bool
+	data      bool
 }
 
 func (e *internalError) Error() string        { return "command: internal error: " + e.text }
@@ -1113,7 +1117,13 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 	if code == notGrantedState {
 		s.notGranted = true
 	}
-	return s.breakWith(&internalError{text: fmt.Sprintf("the statement %s failed with SQLSTATE %q", step, code), statement: true})
+	// A data exception (class 22) or an integrity constraint violation (class 23, but for 23505, which is a
+	// conflict) comes from the values that the fill writes, so it comes again in each attempt; any other SQLSTATE,
+	// such as of a connection (08), of the resources (53), of an operator intervention or a timeout (57) or of a
+	// rolling schema change (42), and an error with no SQLSTATE, is a failed statement (decision of the orchestrator
+	// on the re-review of PR #411).
+	data := strings.HasPrefix(code, "22") || strings.HasPrefix(code, "23")
+	return s.breakWith(&internalError{text: fmt.Sprintf("the statement %s failed with SQLSTATE %q", step, code), statement: !data, data: data})
 }
 
 // notGrantedState is the SQLSTATE insufficient_privilege.

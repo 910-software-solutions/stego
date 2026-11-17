@@ -137,12 +137,13 @@ var workerOutcomes = []WorkerOutcome{WorkerRolledBack, WorkerFenced, WorkerPanic
 // errors of the handle; deadline is a run that reached its deadline; panic a fill that panicked; fill_error an error
 // of the fill that the runtime does not class; undecided a provider that could not decide now; not_granted a
 // privilege that the worker role lacks; statement a statement that the database failed, such as for an undefined
-// column, a statement timeout or a lost connection; declared_refusal a declared refusal of the fill; staging_denied a deny of
+// column, a statement timeout or a lost connection; data a statement that failed on the values of the row, such as
+// for a foreign key or a check; declared_refusal a declared refusal of the fill; staging_denied a deny of
 // the staging principal; tenant a message of a tenant that is not active or a tenant list that was not read;
 // message a message that the runtime cannot take, such as a payload that is not one JSON value; fenced a run that
 // its lease fenced; and unknown a run whose class the observer did not get.
 var WorkerCauses = []string{"invalid", "not_found", "refused", "conflict", "closed", "internal", "deadline", "panic",
-	"fill_error", "undecided", "not_granted", "declared_refusal", "staging_denied", "tenant", "message", "fenced", "statement", "unknown"}
+	"fill_error", "undecided", "not_granted", "declared_refusal", "staging_denied", "tenant", "message", "fenced", "statement", "data", "unknown"}
 
 // SchemaChange is one schema change of the declaration. Open is set when its last step is expand.
 type SchemaChange struct {

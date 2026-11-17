@@ -1161,6 +1161,41 @@ func TestConsumers(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC06-T09 A write that breaks a foreign key in 5 attempts parks the message as poison", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p6', 'new')`)
+		// The reservation of each run names an order that is not there, so its insert fails with SQLSTATE 23503 in
+		// each attempt: the values of the row cause it, not the database.
+		e.exec(`ALTER TABLE reservations ADD CONSTRAINT reservations_order_fk FOREIGN KEY (tenant_id, order_id)
+ REFERENCES orders (tenant_id, id) NOT VALID`)
+		defer e.exec(`ALTER TABLE reservations DROP CONSTRAINT reservations_order_fk`)
+		defer clock.hold()()
+		cases.Store("data", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			_, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: "r-fk", OrderID: "o-none", SKU: "s"})
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-p6", map[string]string{"case": "data"})
+		for i := 1; i <= PoisonAttempts; i++ {
+			want, state := fmt.Sprintf("fill.rolled_back.data.%d", i), "pending"
+			if i == PoisonAttempts {
+				want, state = PoisonCode, "parked"
+			}
+			r := awaitRow(t, m, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+			if r.state != state || r.code != want {
+				t.Fatalf("after attempt %d the message is %s with %q, want %s with %q", i, r.state, r.code, state, want)
+			}
+			if i < PoisonAttempts {
+				clock.add(time.Second)
+			}
+		}
+		if got := e.consumed.causeList(from); len(got) != PoisonAttempts || got[0] != "rolled_back/data" || got[PoisonAttempts-1] != "rolled_back/data" {
+			t.Fatalf("worker.run.failed sent %v, want %d of rolled_back/data", got, PoisonAttempts)
+		}
+		if n := e.count(`SELECT count(*) FROM reservations WHERE id = 'r-fk'`); n != 0 {
+			t.Fatal("the refused insert left its row")
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC06-T08 A conflict between two fill errors starts the count again", func(t *testing.T) {
 		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p5', 'new')`)
 		defer clock.hold()()

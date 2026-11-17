@@ -498,11 +498,12 @@ func poisonStreak(d outbox.Delivery, err error) error {
 
 // streakCauses are the cause classes that the fill causes, which count for the poison bound: an error of the fill,
 // a read of a row that is not there, an invalid value, a deny of the worker's permission, a unique violation, which
-// a consumer counts as an attempt, and a panic. A statement that the database failed, a timeout, a lost connection
+// a consumer counts as an attempt, a statement that fails on the values of the row (data: SQLSTATE classes 22 and
+// 23, decision on the re-review of PR #411), and a panic. A statement that the database failed, a timeout, a lost connection
 // and any other internal error stay transient, are not counted and start the count again (decision of the
 // orchestrator on the security review of PR #411, M1).
 var streakCauses = map[string]bool{"fill_error": true, "not_found": true, "invalid": true, "refused": true, "conflict": true,
-	"panic": true}
+	"panic": true, "data": true}
 
 // consumerOutcome gives the fixed outcome and cause class of the error of a consumer run (ST-SUP-RC35-OC06).
 func consumerOutcome(err error) (probe.WorkerOutcome, string) {
@@ -560,6 +561,8 @@ func causeOf(err error) string {
 		return "closed"
 	case errors.As(err, &statement) && statement.statement:
 		return "statement"
+	case errors.As(err, &statement) && statement.data:
+		return "data"
 	case errors.Is(err, ErrInternal):
 		return "internal"
 	}
