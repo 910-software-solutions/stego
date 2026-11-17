@@ -222,7 +222,9 @@ func fillFaults(check compiler.FillCheck, dir, fill string, contracts []string, 
 }
 
 // listFills runs go list -e -deps -json on the packages of the fills, without test files, in the service's module,
-// with no workspace and a read-only module graph, so it writes no file. It gives nil when the project has no go.mod
+// with no workspace and a read-only module graph, so it writes no file: with the project's go.mod, or with
+// check.ModFile when it is set. When the project's go.mod does not hold every module that the packages reach, it
+// lists them with a completed copy of go.mod and go.sum (listResolved). It gives nil when the project has no go.mod
 // yet or names no fill folder that exists.
 func listFills(check compiler.FillCheck, fills []string) (map[string]listedPackage, error) {
 	if _, err := os.Stat(filepath.Join(check.ProjectDir, "go.mod")); err != nil {
@@ -242,23 +244,19 @@ func listFills(check compiler.FillCheck, fills []string) (map[string]listedPacka
 	if len(patterns) == 0 {
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), closureTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, GoCommand, append([]string{"list", "-e", "-deps", "-json=" + listedFields}, patterns...)...)
-	cmd.Dir = check.ProjectDir
-	// The service's build settings, not the host's, so go list sees the files and imports that the build sees.
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
-	for key, value := range compiler.TargetBuildSettings() {
-		cmd.Env = append(cmd.Env, key+"="+value)
+	stdout, stderr, err := runList(check.ProjectDir, check.ModFile, "readonly", patterns)
+	if err != nil && check.ModFile == "" && unresolvedModules(stderr) {
+		// The project's go.mod does not hold every module that the fills and the generated code reach yet, as
+		// after an apply that stego deps has not followed. go list then completes a copy of go.mod and go.sum, so
+		// the closure is checked all the same and no project file changes; stego deps checks the fills again with
+		// the go.mod and go.sum that it writes (ST-BLD-UC01).
+		stdout, stderr, err = listResolved(check.ProjectDir, patterns)
 	}
-	cmd.WaitDelay = time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("go list of the fills %s failed: %w: %s", strings.Join(fills, ", "), err, strings.TrimSpace(stderr.String()))
+	if err != nil {
+		return nil, fmt.Errorf("go list of the fills %s failed: %w: %s", strings.Join(fills, ", "), err, strings.TrimSpace(stderr))
 	}
 	packages := map[string]listedPackage{}
-	decoder := json.NewDecoder(&stdout)
+	decoder := json.NewDecoder(bytes.NewReader(stdout))
 	for {
 		var p listedPackage
 		err := decoder.Decode(&p)
@@ -271,6 +269,58 @@ func listFills(check compiler.FillCheck, fills []string) (map[string]listedPacka
 		packages[p.ImportPath] = p
 	}
 	return packages, nil
+}
+
+// unresolvedModules tells whether go list stopped because go.mod or go.sum does not hold a module that the listed
+// packages reach, which go mod tidy, and so stego deps, adds.
+func unresolvedModules(stderr string) bool {
+	return strings.Contains(stderr, "updates to go.mod needed") || strings.Contains(stderr, "missing go.sum entry")
+}
+
+// listResolved lists the packages of patterns with a copy of the project's go.mod and go.sum in a folder of its own,
+// which go list may complete with the modules that the packages reach (-mod=mod). The project's files do not change.
+func listResolved(projectDir string, patterns []string) ([]byte, string, error) {
+	stage, err := os.MkdirTemp("", "stego-fill-modules-")
+	if err != nil {
+		return nil, "", err
+	}
+	defer os.RemoveAll(stage)
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(projectDir, name))
+		if errors.Is(err, os.ErrNotExist) && name == "go.sum" {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if err := os.WriteFile(filepath.Join(stage, name), data, 0o600); err != nil {
+			return nil, "", err
+		}
+	}
+	return runList(projectDir, filepath.Join(stage, "go.mod"), "mod", patterns)
+}
+
+// runList runs go list -e -deps -json on patterns in the project folder, with the module mode mode and, when modFile is
+// set, that module file in place of the project's go.mod. It gives the standard output and the standard error.
+func runList(projectDir, modFile, mode string, patterns []string) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), closureTimeout)
+	defer cancel()
+	args := []string{"list", "-e", "-deps", "-json=" + listedFields}
+	if modFile != "" {
+		args = append(args, "-modfile="+modFile)
+	}
+	cmd := exec.CommandContext(ctx, GoCommand, append(args, patterns...)...)
+	cmd.Dir = projectDir
+	// The service's build settings, not the host's, so go list sees the files and imports that the build sees.
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod="+mode)
+	for key, value := range compiler.TargetBuildSettings() {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	cmd.WaitDelay = time.Second
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return stdout.Bytes(), stderr.String(), err
 }
 
 // treeFaults reads every file of the fill folder that the go tool can build, whatever its platform suffix or build

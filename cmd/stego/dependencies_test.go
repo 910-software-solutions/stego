@@ -5,8 +5,10 @@ import (
 	"errors"
 	"maps"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -224,5 +226,136 @@ func TestDependenciesWaitForGeneration(t *testing.T) {
 		if !maps.Equal(before, projectTree(t)) {
 			t.Fatal("a refused resolution changed the project")
 		}
+	})
+}
+
+// walkthroughProject makes a project from the declaration of the fifth walkthrough (testdata/walkthrough5): the
+// inventory service with the command place-order, the query open-orders and the worker fulfill-orders, whose one
+// trigger consumes the effect of place-order. stego init runs first, as a service author does.
+func walkthroughProject(t *testing.T) {
+	t.Helper()
+	_, source, _, _ := runtime.Caller(0)
+	fixture := filepath.Join(filepath.Dir(source), "testdata", "walkthrough5")
+	t.Chdir(t.TempDir())
+	t.Setenv("STEGO_REGISTRY", shippedRegistry(t))
+	t.Setenv("STEGO_MODULE", "example.com/inventory")
+	t.Setenv("STEGO_GO_VERSION", "1.26.11")
+	t.Setenv("GOWORK", "off")
+	t.Setenv("GOTOOLCHAIN", "local")
+	mustRun(t, runInit, "--archetype", "rest-crud")
+	for name, target := range map[string]string{"schema.zed": "authz/schema.zed", "inventory.proto": "proto/inventory.proto", "service.yaml": "service.yaml"} {
+		data, err := os.ReadFile(filepath.Join(fixture, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeProjectFile(t, target, string(data))
+	}
+}
+
+// walkthroughFixture gives a file of testdata/walkthrough5.
+func walkthroughFixture(t *testing.T, name string) string {
+	t.Helper()
+	_, source, _, _ := runtime.Caller(0)
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(source), "testdata", "walkthrough5", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// The fills of the walkthrough project, each with its manifest and one Go file that imports only its contract.
+var walkthroughFills = map[string]struct{ implements, source string }{
+	"place-order": {"command.command", `package place_order
+
+import (
+	"context"
+	"errors"
+
+	commands "example.com/inventory/out/commands"
+)
+
+func New() commands.PlaceOrderFill {
+	return func(ctx context.Context, req *commands.PlaceOrderRequest, h *commands.PlaceOrderHandle) (*commands.PlaceOrderResponse, error) {
+		return nil, errors.New("place-order: not written")
+	}
+}
+`},
+	"open-orders": {"query.query", `package open_orders
+
+import (
+	"context"
+	"errors"
+
+	queries "example.com/inventory/out/queries"
+)
+
+func Fill(ctx context.Context, req queries.OpenOrdersRequest, h *queries.OpenOrdersHandle) (queries.OpenOrdersResponse, error) {
+	var none queries.OpenOrdersResponse
+	return none, errors.New("open-orders: not written")
+}
+`},
+	"fulfill-orders": {"worker.worker", `package fulfill_orders
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+
+	workers "example.com/inventory/out/workers"
+)
+
+func New() workers.FulfillOrdersFill {
+	return func(ctx context.Context, message json.RawMessage, effect string, h *workers.FulfillOrdersHandle) error {
+		return errors.New("fulfill-orders: not written")
+	}
+}
+`},
+}
+
+func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
+	t.Run("ST-BLD-UC01-R01-T03 Resolution checks the fills with the go.mod it resolves, once fills exist", func(t *testing.T) {
+		walkthroughProject(t)
+		for name, f := range walkthroughFills {
+			writeProjectFile(t, "fills/"+name+"/fill.yaml", "kind: fill\nname: "+name+"\nimplements: "+f.implements+"\n")
+			writeProjectFile(t, "fills/"+name+"/fill.go", f.source)
+		}
+		// The first apply writes the go.mod of the component requirements and a go.sum with the runtime pin only.
+		mustRun(t, runApply)
+		// A go build before stego deps asks for the go.sum entry of the runtime's go.mod, as the fifth walkthrough
+		// found. With it, go list loads the module graph, which needs more than the go.mod of the first apply holds.
+		download := exec.Command("go", "mod", "download", "github.com/jsell-rh/stego/registry/runtime")
+		if output, err := download.CombinedOutput(); err != nil {
+			t.Fatalf("go mod download: %v\n%s", err, output)
+		}
+		module, sums := moduleFiles(t)
+		list := exec.Command("go", "list", "-mod=readonly", "-e", "-deps", "./fills/...")
+		if output, err := list.CombinedOutput(); err == nil || !strings.Contains(string(output), "updates to go.mod needed") {
+			t.Fatalf("the fixture does not show the state of the walkthrough, which the test needs: %v\n%s", err, output)
+		}
+		// Validate and apply check the fills with a copy of go.mod and go.sum that go list completes, and write
+		// neither file.
+		mustRun(t, runValidate)
+		mustRun(t, runApply)
+		if after, afterSums := moduleFiles(t); after != module || afterSums != sums {
+			t.Fatal("validate or apply changed go.mod or go.sum")
+		}
+		// A fill that breaks the fill rules stops the resolution, which names it and keeps the module files.
+		writeProjectFile(t, "fills/place-order/bad.go", "package place_order\n\nimport _ \"os\"\n")
+		printed, err := capture(t, runDependencies)
+		if err == nil || !strings.Contains(err.Error(), "place-order") || !strings.Contains(err.Error(), "may not import os") {
+			t.Fatalf("resolution did not refuse the fill that imports os: %v\n%s", err, printed)
+		}
+		if after, afterSums := moduleFiles(t); after != module || afterSums != sums {
+			t.Fatal("a refused resolution changed go.mod or go.sum")
+		}
+		noPendingTransaction(t)
+		if err := os.Remove("fills/place-order/bad.go"); err != nil {
+			t.Fatal(err)
+		}
+		mustRun(t, runDependencies)
+		if after, _ := moduleFiles(t); after == module {
+			t.Fatal("resolution left go.mod as the first apply wrote it")
+		}
+		mustRun(t, runValidate)
 	})
 }

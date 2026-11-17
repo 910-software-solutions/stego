@@ -1,0 +1,51 @@
+definition user {}
+
+// The service resource that an operator provisions and retires tenants on.
+definition service {
+	relation operator: user
+	permission provision = operator
+	permission retire = operator
+}
+
+// A warehouse: managers run it, clerks work in it.
+definition warehouse {
+	relation manager: user
+	relation clerk: user
+	permission view = manager + clerk
+	permission edit = manager + clerk
+	permission manage = manager
+}
+
+definition bin {
+	relation warehouse: warehouse
+	permission view = warehouse->view
+	permission edit = warehouse->edit
+	permission manage = warehouse->manage
+}
+
+definition stock_item {
+	relation bin: bin
+	permission view = bin->view
+	permission edit = bin->edit
+	permission manage = bin->manage
+}
+
+definition order {
+	relation warehouse: warehouse
+	permission view = warehouse->view
+	permission edit = warehouse->edit
+	permission manage = warehouse->manage
+}
+
+definition order_line {
+	relation order: order
+	permission view = order->view
+	permission edit = order->edit
+}
+
+// The workers act in each tenant through their own relation on the tenant (docs/workers.md).
+definition service_account {}
+
+definition tenant {
+	relation worker_fulfill_orders: service_account
+}

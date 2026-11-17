@@ -249,6 +249,9 @@ type FillCheck struct {
 	// Module is the Go module path of the service, whose package out/slots
 	// holds the slot contracts.
 	Module string
+	// ModFile is the module file that the check lists the fills with in place of the project's go.mod, such as the
+	// staged go.mod of stego deps, with the go.sum beside it; empty for the project's own go.mod and go.sum.
+	ModFile string
 	// FillModules are the modules that the declaration lets fills import.
 	FillModules []string
 	// CommandFills are the fills that the commands of the declaration name, with the import path of the command

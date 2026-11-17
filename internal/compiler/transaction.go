@@ -485,6 +485,10 @@ func CommitResolvedModules(ctx context.Context, input ReconcilerInput, resolve M
 func commitResolvedModules(ctx context.Context, input ReconcilerInput, resolve ModuleResolver, fault applyFault) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	// The fills are checked with the go.mod and go.sum that resolution gives, not with the ones it replaces, which
+	// may not hold the modules that the fills reach yet (ST-BLD-UC01, ST-EXT-UC01-R03).
+	qualify := input.QualifyFills
+	input.QualifyFills = nil
 	plan, err := Reconcile(input)
 	if err != nil {
 		return err
@@ -577,6 +581,9 @@ func commitResolvedModules(ctx context.Context, input ReconcilerInput, resolve M
 	if err := validateResolvedModule(module, resolved["go.mod"], plan.requirements); err != nil {
 		return err
 	}
+	if err := checkResolvedFills(input, qualify, modPath); err != nil {
+		return err
+	}
 	after, err := dependencyInputs(ctx, roots)
 	if err != nil {
 		return err
@@ -629,6 +636,35 @@ func commitResolvedModules(ctx context.Context, input ReconcilerInput, resolve M
 		return err
 	}
 	return commitTransaction(project, plan.projectDir, plan, relative, fault)
+}
+
+// checkResolvedFills holds the fills that the declaration names to the fill rules with the resolved module file at
+// modPath and the go.sum beside it, before resolution writes them (ST-BLD-UC01-R01, ST-EXT-UC01-R03). A fault stops
+// the resolution and names the fill.
+func checkResolvedFills(input ReconcilerInput, qualify FillQualifier, modPath string) error {
+	if qualify == nil {
+		return nil
+	}
+	check, err := ResolveFillCheck(input)
+	if err != nil {
+		return err
+	}
+	if len(check.Bindings) == 0 && len(check.CommandFills) == 0 && len(check.QueryFills) == 0 && len(check.WorkerFills) == 0 {
+		return nil
+	}
+	check.ModFile = modPath
+	faults, err := qualify(check)
+	if err != nil {
+		return fmt.Errorf("checking the fills with the resolved go.mod: %w", err)
+	}
+	if len(faults) == 0 {
+		return nil
+	}
+	lines := make([]string, len(faults))
+	for i, fault := range faults {
+		lines[i] = "  [" + fault.Rule + "] " + fault.Path + ": " + fault.Message
+	}
+	return fmt.Errorf("the fills break the fill rules with the resolved go.mod, so go.mod and go.sum stay as they were:\n%s", strings.Join(lines, "\n"))
 }
 
 func validateResolvedModule(before *modfile.File, data []byte, required map[string]string) error {
