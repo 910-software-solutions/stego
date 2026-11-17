@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117095743-41e2d74bb460
+        module_version: v0.0.0-20261117100104-19b0939f3901
         vcs: git
-        revision: 41e2d74bb4604021f1888f23e22df72655300fca
+        revision: 19b0939f390124d5063d7840b55832d3e61043f2
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -149,7 +149,7 @@ last_applied:
         internal/api/openapi.json: 8b7fca8bd9817f4edc6fb039efce9ef59b050dd09244b3426f15c00bd3545598
         internal/api/org_activity_handler.go: 0eafa7c74ad193cfb87081a7a3819c50ec5a51c76554b9ff98530bd83ead0bd8
         internal/api/org_settings_handler.go: fed8f9a62cd8aba81c3636a0675533e7f064e3d71a8f688f7776342c18805f77
-        internal/api/org_users_handler.go: 4818470bd368b2afb0b63071b374d664ce4255bcc0a65bbbfaef7cd59ece8c0d
+        internal/api/org_users_handler.go: a92e38fd3f50fe0773d013fdb7d5576391cc0e4ca6955aa65a4417158b9df864
         internal/api/organizations_handler.go: 7795161675479569835a820d9e396cc5c1589efa47641cac2f6569a8349f452a
         internal/api/router.go: d6124ed4af38af0415a23e5bfcc77ada26e18fe0cea5cf71dee839d28ff93fa6
         internal/api/runtime.go: 40b314935d34a80db8ec210860f3bea629f94b069e19547d0c377d63c4050f4b
