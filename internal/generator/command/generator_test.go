@@ -287,12 +287,16 @@ func TestContract(t *testing.T) {
 			`Read: "SELECT \"id\"::text, \"order_id\", \"sku\", \"qty\", \"version\", ''::text FROM public.\"reservations\" WHERE \"tenant_id\" = $1 AND \"order_id\" = $3 AND \"qty\" > $4 ORDER BY \"id\" LIMIT $2",`,
 			`Values: command.DeclaredValues(command.ListValue{Param: "order_id"}, command.ListValue{Constant: int32(0)})}))`,
 			`func ReserveAndChargeOfOrderWith(orderID string) *command.List[Reservation] { return ReserveAndChargeOfOrder.With(orderID) }`,
+			// The spec takes the lists that the contract package held when it started, before a fill could set the
+			// list variable to its own list (security review of PR #416, L3).
+			`var reserveAndChargeDeclaredLists = []command.AnyList{ReserveAndChargeOfOrder}`,
+			`func ReserveAndChargeDeclaredLists() []command.AnyList { return append([]command.AnyList(nil), reserveAndChargeDeclaredLists...) }`,
 		} {
 			if !strings.Contains(contract, want) {
 				t.Errorf("the contract does not hold %s:\n%s", want, contract)
 			}
 		}
-		if !strings.Contains(handlers, `Lists: []command.AnyList{commands.ReserveAndChargeOfOrder},`) {
+		if !strings.Contains(handlers, `Lists: commands.ReserveAndChargeDeclaredLists(),`) {
 			t.Errorf("the CommandSpec of reserve-and-charge does not declare its list:\n%s", handlers)
 		}
 		// The release that adds a field and renames another builds the list from its own entity.

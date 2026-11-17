@@ -121,9 +121,12 @@ func renderContract(m *model) []byte {
 		for _, h := range c.helpers {
 			renderRelationHelper(w, c, h)
 		}
-		for _, l := range c.lists {
+		names := make([]string, len(c.lists))
+		for i, l := range c.lists {
 			RenderList(&w.Buffer, l.goName, l.decl.Name, "the command "+c.decl.Name, l.decl.Entity, l.plan)
+			names[i] = l.goName
 		}
+		RenderDeclaredLists(&w.Buffer, c.goName, "the command "+c.decl.Name, names)
 	}
 	w.f("%s", refusalHelpers)
 	return w.Bytes()
@@ -326,14 +329,9 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 	w.f("%s", ChangeEventsSpec(m.ctx, written))
 	if len(c.lists) > 0 {
 		// The handle takes only the declared lists (ST-SUP-RP10-LC38).
-		w.f("\tLists: []command.AnyList{")
-		for i, l := range c.lists {
-			if i > 0 {
-				w.f(", ")
-			}
-			w.f("commands.%s", l.goName)
-		}
-		w.f("},\n")
+		// The lists that the contract package took when it started, before a fill could change a list variable
+		// (security review of PR #416, L3).
+		w.f("\tLists: commands.%s(),\n", DeclaredListsName(c.goName))
 	}
 	if len(c.effects) > 0 {
 		w.f("\tDestinations: []command.Destination{")
@@ -639,6 +637,25 @@ func RenderList(w *bytes.Buffer, goName, name, owner, entity string, plan ListPl
 	}
 	fmt.Fprintf(w, "// %sWith gives the list %s of %s with its parameters bound, which the handle binds as SQL\n// parameters (ST-SUP-RP10-LC38).\nfunc %sWith(%s) *command.List[%s] {\n\treturn %s.With(%s)\n}\n\n",
 		goName, name, owner, goName, strings.Join(args, ", "), entity, goName, strings.Join(names, ", "))
+}
+
+// DeclaredListsName is the name of the function that gives the declared lists of the command or worker whose Go
+// name is owner, for its CommandSpec.Lists or WorkerSpec.Lists.
+func DeclaredListsName(owner string) string { return owner + "DeclaredLists" }
+
+// RenderDeclaredLists writes, for the command or worker whose Go name is owner, an unexported slice of its declared
+// lists, which the contract package fills when it starts, and the function DeclaredListsName(owner) that gives a
+// copy of it. A fill imports the contract package, so the slice holds the generated lists before the init of a fill
+// runs: a fill that sets a list variable to a list of its own still gets a list that its handle refuses
+// (ST-SUP-RP10-LC38, security review of PR #416, L3). It writes nothing for no list.
+func RenderDeclaredLists(w *bytes.Buffer, owner, ownerText string, lists []string) {
+	if len(lists) == 0 {
+		return
+	}
+	held := strings.ToLower(owner[:1]) + owner[1:] + "DeclaredLists"
+	fmt.Fprintf(w, "// %s are the declared lists of %s, taken when this package starts.\nvar %s = []command.AnyList{%s}\n\n", held, ownerText, held, strings.Join(lists, ", "))
+	fmt.Fprintf(w, "// %s gives the declared lists of %s for its spec: the lists that this package made, also when a fill set a\n// list variable to another list (ST-SUP-RP10-LC38).\nfunc %s() []command.AnyList { return append([]command.AnyList(nil), %s...) }\n\n",
+		DeclaredListsName(owner), ownerText, DeclaredListsName(owner), held)
 }
 
 // listValue gives the Go source of the command.ListValue of one term: the time of the run for now, or the constant

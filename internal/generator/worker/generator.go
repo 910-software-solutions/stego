@@ -531,9 +531,12 @@ func renderContract(m *model) []byte {
 		}
 	}
 	for _, wk := range m.workers {
-		for _, l := range wk.lists {
+		names := make([]string, len(wk.lists))
+		for i, l := range wk.lists {
 			command.RenderList(&w.Buffer, l.goName, l.decl.Name, "the worker "+wk.decl.Name, l.decl.Entity, l.plan)
+			names[i] = l.goName
 		}
+		command.RenderDeclaredLists(&w.Buffer, wk.goName, "the worker "+wk.decl.Name, names)
 	}
 	w.f("// Refused marks err as a declared refusal of a consuming worker's fill: the message is then parked, since a\n// delivery again gives the same refusal (ST-SUP-RP10-LC26).\nfunc Refused(err error) error { return command.Refused(err) }\n")
 	return w.Bytes()
@@ -683,15 +686,9 @@ func renderWorker(w *writer, m *model, wk *worker) {
 	// (ST-SUP-RC35-OC14).
 	w.f("%s", command.ChangeEventsSpec(m.ctx, wk.decl.Writes))
 	if len(wk.lists) > 0 {
-		// The handle takes only the declared lists (ST-SUP-RP10-LC38).
-		w.f("\tLists: []command.AnyList{")
-		for i, l := range wk.lists {
-			if i > 0 {
-				w.f(", ")
-			}
-			w.f("%s.%s", m.pkg, l.goName)
-		}
-		w.f("},\n")
+		// The handle takes only the declared lists, as the contract package took them when it started (ST-SUP-RP10-LC38,
+		// security review of PR #416, L3).
+		w.f("\tLists: %s.%s(),\n", m.pkg, command.DeclaredListsName(wk.goName))
 	}
 	if len(wk.effects) > 0 {
 		w.f("\tDestinations: []command.Destination{")
