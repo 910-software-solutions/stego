@@ -2,13 +2,16 @@ package worker
 
 import (
 	"fmt"
+	"go/ast"
 	"go/importer"
+	"go/parser"
 	"go/token"
 	gotypes "go/types"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -307,6 +310,24 @@ func TestContract(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC02-T03 The runners and the contract of a service whose workers all have one trigger import only what they use", func(t *testing.T) {
+		for _, keep := range []int{0, 1} {
+			ctx := workerContext(workerSlot)
+			ctx.Workers = ctx.Workers[keep : keep+1]
+			if keep == 0 {
+				ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\trelation worker_apply_partner_replies: service_account\n", "", 1))}
+			} else {
+				ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\trelation worker_sync_partner_orders: service_account\n", "", 1))}
+			}
+			files := generated(t, ctx)
+			for _, name := range []string{"workers/runners/runners.go", "workers/workers.go"} {
+				if unused := unusedImports(t, name, files[name]); len(unused) > 0 {
+					t.Errorf("with the one worker %s, %s imports %v and does not use it", ctx.Workers[0].Name, name, unused)
+				}
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC06-T03 The runners name the tables of the consumers' writes for the worker role, and report a refused privilege", func(t *testing.T) {
 		ctx := workerContext(workerSlot)
 		partner := ctx.Entities[0]
@@ -337,4 +358,34 @@ func TestContract(t *testing.T) {
 			t.Fatalf("a relation of the subject type user gave %v, want a refusal that names tenant#worker_sync_partner_orders", err)
 		}
 	})
+}
+
+// unusedImports gives the imports of the Go source that no selector of the file names, as the compiler refuses them.
+func unusedImports(t *testing.T, name string, source []byte) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), name, source, 0)
+	if err != nil {
+		t.Fatalf("%s does not parse: %v", name, err)
+	}
+	used := map[string]bool{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		if selector, ok := node.(*ast.SelectorExpr); ok {
+			if ident, ok := selector.X.(*ast.Ident); ok {
+				used[ident.Name] = true
+			}
+		}
+		return true
+	})
+	var unused []string
+	for _, spec := range file.Imports {
+		path, _ := strconv.Unquote(spec.Path.Value)
+		local := path[strings.LastIndex(path, "/")+1:]
+		if spec.Name != nil {
+			local = spec.Name.Name
+		}
+		if local != "_" && !used[local] {
+			unused = append(unused, path)
+		}
+	}
+	return unused
 }

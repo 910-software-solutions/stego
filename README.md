@@ -236,6 +236,13 @@ definition todo {
 }
 ```
 
+A denied operation answers 404, the same answer as a missing row, also when the
+caller may read the row. For example, a viewer who reads a todo with 200 gets 404
+on its delete. So an answer never tells a caller that a row it may not change
+exists. The owner decided this rule for each operation on 2026-11-11
+(ST-SUP-RC29-OC02, ST-SUP-RP11-LC06). A command or a query refusal that the
+declaration names keeps its own status, such as 403.
+
 Generate and build:
 
 ```bash
@@ -335,6 +342,23 @@ fills, see [docs/commands-queries-workers.md](docs/commands-queries-workers.md).
 New fill methods return an error until you implement them. They use the generated
 slot types and include a constructor and an interface check. STEGO does not
 replace existing fill files.
+
+The fill of a command, a query or a worker implements the slot
+`command.command`, `query.query` or `worker.worker`. Declare the command, query
+or worker with its `fill` first. Then `stego fill create` writes its fill, also
+before the apply that writes its contract:
+
+```bash
+stego fill create place-order --slot command.command   # New() gives the fill
+stego fill create open-orders --slot query.query       # the function Fill
+stego fill create fulfill-orders --slot worker.worker  # New(), for the trigger
+stego apply         # write the contracts in out/commands, out/queries, out/workers
+stego deps          # resolve the modules, then check the fills again
+go build ./out
+```
+
+Each unfinished fill returns `ErrNotImplemented`, and its test expects that
+error. Change the test when you write the fill.
 
 A fill must be qualified before a binding can use it. `stego test` runs the
 fill tests and, when they pass, records the evidence in the fill's `fill.yaml`:

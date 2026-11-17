@@ -1649,6 +1649,54 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC37-T14 A create or an update that leaves out a field with a default stores the default", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		defaults := map[string]any{"state": "planned", "seats": float64(8), "rate": 1.5, "remote": true}
+		answered := func(what string, r reply, want map[string]any) {
+			t.Helper()
+			object := r.object(t)
+			for field, value := range want {
+				if object[field] != value {
+					t.Errorf("%s answered %s %v in %s, want %v", what, field, object[field], r.body, value)
+				}
+			}
+		}
+		// A body that leaves out each field with a default, and one that sends them as null, store the defaults.
+		var ids []string
+		for _, body := range []string{
+			`{"title":"plain","starts_at":"2026-12-01T10:00:00Z"}`,
+			`{"title":"nulls","starts_at":"2026-12-01T10:00:00Z","state":null,"seats":null,"rate":null,"remote":null}`,
+		} {
+			created := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), body)
+			if created.status != http.StatusCreated {
+				t.Fatalf("the create %s answered %d %s, want 201", body, created.status, created.body)
+			}
+			id := created.member(t, "id")
+			e.own(a, "meeting", id)
+			ids = append(ids, id)
+			answered("the create "+body, created, defaults)
+			if n := e.count(`SELECT count(*) FROM meetings WHERE id = $1::uuid AND state = 'planned' AND seats = 8 AND rate = 1.5 AND remote`, id); n != 1 {
+				t.Errorf("%d meeting rows of %s with the defaults, want 1", n, body)
+			}
+		}
+		// A value that the body gives, also the zero value of its type, is stored as given.
+		given := map[string]any{"state": "held", "seats": float64(0), "rate": float64(0), "remote": false}
+		created := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), `{"title":"given","starts_at":"2026-12-01T10:00:00Z","state":"held","seats":0,"rate":0,"remote":false}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create with the values given answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "meeting", id)
+		answered("the create with the values given", created, given)
+		updated := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", `{"title":"given","starts_at":"2026-12-01T10:00:00Z","seats":3}`)
+		answered("the update that leaves out state, rate and remote", updated, map[string]any{"state": "planned", "seats": float64(3), "rate": 1.5, "remote": true})
+		if n := e.count(`SELECT count(*) FROM meetings WHERE id = $1::uuid AND state = 'planned' AND seats = 3 AND rate = 1.5 AND remote`, id); n != 1 {
+			t.Errorf("%d meeting rows with the update's values and the defaults, want 1", n)
+		}
+		answered("the read", e.send(a, http.MethodGet, "/api/v1/meetings/"+ids[0], "", ""), defaults)
+	})
+
 	t.Run("ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())

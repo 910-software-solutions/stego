@@ -1,0 +1,8 @@
+  - name: grant-clerk
+    writes: [Warehouse]
+    resource_type: warehouse
+    permission: manage
+    resource_member: warehouse_id
+    fill: grant-clerk
+    route: POST /warehouses/{warehouse_id}/clerks
+    relationships_written: [warehouse#clerk]

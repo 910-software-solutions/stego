@@ -71,7 +71,54 @@ func (l recordLogger) Emit(_ context.Context, record otellog.Record) {
 	})
 }
 
-// eventNames is a log provider that keeps the event name and the severity of each record.
+// topicRecorder is a log provider that keeps, for each event kafka.delivery_failed, its failure, topic and reason
+// attributes, and each attribute that is not one of them.
+type topicRecorder struct {
+	noop.LoggerProvider
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *topicRecorder) Logger(string, ...otellog.LoggerOption) otellog.Logger {
+	return topicLogger{r: r}
+}
+
+func (r *topicRecorder) got() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.events...)
+}
+
+type topicLogger struct {
+	noop.Logger
+	r *topicRecorder
+}
+
+func (l topicLogger) Emit(_ context.Context, record otellog.Record) {
+	if record.EventName() != "kafka.delivery_failed" {
+		return
+	}
+	values := map[string]string{}
+	var other []string
+	record.WalkAttributes(func(kv attribute.KeyValue) bool {
+		switch kv.Key {
+		case "failure", "topic", "reason":
+			values[string(kv.Key)] = kv.Value.AsString()
+		default:
+			other = append(other, string(kv.Key))
+		}
+		return true
+	})
+	event := values["failure"] + " " + values["topic"] + " " + values["reason"]
+	if len(other) > 0 || strings.Contains(record.Body().AsString(), "order:o-1") {
+		event += " with " + strings.Join(other, ",") + " " + record.Body().AsString()
+	}
+	l.r.mu.Lock()
+	l.r.events = append(l.r.events, event)
+	l.r.mu.Unlock()
+}
+
+// eventNames is a log provider// eventNames is a log provider that keeps the event name and the severity of each record.
 type eventNames struct {
 	noop.LoggerProvider
 	mu    sync.Mutex
@@ -405,6 +452,44 @@ func TestBrokerSafety(t *testing.T) {
 		}
 		if got := logs.got(); len(got) != 0 {
 			t.Fatalf("logged %v, want no event of an earlier attempt's class", got)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC31-T06 A refused topic is a transient refusal, and the log names the topic and the reason", func(t *testing.T) {
+		// The first broker has no topic missing-topic. The second checks ACLs: the user svc may write idempotently
+		// to the cluster, and has no ACL on the topic events, so the broker refuses the topic, as Kafka does.
+		missing := fake(t, on("127.0.0.1"))
+		server, ca := certificates(t, "", net.ParseIP("127.0.0.1"))
+		denied := fake(t, on("127.0.0.1"), kfake.TLS(server), kfake.EnableSASL(), kfake.EnableACLs(),
+			kfake.User(MechanismSCRAMSHA512, "svc", "secret-pass",
+				kfake.ACL{Resource: kmsg.ACLResourceTypeCluster, Name: "kafka-cluster", Pattern: kmsg.ACLResourcePatternTypeLiteral,
+					Operation: kmsg.ACLOperationIdempotentWrite, Allow: true},
+				kfake.ACL{Resource: kmsg.ACLResourceTypeCluster, Name: "kafka-cluster", Pattern: kmsg.ACLResourcePatternTypeLiteral,
+					Operation: kmsg.ACLOperationDescribe, Allow: true}))
+		for _, c := range []struct {
+			name, topic, reason string
+			settings            Settings
+		}{
+			{"a topic that the broker does not have", "missing-topic", ReasonUnknownTopic,
+				Settings{Brokers: missing.ListenAddrs(), Topic: "missing-topic", InsecureLoopback: true}},
+			{"a topic that the service may not write", fakeTopic, ReasonTopicNotAuthorized,
+				Settings{Brokers: denied.ListenAddrs(), Topic: fakeTopic, CAFile: ca, Mechanism: MechanismSCRAMSHA512,
+					Username: "svc", PasswordFile: writeFile(t, "password", "secret-pass")}},
+		} {
+			logs := &topicRecorder{}
+			d, err := New(c.settings, logs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err, _ = deliver(t, d, 20*time.Second)
+			d.Close()
+			if err == nil || outbox.IsPermanent(err) || !strings.Contains(err.Error(), "refused the topic "+c.topic+": "+c.reason) {
+				t.Fatalf("%s gave %v, want a transient refusal that names the topic and the reason", c.name, err)
+			}
+			want := FailureTopicRefused + " " + c.topic + " " + c.reason
+			if got := logs.got(); len(got) != 1 || got[0] != want {
+				t.Fatalf("%s logged %v, want one event %q with no part of the message", c.name, got, want)
+			}
 		}
 	})
 

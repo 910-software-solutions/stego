@@ -54,10 +54,57 @@ const containerHeader = "# The offline Containerfile of the service. stego apply
 	"# emptyDir at /tmp, as the Kubernetes base sets them.\n"
 
 // ContainerSource is what the build stage copies from the project folder: the folder of the generated output, the
-// entry point of the build, and whether the fills folder holds a fill, which the generated code then imports.
+// entry point of the build, whether the fills folder holds a fill, which the generated code then imports, and the
+// folders of the project that go.mod replaces a module with, which the build reads as stego build does. Replacements
+// are the paths of the replace directives of go.mod as it gives them; WriteDeployment makes Modules from them
+// (ModuleFolders).
 type ContainerSource struct {
-	OutputDir string
-	Fills     bool
+	OutputDir    string
+	Fills        bool
+	Modules      []string
+	Replacements []string
+}
+
+// moduleNote is the plan line for a local module that the Containerfile does not copy, with the path quoted, so
+// that no text of go.mod can change the line (security review of PR #395, L1).
+const moduleNote = "the Containerfile does not copy the local module %q that go.mod replaces a module with: %s, so the image build cannot read it"
+
+// ModuleFolders gives the folders that the build stage copies for the local module replacements of go.mod, in path
+// order, and a plan line for each replacement that it does not copy as its own folder. A replacement in the output
+// folder, in a copied fills folder or the project folder itself needs no copy of its own. A replacement in another
+// replaced folder is copied with that folder. A replacement out of the project folder, with a name that the
+// Containerfile cannot hold, or that holds the output folder or the fills folder, is not copied, and the line says
+// why, so that apply does not fail on a layout that stego build accepts (security review of PR #395, L2).
+func ModuleFolders(replacements []string, outputDir string, fills bool) ([]string, []string) {
+	copied := []string{outputDir}
+	if fills {
+		copied = append(copied, "fills")
+	}
+	within := func(folder, parent string) bool { return folder == parent || strings.HasPrefix(folder, parent+"/") }
+	var candidates, notes []string
+	for _, given := range replacements {
+		folder := path.Clean(given)
+		switch {
+		case path.IsAbs(given) || strings.ContainsAny(given, "\\:") || folder == ".." || strings.HasPrefix(folder, "../"):
+			notes = append(notes, fmt.Sprintf(moduleNote, given, "it is out of the project folder"))
+		case folder == "." || slices.ContainsFunc(copied, func(c string) bool { return within(folder, c) }):
+		case !sourceFolder.MatchString(folder):
+			notes = append(notes, fmt.Sprintf(moduleNote, given, "its folder is not a relative path of letters, digits, '.', '_' and '-' that starts with a letter or a digit"))
+		case slices.ContainsFunc(copied, func(c string) bool { return within(c, folder) }):
+			notes = append(notes, fmt.Sprintf(moduleNote, given, "its folder holds the output folder or the fills folder, which the Containerfile copies on its own"))
+		case !slices.Contains(candidates, folder):
+			candidates = append(candidates, folder)
+		}
+	}
+	slices.Sort(candidates)
+	var folders []string
+	for _, folder := range candidates {
+		if slices.ContainsFunc(folders, func(parent string) bool { return within(folder, parent) }) {
+			continue
+		}
+		folders = append(folders, folder)
+	}
+	return folders, notes
 }
 
 // sourceFolder is a folder of the project that the Containerfile names: a relative path of plain names, so that no
@@ -65,10 +112,10 @@ type ContainerSource struct {
 var sourceFolder = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
 
 // WriteContainerfile writes the offline Containerfile of the service (ST-DLV-CMD03): a build stage on the pinned Go
-// image that copies the module files and the source folders, checks the Go version and the prefetched modules, and
-// builds with the settings and the arguments of the application build and no module download; then a scratch
-// stage with the executable, the CA certificates and a numeric user that is not root. It reads the file back with
-// LoadContainerfile before it gives it (ST-DLV-INV07).
+// image that copies the module files and the source folders, with each local module folder that go.mod replaces a
+// module with, checks the Go version and the prefetched modules, and builds with the settings and the arguments of
+// the application build and no module download; then a scratch stage with the executable, the CA certificates and
+// a numeric user that is not root. It reads the file back with LoadContainerfile before it gives it (ST-DLV-INV07).
 func WriteContainerfile(service string, source ContainerSource) ([]byte, error) {
 	if !serviceLabel.MatchString(service) {
 		return nil, fmt.Errorf("the service name %q is not a DNS label", service)
@@ -92,6 +139,17 @@ func renderContainerfile(source ContainerSource) ([]byte, error) {
 	folders := []string{source.OutputDir}
 	if source.Fills {
 		folders = append(folders, "fills")
+	}
+	for _, module := range source.Modules {
+		if !sourceFolder.MatchString(module) || slices.Contains(strings.Split(module, "/"), "..") {
+			return nil, fmt.Errorf("the local module folder %q that go.mod replaces a module with is not a relative path of plain names", module)
+		}
+		for _, folder := range folders {
+			if module == folder || strings.HasPrefix(module, folder+"/") || strings.HasPrefix(folder, module+"/") {
+				return nil, fmt.Errorf("the local module folder %q is in the folder %s or holds it; the Containerfile copies each folder once", module, folder)
+			}
+		}
+		folders = append(folders, module)
 	}
 	var out strings.Builder
 	out.WriteString(containerHeader)
@@ -154,7 +212,9 @@ var keywords = []string{"FROM", "WORKDIR", "COPY", "RUN", "USER", "ENTRYPOINT"}
 // root and starts the executable by its absolute path in exec form. Then it holds the file to the exact bytes that
 // WriteContainerfile makes for the source folders that the build stage copies, so that no other text passes: more
 // text in the RUN, a COPY with --from after another flag, a parser directive such as # syntax= or # escape=, or a
-// heredoc (security review of PR #367, L1).
+// heredoc (security review of PR #367, L1). WriteContainerfile calls it on the text it makes, before apply writes the
+// file. A hand edit of the file on the disk is caught by the digest that the record keeps under project_files, as
+// for each file of the base.
 func LoadContainerfile(data []byte) (Containerfile, error) {
 	var file Containerfile
 	var stages [][]Instruction
@@ -238,16 +298,17 @@ func LoadContainerfile(data []byte) (Containerfile, error) {
 	if entrypoint != fmt.Sprintf("[%q]", ImageExecutable) || !path.IsAbs(ImageExecutable) {
 		return Containerfile{}, fmt.Errorf("the final stage does not start %s in exec form", ImageExecutable)
 	}
-	// The source folders are the output folder and, when the build stage copies it, the fills folder.
-	var source ContainerSource
-	switch {
-	case len(folders) == 1:
-		source.OutputDir = folders[0]
-	case len(folders) == 2 && folders[1] == "fills":
-		source.OutputDir, source.Fills = folders[0], true
-	default:
-		return Containerfile{}, fmt.Errorf("the build stage copies the folders %v, not the output folder and the fills folder", folders)
+	// The source folders are the output folder, then the fills folder when the build stage copies it, then the local
+	// module folders.
+	if len(folders) == 0 {
+		return Containerfile{}, fmt.Errorf("the build stage copies no output folder")
 	}
+	source := ContainerSource{OutputDir: folders[0]}
+	rest := folders[1:]
+	if len(rest) > 0 && rest[0] == "fills" {
+		source.Fills, rest = true, rest[1:]
+	}
+	source.Modules = rest
 	want, err := renderContainerfile(source)
 	if err != nil {
 		return Containerfile{}, err
