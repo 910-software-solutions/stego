@@ -1057,7 +1057,7 @@ environment:
       - kafka-producer
     type: string
     required: false
-    description: 'The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place. Give one of the two, with the topic of the topic need: stego env check refuses another topic.'
+    description: The topic of every message, which must be the topic of the topic need; give it or STEGO_KAFKA_TOPIC_FILE. stego env check refuses another topic in this variable, and does not read the file.
     secret: false
     one_of: kafka-topic
   - name: STEGO_KAFKA_TOPIC_FILE

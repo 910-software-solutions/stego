@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117132207-cf71d0fac913
+        module_version: v0.0.0-20261117140051-6d529686ddb2
         vcs: git
-        revision: cf71d0fac913e8b4ba3aa34a53cd5d4f1b7b1ff2
+        revision: 6d529686ddb216802b0454d656a2c27b9c28d48a
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: ddf22e96848833092c25e37f48a10f31b2be5cfc50e09b8de0576fe2de1617db
+    registry_content_sha256: dbe8eedb3dbcd2d7b98793f6e6a2b9bad7b0c25656a3be7052104cc0c67cf84f
     components:
         audit-log:
             version: 1.1.1
@@ -57,7 +57,7 @@ last_applied:
             sha: 9336c79178caf803db7222bedd34244d99241ea4bbb3cf5298fd7e87029aad1d
         kafka-producer:
             version: 3.0.0
-            sha: d5698b4254d6279397b439cb5889eade9d8a592fa87021b45661f11173c7cd64
+            sha: c231fae44d60a39f75076018d24bca0b1255fd080e6dfe400fa6ca1cb96b0203
         otel-tracing:
             version: 1.19.0
             sha: 493f1a9b4c15574a0ad10f70ca302558d5d81541676353883275d0ca4ffd80ee
@@ -210,8 +210,8 @@ last_applied:
         deploy/components/secret-files/mount-job-files.yaml: a169f86736f557753bb5184569f3c1b282ac1123e59ffd5f8533fcc1e9a28a33
         deploy/components/secret-files/remove-env.yaml: a243baeae3309873606fb81e1556b5f922fc23b6c504191261e2cea7dfdc4ab6
         deploy/components/secret-files/remove-job-env.yaml: 37a21d57e66be190c320b7ae5dc3824fe90f9d430ca6c4c293f5ffc977c544f3
-        deploy/environment-variables.md: c0fc0c6578d80d55df295701323200979a9edb9006344321f14a4b7ba78e924d
-        deploy/platform-requirements.yaml: 1cab3033b9966a0c8a42b85fbf9bf70e3e8e26f32b69ce27b97f99a1bf05b90a
+        deploy/environment-variables.md: 46ee61308d9d1ee191299dce2cc46af89ea0d83b511591a650e6247dcfb82797
+        deploy/platform-requirements.yaml: 736e42876e62d7fadad1ded5bb1f36215b530554c5bf830c71aebe6b25f23090
     archetype:
         name: rest-crud
         version: 3.151.0
