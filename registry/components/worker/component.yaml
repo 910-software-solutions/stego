@@ -22,6 +22,7 @@ slots: []
 architecture:
   layer: handler
   flow: "Runs the fill of each declared worker at its trigger, in a transaction of each tenant."
+  serves: [workers]
   ports:
     workers: inbound
 

@@ -27,6 +27,7 @@ slots: []
 architecture:
   layer: handler
   flow: "Runs the declared command in the transaction of the caller's tenant."
+  serves: [commands]
   ports:
     commands: inbound
 
