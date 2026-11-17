@@ -15,7 +15,7 @@ last_applied:
                 mode: 420
             authz/schema.zed:
                 exists: true
-                sha256: f1c2a025d38893b4faf57b32662d8d594874c8502948dfd90f4dfaf1266aae8f
+                sha256: 87e9c0b65aca9a22c4e7386893b21b0c86f0d2f1f2f7f7988bf1ba8b5546559f
                 mode: 420
             go.mod:
                 exists: true
@@ -29,14 +29,14 @@ last_applied:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: 23333a4e0621fa6b5b3d10c3c378f3f44716ccaf96f45336d7590162ec6850e8
+        sha256: b81dbcbf58b42951cebb015cca8553dc32a76fee01677676ae197a22fb442536
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117091118-19fad1996f36
+        module_version: v0.0.0-20261117095743-41e2d74bb460
         vcs: git
-        revision: 19fad1996f360e9af80cb0bf168396d166a0a2bc
+        revision: 41e2d74bb4604021f1888f23e22df72655300fca
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -149,15 +149,15 @@ last_applied:
         internal/api/openapi.json: 8b7fca8bd9817f4edc6fb039efce9ef59b050dd09244b3426f15c00bd3545598
         internal/api/org_activity_handler.go: 0eafa7c74ad193cfb87081a7a3819c50ec5a51c76554b9ff98530bd83ead0bd8
         internal/api/org_settings_handler.go: fed8f9a62cd8aba81c3636a0675533e7f064e3d71a8f688f7776342c18805f77
-        internal/api/org_users_handler.go: a92e38fd3f50fe0773d013fdb7d5576391cc0e4ca6955aa65a4417158b9df864
+        internal/api/org_users_handler.go: 4818470bd368b2afb0b63071b374d664ce4255bcc0a65bbbfaef7cd59ece8c0d
         internal/api/organizations_handler.go: 7795161675479569835a820d9e396cc5c1589efa47641cac2f6569a8349f452a
         internal/api/router.go: d6124ed4af38af0415a23e5bfcc77ada26e18fe0cea5cf71dee839d28ff93fa6
         internal/api/runtime.go: 40b314935d34a80db8ec210860f3bea629f94b069e19547d0c377d63c4050f4b
         internal/api/user_activity_handler.go: 879317fda7698a24710044d6422617cd0cc6d71ddc0a0cbad2134533952060d4
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: 7fa2142f0f392775f4e230cef051034f050d33723732be342d1ae8eed40364fc
-        internal/authz/authz.go: a1c41add0d63974cc9f211485044ee803b45fff2baeff1239b02fe60c0f5649f
-        internal/authz/schema.zed: ef4fbbc8f2e880047d08cbe9b3f7abf70e05ed931a2bcebd91cedd03c269aa2b
+        internal/authz/authz.go: 5455408e2aa38c878ccb43b032314fd8f6474725935b089b6b88afe38ef31dc8
+        internal/authz/schema.zed: 5dc471ea0e3cee6c2a66ebe4280a044fa6108f5de24eb11c47a668d5c55e61d9
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
         internal/stegoruntime/runtime.go: 01ec750e2c0ee39de91901153e5e2b4ae6323dff0a6bcbe82bba791fad97d257
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 2ca98108ec9b46e5ad29be8f2f78e3add2440ea21f9dff83caff3aeb913ecc33
-        architecture/index.html: 02dea0231651fba836001508545cd9be899a8abbb13cee41f77a8f592661b795
+        architecture/architecture.json: 39ff5f332d087b14f996119ddc3bd0d47164783c3b01e0115715a704e2afbbf6
+        architecture/index.html: 278bebebcda5bd5c2b5ba4238ecd2c414b679fcc4a5b81fa5718e48a267e42c7
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
         deploy/base/migration-job.yaml: 289f913b022acfd203adefc6f98fb131e9c924d79397225ed1e23b46a01271db

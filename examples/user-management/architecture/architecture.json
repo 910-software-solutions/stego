@@ -8601,20 +8601,6 @@
         "paths": [
           {
             "id": "grant:member#view.001",
-            "role": "role:member#owner@user",
-            "kinds": [
-              "direct"
-            ],
-            "hops": [
-              "member#view",
-              "member#owner"
-            ],
-            "source": {
-              "declaration": "authorization.schema_path"
-            }
-          },
-          {
-            "id": "grant:member#view.002",
             "role": "role:organization#owner@user",
             "kinds": [
               "arrow"
@@ -8630,7 +8616,7 @@
             }
           },
           {
-            "id": "grant:member#view.003",
+            "id": "grant:member#view.002",
             "role": "role:organization#viewer@user",
             "kinds": [
               "arrow"
