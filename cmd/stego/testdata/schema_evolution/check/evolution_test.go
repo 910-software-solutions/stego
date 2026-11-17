@@ -780,6 +780,9 @@ func TestEvolution(t *testing.T) {
 			}
 			id, _ := r.object(t)["id"].(string)
 			d.relate(owner, "member", id, "owner")
+			// The edit of a member needs the view of its organization too (ST-SUP-Q156), through the relationship that
+			// the outbox relay writes; the harness runs no relay, so it writes it by hand.
+			d.relateParent(owner, "member", id, "organization", "organization", org)
 			return id
 		}
 		update := func(a *api, id, email string) {
@@ -1158,6 +1161,8 @@ func TestContract(t *testing.T) {
 		}
 		id, _ := created.object(t)["id"].(string)
 		d.relate(owner, "member", id, "owner")
+		// The edit of a member needs the view of its organization too (ST-SUP-Q156); the harness runs no relay.
+		d.relateParent(owner, "member", id, "organization", "organization", org)
 		if read := d.send(v3api, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, ""); read.status != http.StatusOK || read.object(t)["email"] != "r02@acme.test" {
 			t.Fatalf("a read through v3 answered %d %s", read.status, read.body)
 		}
