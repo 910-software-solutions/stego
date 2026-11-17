@@ -295,6 +295,7 @@ func TestWorkerLists(t *testing.T) {
 		{"one equals term", "- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}"},
 		{"every operator", "- {name: due, entity: Order, lock: true, filter: [{field: due_at, op: less_than, now: true}, {field: amount, op: greater_than_or_equals, value: 10}, {field: amount, op: less_than_or_equals, value: 99}, {field: synced, op: not_equals, value: true}, {field: note, op: is_set}, {field: due_at, op: greater_than, value: \"2026-01-01T00:00:00Z\"}, {field: status, op: not_equals, value: closed}, {field: amount, op: less_than, value: 1000}]}"},
 		{"two lists", "- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}\n      - {name: synced-orders, entity: Order, filter: [{field: synced, op: equals, value: true}]}"},
+		{"two parameters", "- {name: of-status, entity: Order, filter: [{field: status, op: equals, param: status}, {field: due_at, op: less_than, param: due_before}, {field: synced, op: equals, value: false}]}"},
 	}
 	for _, c := range accepted {
 		t.Run("ST-DECL-INV94-T A worker list with "+c.name+" is accepted", func(t *testing.T) {
@@ -317,10 +318,34 @@ func TestWorkerLists(t *testing.T) {
 		{"is_set with a value", "- {name: x, entity: Order, filter: [{field: note, op: is_set, value: a}]}", "no value"},
 		{"an order operator on a bool", "- {name: x, entity: Order, filter: [{field: synced, op: less_than, value: true}]}", "bool"},
 		{"a jsonb field compared", "- {name: x, entity: Order, filter: [{field: body, op: equals, value: a}]}", "is_set"},
+		{"a parameter used twice", "- {name: x, entity: Order, filter: [{field: amount, op: greater_than, param: amount}, {field: amount, op: less_than, param: amount}]}", `"amount" is used twice`},
+		{"a parameter and a value", "- {name: x, entity: Order, filter: [{field: amount, op: equals, value: 1, param: amount}]}", "one of a value, now and a parameter"},
+		{"a parameter and now", "- {name: x, entity: Order, filter: [{field: due_at, op: less_than, now: true, param: due}]}", "one of a value, now and a parameter"},
+		{"a parameter name that is not snake case", "- {name: x, entity: Order, filter: [{field: amount, op: equals, param: Amount}]}", "lower snake case"},
+		{"is_set with a parameter", "- {name: x, entity: Order, filter: [{field: note, op: is_set, param: note}]}", "no value"},
+		{"a parameter on a jsonb field", "- {name: x, entity: Order, filter: [{field: body, op: equals, param: body}]}", "is_set"},
+		{"an order operator on a bool parameter", "- {name: x, entity: Order, filter: [{field: synced, op: greater_than, param: synced}]}", "bool"},
 	}
 	for _, c := range refused {
 		t.Run("ST-DECL-INV94-T A worker list with "+c.name+" is refused", func(t *testing.T) {
 			wantFault(t, workerFaults(t, listOrders(c.lists), "worker-list"), `"scan-orders"`, c.names)
+		})
+	}
+	// A command declares its lists as a worker does (walkthrough 7, B1 and NB4).
+	commandLists := func(lists string) string {
+		return listOrders("- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}") +
+			"commands:\n" + command("place-orders", "writes: [Order]", "fill: place", "route: POST /orders/{orderId}/place", "lists:\n      "+lists)
+	}
+	t.Run("ST-DECL-INV94-T A command list with a parameter and a lock is accepted", func(t *testing.T) {
+		wantNoFault(t, workerFaults(t, commandLists("- {name: of-status, entity: Order, lock: true, filter: [{field: status, op: equals, param: status}, {field: due_at, op: less_than, now: true}]}"), "command-list", "worker-list"))
+	})
+	for _, c := range []struct{ name, lists, names string }{
+		{"an entity that the command does not write", "- {name: todos, entity: Todo, filter: [{field: done, op: equals, param: done}]}", "the command does not write"},
+		{"a parameter used twice", "- {name: x, entity: Order, filter: [{field: amount, op: greater_than, param: amount}, {field: amount, op: less_than, param: amount}]}", `"amount" is used twice`},
+		{"a field that the entity does not declare", "- {name: x, entity: Order, filter: [{field: colour, op: equals, param: colour}]}", `"colour"`},
+	} {
+		t.Run("ST-DECL-INV94-T A command list with "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, workerFaults(t, commandLists(c.lists), "command-list", "worker-list"), `command "place-orders"`, `list "`, c.names)
 		})
 	}
 	t.Run("ST-DECL-INV94-T A locked list of an entity with no Lock at most is refused", func(t *testing.T) {

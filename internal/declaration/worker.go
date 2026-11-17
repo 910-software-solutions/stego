@@ -384,53 +384,74 @@ var listOrdered = map[string]bool{types.ListLessThan: true, types.ListLessThanOr
 var listOperators = []string{types.ListEquals, types.ListNotEquals, types.ListLessThan, types.ListLessThanOrEquals,
 	types.ListGreaterThan, types.ListGreaterThanOrEquals, types.ListIsSet}
 
-// validateWorkerLists checks each declared list of each worker (ST-DECL-INV94): a list name in lower kebab case that
-// is unique in its worker, an entity that the worker writes, a filter of one to eight terms, each a declared field
-// of that entity with a known operator and a value that is a constant of the field type or the time of the run, and
-// lock only for an entity that declares Lock at most (ST-DECL-INV81). Each fault names the worker, the list and the
-// term.
-func validateWorkerLists(workers []types.Worker, entities []types.Entity) []ValidationError {
+// validateWorkerLists checks each declared list of each worker and each command (ST-DECL-INV94): a list name in
+// lower kebab case that is unique in its worker or command, an entity that it writes, a filter of one to eight
+// terms, each a declared field of that entity with a known operator and a value that is a constant of the field type,
+// the time of the run or a parameter whose name is in lower snake case and unique in the list, and lock only for an
+// entity that declares Lock at most (ST-DECL-INV81). Each fault names the worker or command, the list and the term.
+func validateWorkerLists(workers []types.Worker, commands []types.Command, entities []types.Entity) []ValidationError {
+	var faults []ValidationError
+	for i, worker := range workers {
+		faults = append(faults, validateLists("worker", worker.Name, workerPath(i), worker.Writes, worker.Lists, entities)...)
+	}
+	for i, command := range commands {
+		faults = append(faults, validateLists("command", command.Name, commandPath(i), command.Writes, command.Lists, entities)...)
+	}
+	return faults
+}
+
+// validateLists checks the lists of one worker or command, of the kind worker or command.
+func validateLists(kind, name, at string, writes []string, lists []types.WorkerList, entities []types.Entity) []ValidationError {
 	byName := map[string]types.Entity{}
 	for _, e := range entities {
 		byName[e.Name] = e
 	}
 	var faults []ValidationError
-	for i, worker := range workers {
-		seen := map[string]bool{}
-		for j, list := range worker.Lists {
-			path := fmt.Sprintf("%s.lists[%d]", workerPath(i), j)
-			fault := func(at, found, message string) {
-				faults = append(faults, ValidationError{Category: "worker", Rule: "worker-list", Path: path + at, Found: found,
-					Message: fmt.Sprintf("worker %q, list %q: %s", worker.Name, list.Name, message)})
-			}
-			switch {
-			case !kebabName.MatchString(list.Name):
-				fault(".name", list.Name, "the list name must be in lower kebab case, at most 63 characters")
-			case seen[list.Name]:
-				fault(".name", list.Name, "the list name is used twice in the worker; give each list its own name")
-			}
-			seen[list.Name] = true
-			entity, declared := byName[list.Entity]
-			if !declared || !contains(worker.Writes, list.Entity) {
-				fault(".entity", list.Entity, "the list reads the entity "+strconv.Quote(list.Entity)+", which the worker does not write; name an entity of its writes")
-				continue
-			}
-			if _, ok := LockAtMost(entity); list.Lock && !ok {
-				fault(".lock", "true", "the list locks rows of "+entity.Name+", which declares no Lock at most; declare lock_at_most on the entity (ST-DECL-INV81)")
-			}
-			if len(list.Filter) < 1 || len(list.Filter) > maxListTerms {
-				fault(".filter", strconv.Itoa(len(list.Filter)), fmt.Sprintf("the filter has %d terms; give one to %d", len(list.Filter), maxListTerms))
-			}
-			for k, term := range list.Filter {
-				at := fmt.Sprintf(".filter[%d]", k)
-				if reason := listTermFault(entity, term); reason != "" {
-					fault(at, term.Field+" "+term.Op, fmt.Sprintf("the term %d (%s %s): %s", k+1, term.Field, term.Op, reason))
+	seen := map[string]bool{}
+	for j, list := range lists {
+		path := fmt.Sprintf("%s.lists[%d]", at, j)
+		fault := func(at, found, message string) {
+			faults = append(faults, ValidationError{Category: kind, Rule: kind + "-list", Path: path + at, Found: found,
+				Message: fmt.Sprintf("%s %q, list %q: %s", kind, name, list.Name, message)})
+		}
+		switch {
+		case !kebabName.MatchString(list.Name):
+			fault(".name", list.Name, "the list name must be in lower kebab case, at most 63 characters")
+		case seen[list.Name]:
+			fault(".name", list.Name, "the list name is used twice in the "+kind+"; give each list its own name")
+		}
+		seen[list.Name] = true
+		entity, declared := byName[list.Entity]
+		if !declared || !contains(writes, list.Entity) {
+			fault(".entity", list.Entity, "the list reads the entity "+strconv.Quote(list.Entity)+", which the "+kind+" does not write; name an entity of its writes")
+			continue
+		}
+		if _, ok := LockAtMost(entity); list.Lock && !ok {
+			fault(".lock", "true", "the list locks rows of "+entity.Name+", which declares no Lock at most; declare lock_at_most on the entity (ST-DECL-INV81)")
+		}
+		if len(list.Filter) < 1 || len(list.Filter) > maxListTerms {
+			fault(".filter", strconv.Itoa(len(list.Filter)), fmt.Sprintf("the filter has %d terms; give one to %d", len(list.Filter), maxListTerms))
+		}
+		params := map[string]bool{}
+		for k, term := range list.Filter {
+			at := fmt.Sprintf(".filter[%d]", k)
+			reason := listTermFault(entity, term)
+			if reason == "" && term.Param != "" {
+				if params[term.Param] {
+					reason = "the parameter " + strconv.Quote(term.Param) + " is used twice in the list; give each parameter its own name"
 				}
+				params[term.Param] = true
+			}
+			if reason != "" {
+				fault(at, term.Field+" "+term.Op, fmt.Sprintf("the term %d (%s %s): %s", k+1, term.Field, term.Op, reason))
 			}
 		}
 	}
 	return faults
 }
+
+// listParam is the form of a parameter name: lower snake case, at most 63 characters.
+var listParam = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
 
 // listTermFault gives why a term of a list over entity is refused, or nothing.
 func listTermFault(entity types.Entity, term types.ListTerm) string {
@@ -447,7 +468,7 @@ func listTermFault(entity types.Entity, term types.ListTerm) string {
 		return "the operator must be one of " + strings.Join(listOperators, ", ")
 	}
 	if term.Op == types.ListIsSet {
-		if term.Value != nil || term.Now {
+		if term.Value != nil || term.Now || term.Param != "" {
 			return "is_set takes no value"
 		}
 		return ""
@@ -460,6 +481,15 @@ func listTermFault(entity types.Entity, term types.ListTerm) string {
 			return "a bool field takes only equals or not_equals"
 		}
 	}
+	if term.Param != "" {
+		if term.Value != nil || term.Now {
+			return "give one of a value, now and a parameter"
+		}
+		if len(term.Param) > 63 || !listParam.MatchString(term.Param) {
+			return "the parameter name " + strconv.Quote(term.Param) + " must be in lower snake case, at most 63 characters"
+		}
+		return ""
+	}
 	if term.Now {
 		if term.Value != nil {
 			return "give a value or now, not both"
@@ -470,7 +500,7 @@ func listTermFault(entity types.Entity, term types.ListTerm) string {
 		return ""
 	}
 	if term.Value == nil {
-		return "the term needs a value of the field type, or now for a timestamp field"
+		return "the term needs a value of the field type, a parameter, or now for a timestamp field"
 	}
 	if !listValueFits(*field, term.Value) {
 		return fmt.Sprintf("the value %v is not a constant of the field type %s", term.Value, field.Type)
