@@ -284,7 +284,7 @@ func TestGeneratedManagedBrowserSchema(t *testing.T) {
 // TestGeneratedBrowserSchemaMigrate runs the mode migrate and the fault classes of the schema check against the local
 // PostgreSQL server (ST-SUP-RC02-OC56, ST-SUP-RC02-OC57).
 func TestGeneratedBrowserSchemaMigrate(t *testing.T) {
-	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(BrowserSchemaMigrate|BrowserSchemaFaultClass)$")
+	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(BrowserSchemaMigrate|BrowserSchemaFaultClass|ReadmeDatabaseSetup)$")
 }
 
 func TestGeneratedSchemaInputs(t *testing.T) {
@@ -365,6 +365,14 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 		if err := os.WriteFile(filepath.Join(project, "out/browser", entry.Name()), data, 0644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// The database setup of the component README, which a test runs as it is written (ST-SUP-RC02-OC56-T03).
+	readme, err := os.ReadFile(filepath.Join("..", "..", "..", "registry", "components", "browser-backend", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "out/browser/readme.md"), readme, 0644); err != nil {
+		t.Fatal(err)
 	}
 	if local {
 		entries, err := os.ReadDir("testdata/application")

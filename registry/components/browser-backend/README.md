@@ -35,7 +35,39 @@ The database administrator makes these before the first migration job: a
 NOLOGIN owner role that owns the database, a runtime login with only CONNECT on
 the database and USAGE on the schema public, and a migration login that is a
 member of the owner role. Revoke the default PUBLIC grants on the database and
-on the schema public.
+on the schema public. The schema check refuses other attributes and grants, so
+use this SQL as it is. Replace `<service>` with the service name, with each `-`
+as `_`, and each password with a new secret.
+
+```sql
+-- As a database administrator, connected to any database of the server:
+CREATE ROLE <service>_owner NOLOGIN NOINHERIT;
+CREATE ROLE <service>_runtime LOGIN NOINHERIT PASSWORD '<runtime password>';
+CREATE ROLE <service>_migrator LOGIN PASSWORD '<migration password>' IN ROLE <service>_owner;
+CREATE DATABASE <service> OWNER <service>_owner;
+REVOKE ALL ON DATABASE <service> FROM PUBLIC;
+GRANT CONNECT ON DATABASE <service> TO <service>_runtime;
+```
+
+```sql
+-- As a database administrator, connected to the database <service>:
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO <service>_runtime;
+```
+
+The check needs these details, which PostgreSQL does not give by default:
+
+- The owner role and the runtime login are NOINHERIT. PostgreSQL makes a role
+  INHERIT when you do not say so, and the check refuses that with `fault: owner`
+  or `fault: login`.
+- Only the owner and the runtime login hold a grant on the database. Do not
+  grant CONNECT to the migration login: it connects through its membership of
+  the owner role. A grant to it gives `fault: grant`.
+- The migration login is INHERIT, the default, so that it can connect as a
+  member of the owner role.
+
+The Job takes `STEGO_RUNTIME_DATABASE_ROLE=<service>_runtime`, and the owner
+Secret holds the connection string of `<service>_migrator`.
 
 When Verify refuses the database, at startup or in the mode migrate, the
 failure record names the stage `database.schema`, the field `fault` (owner,
