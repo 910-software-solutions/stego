@@ -286,10 +286,11 @@ func CodelessFills(check compiler.FillCheck) []compiler.FillFault {
 // yet or names no fill folder that exists.
 func listFills(check compiler.FillCheck, fills []string) (map[string]listedPackage, error) {
 	if _, err := os.Stat(filepath.Join(check.ProjectDir, "go.mod")); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if _, planned := check.Planned[filepath.Join(check.ProjectDir, "go.mod")]; !planned && errors.Is(err, os.ErrNotExist) {
 			return nil, nil
+		} else if !planned {
+			return nil, err
 		}
-		return nil, err
 	}
 	var patterns []string
 	for _, fill := range fills {
@@ -302,13 +303,18 @@ func listFills(check compiler.FillCheck, fills []string) (map[string]listedPacka
 	if len(patterns) == 0 {
 		return nil, nil
 	}
-	stdout, stderr, err := runList(check.ProjectDir, check.ModFile, "readonly", "", patterns)
+	overlay, remove, err := StageOverlay(check)
+	if err != nil {
+		return nil, err
+	}
+	defer remove()
+	stdout, stderr, err := runList(check.ProjectDir, check.ModFile, "readonly", "", overlay, patterns)
 	if err != nil && check.ModFile == "" && unresolvedModules(stderr) {
 		// The project's go.mod does not hold every module that the fills and the generated code reach yet, as
 		// after an apply that stego deps has not followed. go list then completes a copy of go.mod and go.sum, so
 		// the closure is checked all the same and no project file changes; stego deps checks the fills again with
 		// the go.mod and go.sum that it writes (ST-BLD-UC01).
-		stdout, stderr, err = listResolved(check, patterns)
+		stdout, stderr, err = listResolved(check, overlay, patterns)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("go list of the fills %s failed: %w: %s", strings.Join(fills, ", "), err, strings.TrimSpace(stderr))
@@ -337,7 +343,7 @@ func unresolvedModules(stderr string) bool {
 
 // listResolved lists the packages of patterns with a copy of the project's go.mod and go.sum in a folder of its own,
 // which go list may complete with the modules that the packages reach (-mod=mod). The project's files do not change.
-func listResolved(check compiler.FillCheck, patterns []string) ([]byte, string, error) {
+func listResolved(check compiler.FillCheck, overlay string, patterns []string) ([]byte, string, error) {
 	projectDir := check.ProjectDir
 	// The copy goes in the temporary folder (TMPDIR), as the staged module files of stego deps do, outside the
 	// project's package tree; it holds copies only, private to the user, and goes when the listing ends.
@@ -346,17 +352,8 @@ func listResolved(check compiler.FillCheck, patterns []string) ([]byte, string, 
 		return nil, "", err
 	}
 	defer os.RemoveAll(stage)
-	for _, name := range []string{"go.mod", "go.sum"} {
-		data, err := os.ReadFile(filepath.Join(projectDir, name))
-		if errors.Is(err, os.ErrNotExist) && name == "go.sum" {
-			continue
-		}
-		if err != nil {
-			return nil, "", err
-		}
-		if err := os.WriteFile(filepath.Join(stage, name), data, 0o600); err != nil {
-			return nil, "", err
-		}
+	if err := stageModuleFiles(check, stage); err != nil {
+		return nil, "", err
 	}
 	runtimeProxy := ""
 	if check.RuntimeProxy != nil {
@@ -366,17 +363,134 @@ func listResolved(check compiler.FillCheck, patterns []string) ([]byte, string, 
 			return nil, "", err
 		}
 	}
-	return runList(projectDir, filepath.Join(stage, "go.mod"), "mod", runtimeProxy, patterns)
+	return runList(projectDir, filepath.Join(stage, "go.mod"), "mod", runtimeProxy, overlay, patterns)
+}
+
+// stageModuleFiles copies the project's go.mod, or the go.mod that apply plans when the check holds one, and the
+// project's go.sum when it has one, into the folder stage.
+func stageModuleFiles(check compiler.FillCheck, stage string) error {
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(check.ProjectDir, name))
+		if planned, ok := check.Planned[filepath.Join(check.ProjectDir, name)]; ok {
+			data, err = planned, nil
+		}
+		if errors.Is(err, os.ErrNotExist) && name == "go.sum" {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(stage, name), data, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GoTestSetup prepares a go test of the fills against the generated code and the module files that apply and stego
+// deps write: the go -overlay file of the planned files (StageOverlay), and a copy of go.mod (the planned one when the
+// check holds it) and go.sum in a folder of its own, which go may complete with the modules that the fills and the
+// generated code reach (-mod=mod), beside the runtime pin that the registry's runtime folder serves, as listResolved
+// lists the fills. It gives the flags of go test, the environment entries that it adds, and a function that removes
+// the staged files. The project's files do not change; stego deps writes go.mod and go.sum.
+func GoTestSetup(check compiler.FillCheck) ([]string, []string, func(), error) {
+	overlay, removeOverlay, err := StageOverlay(check)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var flags []string
+	if overlay != "" {
+		flags = append(flags, "-overlay="+overlay)
+	}
+	_, statErr := os.Stat(filepath.Join(check.ProjectDir, "go.mod"))
+	if _, planned := check.Planned[filepath.Join(check.ProjectDir, "go.mod")]; statErr != nil && !planned {
+		// Before the first generation there is no module to test in.
+		return flags, nil, removeOverlay, nil
+	}
+	stage, err := os.MkdirTemp("", "stego-fill-test-modules-")
+	if err != nil {
+		removeOverlay()
+		return nil, nil, nil, err
+	}
+	remove := func() {
+		os.RemoveAll(stage)
+		removeOverlay()
+	}
+	if err := stageModuleFiles(check, stage); err != nil {
+		remove()
+		return nil, nil, nil, err
+	}
+	var env []string
+	if check.RuntimeProxy != nil {
+		runtimeProxy, err := check.RuntimeProxy(stage)
+		if err != nil {
+			remove()
+			return nil, nil, nil, err
+		}
+		if runtimeProxy != "" {
+			proxy := os.Getenv("GOPROXY")
+			if proxy == "" {
+				proxy = "https://proxy.golang.org,direct"
+			}
+			env = append(env, "GOPROXY="+(&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String()+","+proxy)
+		}
+	}
+	flags = append(flags, "-modfile="+filepath.Join(stage, "go.mod"), "-mod=mod")
+	return flags, env, remove, nil
+}
+
+// StageOverlay writes each planned file of the check (compiler.FillCheck.Planned) and the file that go -overlay reads,
+// which maps the path of each planned file to its copy, into a new folder in the temporary folder (TMPDIR). It gives
+// the path of the overlay file and a function that removes the folder; "" and a function that does nothing when the
+// check plans no file. The project's files do not change.
+func StageOverlay(check compiler.FillCheck) (string, func(), error) {
+	if len(check.Planned) == 0 {
+		return "", func() {}, nil
+	}
+	stage, err := os.MkdirTemp("", "stego-fill-overlay-")
+	if err != nil {
+		return "", nil, err
+	}
+	remove := func() { os.RemoveAll(stage) }
+	replace := map[string]string{}
+	names := make([]string, 0, len(check.Planned))
+	for name := range check.Planned {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for i, name := range names {
+		copyPath := filepath.Join(stage, strconv.Itoa(i)+filepath.Ext(name))
+		if err := os.WriteFile(copyPath, check.Planned[name], 0o600); err != nil {
+			remove()
+			return "", nil, err
+		}
+		replace[name] = copyPath
+	}
+	data, err := json.Marshal(map[string]map[string]string{"Replace": replace})
+	if err != nil {
+		remove()
+		return "", nil, err
+	}
+	overlay := filepath.Join(stage, "overlay.json")
+	if err := os.WriteFile(overlay, data, 0o600); err != nil {
+		remove()
+		return "", nil, err
+	}
+	return overlay, remove, nil
 }
 
 // runList runs go list -e -deps -json on patterns in the project folder, with the module mode mode and, when modFile is
-// set, that module file in place of the project's go.mod. It gives the standard output and the standard error.
-func runList(projectDir, modFile, mode, runtimeProxy string, patterns []string) ([]byte, string, error) {
+// set, that module file in place of the project's go.mod, and the go -overlay file overlay when it is set. It gives the
+// standard output and the standard error.
+func runList(projectDir, modFile, mode, runtimeProxy, overlay string, patterns []string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), closureTimeout)
 	defer cancel()
 	args := []string{"list", "-e", "-deps", "-json=" + listedFields}
 	if modFile != "" {
 		args = append(args, "-modfile="+modFile)
+	}
+	if overlay != "" {
+		args = append(args, "-overlay="+overlay)
 	}
 	cmd := exec.CommandContext(ctx, GoCommand, append(args, patterns...)...)
 	cmd.Dir = projectDir

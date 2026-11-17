@@ -318,10 +318,8 @@ func New() workers.FulfillOrdersFill {
 func TestDependenciesCheckTheFillsWithTheResolvedModules(t *testing.T) {
 	t.Run("ST-BLD-UC01-R01-T03 Resolution checks the fills with the go.mod it resolves, once fills exist", func(t *testing.T) {
 		walkthroughProject(t)
-		for name, f := range walkthroughFills {
-			writeProjectFile(t, "fills/"+name+"/fill.yaml", "kind: fill\nname: "+name+"\nimplements: "+f.implements+"\n")
-			writeProjectFile(t, "fills/"+name+"/fill.go", f.source)
-		}
+		writeWalkthroughFills(t)
+		qualifyInProcess(t)
 		// The first apply writes the go.mod of the component requirements and a go.sum with the runtime pin only.
 		mustRun(t, runApply)
 		// A go build before stego deps asks for the go.sum entry of the runtime's go.mod, as the fifth walkthrough

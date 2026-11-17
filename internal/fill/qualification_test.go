@@ -81,6 +81,7 @@ func builtInCheck() compiler.FillCheck {
 func TestFillManifestReader(t *testing.T) {
 	t.Run("ST-EXT-INV01-T A fill manifest that does not name exactly one known slot and one declared collection is refused, naming the field", func(t *testing.T) {
 		check := builtInCheck()
+		check.Slots = append(check.Slots, compiler.FillSlot{Ref: types.SlotRef{Component: "command", Slot: "command"}, Contract: "components/command/component.yaml"})
 		manifests := []struct {
 			name, body, field, value string
 		}{
@@ -91,6 +92,10 @@ func TestFillManifestReader(t *testing.T) {
 			{"fifth-fill", "implements: no-such-component.before_create\ncollection: org-users\n", "implements", "no-such-component.before_create"},
 			{"sixth-fill", "implements: rest-api.before_create\ncollection: org-groups\n", "collection", "org-groups"},
 			{"seventh-fill", "implements: rest-api.before_create\n", "collection", ""},
+			// A fill of the command slot names no collection: its binding is the command that names it (decision
+			// on ST-EXT-Q30).
+			{"command-fill", "implements: command.command\n", "", ""},
+			{"collection-command-fill", "implements: command.command\ncollection: org-users\n", "collection", "org-users"},
 		}
 		root := t.TempDir()
 		for _, m := range manifests {
@@ -103,6 +108,12 @@ func TestFillManifestReader(t *testing.T) {
 				t.Fatal(err)
 			}
 			f, err := ReadManifest(path, check)
+			if m.name == "command-fill" {
+				if err != nil || f == nil || f.Implements != "command.command" || f.Collection != "" {
+					t.Fatalf("%s: refused or misread: %+v, %v", m.name, f, err)
+				}
+				continue
+			}
 			if m.field == "" {
 				if err != nil || f == nil || f.Implements != "rest-api.before_create" || f.Collection != "org-users" {
 					t.Fatalf("%s: refused or misread: %+v, %v", m.name, f, err)

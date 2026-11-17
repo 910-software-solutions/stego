@@ -766,14 +766,37 @@ func runTest(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The fills are tested against the generated code that apply writes, so that the fill of a command, query or
+	// worker is tested before the apply that writes its contract, which apply writes only for a qualified fill
+	// (ST-GEN-INV10, decision on ST-EXT-Q30). Go reads the planned files through -overlay; the project's files do
+	// not change.
+	planned := input
+	planned.QualifyFills = nil
+	if plan, err := compiler.Reconcile(planned); err != nil {
+		fmt.Printf("The fills are tested against the generated code as it is, because the plan cannot be made: %v\n", err)
+	} else if check.Planned, err = compiler.PlannedGoFiles(plan, input.ProjectDir, input.OutDir); err != nil {
+		return err
+	}
+	overlayArgs, testEnv, removeStage, err := fill.GoTestSetup(check)
+	if err != nil {
+		return err
+	}
+	defer removeStage()
+	if newFolders(check.Planned) && !slices.ContainsFunc(testArgs, func(arg string) bool { return strings.HasPrefix(strings.TrimLeft(arg, "-"), "vet") }) {
+		// go vet reads each package from its folder, which a package that apply has not written yet lacks.
+		fmt.Println("The fills are tested without go vet, because apply has not written each package of their contracts yet.")
+		overlayArgs = append(overlayArgs, "-vet=off")
+	}
 	run := func(dir string) error {
 		relative, err := filepath.Rel(input.ProjectDir, dir)
 		if err != nil {
 			return err
 		}
-		goArgs := append([]string{"test", "./" + filepath.ToSlash(relative) + "/..."}, testArgs...)
+		goArgs := append(append([]string{"test"}, overlayArgs...), "./"+filepath.ToSlash(relative)+"/...")
+		goArgs = append(goArgs, testArgs...)
 		cmd := exec.Command("go", goArgs...)
 		cmd.Dir = input.ProjectDir
+		cmd.Env = append(os.Environ(), testEnv...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
@@ -800,6 +823,16 @@ func runTest(args []string) error {
 		return fmt.Errorf("the tests of %d fill(s) failed: %s", len(failed), strings.Join(failed, ", "))
 	}
 	return nil
+}
+
+// newFolders tells whether a planned file goes into a folder that the project does not hold yet.
+func newFolders(planned map[string][]byte) bool {
+	for name := range planned {
+		if _, err := os.Stat(filepath.Dir(name)); err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // recheckFills holds the fills to the fill rules again after the project's first generation, now that go.mod exists

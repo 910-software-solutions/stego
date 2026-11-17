@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -300,6 +301,10 @@ func (p *fillProject) tree(t *testing.T, folders ...string) map[string]string {
 	for _, folder := range folders {
 		root := p.path(folder)
 		err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
+			if name == root && errors.Is(err, fs.ErrNotExist) {
+				// A folder that the project does not hold yet holds no file.
+				return nil
+			}
 			if err != nil || entry.IsDir() {
 				return err
 			}

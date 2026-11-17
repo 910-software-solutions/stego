@@ -49,24 +49,41 @@ func slotContracts(check compiler.FillCheck, fill, implements string) []string {
 }
 
 // contractRuntimeImports gives the packages of the runtime library that the Go files of the contract package
-// import, as generated in the project; none when the package is not generated yet.
+// import, as generated in the project or as the check plans them (compiler.FillCheck.Planned); none when the package is
+// not generated yet.
 func contractRuntimeImports(check compiler.FillCheck, contract string) []string {
 	relative, ok := strings.CutPrefix(contract, strings.TrimSuffix(check.Module, "/")+"/")
 	if !ok {
 		return nil
 	}
-	entries, err := os.ReadDir(filepath.Join(check.ProjectDir, filepath.FromSlash(relative)))
-	if err != nil {
-		return nil
+	folder := filepath.Join(check.ProjectDir, filepath.FromSlash(relative))
+	// The Go files of the contract package as apply writes them: the planned files of the check, and the files of
+	// the folder that the plan does not change.
+	files := map[string][]byte{}
+	if entries, err := os.ReadDir(folder); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				files[filepath.Join(folder, entry.Name())] = nil
+			}
+		}
+	}
+	for name, data := range check.Planned {
+		if filepath.Dir(name) == folder {
+			files[name] = data
+		}
 	}
 	seen := map[string]bool{}
 	var out []string
 	fset := token.NewFileSet()
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+	for name, data := range files {
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(fset, filepath.Join(check.ProjectDir, filepath.FromSlash(relative), entry.Name()), nil, parser.ImportsOnly)
+		var source any
+		if data != nil {
+			source = data
+		}
+		file, err := parser.ParseFile(fset, name, source, parser.ImportsOnly)
 		if err != nil {
 			continue
 		}

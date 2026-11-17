@@ -320,6 +320,8 @@ func walkthroughFirstBuild(t *testing.T) string {
 			}
 		}
 	}
+	// The fills are qualified before the first apply, which writes their contracts (ST-GEN-INV10).
+	qualifyInProcess(t)
 	mustRun(t, runValidate)
 	mustRun(t, runApply)
 	mustRun(t, runDependencies)
@@ -370,6 +372,7 @@ func TestCapabilityAddedLater(t *testing.T) {
 		withCommand := strings.Replace(string(declaration), "\nqueries:", walkthroughFixture(t, "grant-clerk.yaml")+"\nqueries:", 1)
 		writeProjectFile(t, "service.yaml", withCommand)
 		mustRun(t, runFillCreate, "grant-clerk", "--slot", "command.command")
+		qualifyInProcess(t)
 		mustRun(t, runApply)
 		mustRun(t, runDependencies)
 		goInProject(t, "build", "-o", binary, "./out")
@@ -406,6 +409,13 @@ func New() workers.LowStockScanFill {
 	return func(ctx context.Context, tick time.Time, h *workers.LowStockScanHandle) error { return nil }
 }
 `)
+		// A fill that holds code is held to qualification: apply refuses it until stego test and a sign-off
+		// qualify it.
+		if _, err := capture(t, runApply); err == nil || !strings.Contains(err.Error(), `fill "low-stock-scan" is untested`) {
+			t.Fatalf("apply did not refuse the fill with code and no tests: %v", err)
+		}
+		writeProjectFile(t, "fills/low-stock-scan/fill_test.go", "package low_stock_scan\n\nimport \"testing\"\n\n// TestBuilds holds that the fill builds against its contract.\nfunc TestBuilds(t *testing.T) {}\n")
+		qualifyInProcess(t)
 		if printed := mustRun(t, runApply); !strings.Contains(printed, "No changes") {
 			t.Fatalf("apply after the fill was written changed files:\n%s", printed)
 		}

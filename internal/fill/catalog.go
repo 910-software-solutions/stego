@@ -32,6 +32,10 @@ func ResolveSlot(check compiler.FillCheck, slot, component string) (types.SlotRe
 	components := map[string]bool{}
 	names := map[string]bool{}
 	for _, s := range check.Slots {
+		if capabilitySlot(s.Ref) {
+			// The fill of a command, query or worker serves the one that names it, not a slot of a collection.
+			continue
+		}
 		components[s.Ref.Component] = true
 		names[s.Ref.Slot] = true
 		if s.Ref.Slot == slot {

@@ -151,14 +151,91 @@ func (p *wiringProject) stego(args ...string) string {
 	return output
 }
 
-// stegoRun runs the stego binary in the project with its registry copy and gives its output and its error.
+// stegoRun runs the stego binary in the project with its registry copy and gives its output and its error. Before a
+// plan or an apply it qualifies the fills of the project (qualifyFills), as the service author does.
 func (p *wiringProject) stegoRun(args ...string) (string, error) {
+	p.t.Helper()
+	if len(args) > 0 && (args[0] == "plan" || args[0] == "apply") {
+		p.qualifyFills()
+	}
+	return p.stegoExec(nil, args...)
+}
+
+// stegoExec runs the stego binary in the project with its registry copy and the environment entries extra.
+func (p *wiringProject) stegoExec(extra []string, args ...string) (string, error) {
 	p.t.Helper()
 	cmd := exec.Command(p.binary, args...)
 	cmd.Dir = p.dir
-	cmd.Env = wiringGoEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule)
+	cmd.Env = append(wiringGoEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule), extra...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+// qualifyFills qualifies each fill of the project, as plan and apply require (ST-GEN-INV10): it gives a fill that
+// holds Go code and no test file a test file that only builds it, lists a key in SIGNERS that the test makes for this
+// project only, never a real signing key, runs stego test and signs each fill with that key. A fill that does not
+// qualify stays as it is, so plan and apply give their own fault for it.
+func (p *wiringProject) qualifyFills() {
+	t := p.t
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(p.dir, "fills"))
+	if err != nil {
+		return
+	}
+	keyDir := filepath.Join(p.dir, "..", filepath.Base(p.dir)+"-signing")
+	key := filepath.Join(keyDir, "test-key")
+	if _, err := os.Stat(key); err != nil {
+		if err := os.MkdirAll(keyDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "wiring-test", "-f", key).CombinedOutput(); err != nil {
+			t.Fatalf("ssh-keygen: %v\n%s", err, output)
+		}
+		if err := os.WriteFile(filepath.Join(keyDir, "gitconfig"), []byte("[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = "+key+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	public, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(string(public))
+	line := "wiring-test@example.com " + fields[0] + " " + fields[1] + "\n"
+	signers, _ := os.ReadFile(filepath.Join(p.dir, "SIGNERS"))
+	if !strings.Contains(string(signers), line) {
+		p.write("SIGNERS", string(signers)+line)
+	}
+	var names []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		names = append(names, entry.Name())
+		files, err := os.ReadDir(filepath.Join(p.dir, "fills", entry.Name()))
+		if err != nil {
+			continue
+		}
+		pkg, tested := "", false
+		for _, file := range files {
+			name := file.Name()
+			if strings.HasSuffix(name, "_test.go") {
+				tested = true
+			} else if strings.HasSuffix(name, ".go") && pkg == "" {
+				data, err := os.ReadFile(filepath.Join(p.dir, "fills", entry.Name(), name))
+				if match := regexp.MustCompile(`(?m)^package (\w+)`).FindSubmatch(data); err == nil && match != nil {
+					pkg = string(match[1])
+				}
+			}
+		}
+		if pkg != "" && !tested {
+			p.write(filepath.Join("fills", entry.Name(), "qualify_test.go"), "package "+pkg+"\n\nimport \"testing\"\n\n// TestBuilds holds that the fill builds.\nfunc TestBuilds(t *testing.T) {}\n")
+		}
+	}
+	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK="}
+	_, _ = p.stegoExec(signing, "test")
+	for _, name := range names {
+		_, _ = p.stegoExec(signing, "fill", "sign", name)
+	}
 }
 
 // git runs git in the project.
