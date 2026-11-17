@@ -77,10 +77,11 @@ records without end, set `STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION=1`.
 The inbox then writes the info event `kafka.consumer.retention_accepted` once.
 When the inbox does not start, the readiness of the worker mode,
 `/readyz/modes`, answers 503 with `worker: not ready: the component
-inbox-<subscription> stopped`. The stage `kafka-consumer.retention` is not in
-that text: it is in the event `kafka.consumer.start_refused`. `/readyz` stays
-200, because it is the readiness of the API (see
-[Probes and modes](delivery.md#probes-and-modes)).
+inbox-<subscription> stopped`. It is the readiness probe of the worker
+Deployment of the base (see [Probes and modes](delivery.md#probes-and-modes)).
+The stage `kafka-consumer.retention` is not in that text: it is in the event
+`kafka.consumer.start_refused`. `/readyz` stays 200, because it is the
+readiness of the API.
 
 The worker mode reads these settings, with the connection settings
 `STEGO_KAFKA_*` of the Kafka destination:
@@ -95,9 +96,8 @@ When the sessions of the inbox fail 5 times in a row, for example because the
 topic is missing or the user may not read it, the readiness of the worker mode
 names the inbox and a fixed failure class, such as
 `broker:TOPIC_AUTHORIZATION_FAILED`, and the gauge `kafka.consumer.failing` is
-1. A session that reads the topic again clears both. To see this state in
-Kubernetes, run the worker mode in a Deployment of its own whose readiness
-probe is `/readyz/modes` (see [Probes and modes](delivery.md#probes-and-modes)).
+1. A session that reads the topic again clears both. In Kubernetes, the worker
+Deployment of the base is then not ready.
 
 ## Access to the topic
 

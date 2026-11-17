@@ -55,38 +55,41 @@ platform supplies those values.
 
 ## Probes and modes
 
-The Deployment of the base runs the modes that `STEGO_MODE` selects: api, worker and controller, all three by
-default. Its probes are:
+The binary of a service on the runtime data path runs the modes api, worker and controller. When the declared
+modes hold the api mode and the worker or controller mode (all three is the default), the base writes two
+Deployments:
 
-- liveness: `/livez`. It answers 200 while the process runs. It reads no database and no broker, so an outage of a
-  dependency does not restart the pod.
-- readiness: `/readyz`. It tells whether the pod can take requests of the API. It does not read the worker and
-  controller modes.
+| Deployment | File | Modes (`args`) | Readiness | Service |
+|---|---|---|---|---|
+| `<service>` | `deploy/base/deployment.yaml` | `--mode=api` | `/readyz` | The Service selects it. |
+| `<service>-worker` | `deploy/base/worker-deployment.yaml` | `--mode=worker`, `--mode=controller` | `/readyz/modes` | No Service selects it, and it has no container port. |
 
-The readiness of the worker and controller modes is `/readyz/modes`. It answers 503 and names the cause when a
-worker stopped, such as `worker: not ready: the component inbox-order-changes stopped` or
-`the component inbox-order-changes fails: broker:UNKNOWN_TOPIC_OR_PARTITION`, and 200 when each mode that the
-process runs is ready. A process that runs neither mode answers 200 there.
+- The liveness probe of each one is `/livez`. It answers 200 while the process runs, and it reads no database
+  and no broker, so an outage of a dependency does not restart a pod.
+- `/readyz` tells whether the pod can take requests of the API. It does not read the worker and controller
+  modes. Thus an outage of Kafka or of the audit sink does not remove the API from the endpoints of its Service.
+- `/readyz/modes` answers 503 and names the cause when a worker stopped, such as
+  `worker: not ready: the component inbox-order-changes stopped`. No traffic goes to the worker Deployment, so
+  its readiness removes nothing from a Service. It shows a stopped worker in `kubectl get pods` and in the
+  `Available` condition, and a new release whose worker cannot start does not complete its rollout.
+- Each Deployment has the environment entries of the variables that its modes read. A variable that only the
+  worker mode reads (`read_by_mode: worker` in the platform requirements), such as `STEGO_WORKER_DATABASE_URL`,
+  `STEGO_RELAY_DATABASE_URL`, the audit sink settings and the Kafka settings, is only in the worker Deployment.
+  Thus the API pod holds no credential of the worker role, the relay role or Kafka.
+- The `args` select the modes, so neither Deployment has an entry of `STEGO_MODE`.
+- The pods of the worker Deployment have the label `app.kubernetes.io/name: <service>-worker`, so that the
+  selector of `<service>`, which does not change, takes none of them.
+- The Components `secret-files` and `fs-group` patch both Deployments.
+- Give each Deployment its own replicas in the overlay, such as `replicas: [{name: orders, count: 3}, {name:
+  orders-worker, count: 2}]`.
 
-Do not make `/readyz/modes` the readiness probe of a pod that runs the api mode. When Kafka or the audit sink is
-down, the worker mode of each replica is not ready at the same time. Kubernetes then removes every replica from
-the endpoints of the Service, and an outage of a dependency that only the worker uses stops the API too.
+A service whose declared modes hold only the api mode, or only the worker and controller modes, gets one
+Deployment, with the readiness `/readyz` or `/readyz/modes`. A browser service has no modes: it gets one
+Deployment with the readiness `/readyz`.
 
-To see a stopped worker in Kubernetes, run the worker and controller modes in a Deployment of their own, with an
-overlay. Set `STEGO_MODE` to `api` on the Deployment of the base, and add a second Deployment, which no Service
-selects, with `STEGO_MODE` set to `worker,controller` and this readiness probe, on the port of `/readyz` in the
-base:
-
-```yaml
-readinessProbe:
-  httpGet:
-    path: /readyz/modes
-    port: 8080
-```
-
-No traffic goes to that Deployment, so its readiness removes nothing from a Service. It shows a stopped worker in
-`kubectl get pods` and in the `Available` condition, and a new release whose worker cannot start does not
-complete its rollout. Keep the liveness probe on `/livez`: a broker outage must not restart the worker.
+Upgrade: before this release, the one Deployment `<service>` ran every mode, as `STEGO_MODE` selected. After the
+upgrade it runs the api mode only, whatever `STEGO_MODE` holds, and `<service>-worker` runs the worker and
+controller modes. Remove an overlay patch that sets `STEGO_MODE` or the readiness probe of `<service>`.
 
 ## Secrets and configuration
 

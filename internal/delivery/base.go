@@ -22,10 +22,13 @@ const (
 	KustomizationFile  = BaseFolder + "/kustomization.yaml"
 	ServiceAccountFile = BaseFolder + "/service-account.yaml"
 	DeploymentFile     = BaseFolder + "/deployment.yaml"
-	ServiceFile        = BaseFolder + "/service.yaml"
-	RoleFile           = BaseFolder + "/role.yaml"
-	RoleBindingFile    = BaseFolder + "/role-binding.yaml"
-	MigrationJobFile   = BaseFolder + "/migration-job.yaml"
+	// WorkerDeploymentFile holds the Deployment <service>-worker of the worker and controller modes, when the base
+	// splits the modes (ST-DLV-UC07-R07).
+	WorkerDeploymentFile = BaseFolder + "/worker-deployment.yaml"
+	ServiceFile          = BaseFolder + "/service.yaml"
+	RoleFile             = BaseFolder + "/role.yaml"
+	RoleBindingFile      = BaseFolder + "/role-binding.yaml"
+	MigrationJobFile     = BaseFolder + "/migration-job.yaml"
 )
 
 // SecretFilesFolder is the folder, in the project folder, of the opt-in kustomize Component that gives each secret
@@ -42,6 +45,9 @@ const (
 	// The two patches of the migration Job, of the same shapes as those of the Deployment (ST-DLV-Q20).
 	SecretFilesJobRemoval = SecretFilesFolder + "/remove-job-env.yaml"
 	SecretFilesJobMounts  = SecretFilesFolder + "/mount-job-files.yaml"
+	// The two patches of the worker Deployment, of the same shapes as those of the Deployment (ST-DLV-UC07-R07).
+	SecretFilesWorkerRemoval = SecretFilesFolder + "/remove-worker-env.yaml"
+	SecretFilesWorkerMounts  = SecretFilesFolder + "/mount-worker-files.yaml"
 )
 
 // FSGroupFolder is the folder, in the project folder, of the second opt-in kustomize Component, which sets the pod
@@ -57,6 +63,7 @@ const (
 	FSGroupKustomization = FSGroupFolder + "/kustomization.yaml"
 	FSGroupDeployment    = FSGroupFolder + "/deployment-fs-group.yaml"
 	FSGroupJob           = FSGroupFolder + "/job-fs-group.yaml"
+	FSGroupWorker        = FSGroupFolder + "/worker-deployment-fs-group.yaml"
 )
 
 // FSGroup is the fsGroup that the Component fs-group sets: the user and the group of the image (WriteContainerfile).
@@ -71,13 +78,56 @@ const SecretFileMode = 0o400
 
 // BaseFiles are the paths of every file that the Kubernetes base may hold, in the order of the kustomization file,
 // and then the files of the Component secret-files and of the Component fs-group.
-var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, ServiceFile, RoleFile, RoleBindingFile, MigrationJobFile,
-	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts,
-	FSGroupKustomization, FSGroupDeployment, FSGroupJob}
+var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, WorkerDeploymentFile, ServiceFile, RoleFile, RoleBindingFile, MigrationJobFile,
+	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesWorkerRemoval, SecretFilesWorkerMounts, SecretFilesJobRemoval, SecretFilesJobMounts,
+	FSGroupKustomization, FSGroupDeployment, FSGroupWorker, FSGroupJob}
 
 // MigrateMode is the mode of the migration job: the argument of the service binary in the migration Job, and the
 // value of read_by_mode of a variable that only that mode reads (ST-DLV-Q19, ST-DLV-Q20).
 const MigrateMode = "migrate"
+
+// WorkerMode is the value of read_by_mode of a variable that only the worker mode reads, such as the connection of
+// the worker role or a Kafka setting: the Deployment of the api mode wires none of them (ST-DLV-UC07-R07).
+const WorkerMode = "worker"
+
+// ModeVariable selects the modes of a process when no mode option is given. A Deployment of a split base selects its
+// modes with the option --mode in its args, so it wires no entry of this variable.
+const ModeVariable = "STEGO_MODE"
+
+// WorkerReadiness is the readiness probe of the Deployment that runs only the worker and controller modes: the
+// readiness of the modes of the service runtime (ST-DLV-UC07-R03, ST-SUP-RP09-LC05).
+const WorkerReadiness = "/readyz/modes"
+
+// The sides of the modes of a Deployment, which give its environment entries: every mode, the api mode alone, or
+// the worker and controller modes alone.
+const (
+	allModes   = ""
+	apiSide    = "api"
+	workerSide = "worker"
+)
+
+// workerName is the name of the Deployment of the worker and controller modes of a split base.
+func workerName(service string) string { return service + "-worker" }
+
+// modeSides tells which Deployments the declared modes need (ST-DLV-UC07-R07): with the api mode and a background
+// mode, two; else one, with the readiness of its side. No modes means a binary with no mode selection: one
+// Deployment with the probes of health-check.
+func modeSides(modes []string) (split, backgroundOnly bool) {
+	api := slices.Contains(modes, "api")
+	background := slices.Contains(modes, "worker") || slices.Contains(modes, "controller")
+	return api && background, !api && background
+}
+
+// modeArgs gives the args of a Deployment of a split base: one --mode option for each of its declared modes.
+func modeArgs(modes []string, side string) []any {
+	var args []any
+	for _, mode := range modes {
+		if (side == apiSide) == (mode == "api") {
+			args = append(args, "--mode="+mode)
+		}
+	}
+	return args
+}
 
 // OwnerSecret is the name of the Secret of the credential of the owner role, which only the migration Job
 // references (ST-DLV-Q20, ST-DLV-INV13).
@@ -229,11 +279,11 @@ const noProbePort = "no Kubernetes base is written: the platform requirements gi
 // CI file and says so in the plan.
 //
 // release is the digest of the schema of the release, in hex, which names the migration Job (MigrationJobName).
-func WriteDelivery(service, release string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
+func WriteDelivery(service, release string, requirements []byte, probes *ProbeSource, modes []string, source ContainerSource, stanza *ArgoCDStanza, provider string, pins map[string]PipelinePins) (DeploymentFiles, error) {
 	if provider != "" && provider != GitHubActions && provider != Konflux {
 		return DeploymentFiles{}, &StanzaError{Path: "delivery.ci", Reason: fmt.Sprintf("the CI provider %q is not %s or %s", provider, GitHubActions, Konflux)}
 	}
-	written, err := WriteDeployment(service, release, requirements, probes, source, stanza)
+	written, err := WriteDeployment(service, release, requirements, probes, modes, source, stanza)
 	if err != nil {
 		return DeploymentFiles{}, err
 	}
@@ -259,11 +309,11 @@ func WriteDelivery(service, release string, requirements []byte, probes *ProbeSo
 // offline Containerfile of the image that the base runs (ST-DLV-CMD03), and then, as the base is written, the
 // delivery object from the Argo CD part of the delivery stanza, or none when the declaration has no such part
 // (ST-DLV-PO04).
-func WriteDeployment(service, release string, requirements []byte, probes *ProbeSource, source ContainerSource, stanza *ArgoCDStanza) (DeploymentFiles, error) {
+func WriteDeployment(service, release string, requirements []byte, probes *ProbeSource, modes []string, source ContainerSource, stanza *ArgoCDStanza) (DeploymentFiles, error) {
 	if probes == nil {
 		return DeploymentFiles{Notes: []string{NoBase}}, nil
 	}
-	base, written, err := WriteBase(service, release, requirements, *probes)
+	base, written, err := WriteBase(service, release, requirements, *probes, modes)
 	if errors.Is(err, errNoProbePort) {
 		return DeploymentFiles{Notes: []string{fmt.Sprintf(noProbePort, probes.PortVariable)}}, nil
 	}
@@ -312,7 +362,7 @@ func deliveryObjectFor(written BaseWritten, stanza *ArgoCDStanza) (*Application,
 // secret value (ST-DLV-INV08), and it reads the base back with LoadBase before it gives it (ST-DLV-INV09). When the
 // migrate mode alone reads a variable of the service, the base also holds the migration Job of the release, named
 // from the digest release (migrationJob, ST-DLV-UC07-R06).
-func WriteBase(service, release string, requirements []byte, probes ProbeSource) (Base, BaseWritten, error) {
+func WriteBase(service, release string, requirements []byte, probes ProbeSource, modes []string) (Base, BaseWritten, error) {
 	stated, err := LoadRequirements(requirements)
 	if err != nil {
 		return Base{}, BaseWritten{}, err
@@ -357,38 +407,75 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource)
 		return Base{}, BaseWritten{}, err
 	}
 
-	container := map[string]any{
-		"name":           service,
-		"image":          ImagePlaceholder(service),
-		"readinessProbe": httpProbe(probes.Readiness, port),
-		"livenessProbe":  httpProbe(probes.Liveness, port),
-		"resources":      ResourceDefaults,
+	split, backgroundOnly := modeSides(modes)
+	readiness := probes.Readiness
+	if backgroundOnly {
+		readiness = WorkerReadiness
+	}
+	// workload gives the container and the pod of one Deployment: its readiness, its args, its ports and its
+	// environment entries of its side of the modes. The base always writes the settings of the restricted Pod
+	// Security Standard and a read-only root file system, whatever level the requirements state; an overlay may
+	// relax them, the base never does (ST-DLV-Q14). The process writes its temporary files to an emptyDir at /tmp.
+	workload := func(side, readiness string, ports []any) (map[string]any, []secretFile) {
+		container := map[string]any{
+			"name":           service,
+			"image":          ImagePlaceholder(service),
+			"readinessProbe": httpProbe(readiness, port),
+			"livenessProbe":  httpProbe(probes.Liveness, port),
+			"resources":      ResourceDefaults,
+		}
+		if split {
+			container["args"] = modeArgs(modes, side)
+		}
+		if len(ports) > 0 {
+			container["ports"] = ports
+		}
+		container["securityContext"] = map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}},
+			"readOnlyRootFilesystem": true}
+		container["volumeMounts"] = []any{map[string]any{"name": "tmp", "mountPath": "/tmp"}}
+		// One environment entry, names only, for each variable that the modes of the Deployment read
+		// (ST-DLV-UC07-R03, ST-DLV-UC07-R07, ST-DLV-Q18).
+		environment, switched := baseEnvironment(service, stated.Environment, side, split)
+		if len(environment) > 0 {
+			container["env"] = environment
+		}
+		return map[string]any{"serviceAccountName": service, "automountServiceAccountToken": len(permissions) > 0, "containers": []any{container},
+			"securityContext": map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
+			"volumes":         []any{map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": TmpSizeLimit}}}}, switched
 	}
 	var ports []any
 	for _, requirement := range ingress {
 		ports = append(ports, containerPort(requirement))
 	}
-	if len(ports) > 0 {
-		container["ports"] = ports
+	// A Deployment that runs only the api mode wires no variable of the worker mode.
+	side := allModes
+	if split || (slices.Contains(modes, "api") && !backgroundOnly && len(modes) == 1) {
+		side = apiSide
 	}
-	// The base always writes the settings of the restricted Pod Security Standard and a read-only root file
-	// system, whatever level the requirements state; an overlay may relax them, the base never does (ST-DLV-Q14).
-	// The process writes its temporary files to an emptyDir at /tmp.
-	container["securityContext"] = map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}},
-		"readOnlyRootFilesystem": true}
-	container["volumeMounts"] = []any{map[string]any{"name": "tmp", "mountPath": "/tmp"}}
-	// One environment entry, names only, for each variable that the service reads (ST-DLV-UC07-R03, ST-DLV-Q18).
-	environment, switched := baseEnvironment(service, stated.Environment)
-	if len(environment) > 0 {
-		container["env"] = environment
-	}
-	pod := map[string]any{"serviceAccountName": service, "automountServiceAccountToken": len(permissions) > 0, "containers": []any{container},
-		"securityContext": map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
-		"volumes":         []any{map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": TmpSizeLimit}}}}
+	pod, switched := workload(side, readiness, ports)
 	if err := add(DeploymentFile, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
 		"spec": map[string]any{"selector": map[string]any{"matchLabels": labels},
 			"template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": pod}}}); err != nil {
 		return Base{}, BaseWritten{}, err
+	}
+	// The Deployment of the worker and controller modes (ST-DLV-UC07-R07): readiness /readyz/modes, no port that a
+	// Service selects, and labels with another name, so that neither the selector of the Deployment of the api mode,
+	// which never changes, nor that of the Service takes one of its pods.
+	var workerSwitched []secretFile
+	worker := ""
+	if split {
+		worker = workerName(service)
+		if !serviceLabel.MatchString(worker) {
+			return Base{}, BaseWritten{}, fmt.Errorf("the worker Deployment %s is not a Kubernetes name: a DNS label of at most 63 characters; use a service name of at most 56 characters", worker)
+		}
+		workerLabels := map[string]any{nameLabel: worker, partOfLabel: service, componentLabel: workerSide}
+		var workerPod map[string]any
+		workerPod, workerSwitched = workload(workerSide, WorkerReadiness, nil)
+		if err := add(WorkerDeploymentFile, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": worker, "labels": workerLabels},
+			"spec": map[string]any{"selector": map[string]any{"matchLabels": workerLabels},
+				"template": map[string]any{"metadata": map[string]any{"labels": workerLabels}, "spec": workerPod}}}); err != nil {
+			return Base{}, BaseWritten{}, err
+		}
 	}
 
 	if len(ingress) > 0 {
@@ -456,13 +543,13 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource)
 		return Base{}, BaseWritten{}, err
 	}
 	files[KustomizationFile] = data
-	if len(switched) > 0 || len(jobSwitched) > 0 {
-		component, err := secretFilesComponent(service, jobName, switched, jobSwitched)
+	if len(switched) > 0 || len(workerSwitched) > 0 || len(jobSwitched) > 0 {
+		component, err := secretFilesComponent(service, worker, jobName, switched, workerSwitched, jobSwitched)
 		if err != nil {
 			return Base{}, BaseWritten{}, err
 		}
 		maps.Copy(files, component)
-		fsGroup, err := fsGroupComponent(service, jobName)
+		fsGroup, err := fsGroupComponent(service, worker, jobName)
 		if err != nil {
 			return Base{}, BaseWritten{}, err
 		}
@@ -560,7 +647,8 @@ func jobEnvironment(service string, list []AcceptedVariable) ([]any, []secretFil
 	var entries []any
 	var switched []secretFile
 	for _, variable := range list {
-		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart {
+		// A variable that only the worker mode reads gets no entry: the migrate mode does not read it.
+		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode == WorkerMode {
 			continue
 		}
 		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile && sourced[form] {
@@ -620,7 +708,11 @@ type secretFile struct {
 // domain probes gets no entry (ST-STD-OBS-R03); a variable that the start guard refuses gets none, because a value
 // of it stops the service (ST-SUP-UC01-R10); and a variable that only the migration job reads gets none, so that the
 // serving pod never holds the credential of the owner role (ST-DLV-Q19, least privilege).
-func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFile) {
+//
+// side is the side of the modes of the Deployment (ST-DLV-UC07-R07): every mode, which wires the variables of the
+// worker mode too; the api mode alone, which wires none of them; or the worker and controller modes alone. A
+// Deployment of a split base selects its modes in its args, so it wires no entry of STEGO_MODE.
+func baseEnvironment(service string, list []AcceptedVariable, side string, split bool) ([]any, []secretFile) {
 	sourced := map[string]SecretSource{}
 	for _, variable := range list {
 		if variable.Secret && variable.SecretSource != nil {
@@ -634,7 +726,8 @@ func baseEnvironment(service string, list []AcceptedVariable) ([]any, []secretFi
 	var entries []any
 	var switched []secretFile
 	for _, variable := range list {
-		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode != "" {
+		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode == MigrateMode ||
+			(variable.ReadByMode == WorkerMode && side == apiSide) || (split && variable.Name == ModeVariable) {
 			continue
 		}
 		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile {
@@ -678,7 +771,7 @@ func SecretFilePath(source SecretSource) string {
 // read-only, with the mode 0400, no subPath and only the keys that the switched variables read, so that a new value
 // of the secret reaches the file in place. The forms are exclusive, so the first patch removes what the second
 // replaces.
-func secretFilesComponent(service, job string, switched, jobSwitched []secretFile) (map[string][]byte, error) {
+func secretFilesComponent(service, worker, job string, switched, workerSwitched, jobSwitched []secretFile) (map[string][]byte, error) {
 	files := map[string][]byte{}
 	var patches []any
 	for _, target := range []struct {
@@ -686,6 +779,7 @@ func secretFilesComponent(service, job string, switched, jobSwitched []secretFil
 		switched                                []secretFile
 	}{
 		{"Deployment", "apps/v1", service, SecretFilesRemoval, SecretFilesMounts, switched},
+		{"Deployment", "apps/v1", worker, SecretFilesWorkerRemoval, SecretFilesWorkerMounts, workerSwitched},
 		{"Job", "batch/v1", job, SecretFilesJobRemoval, SecretFilesJobMounts, jobSwitched},
 	} {
 		if len(target.switched) == 0 {
@@ -750,11 +844,12 @@ func secretFilesPatches(service, apiVersion, kind, name string, switched []secre
 // Deployment to FSGroup and, when the base has the migration Job job, the same patch of the Job. Kubernetes then
 // gives the files of the Component secret-files, which have the mode 0400, to that group, so that the process, which
 // is not root, reads them. The base writes it next to the Component secret-files, for clusters other than OpenShift.
-func fsGroupComponent(service, job string) (map[string][]byte, error) {
+func fsGroupComponent(service, worker, job string) (map[string][]byte, error) {
 	files := map[string][]byte{}
 	var patches []any
 	for _, target := range []struct{ kind, apiVersion, name, file string }{
 		{"Deployment", "apps/v1", service, FSGroupDeployment},
+		{"Deployment", "apps/v1", worker, FSGroupWorker},
 		{"Job", "batch/v1", job, FSGroupJob},
 	} {
 		if target.name == "" {
@@ -886,7 +981,7 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 		return nil, fmt.Errorf("%s is not a kustomization that lists its resources", KustomizationFile)
 	}
 	resources := map[string]map[string]any{}
-	var service, job string
+	var service, worker, job string
 	var servingSecrets []string
 	var jobContent []byte
 	for _, name := range kustomization.Resources {
@@ -914,10 +1009,14 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 		}
 		switch resource["kind"] {
 		case "Deployment":
-			if service != "" || file != DeploymentFile {
-				return nil, fmt.Errorf("%s holds a second Deployment, or a Deployment out of %s", file, DeploymentFile)
+			switch {
+			case file == DeploymentFile && service == "":
+				service, _ = metadata["name"].(string)
+			case file == WorkerDeploymentFile && worker == "":
+				worker, _ = metadata["name"].(string)
+			default:
+				return nil, fmt.Errorf("%s holds a second Deployment, or a Deployment out of %s and %s", file, DeploymentFile, WorkerDeploymentFile)
 			}
-			service, _ = metadata["name"].(string)
 			references, _, err := checkEnvironmentEntries(content)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", file, err)
@@ -945,6 +1044,9 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 	if service == "" {
 		return nil, fmt.Errorf("the Kubernetes base holds no Deployment in %s", DeploymentFile)
 	}
+	if worker != "" && worker != workerName(service) {
+		return nil, fmt.Errorf("%s holds the Deployment %s, not %s", WorkerDeploymentFile, worker, workerName(service))
+	}
 	// The serving Deployment never references the Secret of the owner credential (ST-DLV-INV13).
 	for _, secret := range servingSecrets {
 		if isOwnerSecret(service, secret) {
@@ -956,10 +1058,10 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 			return nil, fmt.Errorf("%s: %w", MigrationJobFile, err)
 		}
 	}
-	if err := loadSecretFiles(files, service, job, servingSecrets); err != nil {
+	if err := loadSecretFiles(files, service, worker, job, servingSecrets); err != nil {
 		return nil, err
 	}
-	if err := loadFSGroup(files, service, job); err != nil {
+	if err := loadFSGroup(files, service, worker, job); err != nil {
 		return nil, err
 	}
 	return resources, nil
@@ -1296,8 +1398,8 @@ type secretFilesPatch struct {
 // Deployment and, when the base has a migration Job, of the Job, and nothing else; each patch is of the one
 // container of its workload (loadPatchPair). The Deployment patches never mount the Secret of the owner credential,
 // and the Job patches never mount a Secret that the Deployment takes a variable from (ST-DLV-INV13).
-func loadSecretFiles(files map[string][]byte, service, job string, servingSecrets []string) error {
-	component := []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesJobRemoval, SecretFilesJobMounts}
+func loadSecretFiles(files map[string][]byte, service, worker, job string, servingSecrets []string) error {
+	component := []string{SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesWorkerRemoval, SecretFilesWorkerMounts, SecretFilesJobRemoval, SecretFilesJobMounts}
 	held := map[string]bool{}
 	for _, file := range component {
 		if _, ok := files[file]; ok {
@@ -1311,6 +1413,7 @@ func loadSecretFiles(files map[string][]byte, service, job string, servingSecret
 		removal, mounts, apiVersion, kind, name string
 	}{
 		{SecretFilesRemoval, SecretFilesMounts, "apps/v1", "Deployment", service},
+		{SecretFilesWorkerRemoval, SecretFilesWorkerMounts, "apps/v1", "Deployment", worker},
 		{SecretFilesJobRemoval, SecretFilesJobMounts, "batch/v1", "Job", job},
 	}
 	var listed []string
@@ -1327,6 +1430,9 @@ func loadSecretFiles(files map[string][]byte, service, job string, servingSecret
 	}
 	if held[SecretFilesJobRemoval] && job == "" {
 		return fmt.Errorf("the Component %s patches a migration Job, but the base has none", SecretFilesFolder)
+	}
+	if held[SecretFilesWorkerRemoval] && worker == "" {
+		return fmt.Errorf("the Component %s patches a worker Deployment, but the base has none", SecretFilesFolder)
 	}
 	var kustomization secretFilesKustomization
 	if err := decodeStrict(files[SecretFilesKustomization], MaxRequirementsBytes, &kustomization); err != nil {
@@ -1398,10 +1504,10 @@ type fsGroupPatch struct {
 // it holds the Component secret-files; its kustomization is a Component that lists, in this order, the patch of the
 // Deployment and, when the base has a migration Job, the patch of the Job, and nothing else; and each patch only sets
 // the pod fsGroup of its workload to FSGroup.
-func loadFSGroup(files map[string][]byte, service, job string) error {
+func loadFSGroup(files map[string][]byte, service, worker, job string) error {
 	_, secretFiles := files[SecretFilesKustomization]
 	held := map[string]bool{}
-	for _, file := range []string{FSGroupKustomization, FSGroupDeployment, FSGroupJob} {
+	for _, file := range []string{FSGroupKustomization, FSGroupDeployment, FSGroupWorker, FSGroupJob} {
 		if _, ok := files[file]; ok {
 			held[file] = true
 		}
@@ -1414,6 +1520,9 @@ func loadFSGroup(files map[string][]byte, service, job string) error {
 	}
 	type target struct{ file, apiVersion, kind, name string }
 	want := []target{{FSGroupDeployment, "apps/v1", "Deployment", service}}
+	if worker != "" {
+		want = append(want, target{FSGroupWorker, "apps/v1", "Deployment", worker})
+	}
 	if job != "" {
 		want = append(want, target{FSGroupJob, "batch/v1", "Job", job})
 	}
@@ -1421,7 +1530,7 @@ func loadFSGroup(files map[string][]byte, service, job string) error {
 	for _, patch := range want {
 		listed = append(listed, path.Base(patch.file))
 	}
-	if !held[FSGroupKustomization] || len(held) != len(want)+1 || !held[FSGroupDeployment] || (job != "" && !held[FSGroupJob]) {
+	if !held[FSGroupKustomization] || len(held) != len(want)+1 || !held[FSGroupDeployment] || (worker != "" && !held[FSGroupWorker]) || (job != "" && !held[FSGroupJob]) {
 		return fmt.Errorf("the Component %s does not hold exactly its kustomization and the patches %s", FSGroupFolder, strings.Join(listed, ", "))
 	}
 	var kustomization secretFilesKustomization

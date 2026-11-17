@@ -2,7 +2,7 @@
 # once a day (ST-SUP-RC28-OC08).
 kind: component
 name: audit-log
-version: 1.1.1
+version: 1.2.0
 stage: ga
 output_namespace: internal/auditlog
 
@@ -31,36 +31,42 @@ architecture:
 
 environment:
   - name: STEGO_AUDIT_SINK_URL
+    read_by_mode: worker
     type: url
     required: false
     description: "The HTTPS URL of the OTLP/HTTP logs endpoint that gets the audit records. When it has no value, the audit records go to a table in the service database."
     secret: false
     example: "https://collector.example.com/v1/logs"
   - name: STEGO_AUDIT_SINK_TOKEN_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the token for the audit sink at STEGO_AUDIT_SINK_URL. When it has no value, the sink must use a client certificate."
     secret: false
     example: "/etc/stego/audit/token"
   - name: STEGO_AUDIT_SINK_AUTH_HEADER
+    read_by_mode: worker
     type: string
     required: false
     description: "The header that carries the token of STEGO_AUDIT_SINK_TOKEN_FILE as the file holds it. When it has no value, the token goes in the Authorization header as a bearer token."
     secret: false
     example: "X-Api-Key"
   - name: STEGO_AUDIT_SINK_CA_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "A PEM file of certificate authorities that the audit sink adds to the system roots. When it has no value, the sink uses the system roots."
     secret: false
     example: "/etc/stego/audit/ca.crt"
   - name: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the PEM client certificate of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_KEY_FILE."
     secret: false
     example: "/etc/stego/audit/tls.crt"
   - name: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the PEM client key of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_CERT_FILE."

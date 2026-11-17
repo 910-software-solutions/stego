@@ -1294,7 +1294,7 @@ func writeDeployment(input compiler.DeploymentInput) (compiler.DeploymentFiles, 
 		pins[name] = delivery.PipelinePins{Pipeline: stated.Pipeline, Checks: stated.Checks, Signer: stated.Signer}
 	}
 	source := delivery.ContainerSource{OutputDir: input.OutputDir, Fills: input.HoldsFills, Replacements: input.LocalModules}
-	written, err := delivery.WriteDelivery(input.Service, input.Release, input.Requirements, probes, source, stanza, provider, pins)
+	written, err := delivery.WriteDelivery(input.Service, input.Release, input.Requirements, probes, input.Modes, source, stanza, provider, pins)
 	if err != nil {
 		return compiler.DeploymentFiles{}, err
 	}
