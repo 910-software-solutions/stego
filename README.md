@@ -361,6 +361,9 @@ slots:
     gate: [admin-policy]
 ```
 
+To declare commands, queries, workers and observations, and to write their
+fills, see [docs/commands-queries-workers.md](docs/commands-queries-workers.md).
+
 New fill methods return an error until you implement them. They use the generated
 slot types and include a constructor and an interface check. STEGO does not
 replace existing fill files.
