@@ -1,0 +1,21 @@
+// Package getgreeting is the fill of the query get-greeting: it reads the one Greeting of the request.
+package getgreeting
+
+import (
+	"context"
+
+	"{{module}}/out/queries"
+)
+
+// Fill reads the Greeting of the request.
+func Fill(ctx context.Context, req queries.GetGreetingRequest, h *queries.GetGreetingHandle) (queries.GetGreetingResponse, error) {
+	repo, err := queries.GetGreetingGreetings(h)
+	if err != nil {
+		return nil, err
+	}
+	greeting, err := repo.Get(ctx, req.Name)
+	if err != nil {
+		return nil, err
+	}
+	return greeting.Value(), nil
+}
