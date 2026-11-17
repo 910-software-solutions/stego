@@ -18,6 +18,9 @@ type Facts struct {
 	// GRPCMethods gives the kind of each method, as package.Service/Method, of the services of the proto files of the
 	// grpc-application component. It is nil when that component is not active (ST-DECL-INV73).
 	GRPCMethods map[string]MethodKind
+	// RuntimeData is true for a service on the runtime data path, whose outbox relay and audit sink run in the worker
+	// mode and whose audit jobs run in the controller mode (ST-DECL-INV89).
+	RuntimeData bool
 }
 
 // The slots that the fills of commands, queries and workers implement. Each capability component (ST-SUP-RC32,
@@ -51,6 +54,7 @@ func ValidateComposition(service *types.ServiceDeclaration, facts Facts) []Valid
 	faults = append(faults, validateWorkerFill(service.Workers, facts)...)
 	faults = append(faults, validateWorkerEffects(service, facts)...)
 	faults = append(faults, validateWorkerMode(service)...)
+	faults = append(faults, validateNeededModes(service, facts)...)
 	faults = append(faults, validateWorkerLease(service.Workers)...)
 	faults = append(faults, validateWorkerCycles(service.Workers)...)
 	faults = append(faults, validateWorkerCount(service.Workers)...)

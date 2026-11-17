@@ -486,11 +486,22 @@ func TestRuntimeWiring(t *testing.T) {
 			}
 		}
 	})
-	// The next release adds the entity Tag with no schema step, and declares the modes api and worker, which the
+	// A service on the runtime data path needs all three modes: declared modes without worker and controller are
+	// refused by validate, naming the features that need them (ST-DECL-INV89).
+	subset := newWiringProject(t, stego, runtimeArchetype)
+	subset.write("service.yaml", strings.Replace(subset.read("service.yaml"), "entities:\n", "modes: [api]\nentities:\n", 1))
+	t.Run("ST-DECL-INV89-T Declared modes that leave out a mode the declared features need are refused", func(t *testing.T) {
+		output, err := subset.stegoRun("validate")
+		if err == nil || !strings.Contains(output, "[mode-needed] modes") || !strings.Contains(output, "do not hold worker,") ||
+			!strings.Contains(output, "do not hold controller,") || !strings.Contains(output, "outbox relay") {
+			t.Fatalf("stego validate of the modes [api] gave %v, want the faults of worker and controller:\n%s", err, output)
+		}
+	})
+	// The next release adds the entity Tag with no schema step, and declares its three modes out of order, which the
 	// check of ST-GEN-INV26 starts it with.
 	next := newWiringProject(t, stego, runtimeArchetype)
 	declaration := next.read("service.yaml")
-	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "modes: [api, worker]\nentities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
+	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "modes: [controller, api, worker]\nentities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
 	next.stego("apply")
 	next.useLocalRuntime()
 	next.goCommand("mod", "tidy")

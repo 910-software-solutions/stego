@@ -91,10 +91,10 @@ type service struct {
 	// The refused starts of the modes (ST-GEN-INV26): an unknown mode, the worker mode with no connection string of
 	// the worker role, and the binary of the next release, which declares the modes api and worker, with the mode
 	// controller and with no mode option and no database setting.
-	unknownMode, noWorkerURL, undeclaredMode, declaredDefault runResult
-	broker                                                    *kafkatest.Broker
-	foreignDB, legacyDB                                       *sql.DB
-	schemaBeforeNext                                          string
+	unknownMode, noWorkerURL, allModes, declaredDefault runResult
+	broker                                              *kafkatest.Broker
+	foreignDB, legacyDB                                 *sql.DB
+	schemaBeforeNext                                    string
 	// restart stops the service process and starts it again.
 	restart func(t *testing.T)
 	// restartWith stops the service process and starts it again with the arguments given, such as --mode api.
@@ -363,10 +363,11 @@ func start(t *testing.T) *service {
 		}
 	}
 	s.noWorkerURL = run(binary, append(noWorker, "STEGO_WORKER_DATABASE_URL=", "STEGO_WORKER_DATABASE_URL_FILE=", "STEGO_MODE="), "--mode", "worker")
-	// The next release declares the modes api and worker: the mode controller is refused, and with no mode option
-	// the binary selects the two declared modes, which the failure record of the missing database setting names.
+	// The next release declares its three modes out of order: with no mode option and with --mode all the binary
+	// selects them in the order api, worker, controller, which the failure record of the missing database setting
+	// names.
 	noDatabase := []string{"DATABASE_URL=", "DATABASE_URL_FILE=", "STEGO_MODE="}
-	s.undeclaredMode = run(next, noDatabase, "--mode", "controller")
+	s.allModes = run(next, noDatabase, "--mode", "all")
 	s.declaredDefault = run(next, noDatabase)
 
 	// start starts the service process with args, in all modes when args is empty, and waits until it answers
@@ -1629,8 +1630,8 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		}
 		refused("an unknown mode", s.unknownMode, "modes", "")
 		refused("the worker mode with no connection string of the worker role", s.noWorkerURL, "service.start.setting.postgres-adapter.STEGO_WORKER_DATABASE_URL", `["worker"]`)
-		refused("the mode controller, which the next release does not declare", s.undeclaredMode, "modes", "")
-		refused("the next release with no mode option and no database setting", s.declaredDefault, "service.start.setting.postgres-adapter.DATABASE_URL", `["api","worker"]`)
+		refused("the next release with --mode all and no database setting", s.allModes, "service.start.setting.postgres-adapter.DATABASE_URL", `["api","worker","controller"]`)
+		refused("the next release with no mode option and no database setting", s.declaredDefault, "service.start.setting.postgres-adapter.DATABASE_URL", `["api","worker","controller"]`)
 
 		workerConnections := func() int {
 			return count(t, s.admin, `SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND usename = $2`, s.dbName, stegoruntime.WorkerRole)

@@ -910,7 +910,7 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		if err := checkSettingDefaults(component, settings); err != nil {
 			return nil, err
 		}
-		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: component.Variables(), Settings: settings}
+		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: declaredModeVariables(component.Variables(), svcDecl.Modes), Settings: settings}
 		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
 			declared, err := declarer.DeclaredVariables(contexts[name])
 			if err != nil {

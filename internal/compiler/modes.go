@@ -7,6 +7,8 @@ import (
 	"go/token"
 	"path"
 	"slices"
+
+	"github.com/jsell-rh/stego/internal/registry"
 )
 
 // declaredModes gives the modes that a declaration states, in the order api, worker, controller, each once; all three
@@ -58,4 +60,23 @@ func writeModeSelection(buf *bytes.Buffer, call string) {
 		return
 	}
 	fmt.Fprintf(buf, "	stegoStage = \"modes\"\n\tif stegoModes, stegoErr = %s; stegoErr != nil {\n\t\treturn stegoErr\n\t}\n", call)
+}
+
+// modeVariable is the environment variable that selects the modes of a process when no mode option is given.
+const modeVariable = "STEGO_MODE"
+
+// declaredModeVariables gives the environment variables of a component with the allowed values of STEGO_MODE
+// narrowed to the declared modes and all, so that stego env check refuses a value that names a mode the
+// declaration does not state (ST-GEN-INV26). The registry's list is not changed.
+func declaredModeVariables(variables []registry.EnvironmentVariable, stated []string) []registry.EnvironmentVariable {
+	out := slices.Clone(variables)
+	for i, variable := range out {
+		if variable.Name != modeVariable || variable.Allowed == nil || len(variable.Allowed.Values) == 0 {
+			continue
+		}
+		allowed := *variable.Allowed
+		allowed.Values = append(declaredModes(stated), "all")
+		out[i].Allowed = &allowed
+	}
+	return out
 }

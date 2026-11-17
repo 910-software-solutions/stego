@@ -80,7 +80,6 @@ ST-STD-CODE-R04	internal/compiler/resources_test.go	internal/compiler/resources_
 ST-STD-CODE-R04	internal/compiler/state_format_test.go	internal/compiler/state_format_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/state_test.go	internal/compiler/state_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/testdata/database_access_test.go	internal/compiler/testdata/database_access_test.go	the test file names no test record's ID in a test or subtest name
-ST-STD-CODE-R04	internal/compiler/testdata/database_config_test.go	internal/compiler/testdata/database_config_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/testdata/http_lifecycle_test.go	internal/compiler/testdata/http_lifecycle_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/testdata/http_tls_test.go	internal/compiler/testdata/http_tls_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/testdata/task_http_test.go	internal/compiler/testdata/task_http_test.go	the test file names no test record's ID in a test or subtest name

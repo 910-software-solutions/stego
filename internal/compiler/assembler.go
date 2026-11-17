@@ -251,7 +251,7 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 		if hasRoutes || hasTasks {
 			parent = "ctx"
 		}
-		writeDBSetup(&buf, opener, parent)
+		writeDBSetup(&buf, opener, databaseOpenerComponent(input), parent)
 
 		if needsDatabaseAccessCheck(input, consumedWirings) {
 			fmt.Fprintf(&buf, "\tstegoStage = \"database.access\"\n\tif err := %s.VerifyRuntime(%s, db); err != nil { return err }\n", imports.DatabaseAccessAlias, parent)
@@ -548,8 +548,8 @@ func writeMainImports(buf *bytes.Buffer, input AssemblerInput, hasRoutes, hasDB,
 	}
 }
 
-func writeDBSetup(buf *bytes.Buffer, opener, parent string) {
-	writeDatabaseConfiguration(buf)
+func writeDBSetup(buf *bytes.Buffer, opener, component, parent string) {
+	writeDatabaseConfiguration(buf, component)
 	buf.WriteString("\tstegoStage = \"database.open\"\n")
 	if opener == "" {
 		opener = "sql.Open(\"pgx\", dsn)"
