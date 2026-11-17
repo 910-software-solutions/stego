@@ -138,6 +138,7 @@ func TestService(t *testing.T) {
 	t.Run("ST-SUP-RC35-OC07-T01 A slow tenant ends at its own deadline and the next tenant gets its own", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC07-T01") })
 	t.Run("ST-SUP-RC35-OC08-T01 A panic in one worker run does not stop the service or the next run", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC08-T01") })
 	t.Run("ST-SUP-RC35-OC09-T01 A worker run is one span with a fixed outcome, and a failure is one built-in event", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC09-T01") })
+	t.Run("ST-SUP-RC35-OC15-T02 A worker fill reads and locks through its generated list, also after an added column", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC15-T02") })
 	t.Run("ST-SUP-RC35-OC10-T01 Shutdown starts no run, waits for the drain bound and rolls back the rest", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC10-T01") })
 	t.Run("ST-SUP-RC35-OC12-T01 A tick that runs out of time counts the unreached tenants, and the next starts from them", func(t *testing.T) { runCheck(t, p, run, "ST-SUP-RC35-OC12-T01") })
 }

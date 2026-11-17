@@ -372,3 +372,140 @@ func workerSettings(service *types.ServiceDeclaration) []Setting {
 	}
 	return settings
 }
+
+// maxListTerms is the most terms of one worker list filter (ST-DECL-INV94).
+const maxListTerms = 8
+
+// listOrdered are the operators that compare an order, which a bool field does not have.
+var listOrdered = map[string]bool{types.ListLessThan: true, types.ListLessThanOrEquals: true, types.ListGreaterThan: true,
+	types.ListGreaterThanOrEquals: true}
+
+// listOperators are the operators of a list term.
+var listOperators = []string{types.ListEquals, types.ListNotEquals, types.ListLessThan, types.ListLessThanOrEquals,
+	types.ListGreaterThan, types.ListGreaterThanOrEquals, types.ListIsSet}
+
+// validateWorkerLists checks each declared list of each worker (ST-DECL-INV94): a list name in lower kebab case that
+// is unique in its worker, an entity that the worker writes, a filter of one to eight terms, each a declared field
+// of that entity with a known operator and a value that is a constant of the field type or the time of the run, and
+// lock only for an entity that declares Lock at most (ST-DECL-INV81). Each fault names the worker, the list and the
+// term.
+func validateWorkerLists(workers []types.Worker, entities []types.Entity) []ValidationError {
+	byName := map[string]types.Entity{}
+	for _, e := range entities {
+		byName[e.Name] = e
+	}
+	var faults []ValidationError
+	for i, worker := range workers {
+		seen := map[string]bool{}
+		for j, list := range worker.Lists {
+			path := fmt.Sprintf("%s.lists[%d]", workerPath(i), j)
+			fault := func(at, found, message string) {
+				faults = append(faults, ValidationError{Category: "worker", Rule: "worker-list", Path: path + at, Found: found,
+					Message: fmt.Sprintf("worker %q, list %q: %s", worker.Name, list.Name, message)})
+			}
+			switch {
+			case !kebabName.MatchString(list.Name):
+				fault(".name", list.Name, "the list name must be in lower kebab case, at most 63 characters")
+			case seen[list.Name]:
+				fault(".name", list.Name, "the list name is used twice in the worker; give each list its own name")
+			}
+			seen[list.Name] = true
+			entity, declared := byName[list.Entity]
+			if !declared || !contains(worker.Writes, list.Entity) {
+				fault(".entity", list.Entity, "the list reads the entity "+strconv.Quote(list.Entity)+", which the worker does not write; name an entity of its writes")
+				continue
+			}
+			if _, ok := LockAtMost(entity); list.Lock && !ok {
+				fault(".lock", "true", "the list locks rows of "+entity.Name+", which declares no Lock at most; declare lock_at_most on the entity (ST-DECL-INV81)")
+			}
+			if len(list.Filter) < 1 || len(list.Filter) > maxListTerms {
+				fault(".filter", strconv.Itoa(len(list.Filter)), fmt.Sprintf("the filter has %d terms; give one to %d", len(list.Filter), maxListTerms))
+			}
+			for k, term := range list.Filter {
+				at := fmt.Sprintf(".filter[%d]", k)
+				if reason := listTermFault(entity, term); reason != "" {
+					fault(at, term.Field+" "+term.Op, fmt.Sprintf("the term %d (%s %s): %s", k+1, term.Field, term.Op, reason))
+				}
+			}
+		}
+	}
+	return faults
+}
+
+// listTermFault gives why a term of a list over entity is refused, or nothing.
+func listTermFault(entity types.Entity, term types.ListTerm) string {
+	var field *types.Field
+	for i := range entity.Fields {
+		if entity.Fields[i].Name == term.Field {
+			field = &entity.Fields[i]
+		}
+	}
+	if field == nil {
+		return "the entity " + entity.Name + " declares no field " + strconv.Quote(term.Field)
+	}
+	if !contains(listOperators, term.Op) {
+		return "the operator must be one of " + strings.Join(listOperators, ", ")
+	}
+	if term.Op == types.ListIsSet {
+		if term.Value != nil || term.Now {
+			return "is_set takes no value"
+		}
+		return ""
+	}
+	switch field.Type {
+	case types.FieldTypeBytes, types.FieldTypeJsonb:
+		return "a field of the type " + string(field.Type) + " can be checked only with is_set"
+	case types.FieldTypeBool:
+		if listOrdered[term.Op] {
+			return "a bool field takes only equals or not_equals"
+		}
+	}
+	if term.Now {
+		if term.Value != nil {
+			return "give a value or now, not both"
+		}
+		if field.Type != types.FieldTypeTimestamp {
+			return "now, the time of the run, fits only a timestamp field"
+		}
+		return ""
+	}
+	if term.Value == nil {
+		return "the term needs a value of the field type, or now for a timestamp field"
+	}
+	if !listValueFits(*field, term.Value) {
+		return fmt.Sprintf("the value %v is not a constant of the field type %s", term.Value, field.Type)
+	}
+	return ""
+}
+
+// listValueFits tells whether value, as YAML reads it, is a constant of the field's type.
+func listValueFits(field types.Field, value any) bool {
+	switch field.Type {
+	case types.FieldTypeString, types.FieldTypeRef:
+		_, ok := value.(string)
+		return ok
+	case types.FieldTypeEnum:
+		text, ok := value.(string)
+		return ok && contains(field.Values, text)
+	case types.FieldTypeBool:
+		_, ok := value.(bool)
+		return ok
+	case types.FieldTypeInt32, types.FieldTypeInt64:
+		n, ok := value.(int)
+		return ok && (field.Type == types.FieldTypeInt64 || (n >= -1<<31 && n < 1<<31))
+	case types.FieldTypeFloat, types.FieldTypeDouble:
+		switch value.(type) {
+		case int, float64:
+			return true
+		}
+	case types.FieldTypeTimestamp:
+		switch v := value.(type) {
+		case time.Time:
+			return true
+		case string:
+			_, err := time.Parse(time.RFC3339, v)
+			return err == nil
+		}
+	}
+	return false
+}

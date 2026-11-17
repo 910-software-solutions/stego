@@ -55,7 +55,7 @@ func TestProbeBuiltins(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "service.ready") || !strings.Contains(err.Error(), "reserved") {
 			t.Fatalf("the declaration of service.ready returned %v, want a refusal by name", err)
 		}
-		// The worker observations carry the worker name and the fixed outcome only.
+		// The worker observations carry the worker name, the fixed outcome and the fixed cause class only (ST-SUP-RC35-OC06).
 		builtins, err := NewBuiltins([]string{"sync-partner-orders"}, nil)
 		if err != nil {
 			t.Fatal(err)
@@ -63,6 +63,8 @@ func TestProbeBuiltins(t *testing.T) {
 		recorder := NewRecorder(builtins)
 		worker := recorder.Worker("sync-partner-orders")
 		worker.RunFailed(context.Background(), WorkerFenced)
+		worker.RunFailedCause(context.Background(), WorkerUndecided, "undecided")
+		worker.RunFailedCause(context.Background(), WorkerRolledBack, "a cause that is not fixed")
 		worker.TickSkipped()
 		worker.TenantUnreached()
 		recorder.Worker("undeclared").TickSkipped()
@@ -71,10 +73,11 @@ func TestProbeBuiltins(t *testing.T) {
 			kept = append(kept, e.Name+" "+e.Severity.String()+" "+e.String())
 		}
 		if !slices.Equal(kept, []string{
-			"worker.run.failed ERROR worker.run.failed{worker=sync-partner-orders outcome=fenced}",
+			"worker.run.failed ERROR worker.run.failed{worker=sync-partner-orders outcome=fenced cause=unknown}",
+			"worker.run.failed ERROR worker.run.failed{worker=sync-partner-orders outcome=undecided cause=undecided}",
 			"worker.tick.skipped WARN worker.tick.skipped{worker=sync-partner-orders}",
 			"worker.tenant.unreached WARN worker.tenant.unreached{worker=sync-partner-orders}",
-		}) || recorder.Dropped() != 1 {
+		}) || recorder.Dropped() != 2 {
 			t.Fatalf("the recorder holds %v with %d drops", kept, recorder.Dropped())
 		}
 	})

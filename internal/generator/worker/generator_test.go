@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -45,9 +46,10 @@ definition order {
 }
 `
 
-// orderEntity is the owned entity Order with the fields status and synced.
+// orderEntity is the owned entity Order with the fields status and synced, and Lock at most 10.
 const orderEntity = `name: Order
 resource_type: order
+lock_at_most: 10
 permissions: {create: public, read: sync}
 public_reasons: {create: a worker creates orders}
 fields:
@@ -55,9 +57,14 @@ fields:
   - {name: synced, type: bool}
 `
 
+// unsyncedList is the list unsynced of sync-partner-orders: the orders that are not synced and whose status is not
+// done, which the fill locks.
+var unsyncedList = types.WorkerList{Name: "unsynced", Entity: "Order", Lock: true, Filter: []types.ListTerm{
+	{Field: "synced", Op: types.ListEquals, Value: false}, {Field: "status", Op: types.ListNotEquals, Value: "done"}}}
+
 // workerContext is the context of a service with the entity Order, the command reserve that stages for
-// partner-replies, and the workers sync-partner-orders (every 1m) and apply-partner-replies (consumes
-// partner-replies), each with the fill of the slot given.
+// partner-replies, and the workers sync-partner-orders (every 1m, with the list unsynced) and apply-partner-replies
+// (consumes partner-replies), each with the fill of the slot given.
 func workerContext(slot string) gen.Context {
 	var order types.Entity
 	if err := yaml.Unmarshal([]byte(orderEntity), &order); err != nil {
@@ -73,7 +80,7 @@ func workerContext(slot string) gen.Context {
 			Effects: []types.Effect{{Destination: "partner-replies", Name: "reserved"}}}}},
 		Workers: []gen.Worker{
 			{Worker: types.Worker{Name: "sync-partner-orders", Trigger: "every 1m", Writes: []string{"Order"}, ResourceType: "order",
-				Permission: "sync", Fill: types.FillNames{"sync-orders"}}, FillSlot: slot},
+				Permission: "sync", Fill: types.FillNames{"sync-orders"}, Lists: []types.WorkerList{unsyncedList}}, FillSlot: slot},
 			{Worker: types.Worker{Name: "apply-partner-replies", Trigger: "consumes partner-replies", Writes: []string{"Order"},
 				ResourceType: "order", Permission: "apply", Fill: types.FillNames{"apply-replies"}}, FillSlot: slot},
 		},
@@ -308,6 +315,78 @@ func TestContract(t *testing.T) {
 		files, _, err := new(Generator).Generate(ctx)
 		if err == nil || !strings.Contains(err.Error(), "sync-partner-orders") || !strings.Contains(err.Error(), "sync-orders") || files != nil {
 			t.Fatalf("a fill of the command slot gave %v and %d files, want a refusal that names the worker and the fill", err, len(files))
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC15-T01 The contract holds each declared list with the statements of the entity of the release", func(t *testing.T) {
+		files := generated(t, workerContext(workerSlot))
+		// gofmt aligns the keys of the literal, so the check reads the source with one space between words.
+		spaces := regexp.MustCompile(`[ \t]+`)
+		contract, runners := spaces.ReplaceAllString(string(files["workers/workers.go"]), " "), spaces.ReplaceAllString(string(files["workers/runners/runners.go"]), " ")
+		columns := `"id"::text, "status", "synced", "version", "authz_token"`
+		from := `SELECT ` + columns + ` FROM public."orders" WHERE "tenant_id" = $1`
+		for _, want := range []string{
+			`var SyncPartnerOrdersUnsynced = command.Must(command.NewList(OrderEntity, command.ListSpec{Name: "unsynced",`,
+			`Read: ` + strconv.Quote(from+` AND "synced" = $3 AND "status" <> $4 ORDER BY "id" LIMIT $2`),
+			`Lock: ` + strconv.Quote(from+` AND "id" = ANY($2::text[]::uuid[]) AND "synced" = $3 AND "status" <> $4 ORDER BY "id" FOR NO KEY UPDATE`),
+			`Values: command.DeclaredValues(command.ListValue{Constant: false}, command.ListValue{Constant: "done"})}))`,
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("the contract does not hold %s:\n%s", want, contract)
+			}
+		}
+		if !strings.Contains(spaces.ReplaceAllString(string(files["workers/entities.go"]), " "), "LockAtMost: 10,") {
+			t.Error("the entity declaration does not hold the Lock at most of Order")
+		}
+		if !strings.Contains(runners, `Lists: []command.AnyList{workers.SyncPartnerOrdersUnsynced},`) || strings.Count(runners, "Lists:") != 1 {
+			t.Errorf("the runners do not give sync-partner-orders, and only it, its list:\n%s", runners)
+		}
+
+		// The release that adds a field generates the list with its column, and a term on the time of the run.
+		ctx := workerContext(workerSlot)
+		ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "due_at", Type: types.FieldTypeTimestamp, ClientSet: true},
+			types.Field{Name: "estimate", Type: types.FieldTypeInt64})
+		list := unsyncedList
+		list.Lock = false
+		list.Filter = append(slices.Clone(list.Filter), types.ListTerm{Field: "due_at", Op: types.ListLessThan, Now: true},
+			types.ListTerm{Field: "estimate", Op: types.ListGreaterThanOrEquals, Value: 3}, types.ListTerm{Field: "due_at", Op: types.ListIsSet})
+		ctx.Workers[0].Lists = []types.WorkerList{list}
+		contract = spaces.ReplaceAllString(string(generated(t, ctx)["workers/workers.go"]), " ")
+		wider := `SELECT "id"::text, "status", "synced", "due_at", "estimate", "version", "authz_token" FROM public."orders" WHERE "tenant_id" = $1`
+		for _, want := range []string{
+			`Read: ` + strconv.Quote(wider+` AND "synced" = $3 AND "status" <> $4 AND "due_at" < $5 AND "estimate" >= $6 AND "due_at" IS NOT NULL ORDER BY "id" LIMIT $2`),
+			`Values: command.DeclaredValues(command.ListValue{Constant: false}, command.ListValue{Constant: "done"}, command.ListValue{RunTime: true}, command.ListValue{Constant: int64(3)})}))`,
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("the contract of the release with the new fields does not hold %s:\n%s", want, contract)
+			}
+		}
+		if strings.Contains(contract, "Lock: ") {
+			t.Error("a list that does not lock has a Lock statement")
+		}
+
+		// Generation refuses a list that checking refuses, naming the worker and the list.
+		for name, change := range map[string]func(*types.WorkerList){
+			"an entity that the worker does not write": func(l *types.WorkerList) { l.Entity = "Invoice" },
+			"a field that the entity does not declare": func(l *types.WorkerList) {
+				l.Filter = []types.ListTerm{{Field: "colour", Op: types.ListEquals, Value: "red"}}
+			},
+			"a value of another type": func(l *types.WorkerList) {
+				l.Filter = []types.ListTerm{{Field: "synced", Op: types.ListEquals, Value: "yes"}}
+			},
+		} {
+			ctx := workerContext(workerSlot)
+			list := unsyncedList
+			change(&list)
+			ctx.Workers[0].Lists = []types.WorkerList{list}
+			if files, _, err := new(Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "sync-partner-orders") || !strings.Contains(err.Error(), "unsynced") || files != nil {
+				t.Errorf("%s: generation gave %v, want a refusal that names the worker and the list", name, err)
+			}
+		}
+		ctx = workerContext(workerSlot)
+		ctx.Entities[0].LockAtMost = nil
+		if _, _, err := new(Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "Lock at most") {
+			t.Errorf("a locked list of an entity with no Lock at most gave %v", err)
 		}
 	})
 

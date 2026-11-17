@@ -454,6 +454,15 @@ func (o signalledObserver) RunFailed(ctx context.Context, outcome probe.WorkerOu
 	}
 }
 
+// RunFailedCause passes the cause class of a failed run on to the recorder (ST-SUP-RC35-OC06).
+func (o signalledObserver) RunFailedCause(ctx context.Context, outcome probe.WorkerOutcome, cause string) {
+	o.WorkerObserver.(command.CauseObserver).RunFailedCause(ctx, outcome, cause)
+	select {
+	case o.signals.failed <- outcome:
+	default:
+	}
+}
+
 func (o signalledObserver) TickSkipped() {
 	o.WorkerObserver.TickSkipped()
 	select {
@@ -726,13 +735,14 @@ func eventually(t *testing.T, what string, ok func() bool) {
 }
 
 // failed gives the outcomes of the worker.run.failed emissions, and fails the check on an emission with other
-// fields than the worker and the outcome.
+// fields than the worker, the outcome and a fixed cause class (ST-SUP-RC35-OC06).
 func (in *instance) failed(t *testing.T) []string {
 	t.Helper()
 	var out []string
 	for _, em := range in.rec.Emissions("worker.run.failed") {
-		if len(em.Fields) != 2 || em.Fields[0].Name != "worker" || em.Fields[0].Value != worker || em.Fields[1].Name != "outcome" {
-			t.Fatalf("worker.run.failed has the fields %v, want the worker %s and the outcome only", em.Fields, worker)
+		if len(em.Fields) != 3 || em.Fields[0].Name != "worker" || em.Fields[0].Value != worker || em.Fields[1].Name != "outcome" ||
+			em.Fields[2].Name != "cause" || em.Fields[2].Value == "unknown" || !slices.Contains(probe.WorkerCauses, em.Fields[2].Value) {
+			t.Fatalf("worker.run.failed has the fields %v, want the worker %s, the outcome and a fixed cause class only", em.Fields, worker)
 		}
 		out = append(out, em.Fields[1].Value)
 	}
@@ -1109,6 +1119,57 @@ func TestWorker(t *testing.T) {
 		eventually(t, "the run of the first tenant is reported", func() bool { return len(in.failed(t)) == 1 })
 		if got := in.failed(t); got[0] != "rolled_back" || e.status(ids[0]) != "new" {
 			t.Fatalf("the slow run is reported %v and left %s, want rolled_back and no change", got, e.status(ids[0]))
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC15-T02 A worker fill reads and locks through its generated list, also after an added column", func(t *testing.T) {
+		prefix, ids := e.tenants(t, 1)
+		// A synced order and a done order of the tenant, which the list unsynced leaves out.
+		e.exec(`INSERT INTO orders (tenant_id, id, status, synced) VALUES ($1, $2, 'new', true), ($1, $3, 'done', false)`, ids[0],
+			"1b6f3f5e-0b7c-4b4e-9a53-3f2c1f0e2d11", "2b6f3f5e-0b7c-4b4e-9a53-3f2c1f0e2d11")
+		// The fill sends what it read and locked, or the error of the list, so a failed run ends the check.
+		listed := make(chan string, 4)
+		setBody(prefix, func(ctx context.Context, id string, h *workers.SyncPartnerOrdersHandle) (err error) {
+			var got []string
+			defer func() {
+				if err != nil {
+					got = []string{"error: " + err.Error()}
+				}
+				listed <- strings.Join(got, ",")
+			}()
+			orders, err := workers.OrderRepository(h)
+			if err != nil {
+				return err
+			}
+			read, err := orders.List(ctx, workers.SyncPartnerOrdersUnsynced, 10)
+			if err != nil {
+				return err
+			}
+			locked, err := orders.ListForUpdate(ctx, workers.SyncPartnerOrdersUnsynced, nil)
+			if err != nil {
+				return err
+			}
+			for _, rows := range [][]workers.LoadedOrder{read, locked} {
+				for _, row := range rows {
+					got = append(got, row.ID()+":"+row.Value().Status)
+				}
+			}
+			return nil
+		})
+		in := start(t, e, newClock(), "")
+		want := order + ":new," + order + ":new"
+		in.tick()
+		next(t)
+		if got := <-listed; got != want {
+			t.Fatalf("the list read and locked %q, want the one unsynced order %q", got, want)
+		}
+		// The expand step of a schema change adds a column while this release runs: its list names its columns, so
+		// it reads and locks as before.
+		e.exec(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS estimate bigint NOT NULL DEFAULT 0`)
+		in.tick()
+		next(t)
+		if got := <-listed; got != want {
+			t.Fatalf("after the added column the list read and locked %q, want %q", got, want)
 		}
 	})
 
