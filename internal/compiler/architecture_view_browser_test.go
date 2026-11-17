@@ -792,12 +792,72 @@ func TestArchitectureViewBrowser(t *testing.T) {
 					Definite: document.getElementById("view").textContent.indexOf("grants no role a permission") >= 0,
 					Paths: Array.prototype.filter.call(document.querySelectorAll("#details li[data-grant]"), function(l){ return l.textContent.indexOf("depth limit") >= 0; }).length,
 					Scroll: document.documentElement.scrollWidth, Width: window.innerWidth}; })()`, &got)
-			if !strings.Contains(got.Note, "a limit cut the grant paths short before they reached a role") || got.Definite {
+			if !strings.Contains(got.Note, "no grant path reached a role before a limit stopped it: the depth limit of 12 nodes. So the model names no role.") || got.Definite {
 				t.Errorf("at %d px the trust view does not say that a role may hold a permission: %+v", width, got)
 			}
 			if got.Heads != "Paths that stop, with no role" || got.Title != "Paths that stop · docs.read" ||
 				!strings.Contains(got.Own, "doc#read may grant more roles") || got.MayHold != "" || got.Paths == 0 {
 				t.Errorf("at %d px the cell of the paths that stop shows %+v", width, got)
+			}
+			if got.Scroll > got.Width {
+				t.Errorf("at %d px the page is %d px wide", width, got.Scroll)
+			}
+			if blocked, errors := b.problems(); len(blocked) > 0 || len(errors) > 0 {
+				t.Errorf("at %d px: blocked %v, errors %v", width, blocked, errors)
+			}
+		}
+		b.viewport(1280, 900)
+	})
+
+	t.Run("ST-GEN-UC08-R14-T12 The trust view of a model whose grant paths the work limit stopped before a role names that limit, and a cell of the paths that stop with no path of an incomplete permission says may hold", func(t *testing.T) {
+		// The model of ST-GEN-UC08-R14-T11, as a reader can edit it, with no path of doc#write.
+		_, data := deriveFixture(t, workFixture(t))
+		view, err := RenderArchitectureView(withoutPaths(t, data, "permission:doc#write"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "index.html")
+		if err := os.WriteFile(path, view, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		type cell struct {
+			Text, Title, Label, Class, Head, Own, MayHold string
+			Paths                                         int
+		}
+		type shown struct {
+			Note          string
+			Read, Write   cell
+			Scroll, Width int
+		}
+		b.problems()
+		for _, width := range []int{1280, 400} {
+			b.viewport(width, 900)
+			b.open("file://" + path + "#view=trust")
+			var got shown
+			b.eval(`(function(){ var n = document.getElementById("no-role-named");
+				function text(id){ return (document.getElementById(id)||{}).textContent || ""; }
+				function pick(check){ var b = document.querySelector('#view button.cell[data-check="'+check+'"][data-role=""]');
+					if (!b) return {};
+					var c = {Text: b.textContent, Title: b.getAttribute("title"), Label: b.getAttribute("aria-label"), Class: b.className};
+					b.click();
+					c.Head = (document.querySelector("#details h3")||{}).textContent || "";
+					c.Own = text("cellIncomplete"); c.MayHold = text("cellMayHold");
+					c.Paths = Array.prototype.filter.call(document.querySelectorAll("#details li[data-grant]"), function(l){ return l.textContent.indexOf("work limit") >= 0; }).length;
+					return c; }
+				return {Note: n && n.offsetHeight > 0 ? n.textContent : "", Read: pick("check:operation:docs.read"), Write: pick("check:operation:docs.update"),
+					Scroll: document.documentElement.scrollWidth, Width: window.innerWidth}; })()`, &got)
+			if !strings.Contains(got.Note, "no grant path reached a role before a limit stopped it: the work limit of 20000 steps and "+unnamedLimit+".") {
+				t.Errorf("at %d px the note does not name the limits: %q", width, got.Note)
+			}
+			if !strings.Contains(got.Read.Text, "⊘") || !strings.Contains(got.Read.Title, "work limit") || got.Read.Head != "Paths that stop · docs.read" ||
+				!strings.Contains(got.Read.Own, "doc#read may grant more roles") || got.Read.MayHold != "" || got.Read.Paths != 1 {
+				t.Errorf("at %d px the cell of the paths that stop of docs.read shows %+v", width, got.Read)
+			}
+			if got.Write.Text != mayHoldGlyph || got.Write.Title != mayHoldStopText || got.Write.Label != "docs.update: "+mayHoldStopText ||
+				!strings.Contains(got.Write.Class, "may-hold") || got.Write.Head != "Paths that stop · docs.update" ||
+				!strings.Contains(got.Write.Own, "doc#write may grant more roles") || got.Write.Paths != 0 ||
+				!strings.Contains(got.Write.MayHold, "names no path of the permission doc#write that stops") || !strings.Contains(got.Write.MayHold, "a role may hold it") {
+				t.Errorf("at %d px the cell of the paths that stop of docs.update shows %+v", width, got.Write)
 			}
 			if got.Scroll > got.Width {
 				t.Errorf("at %d px the page is %d px wide", width, got.Scroll)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -827,7 +828,7 @@ func TestArchitectureView(t *testing.T) {
 		}
 		note := p.byID("no-role-named")
 		if note == nil || attrOf(note, "role") != "note" || !strings.Contains(attrOf(note, "class"), "incomplete") ||
-			!strings.Contains(textOf(note), "a limit cut the grant paths short before they reached a role") ||
+			!strings.Contains(textOf(note), "no grant path reached a role before a limit stopped it: the depth limit of 12 nodes. So the model names no role.") ||
 			!strings.Contains(textOf(note), "does not say that no role holds one") {
 			t.Errorf("the matrix with no named role does not say that a role may hold a permission: %v", note)
 		}
@@ -876,6 +877,96 @@ func TestArchitectureView(t *testing.T) {
 		}
 		if n := len(p.all(func(n *html.Node) bool { return n.Data == "table" && strings.Contains(attrOf(n, "class"), "access") })); n != 0 {
 			t.Errorf("the matrix of a schema that grants no role draws %d access tables", n)
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R14-T11 With no role named, the note of the access matrix names the limit that stopped the grant paths, and a cell of the line of the paths that stop with no path of an incomplete permission says may hold", func(t *testing.T) {
+		const work = "the work limit of 20000 steps"
+		// The work limit stops the expansion of doc#read and doc#write before a path reaches a role.
+		model, data := deriveFixture(t, workFixture(t))
+		if len(model.Access.Roles) != 0 || model.Access.RolesComplete {
+			t.Fatalf("the work fixture proves too little: %d roles, roles complete %v", len(model.Access.Roles), model.Access.RolesComplete)
+		}
+		for _, perm := range model.Access.Permissions {
+			if perm.Complete || len(perm.Paths) != 1 || !slices.Contains(perm.Paths[0].Kinds, "work limit") || slices.Contains(perm.Paths[0].Kinds, "depth limit") {
+				t.Fatalf("the grant paths of %s do not stop at the work limit only: %+v", perm.ID, perm)
+			}
+		}
+		matrix := func(data []byte) (parsed, string, *html.Node) {
+			t.Helper()
+			view, err := RenderArchitectureView(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := parseView(t, view)
+			note := p.byID("no-role-named")
+			if note == nil || attrOf(note, "role") != "note" || !strings.Contains(textOf(note), "does not say that no role holds one") {
+				t.Fatalf("the matrix with no named role has no note that a role may hold a permission: %v", note)
+			}
+			if strings.Contains(textOf(p.root), "grants no role a permission that an operation checks") {
+				t.Error("the matrix of grant paths that a limit cut short says that no role is granted")
+			}
+			tables := p.all(func(n *html.Node) bool { return n.Data == "table" && strings.Contains(attrOf(n, "class"), "access") })
+			if len(tables) > 1 {
+				t.Fatalf("the matrix has %d access tables", len(tables))
+			}
+			if len(tables) == 0 {
+				return p, textOf(note), nil
+			}
+			return p, textOf(note), tables[0]
+		}
+		_, note, table := matrix(data)
+		if !strings.Contains(note, "no grant path reached a role before a limit stopped it: "+work+".") || strings.Contains(note, "depth limit") {
+			t.Errorf("the note does not name the work limit as the cause: %q", note)
+		}
+		if table == nil {
+			t.Fatal("the matrix of paths that the work limit stopped draws no line of the paths that stop")
+		}
+		for _, c := range model.Access.Checks {
+			buttons := within(table, func(n *html.Node) bool {
+				return n.Data == "button" && attrOf(n, "data-check") == c.ID && attrOf(n, "data-role") == ""
+			})
+			if !c.Public && (len(buttons) != 1 || !strings.Contains(attrOf(buttons[0], "title"), "work limit") || !strings.Contains(textOf(buttons[0]), "⊘")) {
+				t.Errorf("the cell of the paths that stop of %s does not show the work limit", c.ID)
+			}
+		}
+		// A model, as a reader can edit it, with no path of doc#write: its cells in the line of the paths that stop
+		// say may hold, never no grant, and the note names a limit that the model does not name.
+		_, note, table = matrix(withoutPaths(t, data, "permission:doc#write"))
+		if !strings.Contains(note, work+" and "+unnamedLimit+".") {
+			t.Errorf("the note does not name each limit: %q", note)
+		}
+		if table == nil {
+			t.Fatal("the edited matrix draws no line of the paths that stop")
+		}
+		may := 0
+		for _, c := range model.Access.Checks {
+			cells := within(table, func(n *html.Node) bool {
+				return n.Data == "td" && attrOf(n, "data-check") == c.ID && attrOf(n, "data-role") == ""
+			})
+			if len(cells) != 1 {
+				t.Fatalf("%s has %d cells in the line of the paths that stop", c.ID, len(cells))
+			}
+			if strings.Contains(textOf(cells[0]), "no grant") {
+				t.Errorf("the cell of the paths that stop of %s says no grant for an incomplete permission", c.ID)
+			}
+			if c.Grants != "permission:doc#write" {
+				continue
+			}
+			buttons := within(cells[0], func(n *html.Node) bool { return n.Data == "button" })
+			if len(buttons) != 1 || textOf(buttons[0]) != mayHoldGlyph || !strings.Contains(attrOf(buttons[0], "class"), "may-hold") ||
+				attrOf(buttons[0], "title") != mayHoldStopText || attrOf(buttons[0], "aria-label") != shortID(c.Subject)+": "+mayHoldStopText {
+				t.Errorf("the cell of the paths that stop of %s does not say may hold: %q", c.ID, textOf(cells[0]))
+			}
+			may++
+		}
+		if may < 2 {
+			t.Fatalf("the edited matrix proves too little: %d cells of doc#write", may)
+		}
+		// With no path of either permission, no line is drawn, and the note alone names the limit.
+		_, note, table = matrix(withoutPaths(t, data, "permission:doc#write", "permission:doc#read"))
+		if table != nil || !strings.Contains(note, "before a limit stopped it: "+unnamedLimit+".") {
+			t.Errorf("the matrix with no path that stops draws a table, or its note is %q", note)
 		}
 	})
 

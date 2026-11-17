@@ -345,7 +345,7 @@ func TestComplianceFactList(t *testing.T) {
 					t.Errorf("the checks fact of %s has a path that does not stop at the depth limit: %+v", f.About, g)
 				}
 			}
-			line := "a limit cut the paths of " + f.Grants.Permission + " short before they reached a role, so the model names no role that holds it, and a role may hold it by a path past the limit"
+			line := "no path of " + f.Grants.Permission + " reached a role before a limit stopped it (the depth limit of 12 nodes), so the model names no role that holds it, and a role may hold it by a path past the limit"
 			if !strings.Contains(text, line) {
 				t.Errorf("the text does not say that a role may hold %s", f.Grants.Permission)
 			}
@@ -359,8 +359,46 @@ func TestComplianceFactList(t *testing.T) {
 		// A schema that grants nothing, with no limit reached: the text says that no role holds it.
 		_, data = deriveFixture(t, chainFixture(t, 0))
 		if text, _, _ = factsOf(t, archProject(t, data), "access"); !strings.Contains(text, "permission:doc#read has no grant path, so no role holds it") ||
-			strings.Contains(text, "before they reached a role") {
+			strings.Contains(text, "before a limit stopped it") {
 			t.Error("the text of a schema that grants nothing does not say that no role holds the permission")
+		}
+	})
+
+	t.Run("ST-GEN-UC16-R01-T08 The checks fact of a permission whose paths a limit stopped before a role names that limit, and a limit that the model does not name when no path names one", func(t *testing.T) {
+		const work = "the work limit of 20000 steps"
+		// The work limit stops the expansion of doc#read and doc#write before a path reaches a role, as the access
+		// matrix of ST-GEN-UC08-R14-T11 shows it.
+		_, data := deriveFixture(t, workFixture(t))
+		for _, c := range []struct {
+			name   string
+			data   []byte
+			limits map[string]string
+		}{
+			{"derived", data, map[string]string{"permission:doc#read": work, "permission:doc#write": work}},
+			{"edited", withoutPaths(t, data, "permission:doc#write"), map[string]string{"permission:doc#read": work, "permission:doc#write": unnamedLimit}},
+		} {
+			text, list, _ := factsOf(t, archProject(t, c.data), "access")
+			n := 0
+			for _, f := range list.Facts {
+				if f.Name != "checks" || f.Grants == nil {
+					continue
+				}
+				n++
+				want := c.limits[f.Grants.Permission]
+				if f.Grants.Complete || strings.Join(f.Grants.Limits, ",") != want {
+					t.Errorf("%s: the checks fact of %s names the limits %v, not %q", c.name, f.About, f.Grants.Limits, want)
+				}
+				line := "no path of " + f.Grants.Permission + " reached a role before a limit stopped it (" + want + "), so the model names no role that holds it, and a role may hold it by a path past the limit"
+				if !strings.Contains(text, line) {
+					t.Errorf("%s: the text does not name the limit of %s", c.name, f.Grants.Permission)
+				}
+			}
+			if n < 3 {
+				t.Fatalf("%s: the work fixture proves too little: %d checks facts with grants", c.name, n)
+			}
+			if strings.Contains(text, "no role holds it") || strings.Contains(text, "depth limit") || strings.Contains(text, "more roles than these") {
+				t.Errorf("%s: the text says that no role holds a permission, or names a limit that was not reached", c.name)
+			}
 		}
 	})
 

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -695,6 +696,57 @@ const (
 	mayHoldText  = "may hold: no path that the model names gives this role the permission, but a limit cut its grant paths short, so this role may hold it"
 )
 
+// mayHoldStopText marks the cell of the line of the paths that stop, when a limit cut the grant paths of the
+// permission short and the model names no path of it that stops: a role may hold it by a path past the limit, so the
+// cell never reads as no grant (security review of PR #385, L2).
+const mayHoldStopText = "may hold: the model names no path of this permission that stops, but a limit cut its grant paths short, so a role may hold it by a path past the limit"
+
+// unnamedLimit names the limit of a permission that a limit cut short, when no path of it names the limit, as in a
+// model that a reader edited.
+const unnamedLimit = "a limit that the model does not name"
+
+// limitName gives the limit at which a grant path stops, as its stop text names it, with no node and no rest: the
+// depth limit, the work limit or the path limit. A path that no limit stops, such as a recursion, gives "".
+func limitName(g ArchGrant) string {
+	if !slices.Contains(g.Kinds, "depth limit") && !slices.Contains(g.Kinds, "work limit") {
+		return ""
+	}
+	name, _, _ := strings.Cut(g.Stops, ";")
+	name, _, _ = strings.Cut(name, " at ")
+	if name = strings.TrimSpace(name); name != "" {
+		return name
+	}
+	if slices.Contains(g.Kinds, "depth limit") {
+		return "the depth limit"
+	}
+	return "the work limit"
+}
+
+// permissionLimits gives each limit that cut the grant paths of the permissions short, once, in the order of the
+// permissions and their paths. A permission cut short with no path that names its limit gives unnamedLimit, so that
+// a cut never reads as no cut (security review of PR #385, L2).
+func permissionLimits(perms ...*ArchPermission) []string {
+	var out []string
+	for _, p := range perms {
+		if !permissionIncomplete(p) {
+			continue
+		}
+		named := false
+		for _, g := range p.Paths {
+			if name := limitName(g); name != "" {
+				named = true
+				if !slices.Contains(out, name) {
+					out = append(out, name)
+				}
+			}
+		}
+		if !named && !slices.Contains(out, unnamedLimit) {
+			out = append(out, unnamedLimit)
+		}
+	}
+	return out
+}
+
 // permissionIncomplete says whether a limit cut the grant paths of the permission short. A permission whose model
 // does not say that its paths are complete counts as cut short, so the view fails toward "may hold" (security
 // review of PR #383, L3); the JSON decode gives a missing key complete the value false.
@@ -811,7 +863,17 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	if len(roles) == 0 && m.Access.RolesComplete {
 		w.tag("p", " id=\"no-role\"", "The declared authorization schema grants no role a permission that an operation checks.")
 	} else if len(roles) == 0 {
-		w.tag("p", " class=\"incomplete\" role=\"note\" id=\"no-role-named\"", "⚠ Incomplete: a limit cut the grant paths short before they reached a role, so the model names no role. A role may hold a permission by a path past the limit; this matrix does not say that no role holds one.")
+		// The note names each limit that stopped the paths, so the reader knows the cause (security review of PR
+		// #385, L2).
+		var all []*ArchPermission
+		for i := range m.Access.Permissions {
+			all = append(all, &m.Access.Permissions[i])
+		}
+		limits := permissionLimits(all...)
+		if len(limits) == 0 {
+			limits = []string{unnamedLimit}
+		}
+		w.tag("p", " class=\"incomplete\" role=\"note\" id=\"no-role-named\"", "⚠ Incomplete: no grant path reached a role before a limit stopped it: "+strings.Join(limits, " and ")+". So the model names no role. A role may hold a permission by a path past the limit; this matrix does not say that no role holds one.")
 	}
 	if len(lines) == 0 {
 		// No line to draw: the sentence above is the whole matrix.
@@ -922,8 +984,10 @@ func matrixTD(w formWriter, c ArchCheck, role string, perms map[string]*ArchPerm
 	}
 	paths := matrixCell(perms[c.Grants], role)
 	// A role with no named path of a permission whose grant paths a limit cut short may hold it by a path past the
-	// limit, so its cell says "may hold" and never "no grant" (security review of PR #383, L1).
-	may := !c.Public && role != "" && len(paths) == 0 && permissionIncomplete(perms[c.Grants])
+	// limit, so its cell says "may hold" and never "no grant" (security review of PR #383, L1). The line of the paths
+	// that stop says so too, when the model names no path of the permission that stops (security review of PR #385,
+	// L2).
+	may := !c.Public && len(paths) == 0 && permissionIncomplete(perms[c.Grants])
 	if !c.Public && len(paths) == 0 && !may {
 		w.raw("<td" + cell + ">·<span class=\"sr\"> no grant</span></td>")
 		return
@@ -932,8 +996,10 @@ func matrixTD(w formWriter, c ArchCheck, role string, perms map[string]*ArchPerm
 	if c.Public {
 		glyphs, names = "◇", []string{"public"}
 	}
-	if may {
+	if may && role != "" {
 		glyphs, names = mayHoldGlyph, []string{mayHoldText}
+	} else if may {
+		glyphs, names = mayHoldGlyph, []string{mayHoldStopText}
 	}
 	if len(missing) > 0 {
 		glyphs += "⤒"

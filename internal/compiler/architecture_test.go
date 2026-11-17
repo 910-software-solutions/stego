@@ -173,6 +173,42 @@ func chainFixture(t *testing.T, n int) ArchitectureInput {
 	return in
 }
 
+// workFixture gives the inputs of archFixture with the schema wideSchema(40, "nil") and a doc whose permissions read
+// and write each pass an arrow to node0#view: the work limit stops the expansion of each before a path reaches a
+// role, and no depth limit is reached (security review of PR #385, L2).
+func workFixture(t *testing.T) ArchitectureInput {
+	t.Helper()
+	in := archFixture(t)
+	schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(wideSchema(40, "nil")+
+		"\ndefinition doc {\n\trelation root: node0\n\tpermission read = root->view\n\tpermission write = root->view\n}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Schema = schema
+	return in
+}
+
+// withoutPaths gives the model data with no grant path in each named permission, which keeps its key complete false:
+// a model, as a reader can edit it, whose limit names no path that stops.
+func withoutPaths(t *testing.T, data []byte, ids ...string) []byte {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, perm := range raw["access"].(map[string]any)["permissions"].([]any) {
+		obj := perm.(map[string]any)
+		if slices.Contains(ids, obj["id"].(string)) {
+			obj["paths"] = []any{}
+		}
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(out, '\n')
+}
+
 func deriveFixture(t *testing.T, in ArchitectureInput) (*ArchitectureModel, []byte) {
 	t.Helper()
 	files, err := WriteArchitecture(in)
