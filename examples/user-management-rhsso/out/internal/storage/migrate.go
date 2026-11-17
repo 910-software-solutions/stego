@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	stegotenancy "github.com/example/service/out/internal/tenancy"
@@ -105,6 +106,10 @@ const (
 )
 
 var migrations []Migration
+
+// registered makes registerGenerated run once, at the first read of the migrations, so the generated migrations
+// are registered by a call in a fixed order and not by package initialization (ST-GEN-INV14).
+var registered sync.Once
 
 // Digest computes the ledger digest of a migration body. The body is the
 // SQL text of a SQL migration and the generated source text of a function
@@ -353,10 +358,11 @@ func ApplyMigration(ctx context.Context, db Database, name, body string) error {
 	})
 }
 
-// orderedMigrations returns the registered migrations sorted by name.
-// Registration order follows package initialization; the apply order is
+// orderedMigrations returns the registered migrations sorted by name,
+// after it registers the generated migrations once. The apply order is
 // the name order, so names must sort in dependency order.
 func orderedMigrations() []Migration {
+	registered.Do(registerGenerated)
 	ordered := make([]Migration, len(migrations))
 	copy(ordered, migrations)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
@@ -1039,7 +1045,8 @@ func dropInvalid(ctx context.Context, conn *sql.Conn, index string) error {
 	return err
 }
 
-func init() {
+// registerGenerated registers the generated migrations in their fixed order.
+func registerGenerated() {
 	RegisterSQL("001_initial", InitialTables)
 	RegisterSQL("100_tenancy_row_security", stegotenancy.RowSecurity)
 }
