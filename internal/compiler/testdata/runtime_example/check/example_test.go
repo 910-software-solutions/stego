@@ -395,6 +395,11 @@ func TestExample(t *testing.T) {
 			t.Errorf("%d user rows of the organization and the tenant with the jsonb metadata, want 1", n)
 		}
 		s.relate(owner, "member", userID, "owner")
+		// The edit of a member needs the view of its organization too, through the relation that the relay writes
+		// after the commit (ST-SUP-RC20-OC24, ST-SUP-Q156): the patch waits for it.
+		memberID, err := authz.ResourceID(owner.tenant, userID)
+		must(t, err)
+		s.awaitAllowed(owner, "member", memberID, "edit")
 		if r := s.send(owner, http.MethodPatch, "/organizations/"+org+"/users/"+userID, `{"display_name":"Cee"}`); r.status != http.StatusOK || r.member(t, "display_name") != "Cee" {
 			t.Errorf("the patch of the user answered %d %s, want 200 with the new name", r.status, r.body)
 		}
