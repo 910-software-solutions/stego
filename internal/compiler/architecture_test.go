@@ -1620,7 +1620,23 @@ func TestArchitectureActionFlows(t *testing.T) {
 		in.Service.Overrides["events"] = map[string]any{"destinations": []any{map[string]any{"name": "mail", "must_land": true, "idempotent": true}}}
 		in.Service.Queries = []types.Query{{Name: "recent", Reads: []string{"Doc"}, ResourceType: "doc", Permission: "read", Fill: types.FillNames{"reader"}}}
 		in.Service.Workers = []types.Worker{{Name: "sweeper", Trigger: "every 1m", Writes: []string{"Doc"}, ResourceType: "doc", Permission: "write", Fill: types.FillNames{"sweep"}}}
-		model, _ := deriveFixture(t, in)
+		model, data := deriveFixture(t, in)
+		// The text form of the view titles each action flow by its kind and its name, and says of no declared
+		// action that it has no flow.
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := parseView(t, view)
+		form := textOf(page.byID("form-flows"))
+		for _, title := range []string{"command archive", "query recent", "worker sweeper", "The fill sweep carries out the worker."} {
+			if !strings.Contains(form, title) {
+				t.Errorf("the text form of the flows does not hold %q", title)
+			}
+		}
+		if note := page.byID("form-no-flow-actions"); note != nil {
+			t.Errorf("the view says that an action has no flow: %s", textOf(note))
+		}
 		kinds := map[string]string{}
 		for _, f := range model.Flows {
 			var parts []string
