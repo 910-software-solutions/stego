@@ -891,6 +891,34 @@ func allocated(f func()) uint64 {
 	return after.TotalAlloc - before.TotalAlloc
 }
 
+// threadCPU runs f on one locked thread and gives the CPU time that the thread used, in nanoseconds from the first
+// field of /proc/thread-self/schedstat of Linux, or false where the system has no such file; the cost tests then
+// compare only the allocations (review of PR #391, L2). Other processes and other goroutines do not change it, as
+// they change the wall clock.
+func threadCPU(f func()) (time.Duration, bool) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	read := func() (time.Duration, bool) {
+		raw, err := os.ReadFile("/proc/thread-self/schedstat")
+		if err != nil {
+			return 0, false
+		}
+		fields := strings.Fields(string(raw))
+		if len(fields) == 0 {
+			return 0, false
+		}
+		ns, err := strconv.ParseInt(fields[0], 10, 64)
+		return time.Duration(ns), err == nil
+	}
+	before, ok := read()
+	f()
+	after, ok2 := read()
+	if !ok || !ok2 {
+		return 0, false
+	}
+	return after - before, true
+}
+
 // linear fails the test when the work of run grows faster than its input. The bytes that run(large) allocates may
 // be at most twice those of run(small) times large/small; this count does not depend on the runner. The CPU time of
 // the thread of run(large) may be at most three times that of run(small) times large/small, a ratio of two runs on
