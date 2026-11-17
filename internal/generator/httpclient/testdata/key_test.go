@@ -9,6 +9,10 @@ import (
 // TestIdempotencyKeyHeader runs in a module that holds either the client of Render or that of RenderProxy;
 // proxyClient, which the harness writes, tells which.
 func TestIdempotencyKeyHeader(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC07-T02 Only the client of the API proxy sends Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) { checkIdempotencyKey(t) })
+}
+
+func checkIdempotencyKey(t *testing.T) {
 	var got []string
 	c, err := New(tlsOptions(t, func(w http.ResponseWriter, r *http.Request) { got = r.Header.Values("Idempotency-Key") }))
 	if err != nil {
