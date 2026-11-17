@@ -486,10 +486,22 @@ func TestRuntimeWiring(t *testing.T) {
 			}
 		}
 	})
-	// The next release adds the entity Tag with no schema step.
+	// A service on the runtime data path needs all three modes: declared modes without worker and controller are
+	// refused by validate, naming the features that need them (ST-DECL-INV89).
+	subset := newWiringProject(t, stego, runtimeArchetype)
+	subset.write("service.yaml", strings.Replace(subset.read("service.yaml"), "entities:\n", "modes: [api]\nentities:\n", 1))
+	t.Run("ST-DECL-INV89-T Declared modes that leave out a mode the declared features need are refused", func(t *testing.T) {
+		output, err := subset.stegoRun("validate")
+		if err == nil || !strings.Contains(output, "[mode-needed] modes") || !strings.Contains(output, "do not hold worker,") ||
+			!strings.Contains(output, "do not hold controller,") || !strings.Contains(output, "outbox relay") {
+			t.Fatalf("stego validate of the modes [api] gave %v, want the faults of worker and controller:\n%s", err, output)
+		}
+	})
+	// The next release adds the entity Tag with no schema step, and declares its three modes out of order, which the
+	// check of ST-GEN-INV26 starts it with.
 	next := newWiringProject(t, stego, runtimeArchetype)
 	declaration := next.read("service.yaml")
-	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "entities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
+	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "modes: [controller, api, worker]\nentities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
 	next.stego("apply")
 	next.useLocalRuntime()
 	next.goCommand("mod", "tidy")
@@ -516,4 +528,9 @@ func TestRuntimeWiring(t *testing.T) {
 	t.Run(provisionAudited, func(t *testing.T) { passed(t, provisionAudited) })
 	t.Run(provisionGated, func(t *testing.T) { passed(t, provisionGated) })
 	t.Run(provisionWorkers, func(t *testing.T) { passed(t, provisionWorkers) })
+	t.Run(modesCheck, func(t *testing.T) { passed(t, modesCheck) })
 }
+
+// modesCheck is the check of the generated service that starts the binary with no mode option, with --mode api and
+// with --mode api --mode worker, and the refused starts of the modes (ST-GEN-INV26).
+const modesCheck = "ST-GEN-INV26-T The assembler wires each declared mode as a named set in one binary that a repeatable mode flag selects"

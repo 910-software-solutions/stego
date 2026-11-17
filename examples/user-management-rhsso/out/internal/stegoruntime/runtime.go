@@ -11,9 +11,12 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -127,6 +130,8 @@ type Runtime struct {
 	afterSlots *api.AfterSlots
 	routes     *http.ServeMux
 	selection  modes.Selection
+	// workerSettings are the connection settings of the worker mode, which NewService reads at the start.
+	workerSettings service.WorkerSettings
 
 	mu      sync.Mutex
 	workers *service.Workers
@@ -201,10 +206,55 @@ func provisioning() *service.Provisioning {
 	return p
 }
 
+// declaredModes are the modes that the declaration states, in the order api, worker, controller: the binary runs
+// these and no other, and all selects them all (ST-GEN-INV26, ST-DECL-EN01).
+var declaredModes = modes.Selection{"api", "worker", "controller"}
+
+// selectModes reads the modes that the process runs from its mode options and STEGO_MODE (ST-SUP-RP09-LC01), and
+// refuses a mode that the declaration does not state, naming it and the declared modes.
+func selectModes() (modes.Selection, error) {
+	parsed, err := modes.Parse(os.Args[1:], os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(declaredModes))
+	for i, m := range declaredModes {
+		names[i] = string(m)
+	}
+	for _, m := range parsed {
+		if m != modes.All && !slices.Contains(declaredModes, m) {
+			return nil, fmt.Errorf("modes: the declaration does not state the mode %s; the modes of the service are %s and all", m, strings.Join(names, ", "))
+		}
+	}
+	var selection modes.Selection
+	for _, m := range declaredModes {
+		if parsed.Has(m) {
+			selection = append(selection, m)
+		}
+	}
+	return selection, nil
+}
+
+// Modes gives the modes that the process runs. main.go calls it first, at the stage modes, so a refused mode stops
+// the start before the database, and the failure record of a later failure names the modes (ST-GEN-INV26).
+func Modes() ([]string, error) {
+	selection, err := selectModes()
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, len(selection))
+	for i, m := range selection {
+		names[i] = string(m)
+	}
+	return names, nil
+}
+
 // NewService builds the runtime of the service through the service runtime, from the settings of the deployment and
-// the declaration (ST-SUP-RP14), and makes the command and query handlers, which Routes serves.
+// the declaration (ST-SUP-RP14), and makes the command and query handlers, which Routes serves. It reads the settings
+// of the worker mode too when the process runs it, so a missing one stops the start at its stage
+// (ST-SUP-RP14-LC05).
 func NewService(ctx context.Context) (rt *Runtime, err error) {
-	selection, err := modes.Parse(os.Args[1:], os.Getenv)
+	selection, err := selectModes()
 	if err != nil {
 		return nil, err
 	}
@@ -212,12 +262,18 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	if err != nil {
 		return nil, err
 	}
+	var workerSettings service.WorkerSettings
+	if selection.Has(modes.Worker) {
+		if workerSettings, err = service.ReadWorkerSettings(true); err != nil {
+			return nil, err
+		}
+	}
 	afterSlots := api.NewAfterSlots()
 	svc, err := service.New(ctx, settings, parts(afterSlots))
 	if err != nil {
 		return nil, err
 	}
-	rt = &Runtime{svc: svc, routes: http.NewServeMux(), selection: selection, afterSlots: afterSlots}
+	rt = &Runtime{svc: svc, routes: http.NewServeMux(), selection: selection, workerSettings: workerSettings, afterSlots: afterSlots}
 	if err = afterSlots.Meter(svc.Telemetry().MeterProvider()); err != nil {
 		_ = rt.Close()
 		return nil, err
@@ -274,12 +330,8 @@ const ShutdownBound = 30 * time.Second
 // the outbox worker on the worker role, the relay on the relay role and the relay's watch; in the controller mode the
 // audit jobs under the controller lease. It returns when ctx ends, after the workers stopped within ShutdownBound.
 func (rt *Runtime) Run(ctx context.Context) error {
-	var workerSettings service.WorkerSettings
+	workerSettings := rt.workerSettings
 	if rt.selection.Has(modes.Worker) {
-		var err error
-		if workerSettings, err = service.ReadWorkerSettings(true); err != nil {
-			return err
-		}
 		// The audit-sink port binds the HTTPS endpoint of the settings, or else the default table in the service
 		// database (ST-SUP-RP05-LC15, ST-SUP-RP05-LC16).
 		slog.InfoContext(ctx, "the audit sink", "port", audit.SinkDestination, "https", workerSettings.AuditSink.HTTPS())

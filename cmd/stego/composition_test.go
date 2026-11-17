@@ -56,7 +56,9 @@ var td02WithTimes = strings.Replace(td02, "      - {name: done, type: bool, defa
 func TestDeclareComposition(t *testing.T) {
 	t.Parallel()
 	t.Run("ST-DECL-UC09-R01-T01 Modes that are a subset of api, worker and controller are accepted", func(t *testing.T) {
-		for _, modes := range []string{"[api]", "[api, worker]", "[api, worker, controller]"} {
+		// ST-DECL-TD02 is on the runtime data path, so it needs its three modes (ST-DECL-INV89); they are accepted in
+		// any order.
+		for _, modes := range []string{"[api, worker, controller]", "[controller, api, worker]"} {
 			document, run := validateJSON(t, td02Project(t, td02+"modes: "+modes+"\n"))
 			if run.code != 0 || !document.Accepted || len(document.Faults) != 0 {
 				t.Errorf("the modes %s were refused: exit %d\n%s%s", modes, run.code, run.stdout, run.stderr)
