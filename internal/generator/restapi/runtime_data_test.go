@@ -1279,14 +1279,11 @@ func TestChangeEvents(t *testing.T) {
 		order := `ChangeEvents: []command.ChangeEvents{{Entity: "Order", Created: "crud.order.created", Updated: "crud.order.updated", Deleted: "crud.order.deleted"}}`
 		for name, want := range map[string]map[string]int{
 			"api/orders_handler.go": {
-				`Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"orders.after_create"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.created"}}}`: 1,
-				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.updated"}}}`:                                                                                                            1,
-				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.deleted"}}}`:                                                                                                            1,
+				`Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"orders.after_create"}}},`: 1,
 				// The create, the update and the delete of orders each give the handle the events of Order.
 				order: 3,
 			},
 			"api/folder_settings_handler.go": {
-				`{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.setting.created", "crud.setting.updated"}}`: 1,
 				// The upsert writes the setting and reads its folder through the handle: it gives the events of both.
 				`ChangeEvents: []command.ChangeEvents{{Entity: "Setting", Created: "crud.setting.created", Updated: "crud.setting.updated", Deleted: "crud.setting.deleted"}, {Entity: "Folder", Created: "crud.folder.created", Updated: "crud.folder.updated", Deleted: "crud.folder.deleted"}}`: 1,
 			},
@@ -1298,17 +1295,14 @@ func TestChangeEvents(t *testing.T) {
 				}
 			}
 		}
-		// The handle stages each event after the write of its row, so the fill stages none and has no payload helper
-		// (ST-SUP-RP10-LC36).
+		// The handle stages each event after the write of its row, so the fill stages none, has no payload helper, and
+		// the command declares no Kafka destination whose names a fill could stage (ST-SUP-RP10-LC36).
 		for name, source := range files {
-			if bytes.Contains(source, []byte("Stage(ctx, kafkaoutbox.DestinationName")) || bytes.Contains(source, []byte("changeEvent(")) {
-				t.Errorf("%s stages a change event in the fill", name)
+			if bytes.Contains(source, []byte("kafkaoutbox")) || bytes.Contains(source, []byte("changeEvent(")) {
+				t.Errorf("%s names the Kafka destination or stages a change event in the fill", name)
 			}
 		}
-		// A read stages nothing: the read handlers do not name the destination.
-		if strings.Contains(string(files["api/blue_events_handler.go"]), `Effects: []string{"crud.event.updated"}`) {
-			t.Error("the collection blue-events, with create and list, stages an update event")
-		}
+		// Without kafka-producer no command names the Kafka destination or change events.
 		for name, source := range crudFiles(t, crudContext()) {
 			if bytes.Contains(source, []byte("kafkaoutbox")) || bytes.Contains(source, []byte("ChangeEvents")) {
 				t.Errorf("%s names the Kafka destination or change events without kafka-producer", name)

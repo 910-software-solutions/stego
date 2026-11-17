@@ -1033,8 +1033,6 @@ type runtimeHandlerWriter struct {
 	keys       *idempotencyHeader
 	envelope   bool
 	slotsAlias string
-	// events tells whether each write stages its change event for the Kafka destination (ST-SUP-RC20-OC40).
-	events bool
 }
 
 func (w *runtimeHandlerWriter) f(format string, args ...any) { fmt.Fprintf(&w.Buffer, format, args...) }
@@ -1042,8 +1040,7 @@ func (w *runtimeHandlerWriter) f(format string, args ...any) { fmt.Fprintf(&w.Bu
 // renderRuntimeHandler writes the handler file of one collection: its command and query declarations, its handler
 // type, and one method per declared operation that calls Run.
 func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slotsImportPath string, keys *idempotencyHeader) ([]byte, error) {
-	w := &runtimeHandlerWriter{c: c, ctx: ctx, keys: keys, envelope: ctx.Conventions.ResponseFormat == "envelope",
-		events: command.ChangeEvents(ctx)}
+	w := &runtimeHandlerWriter{c: c, ctx: ctx, keys: keys, envelope: ctx.Conventions.ResponseFormat == "envelope"}
 	if c.ops[types.OpUpsert] {
 		read, err := command.KeyListRead(c.entity.Name, ctx.Entities, ctx.Tenancy.Key, c.decl.UpsertLookup())
 		if err != nil {
@@ -1095,9 +1092,6 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
 	if hasWrite {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n")
-	}
-	if hasWrite && w.events {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox\"\n")
 	}
 	if c.ops[types.OpRead] || c.ops[types.OpList] {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n")
@@ -1203,12 +1197,6 @@ func (w *runtimeHandlerWriter) declarations() {
 			var destinations []string
 			if effects := w.afterEffects(op); len(effects) > 0 {
 				destinations = append(destinations, fmt.Sprintf("{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{%s}}", quoteAll(effects)))
-			}
-			if w.events {
-				// The change events of the write go to Kafka, idempotent by the event ID and not must land, so an event
-				// whose attempts end is parked as on every other destination (ST-SUP-RP01-LC31). The handle stages
-				// them, and the fill cannot (ST-SUP-RP10-LC36).
-				destinations = append(destinations, fmt.Sprintf("{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{%s}}", quoteAll(w.eventTypes(op))))
 			}
 			if len(destinations) > 0 {
 				w.f("\tDestinations: []command.Destination{%s},\n", strings.Join(destinations, ", "))
@@ -1766,25 +1754,6 @@ func (w *runtimeHandlerWriter) after(op types.Operation, entityVar, ref string, 
 			w.f("\t%s", line)
 		}
 	}
-}
-
-// eventType gives the event type of a change of the entity of the collection with action, as
-// command.ChangeEventType names it (ST-SUP-RC20-OC40).
-func (w *runtimeHandlerWriter) eventType(action string) string {
-	return command.ChangeEventType(w.ctx.ServiceName, w.c.entity.Name, action)
-}
-
-// eventTypes gives the event types that the command of a write stages.
-func (w *runtimeHandlerWriter) eventTypes(op types.Operation) []string {
-	switch op {
-	case types.OpCreate:
-		return []string{w.eventType(command.EventCreated)}
-	case types.OpUpsert:
-		return []string{w.eventType(command.EventCreated), w.eventType(command.EventUpdated)}
-	case types.OpDelete:
-		return []string{w.eventType(command.EventDeleted)}
-	}
-	return []string{w.eventType(command.EventUpdated)}
 }
 
 // afterEffects gives the effect names that the command of an operation stages for its after slots.
