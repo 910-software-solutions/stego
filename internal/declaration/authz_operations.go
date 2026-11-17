@@ -45,14 +45,35 @@ func operationFaults(rule string, op operationAuthz, schema *AuthzSchema) []Vali
 }
 
 // validateCommandAuthorization checks that each command names a resource type and a permission that the schema
-// holds and a resource member of its request (ST-DECL-INV40).
-func validateCommandAuthorization(commands []types.Command, schema *AuthzSchema) []ValidationError {
+// holds and a resource member of its request (ST-DECL-INV40). A command whose resource type is the resource type of
+// the tenant provisioning is decided on the service-level resource in the tenant of the request (ST-SUP-RC32-OC15):
+// it names no resource member, and not the provision or the retire permission, which are decided on that resource
+// with no tenant and so are platform-wide (ST-SUP-Q127).
+func validateCommandAuthorization(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	var faults []ValidationError
-	for i, command := range commands {
+	var provisioning *types.TenantProvisioning
+	if service.Tenancy != nil && service.Tenancy.Provisioning != nil && service.Tenancy.Provisioning.ResourceType != "" {
+		provisioning = service.Tenancy.Provisioning
+	}
+	for i, command := range service.Commands {
 		faults = append(faults, operationFaults("command-authorization", operationAuthz{"command", command.Name, commandPath(i), command.ResourceType, command.Permission}, schema)...)
-		if command.ResourceMember == "" {
+		serviceLevel := provisioning != nil && command.ResourceType == provisioning.ResourceType
+		switch {
+		case serviceLevel && command.ResourceMember != "":
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".resource_member", Found: command.ResourceMember,
+				Message: fmt.Sprintf("command %q names the resource member %q, but its resource type %s is the resource type of the tenant provisioning, so it is decided on the service-level resource %s:%s in the tenant of the request (ST-SUP-RC32-OC15); remove resource_member", command.Name, command.ResourceMember, command.ResourceType, command.ResourceType, service.Name)})
+		case !serviceLevel && command.ResourceMember == "":
 			faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".resource_member", Found: command.Name,
-				Message: fmt.Sprintf("command %q names no resource member; name the member of its request that holds the ID of the resource the permission is decided on", command.Name)})
+				Message: fmt.Sprintf("command %q names no resource member; name the member of its request that holds the ID of the resource the permission is decided on, or, for a command that creates rows with no parent, name the resource type of the tenant provisioning and no resource member", command.Name)})
+		}
+		if !serviceLevel || command.Permission == "" {
+			continue
+		}
+		for _, platform := range []struct{ name, permission string }{{"provision", provisioning.Provision}, {"retire", provisioning.Retire}} {
+			if platform.permission != "" && command.Permission == platform.permission {
+				faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".permission", Found: command.Permission,
+					Message: fmt.Sprintf("command %q names the permission %q, which tenancy.provisioning.%s also names: a %s is decided on the service-level resource %s:%s with no tenant, but the command is decided on that resource in the tenant of the request (ST-SUP-RC32-OC15), so it needs a permission of its own; declare another permission on %s for the command", command.Name, command.Permission, platform.name, platform.name, command.ResourceType, service.Name, command.ResourceType)})
+			}
 		}
 	}
 	return faults
@@ -187,7 +208,7 @@ func workerPermissions(service *types.ServiceDeclaration, worker types.Worker) [
 
 // operationsAuthorization runs the authorization checks of the commands, queries and workers.
 func operationsAuthorization(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
-	faults := validateCommandAuthorization(service.Commands, schema)
+	faults := validateCommandAuthorization(service, schema)
 	if schema != nil {
 		faults = append(faults, validateCommandRelations(service, schema)...)
 	}

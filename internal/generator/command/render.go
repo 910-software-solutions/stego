@@ -87,10 +87,13 @@ func renderContract(m *model) []byte {
 	if m.usesAudit() {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n")
 	}
-	if m.hasRelations() {
+	if m.hasRelations() || m.hasServiceLevel() {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/authz\"\n")
 	}
 	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	if m.hasServiceLevel() {
+		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/tenant\"\n")
+	}
 	if m.probeImport != "" {
 		w.f("\n\tprobes %q\n", m.probeImport)
 	}
@@ -99,8 +102,12 @@ func renderContract(m *model) []byte {
 		renderEntity(w, e, m.tenantKey)
 	}
 	for _, c := range m.commands {
-		w.f("// %sHandle is the command handle that the fill of %s gets: it reaches only the entities, relations and\n// effect destinations that the command declares.\n", c.goName, c.decl.Name)
-		w.f("type %sHandle = command.Handle[%s]\n\n", c.goName, m.probeType(c))
+		if c.service != "" {
+			renderServiceLevelHandle(w, m, c)
+		} else {
+			w.f("// %sHandle is the command handle that the fill of %s gets: it reaches only the entities, relations and\n// effect destinations that the command declares.\n", c.goName, c.decl.Name)
+			w.f("type %sHandle = command.Handle[%s]\n\n", c.goName, m.probeType(c))
+		}
 		w.f("// %sFill is the command slot of %s: the fill gets the decoded request message and one command handle, and\n", c.goName, c.decl.Name)
 		w.f("// nothing else that reaches storage, authorization, audit, the outbox or the network (ST-SUP-RC32-OC01). It\n// returns the response message, or an error: one of the declared refusals of the command, or any other error,\n// which the handler answers with 500 and the code internal.\n")
 		w.f("type %sFill func(ctx context.Context, request *%s, h *%sHandle) (*%s, error)\n\n", c.goName, c.request.name, c.goName, c.response.name)
@@ -114,6 +121,32 @@ func renderContract(m *model) []byte {
 	}
 	w.f("%s", refusalHelpers)
 	return w.Bytes()
+}
+
+// renderServiceLevelHandle writes the command handle of a command on the service-level resource
+// (ST-SUP-RC32-OC15): Run decides its permission on that resource and on no row, so the handle offers for each
+// written entity only the create and the read, with no locked read, update or delete, and the fill cannot change a
+// row that the decision does not cover. A create still decides each reference of the new row (ST-SUP-RP10-LC05).
+func renderServiceLevelHandle(w *writer, m *model, c *command) {
+	probe := m.probeType(c)
+	w.f("// %sHandle is the command handle that the fill of %s gets. The command is decided on the service-level\n", c.goName, c.decl.Name)
+	w.f("// resource %s:%s in the tenant of the request, so the handle offers only the create and the read of each entity\n", c.resource.resourceType, c.service)
+	w.f("// that the command writes, and the effect destinations that it declares (ST-SUP-RC32-OC15).\n")
+	w.f("type %sHandle struct{ h *command.Handle[%s] }\n\n", c.goName, probe)
+	w.f("// New%sHandle gives the handle of %s over the command handle of its run.\n", c.goName, c.decl.Name)
+	w.f("func New%sHandle(h *command.Handle[%s]) *%sHandle { return &%sHandle{h: h} }\n\n", c.goName, probe, c.goName, c.goName)
+	w.f("// Tenant is the tenant of the request.\nfunc (h *%sHandle) Tenant() tenant.Tenant { return h.h.Tenant() }\n\n", c.goName)
+	w.f("// Principal is the principal of the request.\nfunc (h *%sHandle) Principal() authz.Principal { return h.h.Principal() }\n\n", c.goName)
+	w.f("// Probe is the domain probe of the command.\nfunc (h *%sHandle) Probe() %s { return h.h.Probe() }\n\n", c.goName, probe)
+	w.f("// Effects stages the declared effects of the command.\nfunc (h *%sHandle) Effects() *command.Effects { return h.h.Effects() }\n\n", c.goName)
+	for _, e := range c.writes {
+		w.f("// Create%s creates a row of %s. parents are the loaded values of the rows that its references name, each\n// decided with the permission that the declaration names for the reference (ST-SUP-RP10-LC05).\n", e.goName, e.decl.Name)
+		w.f("func (h *%sHandle) Create%s(ctx context.Context, value %s, parents ...command.Ref) (Loaded%s, error) {\n", c.goName, e.goName, e.goName, e.goName)
+		w.f("\tr, err := %sRepository(h.h)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn r.Create(ctx, value, parents...)\n}\n\n", e.goName)
+		w.f("// Get%s reads the row of %s with the ID id, which the read permission of the entity decides.\n", e.goName, e.decl.Name)
+		w.f("func (h *%sHandle) Get%s(ctx context.Context, id string) (Loaded%s, error) {\n", c.goName, e.goName, e.goName)
+		w.f("\tr, err := %sRepository(h.h)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn r.Get(ctx, id)\n}\n\n", e.goName)
+	}
 }
 
 // renderRelationHelper writes the typed helpers of one relation that the command declares (ST-SUP-RC32-OC13): a
@@ -246,6 +279,16 @@ func (m *model) hasLockTimeout() bool {
 	return false
 }
 
+// hasServiceLevel tells whether a command is decided on the service-level resource (ST-SUP-RC32-OC15).
+func (m *model) hasServiceLevel() bool {
+	for _, c := range m.commands {
+		if c.service != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *model) hasRelations() bool {
 	for _, c := range m.commands {
 		if len(c.relations) > 0 {
@@ -311,9 +354,16 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 		w.f("\tProbe: noProbe,\n")
 	}
 	r := c.resource
-	// The table is named with its schema, so no relation of the same name earlier on the search path stands in for it.
-	token := fmt.Sprintf("SELECT authz_token FROM public.%s WHERE %s = $1 AND id = $2::%s FOR SHARE", r.table, m.tenantKey, r.keyCast)
-	w.f("\tPermission: %q,\n\tResource: &command.Resource{Type: %q, Token: %q, ValidID: command.ValidUUID},\n}))\n\n", c.decl.Permission, r.resourceType, token)
+	if c.service != "" {
+		// A command on the service-level resource names no row: Run decides its permission on
+		// <resource type>:<service name> in the tenant of the request, with no row to read (ST-SUP-RC32-OC15).
+		w.f("\tPermission: %q,\n\tResource: &command.Resource{Type: %q, Service: %q},\n}))\n\n", c.decl.Permission, r.resourceType, c.service)
+	} else {
+		// The table is named with its schema, so no relation of the same name earlier on the search path stands in
+		// for it.
+		token := fmt.Sprintf("SELECT authz_token FROM public.%s WHERE %s = $1 AND id = $2::%s FOR SHARE", r.table, m.tenantKey, r.keyCast)
+		w.f("\tPermission: %q,\n\tResource: &command.Resource{Type: %q, Token: %q, ValidID: command.ValidUUID},\n}))\n\n", c.decl.Permission, r.resourceType, token)
+	}
 	spec := fmt.Sprintf("command.ServeSpec[*commands.%s, *commands.%s, %s]", c.request.name, c.response.name, probe)
 	w.f("// %sSpec is what varies with the declaration of %s.\nfunc %sSpec(fill commands.%sFill, options Options) %s {\n", lower, c.decl.Name, lower, c.goName, spec)
 	w.f("\tspec := %s{\n\t\tCommand: %sCommand,\n\t\tResourceType: %q,\n\t\tSubjectType: subjectType,\n", spec, lower, r.resourceType)
@@ -331,7 +381,11 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 		}
 		w.f("\t\t\treturn nil\n\t\t},\n")
 	}
-	w.f("\t\tResource: func(request *commands.%s) string { return request.%s },\n", c.request.name, c.member.goName)
+	if c.service != "" {
+		w.f("\t\tResource: func(*commands.%s) string { return %q },\n", c.request.name, c.service)
+	} else {
+		w.f("\t\tResource: func(request *commands.%s) string { return request.%s },\n", c.request.name, c.member.goName)
+	}
 	w.f("\t\tRefusals: []*command.Refusal{")
 	for i, ref := range c.refusals {
 		if i > 0 {
@@ -340,7 +394,11 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 		w.f("commands.%s", ref.goName)
 	}
 	w.f("},\n\t\tKeyRequired: true,\n\t\tRetention: options.Retention,\n\t}\n")
-	w.f("\tif fill != nil {\n\t\tspec.Fill = func(ctx context.Context, request *commands.%s, h *command.Handle[%s]) (*commands.%s, error) {\n\t\t\treturn fill(ctx, request, h)\n\t\t}\n\t}\n\treturn spec\n}\n\n", c.request.name, probe, c.response.name)
+	handle := "h"
+	if c.service != "" {
+		handle = "commands.New" + c.goName + "Handle(h)"
+	}
+	w.f("\tif fill != nil {\n\t\tspec.Fill = func(ctx context.Context, request *commands.%s, h *command.Handle[%s]) (*commands.%s, error) {\n\t\t\treturn fill(ctx, request, %s)\n\t\t}\n\t}\n\treturn spec\n}\n\n", c.request.name, probe, c.response.name, handle)
 	w.f("// %s gives the HTTP handler of the command %s at %s: it calls the one fill %s through command.Serve.\n", c.goName, c.decl.Name, c.pattern, c.decl.Fill[0])
 	w.f("func %s(rt *command.Runtime, fill commands.%sFill, options Options) (http.Handler, error) {\n\treturn command.Serve(rt, %sSpec(fill, options))\n}\n\n", c.goName, c.goName, lower)
 	w.f("// %sRPC gives the gRPC handler of the command %s: the same fill, handle, transaction, permission, audit and\n// idempotency as its HTTP handler, with the idempotency key from the idempotency-key request metadata.\n", c.goName, c.decl.Name)

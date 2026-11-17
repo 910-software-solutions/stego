@@ -12,3 +12,15 @@ message AddNoteRequest {
 message AddNoteResponse {
   string note_id = 1;
 }
+
+// PlaceOrderRequest is the request of place-order.
+message PlaceOrderRequest {
+  string sku = 1;
+  int32 qty = 2;
+  string email = 3;
+}
+
+// PlaceOrderResponse is the response of place-order.
+message PlaceOrderResponse {
+  string order_id = 1;
+}

@@ -8,6 +8,8 @@ import "shop/v1/shop.proto";
 service Shop {
   // AddNote is the command add-note.
   rpc AddNote(AddNoteRequest) returns (AddNoteResponse);
+  // PlaceOrder is the command place-order.
+  rpc PlaceOrder(PlaceOrderRequest) returns (PlaceOrderResponse);
   // GetOrderSummary is the query get-order-summary.
   rpc GetOrderSummary(GetOrderSummaryRequest) returns (OrderSummary);
   // WatchOrders is the stream query watch-orders.
