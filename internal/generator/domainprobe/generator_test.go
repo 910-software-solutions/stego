@@ -177,6 +177,23 @@ func methods(t *testing.T, pkg *gotypes.Package, name string) []string {
 }
 
 func TestEmitters(t *testing.T) {
+	t.Run("ST-SUP-RC34-OC01-T02 An entity field of an entity with no loaded model is refused with a fault that tells how to give one", func(t *testing.T) {
+		ctx := reservationContext()
+		ctx.GoModelSources = nil
+		files, _, err := new(Generator).Generate(ctx)
+		if err == nil || files != nil {
+			t.Fatalf("an entity field with no loaded model gave %d files and %v, want a refusal", len(files), err)
+		}
+		for _, part := range []string{"Reservation has no loaded Go model", "no declared query reads Reservation", "declare a query that reads Reservation"} {
+			if !strings.Contains(err.Error(), part) {
+				t.Errorf("the refusal %q does not say %q", err, part)
+			}
+		}
+		if strings.Contains(err.Error(), "()") {
+			t.Errorf("the refusal %q holds an empty list of providers", err)
+		}
+	})
+
 	t.Run("ST-SUP-RC34-OC03-T01 Each emitter's probe holds its own observations only", func(t *testing.T) {
 		pkg, _, _, _ := generateService(t, reservationContext()).probePackage()
 		for name, want := range map[string]string{
