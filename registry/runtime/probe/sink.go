@@ -146,6 +146,9 @@ func (q *queue) drain(ctx context.Context) bool {
 type Runtime struct {
 	core      *core
 	telemetry *otel.Runtime
+	// deadline gives the shared shutdown limit of Close. It is nil, which is context.WithTimeout on the real clock,
+	// but in a test of the package that ends the limit itself (ST-SUP-RP12-LC12).
+	deadline  func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
 	otlp      *otlpSink
 	console   *consoleSink
 	closeOnce sync.Once
@@ -244,7 +247,11 @@ func SpanNames() []string { return []string{CallSpanName} }
 func (r *Runtime) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		r.core.closed.Store(true)
-		ctx, cancel := context.WithTimeout(ctx, otel.ShutdownTimeout)
+		bound := r.deadline
+		if bound == nil {
+			bound = context.WithTimeout
+		}
+		ctx, cancel := bound(ctx, otel.ShutdownTimeout)
 		defer cancel()
 		var group sync.WaitGroup
 		var drained atomic.Bool

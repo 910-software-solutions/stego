@@ -40,6 +40,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/oteldeadline"
 	"github.com/jsell-rh/stego/registry/runtime/internal/spanevent"
 )
 
@@ -105,6 +106,19 @@ type Runtime struct {
 // clock. A test gives a clock that it moves itself, so it proves the export and shutdown bounds of
 // ST-SUP-RP03-LC10 with no wall-clock limit.
 type deadline func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
+
+// init gives the internal package oteldeadline the setter of the shutdown bound, so a test of another package of the
+// runtime module can end the shutdown limit itself; the code that a service generates cannot reach it.
+func init() {
+	oteldeadline.Register(func(runtime any, bound oteldeadline.Deadline) bool {
+		r, ok := runtime.(*Runtime)
+		if !ok || r == nil {
+			return false
+		}
+		r.deadline = deadline(bound)
+		return true
+	})
+}
 
 // settings are the telemetry settings of the process environment, checked (ST-SUP-RP03-LC09).
 type settings struct {
