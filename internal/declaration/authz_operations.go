@@ -102,11 +102,28 @@ func validateQueryAuthorization(queries []types.Query, schema *AuthzSchema) []Va
 }
 
 // validateWorkerAuthorization checks that each worker names a resource type and a permission that the schema holds
-// (ST-DECL-INV69).
-func validateWorkerAuthorization(workers []types.Worker, schema *AuthzSchema) []ValidationError {
+// (ST-DECL-INV69). The worker's handle decides its permission on each row it reads or writes, on the resource type
+// of the row's entity, so the resource type of each entity in its writes must hold the permission too; else
+// checking passes a worker whose every touch of that entity the runtime refuses.
+func validateWorkerAuthorization(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	var faults []ValidationError
-	for i, worker := range workers {
+	for i, worker := range service.Workers {
 		faults = append(faults, operationFaults("worker-authorization", operationAuthz{"worker", worker.Name, workerPath(i), worker.ResourceType, worker.Permission}, schema)...)
+		if schema == nil || worker.Permission == "" {
+			continue
+		}
+		for wi, name := range worker.Writes {
+			_, entity := entityIndex(service.Entities, name)
+			if entity == nil || entity.ResourceType == "" || entity.ResourceType == worker.ResourceType {
+				continue
+			}
+			definition, defined := schema.definitions[entity.ResourceType]
+			if !defined || definition.permissions[worker.Permission] {
+				continue
+			}
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "worker-authorization", Path: fmt.Sprintf("%s.writes[%d]", workerPath(i), wi), Found: name, Allowed: sortedKeys(definition.permissions),
+				Message: fmt.Sprintf("worker %q writes the entity %s of the resource type %s, which lacks the worker's permission %q in the schema %s; the worker decides that permission on each row it touches, so the runtime would refuse each row of %s", worker.Name, name, entity.ResourceType, worker.Permission, schema.Path, name)})
+		}
 	}
 	return faults
 }
@@ -119,7 +136,7 @@ func operationsAuthorization(service *types.ServiceDeclaration, schema *AuthzSch
 	}
 	faults = append(faults, validateQueryAuthorization(service.Queries, schema)...)
 	faults = append(faults, validateReferences(service.Entities, schema)...)
-	return append(faults, validateWorkerAuthorization(service.Workers, schema)...)
+	return append(faults, validateWorkerAuthorization(service, schema)...)
 }
 
 // TenantResourceType is the resource type of the tenant resource, on which provisioning writes the tuple of each

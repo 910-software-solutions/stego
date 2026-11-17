@@ -146,6 +146,34 @@ func TestWorkerAuthorization(t *testing.T) {
 	t.Run("ST-DECL-INV69-T A worker with the resource type invoice, which the schema lacks, is refused", func(t *testing.T) {
 		expectNamed(t, checkOperations(t, td03Worker(t, "resource_type: invoice", "permission: view"), operationFacts()), "worker-authorization", "sync-documents", "resource type \"invoice\"")
 	})
+	// The worker decides its permission on each row it touches, on the resource type of the row's entity, so each
+	// written entity's resource type must hold it too (docs1 review of PR #396).
+	written := func(permission string) []ValidationError {
+		service, schema := td03Files(t)
+		service = change(t, service, "collections:\n", "  - name: Note\n    fields:\n      - {name: text, type: string}\n    resource_type: note\n"+
+			"    public_reasons: {create: a new note has no resource to decide on before it exists}\n"+
+			"    permissions: {create: public, read: edit, update: edit, delete: edit, list: edit}\n"+
+			"    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\n"+
+			"collections:\n  notes:\n    entity: Note\n    operations: [create, read, list]\n")
+		service += "modes: [api, worker]\nworkers:\n" + worker("sync-documents", "trigger: every 1m", "writes: [Todo, Note]", "fill: sync", "resource_type: document", "permission: "+permission)
+		schema += "\ndefinition note {\n\trelation owner: user | service_account\n\tpermission edit = owner\n}\n"
+		decl := readTD03(t, service)
+		faults := Validate(decl).All()
+		faults = append(faults, ValidateComposition(decl, operationFacts())...)
+		return append(faults, CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})...)
+	}
+	t.Run("ST-DECL-INV69-T A worker that writes Note, whose resource type note lacks its permission view, is refused", func(t *testing.T) {
+		faults := written("view")
+		expectNamed(t, faults, "worker-authorization", "sync-documents", "Note", "note", "\"view\"")
+		for _, fault := range faults {
+			if fault.Rule == "worker-authorization" && fault.Path != "workers[0].writes[1]" {
+				t.Errorf("the fault is at %s, want workers[0].writes[1]", fault.Path)
+			}
+		}
+	})
+	t.Run("ST-DECL-INV69-T A worker that writes Note with the permission edit, which document and note hold, is accepted", func(t *testing.T) {
+		expectAccepted(t, written("edit"))
+	})
 }
 
 // replyWorker is the worker apply-document-replies with the trigger consumes document-replies that writes Todo on
