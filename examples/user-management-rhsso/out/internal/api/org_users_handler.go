@@ -14,7 +14,6 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
 	"github.com/jsell-rh/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
@@ -26,7 +25,8 @@ var orgUsersCreateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 	Name:         "create",
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.created"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 }))
 
 // orgUsersReadQuery is the query of a read of org-users (ST-SUP-RP11).
@@ -37,7 +37,8 @@ var orgUsersUpdateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 	Name:         "update",
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.updated"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -47,7 +48,8 @@ var orgUsersDeleteCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 	Name:         "delete",
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.deleted"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -60,7 +62,8 @@ var orgUsersPatchCommand = mustCommand(command.NewCommand(command.CommandSpec[st
 	Name:         "patch",
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.updated"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -312,9 +315,6 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 				return idempotency.Response{}, err
 			}
 		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.created", created, changeEvent("User", "created", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
-		}
 		response, err := json.Marshal(orgUsersPresented(persisted))
 		if err != nil {
 			return idempotency.Response{}, err
@@ -481,9 +481,6 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 				return idempotency.Response{}, err
 			}
 		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.updated", updated, changeEvent("User", "updated", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
-		}
 		response, err := json.Marshal(orgUsersPresented(persisted))
 		if err != nil {
 			return idempotency.Response{}, err
@@ -560,9 +557,6 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			if err := ch.Effects().Stage(ctx, AfterSlotsDestination, "org-users.on_entity_changed", from, slotPayload); err != nil {
 				return idempotency.Response{}, err
 			}
-		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.deleted", from, changeEvent("User", "deleted", id)); err != nil {
-			return idempotency.Response{}, err
 		}
 		return idempotency.Response{Status: http.StatusNoContent}, nil
 	})
@@ -806,9 +800,6 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 			if err := ch.Effects().Stage(ctx, AfterSlotsDestination, "org-users.on_entity_changed", updated, slotPayload); err != nil {
 				return idempotency.Response{}, err
 			}
-		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.updated", updated, changeEvent("User", "updated", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
 		}
 		response, err := json.Marshal(orgUsersPresented(persisted))
 		if err != nil {

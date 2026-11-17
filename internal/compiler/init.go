@@ -13,18 +13,27 @@ import (
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/registry"
+	"github.com/jsell-rh/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
 type InitOptions struct {
 	ProjectDir string
 	Archetype  string
-	Stderr     io.Writer
+	// Empty asks for a scaffold with no example content (ST-DECL-UC01-R05).
+	Empty bool
+	// Module is the module path that the placeholders of the example content take: the one generation then uses
+	// (ProjectModuleSettings). With no value, init takes the module of the project's go.mod or the default.
+	Module string
+	Stderr io.Writer
 }
 
 type InitResult struct {
 	Name    string
 	Created []string
+	// Owed names each setting that the archetype's components mark as author supplied, for an empty scaffold
+	// (ST-DECL-UC01-R05). A scaffold with example content gives them, so it owes none.
+	Owed []string
 }
 
 // Initialize prepares a project for a new declaration (ST-GEN-CMD07). It uses the configured registry, or with no
@@ -81,9 +90,49 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 		return nil, fmt.Errorf("archetype %q not found in registry (available: %s)", opts.Archetype, strings.Join(available, ", "))
 	}
 	name := filepath.Base(project)
-	document, err := declaration.Scaffold(name, opts.Archetype, arch.Language)
+	// The example content of the archetype (ST-SUP-EN03 field Example content), unless the author asks for an empty
+	// scaffold. Its placeholders take the service name and the module path that generation then uses.
+	var example []registry.ExampleFile
+	if !opts.Empty {
+		example = arch.Example
+	}
+	var exampleDeclaration []byte
+	var exampleFiles []registry.ExampleFile
+	for _, file := range example {
+		if file.Path == registry.ExampleDeclaration {
+			exampleDeclaration = file.Text
+		} else {
+			exampleFiles = append(exampleFiles, file)
+		}
+	}
+	module := opts.Module
+	if len(example) > 0 && module == "" {
+		if module, _, err = ProjectModuleSettings(project, "", ""); err != nil {
+			return nil, err
+		}
+	}
+	document, err := declaration.Scaffold(name, opts.Archetype, arch.Language, exampleDeclaration, module, registry.ExampleService, registry.ExampleModule)
 	if err != nil {
 		return nil, err
+	}
+	var owed []string
+	if len(example) == 0 {
+		// The components the archetype names, and its default auth component, as the registry holds them; checking
+		// resolves the ports of the set later.
+		schemas := map[string]map[string]types.ConfigField{}
+		for _, component := range append(append([]string(nil), arch.Components...), arch.DefaultAuth) {
+			if item := reg.Component(component); item != nil {
+				schemas[component] = item.Config
+			}
+		}
+		owed = declaration.AuthorSuppliedSettings(schemas)
+	}
+	// No path of the example content may hold a file, a folder or a link, so a refused scaffold changes no file
+	// (ST-DECL-UC01-R02, ST-DECL-UC01-R06).
+	for _, file := range exampleFiles {
+		if err := checkExampleTarget(root, file.Path); err != nil {
+			return nil, err
+		}
 	}
 	if err := reg.Verify(); err != nil {
 		return nil, err
@@ -125,10 +174,34 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 	} else if !errors.Is(err, os.ErrExist) {
 		return nil, err
 	}
+	for _, file := range exampleFiles {
+		if err := checkExampleTarget(root, file.Path); err != nil {
+			return nil, err
+		}
+		text := strings.NewReplacer(registry.ExampleService, name, registry.ExampleModule, module).Replace(string(file.Text))
+		if err := createRootFile(root, file.Path, []byte(text)); err != nil {
+			return nil, err
+		}
+		created = append(created, file.Path)
+	}
 	if err := createRootFile(root, "service.yaml", document); err != nil {
 		return nil, err
 	}
-	return &InitResult{Name: name, Created: append(created, "service.yaml")}, nil
+	return &InitResult{Name: name, Created: append(created, "service.yaml"), Owed: owed}, nil
+}
+
+// checkExampleTarget refuses a path of the example content at which the project already holds anything, or whose
+// folders hold a symbolic link, and names the path.
+func checkExampleTarget(root *os.Root, name string) error {
+	if err := checkFilePath(root, name); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if _, err := root.Lstat(name); err == nil {
+		return fmt.Errorf("%s already exists; stego init writes the example content of the archetype there", name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // localStateIgnorePath is the Git ignore file that init writes for the local state of the service folder.

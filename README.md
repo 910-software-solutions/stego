@@ -145,6 +145,17 @@ git init
 stego init --archetype rest-crud
 ```
 
+The scaffold of each archetype passes `stego validate` and builds as
+written. An archetype that cannot be empty writes its example content from the
+registry: `rpc-service` writes a proto file with one method, one query on it
+with its fill, and the settings that the query needs; `browser-service` writes
+an API prefix, one route and an index page. The service takes the name of the
+project folder, and the fill imports the module path of `STEGO_MODULE` (or
+`github.com/example/service`): give the same value to each later command. Use
+`stego init --archetype <name> --empty` for a scaffold with no example
+content. It then names each setting that you must give before `stego validate`
+accepts the declaration.
+
 Make the project in its own Git repository. `stego init` writes
 `.stego/.gitignore`, so the apply lock and the saved plan, which are local
 state, stay out of the commit and out of the build. This file keeps the two
@@ -457,7 +468,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego image retrieve` | `stego image retrieve --record <file> --record-sha256 <digest> --build-record <file> --repository <repo> --registry-ca <file> --registry-ca-sha256 <digest> --credentials <file> [--token-origin <origin>]... [--blob-origin <origin>]... --work <folder> --spdx-bundle <file> --cyclonedx-bundle <file> --signer-issuer <url> --signer-subject <identity> --gh <path> --source-repository <owner/name>` |
 | `stego image sign` | `stego image sign --image <folder> (--record-sha256 <digest> \| --after <file>) --spdx-bundle <file> --cyclonedx-bundle <file> --signer-issuer <url> --signer-subject <identity> --gh <path> --source-repository <owner/name>` |
 | `stego image verify` | `stego image verify --record <file> --record-sha256 <digest> --image <folder> --build-record <file> --work <folder> --spdx-bundle <file> --cyclonedx-bundle <file> --signer-issuer <url> --signer-subject <identity> --gh <path> --source-repository <owner/name>` |
-| `stego init` | `stego init --archetype <name>` |
+| `stego init` | `stego init --archetype <name> [--empty]` |
 | `stego lifecycle supersede` | `stego lifecycle supersede --registry <folder> (--component <name> \| --runtime <module>) --digest <digest> --successor <digest> [--successor-component <name>] --fails-after <YYYY-MM-DD> --needs-declaration-change yes\|no --needs-fill-change yes\|no --summary <text> [--reference <url>]...` |
 | `stego lifecycle withdraw` | `stego lifecycle withdraw --registry <folder> (--component <name> \| --runtime <module>) --digest <digest> --fails-after <YYYY-MM-DD> --reason <text> [--reference <url>]...` |
 | `stego plan` | `stego plan [--show] [--base <ref>] [--strict]` |

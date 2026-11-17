@@ -60,7 +60,28 @@ type Archetype struct {
 	// Runtime is the one runtime library version that every service of the
 	// archetype imports (ST-SUP-INV10).
 	Runtime *RuntimePin `yaml:"runtime"`
+	// Example is the archetype's example content (ST-SUP-EN03 field Example content): the files under its example
+	// folder, which stego init writes into a new project. LoadSources reads it from the folder, not from
+	// archetype.yaml. An archetype with no example folder has none.
+	Example []ExampleFile `yaml:"-"`
 }
+
+// ExampleFile is one file of an archetype's example content: its path in the project, and its text with the
+// placeholders ExampleService and ExampleModule.
+type ExampleFile struct {
+	Path string
+	Text []byte
+}
+
+// The placeholders of example content: stego init puts the service name and the module path of the new project in
+// their place.
+const (
+	ExampleService = "{{service}}"
+	ExampleModule  = "{{module}}"
+)
+
+// ExampleDeclaration is the path in the project of the declaration text of example content.
+const ExampleDeclaration = "service.yaml"
 
 // Component represents a deterministic code generator with its metadata.
 type Component struct {

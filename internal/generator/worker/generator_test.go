@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -388,4 +389,52 @@ func unusedImports(t *testing.T, name string, source []byte) []string {
 		}
 	}
 	return unused
+}
+
+func TestContractRuntimeImports(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC03-T04 The worker contract imports exactly the runtime packages that the generator gives the fill check, for each declaration", func(t *testing.T) {
+		// The entity Order has no pii field; the second case adds one, and the third a secret field.
+		for _, c := range []struct {
+			name, sensitivity string
+			want              int
+		}{{"no pii field", "", 1}, {"a written entity with a pii field", "pii", 2}, {"a written entity with a secret field", "secret", 2}} {
+			ctx := workerContext(workerSlot)
+			if c.sensitivity != "" {
+				ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "email", Type: "string", Sensitivity: c.sensitivity})
+			}
+			found := map[string]bool{}
+			for name, data := range generated(t, ctx) {
+				if filepath.Dir(name) != "workers" || !strings.HasSuffix(name, ".go") {
+					continue
+				}
+				file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.ImportsOnly)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, spec := range file.Imports {
+					if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+						found[path] = true
+					}
+				}
+			}
+			var workers []types.Worker
+			for _, w := range ctx.Workers {
+				workers = append(workers, w.Worker)
+			}
+			listed := ContractRuntimeImports(ctx.Entities, workers)
+			if len(listed) != c.want {
+				t.Errorf("%s: ContractRuntimeImports gives %v, want %d packages", c.name, listed, c.want)
+			}
+			for _, path := range listed {
+				if !found[path] {
+					t.Errorf("%s: ContractRuntimeImports gives %s, which the contract does not import, so the fill check admits more than the contract reaches", c.name, path)
+				}
+			}
+			for path := range found {
+				if !slices.Contains(listed, path) {
+					t.Errorf("%s: the contract imports %s, which ContractRuntimeImports does not give, so the fill check refuses a fill that imports it", c.name, path)
+				}
+			}
+		}
+	})
 }
