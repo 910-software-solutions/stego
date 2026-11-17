@@ -482,29 +482,29 @@ func listValue(field types.Field, term types.ListTerm) (string, error) {
 		if field.Type != types.FieldTypeTimestamp {
 			return "", fmt.Errorf("now fits only a timestamp field")
 		}
-		return "{RunTime: true}", nil
+		return "command.ListValue{RunTime: true}", nil
 	}
 	switch v := term.Value.(type) {
 	case string:
 		if field.Type == types.FieldTypeString || field.Type == types.FieldTypeEnum || field.Type == types.FieldTypeRef || field.Type == types.FieldTypeTimestamp {
-			return fmt.Sprintf("{Constant: %q}", v), nil
+			return fmt.Sprintf("command.ListValue{Constant: %q}", v), nil
 		}
 	case bool:
 		if field.Type == types.FieldTypeBool {
-			return fmt.Sprintf("{Constant: %t}", v), nil
+			return fmt.Sprintf("command.ListValue{Constant: %t}", v), nil
 		}
 	case int:
 		switch field.Type {
 		case types.FieldTypeInt32:
-			return fmt.Sprintf("{Constant: int32(%d)}", v), nil
+			return fmt.Sprintf("command.ListValue{Constant: int32(%d)}", v), nil
 		case types.FieldTypeInt64:
-			return fmt.Sprintf("{Constant: int64(%d)}", v), nil
+			return fmt.Sprintf("command.ListValue{Constant: int64(%d)}", v), nil
 		case types.FieldTypeFloat, types.FieldTypeDouble:
-			return fmt.Sprintf("{Constant: float64(%d)}", v), nil
+			return fmt.Sprintf("command.ListValue{Constant: float64(%d)}", v), nil
 		}
 	case float64:
 		if field.Type == types.FieldTypeFloat || field.Type == types.FieldTypeDouble {
-			return fmt.Sprintf("{Constant: float64(%v)}", v), nil
+			return fmt.Sprintf("command.ListValue{Constant: float64(%v)}", v), nil
 		}
 	}
 	return "", fmt.Errorf("the value %v is not a constant of the field type %s", term.Value, field.Type)

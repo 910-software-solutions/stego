@@ -599,8 +599,24 @@ type ListSpec struct {
 	Lock string
 	// Values are the declared values of the filter, for the parameters from $3 in their order: each a constant of
 	// the field type, or the time of the run. A list with Values takes no filter values from the fill: the handle
-	// binds them (ST-DECL-INV94, ST-SUP-RC35-OC15).
-	Values []ListValue
+	// binds them (ST-DECL-INV94, ST-SUP-RC35-OC15). DeclaredValues makes it; a pointer keeps ListSpec comparable.
+	Values *ListValues
+}
+
+// ListValues are the declared values of the filter of a list, in the order of their parameters.
+type ListValues struct{ values []ListValue }
+
+// DeclaredValues gives the declared values of a list filter, for ListSpec.Values.
+func DeclaredValues(values ...ListValue) *ListValues {
+	return &ListValues{values: slices.Clone(values)}
+}
+
+// all gives the values; a nil ListValues has none.
+func (v *ListValues) all() []ListValue {
+	if v == nil {
+		return nil
+	}
+	return v.values
 }
 
 // ListValue is one declared value of a list filter: Constant, or the time of the run when RunTime is true, which is
@@ -644,12 +660,14 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 			return nil, fmt.Errorf("command: the list %s locks rows of %s, which declares no Lock at most", spec.Name, e.spec.Name)
 		}
 	}
-	for i, v := range spec.Values {
+	for i, v := range spec.Values.all() {
 		if v.RunTime && v.Constant != nil {
 			return nil, fmt.Errorf("command: the value %d of the list %s is a constant and the time of the run", i+1, spec.Name)
 		}
 	}
-	spec.Values = slices.Clone(spec.Values)
+	if spec.Values != nil {
+		spec.Values = DeclaredValues(spec.Values.all()...)
+	}
 	return &List[T]{entity: e, spec: spec}, nil
 }
 
@@ -1477,15 +1495,16 @@ func (r *Repository[T]) listArgs(l *List[T], args []any) ([]any, error) {
 	}
 	// A declared list of a worker or consumer handle takes no filter values from the fill, also when its filter has no
 	// value, such as a filter of is_set terms only (security review of PR #411, L3).
-	declared := s.mode == modeWorker || s.mode == modeConsumer || len(l.spec.Values) > 0
+	declared := s.mode == modeWorker || s.mode == modeConsumer || len(l.spec.Values.all()) > 0
 	if declared && len(args) > 0 {
 		return nil, s.breakWith(internalf("the list %s of %s declares its filter values, so the fill gives none", l.spec.Name, r.entity.spec.Name))
 	}
-	if len(l.spec.Values) == 0 {
+	if len(l.spec.Values.all()) == 0 {
 		return args, nil
 	}
-	values := make([]any, len(l.spec.Values))
-	for i, v := range l.spec.Values {
+	bound := l.spec.Values.all()
+	values := make([]any, len(bound))
+	for i, v := range bound {
 		values[i] = v.Constant
 		if v.RunTime {
 			if s.runTime.IsZero() {

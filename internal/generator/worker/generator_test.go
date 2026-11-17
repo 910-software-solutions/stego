@@ -329,7 +329,7 @@ func TestContract(t *testing.T) {
 			`var SyncPartnerOrdersUnsynced = command.Must(command.NewList(OrderEntity, command.ListSpec{Name: "unsynced",`,
 			`Read: ` + strconv.Quote(from+` AND "synced" = $3 AND "status" <> $4 ORDER BY "id" LIMIT $2`),
 			`Lock: ` + strconv.Quote(from+` AND "id" = ANY($2::text[]::uuid[]) AND "synced" = $3 AND "status" <> $4 ORDER BY "id" FOR NO KEY UPDATE`),
-			`Values: []command.ListValue{{Constant: false}, {Constant: "done"}}}))`,
+			`Values: command.DeclaredValues(command.ListValue{Constant: false}, command.ListValue{Constant: "done"})}))`,
 		} {
 			if !strings.Contains(contract, want) {
 				t.Errorf("the contract does not hold %s:\n%s", want, contract)
@@ -355,7 +355,7 @@ func TestContract(t *testing.T) {
 		wider := `SELECT "id"::text, "status", "synced", "due_at", "estimate", "version", "authz_token" FROM public."orders" WHERE "tenant_id" = $1`
 		for _, want := range []string{
 			`Read: ` + strconv.Quote(wider+` AND "synced" = $3 AND "status" <> $4 AND "due_at" < $5 AND "estimate" >= $6 AND "due_at" IS NOT NULL ORDER BY "id" LIMIT $2`),
-			`Values: []command.ListValue{{Constant: false}, {Constant: "done"}, {RunTime: true}, {Constant: int64(3)}}}))`,
+			`Values: command.DeclaredValues(command.ListValue{Constant: false}, command.ListValue{Constant: "done"}, command.ListValue{RunTime: true}, command.ListValue{Constant: int64(3)})}))`,
 		} {
 			if !strings.Contains(contract, want) {
 				t.Errorf("the contract of the release with the new fields does not hold %s:\n%s", want, contract)

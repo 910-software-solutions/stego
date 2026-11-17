@@ -509,7 +509,7 @@ func renderContract(m *model) []byte {
 			if l.lock != "" {
 				w.f("\tLock: %q,\n", l.lock)
 			}
-			w.f("\tValues: []command.ListValue{%s}}))\n\n", strings.Join(l.values, ", "))
+			w.f("\tValues: command.DeclaredValues(%s)}))\n\n", strings.Join(l.values, ", "))
 		}
 	}
 	w.f("// Refused marks err as a declared refusal of a consuming worker's fill: the message is then parked, since a\n// delivery again gives the same refusal (ST-SUP-RP10-LC26).\nfunc Refused(err error) error { return command.Refused(err) }\n")

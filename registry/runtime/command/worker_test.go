@@ -1373,7 +1373,7 @@ func generatedUserList(columns, extra string) ListSpec {
 	return ListSpec{Name: "ranked",
 		Read:   from + filter + ` ORDER BY "id" LIMIT $2`,
 		Lock:   from + ` AND "id" = ANY($2::text[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`,
-		Values: []ListValue{{Constant: "org1"}, {Constant: int64(1)}}}
+		Values: DeclaredValues(ListValue{Constant: "org1"}, ListValue{Constant: int64(1)})}
 }
 
 func TestWorkerLists(t *testing.T) {
@@ -1447,7 +1447,7 @@ func TestWorkerLists(t *testing.T) {
 			t.Fatal(err)
 		}
 		v2Statements := generatedUserList(`"id"::text, "org_id", "email", "admin", "rank", "seen_at", "version", "authz_token"`, ` AND "seen_at" < $5`)
-		v2Statements.Values = append(v2Statements.Values, ListValue{RunTime: true})
+		v2Statements.Values = DeclaredValues(append(v2Statements.Values.all(), ListValue{RunTime: true})...)
 		v2, err := NewList(users2, v2Statements)
 		if err != nil {
 			t.Fatal(err)
@@ -1523,7 +1523,7 @@ func TestWorkerLists(t *testing.T) {
 			t.Fatalf("filter values from the fill for an is_set list gave %v and the run %v, want an internal error", given, err)
 		}
 		timed, err := NewList(e.users, ListSpec{Name: "timed", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
- WHERE tenant_id = $1 AND $3::timestamptz = $4::timestamptz ORDER BY id LIMIT $2`, Values: []ListValue{{RunTime: true}, {Constant: tick}}})
+ WHERE tenant_id = $1 AND $3::timestamptz = $4::timestamptz ORDER BY id LIMIT $2`, Values: DeclaredValues(ListValue{RunTime: true}, ListValue{Constant: tick})})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1543,7 +1543,7 @@ func TestWorkerLists(t *testing.T) {
 		if at, next := count(tick), count(other); at != 3 || next != 0 {
 			t.Fatalf("the run of the tick listed %d rows and the run of the next tick %d; want 3 and 0", at, next)
 		}
-		if _, err := NewList(e.users, ListSpec{Name: "both", Read: v1.spec.Read, Values: []ListValue{{Constant: 1, RunTime: true}}}); err == nil {
+		if _, err := NewList(e.users, ListSpec{Name: "both", Read: v1.spec.Read, Values: DeclaredValues(ListValue{Constant: 1, RunTime: true})}); err == nil {
 			t.Fatal("NewList took a value that is a constant and the time of the run")
 		}
 		if _, err := NewWorker(WorkerSpec[testProbe]{Name: "rank-scan", Permission: "sync", Interval: time.Minute, Writes: []Declared{e.orders},
