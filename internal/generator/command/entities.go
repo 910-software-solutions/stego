@@ -10,6 +10,15 @@ import (
 	"github.com/jsell-rh/stego/internal/types"
 )
 
+// ContractRuntimeImports gives the packages of the runtime library that the command slot contract out/commands can
+// import, for any declaration: the command runtime, the audit package for the entities with a pii or secret field,
+// and the authz package for a command that writes relations. A fill of the command slot may import them
+// (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill check admits them also before out/commands is generated.
+func ContractRuntimeImports() []string {
+	return []string{"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/authz",
+		"github.com/jsell-rh/stego/registry/runtime/command"}
+}
+
 // entity is one entity that a command writes, with its repository declaration (ST-SUP-RP10-LC02).
 type entity struct {
 	decl         types.Entity

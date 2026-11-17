@@ -622,3 +622,45 @@ func TestRelationHelpers(t *testing.T) {
 		}
 	})
 }
+
+// contractRuntime gives the packages of the runtime library that the Go files of the contract package namespace import,
+// in the generated files given; the files of its sub-packages are not part of the contract.
+func contractRuntime(t *testing.T, files map[string][]byte, namespace string) map[string]bool {
+	t.Helper()
+	found := map[string]bool{}
+	for name, data := range files {
+		if filepath.Dir(name) != namespace || !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, spec := range file.Imports {
+			if path := strings.Trim(spec.Path.Value, `"`); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+				found[path] = true
+			}
+		}
+	}
+	return found
+}
+
+func TestContractRuntimeImports(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC03-T05 The command contract imports only the runtime packages that the generator gives the fill check", func(t *testing.T) {
+		// The test declaration has a pii field and a command that writes a relation, so the contract imports each
+		// runtime package that the generator can write into it.
+		found := contractRuntime(t, generated(t, commandContext(t, declaration(t), commandSlot)), "commands")
+		listed := map[string]bool{}
+		for _, path := range ContractRuntimeImports() {
+			listed[path] = true
+			if !found[path] {
+				t.Errorf("ContractRuntimeImports gives %s, which the contract of the test declaration does not import", path)
+			}
+		}
+		for path := range found {
+			if !listed[path] {
+				t.Errorf("the command contract imports %s, which ContractRuntimeImports does not give, so the fill check refuses a fill that imports it", path)
+			}
+		}
+	})
+}

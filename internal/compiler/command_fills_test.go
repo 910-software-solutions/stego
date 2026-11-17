@@ -4,6 +4,9 @@ import (
 	"reflect"
 	"testing"
 
+	commandgen "github.com/jsell-rh/stego/internal/generator/command"
+	querygen "github.com/jsell-rh/stego/internal/generator/query"
+	workergen "github.com/jsell-rh/stego/internal/generator/worker"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
 )
@@ -20,6 +23,10 @@ func TestCommandFillCheck(t *testing.T) {
 			Contract: "example.com/orders/out/commands"}}
 		if !reflect.DeepEqual(check.CommandFills, want) {
 			t.Errorf("the fill check holds the command fills %+v, want %+v", check.CommandFills, want)
+		}
+		// The runtime packages of the contract come from the command generator, with no out/ folder in the project.
+		if got, want := check.ContractRuntime["example.com/orders/out/commands"], commandgen.ContractRuntimeImports(); !reflect.DeepEqual(got, want) {
+			t.Errorf("the fill check gives the command contract the runtime packages %v, want %v", got, want)
 		}
 		if check := fillCheck(ReconcilerInput{ModuleName: "example.com/orders"}, svc, nil, map[string]*registry.Component{}); len(check.CommandFills) != 0 {
 			t.Errorf("a service without the command component gives the command fills %+v", check.CommandFills)
@@ -43,6 +50,13 @@ func TestWorkerAndQueryFillCheck(t *testing.T) {
 		}
 		if check.WorkerContract != "example.com/orders/out/workers" {
 			t.Errorf("the worker contract is %q", check.WorkerContract)
+		}
+		// The runtime packages of each contract come from its generator, with no out/ folder in the project.
+		if got, want := check.ContractRuntime["example.com/orders/out/queries"], querygen.ContractRuntimeImports(); !reflect.DeepEqual(got, want) {
+			t.Errorf("the fill check gives the query contract the runtime packages %v, want %v", got, want)
+		}
+		if got, want := check.ContractRuntime["example.com/orders/out/workers"], workergen.ContractRuntimeImports(); !reflect.DeepEqual(got, want) {
+			t.Errorf("the fill check gives the worker contract the runtime packages %v, want %v", got, want)
 		}
 		if check := fillCheck(ReconcilerInput{ModuleName: "example.com/orders"}, svc, nil, map[string]*registry.Component{}); len(check.WorkerFills) != 1 || check.WorkerContract != "" {
 			t.Errorf("with no worker component, the worker fills are %+v and the contract %q", check.WorkerFills, check.WorkerContract)

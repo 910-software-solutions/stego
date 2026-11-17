@@ -41,6 +41,14 @@ const (
 	tenantType     = "tenant"
 )
 
+// ContractRuntimeImports gives the packages of the runtime library that the worker slot contract out/workers can
+// import, for any declaration: the command runtime, and the audit package for the entities with a pii or secret
+// field. A fill of the worker slot may import them (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill check admits them
+// also before out/workers is generated.
+func ContractRuntimeImports() []string {
+	return []string{"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/command"}
+}
+
 // The grammars of the declared names that the generated code holds.
 var (
 	workerName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)

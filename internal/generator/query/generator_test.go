@@ -270,3 +270,37 @@ func TestExpectedCardinality(t *testing.T) {
 		}
 	})
 }
+
+func TestContractRuntimeImports(t *testing.T) {
+	t.Run("ST-SUP-RC33-OC03-T02 The query contract imports only the runtime packages that the generator gives the fill check", func(t *testing.T) {
+		// The test declaration has the pii field card_last4, so the contract imports each runtime package that the
+		// generator can write into it.
+		found := map[string]bool{}
+		for name, data := range generated(t, shopContext(t)) {
+			if filepath.Dir(name) != "queries" || !strings.HasSuffix(name, ".go") {
+				continue
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.ImportsOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, spec := range file.Imports {
+				if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+					found[path] = true
+				}
+			}
+		}
+		listed := map[string]bool{}
+		for _, path := range ContractRuntimeImports() {
+			listed[path] = true
+			if !found[path] {
+				t.Errorf("ContractRuntimeImports gives %s, which the contract of the test declaration does not import", path)
+			}
+		}
+		for path := range found {
+			if !listed[path] {
+				t.Errorf("the query contract imports %s, which ContractRuntimeImports does not give, so the fill check refuses a fill that imports it", path)
+			}
+		}
+	})
+}

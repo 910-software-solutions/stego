@@ -23,12 +23,15 @@ func writeFile(t *testing.T, dir, name, text string) {
 
 func TestSlotContracts(t *testing.T) {
 	t.Run("ST-EXT-INV05-T A query fill and a command fill import their own slot's contract and the runtime packages it reaches", func(t *testing.T) {
+		// No out/ folder is there: the runtime packages that each contract reaches come from its generator through
+		// the fill check, so a fresh clone and a removed out/ give the same answer as a generated project.
 		dir := t.TempDir()
-		// The generated query and command contracts, which import packages of the runtime library.
-		writeFile(t, dir, "out/queries/queries.go", "package queries\n\nimport (\n\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n\tprobes \"example.com/shop/out/probes\"\n)\n\nvar _ = query.ErrNotFound\nvar _ audit.Fields\nvar _ probes.Probe\n")
-		writeFile(t, dir, "out/commands/commands.go", "package commands\n\nimport \"github.com/jsell-rh/stego/registry/runtime/command\"\n\nvar _ = command.NewID\n")
 		check := compiler.FillCheck{ProjectDir: dir, Module: "example.com/shop", QueryContract: "example.com/shop/out/queries",
-			CommandFills: []compiler.CommandFill{{Fill: "add-note", Contract: "example.com/shop/out/commands"}}}
+			CommandFills: []compiler.CommandFill{{Fill: "add-note", Contract: "example.com/shop/out/commands"}},
+			ContractRuntime: map[string][]string{
+				"example.com/shop/out/queries":  {"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/query"},
+				"example.com/shop/out/commands": {"github.com/jsell-rh/stego/registry/runtime/command"},
+			}}
 		fill := func(name, imports string) string {
 			fillDir := filepath.Join(dir, "fills", name)
 			writeFile(t, dir, "fills/"+name+"/fill.go", "package fill\n\nimport (\n"+imports+")\n")

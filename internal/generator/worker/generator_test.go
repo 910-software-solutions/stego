@@ -389,3 +389,39 @@ func unusedImports(t *testing.T, name string, source []byte) []string {
 	}
 	return unused
 }
+
+func TestContractRuntimeImports(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC03-T04 The worker contract imports only the runtime packages that the generator gives the fill check", func(t *testing.T) {
+		// The entity Order gets a pii field here, so the contract imports each runtime package that the generator
+		// can write into it.
+		ctx := workerContext(workerSlot)
+		ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "email", Type: "string", Sensitivity: "pii"})
+		found := map[string]bool{}
+		for name, data := range generated(t, ctx) {
+			if filepath.Dir(name) != "workers" || !strings.HasSuffix(name, ".go") {
+				continue
+			}
+			file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.ImportsOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, spec := range file.Imports {
+				if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+					found[path] = true
+				}
+			}
+		}
+		listed := map[string]bool{}
+		for _, path := range ContractRuntimeImports() {
+			listed[path] = true
+			if !found[path] {
+				t.Errorf("ContractRuntimeImports gives %s, which the contract of the test declaration does not import", path)
+			}
+		}
+		for path := range found {
+			if !listed[path] {
+				t.Errorf("the worker contract imports %s, which ContractRuntimeImports does not give, so the fill check refuses a fill that imports it", path)
+			}
+		}
+	})
+}

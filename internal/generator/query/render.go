@@ -22,6 +22,13 @@ const (
 	protoImport = "google.golang.org/protobuf/proto"
 )
 
+// ContractRuntimeImports gives the packages of the runtime library that the query slot contract out/queries can
+// import, for any declaration. A fill of the query slot may import them (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill
+// check admits them also before out/queries is generated.
+func ContractRuntimeImports() []string {
+	return []string{auditImport, queryImport}
+}
+
 // render gives the contract package and the handler package of the model.
 func render(m *model) ([]gen.File, error) {
 	var files []gen.File

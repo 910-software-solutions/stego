@@ -288,6 +288,10 @@ type FillCheck struct {
 	// the fill rules as every fill is (ST-SUP-RC35-OC03).
 	WorkerFills    []QueryFill
 	WorkerContract string
+	// ContractRuntime gives, by the import path of a command, query or worker slot contract, the packages of the
+	// runtime library that its generator can write into that contract, which a fill of the slot may import
+	// (ST-EXT-INV05). The generator gives them, so the fill check does not depend on a generated out/ folder.
+	ContractRuntime map[string][]string
 }
 
 // TargetBuildSettings are the Go settings of the platform that a generated service is built for: Linux on amd64 at
