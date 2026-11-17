@@ -1888,12 +1888,11 @@ func TestReconcile_DeletedFileDetectedWhenStateHashMatches(t *testing.T) {
 		t.Error("expected handler.go to appear as 'generate' in plan after deletion from disk")
 	}
 
-	// A missing generated file is hand-edited (ST-GEN-SP01): apply refuses
-	// it, and recreates it when the author allows the replacement.
-	if err := Apply(plan2, projectDir, outDir); err == nil || !strings.Contains(err.Error(), "internal/api/handler.go") {
-		t.Fatalf("apply did not refuse and name the deleted file: %v", err)
+	// A missing generated file is not hand-edited (ST-GEN-SP01, ST-GEN-Q46):
+	// apply recreates it with no flag.
+	if len(plan2.HandEdited) != 0 {
+		t.Fatalf("the deleted file was counted as a hand edit: %v", plan2.HandEdited)
 	}
-	plan2.ReplaceHandEdits = true
 	if err := Apply(plan2, projectDir, outDir); err != nil {
 		t.Fatalf("second Apply failed: %v", err)
 	}

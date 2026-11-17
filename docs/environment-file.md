@@ -8,6 +8,9 @@ writes to `deploy/platform-requirements.yaml`:
 stego env check --requirements deploy/platform-requirements.yaml env/staging.yaml
 ```
 
+The requirements file is a generated file: when it is missing, `stego apply` writes it again with no flag, and when
+it was edited by hand, `stego apply` refuses it and names it.
+
 The check prints each requirement that the file does not meet, each value of the wrong type, and each value that
 no requirement names. It exits with status 1 when one requirement is not met or one value has the wrong type. It
 reads the key names of a secret, never a secret value, and it changes no file.

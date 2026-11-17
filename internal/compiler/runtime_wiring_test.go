@@ -501,7 +501,7 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC33-OC02-T04 A declared query reaches its fill through the generated main.go",
 	"ST-SUP-RP14-LC04-T02 The generated service runs its workers through the service runtime",
 	"ST-SUP-RP14-LC04-T03 The generated worker delivers each audit entry and anchor to the default table",
-	"ST-SUP-RC18-OC31-T02 The generated worker sends to Kafka with the settings of the process, and does not start without them",
+	"ST-SUP-RC18-OC31-T02 The generated worker sends to Kafka with the settings of the process, and does not start without them or with no topic",
 	"ST-SUP-RC20-OC40-T02 A change event of a generated write arrives once with its key and headers, waits out a broker outage in the outbox, and keeps the order of its entity",
 	"ST-SUP-RC20-OC40-T03 A replay of a write with its idempotency key stages no second event",
 	"ST-SUP-RC20-OC40-T04 A write that rolls back after it staged its event leaves no outbox message and no record",

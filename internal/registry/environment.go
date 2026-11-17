@@ -6,7 +6,9 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -93,6 +95,11 @@ type EnvironmentVariable struct {
 	// DATABASE_URL and DATABASE_URL_FILE (ST-SUP-EN14 field One of, ST-DLV-Q09). A group has at least two variables
 	// of the component, and none of them is required on its own (ST-SUP-INV24).
 	OneOf string `yaml:"one_of,omitempty"`
+	// ReadWith is the package of the runtime library that reads the variable, as its path under the runtime module,
+	// such as service, when only that package reads it (ST-SUP-EN14 field Read with, ST-SUP-Q161). The platform
+	// requirements, the reference and the Kubernetes base list the variable only when the generated service imports
+	// that package.
+	ReadWith string `yaml:"read_with,omitempty"`
 }
 
 // ReadByModes are the modes that a variable may state as its one reader: the migration job.
@@ -215,6 +222,9 @@ func declaresVariables(component *Component) error {
 		if variable.ReadByMode != "" && variable.IsRequired() {
 			return fault("read_by_mode", "a variable that one mode reads is not required by the service")
 		}
+		if variable.ReadWith != "" && !runtimePackagePath.MatchString(variable.ReadWith) {
+			return fault("read_with", "%q is not the path of a package under the runtime module, such as service or outbox/kafkaoutbox", variable.ReadWith)
+		}
 		if variable.OneOf != "" && !groupName.MatchString(variable.OneOf) {
 			return fault("one_of", "the group %q is not a name of at most 63 lower-case letters, digits and '-', such as database-url", variable.OneOf)
 		}
@@ -234,6 +244,44 @@ func declaresVariables(component *Component) error {
 		}
 	}
 	return checkGroups(component)
+}
+
+// runtimePackagePath is the path of a package under the runtime module: lower-case words of letters and digits,
+// joined by '/'.
+var runtimePackagePath = regexp.MustCompile(`^[a-z][a-z0-9]*(/[a-z][a-z0-9]*)*$`)
+
+// checkReadWith refuses a variable whose Read with names no package of the runtime library that holds Go code, when
+// the registry holds the runtime folder (ST-SUP-INV24, ST-SUP-Q161). A registry without that folder takes the runtime
+// from its pin, and the form check of declaresVariables holds alone.
+func (r *Registry) checkReadWith() error {
+	folder := r.RuntimeFolder()
+	if folder == "" {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(r.components)) {
+		for _, variable := range r.components[name].Variables() {
+			if variable.ReadWith == "" || holdsGoCode(filepath.Join(folder, filepath.FromSlash(variable.ReadWith))) {
+				continue
+			}
+			return &VariableError{Component: name, Variable: variableLabel(variable.Name), Fact: "read_with",
+				Reason: fmt.Sprintf("the runtime library has no package %s that holds Go code", variable.ReadWith)}
+		}
+	}
+	return nil
+}
+
+// holdsGoCode tells whether the folder holds a Go file that is not a test file.
+func holdsGoCode(folder string) bool {
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), ".go") && !strings.HasSuffix(entry.Name(), "_test.go") {
+			return true
+		}
+	}
+	return false
 }
 
 // groupName is the name of a group of one of: lower-case letters, digits and '-'.

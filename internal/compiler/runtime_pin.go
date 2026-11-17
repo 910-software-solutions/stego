@@ -48,6 +48,33 @@ func runtimeImports(owner string, files []gen.File, pin registry.RuntimePin) (bo
 	return imported, nil
 }
 
+// runtimePackages gives the packages of the pinned runtime library that the Go files import, each as its path under
+// the runtime module, such as service. The platform requirements list a variable whose Read with names another
+// package of the library not at all (ST-SUP-Q161). The files are the generated files, whose imports runtimeImports
+// already checked.
+func runtimePackages(files []gen.File, pin registry.RuntimePin) map[string]bool {
+	packages := map[string]bool{}
+	for _, file := range files {
+		if !strings.HasSuffix(file.Path, ".go") {
+			continue
+		}
+		parsed, err := goparser.ParseFile(token.NewFileSet(), file.Path, file.Bytes(), goparser.ImportsOnly)
+		if err != nil {
+			continue
+		}
+		for _, spec := range parsed.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				continue
+			}
+			if relative, ok := strings.CutPrefix(path, pin.Module+"/"); ok && pin.Module != "" {
+				packages[relative] = true
+			}
+		}
+	}
+	return packages
+}
+
 // runtimeImport says whether an import path is a package of the pinned runtime library, and refuses one of
 // another major version of it or of another STEGO module.
 func runtimeImport(path string, pin registry.RuntimePin) (bool, error) {

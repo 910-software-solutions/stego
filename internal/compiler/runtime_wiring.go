@@ -39,6 +39,9 @@ var runtimeWiringComponents = []string{adapterComponent, gen.TenancyComponent, a
 // restAPIComponent is the component of the collection handlers (ST-SUP-RC20).
 const restAPIComponent = "rest-api"
 
+// kafkaProducerComponent is the component whose change events go to Kafka through the outbox worker.
+const kafkaProducerComponent = "kafka-producer"
+
 // runtimeWiringInput is what the compiler reads to write the runtime wiring of a service.
 type runtimeWiringInput struct {
 	ModuleName, OutDirName string
@@ -81,6 +84,10 @@ type runtimeWiringData struct {
 	// Modes are the modes that the declaration states, in the order api, worker, controller; all three when it
 	// states none (ST-GEN-INV26, ST-DECL-EN01).
 	Modes []string
+	// KafkaTopic is true when the kafka-producer component is active: the worker mode then needs the one topic of
+	// the topic need, and the start refuses a worker mode with no STEGO_KAFKA_TOPIC and no STEGO_KAFKA_TOPIC_FILE at
+	// the stage service.start.setting.kafka-producer.STEGO_KAFKA_TOPIC (walkthrough 7, B7).
+	KafkaTopic bool
 }
 
 // runtimeWiring gives the runtime wiring package of a service on the runtime data path and its wiring of main.go
@@ -117,6 +124,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		SubjectType: svc.Authorization.SubjectFromIdentity, TenantClaim: svc.Tenancy.Claim, ProblemType: svc.ErrorTypeBase,
 		ProblemCode: problemCode(svc.Name),
 	}
+	data.KafkaTopic = slices.Contains(in.Names, kafkaProducerComponent)
 	if slices.Contains(in.Names, idempotencyComponent) && svc.Idempotency != nil {
 		data.Idempotency = pkg(idempotencyComponent)
 	}

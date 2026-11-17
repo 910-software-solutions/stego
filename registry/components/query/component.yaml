@@ -1,6 +1,6 @@
 kind: component
 name: query
-version: 1.1.0
+version: 1.2.0
 stage: ga
 output_namespace: queries
 
@@ -31,6 +31,7 @@ environment:
     description: "The file of the key of the list cursors, at least 32 bytes, the same in each replica. The service does not start when it has no value."
     secret: false
     secret_source: {name: "{service}-query-cursor", key: key}
+    read_with: service
     example: "/etc/stego/query/cursor-key"
 # The platform needs (ST-SUP-EN09): the key of the list cursors, the same in each replica.
 needs:

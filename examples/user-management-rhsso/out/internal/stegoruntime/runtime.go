@@ -144,7 +144,30 @@ var declared = service.Auth{Issuer: declaredIssuer, Audience: declaredAudience, 
 
 // StartStage names the stage of a start that a setting, the database pool, the key source or the schema manifest
 // refused, for the failure record of the process, which holds no error text and no value (ST-SUP-RP14-LC05).
-func StartStage(err error) string { return service.StartStage(err) }
+func StartStage(err error) string {
+	var setting *startSetting
+	if errors.As(err, &setting) {
+		return "service.start.setting." + setting.component + "." + setting.variable
+	}
+	return service.StartStage(err)
+}
+
+// startSetting is a setting that the start of the service refused before the runtime read it: the variable at fault
+// and the registry component that reads it. It holds no value.
+type startSetting struct{ component, variable, problem string }
+
+func (e *startSetting) Error() string { return "the setting " + e.variable + " " + e.problem }
+
+// checkKafkaTopic refuses a worker mode that has no Kafka topic. With none, the destination sends each message to
+// the topic of its event type, which the topic need does not state, so every delivery is refused for ever
+// (walkthrough 7, B7).
+func checkKafkaTopic() error {
+	if os.Getenv("STEGO_KAFKA_TOPIC") == "" && os.Getenv("STEGO_KAFKA_TOPIC_FILE") == "" {
+		return &startSetting{component: "kafka-producer", variable: "STEGO_KAFKA_TOPIC",
+			problem: "or STEGO_KAFKA_TOPIC_FILE must be set for the worker mode: it is the topic of every message"}
+	}
+	return nil
+}
 
 // parts are what varies with the declaration of the service, which service.New takes. The outbox worker gets the
 // destinations of the service's components and the after slots of the collections (ST-SUP-RC20-OC34).
@@ -265,6 +288,9 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	var workerSettings service.WorkerSettings
 	if selection.Has(modes.Worker) {
 		if workerSettings, err = service.ReadWorkerSettings(true); err != nil {
+			return nil, err
+		}
+		if err = checkKafkaTopic(); err != nil {
 			return nil, err
 		}
 	}
