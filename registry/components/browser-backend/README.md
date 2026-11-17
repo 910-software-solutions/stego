@@ -45,8 +45,10 @@ comma-separated list of `name=origin`, such as
   on another host than the console.
 - A request goes to the one origin of the API whose prefix its path is
   under. No header, query or path part of a request can choose another host.
-  A path with an encoded slash, a `.` or `..` segment, or an empty segment
-  gets 400.
+  A path with an encoded slash gets 400. The router of the service sends a
+  path with a `.` or `..` segment, or an empty segment, to its clean form
+  with 307 before the backend reads it, so such a path reaches no API; the
+  backend refuses it with 400 when it gets one.
 - A `Location` of an answer must be under the prefix of the same API.
 - Each API has a bounded client of its own. The same access token goes to
   each API, so the identity provider must give a token whose `aud` holds the
