@@ -4,8 +4,6 @@ kind: service
 name: {{service}}
 archetype: rpc-service
 language: go
-base_path: /api/{{service}}/v1
-error_type_base: https://errors.example.com/{{service}}/
 # The query runtime reads tenant-owned tables, so the service is pooled; an operator adds and retires tenants.
 tenancy:
   kind: pooled

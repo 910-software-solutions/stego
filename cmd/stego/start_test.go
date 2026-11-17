@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -359,6 +360,11 @@ func sortStrings(values []string) []string {
 	return sorted
 }
 
+// keysOf gives the keys of a map in order.
+func keysOf(values map[string]any) []string {
+	return slices.Sorted(maps.Keys(values))
+}
+
 // exampleArchetypes are the archetypes of the fixture registry whose scaffold holds example content, with the files
 // of that content beside the declaration.
 var exampleArchetypes = map[string][]string{
@@ -479,6 +485,43 @@ func TestArchetypeScaffolds(t *testing.T) {
 			}
 			if archetype == "rpc-service" && len(cuts) != len(files)+4 {
 				t.Fatalf("rpc-service: want each file, and the service, the two messages and the method of the proto file, got %d parts", len(cuts))
+			}
+			// The parts of the declaration text: each key, and each setting of a component.
+			text, err := os.ReadFile(filepath.Join(scaffold, "service.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var declared map[string]any
+			if err := yaml.Unmarshal(text, &declared); err != nil {
+				t.Fatal(err)
+			}
+			without := func(remove func(map[string]any)) string {
+				var copied map[string]any
+				if err := yaml.Unmarshal(text, &copied); err != nil {
+					t.Fatal(err)
+				}
+				remove(copied)
+				data, err := yaml.Marshal(copied)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(data)
+			}
+			for _, key := range keysOf(declared) {
+				switch key {
+				case "kind", "name", "archetype", "language":
+					continue
+				case "overrides":
+					for _, component := range keysOf(declared[key].(map[string]any)) {
+						for _, setting := range keysOf(declared[key].(map[string]any)[component].(map[string]any)) {
+							cuts = append(cuts, cut{"the setting " + component + "." + setting, "service.yaml", without(func(d map[string]any) {
+								delete(d["overrides"].(map[string]any)[component].(map[string]any), setting)
+							})})
+						}
+					}
+					continue
+				}
+				cuts = append(cuts, cut{"the key " + key, "service.yaml", without(func(d map[string]any) { delete(d, key) })})
 			}
 			for _, part := range cuts {
 				project := filepath.Join(t.TempDir(), filepath.Base(scaffold))
