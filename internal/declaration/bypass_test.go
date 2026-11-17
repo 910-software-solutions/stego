@@ -29,10 +29,21 @@ rules:
   items:
     name: {type: string}
     unchecked: {type: bool, optional: true, bypass: true}
+groups:
+  type: list
+  optional: true
+  items:
+    type: list
+    items:
+      name: {type: string}
+      unchecked: {type: bool, optional: true, bypass: true}
 `
 	var schema map[string]types.ConfigField
 	if err := yaml.Unmarshal([]byte(config), &schema); err != nil {
 		t.Fatal(err)
+	}
+	if groups := schema["groups"].Items; groups == nil || groups.Inline == nil || groups.Inline.Items == nil || !groups.Inline.Items.Fields["unchecked"].Bypass {
+		t.Fatalf("the fixture schema does not hold the list of lists groups: %+v", schema["groups"])
 	}
 	if !schema["skip_authz"].Bypass || schema["cache_ttl"].Bypass {
 		t.Fatalf("the fixture schema does not mark skip_authz alone: %+v", schema)
@@ -56,7 +67,9 @@ func TestBypassFlagPresent(t *testing.T) {
 	}{
 		{"skip_authz marked as a bypass", "    skip_authz: true\n", true},
 		{"the marked setting of an object in a list", "    rules:\n      - {name: a, unchecked: true}\n", true},
+		{"the marked setting of an object in a list in a list", "    groups:\n      - [{name: a, unchecked: true}]\n", true},
 		{"cache_ttl not marked", "    cache_ttl: 30s\n", false},
+		{"an object in a list in a list with no marked setting", "    groups:\n      - [{name: a}]\n", false},
 		{"an object in a list with no marked setting", "    rules:\n      - {name: a}\n", false},
 		{"TD03 unchanged", "", false},
 	}
@@ -81,6 +94,16 @@ func TestNoBypassFlag(t *testing.T) {
 		if len(faults) != 1 || faults[0].Rule != "no-bypass" || faults[0].Path != "overrides.spicedb-authz.skip_authz" ||
 			!strings.Contains(faults[0].Message, "spicedb-authz") || !strings.Contains(faults[0].Message, "skip_authz") {
 			t.Fatalf("want one no-bypass fault that names spicedb-authz and skip_authz, got %+v", faults)
+		}
+		// A fault names the setting by its path and never holds its value.
+		if faults[0].Found != "" || strings.Contains(faults[0].Message, "true") {
+			t.Errorf("the fault holds the value of the setting: %+v", faults[0])
+		}
+	})
+	t.Run("ST-DECL-INV24-T A marked setting of an object in a list in a list is refused at its path", func(t *testing.T) {
+		faults := ValidateNoBypass(readTD03(t, withSettings(t, service, "    groups:\n      - [{name: a, unchecked: true}]\n")), schemas)
+		if len(faults) != 1 || faults[0].Path != "overrides.spicedb-authz.groups[0][0].unchecked" || faults[0].Found != "" {
+			t.Fatalf("want one no-bypass fault at overrides.spicedb-authz.groups[0][0].unchecked with no value, got %+v", faults)
 		}
 	})
 	t.Run("ST-DECL-INV24-T A setting that is not marked, and TD03 unchanged, are accepted", func(t *testing.T) {
