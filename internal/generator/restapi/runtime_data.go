@@ -1212,12 +1212,10 @@ func (w *runtimeHandlerWriter) declarations() {
 			// The fill reads each ancestor of the path through the handle: the parent of a create or an upsert with the
 			// read permission of its entity, which the refs hold already, and every other ancestor through its link,
 			// with no decision (ST-SUP-RC20-OC24).
-			links := map[string]bool{}
 			for i, level := range c.chain {
 				name := "data." + level.entity + "Entity"
 				if i > 0 || !decidesParent(op) {
 					name = "data." + level.linkType + "Entity"
-					links[name] = true
 				}
 				if !slices.Contains(writes, name) {
 					writes = append(writes, name)
@@ -1226,16 +1224,14 @@ func (w *runtimeHandlerWriter) declarations() {
 			// An update, a patch and a delete check the parent of the row through its link too.
 			if len(c.chain) > 0 && !decidesParent(op) {
 				writes = append(writes, "data."+c.rowLink+"Entity")
-				links["data."+c.rowLink+"Entity"] = true
 			}
 			w.f("var %s = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{\n\tName: %q,\n\tWrites: []command.Declared{%s},\n\tProbe: noProbe,\n", w.commandVar(op), string(op), strings.Join(writes, ", "))
-			// The handle stages the change event of each write of a written entity (ST-SUP-RC20-OC40, ST-SUP-RP10-LC36). A
-			// link is read only and no write goes through it, so it has no change event.
-			var names []string
-			for _, name := range writes {
-				if !links[name] {
-					names = append(names, strings.TrimSuffix(strings.TrimPrefix(name, "data."), "Entity"))
-				}
+			// The handle stages the change event of each write of a written entity (ST-SUP-RC20-OC40, ST-SUP-RP10-LC36).
+			// The command runtime needs the names of each declared entity, also of a link: no write goes through a link,
+			// so the names of its events are never staged.
+			names := make([]string, len(writes))
+			for i, name := range writes {
+				names[i] = strings.TrimSuffix(strings.TrimPrefix(name, "data."), "Entity")
 			}
 			w.f("%s", command.ChangeEventsSpec(w.ctx, names))
 			var destinations []string
