@@ -770,6 +770,7 @@ environment:
     required: false
     description: The header that carries the token of STEGO_AUDIT_SINK_TOKEN_FILE as the file holds it. When it has no value, the token goes in the Authorization header as a bearer token.
     secret: false
+    read_by_mode: worker
   - name: STEGO_AUDIT_SINK_CA_FILE
     read_by:
       - audit-log
@@ -777,6 +778,7 @@ environment:
     required: false
     description: A PEM file of certificate authorities that the audit sink adds to the system roots. When it has no value, the sink uses the system roots.
     secret: false
+    read_by_mode: worker
   - name: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
     read_by:
       - audit-log
@@ -784,6 +786,7 @@ environment:
     required: false
     description: The file of the PEM client certificate of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_KEY_FILE.
     secret: false
+    read_by_mode: worker
   - name: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
     read_by:
       - audit-log
@@ -791,6 +794,7 @@ environment:
     required: false
     description: The file of the PEM client key of mutual TLS for the audit sink. Give it with STEGO_AUDIT_SINK_CLIENT_CERT_FILE.
     secret: false
+    read_by_mode: worker
   - name: STEGO_AUDIT_SINK_TOKEN_FILE
     read_by:
       - audit-log
@@ -798,6 +802,7 @@ environment:
     required: false
     description: The file of the token for the audit sink at STEGO_AUDIT_SINK_URL. When it has no value, the sink must use a client certificate.
     secret: false
+    read_by_mode: worker
   - name: STEGO_AUDIT_SINK_URL
     read_by:
       - audit-log
@@ -805,6 +810,7 @@ environment:
     required: false
     description: The HTTPS URL of the OTLP/HTTP logs endpoint that gets the audit records. When it has no value, the audit records go to a table in the service database.
     secret: false
+    read_by_mode: worker
   - name: STEGO_AUTHN_AUDIENCE
     read_by:
       - jwt-auth
@@ -942,6 +948,7 @@ environment:
     required: false
     description: The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value.
     secret: false
+    read_by_mode: worker
     one_of: kafka-brokers
   - name: STEGO_KAFKA_BROKERS_FILE
     read_by:
@@ -950,6 +957,7 @@ environment:
     required: false
     description: The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two.
     secret: false
+    read_by_mode: worker
     one_of: kafka-brokers
   - name: STEGO_KAFKA_BROKER_HOSTS
     read_by:
@@ -958,6 +966,7 @@ environment:
     required: false
     description: The hosts that the worker may dial, at most 64, or STEGO_KAFKA_BROKER_HOSTS_FILE in its place. When the two have no value, the worker dials each broker that a broker names.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_BROKER_HOSTS_FILE
     read_by:
       - kafka-producer
@@ -965,6 +974,7 @@ environment:
     required: false
     description: The file that holds the list of the hosts that the worker may dial. Give it or STEGO_KAFKA_BROKER_HOSTS, not the two.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_CA_FILE
     read_by:
       - kafka-producer
@@ -972,6 +982,7 @@ environment:
     required: false
     description: A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_CLIENT_CERT_FILE
     read_by:
       - kafka-producer
@@ -979,6 +990,7 @@ environment:
     required: false
     description: The file of the PEM client certificate of mutual TLS. Give it with STEGO_KAFKA_CLIENT_KEY_FILE.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_CLIENT_KEY_FILE
     read_by:
       - kafka-producer
@@ -986,6 +998,7 @@ environment:
     required: false
     description: The file of the PEM client key of mutual TLS. Give it with STEGO_KAFKA_CLIENT_CERT_FILE.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_INSECURE_LOOPBACK
     read_by:
       - kafka-producer
@@ -995,6 +1008,7 @@ environment:
     description: Set to 1 to let loopback brokers go without TLS, for a local test only. When it has no value, each broker needs TLS.
     secret: false
     allowed: 0, 1
+    read_by_mode: worker
   - name: STEGO_KAFKA_PASSWORD_FILE
     read_by:
       - kafka-producer
@@ -1002,6 +1016,7 @@ environment:
     required: false
     description: The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_SASL_MECHANISM
     read_by:
       - kafka-producer
@@ -1010,6 +1025,7 @@ environment:
     description: The SASL mechanism. When it has no value, the worker uses no SASL and needs a client certificate.
     secret: false
     allowed: SCRAM-SHA-512, OAUTHBEARER
+    read_by_mode: worker
   - name: STEGO_KAFKA_TOKEN_FILE
     read_by:
       - kafka-producer
@@ -1017,6 +1033,7 @@ environment:
     required: false
     description: The file of the OAUTHBEARER token. The mechanism OAUTHBEARER needs it.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_TOPIC
     read_by:
       - kafka-producer
@@ -1024,6 +1041,7 @@ environment:
     required: false
     description: The topic of every message, which must be the topic of the topic need; give it or STEGO_KAFKA_TOPIC_FILE. stego env check refuses another topic in this variable, and does not read the file.
     secret: false
+    read_by_mode: worker
     one_of: kafka-topic
   - name: STEGO_KAFKA_TOPIC_FILE
     read_by:
@@ -1032,6 +1050,7 @@ environment:
     required: false
     description: The file that holds the topic of every message. Give it or STEGO_KAFKA_TOPIC, not the two.
     secret: false
+    read_by_mode: worker
     one_of: kafka-topic
   - name: STEGO_KAFKA_USERNAME
     read_by:
@@ -1040,6 +1059,7 @@ environment:
     required: false
     description: The SCRAM user name. Give it or STEGO_KAFKA_USERNAME_FILE when the mechanism is SCRAM-SHA-512.
     secret: false
+    read_by_mode: worker
   - name: STEGO_KAFKA_USERNAME_FILE
     read_by:
       - kafka-producer
@@ -1047,6 +1067,7 @@ environment:
     required: false
     description: The file that holds the SCRAM user name. Give it or STEGO_KAFKA_USERNAME, not the two.
     secret: false
+    read_by_mode: worker
   - name: STEGO_MIGRATION_DATABASE_URL
     read_by:
       - postgres-adapter
@@ -1113,6 +1134,7 @@ environment:
     secret_source:
       name: user-management-database-relay
       key: url
+    read_by_mode: worker
     one_of: relay-database-url
   - name: STEGO_RELAY_DATABASE_URL_FILE
     read_by:
@@ -1121,6 +1143,7 @@ environment:
     required: false
     description: The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two.
     secret: false
+    read_by_mode: worker
     one_of: relay-database-url
   - name: STEGO_SERVICE_VERSION
     read_by:
@@ -1165,6 +1188,7 @@ environment:
     secret_source:
       name: user-management-database
       key: worker-url
+    read_by_mode: worker
     one_of: worker-database-url
   - name: STEGO_WORKER_DATABASE_URL_FILE
     read_by:
@@ -1173,6 +1197,7 @@ environment:
     required: false
     description: The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two.
     secret: false
+    read_by_mode: worker
     one_of: worker-database-url
   - name: TZ
     read_by:

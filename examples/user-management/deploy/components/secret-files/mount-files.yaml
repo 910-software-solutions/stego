@@ -16,12 +16,8 @@ spec:
               value: /var/run/secrets/stego/user-management-database/url
             - name: STEGO_QUERY_CURSOR_KEY_FILE
               value: /var/run/secrets/stego/user-management-query-cursor/key
-            - name: STEGO_RELAY_DATABASE_URL_FILE
-              value: /var/run/secrets/stego/user-management-database-relay/url
             - name: STEGO_SPICEDB_KEY_FILE
               value: /var/run/secrets/stego/user-management-spicedb/preshared-key
-            - name: STEGO_WORKER_DATABASE_URL_FILE
-              value: /var/run/secrets/stego/user-management-database/worker-url
           name: user-management
           volumeMounts:
             - mountPath: /var/run/secrets/stego/user-management-database
@@ -29,9 +25,6 @@ spec:
               readOnly: true
             - mountPath: /var/run/secrets/stego/user-management-query-cursor
               name: user-management-query-cursor
-              readOnly: true
-            - mountPath: /var/run/secrets/stego/user-management-database-relay
-              name: user-management-database-relay
               readOnly: true
             - mountPath: /var/run/secrets/stego/user-management-spicedb
               name: user-management-spicedb
@@ -43,8 +36,6 @@ spec:
             items:
               - key: url
                 path: url
-              - key: worker-url
-                path: worker-url
             secretName: user-management-database
         - name: user-management-query-cursor
           secret:
@@ -53,13 +44,6 @@ spec:
               - key: key
                 path: key
             secretName: user-management-query-cursor
-        - name: user-management-database-relay
-          secret:
-            defaultMode: 256
-            items:
-              - key: url
-                path: url
-            secretName: user-management-database-relay
         - name: user-management-spicedb
           secret:
             defaultMode: 256

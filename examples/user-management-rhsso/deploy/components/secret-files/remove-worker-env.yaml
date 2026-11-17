@@ -1,0 +1,25 @@
+# The opt-in kustomize Component secret-files of the service. stego apply writes this file from the platform
+# requirements. An overlay that lists this folder under components gets each secret as a read-only file under
+# /var/run/secrets/stego in place of an environment variable. Each file has the mode 0400: give the pod an
+# fsGroup, as the restricted SCC of OpenShift does, or list the Component fs-group on another cluster, and do not
+# widen the mode. Do not edit it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-management-worker
+spec:
+  template:
+    spec:
+      containers:
+        - env:
+            - $patch: delete
+              name: DATABASE_URL
+            - $patch: delete
+              name: STEGO_QUERY_CURSOR_KEY_FILE
+            - $patch: delete
+              name: STEGO_RELAY_DATABASE_URL
+            - $patch: delete
+              name: STEGO_SPICEDB_KEY_FILE
+            - $patch: delete
+              name: STEGO_WORKER_DATABASE_URL
+          name: user-management

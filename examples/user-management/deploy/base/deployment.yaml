@@ -19,7 +19,9 @@ spec:
     spec:
       automountServiceAccountToken: false
       containers:
-        - env:
+        - args:
+            - --mode=api
+          env:
             - name: CORS_ALLOWED_HEADERS
               valueFrom:
                 configMapKeyRef:
@@ -151,42 +153,6 @@ spec:
                   key: PORT
                   name: user-management-config
                   optional: true
-            - name: STEGO_AUDIT_SINK_AUTH_HEADER
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_AUDIT_SINK_AUTH_HEADER
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_AUDIT_SINK_CA_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_AUDIT_SINK_CA_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_AUDIT_SINK_TOKEN_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_AUDIT_SINK_TOKEN_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_AUDIT_SINK_URL
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_AUDIT_SINK_URL
-                  name: user-management-config
-                  optional: true
             - name: STEGO_AUTHN_AUDIENCE
               valueFrom:
                 configMapKeyRef:
@@ -289,102 +255,6 @@ spec:
                   key: STEGO_HTTP_TLS_KEY
                   name: user-management-config
                   optional: true
-            - name: STEGO_KAFKA_BROKERS
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_BROKERS
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_BROKERS_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_BROKERS_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_BROKER_HOSTS
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_BROKER_HOSTS
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_BROKER_HOSTS_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_BROKER_HOSTS_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_CA_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_CA_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_CLIENT_CERT_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_CLIENT_CERT_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_CLIENT_KEY_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_CLIENT_KEY_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_INSECURE_LOOPBACK
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_INSECURE_LOOPBACK
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_PASSWORD_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_PASSWORD_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_SASL_MECHANISM
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_SASL_MECHANISM
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_TOKEN_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_TOKEN_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_TOPIC
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_TOPIC
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_TOPIC_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_TOPIC_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_USERNAME
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_USERNAME
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_KAFKA_USERNAME_FILE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_KAFKA_USERNAME_FILE
-                  name: user-management-config
-                  optional: true
-            - name: STEGO_MODE
-              valueFrom:
-                configMapKeyRef:
-                  key: STEGO_MODE
-                  name: user-management-config
-                  optional: true
             - name: STEGO_OTEL_TOKEN_FILE
               valueFrom:
                 configMapKeyRef:
@@ -396,11 +266,6 @@ spec:
                 configMapKeyRef:
                   key: STEGO_QUERY_CURSOR_KEY_FILE
                   name: user-management-config
-            - name: STEGO_RELAY_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  key: url
-                  name: user-management-database-relay
             - name: STEGO_SERVICE_VERSION
               valueFrom:
                 configMapKeyRef:
@@ -423,11 +288,6 @@ spec:
                 configMapKeyRef:
                   key: STEGO_SPICEDB_KEY_FILE
                   name: user-management-config
-            - name: STEGO_WORKER_DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  key: worker-url
-                  name: user-management-database
             - name: TZ
               valueFrom:
                 configMapKeyRef:
