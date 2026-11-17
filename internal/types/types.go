@@ -216,6 +216,9 @@ type ConfigField struct {
 	// Secret marks a setting whose value is a secret: it has no default, and no name of a need or of an
 	// environment variable may hold it (ST-SUP-EN09 field Config schema, ST-SUP-INV23).
 	Secret bool `yaml:"secret,omitempty"`
+	// Bypass marks a setting whose value turns off a check of the service. Checking refuses a declaration that gives
+	// it a value (ST-SUP-EN09 field Config schema, ST-DECL-INV24, ST-DECL-SP07).
+	Bypass bool `yaml:"bypass,omitempty"`
 }
 
 // ConcurrencyMode for upsert operations.
