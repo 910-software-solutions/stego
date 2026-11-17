@@ -750,16 +750,28 @@ the slot `worker.worker`.
    Validate names each fill that is missing and its slot, such as `write the
    fill of the slot command.command there`.
 
-2. Make the fill folder:
+2. Make the fill. You can do this before the first apply, because the
+   contract need not exist yet:
 
    ```bash
    stego fill create place-order --slot command.command
    ```
 
-   This is to write `fills/place-order/fill.yaml`, a fill that compiles
-   against the contract, and a test. At this time, `stego fill create` does
-   not know the slots of commands, queries and workers. Until the fix is
-   merged, write `fill.yaml` by hand. See [Known limits](#known-limits).
+   The output is:
+
+   ```text
+   Created fill "place-order" of the command place-order for slot "command.command"
+     fills/place-order/fill.yaml
+     fills/place-order/fill.go
+     fills/place-order/fill_test.go
+   Run stego apply to write the contract of the fill, and stego deps to resolve its modules; then write the fill.
+   Until it is written, the fill returns ErrNotImplemented.
+   ```
+
+   The new fill exports `New`, or `Fill` for a query, and returns
+   `ErrNotImplemented`. Its test expects that error. Change the test when you
+   write the fill. Fill create refuses a fill that no command, query or worker
+   of `service.yaml` names, and a fill that exists.
 
 3. Generate the contract, and resolve the dependencies:
 
@@ -769,7 +781,8 @@ the slot `worker.worker`.
    ```
 
    Apply writes the contract of the fill in `out/commands`, `out/queries` or
-   `out/workers`. Commit `go.mod` and `go.sum`.
+   `out/workers`. Apply fails if a fill folder holds no Go code, and names the
+   fill. Commit the project with `go.mod` and `go.sum`.
 
 4. Write the fill in `fills/place-order/fill.go`, and write its tests. Then
    run the tests:
@@ -777,6 +790,10 @@ the slot `worker.worker`.
    ```bash
    stego test
    ```
+
+   At this time, `stego test` does not run the tests of these fills. See
+   [Security gap](#security-gap-these-fills-are-not-qualified). Run them with
+   `go test ./fills/...`.
 
 5. Apply again and build:
 
@@ -795,18 +812,6 @@ implements: command.command
 
 The slot of a command fill is `command.command`, of a query fill
 `query.query`, and of a worker fill `worker.worker`.
-
-### Known limits
-
-- `stego fill create` does not know the slots `command.command`,
-  `query.query` and `worker.worker` at this time. It stops with `slot
-  "command.command" not found in any component`. Write `fill.yaml` by hand as
-  above. Then run `stego apply`. A fix is in progress.
-- If the project has a `go.mod` and apply says that the fill has no Go
-  package, add a file `fill.go` that holds only the package clause, such as
-  `package placeorder`. Then run `stego apply` again.
-- If `stego deps` stops with `updates to go.mod needed`, run `go mod tidy`
-  once. Then run `stego deps` again.
 
 ### Security gap: these fills are not qualified
 
