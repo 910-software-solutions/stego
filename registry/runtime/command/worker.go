@@ -479,7 +479,8 @@ const streakPrefix = "fill."
 // transient refusal that is not counted.
 func poisonStreak(d outbox.Delivery, err error) error {
 	outcome, cause := consumerOutcome(err)
-	if outcome != probe.WorkerRolledBack && outcome != probe.WorkerPanicked {
+	if (outcome != probe.WorkerRolledBack && outcome != probe.WorkerPanicked) || !streakCauses[cause] {
+		// The failure code delivery-refused of this attempt starts the count again.
 		return outbox.TransientRefusal(err)
 	}
 	prefix := streakPrefix + string(outcome) + "." + cause + "."
@@ -494,6 +495,14 @@ func poisonStreak(d outbox.Delivery, err error) error {
 	}
 	return outbox.WithFailureCode(outbox.TransientRefusal(err), prefix+strconv.Itoa(n))
 }
+
+// streakCauses are the cause classes that the fill causes, which count for the poison bound: an error of the fill,
+// a read of a row that is not there, an invalid value, a deny of the worker's permission, a unique violation, which
+// a consumer counts as an attempt, and a panic. A statement that the database failed, a timeout, a lost connection
+// and any other internal error stay transient, are not counted and start the count again (decision of the
+// orchestrator on the security review of PR #411, M1).
+var streakCauses = map[string]bool{"fill_error": true, "not_found": true, "invalid": true, "refused": true, "conflict": true,
+	"panic": true}
 
 // consumerOutcome gives the fixed outcome and cause class of the error of a consumer run (ST-SUP-RC35-OC06).
 func consumerOutcome(err error) (probe.WorkerOutcome, string) {
@@ -531,6 +540,7 @@ func consumerOutcome(err error) (probe.WorkerOutcome, string) {
 
 // causeOf gives the fixed cause class of the error of a run, one of probe.WorkerCauses, and never its text.
 func causeOf(err error) string {
+	var statement *internalError
 	switch {
 	case errors.Is(err, errPanic):
 		return "panic"
@@ -548,6 +558,8 @@ func causeOf(err error) string {
 		return "conflict"
 	case errors.Is(err, ErrClosed):
 		return "closed"
+	case errors.As(err, &statement) && statement.statement:
+		return "statement"
 	case errors.Is(err, ErrInternal):
 		return "internal"
 	}

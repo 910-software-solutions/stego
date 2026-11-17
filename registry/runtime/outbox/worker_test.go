@@ -1479,6 +1479,82 @@ func TestWorkerBulkhead(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP01-LC34-T04 The claim of one destination reads the index of its destination's open messages", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, nil)
+		var others []Message
+		for i := 0; i < 300; i++ {
+			others = append(others, message("kafka", fmt.Sprintf("ticket:%d", i)))
+		}
+		for i := 0; i < len(others); i += MaxBatchSize {
+			enqueue(t, db, q, others[i:min(i+MaxBatchSize, len(others))]...)
+		}
+		enqueue(t, db, q, message("authz", "tuple:1"))
+		a := admin(t, db)
+		ctx := context.Background()
+		conn, err := a.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		// The plan of the read part of claim_destination, on statistics of a backlog of another destination.
+		var plan []string
+		for _, statement := range []string{`ANALYZE stego_outbox.messages`, `SET enable_seqscan = off`} {
+			if _, err := conn.ExecContext(ctx, statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rows, err := conn.QueryContext(ctx, `EXPLAIN SELECT m.id FROM stego_outbox.messages AS m
+ WHERE m.destination = 'authz' AND m.state IN ('pending', 'outcome_unknown', 'reconciling') AND m.available_at <= now()
+ ORDER BY m.sequence LIMIT 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, line)
+		}
+		rows.Close()
+		if text := strings.Join(plan, "\n"); !strings.Contains(text, "messages_destination_due") {
+			t.Fatalf("the claim of one destination does not read the index messages_destination_due:\n%s", text)
+		}
+		if got, err := q.ClaimDestination(ctx, "authz", 1, time.Minute); err != nil || len(got) != 1 || got[0].Destination != "authz" {
+			t.Fatalf("the claim of authz behind the kafka backlog gave %v, %v", got, err)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC34-T05 The lease of a destination that no worker registers expires", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		dropped := message("dropped", "row:1")
+		enqueue(t, db, q, dropped)
+		// A worker of an earlier release claimed the message and stopped; this release no longer registers its
+		// destination.
+		if got, err := q.Claim(context.Background(), 1, time.Minute); err != nil || len(got) != 1 {
+			t.Fatalf("the claim gave %v, %v", got, err)
+		}
+		clock.Advance(2 * time.Minute)
+		w := newWorker(t, q, func(c *WorkerConfig) { c.PurgeEvery = time.Second })
+		register(t, w, Destination{Name: "authz", Handler: func(context.Context, *sql.Tx, Delivery) error { return nil }})
+		_, result := startWorker(t, w)
+		// The purge timer moves the expired leases first and then purges, in the same tick. The wait has no deadline:
+		// only the timeout of go test bounds it.
+		for w.Stats().PurgeBatches == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+		w.StopClaiming()
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+		if row := readRow(t, db, dropped.ID); row.State != OutcomeUnknown || row.FailureCode != "lease-expired" || row.Token.Valid {
+			t.Fatalf("the expired lease of the dropped destination is %s with %q", row.State, row.FailureCode)
+		}
+	})
+
 	t.Run("ST-SUP-RP01-LC34-T03 The claim of one destination leases and moves only its own messages", func(t *testing.T) {
 		db, _ := testDatabase(t)
 		clock := newClock()

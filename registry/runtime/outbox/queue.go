@@ -204,7 +204,9 @@ func Manifest(relayRole, runtimeRole, workerRole string) (manifest.Manifest, err
 				Predicate: "(state <> ALL (ARRAY['done'::text, 'discarded'::text]))"},
 			{Name: "messages_due", Columns: []string{"available_at", "sequence"}, Lookup: true,
 				Predicate: "(state = ANY (ARRAY['pending'::text, 'dispatching'::text, 'outcome_unknown'::text, 'reconciling'::text]))"},
-			{Name: "messages_done", Columns: []string{"done_at"}, Lookup: true, Predicate: "(state = 'done'::text)"}},
+			{Name: "messages_done", Columns: []string{"done_at"}, Lookup: true, Predicate: "(state = 'done'::text)"},
+			{Name: "messages_destination_due", Columns: []string{"destination", "sequence"}, Lookup: true,
+				Predicate: "(state = ANY (ARRAY['pending'::text, 'dispatching'::text, 'outcome_unknown'::text, 'reconciling'::text]))"}},
 		RowSecurity: true, Policies: policies, CheckGrants: true, Grants: grants}},
 		// The schema is the outbox's whole, so no other function, such as an overload of a relay function, is in it; and
 		// the relay role owns the relay functions only, since each SECURITY DEFINER function of it spans tenants.
@@ -220,10 +222,11 @@ var relayResults = map[string]string{
 	"stego_outbox.claim_destination": "TABLE(r_tenant text, r_id uuid, r_destination text, r_resource_key text, r_kind text, r_payload bytea, " +
 		"r_outgoing_key text, r_principal text, r_origin text, r_group text, r_state text, r_attempts bigint, r_conflicts bigint, " +
 		"r_lookups bigint, r_lease_until timestamp with time zone, r_dispatched_at timestamp with time zone, r_failure_code text)",
-	"stego_outbox.move":         "TABLE(r_result text, r_state text, r_delay double precision, r_attempts bigint, r_conflicts bigint, r_lookups bigint)",
-	"stego_outbox.release":      "bigint",
-	"stego_outbox.purge_parked": "bigint",
-	"stego_outbox.purge_done":   "bigint",
+	"stego_outbox.move":          "TABLE(r_result text, r_state text, r_delay double precision, r_attempts bigint, r_conflicts bigint, r_lookups bigint)",
+	"stego_outbox.release":       "bigint",
+	"stego_outbox.purge_parked":  "bigint",
+	"stego_outbox.purge_done":    "bigint",
+	"stego_outbox.expire_leases": "bigint",
 	"stego_outbox.blocked": "TABLE(r_tenant text, r_destination text, r_resource_key text, r_state text, r_attempts bigint, " +
 		"r_failure_code text, r_available_at timestamp with time zone, r_created_at timestamp with time zone)",
 	"stego_outbox.oldest":  "TABLE(r_destination text, r_age double precision)",
@@ -238,6 +241,7 @@ var relayFunctions = []string{
 	"stego_outbox.release(timestamptz, uuid, uuid, bigint, text)",
 	"stego_outbox.purge_parked(timestamptz, integer, bigint, jsonb)",
 	"stego_outbox.purge_done(timestamptz, integer, bigint)",
+	"stego_outbox.expire_leases(timestamptz)",
 	"stego_outbox.blocked(timestamptz, integer)",
 	"stego_outbox.oldest(timestamptz)",
 	"stego_outbox.resolve(timestamptz, uuid, text, text, text)",
@@ -380,6 +384,9 @@ var queueObjects = func() string {
 		index("messages_due", `CREATE INDEX IF NOT EXISTS messages_due ON stego_outbox.messages (available_at, sequence)
 	WHERE state IN ('pending', 'dispatching', 'outcome_unknown', 'reconciling');`) +
 		index("messages_done", `CREATE INDEX IF NOT EXISTS messages_done ON stego_outbox.messages (done_at) WHERE state = 'done';`) +
+		// The claim of one destination reads only the open messages of its destination (security review of PR #411, M2).
+		index("messages_destination_due", `CREATE INDEX IF NOT EXISTS messages_destination_due ON stego_outbox.messages (destination, sequence)
+	WHERE state IN ('pending', 'dispatching', 'outcome_unknown', 'reconciling');`) +
 		"\n" + catalogfirst.Unless(catalogfirst.RowSecurity(queue), `ALTER TABLE stego_outbox.messages ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stego_outbox.messages FORCE ROW LEVEL SECURITY;`) +
 		policy(catalogfirst.Policy{Name: "messages_tenant", Command: catalogfirst.EveryCommand, Roles: []string{"'{{runtime}}'", "'{{worker}}'"},
@@ -722,6 +729,28 @@ BEGIN
 END
 $fn$;
 
+CREATE OR REPLACE FUNCTION stego_outbox.expire_leases(p_now timestamptz)
+RETURNS bigint
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+	v_now timestamptz := COALESCE(p_now, pg_catalog.clock_timestamp());
+	v_count bigint;
+BEGIN
+	-- The claim of each destination moves its own expired leases; this pass moves the expired leases of every
+	-- destination, also one that no worker registers any more, at most 32 in one call (security review of PR #411,
+	-- L1). The outcome of each is not known, as for a claim.
+	UPDATE stego_outbox.messages AS x
+	SET state = 'outcome_unknown', lease_token = NULL, lease_until = NULL, failure_code = 'lease-expired',
+		available_at = v_now, conflicts = 0
+	WHERE x.id IN (SELECT e.id FROM stego_outbox.messages AS e
+		WHERE e.state = 'dispatching' AND e.lease_until <= v_now
+		ORDER BY e.sequence LIMIT 32 FOR UPDATE OF e SKIP LOCKED);
+	GET DIAGNOSTICS v_count = ROW_COUNT;
+	RETURN v_count;
+END
+$fn$;
+
 CREATE OR REPLACE FUNCTION stego_outbox.blocked(p_now timestamptz, p_limit integer)
 RETURNS TABLE (r_tenant text, r_destination text, r_resource_key text, r_state text, r_attempts bigint,
 	r_failure_code text, r_available_at timestamptz, r_created_at timestamptz)
@@ -762,6 +791,7 @@ BEGIN
 		'stego_outbox.release(timestamptz, uuid, uuid, bigint, text)',
 		'stego_outbox.purge_parked(timestamptz, integer, bigint, jsonb)',
 		'stego_outbox.purge_done(timestamptz, integer, bigint)',
+		'stego_outbox.expire_leases(timestamptz)',
 		'stego_outbox.blocked(timestamptz, integer)',
 		'stego_outbox.oldest(timestamptz)',
 		'stego_outbox.resolve(timestamptz, uuid, text, text, text)'] LOOP
@@ -1326,6 +1356,16 @@ func (q *Queue) purge(ctx context.Context, limit int, olderThan time.Duration, p
 
 // MinRetention is the shortest retention of a done message (ST-SUP-RP01-LC24).
 const MinRetention = time.Hour
+
+// expireLeases moves at most 32 messages of any destination whose lease has expired to outcome unknown, through
+// the relay function expire_leases, and returns how many it moved (security review of PR #411, L1).
+func (q *Queue) expireLeases(ctx context.Context) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	var n int64
+	err := q.db.QueryRowContext(ctx, `SELECT stego_outbox.expire_leases($1::timestamptz)`, q.now()).Scan(&n)
+	return n, canceled(ctx, err)
+}
 
 // purgeDone removes at most limit messages that reached done before the retention, through the relay function
 // purge_done (ST-SUP-RP01-LC24). The function itself keeps every done message younger than MinRetention.

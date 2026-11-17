@@ -58,7 +58,13 @@ const (
 )
 
 // internalError is an internal error: it matches ErrInternal and holds no field value and no database text.
-type internalError struct{ text string }
+// statement is true for a statement that the database failed, such as for an undefined column, a statement timeout
+// or a lost connection, which the fill did not cause: a consumer does not count it for the poison bound
+// (ST-SUP-RC35-OC06).
+type internalError struct {
+	text      string
+	statement bool
+}
 
 func (e *internalError) Error() string        { return "command: internal error: " + e.text }
 func (e *internalError) Is(target error) bool { return target == ErrInternal }
@@ -1089,7 +1095,7 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 	if code == notGrantedState {
 		s.notGranted = true
 	}
-	return s.breakWith(internalf("the statement %s failed with SQLSTATE %q", step, code))
+	return s.breakWith(&internalError{text: fmt.Sprintf("the statement %s failed with SQLSTATE %q", step, code), statement: true})
 }
 
 // notGrantedState is the SQLSTATE insufficient_privilege.
@@ -1469,11 +1475,14 @@ func (r *Repository[T]) listArgs(l *List[T], args []any) ([]any, error) {
 			"v0.125.0 a worker fill gives no SQL text, so declare the list under lists: of the worker and use the generated "+
 			"list of the worker contract (ST-SUP-RP10-LC38)", s.action, l.spec.Name, r.entity.spec.Name))
 	}
+	// A declared list of a worker or consumer handle takes no filter values from the fill, also when its filter has no
+	// value, such as a filter of is_set terms only (security review of PR #411, L3).
+	declared := s.mode == modeWorker || s.mode == modeConsumer || len(l.spec.Values) > 0
+	if declared && len(args) > 0 {
+		return nil, s.breakWith(internalf("the list %s of %s declares its filter values, so the fill gives none", l.spec.Name, r.entity.spec.Name))
+	}
 	if len(l.spec.Values) == 0 {
 		return args, nil
-	}
-	if len(args) > 0 {
-		return nil, s.breakWith(internalf("the list %s of %s declares its filter values, so the fill gives none", l.spec.Name, r.entity.spec.Name))
 	}
 	values := make([]any, len(l.spec.Values))
 	for i, v := range l.spec.Values {

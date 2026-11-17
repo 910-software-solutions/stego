@@ -1106,6 +1106,104 @@ func TestConsumers(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC06-T07 A statement that the database fails never parks the message, and starts the count again", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p4', 'new')`)
+		defer clock.hold()()
+		// Runs 1 and 2 read an order that is not there; runs 3 to 9 read the charge c1 while its column card_last4
+		// is renamed, so the statement fails with SQLSTATE 42703 (undefined column); run 10 reads the missing order
+		// again.
+		var runs atomic.Int64
+		cases.Store("statement", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			if n := runs.Add(1); n >= 3 && n <= 9 {
+				_, err := repo(t, h, e.chargeE).Get(ctx, "c1")
+				return err
+			}
+			_, err := repo(t, h, e.orders).Get(ctx, "o-missing")
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-p4", map[string]string{"case": "statement"})
+		defer func() {
+			cases.Store("statement", func(context.Context, map[string]string, *Handle[testProbe]) error { return nil })
+			clock.add(time.Hour)
+			awaitRow(t, m, func(r row) bool { return r.state == "done" })
+		}()
+		for i := 1; i <= 10; i++ {
+			switch i {
+			case 3:
+				e.exec(`ALTER TABLE charges RENAME COLUMN card_last4 TO card_last4_gone`)
+			case 10:
+				e.exec(`ALTER TABLE charges RENAME COLUMN card_last4_gone TO card_last4`)
+			}
+			want := "delivery-refused"
+			switch i {
+			case 1, 10:
+				want = "fill.rolled_back.not_found.1"
+			case 2:
+				want = "fill.rolled_back.not_found.2"
+			}
+			r := awaitRow(t, m, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+			if r.state != "pending" || r.code != want {
+				t.Fatalf("after attempt %d the message is %s with %q, want pending with %q", i, r.state, r.code, want)
+			}
+			if i < 10 {
+				clock.add(time.Second)
+			}
+		}
+		got := e.consumed.causeList(from)
+		if len(got) != 10 || got[0] != "rolled_back/not_found" || got[9] != "rolled_back/not_found" {
+			t.Fatalf("worker.run.failed sent %v", got)
+		}
+		for _, c := range got[2:9] {
+			if c != "rolled_back/statement" {
+				t.Fatalf("a failed statement sent %s, want rolled_back/statement", c)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T08 A conflict between two fill errors starts the count again", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p5', 'new')`)
+		defer clock.hold()()
+		// Runs 1 and 2 read an order that is not there; run 3 meets a conflict, which counts no attempt; run 4 reads
+		// the missing order, and its move sets the conflict count to zero; run 5 succeeds.
+		var runs atomic.Int64
+		cases.Store("restart", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			switch runs.Add(1) {
+			case 3:
+				r := repo(t, h, e.orders)
+				o, err := r.Get(ctx, "o-p5")
+				if err != nil {
+					return err
+				}
+				e.exec(`UPDATE orders SET version = version + 1 WHERE tenant_id = 't1' AND id = 'o-p5'`)
+				v := o.Value()
+				v.Status = "conflicted"
+				_, err = r.Update(ctx, o, v)
+				return err
+			case 5:
+				return nil
+			}
+			_, err := repo(t, h, e.orders).Get(ctx, "o-missing")
+			return err
+		})
+		m := e.stage("t1", "o-p5", map[string]string{"case": "restart"})
+		steps := []struct {
+			code                string
+			attempts, conflicts int
+		}{{"fill.rolled_back.not_found.1", 1, 0}, {"fill.rolled_back.not_found.2", 2, 0}, {"delivery-conflict", 2, 1},
+			{"fill.rolled_back.not_found.1", 3, 0}}
+		for i, step := range steps {
+			r := awaitRow(t, m, func(r row) bool {
+				return r.attempts == step.attempts && r.conflicts == step.conflicts && r.state != "dispatching"
+			})
+			if r.state != "pending" || r.code != step.code {
+				t.Fatalf("after run %d the message is %s with %q, want pending with %q", i+1, r.state, r.code, step.code)
+			}
+			clock.add(time.Minute)
+		}
+		awaitRow(t, m, func(r row) bool { return r.state == "done" })
+	})
+
 	t.Run("ST-SUP-RC35-OC06-T06 A provider that cannot decide now and a conflict stay transient past 5 attempts, and each is reported", func(t *testing.T) {
 		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p2', 'new'), ('t1', 'o-p3', 'new')`)
 		defer clock.hold()()
@@ -1409,6 +1507,20 @@ func TestWorkerLists(t *testing.T) {
 			return nil
 		}); !errors.Is(err, ErrInternal) || !errors.Is(given, ErrInternal) || !strings.Contains(given.Error(), "declares its filter values") {
 			t.Fatalf("filter values from the fill gave %v and the run %v, want an internal error", given, err)
+		}
+		// A declared list whose filter has no value, such as is_set terms only, takes no filter value either
+		// (security review of PR #411, L3).
+		isSet, err := NewList(e.users, ListSpec{Name: "set", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND org_id IS NOT NULL ORDER BY id LIMIT $2`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		given = nil
+		if err := run(e.worker("rank-scan", "sync", withLists(isSet), e.users), func(ctx context.Context, h *Handle[testProbe]) error {
+			_, given = repo(t, h, e.users).List(ctx, isSet, 10, "org2")
+			return nil
+		}); !errors.Is(err, ErrInternal) || !errors.Is(given, ErrInternal) || !strings.Contains(given.Error(), "declares its filter values") {
+			t.Fatalf("filter values from the fill for an is_set list gave %v and the run %v, want an internal error", given, err)
 		}
 		timed, err := NewList(e.users, ListSpec{Name: "timed", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
  WHERE tenant_id = $1 AND $3::timestamptz = $4::timestamptz ORDER BY id LIMIT $2`, Values: []ListValue{{RunTime: true}, {Constant: tick}}})

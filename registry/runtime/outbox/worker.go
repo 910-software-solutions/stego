@@ -411,7 +411,8 @@ func (w *Worker) claiming(claimCtx context.Context) bool {
 	}
 }
 
-// purgeTimer purges done messages every PurgeEvery until ctx ends (ST-SUP-RP01-LC24).
+// purgeTimer moves the expired leases of every destination to outcome unknown and purges done messages every
+// PurgeEvery until ctx ends (ST-SUP-RP01-LC24).
 func (w *Worker) purgeTimer(ctx context.Context) {
 	ticker := time.NewTicker(w.config.PurgeEvery)
 	defer ticker.Stop()
@@ -420,6 +421,12 @@ func (w *Worker) purgeTimer(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// The expired leases of every destination, also of one that this worker does not register, move to
+			// outcome unknown, so a message of a destination that a release dropped does not stay dispatching
+			// (security review of PR #411, L1).
+			if _, err := w.queue.expireLeases(ctx); err != nil && ctx.Err() == nil {
+				w.databaseFailures.Add(1)
+			}
 			if _, _, err := w.purgeTick(ctx); err != nil && ctx.Err() == nil {
 				w.databaseFailures.Add(1)
 			}

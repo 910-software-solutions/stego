@@ -1063,7 +1063,7 @@ func TestQueueTenancy(t *testing.T) {
 			names = append(names, name)
 		}
 		rows.Close()
-		if strings.Join(names, ",") != "blocked,claim,claim_destination,move,oldest,purge_done,purge_parked,release,resolve" {
+		if strings.Join(names, ",") != "blocked,claim,claim_destination,expire_leases,move,oldest,purge_done,purge_parked,release,resolve" {
 			t.Fatalf("the relay functions are %v", names)
 		}
 		var relayCommands []string
