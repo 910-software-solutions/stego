@@ -416,6 +416,36 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R07-T05 Markup in the stop text of a grant path of a model with no role stays text in the note and the grant paths", func(t *testing.T) {
+		out, err := RenderArchitectureView(hostileStopsModel(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := parseView(t, out)
+		if n := len(p.all(func(n *html.Node) bool { return n.Data == "img" })); n != 0 {
+			t.Fatalf("the stop text of the model became %d img elements", n)
+		}
+		if n := len(p.all(func(n *html.Node) bool { return n.Data == "script" })); n != 4 {
+			t.Fatalf("the view has %d script blocks, not 4: the stop text ended its block", n)
+		}
+		// The note names the limit by the stop text up to its first ";" or " at ": here the whole hostile text.
+		note := p.byID("no-role-named")
+		if note == nil || !strings.Contains(textOf(note), "before a limit stopped it: "+hostileStops+".") {
+			t.Fatalf("the note does not show the hostile stop text as text: %v", note)
+		}
+		grants := p.all(func(n *html.Node) bool { return n.Data == "ul" && attrOf(n, "class") == "grants" })
+		if len(grants) != 1 || strings.Count(textOf(grants[0]), "stops: "+hostileStops) < 2 {
+			t.Error("the grant paths do not show the hostile stop text as text")
+		}
+		for _, b := range p.all(func(n *html.Node) bool {
+			return n.Data == "button" && attrOf(n, "data-role") == "" && attrOf(n, "data-check") != ""
+		}) {
+			if strings.Contains(attrOf(b, "title"), "<") {
+				t.Errorf("the cell %s writes the stop text in its title: %q", attrOf(b, "data-check"), attrOf(b, "title"))
+			}
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R08-T05 Every colour token keeps its contrast in both themes", func(t *testing.T) {
 		for _, theme := range viewThemes(t) {
 			for _, fg := range []string{"ink", "muted", "focus"} {
@@ -970,6 +1000,125 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R14-T13 A path that the path limit stops shows the path limit glyph and names the path limit in its cell, in the key and in the note, never the work limit", func(t *testing.T) {
+		const limit = "the path limit of 512 paths"
+		model, data := deriveFixture(t, pathFixture(t))
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := parseView(t, view)
+		form := p.byID("form-trust")
+		keys := within(form, func(n *html.Node) bool {
+			return n.Data == "li" && textOf(n) == "⊞ path limit: the expansion stops at its most grant paths"
+		})
+		if len(keys) != 1 {
+			t.Error("the key of the access matrix does not give the path limit glyph")
+		}
+		note := p.byID("no-role-named")
+		if note == nil || !strings.Contains(textOf(note), "no grant path reached a role before a limit stopped it: "+limit+".") || strings.Contains(textOf(note), "work limit") {
+			t.Fatalf("the note does not name the path limit alone: %v", note)
+		}
+		tables := within(form, func(n *html.Node) bool { return n.Data == "table" && strings.Contains(attrOf(n, "class"), "access") })
+		if len(tables) != 1 {
+			t.Fatalf("the matrix has %d access tables", len(tables))
+		}
+		n := 0
+		for _, c := range model.Access.Checks {
+			if c.Public {
+				continue
+			}
+			buttons := within(tables[0], func(n *html.Node) bool {
+				return n.Data == "button" && attrOf(n, "data-check") == c.ID && attrOf(n, "data-role") == ""
+			})
+			if len(buttons) != 1 {
+				t.Fatalf("%s has %d buttons in the line of the paths that stop", c.ID, len(buttons))
+			}
+			title := attrOf(buttons[0], "title")
+			if !strings.Contains(textOf(buttons[0]), "⊞") || strings.Contains(textOf(buttons[0]), "⊘") ||
+				!strings.Contains(title, "path limit") || strings.Contains(title, "work limit") || !strings.Contains(attrOf(buttons[0], "aria-label"), "path limit") {
+				t.Errorf("the cell of the paths that stop of %s does not name the path limit alone: %q, %q", c.ID, textOf(buttons[0]), title)
+			}
+			n++
+		}
+		if n < 3 {
+			t.Fatalf("the path fixture proves too little: %d checks that are not public", n)
+		}
+		// The grant paths list writes the stop text of the path limit, and no work limit.
+		grants := within(form, func(n *html.Node) bool { return n.Data == "ul" && attrOf(n, "class") == "grants" })
+		if len(grants) != 1 || !strings.Contains(textOf(grants[0]), "[arrow, path limit, recursion]") || !strings.Contains(textOf(grants[0]), "stops: "+limit) ||
+			strings.Contains(textOf(grants[0]), "work limit") {
+			t.Error("the grant paths do not name the path limit alone")
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R14-T14 A check whose grants name a permission that the model does not hold reads incomplete and may hold, never no grant", func(t *testing.T) {
+		// grantsGone gives the model data with the grants of the check of docs.read set to a permission that the
+		// model does not hold, as a reader can edit it.
+		grantsGone := func(data []byte) []byte {
+			t.Helper()
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range raw["access"].(map[string]any)["checks"].([]any) {
+				if c.(map[string]any)["subject"] == "operation:docs.read" {
+					c.(map[string]any)["grants"] = "permission:doc#gone"
+				}
+			}
+			out, err := json.MarshalIndent(raw, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			return out
+		}
+		const check = "check:operation:docs.read"
+		model, data := deriveFixture(t, archFixture(t))
+		if len(model.Access.Roles) < 2 {
+			t.Fatalf("the fixture proves too little: %d roles", len(model.Access.Roles))
+		}
+		view, err := RenderArchitectureView(grantsGone(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := parseView(t, view)
+		heads := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == check })
+		if len(heads) != 1 || !strings.Contains(attrOf(heads[0], "title"), "doc#read (incomplete: the model holds no grant path of it)") ||
+			!strings.Contains(textOf(heads[0]), "⚠ incomplete: the model holds no grant path of it") {
+			t.Error("the head of docs.read does not say that its grants are incomplete")
+		}
+		cells := p.all(func(n *html.Node) bool { return n.Data == "td" && attrOf(n, "data-check") == check })
+		if len(cells) != len(model.Access.Roles) {
+			t.Fatalf("docs.read has %d cells for %d roles", len(cells), len(model.Access.Roles))
+		}
+		for _, cell := range cells {
+			buttons := within(cell, func(n *html.Node) bool { return n.Data == "button" })
+			if strings.Contains(textOf(cell), "no grant") || len(buttons) != 1 || textOf(buttons[0]) != mayHoldGlyph ||
+				!strings.Contains(attrOf(buttons[0], "class"), "may-hold") || attrOf(buttons[0], "title") != mayHoldMissingText ||
+				attrOf(buttons[0], "aria-label") != "docs.read: "+mayHoldMissingText {
+				t.Errorf("the cell of docs.read for %s does not say may hold: %q", attrOf(cell, "data-role"), textOf(cell))
+			}
+		}
+		// With no role and the roles complete, the matrix does not say that no role is granted when a check names a
+		// permission that the model does not hold.
+		_, data = deriveFixture(t, chainFixture(t, 0))
+		view, err = RenderArchitectureView(grantsGone(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p = parseView(t, view)
+		if p.byID("no-role") != nil || strings.Contains(textOf(p.root), "grants no role a permission that an operation checks") {
+			t.Error("the matrix says that no role is granted for a check whose permission the model does not hold")
+		}
+		if note := p.byID("no-role-missing"); note == nil || attrOf(note, "role") != "note" ||
+			!strings.Contains(textOf(note), "the model holds no grant path of a permission that an operation checks") || !strings.Contains(textOf(note), "does not say that no role holds one") {
+			t.Errorf("the matrix with no role has no note that a role may hold the permission that the model does not hold: %v", note)
+		}
+		if p.byID("no-role-named") != nil {
+			t.Error("the matrix with no limit reached names a limit")
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R15-T01 The matrix of the data model is titled Operations each collection offers", func(t *testing.T) {
 		data := page.byID("form-data")
 		tables := within(data, func(n *html.Node) bool { return n.Data == "table" && attrOf(n, "class") == "matrix" })
@@ -1049,6 +1198,46 @@ func contrast(a, b [3]float64) float64 {
 
 // hostileValue is free text that would end a script block and run code if the view inserted it as markup.
 const hostileValue = "</script><img src=x onerror=alert(1)><!-- \u2028 & end"
+
+// hostileStops is free text, as a reader can edit it into the stop text of a grant path: markup that would end a
+// script block and run code, and control and bidirectional characters that would change the colors or reorder a line
+// on a terminal. It holds no ";" and no " at ", so the name of the limit is the whole text.
+const hostileStops = hostileValue + " \x1b[31m \u202eevil\u2066"
+
+// hostileStopsModel gives the model of workFixture, which names no role because the work limit stops each grant
+// path, with hostileStops as the stop text of each grant path (security review of PR #388, L2).
+func hostileStopsModel(t *testing.T) []byte {
+	t.Helper()
+	_, data := deriveFixture(t, workFixture(t))
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m["access"].(map[string]any)["roles"].([]any)) != 0 {
+		t.Fatal("the work fixture names a role")
+	}
+	n := 0
+	for _, perm := range m["access"].(map[string]any)["permissions"].([]any) {
+		for _, g := range perm.(map[string]any)["paths"].([]any) {
+			g.(map[string]any)["stops"] = hostileStops
+			n++
+		}
+	}
+	if n < 2 {
+		t.Fatalf("the work fixture has %d grant paths", n)
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(m); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(buf.Bytes(), []byte("</script><img")) {
+		t.Fatal("the hostile model does not hold the raw text")
+	}
+	return buf.Bytes()
+}
 
 // hostileModel gives the model of user-management with the hostile text in the reason of its empty aspect, the
 // reason of each public check, the first step of each flow, the name of the system, and the name and the ID of a

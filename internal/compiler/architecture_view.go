@@ -56,6 +56,7 @@ var grantGlyphs = []struct{ kind, glyph, meaning string }{
 	{"depth limit", "⋯", "depth limit: the expansion stops here"},
 	{"expiration", "⌛", "expiration: only until the relationship expires"},
 	{"work limit", "⊘", "work limit: the expansion stops at its bound of work"},
+	{"path limit", "⊞", "path limit: the expansion stops at its most grant paths"},
 }
 
 // RenderArchitectureView renders the architecture view from the bytes of the architecture model alone
@@ -624,8 +625,8 @@ func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchP
 		name = strings.TrimPrefix(name, group+".")
 	}
 	title := shortID(c.Subject) + ": " + what
-	if permissionIncomplete(perms[c.Grants]) {
-		title += " (incomplete: a limit was reached)"
+	if checkIncomplete(c, perms) {
+		title += " (incomplete: " + incompleteWhy(perms[c.Grants]) + ")"
 	}
 	if len(c.Ancestors) > 0 {
 		title += "; " + ancestorsText(c, perms)
@@ -650,8 +651,8 @@ func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchP
 		}
 		w.raw("</span>")
 	}
-	if permissionIncomplete(perms[c.Grants]) {
-		w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: a limit was reached")
+	if checkIncomplete(c, perms) {
+		w.tag("span", " class=\"sub incomplete\"", "⚠ incomplete: "+incompleteWhy(perms[c.Grants]))
 	}
 	w.raw("</th>")
 }
@@ -701,14 +702,33 @@ const (
 // cell never reads as no grant (security review of PR #385, L2).
 const mayHoldStopText = "may hold: the model names no path of this permission that stops, but a limit cut its grant paths short, so a role may hold it by a path past the limit"
 
+// mayHoldMissingText and mayHoldMissingStopText mark a cell of a check whose grants name a permission that the model
+// does not hold, as in a model that a reader edited: the cell of a role and the cell of the line of the paths that
+// stop. A role may hold the permission, so the cell never reads as no grant (security review of PR #388, Info).
+const (
+	mayHoldMissingText     = "may hold: the model holds no grant path of this permission, so this role may hold it"
+	mayHoldMissingStopText = "may hold: the model holds no grant path of this permission, so a role may hold it"
+)
+
 // unnamedLimit names the limit of a permission that a limit cut short, when no path of it names the limit, as in a
 // model that a reader edited.
 const unnamedLimit = "a limit that the model does not name"
 
+// limitKinds are the kinds of a grant path that a limit stops, in the order in which a path without stop text names
+// its limit.
+var limitKinds = []string{"depth limit", "work limit", "path limit"}
+
 // limitName gives the limit at which a grant path stops, as its stop text names it, with no node and no rest: the
 // depth limit, the work limit or the path limit. A path that no limit stops, such as a recursion, gives "".
 func limitName(g ArchGrant) string {
-	if !slices.Contains(g.Kinds, "depth limit") && !slices.Contains(g.Kinds, "work limit") {
+	kind := ""
+	for _, k := range limitKinds {
+		if slices.Contains(g.Kinds, k) {
+			kind = k
+			break
+		}
+	}
+	if kind == "" {
 		return ""
 	}
 	name, _, _ := strings.Cut(g.Stops, ";")
@@ -716,10 +736,7 @@ func limitName(g ArchGrant) string {
 	if name = strings.TrimSpace(name); name != "" {
 		return name
 	}
-	if slices.Contains(g.Kinds, "depth limit") {
-		return "the depth limit"
-	}
-	return "the work limit"
+	return "the " + kind
 }
 
 // permissionLimits gives each limit that cut the grant paths of the permissions short, once, in the order of the
@@ -751,6 +768,26 @@ func permissionLimits(perms ...*ArchPermission) []string {
 // does not say that its paths are complete counts as cut short, so the view fails toward "may hold" (security
 // review of PR #383, L3); the JSON decode gives a missing key complete the value false.
 func permissionIncomplete(p *ArchPermission) bool { return p != nil && !p.Complete }
+
+// checkIncomplete says whether the roles that the matrix names for a check may be fewer than the roles that hold its
+// permission: a limit cut the grant paths of the permission short, or the model holds no permission of the name that
+// the check grants by, as in a model that a reader edited. So the view fails toward "may hold" (security review of PR
+// #388, Info). A public check needs no permission.
+func checkIncomplete(c ArchCheck, perms map[string]*ArchPermission) bool {
+	if c.Public {
+		return false
+	}
+	p := perms[c.Grants]
+	return p == nil || permissionIncomplete(p)
+}
+
+// incompleteWhy says why the grant paths of the permission of a check are incomplete.
+func incompleteWhy(p *ArchPermission) string {
+	if p == nil {
+		return "the model holds no grant path of it"
+	}
+	return "a limit was reached"
+}
 
 // ancestorIncomplete says whether a limit cut short the grant paths of the read permission of an ancestor.
 func ancestorIncomplete(a ArchAncestor, perms map[string]*ArchPermission) bool {
@@ -860,9 +897,18 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	// With no role, the matrix says that no role is granted only when no limit cut a grant path short. When a limit
 	// cut the paths short, the model names no role, but a role may hold a permission by a path past the limit, so
 	// the matrix says so and keeps the line of the paths that stop (security review of PR #384, L1).
-	if len(roles) == 0 && m.Access.RolesComplete {
+	// A check whose permission the model does not hold, as in a model that a reader edited, can grant a role that the
+	// model does not name, so the matrix never says that no role is granted then (security review of PR #388, Info).
+	missing := false
+	for _, c := range checks {
+		missing = missing || (!c.Public && perms[c.Grants] == nil)
+	}
+	if len(roles) == 0 && missing {
+		w.tag("p", " class=\"incomplete\" role=\"note\" id=\"no-role-missing\"", "⚠ Incomplete: the model holds no grant path of a permission that an operation checks, so it names no role that holds it. A role may hold that permission; this matrix does not say that no role holds one.")
+	}
+	if len(roles) == 0 && m.Access.RolesComplete && !missing {
 		w.tag("p", " id=\"no-role\"", "The declared authorization schema grants no role a permission that an operation checks.")
-	} else if len(roles) == 0 {
+	} else if len(roles) == 0 && !m.Access.RolesComplete {
 		// The note names each limit that stopped the paths, so the reader knows the cause (security review of PR
 		// #385, L2).
 		var all []*ArchPermission
@@ -987,7 +1033,8 @@ func matrixTD(w formWriter, c ArchCheck, role string, perms map[string]*ArchPerm
 	// limit, so its cell says "may hold" and never "no grant" (security review of PR #383, L1). The line of the paths
 	// that stop says so too, when the model names no path of the permission that stops (security review of PR #385,
 	// L2).
-	may := !c.Public && len(paths) == 0 && permissionIncomplete(perms[c.Grants])
+	// A check whose permission the model does not hold says "may hold" too (security review of PR #388, Info).
+	may := !c.Public && len(paths) == 0 && checkIncomplete(c, perms)
 	if !c.Public && len(paths) == 0 && !may {
 		w.raw("<td" + cell + ">·<span class=\"sr\"> no grant</span></td>")
 		return
@@ -996,9 +1043,14 @@ func matrixTD(w formWriter, c ArchCheck, role string, perms map[string]*ArchPerm
 	if c.Public {
 		glyphs, names = "◇", []string{"public"}
 	}
-	if may && role != "" {
+	switch {
+	case may && perms[c.Grants] == nil && role != "":
+		glyphs, names = mayHoldGlyph, []string{mayHoldMissingText}
+	case may && perms[c.Grants] == nil:
+		glyphs, names = mayHoldGlyph, []string{mayHoldMissingStopText}
+	case may && role != "":
 		glyphs, names = mayHoldGlyph, []string{mayHoldText}
-	} else if may {
+	case may:
 		glyphs, names = mayHoldGlyph, []string{mayHoldStopText}
 	}
 	if len(missing) > 0 {

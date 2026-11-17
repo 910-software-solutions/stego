@@ -14,8 +14,8 @@ import (
 // statically from the declared authorization schema, never from a relationship, which is data. A path goes from the
 // permission through each relation, arrow and userset to a subject type and its relation, and states each kind that
 // limits it: an arrow to a parent, a caveat, an expiration, an intersection with another relation, an exclusion, a
-// wildcard. A recursion, the depth limit or the work limit stops a path, and the path says so; the expansion never
-// guesses past it.
+// wildcard. A recursion, the depth limit, the work limit or the path limit stops a path, and the path says so; the
+// expansion never guesses past it.
 
 // schemaSource is the source of each grant path and role: the declared schema.
 var schemaSource = ArchSource{Declaration: "authorization.schema_path"}
@@ -123,16 +123,17 @@ func (e *grantExpander) step(state pathState) bool {
 	}
 	e.steps++
 	if e.steps > maxGrantSteps {
-		e.stop(state, fmt.Sprintf("the work limit of %d steps; the rest of the permission is not expanded", maxGrantSteps))
+		e.stop(state, "work limit", fmt.Sprintf("the work limit of %d steps; the rest of the permission is not expanded", maxGrantSteps))
 		return false
 	}
 	return true
 }
 
-// stop ends the expansion with one path that states the limit.
-func (e *grantExpander) stop(state pathState, why string) {
+// stop ends the expansion with one path that states the limit, of the kind of that limit: the work limit or the path
+// limit, so the mark and the text of the path name the same limit (security review of PR #388, L1).
+func (e *grantExpander) stop(state pathState, kind, why string) {
 	e.full, e.complete = true, false
-	state.kinds = with(state.kinds, "work limit")
+	state.kinds = with(state.kinds, kind)
 	e.paths = append(e.paths, grantPath{state: state, stops: why})
 }
 
@@ -142,7 +143,7 @@ func (e *grantExpander) add(path grantPath) {
 		return
 	}
 	if len(e.paths) >= maxGrantPaths {
-		e.stop(path.state, fmt.Sprintf("the path limit of %d paths; the rest of the permission is not expanded", maxGrantPaths))
+		e.stop(path.state, "path limit", fmt.Sprintf("the path limit of %d paths; the rest of the permission is not expanded", maxGrantPaths))
 		return
 	}
 	e.paths = append(e.paths, path)

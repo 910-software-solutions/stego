@@ -43,7 +43,9 @@ type FactOfList struct {
 	Source      ArchSource   `json:"source"`
 	Quoted      []QuotedText `json:"quoted,omitempty"`
 	Grants      *FactGrants  `json:"grants,omitempty"`
-	// GrantsUnknown is true when the check names a permission and the model holds no grant path of it.
+	// GrantsUnknown is true when the check is not public and the model holds no grant path of its permission, as in a
+	// model that a reader edited. Its grants are then incomplete: a role may hold the permission (security review of PR
+	// #388, Info).
 	GrantsUnknown bool `json:"grants_unknown,omitempty"`
 	// AncestorsIncomplete names, on the checks fact of an operation, each ancestor read whose grant paths a limit cut
 	// short, with the fact of that ancestor check: more roles may hold the read than its paths name (security review
@@ -153,7 +155,7 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 					}
 					if p, ok := permissions[c.Grants]; ok {
 						item.Grants = factGrants(m, p)
-					} else if !c.Public && c.Permission != "" {
+					} else if !c.Public {
 						item.GrantsUnknown = true
 					}
 					for n, a := range c.Ancestors {
@@ -219,7 +221,7 @@ func factListText(list FactList) string {
 			writeGrants(&b, f.Grants)
 		}
 		if f.GrantsUnknown {
-			fmt.Fprintf(&b, "    the grants of %s are not known: the model holds no grant path of it\n", textValue(f.Value))
+			fmt.Fprintf(&b, "    the grants of %s are not known: the model holds no grant path of it, so they are incomplete, and a role may hold it\n", textValue(f.Value))
 		}
 		for _, a := range f.AncestorsIncomplete {
 			fmt.Fprintf(&b, "    a limit cut a path of the ancestor read %s short (%s), so it can grant more roles than its paths name\n", nameText(a.Permission), nameText(a.Fact))

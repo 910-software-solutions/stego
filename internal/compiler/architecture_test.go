@@ -188,6 +188,31 @@ func workFixture(t *testing.T) ArchitectureInput {
 	return in
 }
 
+// pathFixture gives the inputs of archFixture with a doc whose permissions read and write each pass one of 30
+// arrows to hub#mid, and hub#mid one of 30 arrows back to doc#read: each of the 900 paths is a recursion, a path with
+// no role, so the path limit of 512 paths stops the expansion of each before a path reaches a role and before the
+// work limit (security review of PR #388, L1).
+func pathFixture(t *testing.T) ArchitectureInput {
+	t.Helper()
+	var hub, doc strings.Builder
+	var toHub, toDoc []string
+	for i := 1; i <= 30; i++ {
+		fmt.Fprintf(&hub, "\trelation back%d: doc\n", i)
+		fmt.Fprintf(&doc, "\trelation hub%d: hub\n", i)
+		toDoc = append(toDoc, fmt.Sprintf("back%d->read", i))
+		toHub = append(toHub, fmt.Sprintf("hub%d->mid", i))
+	}
+	schemaText := "definition user {}\n\ndefinition hub {\n" + hub.String() + "\tpermission mid = " + strings.Join(toDoc, " + ") + "\n}\n\n" +
+		"definition doc {\n" + doc.String() + "\tpermission read = " + strings.Join(toHub, " + ") + "\n\tpermission write = " + strings.Join(toHub, " + ") + "\n}\n"
+	in := archFixture(t)
+	schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(schemaText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Schema = schema
+	return in
+}
+
 // withoutPaths gives the model data with no grant path in each named permission, which keeps its key complete false:
 // a model, as a reader can edit it, whose limit names no path that stops.
 func withoutPaths(t *testing.T, data []byte, ids ...string) []byte {
@@ -1075,7 +1100,8 @@ func TestArchitectureGrantWork(t *testing.T) {
 		}
 		walk := &grantExpander{schema: empty, complete: true}
 		walk.expand("node0", "view", nil, pathState{})
-		if walk.steps > maxGrantSteps+1 || len(walk.paths) != 1 || !strings.Contains(walk.paths[0].stops, "work limit") || walk.complete {
+		if walk.steps > maxGrantSteps+1 || len(walk.paths) != 1 || !strings.Contains(walk.paths[0].stops, "work limit") || walk.complete ||
+			!slices.Contains(walk.paths[0].state.kinds, "work limit") || slices.Contains(walk.paths[0].state.kinds, "path limit") {
 			t.Fatalf("the expansion of a schema that grants nothing took %d steps and gave %+v", walk.steps, walk.paths)
 		}
 		schema, err := declaration.CompileAuthzSchema("authz/schema.zed", []byte(wideSchema(40, "owner")))
@@ -1089,7 +1115,10 @@ func TestArchitectureGrantWork(t *testing.T) {
 		}
 		grants, _, complete := grantPaths(schema, "node0", "view")
 		last := grants[len(grants)-1]
-		if complete || !slices.Contains(last.Kinds, "work limit") || last.Role != "" || !strings.Contains(last.Stops, "limit") {
+		// The paths to the owner reach the path limit before the work limit; the kind of the last path names the
+		// same limit as its stop text (security review of PR #388, L1).
+		if complete || !slices.Contains(last.Kinds, "path limit") || slices.Contains(last.Kinds, "work limit") || last.Role != "" ||
+			!strings.HasPrefix(last.Stops, fmt.Sprintf("the path limit of %d paths", maxGrantPaths)) {
 			t.Fatalf("the cut expansion does not state its limit: complete %v, last path %+v", complete, last)
 		}
 		in := archFixture(t)
@@ -1107,6 +1136,47 @@ func TestArchitectureGrantWork(t *testing.T) {
 		full, _ := deriveFixture(t, archFixture(t))
 		if !full.Access.RolesComplete {
 			t.Fatal("the role list of a small schema says that it is not complete")
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R13-T04 The expansion that reaches the path limit stops with one path of the kind path limit, whose stop text names that limit, and not the work limit", func(t *testing.T) {
+		const limit = "the path limit of 512 paths"
+		model, _ := deriveFixture(t, pathFixture(t))
+		if len(model.Access.Roles) != 0 || model.Access.RolesComplete {
+			t.Fatalf("the path fixture proves too little: %d roles, roles complete %v", len(model.Access.Roles), model.Access.RolesComplete)
+		}
+		n := 0
+		for _, p := range model.Access.Permissions {
+			if p.ID != "permission:doc#read" && p.ID != "permission:doc#write" {
+				continue
+			}
+			n++
+			if p.Complete || len(p.Paths) != maxGrantPaths+1 {
+				t.Fatalf("%s: complete %v with %d paths, want not complete with %d", p.ID, p.Complete, len(p.Paths), maxGrantPaths+1)
+			}
+			stopped := 0
+			for _, g := range p.Paths {
+				if slices.Contains(g.Kinds, "work limit") {
+					t.Errorf("%s: the path %s has the kind work limit: %+v", p.ID, g.ID, g)
+				}
+				if !slices.Contains(g.Kinds, "path limit") {
+					continue
+				}
+				stopped++
+				if g.Role != "" || !strings.HasPrefix(g.Stops, limit+";") || limitName(g) != limit {
+					t.Errorf("%s: the path of the path limit does not name it: %+v", p.ID, g)
+				}
+			}
+			if stopped != 1 {
+				t.Errorf("%s: %d paths of the kind path limit, want 1", p.ID, stopped)
+			}
+		}
+		if n != 2 {
+			t.Fatalf("the model holds %d of the permissions doc#read and doc#write", n)
+		}
+		// A path of the kind path limit with no stop text, as a reader can edit it, still names the path limit.
+		if got := limitName(ArchGrant{Kinds: []string{"arrow", "path limit"}}); got != "the path limit" {
+			t.Errorf("a path limit with no stop text is named %q", got)
 		}
 	})
 
