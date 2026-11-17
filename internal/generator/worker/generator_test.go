@@ -331,7 +331,7 @@ func TestContract(t *testing.T) {
 			`Lock: ` + strconv.Quote(from+` AND "id" = ANY($2::text[]::uuid[]) AND "synced" = $3 AND "status" <> $4 ORDER BY "id" FOR NO KEY UPDATE`),
 			`Values: command.DeclaredValues(command.ListValue{Constant: false}, command.ListValue{Constant: "done"})}))`,
 			// The spec takes the lists that the contract package held when it started (security review of PR #416, L3).
-			`var syncPartnerOrdersDeclaredLists = []command.AnyList{SyncPartnerOrdersUnsynced}`,
+			`var syncPartnerOrdersDeclaredLists = command.Snapshot(SyncPartnerOrdersUnsynced)`,
 		} {
 			if !strings.Contains(contract, want) {
 				t.Errorf("the contract does not hold %s:\n%s", want, contract)

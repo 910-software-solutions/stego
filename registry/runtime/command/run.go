@@ -318,7 +318,7 @@ type Command[P any] struct {
 	// changeEvents are the checked change events by entity name.
 	changeEvents map[string]ChangeEvents
 	// lists are the declared lists, which the handle takes only (ST-SUP-RP10-LC38).
-	lists map[AnyList]bool
+	lists map[AnyList]listCopy
 }
 
 // NewCommand checks the declaration of one command.

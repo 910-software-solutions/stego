@@ -707,6 +707,53 @@ type AnyList interface {
 	listName() string
 	listBound() bool
 	listNil() bool
+	// listHeld gives the list that the handle looks up and the copy of its declaration that the handle holds it to.
+	listHeld() (AnyList, listCopy)
+}
+
+// listCopy is a copy of the declaration of a list: its entity, its name, its statements and its values. The handle
+// takes a declared list only while it still has this declaration, so a fill that overwrites the list through its
+// pointer, such as *commands.PlaceOrderOfOrder = *command.Must(command.NewList(...)), gets a list that the handle
+// refuses (security review of PR #421, L1).
+type listCopy struct {
+	entity           Declared
+	name, read, lock string
+	values           []ListValue
+}
+
+func (c listCopy) same(o listCopy) bool {
+	return c.entity == o.entity && c.name == o.name && c.read == o.read && c.lock == o.lock && slices.Equal(c.values, o.values)
+}
+
+func (l *List[T]) listCopy() listCopy {
+	return listCopy{entity: l.entity, name: l.spec.Name, read: l.spec.Read, lock: l.spec.Lock, values: slices.Clone(l.spec.Values.all())}
+}
+
+func (l *List[T]) listHeld() (AnyList, listCopy) { return l, l.listCopy() }
+
+// heldList is a declared list with the copy of its declaration that Snapshot took.
+type heldList struct {
+	AnyList
+	held listCopy
+}
+
+func (h heldList) listHeld() (AnyList, listCopy) { return h.AnyList, h.held }
+
+// Snapshot gives the declared lists for CommandSpec.Lists or WorkerSpec.Lists, each with a copy of its declaration
+// taken now. The generated contract package calls it when it starts, before the init of any fill runs, so a fill
+// that later overwrites a list through its pointer gets a list that the handle refuses (ST-SUP-RP10-LC38, security
+// review of PR #421, L1). A nil list stays nil, and the spec refuses it.
+func Snapshot(lists ...AnyList) []AnyList {
+	out := make([]AnyList, len(lists))
+	for i, l := range lists {
+		if l == nil || l.listNil() {
+			out[i] = l
+			continue
+		}
+		list, held := l.listHeld()
+		out[i] = heldList{AnyList: list, held: held}
+	}
+	return out
 }
 
 func (l *List[T]) listEntity() Declared { return l.entity }
@@ -813,8 +860,8 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 
 // checkLists gives the lists that the command or worker owner declares, by list. It refuses a nil list, a list with
 // bound parameters, which is not the declared list, and a list of an entity that the owner does not write.
-func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[AnyList]bool, error) {
-	out := make(map[AnyList]bool, len(lists))
+func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[AnyList]listCopy, error) {
+	out := make(map[AnyList]listCopy, len(lists))
 	for _, l := range lists {
 		if l == nil || l.listNil() {
 			return nil, fmt.Errorf("command: %s declares a nil list", owner)
@@ -825,7 +872,8 @@ func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[An
 		if !writes[l.listEntity()] {
 			return nil, fmt.Errorf("command: %s declares the list %s of %s, which it does not write", owner, l.listName(), l.listEntity().entityName())
 		}
-		out[l] = true
+		list, held := l.listHeld()
+		out[list] = held
 	}
 	return out, nil
 }
@@ -1326,7 +1374,7 @@ type state struct {
 	writes            map[Declared]bool
 	destinations      map[string]Destination
 	// lists are the lists that the command or the worker declares, which its handle takes only (ST-SUP-RP10-LC38).
-	lists map[AnyList]bool
+	lists map[AnyList]listCopy
 	// runTime is the time of the run that a list value RunTime binds: the due tick of a worker run, the start of a
 	// command attempt or the start of a consumer run.
 	runTime time.Time
@@ -1871,7 +1919,7 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 // entity: the list then has no row and runs no statement. bound is the parent row, or nil.
 func (r *Repository[T]) listArgs(ctx context.Context, l *List[T], args []any) (values []any, bound Ref, empty bool, err error) {
 	s := r.st
-	if !s.lists[l.root()] {
+	if held, ok := s.lists[AnyList(l.root())]; !ok || !held.same(l.root().listCopy()) {
 		kind, place := "command", "command contract"
 		if s.mode == modeWorker || s.mode == modeConsumer {
 			kind, place = "worker", "worker contract"

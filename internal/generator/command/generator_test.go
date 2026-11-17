@@ -289,7 +289,7 @@ func TestContract(t *testing.T) {
 			`func ReserveAndChargeOfOrderWith(orderID string) *command.List[Reservation] { return ReserveAndChargeOfOrder.With(orderID) }`,
 			// The spec takes the lists that the contract package held when it started, before a fill could set the
 			// list variable to its own list (security review of PR #416, L3).
-			`var reserveAndChargeDeclaredLists = []command.AnyList{ReserveAndChargeOfOrder}`,
+			`var reserveAndChargeDeclaredLists = command.Snapshot(ReserveAndChargeOfOrder)`,
 			`func ReserveAndChargeDeclaredLists() []command.AnyList { return append([]command.AnyList(nil), reserveAndChargeDeclaredLists...) }`,
 		} {
 			if !strings.Contains(contract, want) {

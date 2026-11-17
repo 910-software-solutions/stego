@@ -1673,6 +1673,28 @@ func TestCommandLists(t *testing.T) {
 		if got, listed, err := list(withReferenced, referenced.With("not-a-uuid")); got != "" || listed != nil || err != nil {
 			t.Fatalf("a key that the referenced entity refuses gave %q, %v, %v; want an empty list", got, listed, err)
 		}
+		// The contract package takes a copy of each declared list when it starts. A fill whose init then overwrites
+		// the list through its pointer, before the spec of its command is built, gets a list that the handle refuses
+		// (security review of PR #421, L1).
+		owned, err := NewList(e.users, ListSpec{Name: "owned", Read: keyed.spec.Read, Values: DeclaredValues(ListValue{Param: "org_id", Key: true})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot := Snapshot(owned)
+		*owned = *Must(NewList(e.users, ListSpec{Name: "owned", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND $3::text IS NOT NULL ORDER BY id LIMIT $2`, Values: DeclaredValues(ListValue{Param: "org_id"})}))
+		withOwned := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = snapshot }, e.users)
+		if got, listed, err := list(withOwned, owned.With("org1")); got != "" || !errors.Is(listed, ErrInternal) || !errors.Is(err, ErrInternal) {
+			t.Fatalf("a declared list that a fill overwrote gave %q, %v, %v; want the internal error of an undeclared list", got, listed, err)
+		}
+		kept, err := NewList(e.users, ListSpec{Name: "kept", Read: keyed.spec.Read, Values: DeclaredValues(ListValue{Param: "org_id", Key: true})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		withKept := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = Snapshot(kept) }, e.users)
+		if _, listed, _ := list(withKept, kept.With("6f1c7f4e-0000-4000-8000-000000000000")); listed != nil {
+			t.Fatalf("a declared list that no fill changed gave %v", listed)
+		}
 		// A pointer is the Go value of an optional field: it binds its value.
 		org := "org2"
 		if got, _, err := list(cmd, e.admins.With(&org)); got != "u3" || err != nil {

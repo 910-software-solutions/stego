@@ -645,15 +645,16 @@ func DeclaredListsName(owner string) string { return owner + "DeclaredLists" }
 
 // RenderDeclaredLists writes, for the command or worker whose Go name is owner, an unexported slice of its declared
 // lists, which the contract package fills when it starts, and the function DeclaredListsName(owner) that gives a
-// copy of it. A fill imports the contract package, so the slice holds the generated lists before the init of a fill
-// runs: a fill that sets a list variable to a list of its own still gets a list that its handle refuses
-// (ST-SUP-RP10-LC38, security review of PR #416, L3). It writes nothing for no list.
+// copy of it. A fill imports the contract package, so the slice holds the generated lists, with a copy of each
+// declaration (command.Snapshot), before the init of a fill runs: a fill that sets a list variable to a list of its own,
+// or overwrites the list through its pointer, still gets a list that its handle refuses (ST-SUP-RP10-LC38, security
+// reviews of PR #416, L3, and of PR #421, L1). It writes nothing for no list.
 func RenderDeclaredLists(w *bytes.Buffer, owner, ownerText string, lists []string) {
 	if len(lists) == 0 {
 		return
 	}
 	held := strings.ToLower(owner[:1]) + owner[1:] + "DeclaredLists"
-	fmt.Fprintf(w, "// %s are the declared lists of %s, taken when this package starts.\nvar %s = []command.AnyList{%s}\n\n", held, ownerText, held, strings.Join(lists, ", "))
+	fmt.Fprintf(w, "// %s are the declared lists of %s, each with a copy of its declaration that this package takes when\n// it starts, so the handle refuses a list that a fill overwrites through its pointer.\nvar %s = command.Snapshot(%s)\n\n", held, ownerText, held, strings.Join(lists, ", "))
 	fmt.Fprintf(w, "// %s gives the declared lists of %s for its spec: the lists that this package made, also when a fill set a\n// list variable to another list (ST-SUP-RP10-LC38).\nfunc %s() []command.AnyList { return append([]command.AnyList(nil), %s...) }\n\n",
 		DeclaredListsName(owner), ownerText, DeclaredListsName(owner), held)
 }
