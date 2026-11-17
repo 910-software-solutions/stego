@@ -253,12 +253,17 @@ func checkContext(m *ArchitectureModel, refer func(owner string, refs ...string)
 }
 
 // actorKinds are the kinds of actor in the order of the overview, top to bottom.
-// issuerName gives the issuer URL that the model may show: its scheme, host and path, with no user info, query or
-// fragment, so a user name, a password or a token that a declaration put in the URL by mistake is not published
-// with the model (security review of PR #345, F1). It gives false for a value that is not an https URL with a host,
-// which the model does not show, and for a path that holds '@': a password with an unencoded '/', as in
-// https://u:123/secret@host/realm, puts the rest of the user info in the path (security review of PR #350).
+// issuerName gives the issuer URL that the model may show: its scheme, host and path, with no query or fragment, so
+// a user name, a password or a token that a declaration put in the URL by mistake is not published with the model
+// (security review of PR #345, F1). It gives false for a value that is not an https URL with a host, which the
+// model does not show, and for a value that holds '@' at any position, also as %40 in the path. The parse cuts the
+// fragment and then the query before it reads the user info, so a '#', a '?' or a '/' in a user name or a password,
+// as in https://u:12#secret@host/realm or https://u:123/secret@host/realm, puts a part of the user info in the host
+// or the path (security reviews of PR #350 and PR #362). An issuer URL has no user info, so it needs no '@'.
 func issuerName(issuer string) (string, bool) {
+	if strings.Contains(issuer, "@") {
+		return "", false
+	}
 	u, err := url.Parse(issuer)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Opaque != "" || strings.Contains(u.Path, "@") {
 		return "", false
