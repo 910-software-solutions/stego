@@ -1,6 +1,6 @@
 kind: component
 name: browser-backend
-version: 4.5.0
+version: 4.6.0
 stage: ga
 output_namespace: browser
 config:
@@ -61,6 +61,38 @@ architecture:
     browser-session-http: inbound
 
 environment:
+  # The mode migrate reads the runtime login and the owner connection (ST-SUP-RC02-OC56); postgres-adapter states the
+  # same variables with the same facts.
+  - name: DATABASE_URL
+    type: string
+    required: false
+    description: "The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
+    secret: true
+    one_of: database-url
+    secret_source: {name: "{service}-database", key: url}
+  - name: DATABASE_URL_FILE
+    type: path
+    required: false
+    description: "The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two."
+    secret: false
+    one_of: database-url
+    example: "/etc/stego/database/url"
+  - name: STEGO_MIGRATION_DATABASE_URL
+    type: string
+    required: false
+    description: "The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
+    secret: true
+    one_of: migration-database-url
+    secret_source: {name: "{service}-database-owner", key: url}
+    read_by_mode: migrate
+  - name: STEGO_MIGRATION_DATABASE_URL_FILE
+    type: path
+    required: false
+    description: "The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two."
+    secret: false
+    one_of: migration-database-url
+    read_by_mode: migrate
+    example: "/etc/stego/database-owner/url"
   - name: STEGO_HTTP_TLS_CERT
     type: path
     required: false

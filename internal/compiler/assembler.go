@@ -253,6 +253,11 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 		}
 		writeDBSetup(&buf, opener, databaseOpenerComponent(input), parent)
 
+		check, err := schemaCheckCall(input, imports, consumedWirings, parent)
+		if err != nil {
+			return gen.File{}, err
+		}
+		buf.WriteString(check)
 		if needsDatabaseAccessCheck(input, consumedWirings) {
 			fmt.Fprintf(&buf, "\tstegoStage = \"database.access\"\n\tif err := %s.VerifyRuntime(%s, db); err != nil { return err }\n", imports.DatabaseAccessAlias, parent)
 		}
@@ -357,7 +362,7 @@ func writeMainImports(buf *bytes.Buffer, input AssemblerInput, hasRoutes, hasDB,
 
 	// Failure output also applies to services with only a fallible constructor.
 	if fallible {
-		for _, pkg := range []string{"encoding/json", "io", "os", "time"} {
+		for _, pkg := range []string{"encoding/json", "errors", "io", "os", "time"} {
 			extraStdlib[pkg] = true
 		}
 	}

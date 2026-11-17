@@ -263,6 +263,16 @@ func stegoReportFailure(output io.Writer, err error) {
 		abortedTasks = failure.abortedTasks
 		modes = failure.modes
 	}
+	// A refused schema check names its fault class and the generated object, two fixed names of the generated code
+	// and never the text of the cause (ST-SUP-RC02-OC57).
+	var fault, object string
+	var classified interface {
+		FaultClass() string
+		FaultObject() string
+	}
+	if errors.As(err, &classified) {
+		fault, object = classified.FaultClass(), classified.FaultObject()
+	}
 	record := struct {
 		Timestamp    string   `json:"timestamp"`
 		Severity     string   `json:"severity"`
@@ -272,7 +282,9 @@ func stegoReportFailure(output io.Writer, err error) {
 		Tasks        []string `json:"tasks,omitempty"`
 		AbortedTasks []string `json:"aborted_tasks,omitempty"`
 		Modes        []string `json:"modes,omitempty"`
-	}{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes}
+		Fault        string   `json:"fault,omitempty"`
+		Object       string   `json:"object,omitempty"`
+	}{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

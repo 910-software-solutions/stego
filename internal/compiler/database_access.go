@@ -5,8 +5,12 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"go/format"
+	"go/token"
+	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"text/template"
@@ -165,4 +169,31 @@ func containsDatabasePrivilege(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+// schemaCheckCall gives the statements of main.go that run the schema check of a consumed wiring after the database
+// ping and before the access check: the stage database.schema, and on a refusal the stage that the Stage function of
+// the same package gives for the error, such as database.schema for a schema fault or database.access for a connection
+// that did not open (ST-SUP-RC02-OC57). It gives no statement when no wiring declares a schema check.
+func schemaCheckCall(input AssemblerInput, imports importResult, consumed map[int]bool, parent string) (string, error) {
+	var out string
+	for i, component := range input.Wirings {
+		if component.Wiring == nil || component.Wiring.SchemaCheck == nil {
+			continue
+		}
+		check := component.Wiring.SchemaCheck
+		if out != "" {
+			return "", fmt.Errorf("multiple components declare a schema check")
+		}
+		valid := func(name string) bool { return token.IsIdentifier(name) && ast.IsExported(name) }
+		if !consumed[i] || !slices.Contains(component.Wiring.Imports, check.Namespace) || !valid(check.Function) || !valid(check.Stage) {
+			return "", fmt.Errorf("component %q has an invalid schema check", component.Name)
+		}
+		name := path.Base(check.Namespace)
+		if renamed := imports.Renames[i][name]; renamed != "" {
+			name = renamed
+		}
+		out = fmt.Sprintf("\tstegoStage = \"database.schema\"\n\tif err := %s.%s(%s, db); err != nil {\n\t\tstegoStage = %s.%s(err)\n\t\treturn err\n\t}\n", name, check.Function, parent, name, check.Stage)
+	}
+	return out, nil
 }
