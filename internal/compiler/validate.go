@@ -48,8 +48,39 @@ func Validate(input ReconcilerInput) (*ValidationResult, error) {
 	if result != nil {
 		result.Settings = declaration.ResolvedSettings(source.Service)
 		result.Warnings = aliasNotices(source.Registry, source.Service, declaration.Warnings(source.Service))
+		result.Warnings = append(result.Warnings, scopedAccessWarnings(source.Service, input.ProjectDir)...)
 	}
 	return result, err
+}
+
+// ScopedAccessWarnings gives the warnings of the declaration in the project of input about each permission of a scoped
+// collection that does not need the read of its parent (ST-SUP-Q156), which stego plan prints too. A declaration that
+// cannot be read gives none: stego validate reports it.
+func ScopedAccessWarnings(input ReconcilerInput) []ValidationError {
+	source, err := loadCompilationSource(input)
+	if err != nil {
+		return nil
+	}
+	return scopedAccessWarnings(source.Service, input.ProjectDir)
+}
+
+// scopedAccessWarnings gives the warnings of each permission of a scoped collection that does not need the read of
+// its parent (declaration.ScopedAccessWarnings, ST-SUP-Q156), from the schema that the declaration binds in the
+// project folder. A schema that cannot be read gives none: the checks of the schema report it.
+func scopedAccessWarnings(service *types.ServiceDeclaration, projectDir string) []ValidationError {
+	if service == nil || service.Authorization == nil || service.Authorization.SchemaPath == "" {
+		return nil
+	}
+	root, err := os.OpenRoot(projectDir)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+	schema, err := declaration.ReadAuthzSchema(service, root.FS())
+	if err != nil {
+		return nil
+	}
+	return declaration.ScopedAccessWarnings(service, schema)
 }
 
 // aliasNotices gives, for each deprecated alias that the declaration binds, one notice that names the mixins of the

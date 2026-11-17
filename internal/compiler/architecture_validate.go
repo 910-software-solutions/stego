@@ -240,10 +240,13 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 		referKind(c.ID, "permission", c.Grants)
 		// Each ancestor check names an entity of the model, the field that links it up the path, and the
 		// permission whose grant paths the model holds (ST-SUP-RC20-OC24).
-		for _, a := range c.Ancestors {
+		for i, a := range c.Ancestors {
 			referKind(a.ID, "entity", a.Entity)
 			referKind(a.ID, "field", a.Link)
 			referKind(a.ID, "permission", a.Grants)
+			if err := checkAncestorDecision(c, i, a); err != nil && fault == nil {
+				fault = err
+			}
 		}
 	}
 	for _, p := range m.Access.Permissions {
@@ -314,6 +317,28 @@ func checkAspects(m *ArchitectureModel) error {
 	}
 	if !slices.Equal(m.Layers, []string{"edge", "authentication", "handler", "slot", "repository", "store", "outside call"}) {
 		return fmt.Errorf("the layers are %s, not the layer order", strings.Join(m.Layers, ", "))
+	}
+	return nil
+}
+
+// checkAncestorDecision checks what the model says that the handler decides on one ancestor (ST-SUP-RC20-OC24,
+// ST-SUP-Q156): only the parent, the last ancestor, of a list, a create or an upsert is decided, and with a bound
+// authorization it names its read permission; an ancestor that is not decided names no permission, no resource type
+// and no grants, so the view never shows a read that no handler decides, and never hides one that it decides. A
+// decided parent with no permission must say that no authorization is bound (ST-DECL-UC06-R01).
+func checkAncestorDecision(c ArchCheck, i int, a ArchAncestor) error {
+	op := c.Subject[strings.LastIndex(c.Subject, ".")+1:]
+	parent := i == len(c.Ancestors)-1
+	decides := strings.HasPrefix(c.Subject, "operation:") && parent && (op == "list" || op == "create" || op == "upsert")
+	switch {
+	case a.Decided != decides:
+		return fmt.Errorf("%s: decided is %t, and the handler decides a permission only on the parent of a list, a create or an upsert", a.ID, a.Decided)
+	case !a.Decided && (a.Permission != "" || a.ResourceType != "" || a.Grants != "" || a.Public):
+		return fmt.Errorf("%s: an ancestor that is not decided names a permission, a resource type or grants", a.ID)
+	case a.Decided && !a.Public && (a.Permission == "") != (a.Grants == ""):
+		return fmt.Errorf("%s: the decided parent names a read permission without its grants, or grants without the permission", a.ID)
+	case a.Decided && !a.Public && a.Permission == "" && a.Source.Rule != "ST-DECL-UC06-R01":
+		return fmt.Errorf("%s: the decided parent names no read permission, and the model does not say that no authorization is bound", a.ID)
 	}
 	return nil
 }

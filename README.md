@@ -239,6 +239,22 @@ the parent's collection and the scope parameter before it. To use another
 path, give the collection `path_prefix`, for example `path_prefix:
 /stock-items`, which comes after the base path.
 
+A route of a scoped collection names each ancestor of the row, such as
+`/workspaces/{workspace_id}/projects/{project_id}/tickets/{id}`. The handler
+decides a permission only on the deepest resource that the route names: the
+row for a read, an update, a patch and a delete, and the parent for a list, a
+create and an upsert. For each ancestor above it, the handler checks only that
+the row exists in the tenant and is of the ancestor above it in the path. A
+missing, wrong or denied path gives the same 404. Thus a project that is shared
+with a user is open to that user through these routes, also when the user may
+not view the workspace. When a row must also need the permission of its parent,
+write that rule in the schema as an intersection, for example
+`permission view = viewer & parent->view`. A caller with no grant on the deepest
+resource learns nothing of the ancestors. A caller with a grant on it learns no
+field of an ancestor, but on a path of two or more levels it can find out, from
+200 against 404, whether an ancestor above the parent is of the next ancestor,
+and the `href` of the row names each ancestor.
+
 Put the SpiceDB schema at `authz/schema.zed`:
 
 ```zed
@@ -523,6 +539,36 @@ and commit the result:
 ```sh
 go test ./internal/assure -run TestOwnTree -update-docs
 ```
+
+## Release notes
+
+### Nested routes: a grant on the deepest resource is enough; check your schema
+
+Before this release, a route of a scoped collection also decided the read
+permission of each ancestor in the path. Now it decides a permission only on
+the deepest resource that the route names (ST-SUP-Q156). For each ancestor
+above it, it checks only that the row exists and is of the ancestor above it.
+
+This can give more access to an existing service. For example, with
+`permission edit = owner + organization->edit` on a member, an owner of the
+member who may not view the organization could not change the member before.
+Now that owner can. `stego validate` and `stego plan` warn about each such
+permission (the rule `scoped-access`). Each warning names the entity, the
+permission and the parent, and gives the intersection that keeps the earlier
+access, such as:
+
+```zed
+permission edit = (owner + organization->edit) & organization->view
+```
+
+Read each warning, and change the schema where the earlier access is the one
+you want.
+
+The user-management examples do this for `member`: its view is now
+`organization->view` and its edit is
+`(owner + organization->edit) & organization->view`. Thus an owner of a member
+who may not view its organization no longer finds that member in the list
+`all-users` either.
 
 ## License
 

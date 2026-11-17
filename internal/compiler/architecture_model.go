@@ -355,18 +355,21 @@ type ArchCheck struct {
 	Public       bool   `json:"public"`
 	Reason       string `json:"reason,omitempty"`
 	Grants       string `json:"grants,omitempty"`
-	// Ancestors are the checks of the parent chain of an operation of a scoped collection, in the order the handler
-	// reads them, the top ancestor first (ST-SUP-RC20-OC24): the handler reads each ancestor of the path before the
-	// row, and answers 404 when one is missing, denied or of another parent. An operation with no scope has none.
+	// Ancestors are the checks of the parent chain of an operation of a scoped collection, the top ancestor first
+	// (ST-SUP-RC20-OC24): each ancestor of the path must exist in the tenant and be of the ancestor above it, and the
+	// handler answers 404 when one is missing, denied or of another parent. Only the parent of a list, a create or an
+	// upsert, the deepest resource that the request names, is decided. An operation with no scope has none.
 	Ancestors []ArchAncestor `json:"ancestors,omitempty"`
 	Source    ArchSource     `json:"source"`
 }
 
 // ArchAncestor is the check of one ancestor in the path of an operation: the entity of the row that the path
-// parameter names, the field of that row that names the ancestor above it, and the read permission of the entity,
-// which the handler decides on the row. With no bound authorization it gets no permission check, and Reason says
-// why; the row must still exist in the tenant and be of the ancestor above it. The derivation refuses an ancestor
-// with no resource type, which no generator builds.
+// parameter names and the field of that row that names the ancestor above it. The row must exist in the tenant and be
+// of the ancestor above it. Decided is true only for the parent of a list, a create or an upsert, the deepest resource
+// that the request names: the handler decides the read permission of the entity on it, or, with no bound
+// authorization, no permission, and Reason says why. An ancestor that is not decided has no permission and no grants:
+// the handler decides no permission on it, and Reason says so (ST-SUP-RC20-OC24, ST-SUP-Q156). The derivation
+// refuses an ancestor with no resource type, which no generator builds.
 type ArchAncestor struct {
 	ID           string `json:"id"`
 	Entity       string `json:"entity"`
@@ -375,6 +378,7 @@ type ArchAncestor struct {
 	ResourceType string `json:"resource_type,omitempty"`
 	Permission   string `json:"permission,omitempty"`
 	Public       bool   `json:"public"`
+	Decided      bool   `json:"decided"`
 	Reason       string `json:"reason,omitempty"`
 	Grants       string `json:"grants,omitempty"`
 	// Source is what sets the check: the read permission of the entity, or the rule that gives it none. ScopeSource
