@@ -713,6 +713,10 @@ func TestRevocationForgery(t *testing.T) {
 	})
 }
 
+// lockReads bounds the reads of pg_stat_activity of ST-SUP-RP06-LC13-T07 that wait for the second relay to wait for
+// the floor lock.
+const lockReads = 100000
+
 func TestRevocationFloor(t *testing.T) {
 	ctx := context.Background()
 
@@ -913,8 +917,10 @@ func TestRevocationFloor(t *testing.T) {
 			<-held.entered
 			go func() { done <- env.deliverByHand(t, relayB, idB) }()
 			// The second relay's floor transaction waits for the first one's lock.
+			// A count of reads, not a time, bounds the wait, with no sleep, so a relay that never waits for the lock
+			// fails the test and does not hang it.
 			waited := false
-			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			for range lockReads {
 				if env.scalar(t, "SELECT count(*) FROM pg_catalog.pg_stat_activity WHERE usename = $1 AND wait_event_type = 'Lock'",
 					env.roles[2]) == "1" {
 					waited = true
