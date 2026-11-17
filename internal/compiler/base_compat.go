@@ -220,6 +220,7 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	faults = append(faults, uniqueAddFaults(base, head)...)
 	faults = append(faults, relaxFaults(base, head)...)
 	faults = append(faults, withinFaults(base, head)...)
+	faults = append(faults, droppedEntityFaults(base, head)...)
 	generated, ok := generatedBaselines(applied, base, head)
 	if !ok {
 		// Generation does not carry out each kind of the declarations yet, so the indexes are compared as the
@@ -241,6 +242,24 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	faults = append(faults, shapeFaults...)
 	if ok {
 		faults = append(faults, generated.faults(faults)...)
+	}
+	return faults
+}
+
+// droppedEntityFaults refuses a drop of an entity of the base that the head does not keep declared with dropped_by:
+// the baseline and the contract come from the declaration alone, so the entity and the collections over it stay as
+// the base has them (ST-DECL-INV58, ST-GEN-Q47).
+func droppedEntityFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	var faults []BaseFault
+	for _, change := range head.SchemaChanges {
+		if change.Kind != "drop" || change.Field != "" {
+			continue
+		}
+		_, inBase := findStoredEntity(base, change.Entity)
+		kept := slices.ContainsFunc(head.DroppedEntities, func(e types.Entity) bool { return e.Name == change.Entity && e.DroppedBy == change.ID })
+		if inBase && !kept {
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Message: fmt.Sprintf("the drop %s removes the entity %s from the head; the release that runs now still reads and writes its table, and the migrations come from the declaration alone, so keep the entity and its collections as the base has them, with dropped_by: %s", change.ID, change.Entity, change.ID)})
+		}
 	}
 	return faults
 }
@@ -277,12 +296,13 @@ func generatedBaselines(applied *AppliedState, base, head *types.ServiceDeclarat
 		}
 	}
 	baseline := func(service *types.ServiceDeclaration, components []string) ([]postgresadapter.BaselineTable, string, error) {
-		entities, err := gen.StoredNames(service.Entities, service.Invariants, service.Collections, service.SchemaChanges)
+		entities, dropped, err := storedEntities(service, service.SchemaChanges)
 		if err != nil {
 			return nil, "", err
 		}
 		return postgresadapter.Baseline(gen.Context{Entities: entities, Collections: service.Collections,
-			SchemaChanges: service.SchemaChanges, SchemaHistory: service.SchemaHistory, Tenancy: pooledTenancy(service, components)})
+			SchemaChanges: service.SchemaChanges, SchemaHistory: service.SchemaHistory, Tenancy: pooledTenancy(service, components),
+			DroppedEntities: dropped, DroppedCollections: service.DroppedCollections, EntityOrder: service.EntityOrder, CollectionOrder: service.CollectionOrder})
 	}
 	out := &baselineOutput{}
 	var err error
@@ -451,7 +471,18 @@ func collectionIndexes(service *types.ServiceDeclaration, entity string) string 
 		}
 	}
 	if declared, ok := findStoredEntity(service, entity); ok && listed {
-		for _, field := range declared.Fields {
+		// A dropped field is in 001_initial with its search index, as its Definition gives it (ST-DECL-EN21).
+		fields := slices.Clone(declared.Fields)
+		for _, change := range service.SchemaChanges {
+			if change.Kind != "drop" || change.Entity != entity || change.Field == "" {
+				continue
+			}
+			if dropped, reason := gen.DropDefinition(change.Definition); reason == "" && !slices.ContainsFunc(fields, func(f types.Field) bool { return f.Name == change.Field }) {
+				dropped.Field.Name = change.Field
+				fields = append(fields, dropped.Field)
+			}
+		}
+		for _, field := range fields {
 			if retype, ok := first[field.Name]; ok {
 				sensitivity := field.Sensitivity
 				field = gen.RetypeField(retype)
@@ -657,7 +688,7 @@ func (e *storedEntity) field(name string) int {
 // its field is not undone, so the shape before it differs from the base, and relaxFaults names the reason.
 func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 	var entities []*storedEntity
-	for _, entity := range service.Entities {
+	stored := func(entity types.Entity) *storedEntity {
 		stored := &storedEntity{Name: entity.Name, Settings: entitySettings(entity)}
 		for _, field := range entity.Fields {
 			stored.Fields = append(stored.Fields, storedField{Name: field.Name, Shape: shapeOf(field)})
@@ -667,7 +698,10 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 				stored.Uniques = append(stored.Uniques, storedUnique{Name: invariant.Name, By: strings.Join(invariant.By, ", "), Where: invariant.Where})
 			}
 		}
-		entities = append(entities, stored)
+		return stored
+	}
+	for _, entity := range service.Entities {
+		entities = append(entities, stored(entity))
 	}
 	find := func(name string) int {
 		return slices.IndexFunc(entities, func(e *storedEntity) bool { return e.Name == name })
@@ -675,8 +709,13 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 	for _, change := range undoOrder(service, from) {
 		at := find(change.Entity)
 		if change.Kind == "drop" && change.Field == "" {
+			// The entity that a drop removes stays declared with dropped_by, as it was (ST-GEN-Q47).
 			if at < 0 {
-				entities = append(entities, &storedEntity{Name: change.Entity, Loose: true})
+				if dropped := slices.IndexFunc(service.DroppedEntities, func(e types.Entity) bool { return e.Name == change.Entity }); dropped >= 0 {
+					entities = append(entities, stored(service.DroppedEntities[dropped]))
+				} else {
+					entities = append(entities, &storedEntity{Name: change.Entity, Loose: true})
+				}
 			}
 			continue
 		}
@@ -706,9 +745,24 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 				entity.Fields[field].Loose = true
 			}
 		case "drop":
-			if field < 0 {
-				entity.Fields = append(entity.Fields, storedField{Name: change.Field, Shape: fieldShape{Type: definitionType(change.Definition)}, Loose: true})
+			if field >= 0 {
+				break
 			}
+			// The Definition of a drop gives the field in full and its place (ST-DECL-EN21); one that cannot be read
+			// gives a loose field of its type, which checking refuses.
+			dropped, reason := gen.DropDefinition(change.Definition)
+			if reason != "" {
+				entity.Fields = append(entity.Fields, storedField{Name: change.Field, Shape: fieldShape{Type: definitionType(change.Definition)}, Loose: true})
+				break
+			}
+			place := 0
+			if !dropped.First {
+				place = len(entity.Fields)
+				if after := entity.field(dropped.After); after >= 0 {
+					place = after + 1
+				}
+			}
+			entity.Fields = slices.Insert(entity.Fields, place, storedField{Name: change.Field, Shape: shapeOf(dropped.Field)})
 		case "unique":
 			entity.Uniques = slices.DeleteFunc(entity.Uniques, func(unique storedUnique) bool { return unique.Name == change.Field })
 		case "relax":
@@ -818,8 +872,8 @@ func baselineFaults(base, head []*storedEntity) []BaseFault {
 			}
 		}
 		if now == nil {
-			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Message: fmt.Sprintf("the head removes the entity %s, which no schema step declares; the release that runs now still reads and writes its table", entity.Name),
-				Declare: []SuggestedChange{{ID: kebab(entity.Name) + "-drop", Kind: "drop", Entity: entity.Name, Needs: "the Definition of its fields", Phase: "expand"}}})
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: entity.Name, Message: fmt.Sprintf("the head removes the entity %s, which no schema step declares; the release that runs now still reads and writes its table, so keep the entity and its collections as they are, with dropped_by: %s-drop", entity.Name, kebab(entity.Name)),
+				Declare: []SuggestedChange{{ID: kebab(entity.Name) + "-drop", Kind: "drop", Entity: entity.Name, Needs: "the entity kept with dropped_by", Phase: "expand"}}})
 		}
 	}
 	return faults
@@ -882,7 +936,13 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 		return SuggestedChange{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-require", Kind: "require", Entity: head.Name, Field: field.Name, Needs: "a fill value", Phase: "expand"}
 	}
 	for i, field := range dropped {
-		declare := []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-drop", Kind: "drop", Entity: head.Name, Field: field.Name, Needs: "the Definition " + definitionOf(field.Shape), Phase: "expand"}}
+		// The Definition of a drop also gives the place of the field, after the field before it in the base, or first
+		// (ST-DECL-EN21).
+		place := ", first"
+		if at := base.field(field.Name); at > 0 {
+			place = ", after " + base.Fields[at-1].Name
+		}
+		declare := []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-drop", Kind: "drop", Entity: head.Name, Field: field.Name, Needs: "the Definition " + definitionOf(field.Shape) + place, Phase: "expand"}}
 		message := fmt.Sprintf("the head removes %s.%s, which no schema step declares; the release that runs now still reads and writes the column %s", head.Name, field.Name, field.Name)
 		if i == 0 && len(added) > 0 {
 			var names []string
@@ -925,6 +985,9 @@ func definitionConstraints(shape fieldShape) string {
 	if shape.Max != nil {
 		parts = append(parts, fmt.Sprintf("max %v", *shape.Max))
 	}
+	if len(shape.Values) > 0 {
+		parts = append(parts, "values "+strings.Join(shape.Values, " "))
+	}
 	if shape.Unique {
 		parts = append(parts, "unique")
 	}
@@ -965,15 +1028,19 @@ func relaxRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclarat
 		kinds[change.ID] = change.Kind
 	}
 	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
-		if kinds[step.Change] != "relax" {
+		kind := kinds[step.Change]
+		if kind != "relax" && (kind != "drop" || step.Phase != "expand") {
 			continue
 		}
 		pinned := version
 		if pinned == "" {
 			pinned = "no runtime library"
 		}
+		// A drop at expand drops the NOT NULL of the old column and gives it a default in the relaxed form, and the
+		// release before reports itself for its contract step (ST-SUP-RC01-OC34), which a runtime from
+		// RelaxRuntimeVersion accepts.
 		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
-			"the base runs %s, whose schema check refuses the column that the relax %s changes in place, so its migration job refuses the database after the step; deploy a release with the runtime library %s or later, with no new schema step, first", pinned, step.Change, RelaxRuntimeVersion)}}
+			"the base runs %s, whose schema check refuses the column that the %s %s changes in place, so its migration job refuses the database after the step; deploy a release with the runtime library %s or later, with no new schema step, first", pinned, kind, step.Change, RelaxRuntimeVersion)}}
 	}
 	return nil
 }

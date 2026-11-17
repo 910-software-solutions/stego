@@ -144,6 +144,10 @@ type Entity struct {
 	Ledger *Ledger `yaml:"ledger,omitempty" json:"Ledger,omitempty"`
 	// EntityAuthorization holds the entity's resource type, permissions and relationships (ST-DECL-UC06).
 	EntityAuthorization `yaml:",inline"`
+	// DroppedBy is the ID of the schema change of kind drop with no field that removes the entity, or empty
+	// (ST-DECL-EN02, ST-GEN-Q47). The entity stays declared as it was, with the collections over it, so that the
+	// baseline and the contract come from the declaration alone; the declaration keeps it apart from Entities.
+	DroppedBy string `yaml:"dropped_by,omitempty" json:"DroppedBy,omitempty"`
 }
 
 // Convention captures the archetype's conventions.
@@ -401,14 +405,22 @@ type ServiceDeclaration struct {
 	ErrorTypeBase       string            `yaml:"error_type_base,omitempty"`
 	Entities            []Entity          `yaml:"entities"`
 	Collections         []Collection      `yaml:"-"`
-	Slots               []SlotDeclaration `yaml:"slots"`
-	Mixins              []string          `yaml:"mixins,omitempty"`
-	Overrides           map[string]any    `yaml:"overrides,omitempty"`
-	FillModules         []FillModule      `yaml:"fill_modules,omitempty"`
-	Idempotency         *Idempotency      `yaml:"idempotency,omitempty"`
-	Tenancy             *Tenancy          `yaml:"tenancy,omitempty"`
-	Audit               *Audit            `yaml:"audit,omitempty"`
-	Controllers         []Controller      `yaml:"controllers,omitempty"`
+	// DroppedEntities are the declared entities with dropped_by, and DroppedCollections the collections over them
+	// (ST-GEN-Q47): reading the declaration takes them out of Entities and Collections, so that only the code that
+	// gives back the stored shape of an earlier step reads them. EntityOrder and CollectionOrder are the names of
+	// all entities and of all collections in the order of the declaration.
+	DroppedEntities    []Entity          `yaml:"-"`
+	DroppedCollections []Collection      `yaml:"-"`
+	EntityOrder        []string          `yaml:"-"`
+	CollectionOrder    []string          `yaml:"-"`
+	Slots              []SlotDeclaration `yaml:"slots"`
+	Mixins             []string          `yaml:"mixins,omitempty"`
+	Overrides          map[string]any    `yaml:"overrides,omitempty"`
+	FillModules        []FillModule      `yaml:"fill_modules,omitempty"`
+	Idempotency        *Idempotency      `yaml:"idempotency,omitempty"`
+	Tenancy            *Tenancy          `yaml:"tenancy,omitempty"`
+	Audit              *Audit            `yaml:"audit,omitempty"`
+	Controllers        []Controller      `yaml:"controllers,omitempty"`
 	// Commands are the business commands that the service's own code carries out (ST-DECL-EN18).
 	Commands []Command `yaml:"commands,omitempty"`
 	// Queries are the reads that the service's own code carries out (ST-DECL-EN19).
@@ -511,7 +523,73 @@ func (sd *ServiceDeclaration) UnmarshalYAML(value *yaml.Node) error {
 	}
 
 	*sd = ServiceDeclaration(raw)
+	sd.splitDropped()
 	return nil
+}
+
+// splitDropped takes each entity with dropped_by, and each collection over such an entity, out of Entities and
+// Collections into DroppedEntities and DroppedCollections, and keeps the order of the declaration in EntityOrder and
+// CollectionOrder (ST-GEN-Q47).
+func (sd *ServiceDeclaration) splitDropped() {
+	sd.EntityOrder, sd.CollectionOrder = nil, nil
+	dropped := map[string]bool{}
+	var live []Entity
+	for _, entity := range sd.Entities {
+		sd.EntityOrder = append(sd.EntityOrder, entity.Name)
+		if entity.DroppedBy != "" {
+			dropped[entity.Name] = true
+			sd.DroppedEntities = append(sd.DroppedEntities, entity)
+			continue
+		}
+		live = append(live, entity)
+	}
+	if len(dropped) == 0 {
+		for _, collection := range sd.Collections {
+			sd.CollectionOrder = append(sd.CollectionOrder, collection.Name)
+		}
+		return
+	}
+	sd.Entities = live
+	var kept []Collection
+	for _, collection := range sd.Collections {
+		sd.CollectionOrder = append(sd.CollectionOrder, collection.Name)
+		if dropped[collection.Entity] {
+			sd.DroppedCollections = append(sd.DroppedCollections, collection)
+			continue
+		}
+		kept = append(kept, collection)
+	}
+	sd.Collections = kept
+}
+
+// AllEntities gives every declared entity in the order of the declaration: the live ones and those with dropped_by.
+func (sd *ServiceDeclaration) AllEntities() []Entity {
+	return inOrder(sd.Entities, sd.DroppedEntities, sd.EntityOrder, func(e Entity) string { return e.Name })
+}
+
+// AllCollections gives every declared collection in the order of the declaration, with those over dropped entities.
+func (sd *ServiceDeclaration) AllCollections() []Collection {
+	return inOrder(sd.Collections, sd.DroppedCollections, sd.CollectionOrder, func(c Collection) string { return c.Name })
+}
+
+// inOrder joins live and dropped in the order of the names, with an item whose name order does not hold last.
+func inOrder[T any](live, dropped []T, order []string, name func(T) string) []T {
+	if len(dropped) == 0 {
+		return live
+	}
+	all := append(append([]T(nil), live...), dropped...)
+	rank := map[string]int{}
+	for i, n := range order {
+		rank[n] = i
+	}
+	at := func(item T) int {
+		if i, ok := rank[name(item)]; ok {
+			return i
+		}
+		return len(order)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return at(all[i]) < at(all[j]) })
+	return all
 }
 
 // MarshalYAML implements custom YAML marshaling for ServiceDeclaration.
@@ -519,7 +597,7 @@ func (sd *ServiceDeclaration) UnmarshalYAML(value *yaml.Node) error {
 func (sd ServiceDeclaration) MarshalYAML() (any, error) {
 	// Build an ordered map for collections.
 	collMap := yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	for _, c := range sd.Collections {
+	for _, c := range sd.AllCollections() {
 		keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: c.Name}
 		// Marshal the collection without the Name field.
 		valNode := &yaml.Node{}
@@ -566,9 +644,9 @@ func (sd ServiceDeclaration) MarshalYAML() (any, error) {
 	}
 
 	// Entities.
-	if len(sd.Entities) > 0 {
+	if entities := sd.AllEntities(); len(entities) > 0 {
 		entNode := &yaml.Node{}
-		entBytes, err := yaml.Marshal(sd.Entities)
+		entBytes, err := yaml.Marshal(entities)
 		if err != nil {
 			return nil, err
 		}
@@ -582,7 +660,7 @@ func (sd ServiceDeclaration) MarshalYAML() (any, error) {
 	}
 
 	// Collections.
-	if len(sd.Collections) > 0 {
+	if len(collMap.Content) > 0 {
 		m.Content = append(m.Content,
 			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "collections"},
 			&collMap,

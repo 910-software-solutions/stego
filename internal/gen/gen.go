@@ -271,6 +271,17 @@ type Context struct {
 	// is a server stream of the proto files of the grpc-application component, which the compiler reads for the check
 	// of ST-DECL-INV73 (ST-SUP-RC33-OC08). Generators must not change it.
 	QueryStreams map[string]bool
+
+	// DroppedEntities are the entities that the declaration declares with dropped_by, and DroppedCollections the
+	// collections over them (ST-DECL-EN02, ST-GEN-Q47): Entities and Collections do not hold them, so no generator
+	// gives them an API, a client, a repository, a handler or a manifest entry, and AtSchemaStep gives them back for
+	// the steps before their drop. EntityOrder and CollectionOrder are the names of all entities and collections in
+	// the order of the declaration, by which AtSchemaStep puts each one back in its place. Generators must not change
+	// them.
+	DroppedEntities    []types.Entity
+	DroppedCollections []types.Collection
+	EntityOrder        []string
+	CollectionOrder    []string
 }
 
 // AtSchemaStep gives a copy of the context with the stored shape after the first steps steps of the schema
@@ -279,8 +290,10 @@ type Context struct {
 // length of the schema history is the context itself. An add of an entity is undone with the entity and each
 // collection over it, an add of a field with the field, a rename by giving the field the column From, with its
 // API name kept (StoredNames), and a relax by giving the field what it was before the change
-// (types.SchemaChange.RelaxedFrom), and a within by taking the within off its reference. Generation carries out no other kind of schema change yet, so AtSchemaStep
-// refuses one, and a change with no step.
+// (types.SchemaChange.RelaxedFrom), a within by taking the within off its reference, a drop of a field by giving the
+// entity back the field of its Definition in its place (DropDefinition), and a drop of an entity by giving back the
+// entity and the collections over it, which the declaration keeps with dropped_by (ST-GEN-Q47).
+// AtSchemaStep refuses a change of another kind, and a change with no step.
 func (c Context) AtSchemaStep(steps int) (Context, error) {
 	first := map[string]int{}
 	for i, step := range c.SchemaHistory {
@@ -294,7 +307,7 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if !stepped {
 			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
 		}
-		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" {
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" && change.Kind != "drop" {
 			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
 		}
 		if at >= steps {
@@ -313,6 +326,14 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 	shaped.Collections = append([]types.Collection(nil), c.Collections...)
 	sort.SliceStable(undo, func(i, j int) bool { return first[undo[i].ID] > first[undo[j].ID] })
 	for _, change := range undo {
+		if change.Kind == "drop" && change.Field == "" {
+			// A drop of an entity is undone by giving back the entity, as the declaration still declares it with
+			// dropped_by, and each collection over it, each in its place (ST-GEN-Q47).
+			if err := shaped.restoreEntity(c, change); err != nil {
+				return Context{}, err
+			}
+			continue
+		}
 		at := -1
 		for j, entity := range shaped.Entities {
 			if entity.Name == change.Entity {
@@ -333,6 +354,29 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 			ref.Within = ""
 			references[change.Field] = ref
 			shaped.Entities[at].References = references
+			continue
+		}
+		if change.Kind == "drop" {
+			// A drop of a field is undone by giving the entity back the field of its Definition, in its place
+			// (ST-DECL-EN21, ST-GEN-INV33).
+			fields := shaped.Entities[at].Fields
+			if slices.ContainsFunc(fields, func(f types.Field) bool { return f.ColumnName() == change.Field || f.Name == change.Field }) {
+				return Context{}, fmt.Errorf("schema change %q drops the field %s.%s, which the entity still has", change.ID, change.Entity, change.Field)
+			}
+			dropped, reason := DropDefinition(change.Definition)
+			if reason != "" {
+				return Context{}, fmt.Errorf("schema change %q: %s", change.ID, reason)
+			}
+			dropped.Field.Name = change.Field
+			place := 0
+			if !dropped.First {
+				after := slices.IndexFunc(fields, func(f types.Field) bool { return f.ColumnName() == dropped.After || f.Name == dropped.After })
+				if after < 0 {
+					return Context{}, fmt.Errorf("schema change %q puts the field %s.%s after %s, which the entity does not have at its step", change.ID, change.Entity, change.Field, dropped.After)
+				}
+				place = after + 1
+			}
+			shaped.Entities[at].Fields = slices.Insert(slices.Clone(fields), place, dropped.Field)
 			continue
 		}
 		if change.Kind == "relax" {
@@ -409,6 +453,43 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 	return shaped, nil
 }
 
+// restoreEntity gives the context back the entity that the drop change removes, from the dropped entities of c, with
+// each collection over it, each in its place in the order of the declaration.
+func (shaped *Context) restoreEntity(c Context, change types.SchemaChange) error {
+	at := slices.IndexFunc(c.DroppedEntities, func(e types.Entity) bool { return e.Name == change.Entity && e.DroppedBy == change.ID })
+	if at < 0 {
+		return fmt.Errorf("schema change %q drops the entity %s, which the declaration does not declare with dropped_by: %s", change.ID, change.Entity, change.ID)
+	}
+	if slices.ContainsFunc(shaped.Entities, func(e types.Entity) bool { return e.Name == change.Entity }) {
+		return fmt.Errorf("schema change %q drops the entity %s, which the declaration still has", change.ID, change.Entity)
+	}
+	entity := c.DroppedEntities[at]
+	entity.DroppedBy = ""
+	entity.Fields = append([]types.Field(nil), entity.Fields...)
+	shaped.Entities = insertInOrder(shaped.Entities, entity, c.EntityOrder, func(e types.Entity) string { return e.Name })
+	for _, collection := range c.DroppedCollections {
+		if collection.Entity == change.Entity {
+			shaped.Collections = insertInOrder(shaped.Collections, collection, c.CollectionOrder, func(c types.Collection) string { return c.Name })
+		}
+	}
+	return nil
+}
+
+// insertInOrder inserts item into list before the first item that comes after it in order, by name.
+func insertInOrder[T any](list []T, item T, order []string, name func(T) string) []T {
+	rank := func(n string) int {
+		if i := slices.Index(order, n); i >= 0 {
+			return i
+		}
+		return len(order)
+	}
+	at := slices.IndexFunc(list, func(other T) bool { return rank(name(other)) > rank(name(item)) })
+	if at < 0 {
+		at = len(list)
+	}
+	return slices.Insert(slices.Clone(list), at, item)
+}
+
 // StoredNames gives a copy of the entities in which each field that a schema change of kind rename names has the
 // API name of the field before its first rename and the column of its declared name (ST-GEN-UC12-R04): a rename
 // does not rename the field in the API, so every generator of an API, a client or a fill reads Name, and the
@@ -477,33 +558,74 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 	return out, nil
 }
 
-// DefinitionField reads the Definition of a dropped field, as [name:] type[, constraint value]..., such as
-// legacy: string, max_length 64, into a field. It gives a reason when the Definition cannot be read.
+// DefinitionField reads the Definition of a retyped field, as [name:] type[, item]..., such as integer, min 0, into a
+// field (decision on ST-GEN-Q07 (a)). It takes the items of DropDefinition but the place of the field, which a retype
+// does not move, and gives a reason when the Definition cannot be read.
 func DefinitionField(definition string) (types.Field, string) {
+	dropped, reason := readDefinition(definition, false)
+	return dropped.Field, reason
+}
+
+// DroppedField is a field that a drop removes, as the Definition of the drop gives it (ST-DECL-EN21): the field, and
+// its place in the entity, after the field After, or First.
+type DroppedField struct {
+	Field types.Field
+	After string
+	First bool
+}
+
+// DropDefinition reads the Definition of a dropped field (ST-DECL-EN21, ST-DECL-INV62): the type, then one item for
+// each attribute that the field had, separated by commas: min_length N, max_length N, min N, max N, values V1 V2 ...,
+// default D, optional, unique, pii or secret, after F or first, and last pattern P, because a pattern can hold a
+// comma. An item that the Definition does not name the field did not have. It gives a reason, and no field, when the
+// Definition cannot be read, names an item twice, or gives no place.
+func DropDefinition(definition string) (DroppedField, string) {
+	dropped, reason := readDefinition(definition, true)
+	if reason == "" && dropped.After == "" && !dropped.First {
+		return DroppedField{}, "the definition gives no place of the field; end it with after F, the field that it came after, or first"
+	}
+	return dropped, reason
+}
+
+// readDefinition reads a Definition; place tells whether it may give the place of the field.
+func readDefinition(definition string, place bool) (DroppedField, string) {
 	parts := strings.Split(definition, ",")
 	head := strings.TrimSpace(parts[0])
 	if _, typ, named := strings.Cut(head, ":"); named {
 		head = strings.TrimSpace(typ)
 	}
-	field := types.Field{Type: types.FieldType(head)}
+	out := DroppedField{Field: types.Field{Type: types.FieldType(head)}}
+	field := &out.Field
 	if !types.ValidFieldTypes[field.Type] {
-		return field, fmt.Sprintf("the type %q is not a field type", head)
+		return out, fmt.Sprintf("the type %q is not a field type", head)
 	}
+	seen := map[string]bool{}
 	for i, part := range parts[1:] {
 		key, value, _ := strings.Cut(strings.TrimSpace(part), " ")
+		value = strings.TrimSpace(value)
+		item := key
+		if key == "pii" || key == "secret" {
+			item = "sensitivity"
+		}
+		if key == "after" || key == "first" {
+			item = "place"
+		}
+		if seen[item] {
+			return out, fmt.Sprintf("the definition gives %s twice", item)
+		}
+		seen[item] = true
 		if key == "pattern" {
-			// A pattern can hold a comma, as in {1,9}, so it is the last constraint and takes the rest of the text.
+			// A pattern can hold a comma, as in {1,9}, so it is the last item and takes the rest of the text.
 			_, rest, _ := strings.Cut(strings.Join(parts[i+1:], ","), "pattern")
 			field.Pattern = strings.TrimSpace(rest)
 			break
 		}
-		value = strings.TrimSpace(value)
 		number, err := strconv.ParseFloat(value, 64)
 		switch key {
 		case "min_length", "max_length":
 			length, err := strconv.Atoi(value)
 			if err != nil {
-				return field, fmt.Sprintf("the constraint %s %q is not a whole number", key, value)
+				return out, fmt.Sprintf("the constraint %s %q is not a whole number", key, value)
 			}
 			if key == "min_length" {
 				field.MinLength = &length
@@ -512,28 +634,58 @@ func DefinitionField(definition string) (types.Field, string) {
 			}
 		case "min", "max":
 			if err != nil {
-				return field, fmt.Sprintf("the constraint %s %q is not a number", key, value)
+				return out, fmt.Sprintf("the constraint %s %q is not a number", key, value)
 			}
 			if key == "min" {
 				field.Min = &number
 			} else {
 				field.Max = &number
 			}
-		case "pattern":
-			field.Pattern = value
 		case "default":
 			// The field keeps its default, so the field before a retype or a drop keeps the DEFAULT of its column
 			// (ST-DECL-INV62, ST-GEN-INV33).
 			if value == "" {
-				return field, "the constraint default has no value"
+				return out, "the constraint default has no value"
 			}
 			field.Default = definitionDefault(field.Type, value)
-		case "optional", "unique":
+		case "values":
+			field.Values = strings.Fields(value)
+			if len(field.Values) == 0 {
+				return out, "the item values names no value"
+			}
+			if field.Type != types.FieldTypeEnum {
+				return out, "the item values is only for an enum"
+			}
+		case "optional", "unique", "pii", "secret", "first":
+			if value != "" {
+				return out, fmt.Sprintf("the item %s takes no value, and the definition gives %q", key, value)
+			}
+			switch key {
+			case "optional":
+				field.Optional = true
+			case "unique":
+				field.Unique = true
+			case "first":
+				out.First = true
+			default:
+				field.Sensitivity = key
+			}
+		case "after":
+			if value == "" || strings.Contains(value, " ") {
+				return out, fmt.Sprintf("the item after needs one field name, and the definition gives %q", value)
+			}
+			out.After = value
 		default:
-			return field, fmt.Sprintf("the constraint %q is not one a field has", key)
+			return out, fmt.Sprintf("the constraint %q is not one a field has", key)
+		}
+		if item == "place" && !place {
+			return out, "a retype keeps the place of its field, so its definition takes no after and no first"
 		}
 	}
-	return field, ""
+	if field.Type == types.FieldTypeEnum && len(field.Values) == 0 && place {
+		return out, "the definition of an enum needs its values, as values V1 V2 ..."
+	}
+	return out, ""
 }
 
 // definitionDefault reads the value of the default item of a Definition as the declaration's YAML gives a default of

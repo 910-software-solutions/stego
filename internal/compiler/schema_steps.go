@@ -77,16 +77,16 @@ func MissingAddSteps(base BaseSource, head *types.ServiceDeclaration) ([]types.S
 	return steps, nil
 }
 
-// generatedSchemaKinds are the kinds of schema change whose steps generation carries out. The kinds retype,
-// require, drop and unique have no generated step migration yet, so generation refuses them rather than write code
-// that does not move the rows; each kind joins the list in the change that generates its steps. An add is a step
+// generatedSchemaKinds are the kinds of schema change whose steps generation carries out. The kind unique has no
+// generated step migration yet, so generation refuses it rather than write code that does not move the rows. An add is a step
 // migration of the postgres-adapter after the baseline 001_initial: the table of a new entity with its row-level
 // security, or the column of a new field (ST-SUP-RC01-OC22, ST-GEN-UC12-R02, ST-GEN-UC12-R06). A rename at expand
 // adds the new column, the sync trigger and the backfill of its change (ST-GEN-UC12-R02, ST-GEN-UC12-R03,
 // ST-GEN-UC13); its contract step waits for ST-GEN-UC15. A relax changes one column in place at its expand step
 // (ST-SUP-RC01-OC45; decision on finding F12, owner, 2026-11-13). A within adds the composite key of a reference to
-// tables with rows at its expand step (ST-SUP-RC01-OC46, ST-DECL-Q42).
-var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "retype": true, "require": true, "relax": true, "within": true}
+// tables with rows at its expand step (ST-SUP-RC01-OC46, ST-DECL-Q42). A drop keeps the old column or table readable
+// for the release before at its expand step and drops it at its contract step (ST-SUP-RC01-OC34, ST-SUP-RC01-OC47).
+var generatedSchemaKinds = map[string]bool{"add": true, "rename": true, "retype": true, "require": true, "relax": true, "within": true, "drop": true}
 
 // unbuiltSchemaChanges refuses a declaration with a schema change of a kind that generation does not carry out
 // yet, naming the change and its kind. Checking still accepts it (stego validate), so the author can declare it.

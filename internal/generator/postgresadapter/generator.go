@@ -344,10 +344,16 @@ type Migration struct {
 // column and the schema of the tenant list stego_tenants with no quotes, by
 // which the check counts the rows left of each tenant. Each statement names
 // the table and the tenant list with their schema (ST-STD-TXN-R19).
+//
+// Drop, for the contract step of a drop, tells that the check is the
+// running releases alone while the old column From, or with no From the
+// table, is there: a drop has no sync trigger and no backfill
+// (ST-SUP-RC01-OC44, ST-SUP-RC01-OC47).
 type ContractStep struct {
 	Change, Schema, Table, Check, Definition, Trigger, Expand string
 	From, Old, New, TenantColumn, TenantSchema                string
 	Statements                                                []ContractStatement
+	Drop                                                      bool
 }
 
 // ContractStatement is one statement of a contract step: SQL; When, a query
@@ -1145,6 +1151,24 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 			_, err = tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', $1, true)", path)
 		}
 	}()
+	if c.Drop {
+		// A drop has no sync trigger and no backfill: while its old column or table is there, the check refuses
+		// while a release that still reads it runs, and when it is gone a run before dropped it.
+		var there bool
+		query := "SELECT pg_catalog.to_regclass($1) IS NOT NULL"
+		args := []any{table}
+		if c.From != "" {
+			query = "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped)"
+			args = append(args, c.From)
+		}
+		if err := tx.QueryRowContext(ctx, query, args...).Scan(&there); err != nil {
+			return err
+		}
+		if !there {
+			return nil
+		}
+		return runningReleases(ctx, tx, c)
+	}
 	var trigger, syncing, column bool
 	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal), EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid = t.tgfoid JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace JOIN pg_catalog.pg_class r ON r.oid = t.tgrelid JOIN pg_catalog.pg_namespace rn ON rn.oid = r.relnamespace WHERE t.tgrelid = pg_catalog.to_regclass($1) AND t.tgname = $2 AND NOT t.tgisinternal AND t.tgenabled IN ('O', 'A') AND n.nspname = 'stego_steps' AND p.proname = $2 AND p.pronargs = 0 AND pg_catalog.pg_get_triggerdef(t.oid) = 'CREATE TRIGGER ' || pg_catalog.quote_ident($2) || ' BEFORE INSERT OR UPDATE ON ' || pg_catalog.quote_ident(rn.nspname) || '.' || pg_catalog.quote_ident(r.relname) || ' FOR EACH ROW EXECUTE FUNCTION stego_steps.' || pg_catalog.quote_ident($2) || '()'), EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $3 AND a.attnum > 0 AND NOT a.attisdropped)", table, c.Trigger, c.From).Scan(&trigger, &syncing, &column); err != nil {
 		return err
@@ -1428,7 +1452,11 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 				}
 				fmt.Fprintf(&buf, "\t\t{SQL: %q, When: %q, Long: %t, Guard: %t%s},\n", s.sql, s.when, s.long, s.guard, also)
 			}
-			fmt.Fprintf(&buf, "\t}})\n")
+			drop := ""
+			if c.drop {
+				drop = ", Drop: true"
+			}
+			fmt.Fprintf(&buf, "\t}%s})\n", drop)
 		default:
 			fmt.Fprintf(&buf, "\tRegisterStep(%q, %q)\n", step.Name, step.Body)
 		}

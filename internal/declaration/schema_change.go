@@ -85,6 +85,14 @@ func validateSchemaChangeKind(changes []types.SchemaChange) []ValidationError {
 		}
 		for _, value := range []string{"field", "from", "conversion", "inverse_conversion", "fill_value", "definition"} {
 			takes, has := schemaValues[value][change.Kind], schemaValueOf(change, value)
+			if change.Kind == "drop" && change.Field == "" && (value == "definition" || value == "fill_value") {
+				// A drop of a whole entity takes no Definition and no fill value: the entity stays declared with
+				// dropped_by (ST-DECL-INV57, ST-GEN-Q47).
+				if has {
+					faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + "." + value, Found: schemaValueText(change, value), Message: fmt.Sprintf("schema change %q drops the whole entity %s, which takes no %s: the entity stays declared with dropped_by: %s; remove the %s", change.ID, change.Entity, value, change.ID, value)})
+				}
+				continue
+			}
 			switch {
 			case takes == valueRequired && !has:
 				faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + "." + value, Message: fmt.Sprintf("schema change %q of kind %s has no %s; a %s needs it", change.ID, change.Kind, value, change.Kind)})
@@ -216,6 +224,10 @@ func (s stepShape) of(entity string, field types.Field) string {
 // that step; that later change is also refused by its own check.
 func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) stepShape {
 	entity, declared := findEntity(service.Entities, change.Entity)
+	if !declared && !(change.Kind == "drop" && change.Field == "") {
+		// An entity that a drop removes stays declared with dropped_by, as it was before the drop (ST-GEN-Q47).
+		entity, declared = findEntity(service.DroppedEntities, change.Entity)
+	}
 	shape := stepShape{declared: declared}
 	if declared {
 		entity.Fields = append([]types.Field(nil), entity.Fields...)
@@ -282,21 +294,29 @@ func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) s
 			}
 			fields[found] = before
 		case "drop":
-			// Generation does not carry out a drop yet, so gen.Context.AtSchemaStep refuses it. When drop generation
-			// lands, AtSchemaStep must build the dropped field again from its Definition as this does (security
-			// review of PR #372, L2).
+			// A drop is undone as gen.Context.AtSchemaStep undoes it: a drop of an entity by the entity that the
+			// declaration keeps with dropped_by, which the shape is already, and a drop of a field by giving the
+			// entity back the field of its Definition in its place (security review of PR #372, L2).
 			if other.Field == "" {
-				return cannot(fmt.Sprintf("the entity %s after that step is still declared", other.Entity))
+				continue
 			}
 			if found >= 0 {
 				return cannot(fmt.Sprintf("the entity %s after that step still has the field %s", other.Entity, other.Field))
 			}
-			dropped, reason := definitionField(other.Definition)
+			dropped, reason := gen.DropDefinition(other.Definition)
 			if reason != "" {
 				return cannot(fmt.Sprintf("its definition %q cannot be read: %s", other.Definition, reason))
 			}
-			dropped.Name = other.Field
-			shape.entity.Fields = append(fields, dropped)
+			dropped.Field.Name = other.Field
+			place := 0
+			if !dropped.First {
+				after := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == dropped.After })
+				if after < 0 {
+					return cannot(fmt.Sprintf("its definition puts the field after %s, which the entity %s after that step does not have", dropped.After, other.Entity))
+				}
+				place = after + 1
+			}
+			shape.entity.Fields = slices.Insert(fields, place, dropped.Field)
 		default:
 			return cannot("its kind is not one that checking knows")
 		}
@@ -343,8 +363,16 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 		}
 		entity, declared := shape.entity, shape.declared
 		if change.Kind == "drop" && change.Field == "" {
-			if declared {
-				fault(".entity", "the declaration still declares the entity that the change drops; remove the entity")
+			// The entity that a drop removes stays declared, with dropped_by naming the drop (ST-DECL-INV58,
+			// ST-GEN-Q47).
+			dropped, kept := findEntity(service.DroppedEntities, change.Entity)
+			switch {
+			case declared:
+				fault(".entity", fmt.Sprintf("the declaration still declares the entity that the change drops as a live entity; keep it as it is and add dropped_by: %s to it", change.ID))
+			case !kept:
+				fault(".entity", fmt.Sprintf("the declaration declares no entity %s with dropped_by: %s; the entity that a drop removes stays declared as it was, with dropped_by naming the drop", change.Entity, change.ID))
+			case dropped.DroppedBy != change.ID:
+				fault(".entity", fmt.Sprintf("the entity %s names the drop %q in dropped_by, not this drop", change.Entity, dropped.DroppedBy))
 			}
 			continue
 		}
@@ -391,6 +419,32 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 			}
 			if !found {
 				fault(".field", "the field names no declared invariant of kind unique on the entity")
+			}
+		}
+	}
+	return faults
+}
+
+// validateDroppedEntities checks that each entity with dropped_by names a schema change of kind drop with no field
+// on that entity, and that the drop has a step: the entity stays declared only to give back the stored shape before
+// its drop (ST-DECL-INV58, ST-GEN-Q47). Every other part of the declaration names only live entities, which the
+// checks of each part hold, as the declaration keeps a dropped entity apart from its entities.
+func validateDroppedEntities(service *types.ServiceDeclaration) []ValidationError {
+	var faults []ValidationError
+	first := firstSteps(service.SchemaHistory)
+	for _, entity := range service.DroppedEntities {
+		at := slices.IndexFunc(service.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == entity.DroppedBy })
+		fault := func(message string) {
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-entity", Path: "entities." + entity.Name + ".dropped_by", Found: entity.DroppedBy, Message: fmt.Sprintf("the entity %s is dropped by %q: %s", entity.Name, entity.DroppedBy, message)})
+		}
+		switch {
+		case at < 0:
+			fault("schema_changes declares no such change; declare a drop with no field of the entity, or remove dropped_by")
+		case service.SchemaChanges[at].Kind != "drop" || service.SchemaChanges[at].Field != "" || service.SchemaChanges[at].Entity != entity.Name:
+			fault(fmt.Sprintf("the change is not a drop with no field of %s; dropped_by names the drop that removes the whole entity", entity.Name))
+		default:
+			if _, stepped := first[entity.DroppedBy]; !stepped {
+				fault("the drop has no step in schema_history; give it its expand step")
 			}
 		}
 	}
@@ -535,6 +589,19 @@ func definitionDefaultFaults(change types.SchemaChange, field types.Field, fault
 
 func definitionField(definition string) (types.Field, string) { return gen.DefinitionField(definition) }
 
+// zeroValue gives the zero value of a field type that has one: the empty string, 0 or false (ST-DECL-INV62).
+func zeroValue(typ types.FieldType) (any, bool) {
+	switch typ {
+	case types.FieldTypeString, types.FieldTypeEnum:
+		return "", true
+	case types.FieldTypeInt32, types.FieldTypeInt64, types.FieldTypeFloat, types.FieldTypeDouble:
+		return 0, true
+	case types.FieldTypeBool:
+		return false, true
+	}
+	return nil, false
+}
+
 // valueSuits tells whether a value suits the type and the constraints of a field, and gives the reason when it
 // does not.
 func valueSuits(field types.Field, value any) (bool, string) {
@@ -638,12 +705,31 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 			if change.Field == "" || change.Definition == "" {
 				continue
 			}
-			var reason string
-			if field, reason = definitionField(change.Definition); reason != "" {
+			dropped, reason := gen.DropDefinition(change.Definition)
+			if reason != "" {
 				fault(".definition", change.Definition, fmt.Sprintf("the definition %q cannot be read: %s", change.Definition, reason))
 				continue
 			}
+			field = dropped.Field
+			field.Name = change.Field
 			definitionDefaultFaults(change, field, fault)
+			if dropped.After != "" {
+				// The place of the field is a field of the entity as the step of the drop leaves it (ST-DECL-INV62).
+				shape := shapeAtStep(service, change)
+				if _, found := shape.field(dropped.After); shape.reason == "" && shape.declared && !found {
+					fault(".definition", change.Definition, fmt.Sprintf("the definition puts the field after %s, which the entity %s does not have at the step of the drop; name the field that %s came after, or first", dropped.After, change.Entity, change.Field))
+				}
+			}
+			if change.FillValue == nil && !field.Optional && field.Default == nil {
+				// The old column of a required field takes the zero value of its type as its DEFAULT at expand, so
+				// the zero value must suit the field (ST-DECL-INV62, ST-SUP-RC01-OC34).
+				zero, ok := zeroValue(field.Type)
+				if !ok {
+					fault(".fill_value", "", fmt.Sprintf("the required field %s.%s of the type %s has no zero value, which its old column would take as its default; give the drop a fill_value", change.Entity, change.Field, field.Type))
+				} else if suits, why := valueSuits(field, zero); !suits {
+					fault(".fill_value", "", fmt.Sprintf("the zero value %q of the required field %s.%s does not suit its definition: %s; its old column takes the default at expand, so give the drop a fill_value that suits", fmt.Sprint(zero), change.Entity, change.Field, why))
+				}
+			}
 		default:
 			continue
 		}

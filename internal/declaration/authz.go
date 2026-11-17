@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"path"
 	"slices"
 	"sort"
@@ -354,6 +355,36 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 	faults = append(faults, validateWrittenRelations(service, schema)...)
 	faults = append(faults, validateSystemPrincipal(service, schema)...)
 	faults = append(faults, checkProvisioningSchema(service, schema)...)
+	faults = append(faults, droppedSchemaNames(service, schema)...)
+	return faults
+}
+
+// droppedSchemaNames refuses a schema that does not define the resource type of an entity with dropped_by, with each
+// relation of its references: the release before the drop still writes the relationships of that type, and the
+// provider refuses a schema that removes a definition or a relation that has relationships, so the schema keeps the
+// definition while the entity stays declared (ST-SUP-RC29-OC25, ST-GEN-Q47).
+func droppedSchemaNames(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
+	var faults []ValidationError
+	for _, entity := range service.DroppedEntities {
+		a := entity.EntityAuthorization
+		if a.ResourceType == "" {
+			continue
+		}
+		fault := func(found, message string) {
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "schema-names", Path: "entities." + entity.Name + ".resource_type", Found: found,
+				Message: fmt.Sprintf("the dropped entity %s %s, which the schema %s lacks; the release before the drop still writes its relationships, and the provider refuses a schema that removes them, so keep its definition in the schema", entity.Name, message, schema.Path)})
+		}
+		if !schema.Defines(a.ResourceType) {
+			fault(a.ResourceType, fmt.Sprintf("has the resource type %q", a.ResourceType))
+			continue
+		}
+		relations := schema.Relations(a.ResourceType)
+		for _, field := range slices.Sorted(maps.Keys(a.References)) {
+			if relation := a.References[field].Relation; relation != "" && !slices.Contains(relations, relation) {
+				fault(relation, fmt.Sprintf("writes the relation %s#%s for its reference %s", a.ResourceType, relation, field))
+			}
+		}
+	}
 	return faults
 }
 
