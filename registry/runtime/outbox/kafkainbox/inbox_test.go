@@ -326,6 +326,47 @@ func (e *env) committed(t *testing.T, topic, group string) int64 {
 	return sum
 }
 
+// alter sets the config name of topic to value.
+func (e *env) alter(t *testing.T, topic, name, value string) {
+	t.Helper()
+	request := kmsg.NewPtrIncrementalAlterConfigsRequest()
+	resource := kmsg.NewIncrementalAlterConfigsRequestResource()
+	resource.ResourceType, resource.ResourceName = kmsg.ConfigResourceTypeTopic, topic
+	config := kmsg.NewIncrementalAlterConfigsRequestResourceConfig()
+	config.Name, config.Op, config.Value = name, kmsg.IncrementalAlterConfigOpSet, &value
+	resource.Configs = append(resource.Configs, config)
+	request.Resources = append(request.Resources, resource)
+	response, err := request.RequestWith(context.Background(), e.producer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range response.Resources {
+		if err := kerr.ErrorForCode(r.ErrorCode); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// handClock is a clock of the inbox that only the test moves.
+type handClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newHandClock() *handClock { return &handClock{at: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)} }
+
+func (c *handClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *handClock) move(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
+
 func (e *env) count(t *testing.T, query string, args ...any) int {
 	t.Helper()
 	var n int
@@ -423,6 +464,12 @@ func TestInbox(t *testing.T) {
 				ev.extra = []kgo.RecordHeader{{Key: kafkaoutbox.HeaderTenant, Value: []byte("acme")}}
 				return ev
 			}(), ReasonDuplicateHeader},
+			// The key names another row than the payload (security review of PR #418, N4).
+			{func() event {
+				ev := change("acme", "orders.order.created", "w-1")
+				ev.resourceKey = "order:z-9"
+				return ev
+			}(), ReasonKeyMismatch},
 		}
 		var events []event
 		for _, c := range cases {
@@ -476,6 +523,49 @@ func TestInbox(t *testing.T) {
 		if err := e.inbox(t, compact, "group-compact", week).Run(context.Background()); !errors.Is(err, ErrRetention) ||
 			!strings.Contains(err.Error(), "compacted") {
 			t.Fatalf("Run on a compacted topic gave %v, want ErrRetention that names the compaction", err)
+		}
+		// A broker that gives no cleanup.policy, or one with no value, is refused as for retention.ms (security review
+		// of PR #418, N3).
+		config := func(name string, value *string) kmsg.DescribeConfigsResponseResourceConfig {
+			c := kmsg.NewDescribeConfigsResponseResourceConfig()
+			c.Name, c.Value = name, value
+			return c
+		}
+		day, policy := "86400000", "delete"
+		for name, configs := range map[string][]kmsg.DescribeConfigsResponseResourceConfig{
+			"no cleanup.policy":            {config("retention.ms", &day)},
+			"a cleanup.policy of no value": {config("retention.ms", &day), config("cleanup.policy", nil)},
+			"no retention.ms":              {config("cleanup.policy", &policy)},
+		} {
+			if _, _, err := topicRetention(configs); err == nil {
+				t.Fatalf("the configs with %s were taken", name)
+			}
+		}
+		if ms, got, err := topicRetention([]kmsg.DescribeConfigsResponseResourceConfig{config("retention.ms", &day), config("cleanup.policy", &policy)}); err != nil || ms != 86400000 || got != "delete" {
+			t.Fatalf("the full configs gave %d %q %v", ms, got, err)
+		}
+		// A topic that becomes compacted after the inbox started stops the inbox at the next check of the session,
+		// with no new session (security review of PR #418, N1).
+		changing := e.topic(t, 1, "86400000")
+		clock := newHandClock()
+		watcher := e.inbox(t, changing, "group-recheck", week)
+		watcher.now = clock.now
+		e.produce(t, changing, change("acme", "orders.order.created", "q-1"))
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- watcher.Run(ctx) }()
+		for e.committed(t, changing, "group-recheck") < 1 {
+			select {
+			case err := <-done:
+				t.Fatalf("the inbox stopped before it read the topic: %v", err)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		e.alter(t, changing, "cleanup.policy", "compact")
+		clock.move(2 * retentionRecheck)
+		if err := <-done; !errors.Is(err, ErrRetention) || watcher.Failed() != RetentionStage {
+			t.Fatalf("the inbox on a topic that became compacted gave %v at the stage %q, want ErrRetention at %s", err, watcher.Failed(), RetentionStage)
 		}
 		for _, c := range []struct {
 			ms     int64
@@ -721,7 +811,16 @@ func TestFailing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		in.backoff = func(int) time.Duration { return 10 * time.Millisecond }
+		var mu sync.Mutex
+		var attempts []int
+		in.backoff = func(attempt int) time.Duration {
+			mu.Lock()
+			defer mu.Unlock()
+			attempts = append(attempts, attempt)
+			return 10 * time.Millisecond
+		}
+		clock := newHandClock()
+		in.now = clock.now
 		gauge := func() int64 {
 			var data metricdata.ResourceMetrics
 			if err := reader.Collect(context.Background(), &data); err != nil {
@@ -753,6 +852,24 @@ func TestFailing(t *testing.T) {
 		}
 		if g := gauge(); g != 0 {
 			t.Fatalf("the gauge is %d after the inbox reads the topic, want 0", g)
+		}
+		// A broker that goes away after the inbox read the topic fails the session, and the inbox reports its failure.
+		// The session read before it failed, so the backoff starts again at the first attempt (security review of PR
+		// #418, N5).
+		mu.Lock()
+		before := len(attempts)
+		mu.Unlock()
+		e.broker.Plain.Down()
+		defer e.broker.Plain.Up()
+		clock.move(2 * retentionRecheck)
+		for in.Failing() == "" {
+			time.Sleep(20 * time.Millisecond)
+		}
+		mu.Lock()
+		first := attempts[before]
+		mu.Unlock()
+		if first != 1 {
+			t.Fatalf("the backoff after a session that read starts at the attempt %d, want 1", first)
 		}
 	})
 }
