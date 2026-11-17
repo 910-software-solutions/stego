@@ -2,16 +2,20 @@ package command
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
+	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
 )
 
@@ -343,18 +347,18 @@ func TestChangeEvents(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RP10-LC36-T07 A fill cannot stage a change event itself", func(t *testing.T) {
-		// The command declares the Kafka destination with the event names, as a collection write does.
+		// The command declares a domain event of the Kafka destination, and forges the event of an update.
 		cmd := e.command("place-order", func(spec *CommandSpec[testProbe]) {
 			withEvents(spec)
 			spec.Destinations = append(spec.Destinations, Destination{Name: kafkaoutbox.DestinationName, Idempotent: true,
-				Effects: []string{"orders.order.created", "orders.order.updated"}})
+				Effects: []string{"orders.order-placed"}})
 		}, e.orders, e.reservationE)
 		_, err := e.run(cmd, e.request("ce-f", u7(t), "k-forge", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
 			o, err := repo(t, h, e.orders).Get(ctx, "o-f1")
 			if err != nil {
 				return err
 			}
-			// The fill wrote no row, and forges the event of an update.
+			// The fill wrote no row.
 			return h.Effects().Stage(ctx, kafkaoutbox.DestinationName, "orders.order.updated", o,
 				json.RawMessage(`{"entity":"Order","action":"updated","id":"o-f1"}`))
 		}))
@@ -370,6 +374,25 @@ func TestChangeEvents(t *testing.T) {
 		}))
 		if !errors.Is(err, ErrInternal) {
 			t.Fatalf("the worker's forged change event gave %v, want an internal error", err)
+		}
+		// The Kafka destination always states its names: a worker cannot forge the event of an entity that it does not
+		// write, which is no change event of its declaration.
+		if _, err := NewWorker(WorkerSpec[testProbe]{Name: "open-kafka", Permission: "sync", Interval: time.Minute,
+			Writes: []Declared{e.orders}, Probe: newTestProbe, ChangeEvents: changeEventsOf("Order"),
+			Destinations: []Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true}}}); err == nil {
+			t.Fatal("a worker with the destination kafka and no effect names was made")
+		}
+		kafka := e.worker("kafka-sync", "sync", func(spec *WorkerSpec[testProbe]) {
+			spec.ChangeEvents = changeEventsOf("Order")
+			spec.Destinations = append(spec.Destinations, Destination{Name: kafkaoutbox.DestinationName, Idempotent: true,
+				Effects: []string{"orders.order-synced"}})
+		}, e.orders)
+		err = RunWorker(e.ctx, e.rt, kafka, tick, mustTenant(t, "ce-f"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+			return h.Effects().Stage(ctx, kafkaoutbox.DestinationName, "orders.charge.created", mustRef(ctx, h, e.orders, "o-f1"),
+				json.RawMessage(`{"entity":"Charge","action":"created","id":"c-forged"}`))
+		}))
+		if !errors.Is(err, ErrInternal) {
+			t.Fatalf("the worker's forged event of an entity that it does not write gave %v, want an internal error", err)
 		}
 		if got := e.staged("ce-f"); len(got) != 0 {
 			t.Errorf("the forged events left %s", kinds(got))
@@ -392,19 +415,93 @@ func TestChangeEvents(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var got []string
+		// More messages than one batch holds are written in the order of their lock keys, each key in the order of the
+		// calls, so every batch locks in one order.
+		var got, want []string
+		var last int64
 		for _, m := range e.staged("ce-x") {
-			if m.kind == "orders.reservation.created" || m.kind == "noted" {
-				got = append(got, m.resourceKey)
+			if m.kind != "orders.reservation.created" && m.kind != "noted" {
+				continue
 			}
+			got = append(got, m.resourceKey)
+			key := outbox.LockKey("ce-x", m.destination, m.resourceKey)
+			if len(got) > 1 && key < last {
+				t.Errorf("the message %s is written after a message of a higher lock key", m)
+			}
+			last = key
 		}
-		var want []string
 		for i := range n {
 			want = append(want, fmt.Sprintf("Reservation:r-m%02d", i))
 		}
 		want = append(want, "order:o-x1")
+		slices.Sort(got)
+		slices.Sort(want)
 		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Errorf("the outbox holds %v, want %v", got, want)
+			t.Errorf("the outbox holds %v, want %v, each once", got, want)
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC36-T10 Two transactions whose keys cross over the batches of their messages do not deadlock", func(t *testing.T) {
+		cmd := e.command("place-order", withEvents, e.orders, e.reservationE)
+		var ids []string
+		for i := range 32 {
+			ids = append(ids, fmt.Sprintf("o-d%02d", i))
+			e.exec(fmt.Sprintf(`INSERT INTO orders (tenant_id, id, status) VALUES ('ce-d', 'o-d%02d', 'open')`, i))
+		}
+		// Each fill stages the effects of one half of the orders, 16 change events, and then the effects of the other
+		// half, in the other order of the other fill: in the order of the calls, the first batch of each would lock
+		// the half that the second batch of the other needs.
+		fill := func(first, second []string, tag string) func(context.Context, *Handle[testProbe]) (idempotency.Response, error) {
+			return fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+				stage := func(ids []string) error {
+					for _, id := range ids {
+						if err := h.Effects().Stage(ctx, "billing", "noted", mustRef(ctx, h, e.orders, id), json.RawMessage(`{}`)); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+				if err := stage(first); err != nil {
+					return err
+				}
+				for i := range 16 {
+					if _, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: fmt.Sprintf("r-%s%02d", tag, i), OrderID: "o-d00", SKU: "s"}); err != nil {
+						return err
+					}
+				}
+				return stage(second)
+			})
+		}
+		before := e.deadlocks()
+		// Both attempts reach their enqueue before either writes a message.
+		var barrier sync.WaitGroup
+		barrier.Add(2)
+		e.rt.step = func(name string, _ *sql.Tx) {
+			if name == "enqueue" {
+				barrier.Done()
+				barrier.Wait()
+			}
+		}
+		defer func() { e.rt.step = nil }()
+		errs := make(chan error, 2)
+		go func() {
+			_, err := e.run(cmd, e.request("ce-d", u7(t), "k-da", `{}`), fill(ids[:16], ids[16:], "a"))
+			errs <- err
+		}()
+		go func() {
+			_, err := e.run(cmd, e.request("ce-d", u7(t), "k-db", `{}`), fill(ids[16:], ids[:16], "b"))
+			errs <- err
+		}()
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Errorf("a run gave %v, want success", err)
+			}
+		}
+		if n := e.deadlocks() - before; n != 0 {
+			t.Errorf("the two runs met %d deadlocks, want none", n)
+		}
+		if n := len(e.staged("ce-d")); n != 2*(32+16) {
+			t.Errorf("the outbox holds %d messages, want %d", n, 2*(32+16))
 		}
 	})
 }
@@ -438,6 +535,10 @@ func TestChangeEventSpecs(t *testing.T) {
 		{"a name of two entities", []ChangeEvents{changeEventsOf("Order")[0], {Entity: "Reservation", Created: "orders.order.created", Updated: "u", Deleted: "d"}}, nil},
 		{"a change event declared as an effect", changeEventsOf("Order", "Reservation"),
 			[]Destination{{Name: "billing", Idempotent: true, Effects: []string{"orders.order.created"}}}},
+		{"a change event declared as an effect of the Kafka destination", changeEventsOf("Order", "Reservation"),
+			[]Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"orders.order.created"}}}},
+		{"the Kafka destination with no effect names", changeEventsOf("Order", "Reservation"),
+			[]Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true}}},
 	}
 	t.Run("ST-SUP-RP10-LC36-T09 A command or a worker with wrong change events is refused", func(t *testing.T) {
 		for _, c := range cases {
@@ -454,8 +555,8 @@ func TestChangeEventSpecs(t *testing.T) {
 		}
 		if _, err := NewCommand(CommandSpec[testProbe]{Name: "place-order", Writes: []Declared{e.orders, e.reservationE},
 			Probe: newTestProbe, ChangeEvents: changeEventsOf("Order", "Reservation"),
-			Destinations: []Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"orders.order.created"}}}}); err != nil {
-			t.Errorf("the command with the change events and the Kafka destination of a collection write was refused: %v", err)
+			Destinations: []Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"orders.order-placed"}}}}); err != nil {
+			t.Errorf("the command with the change events and a domain event of the Kafka destination was refused: %v", err)
 		}
 	})
 }

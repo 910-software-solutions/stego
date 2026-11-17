@@ -924,6 +924,13 @@ func (q *Queue) Enqueue(ctx context.Context, tx *sql.Tx, messages ...Message) er
 	return nil
 }
 
+// LockKey is the advisory lock that Enqueue takes for the messages of one key: the tenant, the destination and the
+// resource key (ST-SUP-RP01-LC03). A caller that enqueues the messages of one transaction in more than one batch sorts
+// them by it first, so every batch takes its locks in the one order of all transactions.
+func LockKey(tenantID, destination, resourceKey string) int64 {
+	return lockKey(tenantID, destination, resourceKey)
+}
+
 // lockKey is the advisory lock of one key: the tenant, the destination and the resource key (ST-SUP-RP01-LC03).
 func lockKey(tenantID, destination, resourceKey string) int64 {
 	hash := sha256.Sum256([]byte("stego-outbox\x00" + tenantID + "\x00" + destination + "\x00" + resourceKey))

@@ -2,6 +2,7 @@ package command
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -22,7 +23,8 @@ import (
 // its messages must land and whether it is idempotent, as the destination is registered on the outbox worker, and
 // whether a worker consumes it, so each message stores the staging principal and stager (ST-SUP-RP10-LC16). Effects
 // are the effect names that the declaration states for the destination: a command's Stage refuses every other name
-// (ST-SUP-RP10-LC07), and a worker that states none may stage any name.
+// (ST-SUP-RP10-LC07), and a worker that states none may stage any name, but on the destination kafka, which needs
+// its names (ST-SUP-RP10-LC36).
 type Destination struct {
 	Name       string
 	MustLand   bool
@@ -52,6 +54,12 @@ func checkDestinations(owner string, destinations []Destination) (map[string]Des
 			if effect == "" || slices.Contains(d.Effects[:i], effect) {
 				return nil, fmt.Errorf("command: %s declares an empty or a repeated effect name for the destination %s", owner, d.Name)
 			}
+		}
+		// The Kafka destination carries the change events, which only the handle stages: an open list of names would
+		// let a worker's fill stage any name there, also one of an entity that the declaration does not write
+		// (ST-SUP-RP10-LC36).
+		if d.Name == ChangeEventDestination && len(d.Effects) == 0 {
+			return nil, fmt.Errorf("command: %s declares the destination %s with no effect names; it states each name that the fill stages there", owner, d.Name)
 		}
 		d.Effects = slices.Clone(d.Effects)
 		byName[d.Name] = d
@@ -132,7 +140,7 @@ func checkChangeEvents(owner string, writes []Declared, destinations map[string]
 	}
 	for _, d := range destinations {
 		for _, effect := range d.Effects {
-			if names[effect] && d.Name != ChangeEventDestination {
+			if names[effect] {
 				return nil, fmt.Errorf("command: %s declares the change event %s as an effect of the destination %s; only the handle stages a change event", owner, effect, d.Name)
 			}
 		}
@@ -329,12 +337,29 @@ func (s *state) enqueue(ctx context.Context) error {
 		return s.fail(ctx, "outbox enqueue", err)
 	}
 	s.rt.stepped("enqueue", s.tx)
-	for batch := range slices.Chunk(s.staged, outbox.MaxBatchSize) {
+	for batch := range slices.Chunk(s.batchOrder(), outbox.MaxBatchSize) {
 		if err := s.rt.cfg.Outbox.Enqueue(ctx, s.tx, batch...); err != nil {
 			return s.fail(ctx, "outbox enqueue", err)
 		}
 	}
 	return nil
+}
+
+// batchOrder gives the staged messages in the order that enqueue writes them. Messages that fit one batch keep the
+// order of the calls. More messages are sorted, stably, by the advisory lock of their key (outbox.LockKey): each
+// batch takes its locks in the one order of all transactions, so two transactions whose keys cross never wait on
+// each other in a cycle, and the messages of one key keep the order of the calls, which is the order that the
+// outbox delivers (ST-SUP-RP01-LC03, ST-SUP-RP10-LC36).
+func (s *state) batchOrder() []outbox.Message {
+	if len(s.staged) <= outbox.MaxBatchSize {
+		return s.staged
+	}
+	sorted := slices.Clone(s.staged)
+	tenantID := s.tenant.ID()
+	slices.SortStableFunc(sorted, func(a, b outbox.Message) int {
+		return cmp.Compare(outbox.LockKey(tenantID, a.Destination, a.ResourceKey), outbox.LockKey(tenantID, b.Destination, b.ResourceKey))
+	})
+	return sorted
 }
 
 // lengthPrefixed joins parts, each prefixed by its length in bytes as a 4-byte big-endian unsigned integer.
