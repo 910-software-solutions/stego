@@ -486,10 +486,11 @@ func TestRuntimeWiring(t *testing.T) {
 			}
 		}
 	})
-	// The next release adds the entity Tag with no schema step.
+	// The next release adds the entity Tag with no schema step, and declares the modes api and worker, which the
+	// check of ST-GEN-INV26 starts it with.
 	next := newWiringProject(t, stego, runtimeArchetype)
 	declaration := next.read("service.yaml")
-	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "entities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
+	next.write("service.yaml", strings.Replace(declaration, "entities:\n", "modes: [api, worker]\nentities:\n  - name: Tag\n    fields:\n      - {name: label, type: string}\n", 1))
 	next.stego("apply")
 	next.useLocalRuntime()
 	next.goCommand("mod", "tidy")
@@ -516,4 +517,9 @@ func TestRuntimeWiring(t *testing.T) {
 	t.Run(provisionAudited, func(t *testing.T) { passed(t, provisionAudited) })
 	t.Run(provisionGated, func(t *testing.T) { passed(t, provisionGated) })
 	t.Run(provisionWorkers, func(t *testing.T) { passed(t, provisionWorkers) })
+	t.Run(modesCheck, func(t *testing.T) { passed(t, modesCheck) })
 }
+
+// modesCheck is the check of the generated service that starts the binary with no mode option, with --mode api and
+// with --mode api --mode worker, and the refused starts of the modes (ST-GEN-INV26).
+const modesCheck = "ST-GEN-INV26-T The assembler wires each declared mode as a named set in one binary that a repeatable mode flag selects"
