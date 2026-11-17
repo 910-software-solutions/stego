@@ -139,6 +139,12 @@ var (
 	// a DNS label of lower-case letters, digits and '-', which starts and ends with a letter or a digit, because the
 	// base names a Secret, a volume, a port or an object by it (#370 security re-review L4).
 	kubernetesName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	// componentName is the name of a component in the platform requirements: a plain word, so that no text of it
+	// can change a line that a command prints (#331 security review, F2).
+	componentName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	// readerName is a reader of an environment variable: a component name, and for runtime-configuration the group
+	// in brackets (reader).
+	readerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}( \([A-Za-z0-9][A-Za-z0-9._-]{0,127}\))?$`)
 	// shapeWord is a key, an engine or a resource.
 	shapeWord = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	// placeholder is one placeholder of a need name.
@@ -536,6 +542,9 @@ func LoadRequirements(data []byte) (Requirements, error) {
 	if requirements.Service == "" {
 		return Requirements{}, fmt.Errorf("platform requirements: the file names no service")
 	}
+	if !serviceLabel.MatchString(requirements.Service) {
+		return Requirements{}, fmt.Errorf("platform requirements: the service name %q is not a DNS label", requirements.Service)
+	}
 	seen := map[string]bool{}
 	for _, requirement := range requirements.Requirements {
 		if len(requirement.Name) > maxWord || !requirementName.MatchString(requirement.Name) {
@@ -550,6 +559,11 @@ func LoadRequirements(data []byte) (Requirements, error) {
 		seen[requirement.Name] = true
 		if len(requirement.Components) == 0 {
 			return Requirements{}, fmt.Errorf("platform requirements: the requirement %s names no component", requirement.Name)
+		}
+		for _, component := range requirement.Components {
+			if !componentName.MatchString(component) {
+				return Requirements{}, fmt.Errorf("platform requirements: the requirement %s names the component %q, which is not a name of at most 128 letters, digits, '.', '-' or '_'", requirement.Name, component)
+			}
 		}
 		sorted := requirement
 		sorted.Keys = slices.Sorted(slices.Values(requirement.Keys))
@@ -572,6 +586,11 @@ func LoadRequirements(data []byte) (Requirements, error) {
 		listed[variable.Name] = true
 		if len(variable.ReadBy) == 0 {
 			return Requirements{}, fmt.Errorf("platform requirements: the environment variable %s names no reader", variable.Name)
+		}
+		for _, reader := range variable.ReadBy {
+			if !readerName.MatchString(reader) {
+				return Requirements{}, fmt.Errorf("platform requirements: the environment variable %s names the reader %q, which is not a name of at most 128 letters, digits, '.', '-' or '_', with its group in brackets or none", variable.Name, reader)
+			}
 		}
 		if source := variable.SecretSource; source != nil {
 			if !variable.Secret && variable.Type != "path" {
