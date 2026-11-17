@@ -12,8 +12,8 @@ import (
 	"syscall"
 
 	"github.com/jsell-rh/stego/internal/appbuild"
-	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/jsell-rh/stego/internal/parser"
 )
 
 func runBuild(args []string) error {
@@ -107,9 +107,11 @@ func runBuild(args []string) error {
 }
 
 // checkBuildFills refuses a build of the service in module, a copy of the source revision, when a fill that its
-// declaration binds is not qualified: untested, unsigned, signed by a key that SIGNERS does not list, or stale. Plan
-// and apply stop at such a fill (ST-GEN-INV10), and so does the build, so that no unqualified fill reaches a binary,
-// also one written after an apply that wrote its contract (decision on ST-EXT-Q30).
+// declaration binds is not qualified as the revision holds it: it has no evidence, its files changed after its
+// evidence, or a key that SIGNERS lists did not sign that evidence. Plan and apply stop at such a fill
+// (ST-GEN-INV10), and so does the build, so that no unqualified fill reaches a binary, also one written after an
+// apply that wrote its contract (decision on ST-EXT-Q30). The check reads only the revision: no registry and no
+// network, as the build runs offline; plan and apply check each contract digest, which only apply changes.
 func checkBuildFills(module string) error {
 	// A module that is no STEGO service, or that holds no fill, builds no fill code.
 	for _, name := range []string{"service.yaml", "fills"} {
@@ -117,24 +119,31 @@ func checkBuildFills(module string) error {
 			return nil
 		}
 	}
-	input, err := reconcilerInputAt(module)
+	service, err := parser.ParseServiceDeclaration(filepath.Join(module, "service.yaml"))
 	if err != nil {
-		return err
+		return fmt.Errorf("build: %w", err)
 	}
-	check, err := compiler.ResolveFillCheck(input)
-	if err != nil {
-		return err
+	var fills []string
+	for _, binding := range service.Slots {
+		fills = append(fills, binding.Gate...)
+		fills = append(fills, binding.Chain...)
+		fills = append(fills, binding.FanOut...)
 	}
-	faults, err := fill.BindingFaults(check)
+	for _, c := range service.Commands {
+		fills = append(fills, c.Fill...)
+	}
+	for _, q := range service.Queries {
+		fills = append(fills, q.Fill...)
+	}
+	for _, w := range service.Workers {
+		fills = append(fills, w.Fill...)
+	}
+	faults, err := fill.RevisionFaults(module, fills)
 	if err != nil {
 		return err
 	}
 	if len(faults) == 0 {
 		return nil
 	}
-	lines := make([]string, len(faults))
-	for i, fault := range faults {
-		lines[i] = "  [" + fault.Rule + "] " + fault.Path + ": " + fault.Message
-	}
-	return fmt.Errorf("build: the source revision binds fills that are not qualified, so nothing is built:\n%s", strings.Join(lines, "\n"))
+	return fmt.Errorf("build: the source revision binds fills that are not qualified, so nothing is built:\n  %s", strings.Join(faults, "\n  "))
 }

@@ -229,14 +229,68 @@ func QualificationFaults(check compiler.FillCheck) ([]compiler.FillFault, error)
 	return append(bound, faults...), nil
 }
 
-// BindingFaults gives a fault for each binding of a fill that does not fit
-// that binding or is not qualified, with what to run, and lists no fill
-// package, so it needs no module (ST-GEN-INV10). stego build stops on it.
-func BindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
-	if len(check.Bindings) == 0 {
-		return nil, nil
+// RevisionFaults gives a fault for each of the fills, by name, in the
+// project folder dir that is not qualified as the folder holds it: its
+// manifest cannot be read, it has no test file or no evidence, its files
+// changed after its evidence, or a key that SIGNERS lists did not sign that
+// evidence. Each fault names the fill and what to run. It reads no registry
+// and no module, so stego build can run it offline on a copy of the source
+// revision; the contract digest of the evidence is taken as it is, since only
+// apply, which checks it, changes a contract (ST-GEN-INV10).
+func RevisionFaults(dir string, fills []string) ([]string, error) {
+	signers, err := ReadSigners(dir)
+	if err != nil {
+		return nil, err
 	}
-	return bindingFaults(check)
+	seen := map[string]bool{}
+	var faults []string
+	for _, name := range fills {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		folder := filepath.Join(dir, "fills", name)
+		if _, err := fillPackageFolder(name); err != nil {
+			faults = append(faults, fmt.Sprintf("fill %q: %v", name, err))
+			continue
+		}
+		f, err := ParseFill(filepath.Join(folder, ManifestFile))
+		if err != nil {
+			faults = append(faults, fmt.Sprintf("fill %q is untested: %v; %s", name, err, nextSteps(name, Untested, nil)))
+			continue
+		}
+		files, err := FileDigests(folder)
+		if err != nil {
+			faults = append(faults, fmt.Sprintf("fill %q is untested: %v; %s", name, err, nextSteps(name, Untested, nil)))
+			continue
+		}
+		current := Current{FillDigest: combine(files), Files: files}
+		for file := range files {
+			if strings.HasSuffix(file, "_test.go") {
+				current.HasTests = true
+			}
+		}
+		if f.Evidence != nil {
+			current.ContractDigest = f.Evidence.ContractDigest
+		}
+		if standing, reason := assess(f, current, signers); standing != Qualified {
+			var reasons []string
+			if reason != "" {
+				reasons = append(reasons, reason)
+			}
+			faults = append(faults, fmt.Sprintf("fill %q is %s: %s; %s", name, standing, strings.Join(reasons, "; "), nextSteps(name, standing, reasons)))
+		}
+	}
+	return faults, nil
+}
+
+// fillPackageFolder refuses a fill name that is not one folder name under
+// fills, such as a path.
+func fillPackageFolder(name string) (string, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("%q is not the name of a fill folder", name)
+	}
+	return name, nil
 }
 
 // bindingFaults gives a fault for each binding of a fill that does not fit that binding or is not qualified.
