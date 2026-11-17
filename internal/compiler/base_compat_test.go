@@ -173,6 +173,40 @@ func TestBaseCompat(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-INV33-T A retype of a field with a default keeps the default of its Definition, so the field before the change is the base's", func(t *testing.T) {
+		t.Parallel()
+		// Walkthrough 6, K2: the Definition of the retype names the default of the field before the change. The
+		// check took it away, so the base column "points" integer NOT NULL DEFAULT 0 never matched the head.
+		td01 := string(userManagementBase(t))
+		const metadata = "      - { name: metadata, type: jsonb, optional: true }\n"
+		base := strings.Replace(td01, metadata, metadata+"      - { name: points, type: int32, min: 0, max: 100, default: 0 }\n", 1)
+		head := func(definition string) string {
+			return withChanges(strings.Replace(base, "{ name: points, type: int32, min: 0, max: 100, default: 0 }", "{ name: points, type: int64, min: 0, max: 100, default: 0 }", 1),
+				"  - {id: user-points-retype, kind: retype, entity: User, field: points, from: int32, definition: \""+definition+"\", conversion: integer_to_int64, inverse_conversion: int64_to_integer}\n",
+				"  - {change: user-points-retype, phase: expand}\n")
+		}
+		for _, c := range []struct {
+			name, definition string
+			accepted         bool
+		}{
+			{"the Definition names the base's default", "int32, min 0, max 100, default 0", true},
+			{"the Definition names another default", "int32, min 0, max 100, default 1", false},
+			{"the Definition names no default", "int32, min 0, max 100", false},
+		} {
+			data := []byte(base)
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: data, Record: recordFor(data)}, parseHead(t, head(c.definition)))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			switch {
+			case c.accepted && check.HasFaults():
+				t.Errorf("%s: want accepted, got %+v", c.name, check.Faults)
+			case !c.accepted && !check.HasFaults():
+				t.Errorf("%s: want refused, got no fault", c.name)
+			}
+		}
+	})
+
 	t.Run("ST-GEN-INV33-T A change of the indexes that a collection gives a base entity is refused, and a change that gives no index is accepted", func(t *testing.T) {
 		t.Parallel()
 		td01 := string(userManagementBase(t))
