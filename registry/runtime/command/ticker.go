@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/jsell-rh/stego/registry/runtime/lease"
@@ -82,8 +81,27 @@ type Ticker struct {
 	ticks   sync.WaitGroup
 	running sync.WaitGroup
 	started bool
-	// armed counts the waits of the scheduler for a due time, for the tests of the package.
-	armed atomic.Int64
+	// step gets each step of the scheduler as it happens: a wait armed for a due time, a tick skipped, and the start
+	// and the end of a tick. A test of the package sets it before Run, so it knows when the ticker is at rest with no
+	// wall-clock wait; it is nil outside the tests.
+	step func(s tickStep, due time.Time)
+}
+
+// tickStep is one step of the scheduler of a ticker.
+type tickStep int
+
+const (
+	stepArmed tickStep = iota
+	stepSkipped
+	stepStarted
+	stepEnded
+)
+
+// stepped gives the step to the hook of the tests, when there is one.
+func (k *Ticker) stepped(s tickStep, due time.Time) {
+	if k.step != nil {
+		k.step(s, due)
+	}
 }
 
 // NewTicker checks spec and gives the ticker of its worker on the command runtime rt.
@@ -149,7 +167,7 @@ func (k *Ticker) schedule(ctx context.Context, held *lease.Held) {
 		now := k.clock.Now()
 		due := nextDue(now, k.interval)
 		wait := k.clock.After(due.Sub(now))
-		k.armed.Add(1)
+		k.stepped(stepArmed, due)
 		select {
 		case <-ctx.Done():
 			return
@@ -165,12 +183,14 @@ func (k *Ticker) schedule(ctx context.Context, held *lease.Held) {
 			k.mu.Unlock()
 			// A tick that comes while one runs is skipped, never queued (ST-SUP-RC35-OC04).
 			k.observe.TickSkipped()
+			k.stepped(stepSkipped, due)
 			continue
 		}
 		k.busy = true
 		k.ticks.Add(1)
 		k.running.Add(1)
 		k.mu.Unlock()
+		k.stepped(stepStarted, due)
 		go func() {
 			defer k.running.Done()
 			defer k.ticks.Done()
@@ -178,6 +198,7 @@ func (k *Ticker) schedule(ctx context.Context, held *lease.Held) {
 				k.mu.Lock()
 				k.busy = false
 				k.mu.Unlock()
+				k.stepped(stepEnded, due)
 			}()
 			k.tick(ctx, due, held)
 		}()
