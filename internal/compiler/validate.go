@@ -16,7 +16,10 @@ import (
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/capability"
+	commandgen "github.com/jsell-rh/stego/internal/generator/command"
+	querygen "github.com/jsell-rh/stego/internal/generator/query"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
+	workergen "github.com/jsell-rh/stego/internal/generator/worker"
 	"github.com/jsell-rh/stego/internal/ports"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
@@ -517,7 +520,8 @@ const workerComponent = "worker"
 // fillCheck gives the fill check of a declaration with its active component
 // set.
 func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, components map[string]*registry.Component) FillCheck {
-	check := FillCheck{ProjectDir: input.ProjectDir, Contracts: reg, Module: input.ModuleName, RuntimeProxy: runtimeProxyStager(reg, svcDecl.Archetype)}
+	check := FillCheck{ProjectDir: input.ProjectDir, Contracts: reg, Module: input.ModuleName, RuntimeProxy: runtimeProxyStager(reg, svcDecl.Archetype),
+		ContractRuntime: map[string][]string{}}
 	for _, module := range svcDecl.FillModules {
 		check.FillModules = append(check.FillModules, module.Module)
 	}
@@ -581,6 +585,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		contract := generatedImportPath(input.ModuleName, outDirName, command.OutputNamespace)
+		check.ContractRuntime[contract] = commandgen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Commands)
 		for i, c := range svcDecl.Commands {
 			if len(c.Fill) == 1 && c.Fill[0] != "" && !strings.ContainsAny(c.Fill[0], `/\.`) {
 				check.CommandFills = append(check.CommandFills, CommandFill{Fill: c.Fill[0], Command: c.Name,
@@ -597,6 +602,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		check.QueryContract = generatedImportPath(input.ModuleName, outDirName, q.OutputNamespace)
+		check.ContractRuntime[check.QueryContract] = querygen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Queries)
 		for i, query := range svcDecl.Queries {
 			if len(query.Fill) == 1 && query.Fill[0] != "" && !strings.ContainsAny(query.Fill[0], `/\.`) {
 				check.QueryFills = append(check.QueryFills, QueryFill{Fill: query.Fill[0], Query: query.Name,
@@ -614,6 +620,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		check.WorkerContract = generatedImportPath(input.ModuleName, outDirName, w.OutputNamespace)
+		check.ContractRuntime[check.WorkerContract] = workergen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Workers)
 	}
 	for i, worker := range svcDecl.Workers {
 		if len(worker.Fill) == 1 && worker.Fill[0] != "" && !strings.ContainsAny(worker.Fill[0], `/\.`) {

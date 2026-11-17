@@ -307,6 +307,10 @@ type FillCheck struct {
 	// commands, queries or workers imports, whose digest is the contract digest of that fill (ST-EXT-DS01). Nil when
 	// no declaration is read.
 	CapabilityContract func(component string) (map[string][]byte, error)
+	// ContractRuntime gives, by the import path of a command, query or worker slot contract, the packages of the
+	// runtime library that its generator can write into that contract, which a fill of the slot may import
+	// (ST-EXT-INV05). The generator gives them, so the fill check does not depend on a generated out/ folder.
+	ContractRuntime map[string][]string
 }
 
 // PlannedGoFiles gives each generated Go file and go.mod of the plan whose content differs from the file in the
