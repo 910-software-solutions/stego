@@ -759,14 +759,9 @@ outbox, and a person can send it again or discard it.
 ### A reference held within a field
 
 A reference can be held within a field that the row and the referenced row
-must have equal. Declare it with `within` on the reference:
-
-```yaml
-  - name: Ticket
-    references:
-      project_id: {relation: project, permission: edit}
-      sprint_id: {relation: sprint, permission: edit, within: project_id}
-```
+must have equal. Declare it with `within` on the reference. For a Ticket of a
+Project that refers to a Sprint of a Project, the reference is
+`sprint_id: {relation: sprint, permission: edit, within: project_id}`.
 
 The field must be a required reference to the same entity on both entities,
 or the scope field of a collection over each entity (ST-DECL-INV93). Use
