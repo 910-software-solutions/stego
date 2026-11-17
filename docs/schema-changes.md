@@ -24,6 +24,14 @@ The release with the expand step adds. The release after it, with the contract
 step, removes what only the old release needed. The declaration keeps every
 schema change, also a finished one.
 
+A schema change does not change the API of the service. After a rename, also
+after its contract step, the API and the OpenAPI document keep the old name
+of the field: the `from` of its first rename. In the example above, a client
+still sends and reads `title`, and the column of the table has the new name
+`heading` (ST-GEN-UC12-R04). A retype keeps the name of the field in the API
+too. A new name in the API is a breaking change for each client, and a
+schema change never makes one.
+
 Checking holds each schema change against its field as its own step leaves
 it: the declared field with each later step undone, the last first
 (ST-DECL-Q17). So one field can change more than once. A retype from `int32`

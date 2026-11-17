@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/registry"
@@ -40,6 +41,9 @@ func validateComponentConfig(service *types.ServiceDeclaration, components map[s
 	}
 	errors = append(errors, declaration.ValidateNoBypass(service, schemas)...)
 	errors = append(errors, declaration.ValidateAuthorSupplied(service, schemas)...)
+	// A bypass setting states no default, and no environment variable takes its default from one, since either would
+	// hold the flag when the declaration gives no value (#394 security review L1).
+	errors = append(errors, declaration.ValidateBypassDefaults(schemas, settingDefaults(components))...)
 	for _, name := range sortedKeys(components) {
 		for _, key := range sortedKeys(components[name].Config) {
 			field := components[name].Config[key]
@@ -49,6 +53,28 @@ func validateComponentConfig(service *types.ServiceDeclaration, components map[s
 		}
 	}
 	return errors
+}
+
+// settingDefaults gives, by component and then by environment variable, the setting key that the variable's
+// default {settings.<key>} names.
+func settingDefaults(components map[string]*registry.Component) map[string]map[string]string {
+	defaults := map[string]map[string]string{}
+	for name, component := range components {
+		for _, variable := range component.Variables() {
+			if variable.Default == nil {
+				continue
+			}
+			key, ok := strings.CutPrefix(*variable.Default, "{settings.")
+			if !ok || !strings.HasSuffix(key, "}") {
+				continue
+			}
+			if defaults[name] == nil {
+				defaults[name] = map[string]string{}
+			}
+			defaults[name][variable.Name] = strings.TrimSuffix(key, "}")
+		}
+	}
+	return defaults
 }
 
 func configError(path, message string) ValidationError {

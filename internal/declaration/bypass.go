@@ -72,3 +72,60 @@ func valueBypassFaults(component, key, place string, value any, field types.Conf
 	}
 	return faults
 }
+
+// ValidateBypassDefaults gives one fault of the no-bypass rule (ST-DECL-INV24) for each setting of an active
+// component's schema that is marked as a bypass and states a default, also in a list at any depth, and for each
+// environment variable of a component whose default is {settings.<key>} of a setting marked as a bypass. The
+// generator resolves a schema default when the declaration gives no value, and a variable default takes the
+// setting's value, so either would hold the flag that a declaration may not give (#394 security review L1). The
+// schemas are the config schemas of the active components, by component name; settingDefaults gives, by component
+// and then by variable name, the setting key that the variable's default names. The faults come in the order of
+// the component names, then of the setting or variable names, and never hold the value.
+func ValidateBypassDefaults(schemas map[string]map[string]types.ConfigField, settingDefaults map[string]map[string]string) []ValidationError {
+	var faults []ValidationError
+	for _, name := range sortedKeys(schemas) {
+		faults = append(faults, schemaBypassDefaults(name, "components."+name+".config", schemas[name])...)
+		variables := settingDefaults[name]
+		for _, variable := range sortedKeys(variables) {
+			key := variables[variable]
+			if field, declared := schemas[name][key]; declared && field.Bypass {
+				faults = append(faults, ValidationError{Category: "config", Rule: "no-bypass", Path: "components." + name + ".environment." + variable + ".default",
+					Message: fmt.Sprintf("the environment variable %s of the component %s takes its default from the setting %s, which the component's schema marks as a bypass; a bypass setting gives no default to a variable", variable, name, key)})
+			}
+		}
+	}
+	return faults
+}
+
+// schemaBypassDefaults checks one config schema: a field marked as a bypass states no default, and the fields of a
+// list's objects and of a list of lists are checked at their own paths.
+func schemaBypassDefaults(component, path string, schema map[string]types.ConfigField) []ValidationError {
+	var faults []ValidationError
+	for _, key := range sortedKeys(schema) {
+		faults = append(faults, fieldBypassDefaults(component, key, path+"."+key, schema[key])...)
+	}
+	return faults
+}
+
+// fieldBypassDefaults checks one schema field and the schema of its items. The default of the field is checked as a
+// value of the field, as a declaration's value is (valueBypassFaults): a bypass field with a default is a fault, and
+// so is the default of a list that gives a bypass field of its items a value (security review of #401, M1).
+func fieldBypassDefaults(component, key, place string, field types.ConfigField) []ValidationError {
+	var faults []ValidationError
+	if field.Default != nil {
+		for _, fault := range valueBypassFaults(component, key, place+".default", field.Default, field) {
+			fault.Message = fmt.Sprintf("the default of the setting %s of the component %s gives a value at %s to a setting that the component's schema marks as a bypass; a bypass setting has no default, so remove it from the default", key, component, fault.Path)
+			faults = append(faults, fault)
+		}
+	}
+	if field.Items == nil {
+		return faults
+	}
+	if field.Items.Fields != nil {
+		faults = append(faults, schemaBypassDefaults(component, place+".items", field.Items.Fields)...)
+	}
+	if field.Items.Inline != nil {
+		faults = append(faults, fieldBypassDefaults(component, key, place+".items", *field.Items.Inline)...)
+	}
+	return faults
+}
