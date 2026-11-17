@@ -229,6 +229,16 @@ func QualificationFaults(check compiler.FillCheck) ([]compiler.FillFault, error)
 	return append(bound, faults...), nil
 }
 
+// BindingFaults gives a fault for each binding of a fill that does not fit
+// that binding or is not qualified, with what to run, and lists no fill
+// package, so it needs no module (ST-GEN-INV10). stego build stops on it.
+func BindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
+	if len(check.Bindings) == 0 {
+		return nil, nil
+	}
+	return bindingFaults(check)
+}
+
 // bindingFaults gives a fault for each binding of a fill that does not fit that binding or is not qualified.
 func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 	// The rule faults reach the compiler through declaredFillFaults, so the

@@ -7,9 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/jsell-rh/stego/internal/fill"
 )
 
 func runBuild(args []string) error {
@@ -89,6 +92,7 @@ func runBuild(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	options.CheckSource = checkBuildFills
 	if _, err := appbuild.Build(ctx, options); err != nil {
 		return err
 	}
@@ -99,4 +103,31 @@ func runBuild(args []string) error {
 		return err
 	}
 	return printEvent(event)
+}
+
+// checkBuildFills refuses a build of the service in module, a copy of the source revision, when a fill that its
+// declaration binds is not qualified: untested, unsigned, signed by a key that SIGNERS does not list, or stale. Plan
+// and apply stop at such a fill (ST-GEN-INV10), and so does the build, so that no unqualified fill reaches a binary,
+// also one written after an apply that wrote its contract (decision on ST-EXT-Q30).
+func checkBuildFills(module string) error {
+	input, err := reconcilerInputAt(module)
+	if err != nil {
+		return err
+	}
+	check, err := compiler.ResolveFillCheck(input)
+	if err != nil {
+		return err
+	}
+	faults, err := fill.BindingFaults(check)
+	if err != nil {
+		return err
+	}
+	if len(faults) == 0 {
+		return nil
+	}
+	lines := make([]string, len(faults))
+	for i, fault := range faults {
+		lines[i] = "  [" + fault.Rule + "] " + fault.Path + ": " + fault.Message
+	}
+	return fmt.Errorf("build: the source revision binds fills that are not qualified, so nothing is built:\n%s", strings.Join(lines, "\n"))
 }

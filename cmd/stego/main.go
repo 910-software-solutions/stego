@@ -667,7 +667,7 @@ func codelessFills(input compiler.ReconcilerInput) error {
 	for i, fault := range faults {
 		lines[i] = "  [" + fault.Rule + "] " + fault.Path + ": " + fault.Message
 	}
-	return fmt.Errorf("apply wrote the generated code, but the service does not build until these fills hold their code:\n%s", strings.Join(lines, "\n"))
+	return fmt.Errorf("apply wrote the generated code, but the service does not build until these fills hold their code; write each fill, then run stego test, stego fill sign and stego apply:\n%s", strings.Join(lines, "\n"))
 }
 
 // runValidate implements `stego validate`.
@@ -772,6 +772,9 @@ func runTest(args []string) error {
 		return err
 	}
 	testArgs := fs.Args()
+	if err := checkTestArgs(testArgs); err != nil {
+		return err
+	}
 	input, err := buildReconcilerInput()
 	if err != nil {
 		return err
@@ -796,7 +799,7 @@ func runTest(args []string) error {
 		return err
 	}
 	defer removeStage()
-	if newFolders(check.Planned) && !slices.ContainsFunc(testArgs, func(arg string) bool { return strings.HasPrefix(strings.TrimLeft(arg, "-"), "vet") }) {
+	if newFolders(check.Planned) {
 		// go vet reads each package from its folder, which a package that apply has not written yet lacks.
 		fmt.Println("The fills are tested without go vet, because apply has not written each package of their contracts yet.")
 		overlayArgs = append(overlayArgs, "-vet=off")
@@ -835,6 +838,26 @@ func runTest(args []string) error {
 	}
 	if len(failed) > 0 {
 		return fmt.Errorf("the tests of %d fill(s) failed: %s", len(failed), strings.Join(failed, ", "))
+	}
+	return nil
+}
+
+// testFlags are the go test flags that stego test passes on: they change how the tests of a fill run and report, not
+// which tests run or which files they build, so the evidence still covers every test of the fill's files.
+var testFlags = map[string]bool{"v": false, "race": false, "count": true, "timeout": true, "failfast": false, "json": false}
+
+// checkTestArgs refuses each argument of stego test that is not a flag of testFlags, such as -run, -skip, -short,
+// -tags or -overlay, which change which tests run or which files they build, and names it (decision on ST-EXT-Q30).
+func checkTestArgs(args []string) error {
+	for i := 0; i < len(args); i++ {
+		name, _, valued := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+		takesValue, known := testFlags[name]
+		if !strings.HasPrefix(args[i], "-") || !known {
+			return fmt.Errorf("stego test does not pass %q to go test: evidence must cover every test of the fill as its files are; only -v, -race, -count, -timeout, -failfast and -json are passed", args[i])
+		}
+		if takesValue && !valued {
+			i++
+		}
 	}
 	return nil
 }
@@ -1156,7 +1179,11 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 	if err != nil {
 		return compiler.ReconcilerInput{}, fmt.Errorf("getting working directory: %w", err)
 	}
+	return reconcilerInputAt(projectDir)
+}
 
+// reconcilerInputAt creates a ReconcilerInput for the project in projectDir from the environment.
+func reconcilerInputAt(projectDir string) (compiler.ReconcilerInput, error) {
 	result, err := registry.ResolveRegistry(registry.ResolveOptions{ProjectDir: projectDir})
 	if err != nil {
 		return compiler.ReconcilerInput{}, err

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"go/ast"
+	"go/build/constraint"
 	"go/format"
 	goparser "go/parser"
 	"go/token"
@@ -148,7 +149,7 @@ func CapabilityContractDigest(check compiler.FillCheck, fill string, ref types.S
 	}
 	sort.Strings(paths)
 	for _, name := range paths {
-		file, err := goparser.ParseFile(fset, name, files[name], goparser.SkipObjectResolution)
+		file, err := goparser.ParseFile(fset, name, files[name], goparser.SkipObjectResolution|goparser.ParseComments)
 		if err != nil {
 			return "", fmt.Errorf("the generated contract %s cannot be read: %w", name, err)
 		}
@@ -167,6 +168,7 @@ func CapabilityContractDigest(check compiler.FillCheck, fill string, ref types.S
 		return "", err
 	}
 	roots = append(roots, used...)
+	roots = append(roots, contractRoots...)
 	contents := map[string]string{}
 	seen := map[string]bool{}
 	for len(roots) > 0 {
@@ -204,8 +206,9 @@ type contractDecls struct {
 
 // add indexes each top-level declaration of a file of the contract package.
 func (d contractDecls) add(fset *token.FileSet, path string, file *ast.File) error {
-	record := func(into map[string][]contractDecl, name, key string, node ast.Node) error {
+	record := func(into map[string][]contractDecl, name, key string, node ast.Node, prefix string) error {
 		var buf bytes.Buffer
+		buf.WriteString(prefix)
 		if err := format.Node(&buf, fset, node); err != nil {
 			return err
 		}
@@ -220,32 +223,63 @@ func (d contractDecls) add(fset *token.FileSet, path string, file *ast.File) err
 		into[name] = append(into[name], contractDecl{key: path + " " + key, digest: hex.EncodeToString(sum[:]), names: names})
 		return nil
 	}
+	// The build constraints of the file decide whether each of its declarations is built, so they count as a
+	// declaration of the file that each fill uses (contractRoots).
+	var constraints []string
+	for _, group := range file.Comments {
+		if group.Pos() >= file.Package {
+			break
+		}
+		for _, comment := range group.List {
+			if constraint.IsGoBuild(comment.Text) || constraint.IsPlusBuild(comment.Text) {
+				constraints = append(constraints, comment.Text)
+			}
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.Join(constraints, "\n")))
+	d.byName[buildConstraints] = append(d.byName[buildConstraints], contractDecl{key: path + " " + buildConstraints, digest: hex.EncodeToString(sum[:])})
+	inits := 0
 	for _, decl := range file.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
 			if decl.Recv == nil {
-				if err := record(d.byName, decl.Name.Name, decl.Name.Name, decl); err != nil {
+				key := decl.Name.Name
+				if key == "init" {
+					// A file may hold more than one init; each runs, in the order of the file.
+					inits++
+					key = fmt.Sprintf("init#%d", inits)
+				}
+				if err := record(d.byName, decl.Name.Name, key, decl, ""); err != nil {
 					return err
 				}
 				continue
 			}
 			receiver := receiverName(decl.Recv.List[0].Type)
-			if err := record(d.methods, receiver, receiver+"."+decl.Name.Name, decl); err != nil {
+			if err := record(d.methods, receiver, receiver+"."+decl.Name.Name, decl, ""); err != nil {
 				return err
 			}
 		case *ast.GenDecl:
-			for _, spec := range decl.Specs {
+			for i, spec := range decl.Specs {
 				switch spec := spec.(type) {
 				case *ast.TypeSpec:
-					if err := record(d.byName, spec.Name.Name, spec.Name.Name, spec); err != nil {
+					if err := record(d.byName, spec.Name.Name, spec.Name.Name, spec, "type "); err != nil {
 						return err
 					}
 				case *ast.ValueSpec:
+					// The keyword counts, so a const that becomes a var changes the digest. The value of a constant in
+					// a group can depend on its place (iota) and on the specs before it, so a constant of a group
+					// counts with the whole group.
+					var node ast.Node = spec
+					prefix := decl.Tok.String() + " "
+					if decl.Tok == token.CONST && decl.Lparen.IsValid() {
+						node, prefix = decl, ""
+					}
 					for _, name := range spec.Names {
-						if name.Name == "_" {
-							continue
+						key := name.Name
+						if key == "_" {
+							key = fmt.Sprintf("_#%d", i)
 						}
-						if err := record(d.byName, name.Name, name.Name, spec); err != nil {
+						if err := record(d.byName, name.Name, key, node, prefix); err != nil {
 							return err
 						}
 					}
@@ -255,6 +289,13 @@ func (d contractDecls) add(fset *token.FileSet, path string, file *ast.File) err
 	}
 	return nil
 }
+
+// buildConstraints is the name under which the build constraints of each file of a contract package count.
+const buildConstraints = "//go:build"
+
+// contractRoots are the declarations of a contract package that each fill of it compiles with, whatever it names:
+// the build constraints of each file, the init functions and the declarations of the blank identifier.
+var contractRoots = []string{buildConstraints, "init", "_"}
 
 // receiverName gives the name of the type of a method receiver, such as T for *T or T[P].
 func receiverName(expr ast.Expr) string {

@@ -265,7 +265,7 @@ func CodelessFills(check compiler.FillCheck) []compiler.FillFault {
 			return
 		}
 		faults = append(faults, compiler.FillFault{Rule: ruleFiles, Path: path, Found: fill,
-			Message: fmt.Sprintf("fill %q holds no Go code yet; write the fill of the slot %s in fills/%s against its contract, which apply has written (stego fill create writes a new fill that compiles)", fill, slot, fill)})
+			Message: fmt.Sprintf("fill %q holds no Go code yet; write the fill of the slot %s in fills/%s against its contract, which apply has written, then run stego test, stego fill sign %s and stego apply", fill, slot, fill, fill)})
 	}
 	for _, f := range check.CommandFills {
 		add(f.Fill, f.Path, commandSlot)
@@ -389,10 +389,12 @@ func stageModuleFiles(check compiler.FillCheck, stage string) error {
 
 // GoTestSetup prepares a go test of the fills against the generated code and the module files that apply and stego
 // deps write: the go -overlay file of the planned files (StageOverlay), and a copy of go.mod (the planned one when the
-// check holds it) and go.sum in a folder of its own, which go may complete with the modules that the fills and the
-// generated code reach (-mod=mod), beside the runtime pin that the registry's runtime folder serves, as listResolved
-// lists the fills. It gives the flags of go test, the environment entries that it adds, and a function that removes
-// the staged files. The project's files do not change; stego deps writes go.mod and go.sum.
+// check holds it) and go.sum in a folder of its own, beside the runtime pin that the registry's runtime folder serves.
+// It completes that copy with the modules that the fills and the generated code reach, not their tests, from the
+// module sources of the build (moduleSources), as listResolved lists the fills; then go test runs read-only on it, so a
+// test file that imports a module that go.mod does not hold fails and fetches nothing. It gives the flags of go test,
+// its environment entries (the module sources, and GOFLAGS with only -modcacherw of the caller) and a function that
+// removes the staged files. The project's files do not change; stego deps writes go.mod and go.sum.
 func GoTestSetup(check compiler.FillCheck) ([]string, []string, func(), error) {
 	overlay, removeOverlay, err := StageOverlay(check)
 	if err != nil {
@@ -402,10 +404,14 @@ func GoTestSetup(check compiler.FillCheck) ([]string, []string, func(), error) {
 	if overlay != "" {
 		flags = append(flags, "-overlay="+overlay)
 	}
+	goFlags := "GOFLAGS="
+	if slices.Contains(strings.Fields(os.Getenv("GOFLAGS")), "-modcacherw") {
+		goFlags += "-modcacherw"
+	}
 	_, statErr := os.Stat(filepath.Join(check.ProjectDir, "go.mod"))
 	if _, planned := check.Planned[filepath.Join(check.ProjectDir, "go.mod")]; statErr != nil && !planned {
 		// Before the first generation there is no module to test in.
-		return flags, nil, removeOverlay, nil
+		return flags, append(moduleSources(""), goFlags), removeOverlay, nil
 	}
 	stage, err := os.MkdirTemp("", "stego-fill-test-modules-")
 	if err != nil {
@@ -420,23 +426,40 @@ func GoTestSetup(check compiler.FillCheck) ([]string, []string, func(), error) {
 		remove()
 		return nil, nil, nil, err
 	}
-	var env []string
+	runtimeProxy := ""
 	if check.RuntimeProxy != nil {
-		runtimeProxy, err := check.RuntimeProxy(stage)
-		if err != nil {
+		if runtimeProxy, err = check.RuntimeProxy(stage); err != nil {
 			remove()
 			return nil, nil, nil, err
 		}
-		if runtimeProxy != "" {
-			proxy := os.Getenv("GOPROXY")
-			if proxy == "" {
-				proxy = "https://proxy.golang.org,direct"
-			}
-			env = append(env, "GOPROXY="+(&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String()+","+proxy)
-		}
 	}
-	flags = append(flags, "-modfile="+filepath.Join(stage, "go.mod"), "-mod=mod")
-	return flags, env, remove, nil
+	modFile := filepath.Join(stage, "go.mod")
+	if _, stderr, err := runList(check.ProjectDir, modFile, "mod", runtimeProxy, overlay, []string{"./fills/..."}); err != nil {
+		remove()
+		return nil, nil, nil, fmt.Errorf("completing the module files of the fills: %w: %s", err, strings.TrimSpace(stderr))
+	}
+	flags = append(flags, "-modfile="+modFile, "-mod=readonly")
+	return flags, append(moduleSources(runtimeProxy), goFlags), remove, nil
+}
+
+// moduleSources are the module sources that the application build trusts, not the host's: the public proxy and
+// checksum database, with the runtime pin's proxy folder first when it is given, no direct version control and no
+// credentials, so that a module that go list or go test completes for a fill comes from where stego build takes it
+// (ST-BLD-UC01-R02). A host that turns the proxy off keeps it off.
+func moduleSources(runtimeProxy string) []string {
+	proxy := "https://proxy.golang.org"
+	if os.Getenv("GOPROXY") == "off" {
+		proxy = "off"
+	}
+	if runtimeProxy != "" {
+		proxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String() + "," + proxy
+	}
+	var env []string
+	for _, key := range []string{"GOPROXY", "GOSUMDB", "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GOINSECURE", "GOAUTH", "GOVCS", "GIT_TERMINAL_PROMPT"} {
+		value := map[string]string{"GOPROXY": proxy, "GOSUMDB": "sum.golang.org", "GOAUTH": "off", "GOVCS": "*:off", "GIT_TERMINAL_PROMPT": "0"}[key]
+		env = append(env, key+"="+value)
+	}
+	return env
 }
 
 // StageOverlay writes each planned file of the check (compiler.FillCheck.Planned) and the file that go -overlay reads,
@@ -504,20 +527,7 @@ func runList(projectDir, modFile, mode, runtimeProxy, overlay string, patterns [
 	for key, value := range compiler.TargetBuildSettings() {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	// The module sources that the application build trusts, not the host's: the public proxy and checksum database,
-	// no direct version control and no credentials, so that a module that go list completes for a fill comes from
-	// where stego build takes it (ST-BLD-UC01-R02). A host that turns the proxy off keeps it off.
-	proxy := "https://proxy.golang.org"
-	if os.Getenv("GOPROXY") == "off" {
-		proxy = "off"
-	}
-	if runtimeProxy != "" {
-		proxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String() + "," + proxy
-	}
-	for key, value := range map[string]string{"GOPROXY": proxy, "GOSUMDB": "sum.golang.org", "GOPRIVATE": "", "GONOPROXY": "",
-		"GONOSUMDB": "", "GOINSECURE": "", "GOAUTH": "off", "GOVCS": "*:off", "GIT_TERMINAL_PROMPT": "0"} {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = append(cmd.Env, moduleSources(runtimeProxy)...)
 	cmd.WaitDelay = time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -585,6 +595,13 @@ func treeFaults(check compiler.FillCheck, fill, dir, fillPackage string, contrac
 				path, err := strconv.Unquote(spec.Path.Value)
 				if err != nil {
 					return nil, err
+				}
+				if spec.Name != nil && spec.Name.Name == "." && slices.Contains(contracts, path) {
+					// A dot import hides which names of the contract the fill uses, which its contract digest counts
+					// (CapabilityContractDigest).
+					faults = append(faults, ruleFault{rule: ruleImports, path: path, text: fmt.Sprintf("fill %q: the file %s imports its contract %s with a dot; import it with a name, so each use names the contract",
+						fill, relative, path)})
+					continue
 				}
 				listed := listedPackage{ImportPath: path, Standard: standardLibrary(path) && path != "C"}
 				follow, allowed := judgeImport(check, contracts, fillPackage, path, listed)
