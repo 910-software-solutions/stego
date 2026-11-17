@@ -321,7 +321,9 @@ func TestContract(t *testing.T) {
 			{"a parameter twice", func(s *types.ServiceDeclaration) {
 				s.Commands[0].Lists[0].Filter[1] = types.ListTerm{Field: "qty", Op: types.ListGreaterThan, Param: "order_id"}
 			}, []string{"of-order", "order_id"}},
-			{"a list name twice", func(s *types.ServiceDeclaration) { s.Commands[0].Lists = append(s.Commands[0].Lists, s.Commands[0].Lists[0]) }, []string{"of-order", "twice"}},
+			{"a list name twice", func(s *types.ServiceDeclaration) {
+				s.Commands[0].Lists = append(s.Commands[0].Lists, s.Commands[0].Lists[0])
+			}, []string{"of-order", "twice"}},
 		} {
 			svc := declaration(t)
 			c.edit(svc)

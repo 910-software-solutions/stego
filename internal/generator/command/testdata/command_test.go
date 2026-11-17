@@ -1103,7 +1103,9 @@ func TestCommandLists(t *testing.T) {
 		// The expand step of a schema change adds a column while this release still runs.
 		_, err := e.admin.ExecContext(e.ctx, `ALTER TABLE reservations ADD COLUMN note text`)
 		must(t, err)
-		t.Cleanup(func() { _, _ = e.admin.ExecContext(context.Background(), `ALTER TABLE reservations DROP COLUMN IF EXISTS note`) })
+		t.Cleanup(func() {
+			_, _ = e.admin.ExecContext(context.Background(), `ALTER TABLE reservations DROP COLUMN IF EXISTS note`)
+		})
 		if got := listed("oc16-t02-c", order); !strings.Contains(got, `"reservationId":"2"`) {
 			t.Fatalf("the run after the added column listed %s, want two reservations", got)
 		}
