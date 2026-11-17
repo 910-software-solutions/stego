@@ -63,6 +63,10 @@ does not change the check: it also refuses a secret source of an environment
 variable that the base of the service does not wire (see
 [delivery](delivery.md)).
 
+The check reads the record of the base, not the out folder. `stego apply`
+writes a missing generated file again with no flag, and refuses only a
+generated file that was edited by hand.
+
 ## Exit status
 
 - 0: no fault.

@@ -87,7 +87,7 @@ type service struct {
 	checks   *spiceRecorder
 	operator caller
 
-	weakMigration, weakStart, foreignMigration, legacyMigration, secondMigration, nextRelease, noKafka runResult
+	weakMigration, weakStart, foreignMigration, legacyMigration, secondMigration, nextRelease, noKafka, noTopic runResult
 	// The refused starts of the modes (ST-GEN-INV26): an unknown mode, the worker mode with no connection string of
 	// the worker role, and the binary of the next release, which declares the modes api and worker, with the mode
 	// controller and with no mode option and no database setting.
@@ -352,7 +352,11 @@ func start(t *testing.T) *service {
 			unset = append(unset, v)
 		}
 	}
-	s.noKafka = run(binary, append(unset, kafkaoutbox.BrokersSetting+"=", kafkaoutbox.TopicSetting+"=", kafkaoutbox.InsecureLoopbackSetting+"="), "--mode=worker")
+	s.noKafka = run(binary, append(unset, kafkaoutbox.BrokersSetting+"=", kafkaoutbox.TopicSetting+"="+changeTopic, kafkaoutbox.InsecureLoopbackSetting+"="), "--mode=worker")
+	// The worker mode with the brokers and no topic does not start either: the start names the topic setting
+	// before the runtime runs (walkthrough 7, B7).
+	s.noTopic = run(binary, append(unset, kafkaoutbox.BrokersSetting+"="+s.broker.Plain.Addr(), kafkaoutbox.InsecureLoopbackSetting+"=1",
+		kafkaoutbox.TopicSetting+"=", kafkaoutbox.TopicFileSetting+"="), "--mode=worker")
 	// The modes are read before the database: an unknown mode stops the start at the stage modes (ST-GEN-INV26).
 	s.unknownMode = run(binary, append(serviceEnv("verify-full"), "STEGO_MODE="), "--mode", "bogus")
 	// The worker mode reads the connection string of the worker role at the start, and names it when it is missing.
@@ -1312,13 +1316,18 @@ func TestWiring(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RC18-OC31-T02 The generated worker sends to Kafka with the settings of the process, and does not start without them", func(t *testing.T) {
+	t.Run("ST-SUP-RC18-OC31-T02 The generated worker sends to Kafka with the settings of the process, and does not start without them or with no topic", func(t *testing.T) {
 		s.t = t
 		// The run with no Kafka setting has the environment of the service of the check, which runs, without the
 		// STEGO_KAFKA_ settings alone: its worker fails to start, and the failure record names the stage and the task,
 		// with no error text (ST-SUP-RP14-LC05).
 		if s.noKafka.err == nil || !strings.Contains(s.noKafka.output, `"stage":"service.run"`) || !strings.Contains(s.noKafka.output, `"stego-runtime[0]"`) {
 			t.Fatalf("the worker mode with no Kafka setting gave %v, want a failed start of the runtime task:\n%s", s.noKafka.err, s.noKafka.output)
+		}
+		// With no topic, the start stops at the stage of the topic setting, before the HTTP listener and the runtime
+		// task, so no message goes to the topic of its event type (walkthrough 7, B7).
+		if s.noTopic.err == nil || !strings.Contains(s.noTopic.output, `"stage":"service.start.setting.kafka-producer.STEGO_KAFKA_TOPIC"`) || strings.Contains(s.noTopic.output, "stego-runtime[0]") {
+			t.Fatalf("the worker mode with no Kafka topic gave %v, want a refused start at the stage of STEGO_KAFKA_TOPIC:\n%s", s.noTopic.err, s.noTopic.output)
 		}
 		// The service of the check runs with the settings: its worker registered the destination kafka, and the
 		// change event of the first create is done.

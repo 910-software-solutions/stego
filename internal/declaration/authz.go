@@ -1092,10 +1092,13 @@ func ScopedAccessWarnings(service *types.ServiceDeclaration, schema *AuthzSchema
 		}
 		for _, op := range []types.Operation{types.OpRead, types.OpUpdate, types.OpPatch, types.OpDelete} {
 			permission := e.Permissions[op]
-			if !slices.Contains(c.Operations, op) || permission == "" || permission == types.PermissionPublic || seen[e.Name+"#"+permission] {
+			// A permission is checked once for each scope: another scoped collection of the entity may reach it
+			// through another relation, from another parent.
+			key := strings.Join([]string{e.Name, permission, relation, p.ResourceType, read}, "#")
+			if !slices.Contains(c.Operations, op) || permission == "" || permission == types.PermissionPublic || seen[key] {
 				continue
 			}
-			seen[e.Name+"#"+permission] = true
+			seen[key] = true
 			rewrite, isPermission := schema.PermissionRewrite(e.ResourceType, permission)
 			g := scopeGuard{schema: schema, resourceType: e.ResourceType, relation: relation, parentType: p.ResourceType, read: read}
 			if isPermission && g.guarded(rewrite, 0) {
@@ -1158,7 +1161,7 @@ func (g scopeGuard) child(child *core.SetOperation_Child, depth int) bool {
 	switch {
 	case child.GetTupleToUserset() != nil:
 		arrow := child.GetTupleToUserset()
-		return arrow.GetTupleset().GetRelation() == g.relation && g.schema.implies(g.parentType, arrow.GetComputedUserset().GetRelation(), g.read, depth+1)
+		return arrow.GetTupleset().GetRelation() == g.relation && g.onlyParent() && g.schema.implies(g.parentType, arrow.GetComputedUserset().GetRelation(), g.read, depth+1)
 	case child.GetComputedUserset() != nil:
 		rewrite, ok := g.schema.PermissionRewrite(g.resourceType, child.GetComputedUserset().GetRelation())
 		return ok && g.guarded(rewrite, depth+1)
@@ -1166,6 +1169,21 @@ func (g scopeGuard) child(child *core.SetOperation_Child, depth int) bool {
 		return g.guarded(child.GetUsersetRewrite(), depth+1)
 	}
 	return false
+}
+
+// onlyParent tells whether the relation admits subjects of the parent type only. An arrow through a relation that
+// also admits another type grants through a subject of that type too, which needs no read of the parent.
+func (g scopeGuard) onlyParent() bool {
+	subjects, ok := g.schema.RelationSubjects(g.resourceType, g.relation)
+	if !ok || len(subjects) == 0 {
+		return false
+	}
+	for _, subject := range subjects {
+		if subject.Type != g.parentType {
+			return false
+		}
+	}
+	return true
 }
 
 // implies tells whether each way to hold the permission name of the type also gives the permission read: the same

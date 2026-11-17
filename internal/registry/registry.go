@@ -211,6 +211,9 @@ func LoadSources(sources ...Source) (*Registry, error) {
 		}
 		r.mixins[name] = item
 	}
+	if err := r.checkReadWith(); err != nil {
+		return nil, err
+	}
 	// An alias names mixins that are no aliases, so an alias never leads to itself or to another alias.
 	for name, item := range r.mixins {
 		for _, target := range item.AliasOf {

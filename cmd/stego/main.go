@@ -780,10 +780,17 @@ func runDrift(args []string) error {
 // it records no evidence, and why, and exits non-zero when a test fails.
 func runTest(args []string) error {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
-		return err
+	fs.Usage = func() { fmt.Fprint(fs.Output(), testUsage) }
+	// stego test has no flags of its own: each flag is a flag of go test, before or after "--" (walkthrough 7, B11).
+	// Only -h and -help ask for the usage.
+	testArgs := args
+	switch {
+	case len(args) > 0 && (args[0] == "-h" || args[0] == "-help" || args[0] == "--help"):
+		fs.Usage()
+		return nil
+	case len(args) > 0 && args[0] == "--":
+		testArgs = args[1:]
 	}
-	testArgs := fs.Args()
 	if err := checkTestArgs(testArgs); err != nil {
 		return err
 	}
@@ -868,6 +875,24 @@ func runTest(args []string) error {
 
 // testFlags are the go test flags that stego test passes on: they change how the tests of a fill run and report, not
 // which tests run or which files they build, so the evidence still covers every test of the fill's files.
+// testUsage is the help of stego test (walkthrough 7, B11).
+const testUsage = `Usage: stego test [--] [go test flags]
+
+Runs the tests of each fill of the project with go test, against the generated
+code that apply plans to write, and records the evidence of each fill that
+passed in its fill.yaml. Then run stego fill sign <fill> for each fill.
+
+Only these go test flags are passed, before or after "--":
+  -v              print each test
+  -race           run with the race detector
+  -count n        run each test n times; n is 1 or more
+  -timeout d      stop the tests after the time d, such as 2m
+  -failfast       stop at the first failed test
+
+Other flags, such as -run, -skip, -short or -tags, are refused, because the
+evidence must cover every test of a fill. Example: stego test -count=1 -v
+`
+
 var testFlags = map[string]bool{"v": false, "race": false, "count": true, "timeout": true, "failfast": false}
 
 // checkTestArgs refuses each argument of stego test that is not a flag of testFlags, such as -run, -skip, -short,

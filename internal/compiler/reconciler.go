@@ -70,6 +70,9 @@ type Plan struct {
 	// lists and that is missing or no longer matches its recorded hash
 	// (ST-GEN-SP01). Apply refuses such a plan unless ReplaceHandEdits is set.
 	HandEdited []string
+	// Restored lists, in path order, each generated file that the record tracks and that is missing: it holds no
+	// hand edit, so the run writes it again with no flag, and the plan names it as restored (ST-GEN-Q46).
+	Restored []string
 
 	// ReplaceHandEdits states that the author lets this apply replace the
 	// hand-edited files (stego apply --replace-hand-edits).
@@ -595,7 +598,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	var requirements []byte
 	if input.WriteRequirements != nil {
-		files, err := requirementsFiles(input.WriteRequirements, svcDecl, componentNames, components, input.Generators, resolved.Contexts)
+		files, err := requirementsFiles(input.WriteRequirements, svcDecl, componentNames, components, input.Generators, resolved.Contexts, runtimePackages(allFiles, pin))
 		if err != nil {
 			return nil, err
 		}
@@ -909,10 +912,13 @@ func schemaDigest(files []gen.File, runtime *registry.RuntimePin) string {
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
-// isSchemaFile tells whether a generated file states the schema: a migration of a folder named migrations, or the
-// schema manifest, which also names the last migration of the release.
+// isSchemaFile tells whether a generated file states the schema: a migration of a folder named migrations, the
+// schema manifest, which also names the last migration of the release, or the session table SQL or a file of the
+// schema package of a browser-service (browser/schema.sql, browser/schema), whose mode migrate makes and checks it. Without the last, the
+// migration Job of a browser-service took the digest of no file in every release (walkthrough 7, B6).
 func isSchemaFile(name string) bool {
-	return slices.Contains(strings.Split(path.Dir(name), "/"), "migrations") || path.Base(name) == "schema_manifest.go"
+	return slices.Contains(strings.Split(path.Dir(name), "/"), "migrations") || path.Base(name) == "schema_manifest.go" ||
+		name == "browser/schema.sql" || path.Dir(name) == "browser/schema"
 }
 
 // ReferenceFile is the path, in the project folder, of the environment variable reference that apply writes: the
@@ -968,7 +974,7 @@ type ComponentNeeds struct {
 // generated code or a fill. A component whose generator gives variables from its declaration entries, such as
 // runtime-configuration, gives them through gen.VariableDeclarer.
 func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclaration, names []string, components map[string]*registry.Component,
-	generators map[string]gen.Generator, contexts map[string]gen.Context) ([]gen.File, error) {
+	generators map[string]gen.Generator, contexts map[string]gen.Context, imported map[string]bool) ([]gen.File, error) {
 	needs := make([]ComponentNeeds, 0, len(names))
 	for _, name := range names {
 		component := components[name]
@@ -981,7 +987,7 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		if err := checkSettingDefaults(component, settings); err != nil {
 			return nil, err
 		}
-		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: declaredModeVariables(component.Variables(), svcDecl.Modes), Settings: settings}
+		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: readVariables(declaredModeVariables(component.Variables(), svcDecl.Modes), imported), Settings: settings}
 		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
 			declared, err := declarer.DeclaredVariables(contexts[name])
 			if err != nil {
@@ -996,6 +1002,15 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		return nil, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
 	}
 	return []gen.File{{Path: RequirementsFile, Content: data.Requirements}, {Path: ReferenceFile, Content: data.Reference}}, nil
+}
+
+// readVariables gives the variables that the generated service reads: each one whose Read with names no package, or
+// a package of the runtime library that the generated code imports (ST-SUP-Q161, ST-DLV-UC01-R06). A browser-service
+// that imports no package of the runtime is not asked for the connection strings that only the runtime reads.
+func readVariables(variables []registry.EnvironmentVariable, imported map[string]bool) []registry.EnvironmentVariable {
+	return slices.DeleteFunc(slices.Clone(variables), func(variable registry.EnvironmentVariable) bool {
+		return variable.ReadWith != "" && !imported[variable.ReadWith]
+	})
 }
 
 // checkSettingDefaults holds each default of a variable that is {settings.<key>} to the variable's type and allowed
@@ -1356,7 +1371,7 @@ func computePlan(
 	var planned []PlannedFile
 	newFileHashes := make(map[string]string)
 	var newProjectHashes map[string]string
-	var handEdited []string
+	var handEdited, restored []string
 
 	for _, f := range generatedFiles {
 		content := f.Bytes()
@@ -1445,11 +1460,21 @@ func computePlan(
 				return nil, err
 			}
 		}
-		if !snapshot.Exists || snapshot.Hash != recorded {
+		// A missing generated file holds no hand edit, so the run writes it again with no flag; only a file that
+		// is there with other bytes is a hand edit (ST-GEN-Q46, ST-GEN-CLI01).
+		_, generated := newFileHashes[path]
+		if _, project := newProjectHashes[path]; project {
+			generated = true
+		}
+		switch {
+		case !snapshot.Exists && generated:
+			restored = append(restored, path)
+		case snapshot.Exists && snapshot.Hash != recorded:
 			handEdited = append(handEdited, path)
 		}
 	}
 	sort.Strings(handEdited)
+	sort.Strings(restored)
 
 	sort.Slice(planned, func(i, j int) bool {
 		return planned[i].Path < planned[j].Path
@@ -1511,6 +1536,7 @@ func computePlan(
 	}
 	return &Plan{
 		HandEdited:   handEdited,
+		Restored:     restored,
 		StateChanged: string(oldStateData) != string(newStateData),
 		snapshots:    snapshots, projectDir: projectPath, outDir: outputPath,
 		Files:          planned,
@@ -1667,7 +1693,11 @@ func FormatPlan(plan *Plan) string {
 		switch f.Action {
 		case ActionGenerate:
 			generateCount++
-			fmt.Fprintf(&sb, "  generate: %s\n", f.Path)
+			if slices.Contains(plan.Restored, f.Path) {
+				fmt.Fprintf(&sb, "  restore:  %s (missing; written again)\n", f.Path)
+			} else {
+				fmt.Fprintf(&sb, "  generate: %s\n", f.Path)
+			}
 		case ActionUpdate:
 			updateCount++
 			fmt.Fprintf(&sb, "  update:   %s\n", f.Path)

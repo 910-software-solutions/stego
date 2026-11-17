@@ -50,7 +50,7 @@ func TestFillScaffoldRejectsExistingDirectoryAndLinks(t *testing.T) {
 func TestFillWorkflowBuild(t *testing.T) {
 	t.Run("ST-EXT-UC01-R01-T01 A scaffolded fill compiles against its slot contract, and its test runs in the generated service", func(t *testing.T) {
 		registry := shippedRegistryCopy(t)
-		project := t.TempDir()
+		project := serviceFolder(t)
 		t.Chdir(project)
 		t.Setenv("STEGO_REGISTRY", registry)
 		t.Setenv("STEGO_MODULE", "example.com/fill-workflow")
@@ -342,6 +342,10 @@ func TestCapabilityFillScaffold(t *testing.T) {
 		}
 		if err != nil || manifest.Implements != "worker.worker" || manifest.Name != "fulfill-orders" || manifest.Kind != "fill" {
 			t.Fatalf("the manifest of fulfill-orders is %+v, %v; want the fill fulfill-orders of the slot worker.worker", manifest, err)
+		}
+		// The fill of a worker serves no collection, so its manifest holds no collection key (walkthrough 7, B12).
+		if strings.Contains(string(data), "collection") {
+			t.Fatalf("the manifest of fulfill-orders holds a collection key:\n%s", data)
 		}
 		// A fill that the declaration does not name, and a fill that exists, are refused, and nothing is written.
 		before := projectTree(t)

@@ -756,6 +756,8 @@ A worker fill reads a set of rows through a declared list (ST-DECL-INV94).
 | `lock` | Optional. When true, `ListForUpdate` locks the rows. The entity must declare `lock_at_most`, a whole number from 1 to 1000. |
 
 `stego apply` writes one typed list for each declared list in `out/workers`.
+When a generated file of `out/workers` is missing, `stego apply` writes it
+again with no flag; it refuses a generated file that was edited by hand.
 Its name is the worker name and the list name in mixed case, such as
 `LowStockScanLowItems`. The generator builds the statements of the list from
 the entity of the release: the columns of the entity, the tenant, and the

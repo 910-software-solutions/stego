@@ -63,7 +63,7 @@ func TestInitializeComposedRegistry(t *testing.T) {
 	t.Setenv("STEGO_REGISTRY", "")
 	for _, archetype := range []string{"common", "application"} {
 		t.Run(archetype, func(t *testing.T) {
-			project := t.TempDir()
+			project := serviceFolder(t)
 			initTestRegistry(t, project, "common-registry", "common")
 			initTestRegistry(t, project, "application-registry", "application")
 			config := "# Keep the operator's configuration.\nregistry:\n  - url: ./common-registry\n    ref: local\n  - url: ./application-registry\n    ref: application\n"
@@ -89,7 +89,7 @@ func TestInitializeComposedRegistry(t *testing.T) {
 
 func TestInitializeDefaultRegistry(t *testing.T) {
 	t.Setenv("STEGO_REGISTRY", "")
-	project := t.TempDir()
+	project := serviceFolder(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -119,7 +119,7 @@ func TestInitializeRejectsInvalidConfiguration(t *testing.T) {
 	t.Setenv("STEGO_REGISTRY", "")
 	for _, config := range []string{"", "registry: [", "registry: []\n", "registry:\n  - url: ./registry\n    ref: local\nunknown: true\n", strings.Repeat(" ", parser.MaxDocumentBytes+1)} {
 		t.Run("invalid", func(t *testing.T) {
-			project := t.TempDir()
+			project := serviceFolder(t)
 			initTestRegistry(t, project, "registry", "example")
 			initTestFile(t, project, ".stego/config.yaml", config)
 			if _, err := Initialize(InitOptions{ProjectDir: project, Archetype: "example"}); err == nil {
@@ -140,7 +140,7 @@ func TestInitializeRejectsInvalidConfiguration(t *testing.T) {
 
 func TestInitializeRejectsRegistryReplacement(t *testing.T) {
 	t.Setenv("STEGO_REGISTRY", "")
-	project := t.TempDir()
+	project := serviceFolder(t)
 	for _, directory := range []string{"common", "application"} {
 		initTestRegistry(t, project, directory, "example")
 	}
@@ -162,7 +162,7 @@ func TestInitializeRejectsExistingPaths(t *testing.T) {
 					continue
 				}
 				t.Run(name+"/"+kind, func(t *testing.T) {
-					project, outside := t.TempDir(), t.TempDir()
+					project, outside := serviceFolder(t), t.TempDir()
 					initTestRegistry(t, project, "registry", "example")
 					initTestFile(t, outside, "protected", "human source")
 					path := filepath.Join(project, name)
@@ -210,7 +210,7 @@ func TestInitializeRejectsExistingPaths(t *testing.T) {
 
 func TestInitializeConcurrent(t *testing.T) {
 	t.Setenv("STEGO_REGISTRY", "")
-	project := t.TempDir()
+	project := serviceFolder(t)
 	initDefaultRegistry(t, "example")
 	start := make(chan struct{})
 	results := make(chan error, 2)
@@ -252,7 +252,7 @@ func TestInitializeConcurrent(t *testing.T) {
 
 func TestInitializeUsesProjectLock(t *testing.T) {
 	t.Setenv("STEGO_REGISTRY", "")
-	project := t.TempDir()
+	project := serviceFolder(t)
 	initDefaultRegistry(t, "example")
 	root, err := os.OpenRoot(project)
 	if err != nil {
@@ -273,7 +273,7 @@ func TestInitializeUsesProjectLock(t *testing.T) {
 }
 
 func TestRootCreateDoesNotReplaceFiles(t *testing.T) {
-	project := t.TempDir()
+	project := serviceFolder(t)
 	root, err := os.OpenRoot(project)
 	if err != nil {
 		t.Fatal(err)
@@ -294,4 +294,15 @@ func TestRootCreateDoesNotReplaceFiles(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("staging file remains: %v, %v", entries, err)
 	}
+}
+
+// serviceFolder makes an empty project folder whose name is a service name: the folder of t.TempDir is a number,
+// which a service name may not be (ST-DECL-INV86, ST-DECL-Q43).
+func serviceFolder(t *testing.T) string {
+	t.Helper()
+	folder := filepath.Join(t.TempDir(), "service")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return folder
 }
