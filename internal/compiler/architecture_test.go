@@ -1073,7 +1073,14 @@ func TestReadArchitecture(t *testing.T) {
 			t.Fatalf("the refusal prints the characters of the model as they are: %q", message)
 		}
 	})
-	t.Run("ST-GEN-UC16-R06-T04 The reader refuses a model of another schema version and says to run stego apply or which STEGO wrote it", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R17-T01 A reader refuses a model of another schema version before the schema, naming both versions and the remedy", func(t *testing.T) {
+		// Each version pins the digest of its schema, so a change of the schema that keeps the version fails here.
+		// When this fails, raise ArchitectureSchemaVersion and the $id and schema_version of the schema, and add
+		// the digest of the new version.
+		schemaDigests := map[int]string{2: "ed18d2a9acd8096a62461c0545c523f51603a9fc92dfdf796e7478d0a929be75"}
+		if got := HashBytes(ArchitectureSchema); got != schemaDigests[ArchitectureSchemaVersion] {
+			t.Fatalf("the architecture schema has the digest %s, not the digest of version %d: a change of the schema must raise its version", got, ArchitectureSchemaVersion)
+		}
 		_, data := deriveFixture(t, archFixture(t))
 		current := fmt.Sprintf(`"schema_version": %d,`, ArchitectureSchemaVersion)
 		if !bytes.Contains(data, []byte(current)) || !bytes.Contains(ArchitectureSchema, []byte(`"$id": "`+ArchitectureSchemaID+`"`)) {
