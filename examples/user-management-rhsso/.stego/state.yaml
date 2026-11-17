@@ -34,21 +34,21 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117061145-817b06848ea0
+        module_version: v0.0.0-20261117063911-574d9f9b462a
         vcs: git
-        revision: 817b06848ea0b3ba1b2936d532d1ccc4672e4829
+        revision: 574d9f9b462a56706aa953d3b16fb7c1770543d7
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: f9449061dafc810e1b5d1453b38d2ca51979c1f9bb84e953ddab4b21837b5149
+    registry_content_sha256: 474a7598e6d93e95e8dd3a2bea7fd9b68cbf99e697eee3f90cadeaccf189d46a
     components:
         audit-log:
             version: 1.1.1
             sha: 666192671fc660e36cdc49a35f10b5cfbd800673d3140cc3fb9caeeefd1a3dac
         command:
             version: 1.1.0
-            sha: 351ca6a591ed3ce971d6096154ceacf5d9656fd042879a255fb953526fe2cf2d
+            sha: ae9cfe6339cb39dea6b8189a98a91cef48ad1ccc77c4e5f900651e9b0ced4790
         domain-probe:
             version: 1.0.1
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
@@ -66,13 +66,13 @@ last_applied:
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
             version: 6.7.1
-            sha: eea75527a6bfef1a1721d62c7cd3c749982425ce3aff368f13ee0d31f2372061
+            sha: 6de0b7d51a01be214471a1eeec911361b8ff0447238061b43b1b66ae4316677a
         query:
             version: 1.1.0
-            sha: f98dfa7278286d6ce3b8bfa384ee354f0816ed9686ec2191f12f5f6ac2c8a577
+            sha: ec99c6e40f1ec83f09e8355c76320fc81d4c30aece6712088475e4ba8d978df1
         rest-api:
             version: 4.5.0
-            sha: 968ef2d2c55f57b48bc60cf8911af3ce62db9fc940e62e5202957d24467c8f28
+            sha: fe8932a7d0ed62a0eaf9247f3dff6778f2e6e72090914e1d3643c373565ea6de
         rh-sso-auth:
             version: 2.1.0
             sha: 74b13a19c5bf34d27d2e175a860248e1dc6e3e3b1af6ec78aa73c16f10839a44
@@ -194,8 +194,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: c22a877ca225a31bf32ae463066bcc0df643cf3308ab2d73717cd34dbbb65a07
-        architecture/index.html: bd15550996e3f4d8fcf3105df0ffaa5da66c6341d3b5e4f2b17cdb2ae31af617
+        architecture/architecture.json: 1a83dcdcf5c455df177669b16766a34a22348802fd6ae32e70bfe8d0b026ebd1
+        architecture/index.html: 81624c4ca80ee4be03ce7fc4b1364f1b58dd458cf12734982a20ffdd3af33bea
         deploy/base/deployment.yaml: 83ab77c456091f0c7a9127b57324a727beff1ae69a9ee49873e38d2f0685d6f8
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
         deploy/base/migration-job.yaml: 675f7cd8492bf1d559b5de00b080a2f123f1f2119efec8ea6e1b303ee24de9c7
