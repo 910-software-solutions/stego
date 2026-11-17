@@ -26,4 +26,8 @@ type TenantProvisioning struct {
 	Provision string `yaml:"provision,omitempty" json:"Provision,omitempty"`
 	// Retire is the permission that a principal needs on that resource to retire a tenant.
 	Retire string `yaml:"retire,omitempty" json:"Retire,omitempty"`
+	// Admin is the relation of the resource type that Provision gives each first administrator of a new tenant, on
+	// the tenant-qualified service-level resource of that tenant only, or "" when Provision takes no administrators
+	// (ST-SUP-RC27-OC13, ST-DECL-INV95).
+	Admin string `yaml:"admin,omitempty" json:"Admin,omitempty"`
 }

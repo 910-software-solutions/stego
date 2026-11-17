@@ -349,6 +349,43 @@ the answer is 404, and the fill does not run.
 Note: a query takes its resource member in lower camel case only. See
 [Declare a query](#declare-a-query).
 
+### A command with no resource member
+
+A command whose `resource_type` is the resource type of the tenant
+provisioning, such as `service`, and that names no `resource_member`, creates
+rows with no parent. The runtime decides its permission on the service-level
+resource of the tenant of the request. Its SpiceDB ID is tenant-qualified:
+
+```text
+service:<base64url of the tenant ID>/<base64url of the service name>
+```
+
+base64url has no padding. For the tenant `acme` of the service `fulfilment`,
+the ID is `service:YWNtZQ/ZnVsZmlsbWVudA`. A grant on `service:fulfilment`,
+with no tenant, is not a grant in a tenant: the command answers 404. Only
+Provision and Retire are decided on `service:<service name>`.
+
+SpiceDB knows a person by the user ID
+`<base64url of the issuer>|<base64url of the sub claim>`.
+
+The first grant in a new tenant comes from Provision. Declare the relation
+with `admin` in `tenancy.provisioning`, such as
+`{resource_type: service, provision: provision, retire: retire, admin: admin}`.
+Then Provision takes the first administrators of the tenant in its body:
+
+```bash
+curl -X POST https://<host>/api/inventory/v1/stego/tenants \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -H 'Idempotency-Key: "provision-acme"' \
+  -d '{"tenant_id":"acme","admins":[{"subject":"dora"}]}'
+```
+
+Provision writes the grant `admin` of each person on the tenant-qualified ID,
+in its transaction. The
+[rpc-service guide](../registry/archetypes/rpc-service/README.md#tenants-and-the-first-grant)
+gives the rules of `admins`, the operator's own grant and how to write later
+grants.
+
 ### Idempotency
 
 Each request of a command must have the header `Idempotency-Key`.
@@ -1034,7 +1071,10 @@ the slot `worker.worker`.
    ```
 
    Plan and apply refuse a fill of a command, query or worker that is not
-   qualified, and name it and what to run. A fill folder that holds only
+   qualified, and name it and what to run. `stego validate` gives only a
+   warning for a fill that has no evidence or no sign-off, such as
+   `fill "place-order" is untested ...; run stego test, then stego fill sign
+   place-order; plan, apply and build refuse the fill until then`. A fill folder that holds only
    `fill.yaml` does not stop apply: apply writes the contract, then names the
    fill to write.
 

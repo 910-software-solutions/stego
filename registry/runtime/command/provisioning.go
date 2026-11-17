@@ -9,15 +9,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
+	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/internal/txhold"
@@ -86,6 +90,117 @@ type TenantSpec struct {
 	// (ST-SUP-RC35-OC13).
 	Reader  WorkerTupleReader
 	Release string
+	// AdminRelation is the declared relation of ResourceType that a Provision gives each first administrator of the
+	// new tenant that its body names, on the tenant-qualified service-level resource of that tenant only, or "" when
+	// the provisioning declares none (ST-SUP-RC27-OC13, ST-DECL-EN27).
+	AdminRelation string
+	// TrustedIssuers are the issuers whose tokens the verifier of the service accepts. A Provision refuses an admin
+	// whose issuer is not one of them, so no grant waits for a person whom no trusted issuer can name
+	// (ST-SUP-RC27-OC13, security review of PR #414, L1). With an admin relation, it holds at least one issuer.
+	TrustedIssuers []string
+}
+
+// The members of the body of a Provision that name the first administrators, and their bounds (ST-SUP-RC27-OC13).
+const (
+	AdminsField     = "admins"
+	MaxAdmins       = 10
+	maxAdminPartLen = 1024
+)
+
+// Admin is one first administrator of a new tenant that the body of a Provision names: the subject (sub) claim of
+// the person, and the issuer of the person's tokens, which defaults to the issuer of the verified caller.
+type Admin struct {
+	Subject string `json:"subject"`
+	Issuer  string `json:"issuer,omitempty"`
+}
+
+// errAdmins is the refusal of a body whose admins the provisioning does not take: 400 with the field admins.
+var errAdmins = errors.New("command: the admins of the provision request are not valid")
+
+// adminSubjects checks the admins of a Provision body against the spec and gives the subject of each, in order: a
+// spec with an admin relation needs 1 to MaxAdmins persons, each once, with a subject and an issuer (the caller's
+// issuer when it is left out) that are not empty, are at most 1024 bytes and hold no control character; a spec with
+// no admin relation, and a Retire, take no admins (ST-SUP-RC27-OC13).
+func (s TenantSpec) adminSubjects(admins []Admin, given bool, callerIssuer string) ([]authz.Subject, error) {
+	if s.Action != tenant.ProvisionAction || s.AdminRelation == "" {
+		if given {
+			return nil, errAdmins
+		}
+		return nil, nil
+	}
+	if len(admins) == 0 || len(admins) > MaxAdmins {
+		return nil, errAdmins
+	}
+	subjects := make([]authz.Subject, 0, len(admins))
+	seen := map[authz.Subject]bool{}
+	for _, admin := range admins {
+		issuer := admin.Issuer
+		if issuer == "" {
+			issuer = callerIssuer
+		}
+		if !adminPart(admin.Subject) || !adminPart(issuer) || !slices.Contains(s.TrustedIssuers, issuer) {
+			return nil, errAdmins
+		}
+		subject, err := authz.PersonSubject(s.SubjectType, issuer, admin.Subject)
+		if err != nil || seen[subject] {
+			return nil, errAdmins
+		}
+		seen[subject] = true
+		subjects = append(subjects, subject)
+	}
+	return subjects, nil
+}
+
+// adminPart tells whether a subject or an issuer of an admin is not empty, is at most 1024 bytes, is valid UTF-8 and
+// holds no control character.
+func adminPart(value string) bool {
+	if value == "" || len(value) > maxAdminPartLen || !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// adminTuples gives the tuple of each first administrator on the tenant-qualified service-level resource of t:
+// <resource type>:<base64url tenant>/<base64url service>#<admin relation>@<subject>, never on the unqualified ID of
+// the whole service, so the grant allows no Provision or Retire (ST-SUP-RC27-OC13, ST-SUP-Q125).
+func (s TenantSpec) adminTuples(t tenant.Tenant, service string, admins []authz.Subject) ([]authz.Tuple, error) {
+	if len(admins) == 0 {
+		return nil, nil
+	}
+	resource, err := authz.NewResource(t, s.ResourceType, service)
+	if err != nil {
+		return nil, err
+	}
+	tuples := make([]authz.Tuple, len(admins))
+	for i, subject := range admins {
+		tuples[i] = authz.Tuple{Resource: resource, Relation: s.AdminRelation, Subject: subject}
+	}
+	return tuples, nil
+}
+
+// relateAdmins stages, through an authorization handle bound to the caller in the transaction tx of the Provision of
+// t, a touch of the tuple of each first administrator, joined to the revocation of the transaction
+// (ST-SUP-RC27-OC13).
+func relateAdmins(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx, req Request, t tenant.Tenant, admins []authz.Subject) error {
+	tuples, err := spec.adminTuples(t, rt.cfg.Service, admins)
+	if err != nil || len(tuples) == 0 {
+		return err
+	}
+	handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, []authz.Relation{{ResourceType: spec.ResourceType, Name: spec.AdminRelation}})
+	if err != nil {
+		return fmt.Errorf("command: the authorization handle of the admin tuples was not bound: %w", err)
+	}
+	for _, tuple := range tuples {
+		if _, err := handle.Relate(ctx, tuple); err != nil {
+			return fmt.Errorf("command: the tuple %s#%s of a first administrator was not staged: %w", tuple.Resource.Type, tuple.Relation, err)
+		}
+	}
+	return nil
 }
 
 // WorkerTenantRelation is the relation of the type tenant that holds the tuple of the worker name in each tenant:
@@ -213,6 +328,18 @@ func (s TenantSpec) check(rt *Runtime) error {
 	case s.ResourceType == "" || s.Permission == "" || s.Schema == "" || s.SubjectType == "":
 		return errors.New("command: the tenant provisioning needs the resource type, the permission, the schema of the tenant list and the subject type")
 	}
+	if s.AdminRelation != "" && len(s.TrustedIssuers) == 0 {
+		return errors.New("command: the admin relation of the tenant provisioning needs the trusted issuers of the verifier")
+	}
+	if s.AdminRelation != "" {
+		// The relation tenant and each worker relation are the runtime's own (ST-DECL-INV95).
+		if s.AdminRelation == authz.TenantRelation || strings.HasPrefix(s.AdminRelation, WorkerRelationPrefix) {
+			return fmt.Errorf("command: the admin relation %q of the tenant provisioning is a relation of the runtime", s.AdminRelation)
+		}
+		if _, err := authz.ParseRelation(s.ResourceType + "#" + s.AdminRelation); err != nil {
+			return fmt.Errorf("command: the admin relation %q of the tenant provisioning is no relation of %s: %w", s.AdminRelation, s.ResourceType, err)
+		}
+	}
 	relations := map[string]string{}
 	for _, name := range s.Workers {
 		// Two workers with one relation would hold each other's grant (ST-SUP-RC35-OC13).
@@ -298,7 +425,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 			writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
-		id, err := requestedTenant(spec.Action, r, body)
+		id, named, err := requestedTenant(spec.Action, r, body)
 		if err != nil {
 			writeProblem(w, http.StatusBadRequest, "", "")
 			return
@@ -306,6 +433,15 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		if err := tenant.ValidID(id); err != nil {
 			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, TenantIDField)
 			return
+		}
+		var callerIssuer string
+		if identity, ok := authn.FromContext(r.Context()); ok {
+			callerIssuer = identity.Issuer()
+		}
+		// The admins are checked after the decision (runTenant), so a caller who may not provision learns nothing
+		// of them, such as whether the provisioning declares an admin relation (security review of PR #414, L3).
+		admins := func() ([]authz.Subject, error) {
+			return spec.adminSubjects(named.Admins, named.Admins != nil, callerIssuer)
 		}
 		fingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)
 		if err != nil {
@@ -315,7 +451,11 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
 			Resource: id, RequestID: NewID(), ActorIP: remoteIP(r.RemoteAddr), UserAgent: r.UserAgent(),
 			Retention: spec.Retention}
-		result, err := runTenant(r.Context(), rt, spec, req)
+		result, err := runTenant(r.Context(), rt, spec, req, admins)
+		if errors.Is(err, errAdmins) {
+			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
+			return
+		}
 		if err != nil {
 			o := tenantOutcome(err)
 			if spec.callerListed(r.Context(), b.Tenant) {
@@ -394,40 +534,45 @@ func (rt *Runtime) UnlistedOutcomes() int64 { return rt.unlistedOutcomes.Load() 
 
 // tenantBody is the body of a Provision request; a Retire takes no body, or one whose tenant_id is its path value.
 type tenantBody struct {
-	TenantID string `json:"tenant_id"`
+	TenantID string  `json:"tenant_id"`
+	Admins   []Admin `json:"admins"`
 }
 
 // requestedTenant gives the tenant ID that a request names: the member tenant_id of the body of a Provision, which
 // must be one JSON object with no other member, or the path value tenantId of a Retire.
-func requestedTenant(action tenant.RequestAction, r *http.Request, body []byte) (string, error) {
+func requestedTenant(action tenant.RequestAction, r *http.Request, body []byte) (string, tenantBody, error) {
 	var named tenantBody
 	if len(bytes.TrimSpace(body)) > 0 {
 		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&named); err != nil {
-			return "", ErrBadRequest
+			return "", tenantBody{}, ErrBadRequest
 		}
 		if decoder.More() {
-			return "", ErrBadRequest
+			return "", tenantBody{}, ErrBadRequest
 		}
 		if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-			return "", ErrBadRequest
+			return "", tenantBody{}, ErrBadRequest
 		}
 	}
 	if action == tenant.ProvisionAction {
-		return named.TenantID, nil
+		return named.TenantID, named, nil
 	}
 	id := r.PathValue(TenantPathValue)
 	if named.TenantID != "" && named.TenantID != id {
-		return "", ErrBadRequest
+		return "", tenantBody{}, ErrBadRequest
 	}
-	return id, nil
+	return id, named, nil
 }
 
 // runTenant decides the request and changes the tenant list. It gives the answer to send, or the error whose
 // outcome the handler answers and audits.
-func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (Result, error) {
+func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, adminsOf func() ([]authz.Subject, error)) (Result, error) {
 	decision, err := decideTenant(ctx, rt, spec, req)
+	if err != nil {
+		return Result{}, err
+	}
+	admins, err := adminsOf()
 	if err != nil {
 		return Result{}, err
 	}
@@ -469,7 +614,16 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (
 			}
 		}
 		wrapped, err := idempotency.Wrap(ctx, hookTx{q: q}, keyRequest, func(ctx context.Context) (idempotency.Response, error) {
-			if _, err := rt.cfg.Audit.Record(ctx, tx, t, []audit.Event{tenantEvent(ctx, rt, spec, req, t)}); err != nil {
+			event, err := tenantEvent(ctx, rt, spec, req, t, len(admins))
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if _, err := rt.cfg.Audit.Record(ctx, tx, t, []audit.Event{event}); err != nil {
+				return idempotency.Response{}, err
+			}
+			// The grants of the first administrators commit with the new tenant, or not at all; a replay of the key
+			// stages none again (ST-SUP-RC27-OC13).
+			if err := relateAdmins(ctx, rt, spec, tx, req, t, admins); err != nil {
 				return idempotency.Response{}, err
 			}
 			// The tuples of the workers commit with the change of the tenant list, or not at all; a replay of the
@@ -564,8 +718,10 @@ func replayTenant(ctx context.Context, rt *Runtime, t tenant.Tenant, req idempot
 }
 
 // tenantEvent is the audit row of a change of the tenant list: the command as the action, the caller as the actor
-// and the tenant as the resource, in the tenant's own chain (ST-SUP-RC27-OC10).
-func tenantEvent(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, t tenant.Tenant) audit.Event {
+// and the tenant as the resource, in the tenant's own chain (ST-SUP-RC27-OC10). A Provision that grants first
+// administrators records the admin relation and their count as its after state, and no subject or issuer
+// (ST-SUP-RC27-OC13).
+func tenantEvent(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, t tenant.Tenant, admins int) (audit.Event, error) {
 	cfg := rt.cfg
 	e := audit.Event{
 		TenantID: t.ID(), ActorID: req.Principal.Subject().String(), ActorKind: actorKind(req.Principal),
@@ -577,7 +733,14 @@ func tenantEvent(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 	if span := trace.SpanContextFromContext(ctx); span.IsValid() {
 		e.TraceID, e.SpanID = span.TraceID().String(), span.SpanID().String()
 	}
-	return e
+	if admins > 0 {
+		after := map[string]any{"admin_relation": spec.AdminRelation, AdminsField: admins}
+		fields := audit.Fields{"admin_relation": audit.Plain, AdminsField: audit.Plain}
+		if err := e.SetStates(cfg.AuditSettings, fields, nil, after); err != nil {
+			return audit.Event{}, err
+		}
+	}
+	return e, nil
 }
 
 // tenantResponse is the answer of a committed change: 201 with the tenant ID for a Provision, and 200 with the

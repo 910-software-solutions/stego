@@ -57,6 +57,28 @@ func SubjectOf(subjectType string, identity authn.Identity) (Subject, error) {
 	return subject, nil
 }
 
+// PersonSubject maps the issuer and the subject (sub) claim of a person who has not called yet, such as a first
+// administrator that Provision names, to the subject of the declared subject type with the user ID of SubjectOf, so
+// a grant to it allows the same person that SubjectOf maps from a verified token of that issuer (ST-SUP-RC27-OC13,
+// ST-SUP-RP06-LC07). It refuses an empty issuer or subject, the subject type service_account, and a subject longer
+// than MaxSubjectBytes.
+func PersonSubject(subjectType, issuer, sub string) (Subject, error) {
+	if issuer == "" || sub == "" {
+		return Subject{}, errors.New("authz: the person has no issuer or no subject")
+	}
+	if subjectType == ServiceAccountType {
+		return Subject{}, errors.New("authz: a person cannot have the subject type service_account")
+	}
+	subject := Subject{Type: subjectType, ID: subjectID(issuer, sub)}
+	if len(subject.String()) > MaxSubjectBytes {
+		return Subject{}, ErrSubjectTooLong
+	}
+	if err := subject.valid(); err != nil {
+		return Subject{}, fmt.Errorf("authz: the person does not map to a subject: %w", err)
+	}
+	return subject, nil
+}
+
 // MaxSubjectBytes is the longest subject, type:id, that SubjectOf gives, so it fits the principal column of an outbox
 // message (ST-SUP-RP10-LC16).
 const MaxSubjectBytes = 255

@@ -135,11 +135,32 @@ func validateOperationRoutes(service *types.ServiceDeclaration) []ValidationErro
 			faults = append(faults, ValidationError{Category: r.kind, Rule: "operation-route", Path: r.path, Found: r.route, Message: fmt.Sprintf("%s %q has the route %q, whose path does not start with /", r.kind, r.name, r.route)})
 			continue
 		}
+		if segment := partWildcard(routePath); segment != "" {
+			// The HTTP multiplexer takes a wildcard only as a whole segment, so the AIP custom method form
+			// {id}:verb is not served (walkthrough 7).
+			faults = append(faults, ValidationError{Category: r.kind, Rule: "operation-route", Path: r.path, Found: r.route, Message: fmt.Sprintf("%s %q has the route %q, whose segment %q holds a wildcard and more; a wildcard {name} must be a whole segment of the path, so give the verb its own segment, such as %s %s", r.kind, r.name, r.route, segment, method, strings.ReplaceAll(routePath, "}:", "}/"))})
+			continue
+		}
 		if err := registerRoute(mux, OperationPattern(service.BasePath, r.route)); err != nil {
 			faults = append(faults, ValidationError{Category: r.kind, Rule: "operation-route", Path: r.path, Found: r.route, Message: fmt.Sprintf("%s %q has the route %q: %v", r.kind, r.name, r.route, err)})
 		}
 	}
 	return faults
+}
+
+// partWildcard gives the first segment of the path that holds a wildcard and more, such as {id}:cancel, or empty.
+// A segment that opens a wildcard and does not close it is left to the multiplexer, which names the fault.
+func partWildcard(routePath string) string {
+	for _, segment := range strings.Split(routePath, "/") {
+		open := strings.Index(segment, "{")
+		if open < 0 || !strings.Contains(segment, "}") {
+			continue
+		}
+		if open != 0 || !strings.HasSuffix(segment, "}") || strings.Count(segment, "{") != 1 {
+			return segment
+		}
+	}
+	return ""
 }
 
 // ownPath is the path under the base path that the generated service keeps for its own routes, such as the tenant

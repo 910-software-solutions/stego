@@ -121,13 +121,19 @@ func nextSteps(fill string, standing Standing, reasons []string) string {
 	return fmt.Sprintf("run stego test, then stego fill sign %s", fill)
 }
 
+// The reasons of a fill that has no evidence and of a fill that has evidence and no sign-off.
+const (
+	reasonNoEvidence = "it has no evidence"
+	reasonNoSignOff  = "it has no sign-off"
+)
+
 // assess gives the standing of a fill and, when it is not qualified, why.
 func assess(f *Fill, current Current, signers Signers) (Standing, string) {
 	if !current.HasTests {
 		return Untested, "it has no test file"
 	}
 	if f.Evidence == nil {
-		return Untested, "it has no evidence"
+		return Untested, reasonNoEvidence
 	}
 	var changed []string
 	if f.Evidence.FillDigest != current.FillDigest {
@@ -147,7 +153,7 @@ func assess(f *Fill, current Current, signers Signers) (Standing, string) {
 		return Stale, strings.Join(changed, ", ") + " changed after its evidence"
 	}
 	if f.SignOff == nil {
-		return Unsigned, "it has no sign-off"
+		return Unsigned, reasonNoSignOff
 	}
 	digest, err := EvidenceDigest(f)
 	if err != nil {
@@ -389,7 +395,8 @@ func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 				}
 			}
 			faults = append(faults, compiler.FillFault{Rule: "fill-qualified", Path: binding.Path, Found: binding.Fill,
-				Message: fmt.Sprintf("fill %q is %s %s: %s; %s", binding.Fill, row.Standing, at, strings.Join(reasons, "; "), nextSteps(binding.Fill, row.Standing, row.Reasons))})
+				Message:  fmt.Sprintf("fill %q is %s %s: %s; %s", binding.Fill, row.Standing, at, strings.Join(reasons, "; "), nextSteps(binding.Fill, row.Standing, row.Reasons)),
+				Unproved: misfits[i] == "" && unproved(row)})
 		}
 		if misfits[i] != "" {
 			faults = append(faults, compiler.FillFault{Rule: "fill-fits-binding", Path: binding.Path, Found: binding.Fill,
@@ -397,6 +404,22 @@ func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 		}
 	}
 	return faults, nil
+}
+
+// unproved tells whether the fill of row fits its bindings and lacks only its evidence or only its sign-off, so that
+// stego test, then stego fill sign, qualify it with no change to the fill (ST-DECL-UC01-R01). A stale fill, a sign-off
+// that does not verify, a key that SIGNERS does not list and a fill with no test file are not unproved.
+func unproved(row Qualification) bool {
+	if !row.Fits || len(row.Reasons) != 1 {
+		return false
+	}
+	switch row.Standing {
+	case Untested:
+		return row.Reasons[0] == reasonNoEvidence
+	case Unsigned:
+		return row.Reasons[0] == reasonNoSignOff
+	}
+	return false
 }
 
 // projectQualification builds the qualification of each bound fill from its
