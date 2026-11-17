@@ -34,21 +34,21 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117050233-aa4ebf716e53
+        module_version: v0.0.0-20261117055838-4883a03cd544
         vcs: git
-        revision: aa4ebf716e53a2662c95fed03dad20c70594c4ed
+        revision: 4883a03cd5440b925bf53b1e2a0502395336ec02
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 888f9e08ddc4bbb9681b86b6e5fdfd3fed4224b7cded74af1eeb99f6554eae5f
+    registry_content_sha256: 61fc67e0698f7ea3fe971cc193a843e9026a0bf9487928c992056a43d97bf2e1
     components:
         audit-log:
             version: 1.1.1
             sha: 666192671fc660e36cdc49a35f10b5cfbd800673d3140cc3fb9caeeefd1a3dac
         command:
             version: 1.1.0
-            sha: ae9cfe6339cb39dea6b8189a98a91cef48ad1ccc77c4e5f900651e9b0ced4790
+            sha: b80cfb0779d2f3215ad192da80e9733f979e7625b409c85110f2b648fa742d1a
         domain-probe:
             version: 1.0.1
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
@@ -158,7 +158,7 @@ last_applied:
         internal/authz/authz.go: bcd5166c619d644f6d24f237c57824396616b093550cfa20a58090eb3bde5bfd
         internal/authz/schema.zed: b92eda055de3d7b9a0cfe4fa015c3ab5ab12a1849f6178ee8aeaac5a56f729b2
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
-        internal/stegoruntime/runtime.go: a1f4119f02c6994b7165639cadb72cf7102898fd40781a574474157d3f40e3b4
+        internal/stegoruntime/runtime.go: 01ec750e2c0ee39de91901153e5e2b4ae6323dff0a6bcbe82bba791fad97d257
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
         internal/storage/migrate.go: aae303e9f4d5fb436273a0d56614a3240f168d6ab427efd74f2b3b4cc5aa8ef1
         internal/storage/migrations/001_initial.sql: 8561b6d30aa26aeb145ee71633ecb53242fc7ef58dd6629aa917ac290e33085a
@@ -169,7 +169,7 @@ last_applied:
         internal/tenancy/migrations/roles.sql: 131dcb112a94f82ead145bcb5797c5915ad94a230564e2181883d19944450fc9
         internal/tenancy/migrations/row_security.sql: 6813d74ed06f5df636433d5335339bcb4338f05de418002cd7ef94b60f44b6d9
         internal/tenancy/row_security.go: b49ceb1b85177e84037254ebc7872f9c1d048f24a27b02babc9937603a2360e1
-        main.go: e18ce0c1bff1f412d49437be31beea54425c61c02f979e3f036f244c8518239a
+        main.go: e806bc8effb0a068d8db4da415fc2a822c650a51e496e8f3de7887b876937b51
         probes/observations.json: 3219f8292bdb4a47a2882aa87528a231132ea9219db88c094ea0051559fad046
         probes/probes.go: 7b1f0c4ba4b67cf9ba9890be0743d793cc9603cfbf4e43b1193cc2e8b1fe8bf9
         slots/after_create.go: 03242bcad46578176c9ac819f42390080ebebb94f72c480316f09740289ad80f
@@ -224,8 +224,8 @@ last_applied:
         deploy/components/secret-files/mount-job-files.yaml: 673f3e064149ce45daf32661cf9be347b432ff2d02383e5d3467762f4447909d
         deploy/components/secret-files/remove-env.yaml: a243baeae3309873606fb81e1556b5f922fc23b6c504191261e2cea7dfdc4ab6
         deploy/components/secret-files/remove-job-env.yaml: eaf5afbf5efa9eb6684f58346858343dd1e852134f46b117d7bbafb95eb14a61
-        deploy/environment-variables.md: 7a439a59c7fce5afd4ee492e487a302ab5b98ccda2e4eaece36f4da32a44f00f
-        deploy/platform-requirements.yaml: 614bd3ad67bfeb5a3248f5783796e0d578bea826b30b778e5addee70987df9c4
+        deploy/environment-variables.md: 859a99e52594c281d38b2b2f949dde55133d53de65d805f0ec0a16351f1f0fc9
+        deploy/platform-requirements.yaml: a79984e1d923ee8221aa64bd773ea316adcc5f59932c0e094f739bb89d2c0197
     archetype:
         name: rest-crud
         version: 3.145.0
