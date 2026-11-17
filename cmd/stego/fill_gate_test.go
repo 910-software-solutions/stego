@@ -44,7 +44,7 @@ func TestFillGate(t *testing.T) {
 		expectRefused(t, p, "unlisted-fill", "SIGNERS does not list its key")
 	})
 
-	t.Run("ST-EXT-UC02-R02-T07 Validate warns of a fill with no evidence or no sign-off and names the fix, and plan, apply and deps refuse it", func(t *testing.T) {
+	t.Run("ST-EXT-UC02-R02-T09 Validate warns of a fill with no evidence or no sign-off and names the fix, and plan, apply and deps refuse it", func(t *testing.T) {
 		for _, c := range []struct{ fill, standing string }{{"untested-fill", "untested"}, {"unsigned-fill", "unsigned"}} {
 			p := newFillProject(t)
 			p.bind(t, slotBinding{c.fill, "before_create", "org-users"})
