@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +94,10 @@ type TenantSpec struct {
 	// new tenant that its body names, on the tenant-qualified service-level resource of that tenant only, or "" when
 	// the provisioning declares none (ST-SUP-RC27-OC13, ST-DECL-EN27).
 	AdminRelation string
+	// TrustedIssuers are the issuers whose tokens the verifier of the service accepts. A Provision refuses an admin
+	// whose issuer is not one of them, so no grant waits for a person whom no trusted issuer can name
+	// (ST-SUP-RC27-OC13, security review of PR #414, L1). With an admin relation, it holds at least one issuer.
+	TrustedIssuers []string
 }
 
 // The members of the body of a Provision that name the first administrators, and their bounds (ST-SUP-RC27-OC13).
@@ -133,7 +138,7 @@ func (s TenantSpec) adminSubjects(admins []Admin, given bool, callerIssuer strin
 		if issuer == "" {
 			issuer = callerIssuer
 		}
-		if !adminPart(admin.Subject) || !adminPart(issuer) {
+		if !adminPart(admin.Subject) || !adminPart(issuer) || !slices.Contains(s.TrustedIssuers, issuer) {
 			return nil, errAdmins
 		}
 		subject, err := authz.PersonSubject(s.SubjectType, issuer, admin.Subject)
@@ -323,6 +328,9 @@ func (s TenantSpec) check(rt *Runtime) error {
 	case s.ResourceType == "" || s.Permission == "" || s.Schema == "" || s.SubjectType == "":
 		return errors.New("command: the tenant provisioning needs the resource type, the permission, the schema of the tenant list and the subject type")
 	}
+	if s.AdminRelation != "" && len(s.TrustedIssuers) == 0 {
+		return errors.New("command: the admin relation of the tenant provisioning needs the trusted issuers of the verifier")
+	}
 	if s.AdminRelation != "" {
 		// The relation tenant and each worker relation are the runtime's own (ST-DECL-INV95).
 		if s.AdminRelation == authz.TenantRelation || strings.HasPrefix(s.AdminRelation, WorkerRelationPrefix) {
@@ -430,10 +438,10 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		if identity, ok := authn.FromContext(r.Context()); ok {
 			callerIssuer = identity.Issuer()
 		}
-		admins, err := spec.adminSubjects(named.Admins, named.Admins != nil, callerIssuer)
-		if err != nil {
-			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
-			return
+		// The admins are checked after the decision (runTenant), so a caller who may not provision learns nothing
+		// of them, such as whether the provisioning declares an admin relation (security review of PR #414, L3).
+		admins := func() ([]authz.Subject, error) {
+			return spec.adminSubjects(named.Admins, named.Admins != nil, callerIssuer)
 		}
 		fingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)
 		if err != nil {
@@ -444,6 +452,10 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 			Resource: id, RequestID: NewID(), ActorIP: remoteIP(r.RemoteAddr), UserAgent: r.UserAgent(),
 			Retention: spec.Retention}
 		result, err := runTenant(r.Context(), rt, spec, req, admins)
+		if errors.Is(err, errAdmins) {
+			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
+			return
+		}
 		if err != nil {
 			o := tenantOutcome(err)
 			if spec.callerListed(r.Context(), b.Tenant) {
@@ -555,8 +567,12 @@ func requestedTenant(action tenant.RequestAction, r *http.Request, body []byte) 
 
 // runTenant decides the request and changes the tenant list. It gives the answer to send, or the error whose
 // outcome the handler answers and audits.
-func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, admins []authz.Subject) (Result, error) {
+func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, adminsOf func() ([]authz.Subject, error)) (Result, error) {
 	decision, err := decideTenant(ctx, rt, spec, req)
+	if err != nil {
+		return Result{}, err
+	}
+	admins, err := adminsOf()
 	if err != nil {
 		return Result{}, err
 	}

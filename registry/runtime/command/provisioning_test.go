@@ -325,7 +325,7 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 					relation = ""
 				}
 				h, err := ServeTenant(rt, TenantSpec{Action: action, ResourceType: "service", Permission: string(action), Schema: "public",
-					SubjectType: "user", AdminRelation: relation})
+					SubjectType: "user", AdminRelation: relation, TrustedIssuers: []string{"https://issuer.example", "https://other.example"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -345,23 +345,33 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 			t.Fatal(err)
 		}
 		t.Cleanup(verifier.Stop)
-		claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
-		claims["tenant"] = "ops"
-		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
-		e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+		mint := func(sub string) string {
+			claims := authntest.Claims("https://issuer.example", "orders", sub, time.Now())
+			claims["tenant"] = "ops"
+			return authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		}
+		token, strangerToken := mint("op-1"), mint("stranger")
+		stranger, err := authz.PersonSubject("user", "https://issuer.example", "stranger")
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.decision.setAllow(func(subject, _, resource string) bool {
+			return subject != stranger.String() && resource == "UNQUALIFIED service:orders"
+		})
 		defer e.decision.setAllow(nil)
 		type answer struct {
 			status int
 			body   string
 		}
-		send := func(mux *http.ServeMux, path, key, body string) answer {
+		sendAs := func(bearer string, mux *http.ServeMux, path, key, body string) answer {
 			r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("Authorization", "Bearer "+bearer)
 			r.Header.Set("Idempotency-Key", `"`+key+`"`)
 			w := httptest.NewRecorder()
 			verifier.Middleware(mux).ServeHTTP(w, r)
 			return answer{w.Code, w.Body.String()}
 		}
+		send := func(mux *http.ServeMux, path, key, body string) answer { return sendAs(token, mux, path, key, body) }
 		tuples := func(tenantID string) []string {
 			rows, err := e.admin.QueryContext(e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
  (p->'tuple'->>'relation') || '@' || (p->'tuple'->>'subject_type') || ':' || (p->'tuple'->>'subject_id')
@@ -406,6 +416,7 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 			"an empty subject":    {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":""}]}`},
 			"a control character": {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"al\u0000ice"}]}`},
 			"a long issuer":       {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"alice","issuer":"` + long + `"}]}`},
+			"an untrusted issuer": {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"alice","issuer":"https://evil.example"}]}`},
 			"admins when none":    {withoutAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"alice"}]}`},
 			"admins on a retire":  {withAdmin, "/stego/tenants/org-n/retire", `{"tenant_id":"org-n","admins":[{"subject":"alice"}]}`},
 		} {
@@ -416,6 +427,16 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 		}
 		if e.count(`SELECT count(*) FROM stego_tenants WHERE tenant_id = 'org-n'`) != 0 || len(tuples("org-n")) != 0 {
 			t.Fatal("a refused body changed the tenant list or staged a tuple")
+		}
+		// A caller who may not provision gets 404 before any check of the admins, so a refusal tells it nothing of
+		// them (security review of PR #414, L3).
+		for _, body := range []string{`{"tenant_id":"org-n","admins":[]}`, `{"tenant_id":"org-n","admins":[{"subject":"alice","issuer":"https://evil.example"}]}`, `{"tenant_id":"org-n"}`} {
+			if got := sendAs(strangerToken, withAdmin, "/stego/tenants", "k-"+NewID(), body); got.status != http.StatusNotFound {
+				t.Errorf("the provision of a denied caller with the body %s answered %d %s, want 404", body, got.status, got.body)
+			}
+		}
+		if got := sendAs(strangerToken, withoutAdmin, "/stego/tenants", "k-"+NewID(), `{"tenant_id":"org-n","admins":[{"subject":"alice"}]}`); got.status != http.StatusNotFound {
+			t.Errorf("the provision of a denied caller with admins that the provisioning does not take answered %d, want 404", got.status)
 		}
 		// A body with an unknown member of an admin is refused as a bad request.
 		if got := send(withAdmin, "/stego/tenants", "k-"+NewID(), `{"tenant_id":"org-n","admins":[{"subject":"alice","role":"owner"}]}`); got.status != http.StatusBadRequest {
@@ -463,9 +484,14 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 		// An admin relation that the runtime writes itself, or that is no relation, is refused before any request.
 		for _, relation := range []string{"tenant", "worker_sync", "a b"} {
 			if _, err := ServeTenant(rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",
-				Schema: "public", SubjectType: "user", AdminRelation: relation}); err == nil {
+				Schema: "public", SubjectType: "user", AdminRelation: relation, TrustedIssuers: []string{"https://issuer.example"}}); err == nil {
 				t.Errorf("the admin relation %q was accepted", relation)
 			}
+		}
+		// An admin relation with no trusted issuer is refused before any request (L1).
+		if _, err := ServeTenant(rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",
+			Schema: "public", SubjectType: "user", AdminRelation: "admin"}); err == nil || !strings.Contains(err.Error(), "trusted issuers") {
+			t.Errorf("an admin relation with no trusted issuer gave %v, want a refusal that names the trusted issuers", err)
 		}
 	})
 

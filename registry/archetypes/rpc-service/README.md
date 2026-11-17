@@ -73,6 +73,10 @@ writes it to SpiceDB directly, one time for each service:
 zed relationship create service:fulfilment operator "user:<user ID of the operator>"
 ```
 
+`zed` writes with the SpiceDB preshared key. This key can write every
+relation of every tenant. Thus only the platform operator runs `zed`, and
+only from a controlled host. A `zed` write gets no STEGO audit row.
+
 ### The user ID
 
 SpiceDB knows a person by a user ID that STEGO makes from the token:
@@ -133,16 +137,23 @@ Provision writes, in its transaction, the grant
 `service:<base64url of the tenant>/<base64url of the service name>#admin@user:<user ID>`
 for each person. The grant is in the new tenant only. It does not let the
 person provision or retire a tenant. The audit row of Provision names the
-relation and the number of persons. Provision refuses with 400 and the field
-`admins`:
+relation and the number of persons.
+
+Provision first decides the permission of the caller. A caller who may not
+provision gets 404 and learns nothing of the admins. Then Provision refuses
+with 400 and the field `admins`:
 
 - a body with no `admins`, or with 0 or more than 10 persons,
 - the same person two times,
 - an empty `subject` or `issuer`, one longer than 1024 bytes, or one with a
   control character,
+- an `issuer` that is not the issuer whose tokens the service accepts,
 - `admins` when the provisioning declares no `admin`.
 
-The same `Idempotency-Key` with other admins is refused with 422.
+A replay with the same `Idempotency-Key` must send the same body: the same
+`admins` list, in the same order and in the same form. For example, an
+`issuer` that is the same as the default counts as another form. Another body
+with that key is refused with 422.
 
 ### A command that writes the first row
 
@@ -176,3 +187,7 @@ the grant to SpiceDB directly, with the tenant-qualified ID:
 TENANT=$(b64url acme); SERVICE=$(b64url fulfilment)
 zed relationship create "service:$TENANT/$SERVICE" dispatcher "user:<user ID>"
 ```
+
+The rules of the operator's `zed` writes apply: only the platform operator
+writes, from a controlled host, and the write gets no STEGO audit row.
+ST-SUP-Q160 tracks a path that STEGO decides and audits.

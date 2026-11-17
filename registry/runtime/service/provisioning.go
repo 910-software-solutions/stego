@@ -90,6 +90,10 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	}
 	var err error
 	spec.Action, spec.Permission, spec.AdminRelation = tenant.ProvisionAction, p.Provision, p.AdminRelation
+	if p.AdminRelation != "" {
+		// An admin of another issuer than the one the verifier trusts could never call (security review of PR #414, L1).
+		spec.TrustedIssuers = []string{svc.issuer}
+	}
 	if tp.provision, err = command.ServeTenant(rt, spec); err != nil {
 		return nil, err
 	}
