@@ -59,6 +59,7 @@ func (r *ArchitectureRefusal) Unwrap() error { return r.Err }
 const (
 	reasonNoEntity     = "The declaration states no entity."
 	reasonNoOperation  = "The declaration states no collection operation."
+	reasonNoServer     = "No component of the active set serves the collections."
 	reasonNoNeed       = "No component of the active set states a platform need or an environment variable."
 	reasonNoComponents = "The active set holds no component."
 )
@@ -117,8 +118,6 @@ type deriver struct {
 	offers map[string]slotOffer
 	// handler is the component that serves the collections, or nil.
 	handler *registry.Component
-	// servers maps each kind of operation of registry.ServedKinds to the component that serves it.
-	servers map[string]*registry.Component
 	// bindings maps consumer#port to its binding.
 	bindings map[string]ArchBinding
 	// routes maps an operation ID to its method and path.
@@ -163,9 +162,6 @@ func deriveModel(in ArchitectureInput) (*ArchitectureModel, error) {
 		Layers: slices.Clone(registry.Layers),
 	}
 	d.structure()
-	if err := d.servedKinds(); err != nil {
-		return nil, err
-	}
 	if err := d.slots(); err != nil {
 		return nil, err
 	}
@@ -250,46 +246,15 @@ func (d *deriver) structure() {
 		m.Ports = append(m.Ports, *entry)
 	}
 	d.bind()
-}
-
-// servedKinds finds, for each kind of operation that the service has, the one active component that states in
-// serves that its flows start at it (ST-GEN-UC08-R05, ST-GEN-Q44 (A)). It refuses a kind that the service has with
-// no such component or with more than one, naming the kind and the components, and names nothing it guesses. The
-// component that serves the collection operations is the handler of their flows.
-func (d *deriver) servedKinds() error {
-	svc := d.in.Service
-	has := map[string]bool{"collection operations": len(svc.Collections) > 0, "commands": len(svc.Commands) > 0,
-		"queries": len(svc.Queries) > 0, "workers": len(svc.Workers) > 0}
-	d.servers = map[string]*registry.Component{}
-	for _, kind := range registry.ServedKinds {
-		var serving []string
-		for _, name := range d.in.Names {
-			if c := d.in.Components[name]; slices.Contains(c.Architecture.Serves, kind) {
-				serving = append(serving, name)
-			}
-		}
-		switch {
-		case len(serving) > 1:
-			return &ArchitectureRefusal{fmt.Errorf("the components %s each state in architecture.serves that the %s start at them; one component serves each kind",
-				strings.Join(serving, " and "), kind)}
-		case len(serving) == 1:
-			d.servers[kind] = d.in.Components[serving[0]]
-		case has[kind]:
-			return &ArchitectureRefusal{fmt.Errorf("the service has %s, and no component of the active set states in architecture.serves that their request flows start at it", kind)}
+	// The component that serves the collections is the one of the handler layer whose settings take the collections
+	// (the setting expose), so a flow starts at it.
+	for _, name := range d.in.Names {
+		c := d.in.Components[name]
+		if _, serves := c.Config["expose"]; serves && c.Architecture.Layer == "handler" {
+			d.handler = c
+			break
 		}
 	}
-	d.handler = d.servers["collection operations"]
-	// With no component of the store layer, the store step and the store actor come from the store that the
-	// repository states, and a repository that states none is refused, as a missing layer is.
-	if d.handler != nil && len(d.byLayer("store")) == 0 {
-		for _, p := range d.handler.Requires {
-			if c, _ := d.provider(d.handler.Name, p.Name); c != nil && c.Architecture.Layer == "repository" && c.Architecture.Store == "" {
-				return &ArchitectureRefusal{&registry.PlaceError{Part: "component " + c.Name, Statement: "architecture.store",
-					Reason: "no component of the store layer is active, and the repository states no store that keeps its rows; give architecture.store, such as PostgreSQL"}}
-			}
-		}
-	}
-	return nil
 }
 
 // bind gives each required port of each component the component that provides it: the one the declaration binds,

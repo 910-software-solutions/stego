@@ -41,7 +41,6 @@ conversions:
 architecture:
   layer: repository
   flow: "Reads and writes the rows of each entity in PostgreSQL in one transaction."
-  store: PostgreSQL
   ports:
     storage-adapter: inbound
 

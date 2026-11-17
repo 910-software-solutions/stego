@@ -101,11 +101,6 @@ type ArchitectureRole struct {
 	Flow string `yaml:"flow"`
 	// Ports maps each port the component provides or requires to its side, inbound or outbound.
 	Ports map[string]string `yaml:"ports"`
-	// Serves are the kinds of operation whose request flows start at the component, of ServedKinds (ST-GEN-Q44 (A)).
-	Serves []string `yaml:"serves,omitempty"`
-	// Store is the name of the store that keeps the rows of a component of the repository layer, such as
-	// PostgreSQL, for a service with no component of the store layer (ST-GEN-Q44 (A)).
-	Store string `yaml:"store,omitempty"`
 }
 
 // PipelinePins are the pinned references and the one trusted signer of one CI provider: the shared pipeline, the

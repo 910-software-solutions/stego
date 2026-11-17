@@ -108,7 +108,6 @@ slots:
 architecture:
   layer: handler
   flow: "Decodes the request of a collection operation and calls its command or query."
-  serves: [collection operations]
   ports:
     auth-provider: outbound
     storage-adapter: outbound

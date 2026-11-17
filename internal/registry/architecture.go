@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 )
 
@@ -27,13 +26,6 @@ var SlotOperations = []string{"create", "read", "update", "delete", "list", "ups
 
 // MaxFlowPart is the most characters a flow part may have.
 const MaxFlowPart = 100
-
-// ServedKinds are the kinds of operation whose request flows start at the component that serves them
-// (ST-SUP-EN09 field Architecture role, ST-GEN-Q44 (A)).
-var ServedKinds = []string{"collection operations", "commands", "queries", "workers"}
-
-// MaxStoreName is the most characters the store of a repository may have.
-const MaxStoreName = 40
 
 // PlaceError is a component or a mixin that does not state its place: the part, the slot when the fault is a
 // slot's, the statement it leaves out or gets wrong, and why.
@@ -94,25 +86,6 @@ func statesPlace(component *Component) *PlaceError {
 	for _, name := range sortedNames(role.Ports) {
 		if !ports[name] {
 			return fault("architecture.ports."+name, "the component neither provides nor requires the port %s", name)
-		}
-	}
-	for i, kind := range role.Serves {
-		if !slices.Contains(ServedKinds, kind) {
-			return fault("architecture.serves", "the kind %q is not one of %s", kind, strings.Join(ServedKinds, ", "))
-		}
-		if slices.Contains(role.Serves[:i], kind) {
-			return fault("architecture.serves", "the kind %s is stated twice", kind)
-		}
-	}
-	if role.Store != "" {
-		store := strings.TrimSpace(role.Store)
-		switch {
-		case role.Layer != "repository":
-			return fault("architecture.store", "only a component of the repository layer states its store")
-		case utf8.RuneCountInString(role.Store) > MaxStoreName:
-			return fault("architecture.store", "the store name has %d characters, more than %d", utf8.RuneCountInString(role.Store), MaxStoreName)
-		case store != role.Store || strings.ContainsAny(role.Store, "\n\r\t") || strings.ContainsFunc(role.Store, unicode.IsControl):
-			return fault("architecture.store", "the store name is not plain text on one line")
 		}
 	}
 	return slotsStatePlace(part, component.Slots)

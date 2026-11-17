@@ -79,15 +79,10 @@ func archFixture(t *testing.T) ArchitectureInput {
 		registry.SlotDefinition{Name: "after_create", Phase: "after_store", Operations: []string{"create"}},
 		registry.SlotDefinition{Name: "validate", Phase: "before_store", Operations: []string{"create", "update"}})
 	api.Config = map[string]types.ConfigField{"expose": {Type: "list"}}
-	// The handler of the small service serves each kind of operation, so a test can add a query or a worker
-	// (ST-GEN-Q44 (A)).
-	api.Architecture.Serves = slices.Clone(registry.ServedKinds)
-	store := archComponent("store", "repository", nil, []string{"storage-adapter"})
-	store.Architecture.Store = "DocsDB"
 	components := map[string]*registry.Component{
 		"rest-api": api,
 		"auth":     archComponent("auth", "authentication", nil, []string{"auth-provider"}),
-		"store":    store,
+		"store":    archComponent("store", "repository", nil, []string{"storage-adapter"}),
 		"outbox":   archComponent("outbox", "repository", nil, []string{"durable-outbox"}),
 		"events":   archComponent("events", "outside call", []string{"durable-outbox"}, []string{"event-publisher"}),
 	}
@@ -494,7 +489,7 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 }
 
 func TestArchitectureRefusals(t *testing.T) {
-	t.Run("ST-GEN-UC08-R05-T02 The derivation refuses a component with no layer, flow part or port side, a slot with no phase, a kind of operation with no or two serving components and a repository with no store, naming it and the statement", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R05-T02 The derivation refuses a component with no layer, flow part or port side, and a slot with no phase, naming it and the statement", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
 			change func(ArchitectureInput)
@@ -508,14 +503,6 @@ func TestArchitectureRefusals(t *testing.T) {
 			{"no mixin slot phase", func(in ArchitectureInput) {
 				in.Mixins[0].AddsSlots[0].Phase = ""
 			}, []string{"mixin extra", "slots[on_change].phase"}},
-			// The kinds of operation and the store (ST-GEN-Q44 (A)).
-			{"no component that serves the command", func(in ArchitectureInput) {
-				in.Components["rest-api"].Architecture.Serves = []string{"collection operations"}
-			}, []string{"the service has commands", "architecture.serves"}},
-			{"two components that serve the collections", func(in ArchitectureInput) {
-				in.Components["auth"].Architecture.Serves = []string{"collection operations"}
-			}, []string{"the components rest-api and auth", "collection operations", "one component serves each kind"}},
-			{"a repository with no store", func(in ArchitectureInput) { in.Components["store"].Architecture.Store = "" }, []string{"component store", "architecture.store"}},
 		} {
 			in := archFixture(t)
 			in.Mixins = []*registry.Mixin{{Kind: "mixin", Name: "extra", Version: "1.0.0", AddsSlots: []registry.SlotDefinition{{Name: "on_change", Phase: "after_store", Operations: []string{"create"}}}}}
@@ -849,11 +836,15 @@ func TestArchitectureViewRefusals(t *testing.T) {
 		in.Names[slices.Index(in.Names, "rest-api")] = "other-api"
 		in.Wirings[0].Name = "other-api"
 		refused("another component", in, "the component other-api serves the collections", "the component rest-api alone")
-		// With no component that serves the collections, the derivation refuses to guess where their flows start
-		// (ST-GEN-UC08-R05, ST-GEN-Q44 (A)).
+		// With no component that serves the collections, no generator plans their entities, so the derivation does
+		// not refuse a list that the query runtime would refuse.
 		in = archFixture(t)
-		in.Components["rest-api"].Architecture.Serves = []string{"commands", "queries", "workers"}
-		refused("no component that serves the collections", in, "the service has collection operations", "architecture.serves")
+		in.Components["rest-api"].Config = nil
+		in.Service.Entities[0].Permissions = maps.Clone(in.Service.Entities[0].Permissions)
+		delete(in.Service.Entities[0].Permissions, types.OpList)
+		if _, err := WriteArchitecture(in); err != nil {
+			t.Errorf("with no component that serves the collections, the derivation refuses: %v", err)
+		}
 	})
 }
 
@@ -879,13 +870,11 @@ func TestArchitectureEmptyAspects(t *testing.T) {
 		if model.Aspects.DataModel != (ArchAspect{State: "empty", Reason: reasonNoEntity}) || model.Aspects.RequestFlows != (ArchAspect{State: "empty", Reason: reasonNoOperation}) {
 			t.Fatalf("with no entity and no operation the aspects are %+v %+v", model.Aspects.DataModel, model.Aspects.RequestFlows)
 		}
-		// A service whose collections no component serves is refused (ST-GEN-UC08-R05), so its flows are never an
-		// empty aspect.
 		in = archFixture(t)
-		in.Components["rest-api"].Architecture.Serves = nil
-		var refusal *ArchitectureRefusal
-		if _, err := DeriveArchitecture(in); !errors.As(err, &refusal) || !strings.Contains(err.Error(), "collection operations") {
-			t.Fatalf("with no component that serves the collections the derivation gives %v, want a refusal", err)
+		in.Components["rest-api"].Config = nil
+		model, _ = deriveFixture(t, in)
+		if model.Aspects.RequestFlows != (ArchAspect{State: "empty", Reason: reasonNoServer}) {
+			t.Fatalf("with no component that serves the collections the request flows are %+v", model.Aspects.RequestFlows)
 		}
 	})
 }
@@ -1442,7 +1431,7 @@ func TestArchitectureContext(t *testing.T) {
 			"actor:authorization.spicedb authorization service spicedb <service.yaml authorization.provider>",
 			"actor:caller caller Caller <service.yaml collections>",
 			"actor:outside.events outside system System that events calls <registry component events 1.0.0, field architecture.layer>",
-			"actor:store.store store DocsDB <registry component store 1.0.0, field architecture.store>",
+			"actor:store.store store Store of store <registry component store 1.0.0, field architecture.layer>",
 		}
 		if !slices.Equal(actors, want) {
 			t.Fatalf("the actors are\n%s\nwant\n%s", strings.Join(actors, "\n"), strings.Join(want, "\n"))
@@ -1451,7 +1440,7 @@ func TestArchitectureContext(t *testing.T) {
 			"actor:caller calls 3 operations container:docs through component:rest-api sync <service.yaml collections>",
 			"container:docs asks for permission decisions actor:authorization.spicedb through  sync <service.yaml authorization.provider>",
 			"container:docs sends change messages, later actor:outside.events through component:events async <registry component events 1.0.0, field architecture.layer>",
-			"container:docs keeps rows actor:store.store through component:store sync <registry component store 1.0.0, field architecture.store>",
+			"container:docs keeps rows actor:store.store through component:store sync <registry component store 1.0.0, field architecture.layer>",
 		}
 		if !slices.Equal(relations, wantRelations) {
 			t.Fatalf("the relations are\n%s\nwant\n%s", strings.Join(relations, "\n"), strings.Join(wantRelations, "\n"))
