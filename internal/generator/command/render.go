@@ -1,8 +1,11 @@
 package command
 
 import (
+	"bytes"
 	"fmt"
 	"go/format"
+	"go/token"
+	"slices"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/types"
@@ -117,6 +120,9 @@ func renderContract(m *model) []byte {
 		}
 		for _, h := range c.helpers {
 			renderRelationHelper(w, c, h)
+		}
+		for _, l := range c.lists {
+			RenderList(&w.Buffer, l.goName, l.decl.Name, "the command "+c.decl.Name, l.decl.Entity, l.plan)
 		}
 	}
 	w.f("%s", refusalHelpers)
@@ -318,6 +324,17 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 		written[i] = e.decl.Name
 	}
 	w.f("%s", ChangeEventsSpec(m.ctx, written))
+	if len(c.lists) > 0 {
+		// The handle takes only the declared lists (ST-SUP-RP10-LC38).
+		w.f("\tLists: []command.AnyList{")
+		for i, l := range c.lists {
+			if i > 0 {
+				w.f(", ")
+			}
+			w.f("commands.%s", l.goName)
+		}
+		w.f("},\n")
+	}
 	if len(c.effects) > 0 {
 		w.f("\tDestinations: []command.Destination{")
 		for i, d := range c.effects {
@@ -439,64 +456,56 @@ func fillAlias(name string) string {
 	return "fill" + alias
 }
 
-// KeyListRead gives the Read statement of a command.ListSpec that finds the row of the entity named name whose
-// fields keys hold the values $3, $4 and on, in the tenant $1, at most $2 rows: the lookup of an upsert by its
-// natural key (ST-SUP-RC20-OC13). It returns the columns of the entity's Scan, as each statement of EntityFile does.
-func KeyListRead(name string, entities []types.Entity, tenantKey string, keys []string) (string, error) {
-	byName := map[string]types.Entity{}
-	for _, e := range entities {
-		byName[e.Name] = e
-	}
-	decl, ok := byName[name]
-	if !ok {
-		return "", fmt.Errorf("command: the entity %s is not declared", name)
-	}
-	e, err := planEntity(decl, byName, tenantKey, Relations{})
-	if err != nil {
-		return "", fmt.Errorf("command: the entity %s: %w", name, err)
-	}
-	where := []string{fmt.Sprintf("%s = $1", quote(tenantKey))}
-	for i, key := range keys {
-		found := false
-		for _, f := range e.fields {
-			found = found || f.decl.Name == key
-		}
-		if !found {
-			return "", fmt.Errorf("command: the entity %s has no field %s of its upsert key", name, key)
-		}
-		where = append(where, fmt.Sprintf("%s = $%d", quote(key), i+3))
-	}
-	return fmt.Sprintf("SELECT %s FROM public.%s WHERE %s ORDER BY \"id\" LIMIT $2", e.columns(), quote(e.table), strings.Join(where, " AND ")), nil
-}
-
 // listOperators are the SQL operators of the list term operators (ST-DECL-INV94).
 var listOperators = map[string]string{types.ListEquals: "=", types.ListNotEquals: "<>", types.ListLessThan: "<",
 	types.ListLessThanOrEquals: "<=", types.ListGreaterThan: ">", types.ListGreaterThanOrEquals: ">="}
 
-// ListStatements gives the Read and Lock statements of the declared list of a worker over the entity of the release
-// (ST-SUP-RC35-OC15), and the Go source of its command.ListValue values in the order of their parameters. Both
-// statements return the column list of the entity's generated Scan and take the tenant as $1. Read takes the most
-// rows as $2; Lock takes the IDs to lock as the text array $2, applies the filter again, and locks FOR NO KEY UPDATE.
-// Each term with a value binds it as a parameter from $3: a constant, or the time of the run for now; is_set binds
-// none. Both order by the key, so a schema step that adds a column changes the list with the release and no fill
-// gives SQL text. Lock is empty for a list that does not lock.
-func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey string) (read, lock string, values []string, err error) {
+// ListPlan is the generated form of one declared list of a command or a worker (ST-SUP-RC32-OC16,
+// ST-SUP-RC35-OC15): its Read and Lock statements over the entity of the release, the Go source of its
+// command.ListValue values in the order of their parameters, and its parameters, which the generated With function
+// takes as typed Go arguments.
+type ListPlan struct {
+	Read, Lock string
+	Values     []string
+	Params     []ListParam
+	// Child tells that the entity is a child: it has no resource type and References references to entities with a
+	// resource type; Parents are the referenced entities of the parent terms (ST-DECL-INV94).
+	Child      bool
+	References int
+	Parents    []string
+}
+
+// ListParam is one declared parameter of a list: its name, the Go name of its argument and the Go type of its field.
+type ListParam struct {
+	Name, GoName, GoType string
+}
+
+// ListStatements gives the plan of the declared list of a command or a worker over the entity of the release
+// (ST-SUP-RC35-OC15, ST-SUP-RC32-OC16). Both statements return the column list of the entity's generated Scan and
+// take the tenant as $1. Read takes the most rows as $2; Lock takes the IDs to lock as the text array $2, applies the
+// filter again, and locks FOR NO KEY UPDATE. Each term with a value binds it as a parameter from $3: a constant, the
+// time of the run for now, or a declared parameter, which the fill gives through the generated With function; is_set
+// binds none. Both order by the key, so a schema step that adds or renames a column changes the list with the release
+// and no fill gives SQL text. Lock is empty for a list that does not lock.
+func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey string) (ListPlan, error) {
 	byName := map[string]types.Entity{}
 	for _, e := range entities {
 		byName[e.Name] = e
 	}
 	decl, ok := byName[list.Entity]
 	if !ok {
-		return "", "", nil, fmt.Errorf("command: the list %s reads the entity %s, which is not declared", list.Name, list.Entity)
+		return ListPlan{}, fmt.Errorf("command: the list %s reads the entity %s, which is not declared", list.Name, list.Entity)
 	}
 	e, err := planEntity(decl, byName, tenantKey, Relations{})
 	if err != nil {
-		return "", "", nil, fmt.Errorf("command: the entity %s: %w", list.Entity, err)
+		return ListPlan{}, fmt.Errorf("command: the entity %s: %w", list.Entity, err)
 	}
 	if len(list.Filter) == 0 {
-		return "", "", nil, fmt.Errorf("command: the list %s has no filter term", list.Name)
+		return ListPlan{}, fmt.Errorf("command: the list %s has no filter term", list.Name)
 	}
+	var plan ListPlan
 	var terms []string
+	seen := map[string]bool{}
 	for _, term := range list.Filter {
 		var field *entityField
 		for _, f := range e.fields {
@@ -505,7 +514,7 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 			}
 		}
 		if field == nil {
-			return "", "", nil, fmt.Errorf("command: the list %s names the field %s, which %s does not declare", list.Name, term.Field, list.Entity)
+			return ListPlan{}, fmt.Errorf("command: the list %s names the field %s, which %s does not declare", list.Name, term.Field, list.Entity)
 		}
 		column := quote(field.decl.ColumnName())
 		if term.Op == types.ListIsSet {
@@ -514,22 +523,117 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 		}
 		op, ok := listOperators[term.Op]
 		if !ok {
-			return "", "", nil, fmt.Errorf("command: the list %s has the operator %q", list.Name, term.Op)
+			return ListPlan{}, fmt.Errorf("command: the list %s has the operator %q", list.Name, term.Op)
 		}
-		value, err := listValue(field.decl, term)
-		if err != nil {
-			return "", "", nil, fmt.Errorf("command: the list %s, the term on %s: %w", list.Name, term.Field, err)
+		var value string
+		if term.Parent {
+			if term.Op != types.ListEquals || field.decl.Type != types.FieldTypeRef || term.Param != "" || term.Value != nil || term.Now {
+				return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: a parent term needs a reference field and equals, and no value", list.Name, term.Field)
+			}
+			value = fmt.Sprintf("command.ListValue{Parent: %q}", field.decl.To)
+			plan.Parents = append(plan.Parents, field.decl.To)
+			plan.Params = append(plan.Params, ListParam{Name: term.Field, GoName: paramName(strings.TrimSuffix(term.Field, "_id")), GoType: "Loaded" + field.decl.To})
+		} else if term.Param != "" {
+			goType, ok := paramTypes[field.decl.Type]
+			if !ok || seen[term.Param] || term.Value != nil || term.Now {
+				return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: the parameter %s is given twice, with a value, or on a field of the type %s", list.Name, term.Field, term.Param, field.decl.Type)
+			}
+			seen[term.Param] = true
+			if field.decl.Type == types.FieldTypeRef {
+				// A reference holds the key of a row: the handle checks it with the key check of the entity
+				// (ST-SUP-RP10-LC38).
+				value = fmt.Sprintf("command.ListValue{Param: %q, Key: true}", term.Param)
+			} else {
+				value = fmt.Sprintf("command.ListValue{Param: %q}", term.Param)
+			}
+			plan.Params = append(plan.Params, ListParam{Name: term.Param, GoName: paramName(term.Param), GoType: goType})
+		} else if value, err = listValue(field.decl, term); err != nil {
+			return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: %w", list.Name, term.Field, err)
 		}
-		values = append(values, value)
-		terms = append(terms, fmt.Sprintf("%s %s $%d", column, op, len(values)+2))
+		plan.Values = append(plan.Values, value)
+		terms = append(terms, fmt.Sprintf("%s %s $%d", column, op, len(plan.Values)+2))
 	}
+	plan.Child, plan.References = e.resourceType == "" && len(e.references) > 0, len(e.references)
 	from := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s = $1", e.columns(), quote(e.table), quote(tenantKey))
 	filter := " AND " + strings.Join(terms, " AND ")
-	read = from + filter + ` ORDER BY "id" LIMIT $2`
+	plan.Read = from + filter + ` ORDER BY "id" LIMIT $2`
 	if list.Lock {
-		lock = from + ` AND "id" = ANY($2::text[]::uuid[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`
+		plan.Lock = from + ` AND "id" = ANY($2::text[]::uuid[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`
 	}
-	return read, lock, values, nil
+	return plan, nil
+}
+
+// CheckChild refuses a plan of a declared list of owner that does not fit its entity (ST-DECL-INV94,
+// ST-SUP-RC32-OC16): a list of a child entity needs exactly one parent term, of an entity in writes, and the child
+// one reference to an entity with a resource type; a list of any other entity takes no parent term.
+func (p ListPlan) CheckChild(owner, list, entity string, writes []string) error {
+	switch {
+	case p.Child && p.References > 1:
+		return fmt.Errorf("%s: the list %s reads the child entity %s, which refers to more than one entity with a resource type, so it has no list (ST-DECL-INV94)", owner, list, entity)
+	case p.Child && len(p.Parents) != 1:
+		return fmt.Errorf("%s: the list %s reads the child entity %s and needs exactly one parent term, which takes the decided parent row (ST-DECL-INV94)", owner, list, entity)
+	case !p.Child && len(p.Parents) > 0:
+		return fmt.Errorf("%s: the list %s has a parent term, and %s is not a child entity (ST-DECL-INV94)", owner, list, entity)
+	}
+	for _, parent := range p.Parents {
+		if !slices.Contains(writes, parent) {
+			return fmt.Errorf("%s: the list %s takes a parent row of %s, which it does not write, so its fill cannot load one", owner, list, parent)
+		}
+	}
+	return nil
+}
+
+// paramTypes are the Go types of a list parameter by the type of its field: the Go type of the entity's field, which
+// command.List.With takes. A field of the type bytes or jsonb takes no parameter (ST-DECL-INV94).
+var paramTypes = map[types.FieldType]string{types.FieldTypeString: "string", types.FieldTypeEnum: "string",
+	types.FieldTypeRef: "string", types.FieldTypeInt32: "int32", types.FieldTypeInt64: "int64",
+	types.FieldTypeFloat: "float32", types.FieldTypeDouble: "float64", types.FieldTypeBool: "bool",
+	types.FieldTypeTimestamp: "time.Time"}
+
+// paramName gives the Go name of the argument of the parameter name, such as orderID for order_id; a name that is a
+// Go keyword or a predeclared name takes the suffix Value.
+func paramName(name string) string {
+	mixed := mixedCase(name)
+	lower := strings.ToLower(mixed[:1]) + mixed[1:]
+	if token.IsKeyword(lower) || reservedParams[lower] {
+		return lower + "Value"
+	}
+	return lower
+}
+
+// reservedParams are the predeclared Go names and the package names of a contract that an argument must not hide.
+var reservedParams = map[string]bool{"any": true, "append": true, "bool": true, "byte": true, "cap": true, "clear": true,
+	"close": true, "complex": true, "copy": true, "delete": true, "error": true, "false": true, "float32": true,
+	"float64": true, "imag": true, "int": true, "int32": true, "int64": true, "iota": true, "len": true, "make": true,
+	"max": true, "min": true, "new": true, "nil": true, "panic": true, "print": true, "println": true, "real": true,
+	"recover": true, "rune": true, "string": true, "true": true, "uint": true, "command": true, "context": true,
+	"time": true, "json": true, "bytes": true, "audit": true, "authz": true, "tenant": true, "probes": true}
+
+// RenderList writes one declared list of a command or a worker, named goName, over the entity entity of the same
+// package: the typed command.List with its statements and its values and, for a list with parameters, the function
+// <goName>With that takes each parameter as a typed Go argument and gives the list with them bound
+// (ST-SUP-RP10-LC38). owner names the command or the worker, as "the command place-order".
+func RenderList(w *bytes.Buffer, goName, name, owner, entity string, plan ListPlan) {
+	fmt.Fprintf(w, "// %s is the list %s of %s over %s, which its fill reads with List or ListForUpdate. The\n// generator builds its statements from the entity of this release, so a fill gives no SQL text (ST-SUP-RC32-OC16,\n// ST-SUP-RC35-OC15, ST-SUP-RP10-LC38).", goName, name, owner, entity)
+	if len(plan.Params) > 0 {
+		fmt.Fprintf(w, " Its fill gives the parameters through %sWith.", goName)
+	}
+	fmt.Fprintf(w, "\nvar %s = command.Must(command.NewList(%sEntity, command.ListSpec{Name: %q,\n\tRead: %q,\n", goName, entity, name, plan.Read)
+	if plan.Lock != "" {
+		fmt.Fprintf(w, "\tLock: %q,\n", plan.Lock)
+	}
+	fmt.Fprintf(w, "\tValues: command.DeclaredValues(%s)}))\n\n", strings.Join(plan.Values, ", "))
+	if len(plan.Params) == 0 {
+		return
+	}
+	args := make([]string, len(plan.Params))
+	names := make([]string, len(plan.Params))
+	for i, p := range plan.Params {
+		args[i] = p.GoName + " " + p.GoType
+		names[i] = p.GoName
+	}
+	fmt.Fprintf(w, "// %sWith gives the list %s of %s with its parameters bound, which the handle binds as SQL\n// parameters (ST-SUP-RP10-LC38).\nfunc %sWith(%s) *command.List[%s] {\n\treturn %s.With(%s)\n}\n\n",
+		goName, name, owner, goName, strings.Join(args, ", "), entity, goName, strings.Join(names, ", "))
 }
 
 // listValue gives the Go source of the command.ListValue of one term: the time of the run for now, or the constant

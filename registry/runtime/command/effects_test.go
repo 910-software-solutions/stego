@@ -247,8 +247,9 @@ func TestEffects(t *testing.T) {
 					return err
 				}
 				if err := h.Effects().Stage(ctx, "billing", effect, c, []byte(`{"amount":200}`)); err != nil {
-					if !strings.Contains(err.Error(), effect) {
-						t.Errorf("the stage of %s gave %v, want an error that names the effect", effect, err)
+					// The error names no effect string that the fill gave (security review of PR #416, L2).
+					if !errors.Is(err, ErrInternal) || strings.Contains(err.Error(), effect) {
+						t.Errorf("the stage of %s gave %v, want an internal error that does not hold the effect", effect, err)
 					}
 					return nil
 				}
@@ -476,7 +477,8 @@ func charge(ctx context.Context, h *command.Handle[struct{}], c gen.LoadedCharge
 		}
 		before = e.auditRows("t1", "read")
 		listed := 0
-		_, err = e.run(cmd, e.request("t1", u7(t), "k-pii-list", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+		listing := e.command("reserve-and-charge", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{charges} }, e.orders, e.reservationE, e.chargeE)
+		_, err = e.run(listing, e.request("t1", u7(t), "k-pii-list", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
 			got, err := repo(t, h, e.chargeE).List(ctx, charges, 10)
 			listed = len(got)
 			return err

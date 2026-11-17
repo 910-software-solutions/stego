@@ -431,8 +431,9 @@ func (e *env) entities() {
 	must(err)
 	cols := "id, order_id, sku, version, authz_token"
 	e.ofOrder, err = NewList(e.underOrder, ListSpec{Name: "of-order",
-		Read: "SELECT " + cols + " FROM reservations WHERE tenant_id = $1 AND order_id = $3 ORDER BY id LIMIT $2",
-		Lock: "SELECT " + cols + " FROM reservations WHERE tenant_id = $1 AND id = ANY($2) AND order_id = $3 ORDER BY id FOR NO KEY UPDATE"})
+		Read:   "SELECT " + cols + " FROM reservations WHERE tenant_id = $1 AND order_id = $3 ORDER BY id LIMIT $2",
+		Lock:   "SELECT " + cols + " FROM reservations WHERE tenant_id = $1 AND id = ANY($2) AND order_id = $3 ORDER BY id FOR NO KEY UPDATE",
+		Values: DeclaredValues(ListValue{Param: "order_id"})})
 	must(err)
 	chargeSpec := spec("Charge", "charge", "charges", []string{"amount", "card_last4"},
 		func(s Scanner) (charge, Meta, error) {
@@ -493,8 +494,9 @@ func (e *env) entities() {
 	must(err)
 	all := "id, org_id, email, admin, rank, version, authz_token"
 	e.admins, err = NewList(e.users, ListSpec{Name: "admins",
-		Read: "SELECT " + all + " FROM users WHERE tenant_id = $1 AND org_id = $3 AND admin ORDER BY rank DESC LIMIT $2",
-		Lock: "SELECT " + all + " FROM users WHERE tenant_id = $1 AND id = ANY($2) AND org_id = $3 AND admin ORDER BY id FOR NO KEY UPDATE"})
+		Read:   "SELECT " + all + " FROM users WHERE tenant_id = $1 AND org_id = $3 AND admin ORDER BY rank DESC LIMIT $2",
+		Lock:   "SELECT " + all + " FROM users WHERE tenant_id = $1 AND id = ANY($2) AND org_id = $3 AND admin ORDER BY id FOR NO KEY UPDATE",
+		Values: DeclaredValues(ListValue{Param: "org_id"})})
 	must(err)
 }
 
@@ -729,6 +731,18 @@ func (e *env) command(name string, change func(*CommandSpec[testProbe]), writes 
 	if change != nil {
 		change(&spec)
 	}
+	if spec.Lists == nil {
+		// A command of the tests declares the lists of the env for the entities that it writes, as the generator
+		// declares the lists of a command's declaration (ST-SUP-RP10-LC38).
+		for _, w := range spec.Writes {
+			switch w {
+			case e.underOrder:
+				spec.Lists = append(spec.Lists, e.ofOrder)
+			case e.users:
+				spec.Lists = append(spec.Lists, e.admins)
+			}
+		}
+	}
 	cmd, err := NewCommand(spec)
 	if err != nil {
 		e.t.Fatal(err)
@@ -787,6 +801,7 @@ func (e *env) bindOn(db *sql.DB, tenantID string, p authz.Principal, cmd *Comman
 	s.request = Request{Key: "k-bind", RequestID: "req-bind"}
 	s.inbound = commandInbound("k-bind")
 	s.ownRelations = cmd.own
+	s.lists = cmd.lists
 	if s.az, err = e.authz.Bind(tx, tn, p, cmd.bound); err != nil {
 		e.t.Fatal(err)
 	}
@@ -1371,7 +1386,7 @@ func TestLockedLists(t *testing.T) {
 		listed := make(chan error, 1)
 		go func() {
 			var err error
-			got, err = r.ListForUpdate(e.ctx, e.admins, nil, "o1")
+			got, err = r.ListForUpdate(e.ctx, e.admins.With("o1"), nil)
 			listed <- err
 		}()
 		e.waitLockWaits(1)
@@ -1418,7 +1433,7 @@ func TestLockedLists(t *testing.T) {
 			e.seedUser("t1", id, "o2", true, i+1, 1)
 		}
 		h, _, end := e.bind("t1", u7(t), cmd)
-		got, err := repo(t, h, e.users).ListForUpdate(e.ctx, e.admins, nil, "o2")
+		got, err := repo(t, h, e.users).ListForUpdate(e.ctx, e.admins.With("o2"), nil)
 		end()
 		if err != nil || len(got) != 3 {
 			t.Fatalf("the list of three admins gave %v, %v", ids(got), err)
@@ -1426,7 +1441,7 @@ func TestLockedLists(t *testing.T) {
 		e.seedUser("t1", "v4", "o2", true, 4, 1)
 		h, _, end = e.bind("t1", u7(t), cmd)
 		defer end()
-		got, err = repo(t, h, e.users).ListForUpdate(e.ctx, e.admins, nil, "o2")
+		got, err = repo(t, h, e.users).ListForUpdate(e.ctx, e.admins.With("o2"), nil)
 		if got != nil || !errors.Is(err, ErrInternal) || errors.Is(err, ErrConflict) {
 			t.Fatalf("the list of four admins gave %v, %v; want no row and an internal error", ids(got), err)
 		}
@@ -1439,13 +1454,13 @@ func TestLockedLists(t *testing.T) {
 		if _, err := NewList(e.orders, ListSpec{Name: "open", Read: "SELECT 1 WHERE $1 = $1", Lock: "SELECT 1 WHERE $1 = $1 ORDER BY 1 FOR NO KEY UPDATE"}); err == nil {
 			t.Fatal("a locked list of Order, which declares no Lock at most, was accepted")
 		}
-		unlocked, err := NewList(e.users, ListSpec{Name: "all", Read: e.admins.spec.Read})
+		unlocked, err := NewList(e.users, ListSpec{Name: "all", Read: e.admins.spec.Read, Values: DeclaredValues(ListValue{Param: "org_id"})})
 		if err != nil {
 			t.Fatal(err)
 		}
 		h2, _, end2 := e.bind("t1", u7(t), cmd)
 		defer end2()
-		if _, err := repo(t, h2, e.users).ListForUpdate(e.ctx, unlocked, nil, "o2"); err == nil {
+		if _, err := repo(t, h2, e.users).ListForUpdate(e.ctx, unlocked.With("o2"), nil); err == nil {
 			t.Fatal("ListForUpdate ran a list with no Lock statement")
 		}
 	})
@@ -1458,7 +1473,7 @@ func TestLockedLists(t *testing.T) {
 		e.decision.setAllow(deny("user:w3"))
 		defer e.decision.setAllow(nil)
 		h, _, end := e.bind("t1", u7(t), cmd)
-		got, err := repo(t, h, e.users).ListForUpdate(e.ctx, e.admins, nil, "o3")
+		got, err := repo(t, h, e.users).ListForUpdate(e.ctx, e.admins.With("o3"), nil)
 		if err != nil || strings.Join(ids(got), ",") != "w1,w2" {
 			t.Fatalf("the list gave %v, %v; want w1 and w2", ids(got), err)
 		}
@@ -1483,7 +1498,7 @@ func TestLockedLists(t *testing.T) {
 		e.decision.taken()
 		h, _, end = e.bind("t1", u7(t), cmd)
 		defer end()
-		got, err = repo(t, h, e.users).ListForUpdate(e.ctx, e.admins, nil, "o3")
+		got, err = repo(t, h, e.users).ListForUpdate(e.ctx, e.admins.With("o3"), nil)
 		if err != nil || strings.Join(ids(got), ",") != "w1" {
 			t.Fatalf("the second list gave %v, %v; want only w1", ids(got), err)
 		}

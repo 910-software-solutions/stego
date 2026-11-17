@@ -945,6 +945,24 @@ func TestCauseLog(t *testing.T) {
 		now = now.Add(time.Nanosecond)
 		check(CauseUnavailable, answer{true, 3})
 		check(CauseSchemaNotServed, answer{true, 0})
+		// The log keeps at most MaxCauses causes: a new cause evicts the cause with the oldest line (security review
+		// of PR #416, L2).
+		bounded := NewCauseLog(func() time.Time { return now })
+		for i := range MaxCauses + 10 {
+			now = now.Add(time.Millisecond)
+			if ok, _ := bounded.Allow(fmt.Sprintf("cause-%d", i)); !ok {
+				t.Fatalf("the new cause %d is held back", i)
+			}
+		}
+		if len(bounded.last) != MaxCauses || len(bounded.held) > MaxCauses {
+			t.Errorf("the cause log keeps %d and %d causes, want at most %d", len(bounded.last), len(bounded.held), MaxCauses)
+		}
+		if _, kept := bounded.last["cause-0"]; kept {
+			t.Error("the cause with the oldest line was not evicted")
+		}
+		if ok, _ := bounded.Allow(fmt.Sprintf("cause-%d", MaxCauses+9)); ok {
+			t.Error("a kept cause is not held back")
+		}
 		var zero CauseLog
 		if ok, _ := zero.Allow(CauseDeadline); !ok {
 			t.Error("the zero CauseLog holds back the first line")

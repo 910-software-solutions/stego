@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 // orders is ST-DECL-TD02 with the modes given (none when empty) and the owned entity Order with the fields status
@@ -295,6 +296,7 @@ func TestWorkerLists(t *testing.T) {
 		{"one equals term", "- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}"},
 		{"every operator", "- {name: due, entity: Order, lock: true, filter: [{field: due_at, op: less_than, now: true}, {field: amount, op: greater_than_or_equals, value: 10}, {field: amount, op: less_than_or_equals, value: 99}, {field: synced, op: not_equals, value: true}, {field: note, op: is_set}, {field: due_at, op: greater_than, value: \"2026-01-01T00:00:00Z\"}, {field: status, op: not_equals, value: closed}, {field: amount, op: less_than, value: 1000}]}"},
 		{"two lists", "- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}\n      - {name: synced-orders, entity: Order, filter: [{field: synced, op: equals, value: true}]}"},
+		{"two parameters", "- {name: of-status, entity: Order, filter: [{field: status, op: equals, param: status}, {field: due_at, op: less_than, param: due_before}, {field: synced, op: equals, value: false}]}"},
 	}
 	for _, c := range accepted {
 		t.Run("ST-DECL-INV94-T A worker list with "+c.name+" is accepted", func(t *testing.T) {
@@ -317,10 +319,34 @@ func TestWorkerLists(t *testing.T) {
 		{"is_set with a value", "- {name: x, entity: Order, filter: [{field: note, op: is_set, value: a}]}", "no value"},
 		{"an order operator on a bool", "- {name: x, entity: Order, filter: [{field: synced, op: less_than, value: true}]}", "bool"},
 		{"a jsonb field compared", "- {name: x, entity: Order, filter: [{field: body, op: equals, value: a}]}", "is_set"},
+		{"a parameter used twice", "- {name: x, entity: Order, filter: [{field: amount, op: greater_than, param: amount}, {field: amount, op: less_than, param: amount}]}", `"amount" is used twice`},
+		{"a parameter and a value", "- {name: x, entity: Order, filter: [{field: amount, op: equals, value: 1, param: amount}]}", "one of a value, now and a parameter"},
+		{"a parameter and now", "- {name: x, entity: Order, filter: [{field: due_at, op: less_than, now: true, param: due}]}", "one of a value, now and a parameter"},
+		{"a parameter name that is not snake case", "- {name: x, entity: Order, filter: [{field: amount, op: equals, param: Amount}]}", "lower snake case"},
+		{"is_set with a parameter", "- {name: x, entity: Order, filter: [{field: note, op: is_set, param: note}]}", "no value"},
+		{"a parameter on a jsonb field", "- {name: x, entity: Order, filter: [{field: body, op: equals, param: body}]}", "is_set"},
+		{"an order operator on a bool parameter", "- {name: x, entity: Order, filter: [{field: synced, op: greater_than, param: synced}]}", "bool"},
 	}
 	for _, c := range refused {
 		t.Run("ST-DECL-INV94-T A worker list with "+c.name+" is refused", func(t *testing.T) {
 			wantFault(t, workerFaults(t, listOrders(c.lists), "worker-list"), `"scan-orders"`, c.names)
+		})
+	}
+	// A command declares its lists as a worker does (walkthrough 7, B1 and NB4).
+	commandLists := func(lists string) string {
+		return listOrders("- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}") +
+			"commands:\n" + command("place-orders", "writes: [Order]", "fill: place", "route: POST /orders/{orderId}/place", "lists:\n      "+lists)
+	}
+	t.Run("ST-DECL-INV94-T A command list with a parameter and a lock is accepted", func(t *testing.T) {
+		wantNoFault(t, workerFaults(t, commandLists("- {name: of-status, entity: Order, lock: true, filter: [{field: status, op: equals, param: status}, {field: due_at, op: less_than, now: true}]}"), "command-list", "worker-list"))
+	})
+	for _, c := range []struct{ name, lists, names string }{
+		{"an entity that the command does not write", "- {name: todos, entity: Todo, filter: [{field: done, op: equals, param: done}]}", "the command does not write"},
+		{"a parameter used twice", "- {name: x, entity: Order, filter: [{field: amount, op: greater_than, param: amount}, {field: amount, op: less_than, param: amount}]}", `"amount" is used twice`},
+		{"a field that the entity does not declare", "- {name: x, entity: Order, filter: [{field: colour, op: equals, param: colour}]}", `"colour"`},
+	} {
+		t.Run("ST-DECL-INV94-T A command list with "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, workerFaults(t, commandLists(c.lists), "command-list", "worker-list"), `command "place-orders"`, `list "`, c.names)
 		})
 	}
 	t.Run("ST-DECL-INV94-T A locked list of an entity with no Lock at most is refused", func(t *testing.T) {
@@ -350,6 +376,49 @@ func TestLockAtMost(t *testing.T) {
 			if _, _, err := parser.ReadServiceDeclaration([]byte(entity("    lock_at_most: "+value+"\n")), "service.yaml"); err == nil {
 				t.Fatal("the declaration was read")
 			}
+		})
+	}
+}
+
+func TestChildLists(t *testing.T) {
+	// Order has a resource type; Line is a child of Order; Pair is a child of Order and Store; Note has no
+	// authorization of its rows (security review of PR #416, M1).
+	entities := []types.Entity{
+		{Name: "Order", EntityAuthorization: types.EntityAuthorization{ResourceType: "order"}, Fields: []types.Field{{Name: "status", Type: types.FieldTypeString}, {Name: "store_id", Type: types.FieldTypeRef, To: "Store"}}},
+		{Name: "Store", EntityAuthorization: types.EntityAuthorization{ResourceType: "store"}, Fields: []types.Field{{Name: "city", Type: types.FieldTypeString}}},
+		{Name: "Line", Fields: []types.Field{{Name: "order_id", Type: types.FieldTypeRef, To: "Order"}, {Name: "sku", Type: types.FieldTypeString}}},
+		{Name: "Pair", Fields: []types.Field{{Name: "order_id", Type: types.FieldTypeRef, To: "Order"}, {Name: "store_id", Type: types.FieldTypeRef, To: "Store"}}},
+		{Name: "Note", Fields: []types.Field{{Name: "body", Type: types.FieldTypeString}}},
+	}
+	parent := types.ListTerm{Field: "order_id", Op: types.ListEquals, Parent: true}
+	list := func(entity string, terms ...types.ListTerm) []types.WorkerList {
+		return []types.WorkerList{{Name: "rows", Entity: entity, Filter: terms}}
+	}
+	writes := []string{"Order", "Store", "Line", "Pair", "Note"}
+	for name, lists := range map[string][]types.WorkerList{
+		"a child list with its parent term":          list("Line", parent),
+		"a child list with its parent term and more": list("Line", parent, types.ListTerm{Field: "sku", Op: types.ListEquals, Param: "sku"}),
+		"a list of an entity with a resource type":   list("Order", types.ListTerm{Field: "status", Op: types.ListEquals, Param: "status"}),
+		"a list of an entity with no authorization":  list("Note", types.ListTerm{Field: "body", Op: types.ListIsSet}),
+	} {
+		t.Run("ST-DECL-INV94-T "+name+" is accepted", func(t *testing.T) {
+			wantNoFault(t, validateLists("command", "place-order", "commands[0]", writes, lists, entities))
+		})
+	}
+	for name, c := range map[string]struct {
+		lists []types.WorkerList
+		want  string
+	}{
+		"a child list with no parent term":              {list("Line", types.ListTerm{Field: "order_id", Op: types.ListEquals, Param: "order_id"}), "exactly one term"},
+		"a child list with two parent terms":            {list("Line", parent, parent), "exactly one term"},
+		"a parent term on an entity with a type":        {list("Order", types.ListTerm{Field: "store_id", Op: types.ListEquals, Parent: true}), "fits only a list of a child entity"},
+		"a parent term with another operator":           {list("Line", types.ListTerm{Field: "order_id", Op: types.ListNotEquals, Parent: true}), "only the operator equals"},
+		"a parent term with a parameter":                {list("Line", types.ListTerm{Field: "order_id", Op: types.ListEquals, Parent: true, Param: "order_id"}), "only the operator equals"},
+		"a parent term on a field that is no reference": {list("Line", types.ListTerm{Field: "sku", Op: types.ListEquals, Parent: true}), "needs a reference field"},
+		"a child of two parents":                        {list("Pair", parent), "more than one entity"},
+	} {
+		t.Run("ST-DECL-INV94-T "+name+" is refused", func(t *testing.T) {
+			wantFault(t, validateLists("command", "place-order", "commands[0]", writes, c.lists, entities), `command "place-order"`, `list "rows"`, c.want)
 		})
 	}
 }

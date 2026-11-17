@@ -28,9 +28,9 @@ type Worker struct {
 	Lists []WorkerList `yaml:"lists,omitempty"`
 }
 
-// WorkerList is one declared list of a worker (ST-DECL-INV94): its name, unique in the worker, an entity that the
-// worker writes, a filter of one to eight terms over the entity's declared fields, and whether the list locks its
-// rows, which needs the Lock at most of the entity (ST-DECL-INV81).
+// WorkerList is one declared list of a worker or a command (ST-DECL-INV94): its name, unique in the worker or the
+// command, an entity that it writes, a filter of one to eight terms over the entity's declared fields, and whether
+// the list locks its rows, which needs the Lock at most of the entity (ST-DECL-INV81).
 type WorkerList struct {
 	Name   string     `yaml:"name"`
 	Entity string     `yaml:"entity"`
@@ -50,10 +50,16 @@ const (
 )
 
 // ListTerm is one term of a list filter: a declared field of the entity, an operator, and a value that is a constant
-// of the field type, or Now for the time of the run. The operator is_set takes no value.
+// of the field type, Now for the time of the run, or the parameter Param, whose value the fill gives at call time
+// through the generated function of the list (ST-DECL-INV94). The operator is_set takes no value.
 type ListTerm struct {
 	Field string `yaml:"field"`
 	Op    string `yaml:"op"`
 	Value any    `yaml:"value,omitempty"`
 	Now   bool   `yaml:"now,omitempty"`
+	// Param is the name of a parameter in lower snake case, unique in its list.
+	Param string `yaml:"param,omitempty"`
+	// Parent tells that the value is the ID of the loaded parent row, which the fill gives at call time: the term of
+	// the reference of a list over a child entity (ST-DECL-INV94).
+	Parent bool `yaml:"parent,omitempty"`
 }
