@@ -88,6 +88,11 @@ environment file against them.
   `GRPC_` names except the three log settings, `SSL_CERT_FILE` and `SSL_CERT_DIR`. The platform requirements mark
   each of them `refused_at_start: true`, and `stego env check` fails when the environment file gives one a value.
   `GODEBUG` keeps its entry, but the service does not start when it holds a `tls`, `x509` or `http2debug` setting.
+- The database connection does not read the files in the home folder: no `~/.pgpass`, no
+  `~/.pg_service.conf`, and no `root.crt`, `postgresql.crt` or `postgresql.key` in `~/.postgresql`. Without
+  `sslrootcert`, the service verifies the database server against the system CA pool. When the server has a
+  certificate from a private CA, put `sslrootcert=<path>` in `DATABASE_URL`, with a path that the overlay mounts
+  (`sslmode=verify-full` is also necessary). A deployment that used `~/.postgresql/root.crt` must change to this.
 
 When a component names a secret source that the service does not state, such as a key that its secret need does
 not have, `stego validate`, `stego plan` and `stego apply` write a `WARNING` with the variable, the need and the
