@@ -181,6 +181,7 @@ func deriveModel(in ArchitectureInput) (*ArchitectureModel, error) {
 		return nil, err
 	}
 	d.flows()
+	d.actionFlows()
 	d.stepLayers()
 	d.trust()
 	d.compliance()
@@ -279,17 +280,49 @@ func (d *deriver) servedKinds() error {
 		}
 	}
 	d.handler = d.servers["collection operations"]
+	// The component that serves a kind of operation of the service is bound to a repository, through which its
+	// flows pass (ST-GEN-Q45 (b), ST-GEN-UC08-R05).
+	for _, kind := range registry.ServedKinds {
+		if c := d.servers[kind]; c != nil && has[kind] && len(d.repositories(c)) == 0 {
+			return &ArchitectureRefusal{fmt.Errorf("the component %s serves the %s and is bound to no component of the repository layer; bind its port storage-adapter to the repository that keeps its rows",
+				c.Name, kind)}
+		}
+	}
 	// With no component of the store layer, the store step and the store actor come from the store that the
 	// repository states, and a repository that states none is refused, as a missing layer is.
-	if d.handler != nil && len(d.byLayer("store")) == 0 {
-		for _, p := range d.handler.Requires {
-			if c, _ := d.provider(d.handler.Name, p.Name); c != nil && c.Architecture.Layer == "repository" && c.Architecture.Store == "" {
-				return &ArchitectureRefusal{&registry.PlaceError{Part: "component " + c.Name, Statement: "architecture.store",
-					Reason: "no component of the store layer is active, and the repository states no store that keeps its rows; give architecture.store, such as PostgreSQL"}}
+	if len(d.byLayer("store")) == 0 {
+		for _, kind := range registry.ServedKinds {
+			c := d.servers[kind]
+			if c == nil || !has[kind] {
+				continue
+			}
+			for _, r := range d.repositories(c) {
+				if r.component.Architecture.Store == "" {
+					return &ArchitectureRefusal{&registry.PlaceError{Part: "component " + r.component.Name, Statement: "architecture.store",
+						Reason: "no component of the store layer is active, and the repository states no store that keeps its rows; give architecture.store, such as PostgreSQL"}}
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// boundRepository is a component of the repository layer that a component is bound to, and the port of the binding.
+type boundRepository struct {
+	component *registry.Component
+	port      string
+}
+
+// repositories gives the components of the repository layer that the component is bound to, in the order of its
+// required ports.
+func (d *deriver) repositories(c *registry.Component) []boundRepository {
+	var list []boundRepository
+	for _, p := range c.Requires {
+		if r, binding := d.provider(c.Name, p.Name); r != nil && r.Architecture.Layer == "repository" {
+			list = append(list, boundRepository{r, binding.Port})
+		}
+	}
+	return list
 }
 
 // bind gives each required port of each component the component that provides it: the one the declaration binds,

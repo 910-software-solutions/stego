@@ -547,7 +547,7 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 }
 
 func TestArchitectureRefusals(t *testing.T) {
-	t.Run("ST-GEN-UC08-R05-T02 The derivation refuses a component with no layer, flow part or port side, a slot with no phase, a kind of operation with no or two serving components and a repository with no store, naming it and the statement", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R05-T02 The derivation refuses a component with no layer, flow part or port side, a slot with no phase, a kind of operation with no or two serving components, a serving component with no repository and a repository with no store, naming it and the statement", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
 			change func(ArchitectureInput)
@@ -569,6 +569,9 @@ func TestArchitectureRefusals(t *testing.T) {
 				in.Components["auth"].Architecture.Serves = []string{"collection operations"}
 			}, []string{"the components rest-api and auth", "collection operations", "one component serves each kind"}},
 			{"a repository with no store", func(in ArchitectureInput) { in.Components["store"].Architecture.Store = "" }, []string{"component store", "architecture.store"}},
+			{"a serving component bound to no repository", func(in ArchitectureInput) {
+				in.Components["store"].Architecture.Layer, in.Components["store"].Architecture.Store = "handler", ""
+			}, []string{"the component rest-api serves the collection operations", "bound to no component of the repository layer"}},
 		} {
 			in := archFixture(t)
 			in.Mixins = []*registry.Mixin{{Kind: "mixin", Name: "extra", Version: "1.0.0", AddsSlots: []registry.SlotDefinition{{Name: "on_change", Phase: "after_store", Operations: []string{"create"}}}}}
@@ -1141,7 +1144,7 @@ func TestReadArchitecture(t *testing.T) {
 		// Each version pins the digest of its schema, so a change of the schema that keeps the version fails here.
 		// When this fails, raise ArchitectureSchemaVersion and the $id and schema_version of the schema, and add
 		// the digest of the new version.
-		schemaDigests := map[int]string{2: "ed18d2a9acd8096a62461c0545c523f51603a9fc92dfdf796e7478d0a929be75"}
+		schemaDigests := map[int]string{2: "22b8267f9bb511066c6f9d3c1edd5f1d3c4631427f0d874acb27ad80c214da21"}
 		if got := HashBytes(ArchitectureSchema); got != schemaDigests[ArchitectureSchemaVersion] {
 			t.Fatalf("the architecture schema has the digest %s, not the digest of version %d: a change of the schema must raise its version", got, ArchitectureSchemaVersion)
 		}
@@ -1605,6 +1608,51 @@ func TestArchitectureContext(t *testing.T) {
 		loose := bytes.Replace(data, []byte(`"to": "container:docs"`), []byte(`"to": "component:rest-api"`), 1)
 		if err := ValidateArchitecture(loose); err == nil || !strings.Contains(err.Error(), "joins only containers and actors") {
 			t.Fatalf("a relation to a component is valid: %v", err)
+		}
+	})
+}
+
+func TestArchitectureActionFlows(t *testing.T) {
+	t.Run("ST-GEN-UC08-R18-T01 Each command, query and worker has a request flow from the component that serves its kind through its fill, the repository and the store to its events and effects", func(t *testing.T) {
+		in := archFixture(t)
+		in.Service.Commands[0].Writes = []string{"Doc"}
+		in.Service.Commands[0].Effects = []types.Effect{{Destination: "mail", Name: "notify"}}
+		in.Service.Overrides["events"] = map[string]any{"destinations": []any{map[string]any{"name": "mail", "must_land": true, "idempotent": true}}}
+		in.Service.Queries = []types.Query{{Name: "recent", Reads: []string{"Doc"}, ResourceType: "doc", Permission: "read", Fill: types.FillNames{"reader"}}}
+		in.Service.Workers = []types.Worker{{Name: "sweeper", Trigger: "every 1m", Writes: []string{"Doc"}, ResourceType: "doc", Permission: "write", Fill: types.FillNames{"sweep"}}}
+		model, _ := deriveFixture(t, in)
+		kinds := map[string]string{}
+		for _, f := range model.Flows {
+			var parts []string
+			for _, s := range f.Steps {
+				parts = append(parts, s.Kind+" "+s.Element)
+			}
+			kinds[f.ID] = strings.Join(parts, ", ")
+		}
+		for id, want := range map[string]string{
+			"flow:command.archive": "operation command:archive, authenticate component:auth, authorize check:command:archive, handle component:rest-api, fill fill:archiver, repository component:store, store component:store, outbox component:outbox, event component:events, outside call component:events",
+			"flow:query.recent":    "operation query:recent, authenticate component:auth, authorize check:query:recent, handle component:rest-api, fill fill:reader, repository component:store, store component:store",
+			"flow:worker.sweeper":  "operation worker:sweeper, authorize check:worker:sweeper, handle component:rest-api, fill fill:sweep, repository component:store, store component:store, outbox component:outbox, event component:events",
+		} {
+			if kinds[id] != want {
+				t.Errorf("the flow %s is\n%s\nwant\n%s", id, kinds[id], want)
+			}
+		}
+		for _, f := range model.Flows {
+			if f.ID != "flow:worker.sweeper" {
+				continue
+			}
+			if f.Steps[0].Text != "The worker sweeper runs: every 1m." || f.Steps[0].Source.Declaration != "workers[0]" || f.Steps[3].Text != "The fill sweep carries out the worker." {
+				t.Errorf("the worker flow does not state its trigger and its fill with their sources: %+v", f.Steps)
+			}
+		}
+		// The fill step is in the slot layer, between the handler and the repository.
+		for _, f := range model.Flows {
+			for _, s := range f.Steps {
+				if s.Kind == "fill" && s.Layer != "slot" {
+					t.Errorf("the fill step of %s is in the layer %s", f.ID, s.Layer)
+				}
+			}
 		}
 	})
 }

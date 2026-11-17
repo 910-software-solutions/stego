@@ -305,7 +305,7 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 }
 
 // stepLayer gives the place of a step kind in the order of a flow; a slot step takes its place from its phase.
-var stepLayer = map[string]int{"operation": 0, "authenticate": 1, "authorize": 2, "handle": 3, "repository": 5, "store": 6, "outbox": 7, "event": 9, "outside call": 10}
+var stepLayer = map[string]int{"operation": 0, "authenticate": 1, "authorize": 2, "handle": 3, "fill": 4, "repository": 5, "store": 6, "outbox": 7, "event": 9, "outside call": 10}
 
 // checkFlowOrder checks that the steps of a flow are numbered 1 to n and follow the layer order, each slot at its
 // phase.

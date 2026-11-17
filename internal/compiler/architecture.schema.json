@@ -1079,6 +1079,7 @@
             "authenticate",
             "authorize",
             "handle",
+            "fill",
             "slot",
             "repository",
             "store",

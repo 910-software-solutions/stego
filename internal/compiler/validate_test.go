@@ -103,8 +103,9 @@ slots:
 			yaml: `kind: component
 environment: []
 architecture:
-  layer: handler
+  layer: repository
   flow: Serves the test.
+  store: TestStore
   ports:
     storage-adapter: inbound
 name: stub-store
