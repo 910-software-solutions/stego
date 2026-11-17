@@ -274,6 +274,10 @@ type CommandSpec[P any] struct {
 	// Resource is the resource on which Run decides Permission: for a command that creates, the parent that the
 	// new resource goes under.
 	Resource *Resource
+	// ChangeEvents are the names of the change events of each entity that the command writes, which the generator
+	// gives when the service has the kafka-producer component, or none: each create, update and delete of the
+	// handle then stages its change event (ST-SUP-RC32-OC14, ST-SUP-RP10-LC36).
+	ChangeEvents []ChangeEvents
 }
 
 // Resource is the generated declaration of the resource of a command (ST-SUP-RP10-LC31): its resource type at the
@@ -302,6 +306,8 @@ type Command[P any] struct {
 	// runtime writes for the references of the written entities (ST-SUP-RP10-LC05); own are the fill's own.
 	bound []authz.Relation
 	own   map[authz.Relation]bool
+	// changeEvents are the checked change events by entity name.
+	changeEvents map[string]ChangeEvents
 }
 
 // NewCommand checks the declaration of one command.
@@ -323,8 +329,13 @@ func NewCommand[P any](spec CommandSpec[P]) (*Command[P], error) {
 	if err := checkResource(spec.Name, spec.Permission, spec.Resource); err != nil {
 		return nil, err
 	}
+	changeEvents, err := checkChangeEvents(spec.Name, spec.Writes, destinations, spec.ChangeEvents)
+	if err != nil {
+		return nil, err
+	}
 	bound, own := boundRelations(spec.Relations, spec.Writes)
-	return &Command[P]{spec: spec, writes: writes, destinations: destinations, bound: bound, own: own}, nil
+	return &Command[P]{spec: spec, writes: writes, destinations: destinations, bound: bound, own: own,
+		changeEvents: changeEvents}, nil
 }
 
 // boundRelations gives the relations of an authorization handle: the declared ones, which the fill may write, and
@@ -555,6 +566,7 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	}()
 	s := newState(ctx, rt, tx, req.Tenant, req.Principal, modeCommand, cmd.spec.Name, cmd.writes, cmd.destinations)
 	s.request = req
+	s.changeEvents = cmd.changeEvents
 	s.commandPermission = cmd.spec.Permission
 	s.lockTimeout = cmd.spec.LockTimeout
 	if s.lockTimeout == 0 {
@@ -839,7 +851,7 @@ var errDeadline = &conflictError{text: "the run reached its deadline before the 
 func newState(ctx context.Context, rt *Runtime, tx *sql.Tx, t tenant.Tenant, p authz.Principal, m mode, action string,
 	writes map[Declared]bool, destinations map[string]Destination) *state {
 	s := &state{rt: rt, tx: tx, tenant: t, principal: p, mode: m, action: action, writes: writes,
-		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}}
+		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{}}
 	if deadline, ok := ctx.Deadline(); ok {
 		s.deadline = deadline
 	}
