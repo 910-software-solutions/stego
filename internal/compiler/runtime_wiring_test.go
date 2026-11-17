@@ -505,6 +505,8 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC20-OC40-T02 A change event of a generated write arrives once with its key and headers, waits out a broker outage in the outbox, and keeps the order of its entity",
 	"ST-SUP-RC20-OC40-T03 A replay of a write with its idempotency key stages no second event",
 	"ST-SUP-RC20-OC40-T04 A write that rolls back after it staged its event leaves no outbox message and no record",
+	"ST-SUP-RC32-OC14-T02 The write of a command sends the change event of its row to Kafka",
+	"ST-SUP-RC35-OC14-T02 The writes of a worker send the change events of their rows to Kafka",
 	"ST-SUP-RC35-OC13-T01 Provisioning a tenant writes one tuple for each worker in that tenant only",
 	"ST-SUP-RC35-OC13-T06 The reconcile at start gives a tenant of an earlier release each worker's tuple and deletes the tuple of a removed worker",
 }

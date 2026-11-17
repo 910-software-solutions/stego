@@ -975,7 +975,13 @@ type state struct {
 	inbound func(id string) string
 	staged  []outbox.Message
 	stagedK map[string]bool
-	events  []audit.Event
+	// effects counts the effects that the fill staged, which a call holds at most outbox.MaxBatchSize of.
+	effects int
+	// changeEvents are the change events of the written entities by entity name, or nil when the declaration gives
+	// none; changes counts the change events of one name for one row in the call (ST-SUP-RP10-LC36).
+	changeEvents map[string]ChangeEvents
+	changes      map[string]int
+	events       []audit.Event
 	// written holds the version of each row that a write of this attempt left; a deleted row holds -1.
 	written     map[rowKey]int64
 	deadline    time.Time
@@ -1518,6 +1524,9 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err := s.buffer(e.auditType(), e.spec.Fields, meta.ID, nil, e.spec.State(stored)); err != nil {
 		return nil, err
 	}
+	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, meta.ID, ActionCreated); err != nil {
+		return nil, err
+	}
 	s.written[rowKey{e.spec.Name, meta.ID}] = meta.Version
 	// The row is new in this transaction, which holds it as strongly as a lock FOR UPDATE.
 	return newLoaded(stored, meta, e, s, lockDelete), nil
@@ -1584,6 +1593,9 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 	if err := s.buffer(e.auditType(), e.spec.Fields, meta.ID, e.spec.State(from2.value), e.spec.State(stored)); err != nil {
 		return nil, err
 	}
+	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, meta.ID, ActionUpdated); err != nil {
+		return nil, err
+	}
 	s.written[rowKey{e.spec.Name, meta.ID}] = meta.Version
 	return newLoaded(stored, meta, e, s, max(from2.lock, lockUpdate)), nil
 }
@@ -1631,6 +1643,9 @@ func (r *Repository[T]) Delete(ctx context.Context, from Loaded[T], parent ...Re
 		return err
 	}
 	if err := s.buffer(e.auditType(), e.spec.Fields, from2.meta.ID, e.spec.State(from2.value), nil); err != nil {
+		return err
+	}
+	if err := s.stageChange(e.spec.Name, e.spec.ResourceType, from2.meta.ID, ActionDeleted); err != nil {
 		return err
 	}
 	s.written[rowKey{e.spec.Name, from2.meta.ID}] = -1

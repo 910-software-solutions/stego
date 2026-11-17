@@ -73,13 +73,13 @@ func TestMixinAlias(t *testing.T) {
 			}
 		}
 		// The base of the archetype already has the outbox, with the audit sink as its destination. The alias adds the
-		// Kafka destination to the outbox and to each command, as the two mixins do, and a plan with no mixin has
-		// neither.
+		// Kafka destination to the outbox and the change events to each command, which the handle stages for each write
+		// (ST-SUP-RP10-LC36), as the two mixins do, and a plan with no mixin has neither.
 		plain := tree(td02)
 		for _, want := range []struct{ path, text string }{
 			{"internal/outbox/outbox.go", `var Destinations = []string{"audit-sink", "kafka"}`},
 			{"internal/outbox/outbox.go", "kafkaoutbox.New(settings, config.Logger)"},
-			{"internal/api/todos_handler.go", "Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName"},
+			{"internal/api/todos_handler.go", "[]command.ChangeEvents{{Entity: "},
 		} {
 			if !strings.Contains(alias[want.path], want.text) {
 				t.Errorf("the plan of event-publisher has no %q in %s", want.text, want.path)
