@@ -69,7 +69,6 @@ ST-STD-CODE-R04	internal/compiler/dependency_target_test.go	internal/compiler/de
 ST-STD-CODE-R04	internal/compiler/filesystem_test.go	internal/compiler/filesystem_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/generator_inputs_test.go	internal/compiler/generator_inputs_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/go_models_test.go	internal/compiler/go_models_test.go	the test file names no test record's ID in a test or subtest name
-ST-STD-CODE-R04	internal/compiler/go_namespace_test.go	internal/compiler/go_namespace_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/http_logger_test.go	internal/compiler/http_logger_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/http_responses_test.go	internal/compiler/http_responses_test.go	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	internal/compiler/http_routes_test.go	internal/compiler/http_routes_test.go	the test file names no test record's ID in a test or subtest name
@@ -215,8 +214,6 @@ ST-STD-CODE-R04	scripts/test_compiler_verification.py	scripts/test_compiler_veri
 ST-STD-CODE-R04	scripts/test_isolated_allocation.py	scripts/test_isolated_allocation.py	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R04	scripts/test_network_metadata.py	scripts/test_network_metadata.py	the test file names no test record's ID in a test or subtest name
 ST-STD-CODE-R05	internal/gen/go_models.go	internal/gen/go_models.go	no technical record names the file, directly or through a folder
-ST-STD-CODE-R05	internal/gen/go_namespace.go	internal/gen/go_namespace.go	no technical record names the file, directly or through a folder
-ST-STD-CODE-R05	internal/gen/http_base_path.go	internal/gen/http_base_path.go	no technical record names the file, directly or through a folder
 ST-STD-CODE-R05	internal/gen/http_routes.go	internal/gen/http_routes.go	no technical record names the file, directly or through a folder
 ST-STD-CODE-R05	internal/gen/input.go	internal/gen/input.go	no technical record names the file, directly or through a folder
 ST-STD-CODE-R05	internal/generator/browserdom/declarations.d.ts	internal/generator/browserdom/declarations.d.ts	no technical record names the file, directly or through a folder
