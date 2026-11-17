@@ -1280,8 +1280,8 @@ func TestChangeEvents(t *testing.T) {
 		for name, want := range map[string]map[string]int{
 			"api/orders_handler.go": {
 				`Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"orders.after_create"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.created"}}}`: 1,
-				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.updated"}}}`: 1,
-				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.deleted"}}}`: 1,
+				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.updated"}}}`:                                                                                                            1,
+				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.deleted"}}}`:                                                                                                            1,
 				// The create, the update and the delete of orders each give the handle the events of Order.
 				order: 3,
 			},
