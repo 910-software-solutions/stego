@@ -28,6 +28,7 @@ var orgSettingsUpsertCommand = mustCommand(command.NewCommand(command.CommandSpe
 	Name:         "upsert",
 	Writes:       []command.Declared{data.OrgSettingEntity, data.OrganizationEntity},
 	Probe:        noProbe,
+	ChangeEvents: []command.ChangeEvents{{Entity: "OrgSetting", Created: "user-management.org-setting.created", Updated: "user-management.org-setting.updated", Deleted: "user-management.org-setting.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
 	Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.org-setting.created", "user-management.org-setting.updated"}}},
 }))
 
@@ -300,9 +301,6 @@ func (h *OrgSettingsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 				return idempotency.Response{}, err
 			}
 			persisted = orgSettingsFromData(created.Value())
-			if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.org-setting.created", created, changeEvent("OrgSetting", "created", persisted.ID)); err != nil {
-				return idempotency.Response{}, err
-			}
 			response, err := json.Marshal(orgSettingsPresented(persisted))
 			if err != nil {
 				return idempotency.Response{}, err
@@ -345,9 +343,6 @@ func (h *OrgSettingsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 			return idempotency.Response{}, err
 		}
 		persisted = orgSettingsFromData(updated.Value())
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.org-setting.updated", updated, changeEvent("OrgSetting", "updated", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
-		}
 		response, err := json.Marshal(orgSettingsPresented(persisted))
 		if err != nil {
 			return idempotency.Response{}, err
