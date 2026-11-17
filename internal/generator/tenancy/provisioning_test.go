@@ -1,6 +1,10 @@
 package tenancy
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jsell-rh/stego/internal/types"
+)
 
 func TestProvisioningRoutes(t *testing.T) {
 	t.Run("ST-SUP-RC27-OC09-T02 The provisioning routes are under the base path, and a declared route under /stego/ is refused", func(t *testing.T) {
@@ -32,6 +36,23 @@ func TestProvisioningRoutes(t *testing.T) {
 		for _, pattern := range []string{"POST /api/shop/v1/orders", "GET /api/shop/v1/stegosaurus", "GET /stego/tenants", "GET /livez"} {
 			if err := CheckOwnPattern("/api/shop/v1", pattern); err != nil {
 				t.Errorf("the component route %q is refused: %v", pattern, err)
+			}
+		}
+	})
+}
+
+func TestAdminRelation(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC13-T03 The generated Provision takes the declared admin relation, and none with no provisioning or no admin", func(t *testing.T) {
+		for _, c := range []struct {
+			p    *types.TenantProvisioning
+			want string
+		}{
+			{nil, ""},
+			{&types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire"}, ""},
+			{&types.TenantProvisioning{ResourceType: "service", Provision: "provision", Retire: "retire", Admin: "admin"}, "admin"},
+		} {
+			if got := AdminRelation(c.p); got != c.want {
+				t.Errorf("AdminRelation(%+v) = %q, want %q", c.p, got, c.want)
 			}
 		}
 	})

@@ -13,6 +13,8 @@ definition tenant {
 
 definition service {
 	relation operator: user
+	// The first administrators of a tenant, on its tenant-qualified service-level resource (ST-SUP-RC27-OC13).
+	relation admin: user
 	permission provision = operator
 	permission retire = operator
 }

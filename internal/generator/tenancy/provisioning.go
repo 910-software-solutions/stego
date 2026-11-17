@@ -3,6 +3,8 @@ package tenancy
 import (
 	"fmt"
 	"strings"
+
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 // The paths of Provision and Retire after the base path of the service (ST-SUP-RC27-OC09). The path value tenantId
@@ -59,4 +61,14 @@ func CheckOwnRoute(route string) error {
 		return fmt.Errorf("the route %q is under %s/, which the generated service keeps for its own routes, such as the tenant provisioning; give it another path", route, ownPrefix)
 	}
 	return nil
+}
+
+// AdminRelation gives the relation that the generated Provision gives each first administrator of a new tenant: the
+// declared admin relation of the provisioning p, or "" when p is nil or declares none, so that Provision takes no
+// administrators (ST-SUP-RC27-OC13). Checking holds the relation to the schema first (ST-DECL-INV95).
+func AdminRelation(p *types.TenantProvisioning) string {
+	if p == nil {
+		return ""
+	}
+	return p.Admin
 }

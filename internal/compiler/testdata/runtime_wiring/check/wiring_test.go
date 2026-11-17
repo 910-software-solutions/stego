@@ -515,10 +515,11 @@ func (s *service) grantOn(c caller, resourceID string) {
 	must(s.t, err)
 }
 
-// provision calls Provision for the tenant id as c, with the idempotency key given.
+// provision calls Provision for the tenant id as c, with the idempotency key given, and one first administrator.
 func (s *service) provision(c *caller, id, key string) reply {
 	s.t.Helper()
-	body, err := json.Marshal(map[string]string{"tenant_id": id})
+	// The provisioning declares admin, so each Provision names a first administrator of the tenant (ST-SUP-RC27-OC13).
+	body, err := json.Marshal(map[string]any{"tenant_id": id, "admins": []map[string]string{{"subject": "admin-of-" + id}}})
 	must(s.t, err)
 	return s.send(c, http.MethodPost, "/stego/tenants", key, string(body))
 }
@@ -1542,6 +1543,43 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 			t.Fatalf("SpiceDB holds on the tenant resource of %s:\n%s\nwant each worker's own tuple and no other:\n%s", id, strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 	})
+	t.Run("ST-SUP-RC27-OC13-T01 Provision gives each first administrator the admin relation in the new tenant only, which the relay writes to SpiceDB", func(t *testing.T) {
+		s.t = t
+		id := "org-adm-" + short()
+		sub := "alice-" + short()
+		alice := s.as(sub, id)
+		// The issuer of alice is the issuer of the operator, so the body names the subject claim only.
+		body, err := json.Marshal(map[string]any{"tenant_id": id, "admins": []map[string]string{{"subject": sub}}})
+		must(t, err)
+		key := "k-" + uuid.NewString()
+		if got := s.send(&s.operator, http.MethodPost, "/stego/tenants", key, string(body)); got.status != http.StatusCreated {
+			t.Fatalf("the provision of %s with the admin alice answered %d %s, want 201", id, got.status, got.body)
+		}
+		qualified, err := authz.ResourceID(alice.tenant, serviceName)
+		must(t, err)
+		want := []string{"service:" + qualified + "#admin@user:" + alice.subject}
+		if got := s.awaitRelation(t, "service", qualified, "admin", want); !slices.Equal(got, want) {
+			t.Fatalf("SpiceDB holds %v on the service-level resource of %s, want %v", got, id, want)
+		}
+		// The grant is on the tenant-qualified ID only: the ID of the whole service holds no admin, so alice may
+		// provision and retire no tenant (ST-SUP-Q125).
+		if got := s.relations(t, "service", serviceName, "admin"); len(got) != 0 {
+			t.Fatalf("the ID of the whole service holds the admins %v", got)
+		}
+		if got := s.provision(&alice, "org-adm-x-"+short(), "k-"+uuid.NewString()); got.status != http.StatusNotFound {
+			t.Fatalf("the provision of a tenant by the admin alice answered %d %s, want 404", got.status, got.body)
+		}
+		// A replay of the key with other admins is refused, and stages nothing.
+		other, err := json.Marshal(map[string]any{"tenant_id": id, "admins": []map[string]string{{"subject": "mallory"}}})
+		must(t, err)
+		if got := s.send(&s.operator, http.MethodPost, "/stego/tenants", key, string(other)); got.status != http.StatusUnprocessableEntity {
+			t.Fatalf("the replay of the provision with other admins answered %d %s, want 422", got.status, got.body)
+		}
+		if got := s.relations(t, "service", qualified, "admin"); !slices.Equal(got, want) {
+			t.Fatalf("the refused replay changed the admins: %v", got)
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC13-T01 Provisioning a tenant writes one tuple for each worker in that tenant only", func(t *testing.T) {
 		s.t = t
 		first, second := "org-t1-"+short(), "org-t2-"+short()

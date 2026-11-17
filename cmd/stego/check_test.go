@@ -123,12 +123,22 @@ func TestCheckADeclaration(t *testing.T) {
 		accepted := 0
 		for name, make := range candidates {
 			project := make(t)
-			if run := stegoIn(t, project, nil, "validate"); run.code != 0 {
+			run := stegoIn(t, project, nil, "validate")
+			if run.code != 0 {
 				t.Logf("%s is not accepted by stego validate, so it is not a case of the test", name)
 				continue
 			}
 			accepted++
-			run := stegoIn(t, project, nil, "apply")
+			if strings.Contains(run.stdout, "[fill-qualified]") {
+				// A fill with no evidence or no sign-off is a warning of validate, and generation refuses it until
+				// stego test and stego fill sign qualify it (ST-DECL-UC01-R01, ST-GEN-INV10): its standing comes from
+				// the fill's evidence, not from the declaration.
+				if strings.Contains(run.stdout, "error(s)") {
+					t.Fatalf("%s: stego validate passed with a fault:\n%s", name, run.stdout)
+				}
+				qualifyDocFills(t, project, nil, name)
+			}
+			run = stegoIn(t, project, nil, "apply")
 			if name == "ST-DECL-TD03" && run.code != 0 {
 				// The registry holds spicedb-authz (ST-SUP-RC29), so the authorization of TD03 no longer fails closed
 				// (ST-DECL-UC06-R07): generation must accept it.

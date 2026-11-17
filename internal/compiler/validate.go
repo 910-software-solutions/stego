@@ -50,8 +50,10 @@ func Validate(input ReconcilerInput) (*ValidationResult, error) {
 	result, err := validateSource(input, source)
 	if result != nil {
 		result.Settings = declaration.ResolvedSettings(source.Service)
+		unproved := result.Warnings
 		result.Warnings = aliasNotices(source.Registry, source.Service, declaration.Warnings(source.Service))
 		result.Warnings = append(result.Warnings, scopedAccessWarnings(source.Service, input.ProjectDir)...)
+		result.Warnings = append(result.Warnings, unproved...)
 	}
 	return result, err
 }
@@ -227,7 +229,15 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 				return nil, fmt.Errorf("checking the bound fills: %w", err)
 			}
 			for _, fault := range faults {
-				result.Errors = append(result.Errors, ValidationError{Category: "fill", Rule: fault.Rule, Path: fault.Path, Found: fault.Found, Message: fault.Message})
+				checked := ValidationError{Category: "fill", Rule: fault.Rule, Path: fault.Path, Found: fault.Found, Message: fault.Message}
+				if fault.Unproved && input.WarnUnproved {
+					// stego validate accepts the declaration and names the two steps that plan, apply and build
+					// need (ST-DECL-UC01-R01).
+					checked.Message += "; plan, apply and build refuse the fill until then"
+					result.Warnings = append(result.Warnings, checked)
+					continue
+				}
+				result.Errors = append(result.Errors, checked)
 			}
 		}
 	}
@@ -809,6 +819,8 @@ func capabilityContracts(input ReconcilerInput, components map[string]*registry.
 			planned := input
 			planned.QualifyFills = nil
 			planned.CheckOnly = false
+			// This plan only gives the contract of the fills and is never written; it checks no fill.
+			planned.WarnUnproved = false
 			plan, planErr = Reconcile(planned)
 		})
 		if planErr != nil {
