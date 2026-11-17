@@ -43,7 +43,8 @@ var whereTerm = regexp.MustCompile(`^([a-z][a-z0-9_]{0,62}) *(=|<>|!=) *(true|fa
 const mixinEventPublisher = "event-publisher"
 
 // Warnings gives the notices that checking gives about the accepted parts of the declaration (decision on
-// ST-DECL-Q15): the mixin event-publisher is a deprecated alias of durable-events and kafka-events (ST-DECL-INV28).
+// ST-DECL-Q15): the mixin event-publisher is a deprecated alias of durable-events and kafka-events (ST-DECL-INV28),
+// and a reference with no within between two entities that refer to the same entity (WithinWarnings, ST-DECL-INV93).
 // A warning names only what the declaration holds and fixed text, so it holds no secret.
 func Warnings(service *types.ServiceDeclaration) []ValidationError {
 	if service == nil {
@@ -56,7 +57,7 @@ func Warnings(service *types.ServiceDeclaration) []ValidationError {
 				Message: fmt.Sprintf("the mixin %s is a deprecated alias of the mixins %s and %s; bind %s and %s instead", mixinEventPublisher, mixinDurableEvents, mixinKafkaEvents, mixinDurableEvents, mixinKafkaEvents)})
 		}
 	}
-	return warnings
+	return append(warnings, WithinWarnings(service)...)
 }
 
 // ModeUnknown is the specification ST-DECL-SP14: Modes names a mode other than api, worker or controller.

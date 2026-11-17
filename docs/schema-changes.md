@@ -138,6 +138,36 @@ A relax needs the runtime library v0.108.0 or later in the release before:
 `stego compat` refuses a relax on a base that pins an older one, and names the
 version to deploy first.
 
+## Within steps
+
+A reference can be held within a field: `within: project_id` on the reference
+`sprint_id` of a ticket means that the ticket and its sprint must have the
+same project (ST-DECL-INV93, ST-DECL-Q42). The tables hold this rule with a
+composite key: a unique key of the tenant column, `project_id` and `id` on the
+sprints, and the foreign key of the tenant column, `project_id` and
+`sprint_id` of the tickets onto it (ST-SUP-RC01-OC46). A first release has the
+key in `001_initial`. When the tables of the release before have rows, add
+`within` with a within step, which has an expand step only:
+
+```yaml
+schema_changes:
+  - {id: ticket-sprint-within, kind: within, entity: Ticket, field: sprint_id}
+schema_history:
+  - {change: ticket-sprint-within, phase: expand}
+```
+
+The step builds the unique key `CONCURRENTLY` in its index migration, adds the
+foreign key `NOT VALID` in its keys migration, `<step>_keys`, after the index,
+and validates the key in its validate migration, which blocks no read and no
+write. A row that breaks the rule, such as a ticket of one project in a sprint
+of another, stops the migration job at the validate migration. Its refusal
+names the step, the table and the key, and no value of the row. Correct or
+remove the rows that break the key, then run the migration job again: it
+continues at the validate migration. `stego compat` names the within step to
+declare when you add `within` to a reference of a table with rows. A change or
+a removal of `within` has no step yet, so the check against the base refuses
+it.
+
 ## The migrations of the steps
 
 `001_initial` holds the tables of the first release: the declaration with

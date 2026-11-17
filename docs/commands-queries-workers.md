@@ -758,6 +758,39 @@ now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
 outbox, and a person can send it again or discard it.
 
+### A reference held within a field
+
+A reference can be held within a field that the row and the referenced row
+must have equal. Declare it with `within` on the reference. For a Ticket of a
+Project that refers to a Sprint of a Project, the reference is
+`sprint_id: {relation: sprint, permission: edit, within: project_id}`.
+
+The field must be a required reference to the same entity on both entities,
+or the scope field of a collection over each entity (ST-DECL-INV93). Use
+`within: none` when the reference crosses that entity on purpose, such as a
+link between issues of two projects. Checking warns about a reference with no
+`within` when both entities refer to the same entity.
+
+A create, and an update that changes the reference or the field, compares the
+field of the new row with the loaded referenced row before the row statement.
+A difference is refused with 400, the code `invalid` and the field of the
+reference, and nothing is written (ST-SUP-RP10-LC37). An update that changes
+only the field must also give the loaded row of the reference that stays; the
+generated CRUD handlers do this. The database holds the same rule with a
+composite key (ST-SUP-RC01-OC46), so a race, a worker that gives no parent and
+a move of the referenced row are refused too: a move of a sprint to another
+project while a ticket of the first project refers to it gives 400 `invalid`
+with the field `project_id`.
+
+### Release notes for runtime v0.126.0
+
+- A reference can be held within a field (ST-SUP-RP10-LC37). `Reference` has
+  the new fields `Field`, `Within` and `Key`, and `EntitySpec` has `Within`
+  and `Referrers`. Generated code sets them; code that builds an `EntitySpec`
+  by hand needs no change while no reference declares `within`.
+- A foreign key violation of a composite key of `within` is `ErrInvalid` that
+  names the reference, not an internal error.
+
 ### Release notes for runtime v0.125.0
 
 - A worker fill gives no SQL text. Before v0.125.0, a worker fill gave its
