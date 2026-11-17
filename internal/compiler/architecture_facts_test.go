@@ -402,6 +402,67 @@ func TestComplianceFactList(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC16-R01-T09 The checks fact of a permission that the path limit stopped names the path limit, and never the work limit", func(t *testing.T) {
+		const limit = "the path limit of 512 paths"
+		_, data := deriveFixture(t, pathFixture(t))
+		text, list, _ := factsOf(t, archProject(t, data), "access")
+		n := 0
+		for _, f := range list.Facts {
+			if f.Name != "checks" || f.Grants == nil {
+				continue
+			}
+			n++
+			if f.Grants.Complete || strings.Join(f.Grants.Limits, ",") != limit {
+				t.Errorf("the checks fact of %s names the limits %v, not %q", f.About, f.Grants.Limits, limit)
+			}
+			if !strings.Contains(text, "no path of "+f.Grants.Permission+" reached a role before a limit stopped it ("+limit+")") {
+				t.Errorf("the text does not name the path limit of %s", f.Grants.Permission)
+			}
+		}
+		if n < 3 {
+			t.Fatalf("the path fixture proves too little: %d checks facts with grants", n)
+		}
+		if strings.Contains(text, "work limit") || strings.Contains(text, "no role holds it") {
+			t.Error("the text names the work limit, or says that no role holds a permission")
+		}
+	})
+
+	t.Run("ST-GEN-UC16-R01-T10 The access facts of a service with no authorization bound never say that grants are unknown or incomplete, and an ancestor read whose permission the model does not hold is named as incomplete", func(t *testing.T) {
+		for name, data := range unboundModels(t) {
+			text, list, raw := factsOf(t, archProject(t, data), "access")
+			for _, f := range list.Facts {
+				if f.GrantsUnknown || f.Grants != nil || len(f.AncestorsIncomplete) > 0 {
+					t.Errorf("%s: the fact %s of a service with no authorization has grants: %+v", name, f.ID, f)
+				}
+			}
+			for _, bad := range []string{"not known", "may hold", "incomplete", "grant path"} {
+				if strings.Contains(text, bad) {
+					t.Errorf("%s: the facts of a service with no authorization say %q:\n%s", name, bad, text)
+				}
+			}
+			if bytes.Contains(raw, []byte("grants_unknown")) || !strings.Contains(text, "unstated") && !strings.Contains(text, "none") {
+				t.Errorf("%s: the facts do not say that no permission is checked:\n%s", name, text)
+			}
+		}
+		// The reader refuses grants that name no element of the model, so the facts of an edited model are taken
+		// from the model itself.
+		model, _ := ancestorGoneModel(t)
+		list := complianceFacts(model, "access")
+		gone := 0
+		for _, f := range list.Facts {
+			for _, a := range f.AncestorsIncomplete {
+				if a.Permission == "permission:shelf#gone" && a.Unknown {
+					gone++
+				}
+			}
+		}
+		text := factListText(list)
+		if gone == 0 || !strings.Contains(text, "    the model holds no grant path of the ancestor read permission:shelf#gone (") ||
+			!strings.Contains(text, "so it can grant roles that the model does not name\n") {
+			t.Fatalf("the facts do not name the ancestor read whose permission the model does not hold:\n%s", text)
+		}
+	})
+
 	t.Run("ST-GEN-UC16-R02-T01 Each fact of a list names its one source, in the text and in the JSON", func(t *testing.T) {
 		_, project := claimFixtureProject(t, "a new doc has no resource before it exists")
 		for _, topic := range ComplianceTopics {
@@ -461,6 +522,32 @@ func TestComplianceFactList(t *testing.T) {
 			}
 		}
 		t.Fatalf("the JSON does not give the reason as the declaration states it: %s", data)
+	})
+
+	t.Run("ST-GEN-UC16-R02-T03 The limits of a model with no role, whose stop text holds markup, control and bidirectional characters, are printed escaped in the text and given unchanged in the JSON", func(t *testing.T) {
+		text, list, data := factsOf(t, archProject(t, hostileStopsModel(t)), "access")
+		for _, bad := range []string{"\x1b", "\u202e", "\u2066"} {
+			if strings.Contains(text, bad) || strings.Contains(string(data), bad) {
+				t.Fatalf("the output holds the character %q:\n%s", bad, text)
+			}
+		}
+		line := "reached a role before a limit stopped it (" + nameText(hostileStops) + "), so the model names no role that holds it"
+		if !strings.Contains(text, line) || !strings.Contains(text, `\u001b[31m`) || !strings.Contains(text, `\u202eevil\u2066`) {
+			t.Fatalf("the text does not name the hostile limit escaped:\n%s", text)
+		}
+		n := 0
+		for _, f := range list.Facts {
+			if f.Name != "checks" || f.Grants == nil {
+				continue
+			}
+			n++
+			if len(f.Grants.Limits) != 1 || f.Grants.Limits[0] != hostileStops {
+				t.Errorf("the JSON of %s gives the limits %q, not the stop text unchanged", f.About, f.Grants.Limits)
+			}
+		}
+		if n < 3 {
+			t.Fatalf("the hostile model proves too little: %d checks facts with grants", n)
+		}
 	})
 
 	t.Run("ST-GEN-UC16-R03-T01 No list says that the service complies; a claim word of the declaration is only quoted", func(t *testing.T) {
@@ -618,7 +705,7 @@ func TestComplianceFactList(t *testing.T) {
 				unknown = f.GrantsUnknown && f.Grants == nil
 			}
 		}
-		if !unknown || !strings.Contains(text, "    the grants of doc#read are not known: the model holds no grant path of it\n") {
+		if !unknown || !strings.Contains(text, "    the grants of doc#read are not known: the model holds no grant path of it, so they are incomplete, and a role may hold it\n") {
 			t.Fatalf("a check with no known grants is not said to be unknown:\n%s", text)
 		}
 	})
