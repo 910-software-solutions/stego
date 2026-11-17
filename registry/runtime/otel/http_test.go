@@ -82,27 +82,30 @@ func TestServerSpanBounds(t *testing.T) {
 	})
 	t.Run("ST-SUP-RP03-LC07-T02 The server span ends only after the final status is known", func(t *testing.T) {
 		h := newHarness(t, 1)
+		// The order is read from the span recorder, not from the clock: no span has ended when the last byte is
+		// written or before the RPC status is known.
 		var lastByte time.Time
+		endedAtLastByte := -1
 		h.runtime.Handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusAccepted)
 			for i := range 3 {
 				fmt.Fprintf(w, "part %d\n", i)
 				http.NewResponseController(w).Flush()
-				time.Sleep(10 * time.Millisecond)
 			}
+			endedAtLastByte = len(h.spans.Ended())
 			lastByte = time.Now()
 		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/stream", nil))
 		span := h.lastSpan(t)
-		if got, _ := spanAttribute(span, "http.response.status_code"); got != "202" || span.EndTime().Before(lastByte) {
-			t.Fatal("the HTTP span ended before the last byte or lost the status")
+		if got, _ := spanAttribute(span, "http.response.status_code"); got != "202" || endedAtLastByte != 0 || span.EndTime().Before(lastByte) {
+			t.Fatal("the HTTP span ended before the last byte or lost the status", endedAtLastByte)
 		}
 		_, finish := h.runtime.TraceRPC(context.Background(), "/sample.v1.Records/Watch")
-		time.Sleep(10 * time.Millisecond)
+		endedBeforeStatus := len(h.spans.Ended())
 		before := time.Now()
 		finish(status.Error(grpccodes.NotFound, "gone"))
 		span = h.lastSpan(t)
-		if got, _ := spanAttribute(span, "rpc.response.status_code"); got != "NOT_FOUND" || span.EndTime().Before(before) {
-			t.Fatal("the RPC span ended before the final status")
+		if got, _ := spanAttribute(span, "rpc.response.status_code"); got != "NOT_FOUND" || endedBeforeStatus != 1 || span.EndTime().Before(before) {
+			t.Fatal("the RPC span ended before the final status", endedBeforeStatus)
 		}
 	})
 	t.Run("ST-SUP-RP03-LC07-T03 The span wrapper does not change the observed call", func(t *testing.T) {
@@ -198,7 +201,6 @@ func observedCalls(t *testing.T, r *Runtime) []string {
 		note("handler started")
 		close(draining)
 		<-shutdownBegun
-		time.Sleep(50 * time.Millisecond)
 		io.WriteString(w, "drained")
 		note("handler ended")
 	})
@@ -233,6 +235,8 @@ func observedCalls(t *testing.T, r *Runtime) []string {
 	}
 	server := httptest.NewServer(withDeadline(r.Handler(authenticate(capacity(r.Route(mux))))))
 	defer server.Close()
+	// The drained handler goes on when the server's Shutdown has begun: the server runs this function then.
+	server.Config.RegisterOnShutdown(func() { close(shutdownBegun) })
 	client := server.Client()
 	// describe makes one call and gives what the client sees; call notes it at once.
 	describe := func(path, token string) string {
@@ -275,8 +279,6 @@ func observedCalls(t *testing.T, r *Runtime) []string {
 	note("shutdown began")
 	shutdownDone := make(chan error)
 	go func() { shutdownDone <- server.Config.Shutdown(context.Background()) }()
-	time.Sleep(10 * time.Millisecond)
-	close(shutdownBegun)
 	note("shutdown returned %v", <-shutdownDone)
 	<-drained
 	note("%s", drainedCall)

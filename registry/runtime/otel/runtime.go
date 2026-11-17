@@ -173,7 +173,7 @@ func newRuntime(service string, bound deadline, operations ...string) (*Runtime,
 			r.Close()
 			return nil, errors.New("cannot create the log exporter")
 		}
-		processor = sdklog.NewBatchProcessor(&safeLogExporter{Exporter: exporter, failures: &r.logFailures}, sdklog.WithMaxQueueSize(QueueSize), sdklog.WithExportMaxBatchSize(BatchSize), sdklog.WithExportInterval(batchDelay), sdklog.WithExportTimeout(ExportTimeout))
+		processor = logQueue(exporter, &r.logFailures)
 	}
 	if err := r.startSignals(reader, processor); err != nil {
 		r.Close()
@@ -209,6 +209,13 @@ func dial(values settings) (*grpc.ClientConn, error) {
 		return nil, errors.New("cannot create the telemetry export connection")
 	}
 	return connection, nil
+}
+
+// logQueue is the bounded log queue of ST-SUP-RP03-LC03 over the log exporter: it holds QueueSize records, drops
+// rather than blocks, sends batches of at most BatchSize, bounds each export by ExportTimeout and counts each failed
+// export in failures.
+func logQueue(exporter sdklog.Exporter, failures *atomic.Uint64) sdklog.Processor {
+	return sdklog.NewBatchProcessor(&safeLogExporter{Exporter: exporter, failures: failures}, sdklog.WithMaxQueueSize(QueueSize), sdklog.WithExportMaxBatchSize(BatchSize), sdklog.WithExportInterval(batchDelay), sdklog.WithExportTimeout(ExportTimeout))
 }
 
 // startTraces starts the private tracer provider with the local ratio sampler and the span processor. The

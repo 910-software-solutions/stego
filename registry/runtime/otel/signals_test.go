@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
+	"testing/synctest"
 
 	"go.opentelemetry.io/otel/trace"
 	logcollector "go.opentelemetry.io/proto/otlp/collector/logs/v1"
@@ -43,29 +43,38 @@ func metricMap(request *metriccollector.ExportMetricsServiceRequest) map[string]
 
 func TestExportFailures(t *testing.T) {
 	t.Run("ST-SUP-RP03-LC03-T02 The runtime counts export failures per signal", func(t *testing.T) {
-		startCollector(t, true)
-		t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "1000")
+		// The calls run in a synctest bubble against the runtime's own queues over exports that never answer: a
+		// call that waits for an export fails the test once every goroutine of the bubble waits.
+		synctest.Test(t, func(t *testing.T) {
+			r := blockedRuntime(t)
+			unblocked(t, func() {
+				for range QueueSize * 3 {
+					_, finish := r.TraceRPC(context.Background(), "/sample.Records/Get")
+					finish(nil)
+				}
+			})
+			r.Close()
+		})
+		// The collector refuses each export at once, so each flush ends with a failed export and no wait.
+		c := startCollector(t, false)
+		c.refuse.Store(true)
 		r, err := New("records")
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer r.Close()
-		started := time.Now()
-		for range QueueSize * 3 {
+		for range 3 {
 			_, finish := r.TraceRPC(context.Background(), "/sample.Records/Get")
 			finish(nil)
 		}
-		if time.Since(started) > time.Second {
-			t.Fatal("a blocked export delayed the calls")
+		if err := r.meter.ForceFlush(context.Background()); err == nil {
+			t.Fatal("a failed metric export reported success")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
-		if err := r.meter.ForceFlush(ctx); err == nil {
-			t.Fatal("a blocked metric collector reported success")
+		_ = r.provider.ForceFlush(context.Background())
+		_ = r.logs.ForceFlush(context.Background())
+		if r.MetricExportFailures() == 0 || r.LogExportFailures() == 0 || r.ExportFailures() == 0 {
+			t.Fatalf("the failure counters are trace %d, metric %d, log %d; want each above 0", r.ExportFailures(), r.MetricExportFailures(), r.LogExportFailures())
 		}
-		waitFor(t, 3*time.Second, func() bool {
-			return r.MetricExportFailures() > 0 && r.LogExportFailures() > 0 && r.ExportFailures() > 0
-		})
 	})
 }
 
@@ -116,13 +125,15 @@ func serveDenied(t *testing.T, ratio string) signalRun {
 					count += len(scope.LogRecords)
 				}
 			}
-		case <-time.After(time.Second):
+		default:
+			// Close returns after the log queue and the meter sent what they held, and the collector keeps each
+			// request before it answers, so the records are there with no wait.
 			t.Fatal("the logs were not exported")
 		}
 	}
 	select {
 	case run.metrics = <-sink.metrics:
-	case <-time.After(time.Second):
+	default:
 		t.Fatal("the metrics were not exported")
 	}
 	return run
