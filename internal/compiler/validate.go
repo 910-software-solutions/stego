@@ -756,9 +756,46 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 		if len(files) == 0 {
 			return nil, fmt.Errorf("the contract package %s holds no Go file", folder)
 		}
+		// Go builds each package under out that a file imports, such as the handlers of out/commands, so every
+		// folder under out is held to the same rule as the contract package (sec-419 LOW-2).
+		if err := checkGeneratedTree(projectDir); err != nil {
+			return nil, err
+		}
 		return files, nil
 	}
 	return check
+}
+
+// checkGeneratedTree refuses an entry under the out folder of the project that go build could take but that the
+// generated Go files do not show: a link or another file that is not a regular file, at any depth, and a file that
+// go build puts in the binary that is not a Go file. WalkDir does not follow a link, so a linked folder is refused
+// as a link.
+func checkGeneratedTree(projectDir string) error {
+	out := filepath.Join(projectDir, "out")
+	return filepath.WalkDir(out, func(name string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if name == out {
+			return nil
+		}
+		relative, err := filepath.Rel(projectDir, name)
+		if err != nil {
+			return err
+		}
+		folder, base := path.Split(filepath.ToSlash(relative))
+		folder = strings.TrimSuffix(folder, "/")
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("the generated package %s holds %s, which is not a regular file; go build would compile it, so stego build refuses it", folder, base)
+		}
+		if buildsWithGo(base) {
+			return fmt.Errorf("the generated package %s holds %s, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, base)
+		}
+		return nil
+	})
 }
 
 // buildsWithGo tells if go build puts a file of this name in the package it builds, other than a Go file: assembler,

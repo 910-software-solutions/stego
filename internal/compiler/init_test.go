@@ -378,3 +378,34 @@ func TestInitializeRemovesPartlyWrittenFile(t *testing.T) {
 		}
 	})
 }
+
+func TestInitializeKeepsFileOfAnotherProcess(t *testing.T) {
+	t.Run("ST-DECL-UC01-R02-T04 A scaffold whose file another process makes first fails, and keeps that file", func(t *testing.T) {
+		t.Setenv("STEGO_REGISTRY", "")
+		for _, racing := range []string{localStateIgnorePath, "service.yaml"} {
+			t.Run(racing, func(t *testing.T) {
+				project := serviceFolder(t)
+				initDefaultRegistry(t, "example")
+				const other = "written by another process\n"
+				publishingFault = func(name string) {
+					if name == racing {
+						initTestFile(t, project, racing, other)
+					}
+				}
+				t.Cleanup(func() { publishingFault = nil })
+				_, err := Initialize(InitOptions{ProjectDir: project, Archetype: "example"})
+				if racing == localStateIgnorePath {
+					// An ignore file that is there is kept as written, so the scaffold goes on.
+					if err != nil {
+						t.Fatalf("stego init: %v", err)
+					}
+				} else if err == nil || !errors.Is(err, os.ErrExist) {
+					t.Fatalf("want the refused write of %s, got %v", racing, err)
+				}
+				if data, err := os.ReadFile(filepath.Join(project, racing)); err != nil || string(data) != other {
+					t.Fatalf("the file of the other process at %s is gone or changed: %q, %v", racing, data, err)
+				}
+			})
+		}
+	})
+}

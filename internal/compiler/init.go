@@ -167,13 +167,15 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 			err = errors.Join(err, removeMade(root, made))
 		}
 	}()
-	// create writes a new file and names it in made before the write when the project does not hold it, so a write
-	// that fails after the file is there removes it too. A path that the project held before is never named.
+	// create writes a new file and names it in made once this run has put it there, also when a later step of the
+	// write fails, so a write that fails after the file is there removes it too. A path that the project held
+	// before, or that another process made first, is never named (sec-419 LOW-1).
 	create := func(name string, data []byte) error {
-		if _, err := root.Lstat(name); errors.Is(err, os.ErrNotExist) && !slices.Contains(made, name) {
+		published, err := publishRootFile(root, name, data, 0644, false)
+		if published && !slices.Contains(made, name) {
 			made = append(made, name)
 		}
-		return createRootFile(root, name, data)
+		return err
 	}
 	created := []string{}
 	if err := root.Mkdir("fills", 0755); err == nil {
