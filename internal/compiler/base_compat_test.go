@@ -336,9 +336,13 @@ func TestBaseCompat(t *testing.T) {
 				t.Errorf("%s: the head that adds pooled tenancy gives no fault on 001_initial: %+v", name, check.Faults)
 			}
 		}
-		// The settings alone select the tenancy component: no archetype or mixin of the registry holds it.
+		// The settings alone select the tenancy component: no archetype or mixin of the registry holds it. The
+		// example content of an archetype is a declaration, which gives the settings, so it is not read here.
 		for _, folder := range []string{"archetypes", "mixins"} {
 			err := filepath.WalkDir(filepath.Join("..", "..", "registry", folder), func(path string, entry fs.DirEntry, err error) error {
+				if err == nil && entry.IsDir() && entry.Name() == "example" {
+					return fs.SkipDir
+				}
 				if err != nil || entry.IsDir() {
 					return err
 				}

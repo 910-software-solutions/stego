@@ -1,0 +1,12 @@
+definition user {}
+
+definition service {
+	relation operator: user
+	permission provision = operator
+	permission retire = operator
+}
+
+definition greeting {
+	relation viewer: user
+	permission view = viewer
+}
