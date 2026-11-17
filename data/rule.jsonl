@@ -32,6 +32,7 @@
 {"id":"ST-DECL-INV08-RL","title":"parser.checkNodes","invariant_id":"ST-DECL-INV08","file":"internal/parser/strict.go"}
 {"id":"ST-DECL-INV09-RL","title":"declaration.validateCollectionReferences","invariant_id":"ST-DECL-INV09","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV13-RL","title":"declaration.validateFieldDefaults","invariant_id":"ST-DECL-INV13","file":"internal/declaration/validate.go"}
+{"id":"ST-DECL-INV17-RL","title":"gen.ValidateGoImportNamespace","invariant_id":"ST-DECL-INV17","file":"internal/gen/go_namespace.go"}
 {"id":"ST-DECL-INV18-RL","title":"declaration.validateDefaultsLeft","invariant_id":"ST-DECL-INV18","file":"internal/declaration/reach.go"}
 {"id":"ST-DECL-INV19-RL","title":"declaration.validateTenancyClaim","invariant_id":"ST-DECL-INV19","file":"internal/declaration/tenancy.go"}
 {"id":"ST-DECL-INV20-RL","title":"declaration.validateTenantlessPaths","invariant_id":"ST-DECL-INV20","file":"internal/declaration/tenancy.go"}
@@ -46,6 +47,7 @@
 {"id":"ST-DECL-INV29-RL","title":"declaration.validateControllers","invariant_id":"ST-DECL-INV29","file":"internal/declaration/composition.go"}
 {"id":"ST-DECL-INV30-RL","title":"declaration.validateDeclaredInvariants","invariant_id":"ST-DECL-INV30","file":"internal/declaration/composition.go"}
 {"id":"ST-DECL-INV31-RL","title":"declaration.validateAuthorizationCoverage","invariant_id":"ST-DECL-INV31","file":"internal/declaration/authz_coverage.go"}
+{"id":"ST-DECL-INV32-RL","title":"gen.ValidateHTTPBasePath","invariant_id":"ST-DECL-INV32","file":"internal/gen/http_base_path.go"}
 {"id":"ST-DECL-INV33-RL","title":"types.ValidateLiveUnique","invariant_id":"ST-DECL-INV33","file":"internal/types/live_unique.go"}
 {"id":"ST-DECL-INV34-RL","title":"types.ValidateVersioned","invariant_id":"ST-DECL-INV34","file":"internal/types/versioned.go"}
 {"id":"ST-DECL-INV35-RL","title":"declaration.validateSlotBindingCollections","invariant_id":"ST-DECL-INV35","file":"internal/declaration/validate.go"}
@@ -85,18 +87,22 @@
 {"id":"ST-DECL-INV69-RL","title":"declaration.validateWorkerAuthorization","invariant_id":"ST-DECL-INV69","file":"internal/declaration/authz_operations.go"}
 {"id":"ST-DECL-INV70-RL","title":"declaration.validateWorkerEffects","invariant_id":"ST-DECL-INV70","file":"internal/declaration/worker.go"}
 {"id":"ST-DECL-INV71-RL","title":"declaration.validateWorkerMode","invariant_id":"ST-DECL-INV71","file":"internal/declaration/worker.go"}
+{"id":"ST-DECL-INV72-RL","title":"declaration.validateServerFactories","invariant_id":"ST-DECL-INV72","file":"internal/declaration/factory.go"}
 {"id":"ST-DECL-INV73-RL","title":"declaration.validateGRPCMethods","invariant_id":"ST-DECL-INV73","file":"internal/declaration/grpc.go"}
 {"id":"ST-DECL-INV74-RL","title":"declaration.validateWorkerLease","invariant_id":"ST-DECL-INV74","file":"internal/declaration/worker.go"}
+{"id":"ST-DECL-INV75-RL","title":"declaration.validateGRPCServed","invariant_id":"ST-DECL-INV75","file":"internal/declaration/grpc.go"}
 {"id":"ST-DECL-INV76-RL","title":"declaration.validateWorkerCycles","invariant_id":"ST-DECL-INV76","file":"internal/declaration/worker.go"}
 {"id":"ST-DECL-INV78-RL","title":"declaration.validateProvisioning","invariant_id":"ST-DECL-INV78","file":"internal/declaration/provisioning.go"}
 {"id":"ST-DECL-INV79-RL","title":"declaration.validateWorkerCount","invariant_id":"ST-DECL-INV79","file":"internal/declaration/worker.go"}
 {"id":"ST-DECL-INV80-RL","title":"declaration.validateCommandRetry","invariant_id":"ST-DECL-INV80","file":"internal/declaration/command.go"}
 {"id":"ST-DECL-INV82-RL","title":"declaration.validateIdempotencyValues","invariant_id":"ST-DECL-INV82","file":"internal/declaration/idempotency.go"}
+{"id":"ST-DECL-INV83-RL","title":"declaration.validateProblemBase","invariant_id":"ST-DECL-INV83","file":"internal/declaration/idempotency.go"}
 {"id":"ST-DECL-INV84-RL","title":"declaration.validateAuthorizationTenancy","invariant_id":"ST-DECL-INV84","file":"internal/declaration/authz.go"}
 {"id":"ST-DECL-INV85-RL","title":"declaration.validateReferences","invariant_id":"ST-DECL-INV85","file":"internal/declaration/references.go"}
 {"id":"ST-DECL-INV86-RL","title":"declaration.validateNameForms","invariant_id":"ST-DECL-INV86","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV87-RL","title":"declaration.validateSettingBounds","invariant_id":"ST-DECL-INV87","file":"internal/declaration/setting_bounds.go"}
 {"id":"ST-DECL-INV88-RL","title":"declaration.checkSchemaShape","invariant_id":"ST-DECL-INV88","file":"internal/declaration/schema_shape.go"}
+{"id":"ST-DECL-INV89-RL","title":"declaration.validateNeededModes","invariant_id":"ST-DECL-INV89","file":"internal/declaration/modes.go"}
 {"id":"ST-DECL-INV90-RL","title":"declaration.ValidateAuthorSupplied","invariant_id":"ST-DECL-INV90","file":"internal/declaration/author_supplied.go"}
 {"id":"ST-DIS-INV06-RL","title":"lifecycle.oneSuccessor","invariant_id":"ST-DIS-INV06","file":"internal/lifecycle/rules.go"}
 {"id":"ST-DIS-INV09-RL","title":"build","invariant_id":"ST-DIS-INV09","file":"scripts/check-compiler-artifact.py"}
@@ -134,6 +140,7 @@
 {"id":"ST-GEN-INV23-RL","title":"compiler.InputManifest.validate","invariant_id":"ST-GEN-INV23","file":"internal/compiler/input_manifest.go"}
 {"id":"ST-GEN-INV24-RL","title":"compiler.predeclaredName","invariant_id":"ST-GEN-INV24","file":"internal/compiler/symbol_names.go"}
 {"id":"ST-GEN-INV25-RL","title":"compiler.decodeState","invariant_id":"ST-GEN-INV25","file":"internal/compiler/state.go"}
+{"id":"ST-GEN-INV26-RL","title":"compiler.declaredModes","invariant_id":"ST-GEN-INV26","file":"internal/compiler/modes.go"}
 {"id":"ST-GEN-INV28-RL","title":"compiler.prepareComponents","invariant_id":"ST-GEN-INV28","file":"internal/compiler/preflight.go"}
 {"id":"ST-GEN-INV29-RL","title":"compiler.lockProject","invariant_id":"ST-GEN-INV29","file":"internal/compiler/lock.go"}
 {"id":"ST-GEN-INV30-RL","title":"compiler.validateSlotConsumption","invariant_id":"ST-GEN-INV30","file":"internal/compiler/validate.go"}

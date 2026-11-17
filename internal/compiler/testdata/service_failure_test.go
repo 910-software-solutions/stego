@@ -49,6 +49,16 @@ func TestFailureRecordDoesNotFormatCause(t *testing.T) {
 				t.Fatal(e)
 			}
 		}
+		// The modes that the process runs are data of the record, with no error text (ST-GEN-INV26).
+		var output bytes.Buffer
+		stegoReportFailure(&output, &stegoServiceFailure{stage: "service.start.database", cause: cause, modes: []string{"api", "worker"}})
+		var record map[string]any
+		if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			t.Fatal(e)
+		}
+		if modes, _ := json.Marshal(record["modes"]); len(record) != 6 || string(modes) != `["api","worker"]` || record["stage"] != "service.start.database" {
+			t.Fatal("invalid failure record with modes", record)
+		}
 	})
 }
 
