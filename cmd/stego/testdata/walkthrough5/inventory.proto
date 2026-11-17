@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package inventory.v1;
+
+option go_package = "inventory/v1;inventoryv1";
+
+// PlaceOrderRequest places a draft order: it reserves the stock of each line.
+message PlaceOrderRequest {
+  string order_id = 1;
+  string bin_id = 2;
+}
+
+message PlaceOrderResponse {
+  string order_id = 1;
+  string status = 2;
+  int32 total_units = 3;
+}
+
+// GrantClerkRequest makes a user a clerk of a warehouse.
+message GrantClerkRequest {
+  string warehouse_id = 1;
+  string user = 2;
+}
+
+message GrantClerkResponse {
+  string warehouse_id = 1;
+}

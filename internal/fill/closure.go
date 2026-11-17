@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,9 +126,11 @@ const (
 type ruleFault struct{ rule, path, text string }
 
 // ruleTarget is one fill that the declaration names, with where it names it and the packages its slot admits.
+// capability tells that it is the fill of a command, a query or a worker.
 type ruleTarget struct {
 	fill, path string
 	contracts  []string
+	capability bool
 }
 
 // declaredFillFaults holds every fill that the declaration names, at every slot, to the fill rules (ST-EXT-UC01-R03,
@@ -142,7 +145,8 @@ func declaredFillFaults(check compiler.FillCheck) ([]compiler.FillFault, error) 
 			return
 		}
 		seen[fill] = true
-		targets = append(targets, ruleTarget{fill: fill, path: path, contracts: slotContracts(check, fill, implements)})
+		capability := implements == commandSlot || implements == querySlot || implements == workerSlot
+		targets = append(targets, ruleTarget{fill: fill, path: path, contracts: slotContracts(check, fill, implements), capability: capability})
 	}
 	for _, f := range check.CommandFills {
 		add(f.Fill, f.Path, commandSlot)
@@ -171,6 +175,12 @@ func declaredFillFaults(check compiler.FillCheck) ([]compiler.FillFault, error) 
 	}
 	var faults []compiler.FillFault
 	for _, target := range targets {
+		dir := filepath.Join(check.ProjectDir, "fills", target.fill)
+		if target.capability && !holdsGoCode(dir) {
+			// Nothing of the fill is built yet, so the fill rules hold nothing. Generation then writes the
+			// contract that the fill is written against, and apply names the fill to write (CodelessFills).
+			continue
+		}
 		found, err := fillFaults(check, filepath.Join(check.ProjectDir, "fills", target.fill), target.fill, target.contracts, packages)
 		if err != nil {
 			return nil, err
@@ -221,8 +231,58 @@ func fillFaults(check compiler.FillCheck, dir, fill string, contracts []string, 
 	return faults, nil
 }
 
+// holdsGoCode tells whether the fill folder dir holds a Go file that is not a test file, at any depth and whatever its
+// name. A folder that holds only fill.yaml, test files and test data builds nothing into the service yet. It gives true
+// for a path that is not a real folder, such as a symbolic link, and for a folder that cannot be read, so that the
+// fill rules hold such a fill and refuse it.
+func holdsGoCode(dir string) bool {
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return true
+	}
+	found := false
+	err = filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+			found = true
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found || err != nil
+}
+
+// CodelessFills gives the fills of the commands, queries and workers of the declaration whose fill folder exists and
+// holds no Go code yet, each with where the declaration names it, in the order of the declaration. Apply writes their
+// contracts and then names them, since the service does not build without them (ST-EXT-UC01-R01, ST-GEN-UC04).
+func CodelessFills(check compiler.FillCheck) []compiler.FillFault {
+	var faults []compiler.FillFault
+	add := func(fill, path, slot string) {
+		dir := filepath.Join(check.ProjectDir, "fills", fill)
+		if _, err := os.Stat(dir); err != nil || holdsGoCode(dir) {
+			return
+		}
+		faults = append(faults, compiler.FillFault{Rule: ruleFiles, Path: path, Found: fill,
+			Message: fmt.Sprintf("fill %q holds no Go code yet; write the fill of the slot %s in fills/%s against its contract, which apply has written (stego fill create writes a new fill that compiles)", fill, slot, fill)})
+	}
+	for _, f := range check.CommandFills {
+		add(f.Fill, f.Path, commandSlot)
+	}
+	for _, f := range check.QueryFills {
+		add(f.Fill, f.Path, querySlot)
+	}
+	for _, f := range check.WorkerFills {
+		add(f.Fill, f.Path, workerSlot)
+	}
+	return faults
+}
+
 // listFills runs go list -e -deps -json on the packages of the fills, without test files, in the service's module,
-// with no workspace and a read-only module graph, so it writes no file. It gives nil when the project has no go.mod
+// with no workspace and a read-only module graph, so it writes no file: with the project's go.mod, or with
+// check.ModFile when it is set. When the project's go.mod does not hold every module that the packages reach, it
+// lists them with a completed copy of go.mod and go.sum (listResolved). It gives nil when the project has no go.mod
 // yet or names no fill folder that exists.
 func listFills(check compiler.FillCheck, fills []string) (map[string]listedPackage, error) {
 	if _, err := os.Stat(filepath.Join(check.ProjectDir, "go.mod")); err != nil {
@@ -242,23 +302,19 @@ func listFills(check compiler.FillCheck, fills []string) (map[string]listedPacka
 	if len(patterns) == 0 {
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), closureTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, GoCommand, append([]string{"list", "-e", "-deps", "-json=" + listedFields}, patterns...)...)
-	cmd.Dir = check.ProjectDir
-	// The service's build settings, not the host's, so go list sees the files and imports that the build sees.
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
-	for key, value := range compiler.TargetBuildSettings() {
-		cmd.Env = append(cmd.Env, key+"="+value)
+	stdout, stderr, err := runList(check.ProjectDir, check.ModFile, "readonly", "", patterns)
+	if err != nil && check.ModFile == "" && unresolvedModules(stderr) {
+		// The project's go.mod does not hold every module that the fills and the generated code reach yet, as
+		// after an apply that stego deps has not followed. go list then completes a copy of go.mod and go.sum, so
+		// the closure is checked all the same and no project file changes; stego deps checks the fills again with
+		// the go.mod and go.sum that it writes (ST-BLD-UC01).
+		stdout, stderr, err = listResolved(check, patterns)
 	}
-	cmd.WaitDelay = time.Second
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("go list of the fills %s failed: %w: %s", strings.Join(fills, ", "), err, strings.TrimSpace(stderr.String()))
+	if err != nil {
+		return nil, fmt.Errorf("go list of the fills %s failed: %w: %s", strings.Join(fills, ", "), err, strings.TrimSpace(stderr))
 	}
 	packages := map[string]listedPackage{}
-	decoder := json.NewDecoder(&stdout)
+	decoder := json.NewDecoder(bytes.NewReader(stdout))
 	for {
 		var p listedPackage
 		err := decoder.Decode(&p)
@@ -271,6 +327,83 @@ func listFills(check compiler.FillCheck, fills []string) (map[string]listedPacka
 		packages[p.ImportPath] = p
 	}
 	return packages, nil
+}
+
+// unresolvedModules tells whether go list stopped because go.mod or go.sum does not hold a module that the listed
+// packages reach, which go mod tidy, and so stego deps, adds.
+func unresolvedModules(stderr string) bool {
+	return strings.Contains(stderr, "updates to go.mod needed") || strings.Contains(stderr, "missing go.sum entry")
+}
+
+// listResolved lists the packages of patterns with a copy of the project's go.mod and go.sum in a folder of its own,
+// which go list may complete with the modules that the packages reach (-mod=mod). The project's files do not change.
+func listResolved(check compiler.FillCheck, patterns []string) ([]byte, string, error) {
+	projectDir := check.ProjectDir
+	// The copy goes in the temporary folder (TMPDIR), as the staged module files of stego deps do, outside the
+	// project's package tree; it holds copies only, private to the user, and goes when the listing ends.
+	stage, err := os.MkdirTemp("", "stego-fill-modules-")
+	if err != nil {
+		return nil, "", err
+	}
+	defer os.RemoveAll(stage)
+	for _, name := range []string{"go.mod", "go.sum"} {
+		data, err := os.ReadFile(filepath.Join(projectDir, name))
+		if errors.Is(err, os.ErrNotExist) && name == "go.sum" {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if err := os.WriteFile(filepath.Join(stage, name), data, 0o600); err != nil {
+			return nil, "", err
+		}
+	}
+	runtimeProxy := ""
+	if check.RuntimeProxy != nil {
+		// The runtime pin resolves from the registry's runtime folder first, as for stego deps, so an unpublished
+		// pin needs no fetch.
+		if runtimeProxy, err = check.RuntimeProxy(stage); err != nil {
+			return nil, "", err
+		}
+	}
+	return runList(projectDir, filepath.Join(stage, "go.mod"), "mod", runtimeProxy, patterns)
+}
+
+// runList runs go list -e -deps -json on patterns in the project folder, with the module mode mode and, when modFile is
+// set, that module file in place of the project's go.mod. It gives the standard output and the standard error.
+func runList(projectDir, modFile, mode, runtimeProxy string, patterns []string) ([]byte, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), closureTimeout)
+	defer cancel()
+	args := []string{"list", "-e", "-deps", "-json=" + listedFields}
+	if modFile != "" {
+		args = append(args, "-modfile="+modFile)
+	}
+	cmd := exec.CommandContext(ctx, GoCommand, append(args, patterns...)...)
+	cmd.Dir = projectDir
+	// The service's build settings, not the host's, so go list sees the files and imports that the build sees.
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod="+mode)
+	for key, value := range compiler.TargetBuildSettings() {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	// The module sources that the application build trusts, not the host's: the public proxy and checksum database,
+	// no direct version control and no credentials, so that a module that go list completes for a fill comes from
+	// where stego build takes it (ST-BLD-UC01-R02). A host that turns the proxy off keeps it off.
+	proxy := "https://proxy.golang.org"
+	if os.Getenv("GOPROXY") == "off" {
+		proxy = "off"
+	}
+	if runtimeProxy != "" {
+		proxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String() + "," + proxy
+	}
+	for key, value := range map[string]string{"GOPROXY": proxy, "GOSUMDB": "sum.golang.org", "GOPRIVATE": "", "GONOPROXY": "",
+		"GONOSUMDB": "", "GOINSECURE": "", "GOAUTH": "off", "GOVCS": "*:off", "GIT_TERMINAL_PROMPT": "0"} {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	cmd.WaitDelay = time.Second
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	return stdout.Bytes(), stderr.String(), err
 }
 
 // treeFaults reads every file of the fill folder that the go tool can build, whatever its platform suffix or build

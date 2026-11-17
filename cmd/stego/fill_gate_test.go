@@ -717,3 +717,47 @@ func TestFirstGenerationRecheck(t *testing.T) {
 		}
 	})
 }
+
+func TestCapabilityFillFolderFailsClosed(t *testing.T) {
+	t.Run("ST-EXT-UC01-R03-T14 Validate and deps refuse a command fill whose folder is a symbolic link or cannot be read", func(t *testing.T) {
+		walkthroughProject(t)
+		for name, f := range walkthroughFills {
+			writeProjectFile(t, "fills/"+name+"/fill.yaml", "kind: fill\nname: "+name+"\nimplements: "+f.implements+"\n")
+			writeProjectFile(t, "fills/"+name+"/fill.go", f.source)
+		}
+		mustRun(t, runApply)
+		// The fill folder place-order is a link to a folder outside fills that holds code which imports os/exec.
+		outside := filepath.Join(t.TempDir(), "evil")
+		writeProjectFile(t, filepath.Join(outside, "fill.yaml"), "kind: fill\nname: place-order\nimplements: command.command\n")
+		writeProjectFile(t, filepath.Join(outside, "fill.go"), strings.Replace(walkthroughFills["place-order"].source, "\t\"errors\"\n", "\t\"errors\"\n\t_ \"os/exec\"\n", 1))
+		if err := os.RemoveAll("fills/place-order"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, "fills/place-order"); err != nil {
+			t.Fatal(err)
+		}
+		for _, command := range []func([]string) error{runValidate, runDependencies} {
+			printed, err := capture(t, command)
+			if err == nil || !strings.Contains(printed+err.Error(), "place-order") {
+				t.Fatalf("a linked fill folder passed: %v\n%s", err, printed)
+			}
+		}
+		// A fill folder with a sub folder that cannot be read is held to the fill rules too.
+		if err := os.Remove("fills/place-order"); err != nil {
+			t.Fatal(err)
+		}
+		writeProjectFile(t, "fills/place-order/fill.yaml", "kind: fill\nname: place-order\nimplements: command.command\n")
+		writeProjectFile(t, "fills/place-order/a/b.go", "package b\n\nimport _ \"os/exec\"\n")
+		if err := os.Chmod("fills/place-order/a", 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(filepath.Join("fills", "place-order", "a"), 0o755) })
+		if _, err := os.ReadDir("fills/place-order/a"); err == nil {
+			t.Skip("the test runs with a user that reads a folder of mode 0, so no walk fails")
+		}
+		printed, err := capture(t, runValidate)
+		if err == nil {
+			t.Fatalf("a fill folder that cannot be read passed:\n%s", printed)
+		}
+	})
+}
