@@ -130,6 +130,48 @@ func TestStartAServiceDeclaration(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-DECL-UC01-R02-T02 A scaffold that fails part way removes each file and folder it made, so a rerun passes", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("a folder with no write permission does not stop the root user")
+		}
+		project := declaringProject(t)
+		putFile(t, project, "README.md", "# todo\n")
+		// The example content of rpc-service holds proto/service.proto; a folder proto with no write permission
+		// makes that write fail after the earlier writes of the run.
+		locked := filepath.Join(project, "proto")
+		if err := os.Mkdir(locked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(locked, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+		// The apply lock stays, as after each refused scaffold that took it.
+		withoutLock := func(tree map[string]string) map[string]string {
+			delete(tree, ".stego/apply.lock")
+			return tree
+		}
+		before := withoutLock(treeOf(t, project))
+		run := stegoIn(t, project, nil, "init", "--archetype", "rpc-service")
+		if run.code == 0 || !strings.Contains(run.stderr, "permission denied") {
+			t.Fatalf("want a refusal of the write into proto, got exit %d: %s%s", run.code, run.stdout, run.stderr)
+		}
+		if after := withoutLock(treeOf(t, project)); !reflect.DeepEqual(before, after) {
+			t.Fatalf("the failed scaffold left files: before %v, after %v", before, after)
+		}
+		if err := os.Chmod(locked, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if run := stegoIn(t, project, nil, "init", "--archetype", "rpc-service"); run.code != 0 {
+			t.Fatalf("the rerun of stego init: exit %d: %s%s", run.code, run.stdout, run.stderr)
+		}
+		for _, name := range []string{"service.yaml", "proto/service.proto", "README.md"} {
+			if _, err := os.Stat(filepath.Join(project, filepath.FromSlash(name))); err != nil {
+				t.Errorf("%s is not there after the rerun: %v", name, err)
+			}
+		}
+	})
+
 	t.Run("ST-DECL-UC01-R03-T01 An unknown archetype is refused, with the archetypes the registry holds", func(t *testing.T) {
 		project := declaringProject(t)
 		before := treeOf(t, project)

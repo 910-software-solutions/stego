@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/parser"
@@ -152,6 +155,18 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 	if err := reg.Verify(); err != nil {
 		return nil, err
 	}
+	// A write that fails part way removes each file and folder that this run made, so a rerun does not refuse the
+	// example content of this run as files that the project already holds (ST-DECL-UC01-R02). A file or folder
+	// that was there before the run is never removed.
+	var made []string
+	for _, file := range append([]string{"fills/.", ".stego/config.yaml", localStateIgnorePath, "service.yaml"}, examplePaths(exampleFiles)...) {
+		made = appendAbsentFolders(root, made, path.Dir(file))
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, removeMade(root, made))
+		}
+	}()
 	created := []string{}
 	if err := root.Mkdir("fills", 0755); err == nil {
 		created = append(created, "fills/")
@@ -165,11 +180,13 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 		if err := createRootFile(root, ".stego/config.yaml", config); err != nil {
 			return nil, err
 		}
+		made = append(made, ".stego/config.yaml")
 		created = append(created, ".stego/config.yaml")
 	}
 	// The apply lock and a saved plan are local state: they are not committed, so no build takes them as input
 	// (ST-DECL-UC01-R07). An ignore file that the author already has is kept as written.
 	if err := createRootFile(root, localStateIgnorePath, []byte(localStateIgnore)); err == nil {
+		made = append(made, localStateIgnorePath)
 		created = append(created, localStateIgnorePath)
 	} else if !errors.Is(err, os.ErrExist) {
 		return nil, err
@@ -182,12 +199,55 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 		if err := createRootFile(root, file.Path, []byte(text)); err != nil {
 			return nil, err
 		}
+		made = append(made, file.Path)
 		created = append(created, file.Path)
 	}
 	if err := createRootFile(root, "service.yaml", document); err != nil {
 		return nil, err
 	}
 	return &InitResult{Name: name, Created: append(created, "service.yaml"), Owed: owed}, nil
+}
+
+// examplePaths gives the path of each file of the example content.
+func examplePaths(files []registry.ExampleFile) []string {
+	paths := make([]string, len(files))
+	for i, file := range files {
+		paths[i] = file.Path
+	}
+	return paths
+}
+
+// appendAbsentFolders appends to made each folder of the path, from the top down, that the project does not hold
+// and that made does not name yet.
+func appendAbsentFolders(root *os.Root, made []string, folder string) []string {
+	if folder == "." || folder == "/" || folder == "" {
+		return made
+	}
+	made = appendAbsentFolders(root, made, path.Dir(folder))
+	if slices.Contains(made, folder) {
+		return made
+	}
+	if _, err := root.Lstat(folder); errors.Is(err, os.ErrNotExist) {
+		made = append(made, folder)
+	}
+	return made
+}
+
+// removeMade removes each path of made that is there, the last first, so a folder goes after the files in it. A
+// folder that holds another file is kept.
+func removeMade(root *os.Root, made []string) error {
+	var faults []error
+	for i := len(made) - 1; i >= 0; i-- {
+		if err := root.Remove(made[i]); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmpty(err) {
+			faults = append(faults, fmt.Errorf("removing %s after the failed scaffold: %w", made[i], err))
+		}
+	}
+	return errors.Join(faults...)
+}
+
+// isNotEmpty tells whether the error is that of the removal of a folder that holds a file.
+func isNotEmpty(err error) bool {
+	return errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST)
 }
 
 // checkExampleTarget refuses a path of the example content at which the project already holds anything, or whose
