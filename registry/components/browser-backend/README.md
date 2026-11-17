@@ -37,16 +37,33 @@ the database and USAGE on the schema public, and a migration login that is a
 member of the owner role. Revoke the default PUBLIC grants on the database and
 on the schema public. The schema check refuses other attributes and grants, so
 use this SQL as it is. Replace `<service>` with the service name, with each `-`
-as `_`, and each password with a new secret.
+as `_`. Generation refuses a service name that gives a role name longer than
+the 63 bytes of a PostgreSQL name, because PostgreSQL cuts a longer name with
+no error.
 
 ```sql
 -- As a database administrator, connected to any database of the server:
 CREATE ROLE <service>_owner NOLOGIN NOINHERIT;
-CREATE ROLE <service>_runtime LOGIN NOINHERIT PASSWORD '<runtime password>';
-CREATE ROLE <service>_migrator LOGIN PASSWORD '<migration password>' IN ROLE <service>_owner;
+CREATE ROLE <service>_runtime LOGIN NOINHERIT;
+CREATE ROLE <service>_migrator LOGIN IN ROLE <service>_owner;
 CREATE DATABASE <service> OWNER <service>_owner;
 REVOKE ALL ON DATABASE <service> FROM PUBLIC;
 GRANT CONNECT ON DATABASE <service> TO <service>_runtime;
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+```
+
+The last line stops the runtime login, and each other login, from a connection
+to the default database `postgres`, which PostgreSQL opens to PUBLIC. If other
+logins of the server connect to `postgres`, grant CONNECT to each of them
+before you run it.
+
+Then give each login a new secret in `psql`. The `\password` command asks for
+the secret and sends only its SCRAM hash, so the secret is not in the SQL, the
+shell history or the server log:
+
+```psql
+\password <service>_runtime
+\password <service>_migrator
 ```
 
 ```sql

@@ -18,16 +18,16 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
-// readmeBlocks gives the SQL blocks of the component README (readme.md, which the harness copies beside this file),
-// in their order, each as its statements.
-func readmeBlocks(t *testing.T) [][]string {
+// readmeBlocks gives the blocks of one language of the component README (readme.md, which the harness copies beside
+// this file), in their order, each as its statements.
+func readmeBlocks(t *testing.T, language string) [][]string {
 	t.Helper()
 	data, err := os.ReadFile("readme.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var blocks [][]string
-	for _, match := range regexp.MustCompile("(?s)```sql\n(.*?)```").FindAllStringSubmatch(string(data), -1) {
+	for _, match := range regexp.MustCompile("(?s)```"+language+"\n(.*?)```").FindAllStringSubmatch(string(data), -1) {
 		var statements []string
 		for _, line := range strings.Split(match[1], "\n") {
 			line = strings.TrimSpace(line)
@@ -50,9 +50,21 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 			}
 			t.Skip("database fixture is not configured")
 		}
-		blocks := readmeBlocks(t)
+		blocks := readmeBlocks(t, "sql")
 		if len(blocks) != 2 {
 			t.Fatalf("the README holds %d SQL blocks, want 2: one for the server and one for the database", len(blocks))
+		}
+		// The README gives no secret in its SQL: psql sets each one with \password, which sends only its hash.
+		psql := readmeBlocks(t, "psql")
+		if len(psql) != 1 {
+			t.Fatalf("the README holds %d psql blocks, want 1 that sets the secrets", len(psql))
+		}
+		for _, block := range blocks {
+			for _, statement := range block {
+				if strings.Contains(strings.ToUpper(statement), "PASSWORD") {
+					t.Errorf("the README SQL holds a secret: %q", statement)
+				}
+			}
 		}
 		var suffix [6]byte
 		if _, err := rand.Read(suffix[:]); err != nil {
@@ -60,7 +72,8 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 		}
 		service := fmt.Sprintf("readme_%x", suffix)
 		runtimePassword, migrationPassword := fmt.Sprintf("rt%x", suffix), fmt.Sprintf("mg%x", suffix)
-		fill := strings.NewReplacer("<service>", service, "<runtime password>", runtimePassword, "<migration password>", migrationPassword)
+		fill := strings.NewReplacer("<service>", service)
+		passwords := map[string]string{service + "_runtime": runtimePassword, service + "_migrator": migrationPassword}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -73,7 +86,8 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 		t.Cleanup(func() {
 			cleanup := stdlib.OpenDB(*cfg)
 			defer cleanup.Close()
-			for _, query := range []string{"DROP DATABASE IF EXISTS " + service + " WITH (FORCE)", "DROP ROLE IF EXISTS " + service + "_migrator", "DROP ROLE IF EXISTS " + service + "_runtime", "DROP ROLE IF EXISTS " + service + "_owner"} {
+			// The README revokes the CONNECT of PUBLIC on the default database of the server, which other tests share.
+			for _, query := range []string{"GRANT CONNECT ON DATABASE postgres TO PUBLIC", "DROP DATABASE IF EXISTS " + service + " WITH (FORCE)", "DROP ROLE IF EXISTS " + service + "_migrator", "DROP ROLE IF EXISTS " + service + "_runtime", "DROP ROLE IF EXISTS " + service + "_owner"} {
 				if _, err := cleanup.ExecContext(context.Background(), query); err != nil {
 					t.Error(err)
 				}
@@ -88,6 +102,21 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 			}
 		}
 		run(admin, blocks[0])
+		// \password <role> of psql runs ALTER ROLE with the hash of the secret it reads; the test gives the secret.
+		for _, line := range psql[0] {
+			role, ok := strings.CutPrefix(fill.Replace(line), `\password `)
+			password, known := passwords[role]
+			if !ok || !known {
+				t.Fatalf("the README psql line %q is not \\password of the runtime or the migration login", line)
+			}
+			if _, err := admin.ExecContext(ctx, "ALTER ROLE "+pgx.Identifier{role}.Sanitize()+" PASSWORD "+quoteLiteral(password)); err != nil {
+				t.Fatalf("setting the secret of %s: %v", role, err)
+			}
+			delete(passwords, role)
+		}
+		if len(passwords) != 0 {
+			t.Fatalf("the README psql block sets no secret for %v", passwords)
+		}
 		inDatabase := cfg.Copy()
 		inDatabase.Database = service
 		adminInDatabase := stdlib.OpenDB(*inDatabase)
@@ -121,5 +150,16 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 			fault, object := classOf(err)
 			t.Fatalf("the runtime login of the README setup does not pass Verify: %v (fault %s, object %s)", err, fault, object)
 		}
+		// The runtime login cannot connect to the default database of the server.
+		elsewhere := runtimeConfig.Copy()
+		elsewhere.Database = "postgres"
+		other := stdlib.OpenDB(*elsewhere)
+		defer other.Close()
+		if err := other.PingContext(ctx); err == nil || !strings.Contains(err.Error(), "permission denied for database") {
+			t.Errorf("the runtime login of the README setup connects to the database postgres: %v", err)
+		}
 	})
 }
+
+// quoteLiteral gives the SQL string literal of a test secret, which holds only letters and digits.
+func quoteLiteral(text string) string { return "'" + strings.ReplaceAll(text, "'", "''") + "'" }

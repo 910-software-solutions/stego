@@ -266,6 +266,12 @@ func (g *Generator) validateContext(ctx gen.Context) error {
 			return fmt.Errorf("browser-backend must run separately from bearer-token APIs")
 		}
 	}
+	// The README names the logins of the database <service>_owner, <service>_runtime and <service>_migrator, with each
+	// - as _. PostgreSQL cuts a name longer than 63 bytes with no error, so such a service name is refused here
+	// (sec-415 L3).
+	if role := strings.ReplaceAll(ctx.ServiceName, "-", "_") + "_migrator"; len(role) > 63 {
+		return fmt.Errorf("the service name %q gives the database login %s, which is longer than the 63 bytes of a PostgreSQL name; give the service a name of at most 54 bytes", ctx.ServiceName, role)
+	}
 	_, _, err := g.resolveAssets(ctx)
 	return err
 }

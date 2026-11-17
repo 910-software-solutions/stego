@@ -308,3 +308,25 @@ func TestOwnSubtest(t *testing.T) {
 		}
 	})
 }
+
+func TestRoleNameLength(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC04-T13 A role prefix whose role names are longer than 63 bytes is refused, naming the role", func(t *testing.T) {
+		_, ctx := contexts()
+		// A prefix of 45 bytes gives the role <prefix>_idempotency_purge of 63 bytes, the most PostgreSQL holds.
+		longest := ctx
+		longest.ServiceName = strings.Repeat("a", 45)
+		if err := new(Generator).ValidateContext(longest); err != nil {
+			t.Errorf("a prefix of 45 bytes is refused: %v", err)
+		}
+		// One byte more, from the service name or from runtime_role, and PostgreSQL would cut the name.
+		named := ctx
+		named.ServiceName = strings.Repeat("a", 46)
+		set := ctx
+		set.ComponentConfig = map[string]any{"runtime_role": strings.Repeat("b", 46) + "_runtime", "owner_role": strings.Repeat("b", 46) + "_owner"}
+		for name, c := range map[string]gen.Context{"service name": named, "runtime_role": set} {
+			if err := new(Generator).ValidateContext(c); err == nil || !strings.Contains(err.Error(), "_idempotency_purge is longer than the 63 bytes") {
+				t.Errorf("the prefix of 46 bytes from the %s is not refused: %v", name, err)
+			}
+		}
+	})
+}

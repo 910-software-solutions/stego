@@ -652,7 +652,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 	})
 
 	t.Run("ST-DECL-UC01-R01-T03 Init refuses a project folder whose name is not a service name, and writes nothing", func(t *testing.T) {
-		for _, name := range []string{"Greeter", "greeter_service", "-greeter", "001", "<img src=x onerror=alert(1)>"} {
+		for _, name := range []string{"Greeter", "greeter_service", "-greeter", "greeter-", "001", "<img src=x onerror=alert(1)>"} {
 			project := filepath.Join(t.TempDir(), name)
 			putFile(t, project, ".stego/config.yaml", declaringConfig(t))
 			before := treeOf(t, project)
