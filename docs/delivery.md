@@ -24,7 +24,15 @@ platform supplies those values.
   read-only root file system and the `/tmp` emptyDir of the base. For a local build, mount a writable copy of the
   module cache folder of `stego build download` at that path, for example
   `buildah build --network=none -v "$PWD/modules-copy:/cachi2/output/deps/gomod/pkg/mod" -f Containerfile .`.
-  `stego apply` reads the file back and accepts only the exact text that it writes, so do not edit it.
+  The build stage copies `go.mod`, `go.sum`, the output folder, the `fills` folder when it holds a fill, and each
+  folder of the project that a `replace` directive of `go.mod` names with no version (a local module). A local
+  module out of the project folder, in a folder whose name is not plain (a space, or a first `_` or `.`), or in a
+  folder that holds the output folder is not copied, and the plan says so: move it to a plain folder of the
+  project. A module in another local module folder is copied with that folder. After you add a `replace`,
+  `stego deps` runs with no new apply, and the next `stego apply` writes the Containerfile again.
+  `stego apply` checks the text that it writes against the offline shape before it writes the file, and the record
+  keeps the digest of the file: `stego apply` and `stego drift` refuse a hand edit, so do not edit it. Check out the
+  file with LF line ends: a CRLF checkout changes the digest.
 - `deploy/argocd/applicationset.yaml`, when the declaration has `delivery.argocd`: an Argo CD ApplicationSet. Its git
   files generator reads the platform's environment files. Each Application has one source: the overlay at the
   `destination.overlay_path` of its environment file, in the repository of the environment files.
@@ -85,6 +93,11 @@ environment file against them.
   `GRPC_` names except the three log settings, `SSL_CERT_FILE` and `SSL_CERT_DIR`. The platform requirements mark
   each of them `refused_at_start: true`, and `stego env check` fails when the environment file gives one a value.
   `GODEBUG` keeps its entry, but the service does not start when it holds a `tls`, `x509` or `http2debug` setting.
+- The database connection does not read the files in the home folder: no `~/.pgpass`, no
+  `~/.pg_service.conf`, and no `root.crt`, `postgresql.crt` or `postgresql.key` in `~/.postgresql`. Without
+  `sslrootcert`, the service verifies the database server against the system CA pool. When the server has a
+  certificate from a private CA, put `sslrootcert=<path>` in `DATABASE_URL`, with a path that the overlay mounts
+  (`sslmode=verify-full` is also necessary). A deployment that used `~/.postgresql/root.crt` must change to this.
 
 When a component names a secret source that the service does not state, such as a key that its secret need does
 not have, `stego validate`, `stego plan` and `stego apply` write a `WARNING` with the variable, the need and the

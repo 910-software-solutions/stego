@@ -113,6 +113,22 @@ func (p *Plan) hasOutputChanges() bool {
 	return false
 }
 
+// hasCodeChanges tells whether the plan changes a file that comes from the declaration, which module resolution
+// waits for (ST-BLD-UC01-R03). The offline Containerfile is left out: it also copies the local module folders that
+// go.mod replaces a module with, so a replace directive that the service author adds before stego deps changes it,
+// with no change of the declaration. The next apply writes it.
+func (p *Plan) hasCodeChanges() bool {
+	if len(p.EntityChanges) > 0 {
+		return true
+	}
+	for _, f := range p.Files {
+		if f.Action != ActionUnchanged && f.Path != ContainerFile {
+			return true
+		}
+	}
+	return false
+}
+
 // ReconcilerInput gathers everything needed to compute a plan.
 type ReconcilerInput struct {
 	// ProjectDir is the root of the project (where service.yaml lives).
@@ -521,7 +537,17 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		if component := reg.Component(registry.PipelineComponent); component != nil {
 			pipelines = component.Pipelines
 		}
-		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, schemaDigest(allFiles, runtime))
+		var moduleFile []byte
+		for _, file := range allFiles {
+			if file.Path == "go.mod" {
+				moduleFile = file.Content
+			}
+		}
+		modules, err := localModuleReplacements(moduleFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading the local module replacements of go.mod: %w", err)
+		}
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, modules, schemaDigest(allFiles, runtime))
 		if err != nil {
 			return nil, err
 		}
@@ -739,6 +765,10 @@ type DeploymentInput struct {
 	// Containerfile copies both (ST-DLV-INV07).
 	OutputDir  string
 	HoldsFills bool
+	// LocalModules are the paths, as go.mod gives them, that go.mod replaces a module with (a replace directive
+	// with no version), which the offline Containerfile copies when they are folders of the project
+	// (localModuleReplacements).
+	LocalModules []string
 	// Release is the digest of the schema of the release, in hex (schemaDigest), which names the migration Job of
 	// the base (ST-DLV-UC07-R06).
 	Release string
@@ -754,7 +784,7 @@ type DeploymentFiles struct {
 // component of the active set serves, in the order of the active set (ST-DLV-INV08). It refuses a file out of the
 // paths of the base.
 func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, names []string, generators map[string]gen.Generator,
-	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool, release string) ([]gen.File, []string, error) {
+	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool, modules []string, release string) ([]gen.File, []string, error) {
 	var probes *gen.Probes
 	for _, name := range names {
 		declarer, ok := generators[name].(gen.ProbeDeclarer)
@@ -771,7 +801,7 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 		probes = &served
 	}
 	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery, Pipelines: pipelines,
-		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills, Release: release})
+		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills, LocalModules: modules, Release: release})
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
 	}
