@@ -209,15 +209,11 @@ func TestTenantTransaction(t *testing.T) {
 		if open := db.Stats().OpenConnections; open != 1 {
 			t.Fatalf("the pool holds %d connections, want 1: the connection %d is not closed", open, before)
 		}
+		// The lock is free only when the server process of the closed connection ends: that proves the close. The
+		// test reads no pg_stat_activity after it, as the server clears that row only after it frees the session
+		// locks (review of PR #391, M1).
 		if _, err := env.db.ExecContext(ctx, "SELECT pg_advisory_lock($1)", gone); err != nil {
 			t.Fatal(err)
-		}
-		var alive int
-		if err := env.db.QueryRowContext(ctx, "SELECT count(*) FROM pg_stat_activity WHERE pid = $1", before).Scan(&alive); err != nil {
-			t.Fatal(err)
-		}
-		if alive != 0 {
-			t.Fatalf("the connection %d is still open, want it closed", before)
 		}
 	})
 }
