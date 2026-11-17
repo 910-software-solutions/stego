@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117232316-37630328d176
+        module_version: v0.0.0-20261117234807-44b7ca81f866
         vcs: git
-        revision: 37630328d176a21c622b7fd15db461dc796f16a5
+        revision: 44b7ca81f866574a538069f6488d85819b66bfbc
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 44c464cc1177038db5824d0c9201226bb0e4adc975afb7efa03c5a82e7099b03
+    registry_content_sha256: 11dd54aea1f9328bf83b3e118254767c2c064def23e8fc8c0aae97df81f96700
     components:
         audit-log:
             version: 1.1.1
