@@ -21,12 +21,14 @@ const (
 	auditComponent       = "audit-log"
 	idempotencyComponent = "idempotency"
 	ledgerComponent      = "ledger"
+	// kafkaConsumerComponent is the component of a declared subscription (ST-SUP-RC38).
+	kafkaConsumerComponent = "kafka-consumer"
 )
 
 // selectComponents gives the infrastructure components that the declared settings of svc imply, in a fixed order:
 // a stated tenancy that is not single selects tenancy, a stated audit that is on selects audit-log, a stated
-// authorization selects spicedb-authz, a stated idempotency selects idempotency, and an entity of kind ledger
-// selects ledger (ST-GEN-INV37). A setting that the declaration omits selects nothing, so a declaration that relies
+// authorization selects spicedb-authz, a stated idempotency selects idempotency, a declared worker selects worker, a
+// declared subscription selects kafka-consumer, and an entity of kind ledger selects ledger (ST-GEN-INV37). A setting that the declaration omits selects nothing, so a declaration that relies
 // on the defaults keeps the components of its archetype and mixins.
 func selectComponents(svc *types.ServiceDeclaration) []selection {
 	var selected []selection
@@ -45,6 +47,11 @@ func selectComponents(svc *types.ServiceDeclaration) []selection {
 	if len(svc.Workers) > 0 {
 		// A declared worker selects the worker component, which generates its runner (ST-SUP-RC35, ST-SUP-Q131).
 		selected = append(selected, selection{Component: workerComponent, Setting: "workers"})
+	}
+	if len(svc.Subscriptions) > 0 {
+		// A declared subscription selects the kafka-consumer component, whose Kafka inbox reads its topic
+		// (ST-SUP-RC38, decision on ST-SUP-Q158).
+		selected = append(selected, selection{Component: kafkaConsumerComponent, Setting: "subscriptions"})
 	}
 	for _, entity := range svc.Entities {
 		if entity.Kind == "ledger" {

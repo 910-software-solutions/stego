@@ -49,6 +49,9 @@ import (
 {{- if .Workers}}
 	workerrunners {{printf "%q" .Workers}}
 {{- end}}
+{{- if .Inbox}}
+	subscriptions {{printf "%q" .Inbox}}
+{{- end}}
 )
 
 // The declaration of the service.
@@ -153,7 +156,7 @@ var declared = service.Auth{Issuer: declaredIssuer, Audience: declaredAudience, 
 // StartStage names the stage of a start that a setting, the database pool, the key source or the schema manifest
 // refused, for the failure record of the process, which holds no error text and no value (ST-SUP-RP14-LC05).
 func StartStage(err error) string {
-{{- if .KafkaTopic}}
+{{- if or .KafkaTopic .Inbox}}
 	var setting *startSetting
 	if errors.As(err, &setting) {
 		return "service.start.setting." + setting.component + "." + setting.variable
@@ -161,13 +164,15 @@ func StartStage(err error) string {
 {{- end}}
 	return service.StartStage(err)
 }
-{{- if .KafkaTopic}}
+{{- if or .KafkaTopic .Inbox}}
 
 // startSetting is a setting that the start of the service refused before the runtime read it: the variable at fault
 // and the registry component that reads it. It holds no value.
 type startSetting struct{ component, variable, problem string }
 
 func (e *startSetting) Error() string { return "the setting " + e.variable + " " + e.problem }
+{{- end}}
+{{- if .KafkaTopic}}
 
 // checkKafkaTopic refuses a worker mode that has no Kafka topic. With none, the destination sends each message to
 // the topic of its event type, which the topic need does not state, so every delivery is refused for ever
@@ -176,6 +181,18 @@ func checkKafkaTopic() error {
 	if os.Getenv("STEGO_KAFKA_TOPIC") == "" && os.Getenv("STEGO_KAFKA_TOPIC_FILE") == "" {
 		return &startSetting{component: "kafka-producer", variable: "STEGO_KAFKA_TOPIC",
 			problem: "or STEGO_KAFKA_TOPIC_FILE must be set for the worker mode: it is the topic of every message"}
+	}
+	return nil
+}
+{{- end}}
+{{- if .Inbox}}
+
+// checkConsumerTopic refuses a worker mode that has no topic for the Kafka inbox of the subscription, at the stage
+// service.start.setting.kafka-consumer.STEGO_KAFKA_CONSUMER_TOPIC (ST-SUP-RP14-LC08).
+func checkConsumerTopic() error {
+	if os.Getenv("STEGO_KAFKA_CONSUMER_TOPIC") == "" && os.Getenv("STEGO_KAFKA_CONSUMER_TOPIC_FILE") == "" {
+		return &startSetting{component: "kafka-consumer", variable: "STEGO_KAFKA_CONSUMER_TOPIC",
+			problem: "or STEGO_KAFKA_CONSUMER_TOPIC_FILE must be set for the worker mode: it is the topic of the subscription"}
 	}
 	return nil
 }
@@ -232,6 +249,11 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 			// The tables that the consumers write, on which the migration job grants the worker role SELECT, INSERT and
 			// UPDATE (ST-SUP-Q141).
 			ConsumerTables: workerrunners.ConsumerTables(),
+{{- end}}
+{{- if .Inbox}}
+			// The Kafka inbox of the declared subscription, which writes each record into the outbox for its worker
+			// (ST-SUP-RC38-OC01).
+			Inbox: subscriptions.Inbox,
 {{- end}}
 		},
 {{- if .Workers}}
@@ -329,6 +351,11 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 		}
 {{- if .KafkaTopic}}
 		if err = checkKafkaTopic(); err != nil {
+			return nil, err
+		}
+{{- end}}
+{{- if .Inbox}}
+		if err = checkConsumerTopic(); err != nil {
 			return nil, err
 		}
 {{- end}}
@@ -522,6 +549,13 @@ func Migrate(ctx context.Context) error {
 	if err != nil {
 		return &service.StepError{Step: service.StepSettings, Err: err}
 	}
+{{- if .Inbox}}
+	// The table of the refused records of the Kafka inbox (ST-SUP-RP01-LC37).
+	inboxText, err := subscriptions.Migration(WorkerRole)
+	if err != nil {
+		return &service.StepError{Step: service.StepSettings, Err: err}
+	}
+{{- end}}
 	auditText, err := svcaudit.Migration(RuntimeRole)
 	if err != nil {
 		return &service.StepError{Step: service.StepSettings, Err: err}
@@ -547,6 +581,9 @@ func Migrate(ctx context.Context) error {
 		Definitions: svcauthz.Definitions,
 		Grants:      grants, TenantSchema: tenantSchema,
 		Service:     Service, Backfills: backfills, Parts: &declaredParts,
+{{- if .Inbox}}
+		Inbox: inboxText,
+{{- end}}
 {{- if .Workers}}
 		// The lease row of each single worker (ST-SUP-RC35-OC05).
 		WorkerLeases: workerrunners.Leases(),

@@ -414,7 +414,12 @@ func render(p plan) []byte {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "// Package %s is the authorization wiring of the service on the authorization runtime\n// github.com/jsell-rh/stego/registry/runtime/authz (ST-SUP-RC29).\n", p.Package)
 	fmt.Fprintf(&b, "package %s\n\n", p.Package)
-	b.WriteString("import (\n\t\"context\"\n\t\"database/sql\"\n\t\"fmt\"\n\t\"strings\"\n\t\"time\"\n\n")
+	// strings quotes the worker role in the grants of the protected tables; a service with none has no grant.
+	if len(p.Entities) > 0 {
+		b.WriteString("import (\n\t\"context\"\n\t\"database/sql\"\n\t\"fmt\"\n\t\"strings\"\n\t\"time\"\n\n")
+	} else {
+		b.WriteString("import (\n\t\"context\"\n\t\"database/sql\"\n\t\"fmt\"\n\t\"time\"\n\n")
+	}
 	b.WriteString("\tv1 \"github.com/authzed/authzed-go/proto/authzed/api/v1\"\n\totellog \"go.opentelemetry.io/otel/log\"\n\t\"go.opentelemetry.io/otel/metric\"\n\t\"google.golang.org/grpc\"\n\n")
 	fmt.Fprintf(&b, "\tstegoauthz %q\n\t\"github.com/jsell-rh/stego/registry/runtime/outbox\"\n", RuntimePackage)
 	if len(p.Entities) > 0 {
@@ -498,15 +503,22 @@ func Migration(runtimeRole, relayRole, outboxRelayRole, workerRole string) (stri
 	if err != nil {
 		return "", err
 	}
-	worker := "\"" + strings.ReplaceAll(workerRole, "\"", "\"\"") + "\""
+`)
+	// A service with no protected table has no token column to grant: the text is the runtime's alone, and the
+	// emitted code declares no variable that it does not use.
+	if len(p.Entities) == 0 {
+		b.WriteString("\treturn text, nil\n}\n")
+	} else {
+		b.WriteString(`	worker := "\"" + strings.ReplaceAll(workerRole, "\"", "\"\"") + "\""
 	var statements strings.Builder
 `)
-	for _, e := range p.Entities {
-		fmt.Fprintf(&b, "\tstatements.WriteString(%s)\n", strconv.Quote(e.Column))
-		fmt.Fprintf(&b, "\tstatements.WriteString(%s + worker + \";\\n\")\n", strconv.Quote(e.Grant))
+		for _, e := range p.Entities {
+			fmt.Fprintf(&b, "\tstatements.WriteString(%s)\n", strconv.Quote(e.Column))
+			fmt.Fprintf(&b, "\tstatements.WriteString(%s + worker + \";\\n\")\n", strconv.Quote(e.Grant))
+		}
+		b.WriteString("\treturn text + statements.String(), nil\n}\n")
 	}
-	b.WriteString(`	return text + statements.String(), nil
-}
+	b.WriteString(`
 
 // WriteSchema writes Schema to SpiceDB through WriteSchema, for the migration job to run before the service starts,
 // so the schema is versioned with the release (ST-SUP-RC29-OC23). SpiceDB refuses, and writes nothing, when the

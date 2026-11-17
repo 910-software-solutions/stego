@@ -521,6 +521,30 @@ func TestMigration(t *testing.T) {
 	})
 }
 
+func TestMigrationNoProtectedTable(t *testing.T) {
+	t.Run("ST-SUP-RC29-OC06-T09 A service with no protected table gets the runtime's migration text alone, with no unused name or import", func(t *testing.T) {
+		// Found by core builder 14 (walkthrough 7, N1): a consumer service whose one entity has no resource type got
+		// the variable worker and the import strings, which it does not use, so its code did not compile.
+		ctx := documentContext(t)
+		ctx.Entities = ctx.Entities[2:]
+		ctx.Collections = nil
+		source := emitted(t, generate(t, ctx), "authz.go")
+		file, err := parser.ParseFile(token.NewFileSet(), "authz.go", source, parser.ImportsOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, spec := range file.Imports {
+			if spec.Path.Value == `"strings"` && !strings.Contains(source, "strings.") {
+				t.Error("authz.go imports strings and does not use it")
+			}
+		}
+		if strings.Contains(source, "worker := ") || strings.Contains(source, "GRANT SELECT (tenant_id, id)") ||
+			!strings.Contains(source, "\treturn text, nil\n}") {
+			t.Errorf("the migration of a service with no protected table is not the runtime's text alone:\n%s", source)
+		}
+	})
+}
+
 func TestTokenStatements(t *testing.T) {
 	t.Run("ST-SUP-RC29-OC06-T07 The migration quotes the table name as an identifier, and as a string literal in the regclass name", func(t *testing.T) {
 		// Review of PR #292, L1: the name was put raw into a quoted identifier and a string literal.

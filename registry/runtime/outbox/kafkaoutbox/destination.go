@@ -181,6 +181,46 @@ func (s *session) close() { s.once.Do(s.client.Close) }
 // that a broker names in its metadata, through one dialer that holds it to the settings. logs gives the event
 // kafka.delivery_failed of a failure of a named class; nil emits none.
 func New(s Settings, logs otellog.LoggerProvider) (*Destination, error) {
+	connection, err := Connection(s)
+	if err != nil {
+		return nil, err
+	}
+	options := append(connection,
+		kgo.ClientID("stego-outbox"),
+		// The destination fetches nothing; the fetch bound only has to stay within the read bound.
+		kgo.FetchMaxBytes(MaxReadBytes),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.ProducerLinger(0),
+		kgo.RecordDeliveryTimeout(DeliveryTimeout),
+		kgo.UnknownTopicRetries(UnknownTopicRetries),
+		kgo.StopProducerOnDataLossDetected(),
+		kgo.MaxBufferedRecords(outbox.MaxBatchSize*4),
+		// The key hash of the Java client, so one entity's events go to one partition whatever client reads them.
+		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)),
+	)
+	d := &Destination{options: options, topic: s.Topic}
+	if logs != nil {
+		d.logger = logs.Logger("github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox")
+		if s.InsecureLoopback {
+			// The insecure loopback mode is for a local test only: a deployment that sets it says so in its log.
+			var record otellog.Record
+			record.SetEventName("kafka.insecure_loopback")
+			record.SetSeverity(otellog.SeverityWarn)
+			record.SetSeverityText("WARN")
+			record.SetBody(attribute.StringValue("the Kafka destination talks to loopback brokers without TLS: STEGO_KAFKA_INSECURE_LOOPBACK=1 is for a local test only"))
+			d.logger.Emit(context.Background(), record)
+		}
+	}
+	return d, nil
+}
+
+// Connection gives the client options of the connection that the settings name, which the Kafka destination and the
+// Kafka inbox share (ST-SUP-RP01-LC32): the seed brokers, one dialer that holds each broker to the broker host list
+// and to the loopback check, the verified TLS with the dialed host as server name and the client certificate, the
+// SASL mechanism that reads its secret file at each authentication with the bounds of the SCRAM challenge, the read
+// bound of MaxReadBytes and no client metrics. It checks the settings and loads the CA file and the client
+// certificate, and refuses a file that does not load with an error that names its setting and holds no secret.
+func Connection(s Settings) ([]kgo.Opt, error) {
 	if err := s.Check(); err != nil {
 		return nil, err
 	}
@@ -194,19 +234,8 @@ func New(s Settings, logs otellog.LoggerProvider) (*Destination, error) {
 	}
 	options := []kgo.Opt{
 		kgo.SeedBrokers(append([]string(nil), s.Brokers...)...),
-		kgo.ClientID("stego-outbox"),
 		kgo.Dialer(dialer.dial),
 		kgo.BrokerMaxReadBytes(MaxReadBytes),
-		// The destination fetches nothing; the fetch bound only has to stay within the read bound.
-		kgo.FetchMaxBytes(MaxReadBytes),
-		kgo.RequiredAcks(kgo.AllISRAcks()),
-		kgo.ProducerLinger(0),
-		kgo.RecordDeliveryTimeout(DeliveryTimeout),
-		kgo.UnknownTopicRetries(UnknownTopicRetries),
-		kgo.StopProducerOnDataLossDetected(),
-		kgo.MaxBufferedRecords(outbox.MaxBatchSize * 4),
-		// The key hash of the Java client, so one entity's events go to one partition whatever client reads them.
-		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)),
 		kgo.DisableClientMetrics(),
 	}
 	if !s.InsecureLoopback {
@@ -236,20 +265,7 @@ func New(s Settings, logs otellog.LoggerProvider) (*Destination, error) {
 			return oauth.Auth{Token: token}, nil
 		})}))
 	}
-	d := &Destination{options: options, topic: s.Topic}
-	if logs != nil {
-		d.logger = logs.Logger("github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox")
-		if s.InsecureLoopback {
-			// The insecure loopback mode is for a local test only: a deployment that sets it says so in its log.
-			var record otellog.Record
-			record.SetEventName("kafka.insecure_loopback")
-			record.SetSeverity(otellog.SeverityWarn)
-			record.SetSeverityText("WARN")
-			record.SetBody(attribute.StringValue("the Kafka destination talks to loopback brokers without TLS: STEGO_KAFKA_INSECURE_LOOPBACK=1 is for a local test only"))
-			d.logger.Emit(context.Background(), record)
-		}
-	}
-	return d, nil
+	return options, nil
 }
 
 // brokerDialer dials each broker for the client: a seed, or a broker that a broker names in its metadata. With hosts,

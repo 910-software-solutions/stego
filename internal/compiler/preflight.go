@@ -181,6 +181,7 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			FillSlots:       maps.Clone(facts.FillSlots),
 			Commands:        declaredCommands(svcDecl, facts.FillSlots),
 			Workers:         declaredWorkers(svcDecl, facts.FillSlots),
+			Subscriptions:   svcDecl.Subscriptions,
 			Destinations:    declaredDestinations(svcDecl, componentNames),
 			QueryStreams:    declaration.QueryStreams(svcDecl, facts),
 		}

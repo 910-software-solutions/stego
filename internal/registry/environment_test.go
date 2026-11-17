@@ -339,6 +339,8 @@ func TestOneOfGroups(t *testing.T) {
 			"postgres-adapter/relay-database-url":     {"STEGO_RELAY_DATABASE_URL", "STEGO_RELAY_DATABASE_URL_FILE"},
 			"kafka-producer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
 			"kafka-producer/kafka-topic":              {"STEGO_KAFKA_TOPIC", "STEGO_KAFKA_TOPIC_FILE"},
+			"kafka-consumer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
+			"kafka-consumer/kafka-consumer-topic":     {"STEGO_KAFKA_CONSUMER_TOPIC", "STEGO_KAFKA_CONSUMER_TOPIC_FILE"},
 			// The mode migrate of browser-backend reads the same owner connection as postgres-adapter (ST-SUP-RC02-OC56).
 			"browser-backend/migration-database-url": {"STEGO_MIGRATION_DATABASE_URL", "STEGO_MIGRATION_DATABASE_URL_FILE"},
 		}

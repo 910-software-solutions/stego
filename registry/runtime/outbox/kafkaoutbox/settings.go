@@ -349,3 +349,8 @@ func readSecret(name, path string) (string, error) {
 	}
 	return secret, nil
 }
+
+// ReadValue reads one setting that is not a secret from the process environment: from name, or from the file that
+// fileName names, never both, as the settings of the destination are read (ST-SUP-RP01-LC32). The Kafka inbox reads
+// its own settings with it.
+func ReadValue(name, fileName string) (string, error) { return value(name, fileName) }

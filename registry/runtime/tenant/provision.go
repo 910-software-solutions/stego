@@ -251,6 +251,55 @@ func ListAfter(ctx context.Context, db *sql.DB, schema, after string, limit int)
 	return tenants, nil
 }
 
+// Listing is the state of one tenant ID in the tenant list: not listed, listed and active, or listed and retired.
+type Listing int
+
+const (
+	// NotListed is a tenant ID that the tenant list does not hold.
+	NotListed Listing = iota
+	// Active is a tenant that the tenant list holds with no retire time.
+	Active
+	// Retired is a tenant that the tenant list holds with a retire time.
+	Retired
+)
+
+// Lookup reads the entry of the tenant ID id in the tenant list of schema, as the role of db, the runtime role in a
+// service (ST-SUP-RP04-LC11). id is only the key of the read, such as the tenant header of a consumed Kafka record:
+// the tenant that Lookup gives is built from the tenant column of the entry that the statement read, through New, so
+// a header is never a source of a tenant (ST-SUP-RP04-LC01). It gives the tenant and Active or Retired for a listed
+// ID, and the zero tenant and NotListed for an ID that the list does not hold or that is not a valid tenant ID, which
+// it refuses before it sends a statement. A failed read is an error.
+func Lookup(ctx context.Context, db *sql.DB, schema, id string) (Tenant, Listing, error) {
+	if db == nil {
+		return Tenant{}, NotListed, errors.New("tenant: no database")
+	}
+	quotedSchema, err := quoteName("schema", schema)
+	if err != nil {
+		return Tenant{}, NotListed, err
+	}
+	if validID(id) != nil {
+		return Tenant{}, NotListed, nil
+	}
+	var c column
+	var active bool
+	err = db.QueryRowContext(ctx, "SELECT tenant_id, retired_at IS NULL FROM "+quotedSchema+
+		".stego_tenants WHERE tenant_id = $1", id).Scan(&c, &active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Tenant{}, NotListed, nil
+	}
+	if err != nil {
+		return Tenant{}, NotListed, fmt.Errorf("tenant: read the entry of the tenant list: %w", err)
+	}
+	t, err := New(c)
+	if err != nil {
+		return Tenant{}, NotListed, err
+	}
+	if !active {
+		return t, Retired, nil
+	}
+	return t, Active, nil
+}
+
 // ActiveIn tells, through q, an open transaction, whether the tenant list of schema holds t as active: listed and
 // not retired. A job that read t from an earlier page reads it again so in the transaction of its write, after it
 // took the lock that a Provision or Retire of t holds, so it never writes for a tenant that was retired since.

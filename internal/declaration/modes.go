@@ -35,6 +35,10 @@ func validateNeededModes(service *types.ServiceDeclaration, facts Facts) []Valid
 		}
 		needs["controller"] = append(needs["controller"], controller)
 	}
+	if len(service.Subscriptions) > 0 {
+		// The Kafka inbox of a subscription runs in the worker mode (ST-SUP-RC38-OC01).
+		needs["worker"] = append(needs["worker"], "the Kafka inbox of the subscription "+service.Subscriptions[0].Name)
+	}
 	var faults []ValidationError
 	for _, mode := range knownModes {
 		if len(needs[mode]) == 0 || RunsMode(service, mode) {

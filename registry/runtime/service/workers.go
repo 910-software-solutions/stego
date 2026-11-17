@@ -24,6 +24,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -121,10 +122,28 @@ type WorkerParts struct {
 	// trigger, which calls RunConsumer on the command runtime of the workers (ST-SUP-RC35-OC06). Nil: the service
 	// has no such worker.
 	Consumers func(rt *command.Runtime, worker *outbox.Worker, observe func(name string) command.WorkerObserver) error
+	// Inbox gives the Kafka inbox of the declared subscription, which writes each record that it takes into the outbox
+	// for the worker that consumes the subscription (ST-SUP-RC38-OC01). The worker mode runs it, and the purge timer
+	// of the outbox worker purges its refused records. Nil: the service declares no subscription.
+	Inbox func(env InboxEnv) (*kafkainbox.Inbox, error)
 	// ConsumerTables are the tables in public of the entities that the workers with a consumes trigger write, which
 	// the migration job grants the worker role SELECT, INSERT and UPDATE on (decision on ST-SUP-Q141, orchestrator
 	// under the owner's delegation, 2026-11-15).
 	ConsumerTables []string
+}
+
+// InboxEnv is what the Kafka inbox of a subscription gets from the worker mode.
+type InboxEnv struct {
+	// Queue is the outbox queue on the pool of the worker role, DB, on which the inbox writes.
+	Queue *outbox.Queue
+	DB    *sql.DB
+	// Tenants looks a tenant ID up in the tenant list, on the pool of the runtime role (ST-SUP-RP04-LC11).
+	Tenants kafkainbox.Lookup
+	// Retention is the done retention of the outbox worker, which the topic's retention must not exceed.
+	Retention time.Duration
+	// Logs and Meter are the providers of the service's telemetry.
+	Logs  otellog.LoggerProvider
+	Meter metric.MeterProvider
 }
 
 // WorkerLeasePrefix is the prefix of the name of the lease of a single worker: stego.worker.<worker name>
@@ -191,6 +210,9 @@ type Workers struct {
 
 	workerDB, relayDB *sql.DB
 	worker            *outbox.Worker
+	// inboxName is the component name of the Kafka inbox of a declared subscription, or empty: a stopped inbox, such
+	// as one that the retention of its topic stopped, makes the worker mode not ready (ST-SUP-RP14-LC08).
+	inboxName string
 	relay             *authz.Relay
 	periodic          *lease.Periodic
 	tickers           []*command.Ticker
@@ -371,6 +393,24 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 			return nil, err
 		}
 	}
+	var inbox *kafkainbox.Inbox
+	if p.Inbox != nil {
+		if p.TenantSchema == "" {
+			return nil, errors.New("service: the Kafka inbox needs the schema of the tenant list")
+		}
+		pool, schema := svc.pool, p.TenantSchema
+		if inbox, err = p.Inbox(InboxEnv{Queue: queue, DB: w.workerDB, Retention: w.worker.Retention(),
+			Logs: svc.telemetry.LoggerProvider(), Meter: svc.telemetry.MeterProvider(),
+			Tenants: func(ctx context.Context, id string) (tenant.Tenant, tenant.Listing, error) {
+				return tenant.Lookup(ctx, pool, schema, id)
+			}}); err != nil {
+			return nil, inboxSetting(err)
+		}
+		// The refused records are purged on the timer of the outbox (ST-SUP-RP01-LC37).
+		if err := w.worker.AddPurge(inbox.Purge); err != nil {
+			return nil, err
+		}
+	}
 	// Each registered destination has a claim slot of its own, so a service with more destinations than Concurrency
 	// runs one slot for each, and each slot holds one connection (ST-SUP-RP01-LC34).
 	if slots := max(config.Concurrency, len(w.worker.Registrations())); w.workerDB.Stats().MaxOpenConnections < slots+2 &&
@@ -378,6 +418,12 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		w.workerDB.SetMaxOpenConns(slots + 2)
 	}
 	set := []modes.Component{{Name: OutboxWorkerName, Run: w.worker.Run}}
+	if inbox != nil {
+		// The inbox runs in the worker mode; a start that it refuses for good, such as a topic retention longer than
+		// the done retention, stops it, and the readiness of the worker mode names it (ST-SUP-RC38-OC01).
+		w.inboxName = inbox.Name()
+		set = append(set, modes.Component{Name: inbox.Name(), Run: inbox.Run})
+	}
 	if p.Tickers != nil {
 		if svc.workers == nil || p.TenantSchema == "" {
 			return nil, errors.New("service: the workers need the command runtime of the workers and the schema of the tenant list")
@@ -623,7 +669,7 @@ func (w *Workers) Ready(ctx context.Context) error {
 		if m == modes.Worker && w.workerDB != nil {
 			if err := w.workerDB.PingContext(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w: the worker role's pool does not reach the database", m, modes.ErrNotReady))
-			} else if reason := w.stopped(OutboxWorkerName, RelayWatchName); reason != "" {
+			} else if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
 			}
 		}
@@ -702,4 +748,17 @@ func (w *Workers) closePools() {
 			_ = db.Close()
 		}
 	}
+}
+
+// KafkaConsumerComponent is the registry component whose settings the Kafka inbox reads (ST-SUP-RC38).
+const KafkaConsumerComponent = "kafka-consumer"
+
+// inboxSetting gives a refused setting of the Kafka inbox as a *SettingError of the component kafka-consumer, so the
+// start names its stage service.start.setting.kafka-consumer.<variable> and no value (ST-SUP-RP14-LC05).
+func inboxSetting(err error) error {
+	var setting *kafkainbox.SettingError
+	if errors.As(err, &setting) {
+		return &SettingError{Component: KafkaConsumerComponent, Variable: setting.Variable, names: setting.Variable, problem: setting.Problem}
+	}
+	return err
 }

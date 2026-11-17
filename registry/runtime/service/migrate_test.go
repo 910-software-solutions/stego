@@ -31,6 +31,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
+	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -2797,6 +2798,76 @@ func TestMigrateTenantKeys(t *testing.T) {
 		var listed bool
 		if err := f.admin.QueryRow("SELECT EXISTS (SELECT 1 FROM public.stego_tenants WHERE tenant_id = 'tenant-a')").Scan(&listed); err != nil || !listed {
 			t.Fatalf("tenant-a is not in the list after the refused delete (error %v)", err)
+		}
+	})
+}
+
+func TestMigrateInbox(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC08-T01 The job makes the table of the refused records of a declared subscription after the audit sink, as the owner, for the worker role", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		m := f.migration(nil)
+		text, err := kafkainbox.Migration(f.worker)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.Inbox = text
+		s := &steps{backends: map[int]bool{}}
+		stepped = s.record(t)
+		defer func() { stepped = nil }()
+		if err := Migrate(context.Background(), settings, m); err != nil {
+			t.Fatal(err)
+		}
+		at := slices.Index(s.names, StepInbox)
+		if at < 1 || s.names[at-1] != StepAuditSink {
+			t.Fatalf("the job ran %v, want %s right after %s", s.names, StepInbox, StepAuditSink)
+		}
+		var owned, insert bool
+		if err := f.admin.QueryRow(`SELECT (SELECT tableowner FROM pg_tables WHERE schemaname = 'stego_inbox' AND tablename = 'refused') = $1,
+			has_table_privilege($2, 'stego_inbox.refused', 'INSERT')`, f.owner, f.worker).Scan(&owned, &insert); err != nil || !owned || !insert {
+			t.Fatalf("the table of the refused records is owned by the owner %t and writable by the worker %t (%v)", owned, insert, err)
+		}
+		// A service with no subscription runs no such step.
+		s = &steps{backends: map[int]bool{}}
+		stepped = s.record(t)
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil || slices.Contains(s.names, StepInbox) {
+			t.Fatalf("a job with no inbox text ran %v (%v)", s.names, err)
+		}
+	})
+}
+
+func TestInboxSetting(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC08-T02 A refused setting of the Kafka inbox names the stage of kafka-consumer and the variable, and no value", func(t *testing.T) {
+		t.Setenv("STEGO_KAFKA_BROKERS", "127.0.0.1:9092")
+		t.Setenv("STEGO_KAFKA_INSECURE_LOOPBACK", "1")
+		t.Setenv(kafkainbox.TopicSetting, "")
+		_, err := kafkainbox.ReadSettings("fulfilment", "order-changes")
+		if stage := StartStage(inboxSetting(err)); stage != "service.start.setting.kafka-consumer."+kafkainbox.TopicSetting {
+			t.Fatalf("the stage of a missing topic is %q", stage)
+		}
+		t.Setenv(kafkainbox.TopicSetting, "secret-topic-name!")
+		_, err = kafkainbox.ReadSettings("fulfilment", "order-changes")
+		if err = inboxSetting(err); err == nil || strings.Contains(err.Error(), "secret-topic-name") {
+			t.Fatalf("the refusal of a malformed topic is %v", err)
+		}
+		if other := errors.New("other"); inboxSetting(other) != other {
+			t.Fatal("inboxSetting changed an error that is not a setting")
+		}
+	})
+}
+
+func TestInboxReadiness(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC08-T03 A stopped Kafka inbox is named by the readiness of the worker mode", func(t *testing.T) {
+		w := &Workers{inboxName: "inbox-order-changes"}
+		w.track(OutboxWorkerName)
+		w.track("inbox-order-changes").running.Store(false)
+		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "the component inbox-order-changes stopped" {
+			t.Fatalf("the reason is %q", reason)
+		}
+		w.track("inbox-order-changes")
+		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
+			t.Fatalf("a running inbox gives the reason %q", reason)
 		}
 	})
 }

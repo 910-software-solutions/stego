@@ -44,6 +44,7 @@ const (
 	StepOutboxSequence      = "outbox_sequence"
 	StepAuditTables         = "audit_tables"
 	StepAuditSink           = "audit_sink"
+	StepInbox               = "kafka_inbox"
 	StepIdempotencyKeys     = "idempotency_keys"
 	StepAuthorizationTables = "authorization_tables"
 	StepRuntimeGrants       = "runtime_grants"
@@ -83,6 +84,9 @@ type Migration struct {
 	// Outbox, Audit and Authorization are the migration texts of the outbox queue, the audit tables and the
 	// authorization tables, for the roles of the service; the idempotency keys take the runtime's own text.
 	Outbox, Audit, Authorization string
+	// Inbox is the migration text of the table of the refused records of the Kafka inbox, kafkainbox.Migration for the
+	// worker role, for a service that declares a subscription; empty for one that declares none (ST-SUP-RP01-LC37).
+	Inbox string
 	// WriteSchema writes the authorization schema of the release to SpiceDB, which refuses a schema that removes a
 	// definition or a relation that has relationships (ST-SUP-RC29-OC23).
 	WriteSchema func(ctx context.Context, conn grpc.ClientConnInterface) error
@@ -336,6 +340,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		{StepOutboxQueue, m.Outbox},
 		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole, m.WorkerLeases)},
 		{StepAuditSink, sinkTable},
+		{StepInbox, m.Inbox},
 		{StepIdempotencyKeys, keys},
 		// The grants of the worker role are in the one transaction of the authorization tables: a table-level REVOKE
 		// also takes back the column grants on the token of each protected table, which the authorization text gives
@@ -345,6 +350,9 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		{StepRuntimeGrants, granted(m.Grants, m.RuntimeRole)},
 	}
 	for _, t := range texts {
+		if t.text == "" && t.name == StepInbox {
+			continue
+		}
 		if err := step(t.name, func() error { return textStep(ctx, conn, m.OwnerRole, t.name, t.text) }); err != nil {
 			return err
 		}

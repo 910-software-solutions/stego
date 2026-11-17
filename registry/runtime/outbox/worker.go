@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -130,6 +131,7 @@ type Worker struct {
 	metrics      *metrics
 	mu           sync.Mutex
 	destinations map[string]Destination
+	purges       []Purger
 	running      atomic.Bool
 	started      atomic.Bool
 	stop         chan struct{}
@@ -228,6 +230,29 @@ func (w *Worker) Register(d Destination) error {
 	w.destinations[d.Name] = d
 	return nil
 }
+
+// Purger removes at most limit rows of a table that a component of the service keeps beside the queue, such as the
+// refused records of a Kafka inbox, and gives how many it removed. The purge timer of the worker runs it.
+type Purger func(ctx context.Context, limit int) (int64, error)
+
+// AddPurge adds p to the purge timer before Run, so a table beside the queue is purged on the timer of the outbox
+// (ST-SUP-RP01-LC36): at each PurgeEvery, after the done messages, the timer runs p in batches of MaxBatchSize until a
+// batch is not full or 1000 batches ran. It refuses a nil purger and a call after Run started.
+func (w *Worker) AddPurge(p Purger) error {
+	if p == nil {
+		return errors.New("outbox: AddPurge needs a purger")
+	}
+	if w.started.Load() {
+		return errors.New("outbox: a purger is added before Run")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.purges = append(w.purges, p)
+	return nil
+}
+
+// Retention is the time that a done message stays in the queue before the purge timer removes it.
+func (w *Worker) Retention() time.Duration { return w.config.Retention }
 
 // Registration is what the worker holds for one destination.
 type Registration struct {
@@ -430,8 +455,35 @@ func (w *Worker) purgeTimer(ctx context.Context) {
 			if _, _, err := w.purgeTick(ctx); err != nil && ctx.Err() == nil {
 				w.databaseFailures.Add(1)
 			}
+			if err := w.purgeAdded(ctx); err != nil && ctx.Err() == nil {
+				w.databaseFailures.Add(1)
+			}
 		}
 	}
+}
+
+// purgeAdded runs each purger that AddPurge added, in batches of MaxBatchSize, until a batch is not full or 1000
+// batches ran. A failed purger does not stop the others; it returns the first error.
+func (w *Worker) purgeAdded(ctx context.Context) error {
+	w.mu.Lock()
+	purges := slices.Clone(w.purges)
+	w.mu.Unlock()
+	var first error
+	for _, p := range purges {
+		for batch := 1; batch <= 1000; batch++ {
+			n, err := p(ctx, MaxBatchSize)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				break
+			}
+			if n < MaxBatchSize {
+				break
+			}
+		}
+	}
+	return first
 }
 
 // purgeTick removes the done messages older than the retention, in batches of MaxBatchSize through the relay

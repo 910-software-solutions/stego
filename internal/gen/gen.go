@@ -253,6 +253,10 @@ type Context struct {
 	// its fill implements. Generators must not change them.
 	Workers []Worker
 
+	// Subscriptions are the declared subscriptions of the service (ST-DECL-EN28), in declaration order. Generators
+	// must not change them.
+	Subscriptions []types.Subscription
+
 	// FillSlots gives, for each fill that a command, a query or a worker names and that the project holds, the slot
 	// it implements as component.slot, as its fill.yaml states (ST-DECL-INV45). A fill that the project does not hold
 	// has no entry.
