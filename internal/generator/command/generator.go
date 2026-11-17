@@ -267,10 +267,45 @@ func plan(ctx gen.Context) (*model, error) {
 			m.entities = append(m.entities, p)
 		}
 	}
+	if err := m.checkChangeEvents(); err != nil {
+		return nil, err
+	}
 	if err := m.takeNames(); err != nil {
 		return nil, err
 	}
 	return m, nil
+}
+
+// checkChangeEvents refuses, for a service with the kafka-producer component, a service without the outbox
+// component, a written entity whose change event name Kafka refuses, and a declared effect named as a change event of
+// the service, which only the handle stages (ST-SUP-RC32-OC14, ST-SUP-RP10-LC36).
+func (m *model) checkChangeEvents() error {
+	if !ChangeEvents(m.ctx) {
+		return nil
+	}
+	var names []string
+	for _, e := range m.entities {
+		names = append(names, e.decl.Name)
+	}
+	if err := CheckChangeEvents(m.ctx, "command", "ST-SUP-RC32-OC14", names); err != nil {
+		return err
+	}
+	events := map[string]bool{}
+	for _, e := range m.ctx.Entities {
+		for _, action := range []string{EventCreated, EventUpdated, EventDeleted} {
+			events[ChangeEventType(m.ctx.ServiceName, e.Name, action)] = true
+		}
+	}
+	for _, c := range m.commands {
+		for _, d := range c.effects {
+			for _, name := range c.effectNames[d] {
+				if events[name] {
+					return fmt.Errorf("command: the command %s declares the effect %s, which is the name of a change event that the handle stages for each write (ST-SUP-RC32-OC14)", c.decl.Name, name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // planCommand checks one command.

@@ -1398,7 +1398,7 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
  FOR EACH ROW WHEN (NEW.sku = 'rolled-back') EXECUTE FUNCTION wiring_refuse_at_commit()`)
 		defer execAll(t, s.admin, "DROP TRIGGER wiring_refuse_at_commit ON orders", "DROP FUNCTION wiring_refuse_at_commit()")
 		messages := s.kafkaMessages(t)
-		before := len(s.broker.Records(t, changeTopic, 0, 10*time.Second, time.Second))
+		before := s.changeRecords(t, time.Second)
 		got := s.send(&owner, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"rolled-back","qty":1}`)
 		if got.status < http.StatusInternalServerError {
 			t.Fatalf("the create whose commit is refused answered %d %s, want a server error", got.status, got.body)
@@ -1409,8 +1409,81 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		if n := s.kafkaMessages(t); n != messages {
 			t.Errorf("the outbox holds %d events of the destination kafka after the refused create, want the %d of before", n, messages)
 		}
-		if after := len(s.broker.Records(t, changeTopic, 0, 10*time.Second, 3*time.Second)); after != before {
+		if after := s.changeRecords(t, 3*time.Second); after != before {
 			t.Errorf("the topic holds %d records after the refused create, want the %d of before", after, before)
+		}
+	})
+
+	t.Run("ST-SUP-RC32-OC14-T02 The write of a command sends the change event of its row to Kafka", func(t *testing.T) {
+		s.t = t
+		created := s.send(&owner, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"noted","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		s.own(owner, id)
+		s.canEdit(t, owner, id)
+		var added reply
+		// The decision of the command may see the owner tuple some time after canEdit does: a denied note writes
+		// nothing and stages nothing, so the check sends it again until it passes.
+		s.eventually(t, "the note of the owner passes", func() bool {
+			added = s.send(&owner, http.MethodPost, "/orders/"+id+"/notes", "k-"+uuid.NewString(), `{"text":"evented"}`)
+			return added.status/100 == 2
+		})
+		note := added.member(t, "noteId")
+		// The command add-note creates the note through the handle, which stages the event of the note in the
+		// transaction of the command, as a collection write does (ST-SUP-RP10-LC36).
+		m := s.eventDone(t, note, "wiring-shop.note.created")
+		if m.resourceKey != "note:"+note {
+			t.Errorf("the event of the note has the resource key %q, want note:%s", m.resourceKey, note)
+		}
+		records := s.records(t, note, 1)
+		if len(records) != 1 {
+			t.Fatalf("the topic holds %d records of the note, want the one event", len(records))
+		}
+		r := records[0]
+		if want := kafkaoutbox.Key(owner.tenant.ID(), m.resourceKey); string(r.Key) != want {
+			t.Errorf("the record key is %q, want %q", r.Key, want)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(r.Value, &payload); err != nil || payload["entity"] != "Note" || payload["action"] != "created" || payload["id"] != note || len(payload) != 3 {
+			t.Errorf("the record value is %s (%v), want the entity Note, the action created and the ID %s only", r.Value, err, note)
+		}
+		for name, value := range map[string]string{kafkaoutbox.HeaderEventType: "wiring-shop.note.created", kafkaoutbox.HeaderEventAction: "created",
+			kafkaoutbox.HeaderEventID: m.id, kafkaoutbox.HeaderIdempotencyKey: m.outgoing, kafkaoutbox.HeaderTenant: owner.tenant.ID()} {
+			if got, once := kafkatest.Header(r, name); !once || got != value {
+				t.Errorf("the header %s is %q (once: %v), want %q", name, got, once, value)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC14-T02 The writes of a worker send the change events of their rows to Kafka", func(t *testing.T) {
+		s.t = t
+		// Each tick of sync-partner-orders in the kept tenant updates the seeded order through the handle.
+		s.eventually(t, "an event of a tick of the worker is done", func() bool {
+			return count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'kafka' AND tenant_id = $1
+ AND kind = 'wiring-shop.order.updated' AND resource_key = $2 AND state = 'done'`, kept, "order:"+syncedOrder) >= 1
+		})
+		var mine int
+		for _, r := range s.records(t, syncedOrder, 1) {
+			var payload map[string]string
+			must(t, json.Unmarshal(r.Value, &payload))
+			if tenant, _ := kafkatest.Header(r, kafkaoutbox.HeaderTenant); tenant == kept {
+				mine++
+				if payload["entity"] != "Order" || payload["action"] != "updated" || len(payload) != 3 || string(r.Key) != kafkaoutbox.Key(kept, "order:"+syncedOrder) {
+					t.Errorf("the record of the tick is %s with the key %q, want the entity Order, the action updated and the ID only", r.Value, r.Key)
+				}
+			}
+		}
+		if mine == 0 {
+			t.Error("the topic holds no record of a tick of the worker in the kept tenant")
+		}
+		// The consumer apply-note-replies updated an order of the kept tenant in ST-SUP-RC35-OC06-T04: RunConsumer
+		// stages its event too.
+		if n := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages m JOIN orders o ON o.tenant_id = m.tenant_id
+ AND m.resource_key = 'order:' || o.id::text WHERE m.destination = 'kafka' AND m.tenant_id = $1 AND o.sku = 'consumed'
+ AND m.kind = 'wiring-shop.order.updated'`, kept); n != 1 {
+			t.Errorf("the outbox holds %d events of the consumer's update, want one", n)
 		}
 	})
 
@@ -1663,7 +1736,20 @@ func (s *service) awaitPermission(t *testing.T, resourceType, resourceID, permis
 
 // kafkaMessages counts the outbox messages of the destination kafka.
 func (s *service) kafkaMessages(t *testing.T) int {
-	return count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'kafka'`)
+	return count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'kafka' AND tenant_id NOT LIKE 'org-w%'`)
+}
+
+// changeRecords counts the records of the change topic, but those of the tenants of the workers, whose ticks write
+// the seeded order and stage its change event every 10 s (ST-SUP-RP10-LC36).
+func (s *service) changeRecords(t *testing.T, quiet time.Duration) int {
+	t.Helper()
+	n := 0
+	for _, r := range s.broker.Records(t, changeTopic, 0, 10*time.Second, quiet) {
+		if tenant, _ := kafkatest.Header(r, kafkaoutbox.HeaderTenant); !strings.HasPrefix(tenant, "org-w") {
+			n++
+		}
+	}
+	return n
 }
 
 // canEdit waits until SpiceDB answers, at its quantized revision, that the caller may edit the order id, as the
