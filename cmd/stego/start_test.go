@@ -538,8 +538,8 @@ func TestArchetypeScaffolds(t *testing.T) {
 		// --module comes before STEGO_MODULE, and the go.mod holds the module and the Go version only.
 		project := namedProject(t)
 		run := stegoIn(t, project, append(slices.Clone(cleared), "STEGO_MODULE=example.com/other"), "init", "--archetype", "rpc-service", "--module", "example.com/acme/greeter")
-		if run.code != 0 || !strings.Contains(run.stdout, "  go.mod\n") {
-			t.Fatalf("stego init --module: exit %d, want exit 0 and go.mod among the files it made: %s%s", run.code, run.stdout, run.stderr)
+		if run.code != 0 || !strings.Contains(run.stdout, "  go.mod\n") || !strings.Contains(run.stdout, "Module: example.com/acme/greeter (from --module)\n") {
+			t.Fatalf("stego init --module: exit %d, want exit 0, go.mod among the files it made and the module with its source: %s%s", run.code, run.stdout, run.stderr)
 		}
 		if got := read(t, filepath.Join(project, "go.mod")); got != "module example.com/acme/greeter\n\ngo 1.26.11\n" {
 			t.Errorf("init wrote the go.mod %q", got)
@@ -566,8 +566,13 @@ func TestArchetypeScaffolds(t *testing.T) {
 		// With no --module, init takes STEGO_MODULE, and with neither the default.
 		for env, want := range map[string]string{"STEGO_MODULE=example.com/from-env": "example.com/from-env", "STEGO_MODULE=": "github.com/example/service"} {
 			project := namedProject(t)
-			if run := stegoIn(t, project, append(slices.Clone(cleared), env), "init", "--archetype", "rest-crud"); run.code != 0 {
+			run := stegoIn(t, project, append(slices.Clone(cleared), env), "init", "--archetype", "rest-crud")
+			if run.code != 0 {
 				t.Fatalf("%s: stego init: exit %d: %s", env, run.code, run.stderr)
+			}
+			source := map[bool]string{true: "STEGO_MODULE", false: "the default"}[env != "STEGO_MODULE="]
+			if !strings.Contains(run.stdout, "Module: "+want+" (from "+source+")\n") {
+				t.Errorf("%s: stego init did not print the module with its source %s: %s", env, source, run.stdout)
 			}
 			if got := read(t, filepath.Join(project, "go.mod")); got != "module "+want+"\n\ngo 1.26.11\n" {
 				t.Errorf("%s: init wrote the go.mod %q", env, got)
@@ -587,7 +592,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 			t.Errorf("the refused scaffold changed a file")
 		}
 		run = stegoIn(t, project, cleared, "init", "--archetype", "rpc-service")
-		if run.code != 0 || strings.Contains(run.stdout, "  go.mod\n") {
+		if run.code != 0 || strings.Contains(run.stdout, "  go.mod\n") || !strings.Contains(run.stdout, "Module: example.com/mine (from the go.mod of the folder)\n") {
 			t.Fatalf("stego init beside a go.mod: exit %d, want exit 0 and no go.mod among the files it made: %s%s", run.code, run.stdout, run.stderr)
 		}
 		if got := read(t, filepath.Join(project, "go.mod")); got != own {

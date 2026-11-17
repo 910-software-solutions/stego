@@ -203,15 +203,23 @@ func runInit(args []string) error {
 	}
 	// The module comes from --module, then STEGO_MODULE, then the project's go.mod or the default. Init writes it in
 	// a new go.mod, and each later command reads it from there (walkthrough-7 B12, decision A).
-	module := *moduleFlag
+	module, source := *moduleFlag, "--module"
 	if module == "" {
-		module = os.Getenv("STEGO_MODULE")
+		module, source = os.Getenv("STEGO_MODULE"), "STEGO_MODULE"
+	}
+	if module == "" {
+		source = "the default"
 	}
 	result, err := compiler.Initialize(compiler.InitOptions{ProjectDir: projectDir, Archetype: *archetype, Empty: *empty, Module: module, GoVersion: os.Getenv("STEGO_GO_VERSION"), Stderr: os.Stderr})
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Initialized stego project %q with archetype %q\n", result.Name, *archetype)
+	// The module path and where it came from, so that a STEGO_MODULE left set from another project shows.
+	if result.ModuleFromProject {
+		source = "the go.mod of the folder"
+	}
+	fmt.Printf("Module: %s (from %s)\n", result.Module, source)
 	fmt.Println("Created:")
 	for _, path := range result.Created {
 		fmt.Printf("  %s\n", path)

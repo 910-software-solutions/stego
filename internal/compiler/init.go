@@ -40,6 +40,10 @@ type InitOptions struct {
 type InitResult struct {
 	Name    string
 	Created []string
+	// Module is the module path of the service, and ModuleFromProject tells that it is the one of the go.mod that the
+	// project held, so init wrote no go.mod.
+	Module            string
+	ModuleFromProject bool
 	// Owed names each setting that the archetype's components mark as author supplied, for an empty scaffold
 	// (ST-DECL-UC01-R05). A scaffold with example content gives them, so it owes none.
 	Owed []string
@@ -233,7 +237,7 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 	if err := create("service.yaml", document); err != nil {
 		return nil, err
 	}
-	return &InitResult{Name: name, Created: append(created, "service.yaml"), Owed: owed}, nil
+	return &InitResult{Name: name, Created: append(created, "service.yaml"), Owed: owed, Module: module, ModuleFromProject: goModule == nil}, nil
 }
 
 // minimalModule gives the go.mod that init writes in a project that holds none: the module and the Go version only.
