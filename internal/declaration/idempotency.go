@@ -176,3 +176,21 @@ func validateIdempotencyValues(service *types.ServiceDeclaration) []ValidationEr
 	}
 	return faults
 }
+
+// validateProblemBase checks that a declaration with the idempotency setting sets error_type_base (ST-DECL-INV83):
+// the idempotency component emits the problem types idempotency-key-missing, idempotency-key-in-progress and
+// idempotency-key-reused under the service's problem base, so without the base they have no URI. The fault is at
+// error_type_base and names the setting that needs it. The idempotency generator keeps its own check as a second
+// guard.
+func validateProblemBase(service *types.ServiceDeclaration) []ValidationError {
+	if service == nil || service.Idempotency == nil || strings.TrimSpace(service.ErrorTypeBase) != "" {
+		return nil
+	}
+	return []ValidationError{{
+		Category: "service",
+		Rule:     "problem-base",
+		Path:     "error_type_base",
+		Found:    "",
+		Message:  "the setting idempotency needs error_type_base: the idempotency component gives the problem types idempotency-key-missing, idempotency-key-in-progress and idempotency-key-reused under the problem base of the service; set error_type_base to an absolute URI that ends with /, such as https://errors.example.com/my-service/, or remove idempotency",
+	}}
+}
