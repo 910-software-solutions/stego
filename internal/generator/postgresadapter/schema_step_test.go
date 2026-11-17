@@ -1,6 +1,8 @@
 package postgresadapter_test
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -512,6 +514,106 @@ func TestSchemaMarker(t *testing.T) {
 		ctx.SchemaHistory[0].Change = "Add_Card"
 		if files, _, err := new(postgresadapter.Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "ST-SUP-RC01-OC43") || files != nil {
 			t.Errorf("a step named step_0001_Add_Card_expand gives files %d and error %v, want the refusal", len(files), err)
+		}
+	})
+}
+
+// withinEntities are the entities of the within cases (ST-SUP-RC01-OC46): the owned Project, the owned Sprint of a
+// project, and the owned Ticket of a project with an optional sprint; with within, the sprint of a ticket is held
+// within project_id.
+func withinEntities(within string) []types.Entity {
+	return []types.Entity{
+		{Name: "Project", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}}},
+		{Name: "Sprint", Fields: []types.Field{{Name: "project_id", Type: types.FieldTypeRef, To: "Project"}, {Name: "name", Type: types.FieldTypeString}}},
+		{Name: "Ticket", EntityAuthorization: types.EntityAuthorization{References: map[string]types.Reference{
+			"sprint_id": {Relation: "sprint", Permission: "edit", Within: within}}},
+			Fields: []types.Field{{Name: "project_id", Type: types.FieldTypeRef, To: "Project"}, {Name: "sprint_id", Type: types.FieldTypeRef, To: "Sprint", Optional: true},
+				{Name: "title", Type: types.FieldTypeString}}},
+	}
+}
+
+// withinBase is the release before the within step: the sprint of a ticket has no within.
+func withinBase(ns, tenancyNS string) gen.Context {
+	return runtimeService(ns, tenancyNS, withinEntities(""), nil)
+}
+
+// withinHead is withinBase with within: project_id on the sprint of a ticket, added by the within step
+// ticket-sprint-within on the tables with rows (ST-SUP-RC01-OC46, ST-DECL-Q42).
+func withinHead(ns, tenancyNS string) gen.Context {
+	ctx := runtimeService(ns, tenancyNS, withinEntities("project_id"), nil)
+	ctx.SchemaChanges = []types.SchemaChange{{ID: "ticket-sprint-within", Kind: "within", Entity: "Ticket", Field: "sprint_id"}}
+	ctx.SchemaHistory = []types.SchemaStep{{Change: "ticket-sprint-within", Phase: "expand"}}
+	return ctx
+}
+
+// withinFresh is a first release with within: project_id on the sprint of a ticket, so 001_initial holds the key.
+func withinFresh(ns, tenancyNS string) gen.Context {
+	return runtimeService(ns, tenancyNS, withinEntities("project_id"), nil)
+}
+
+func TestWithinKeys(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC46-T03 The within step builds the unique key, then adds the foreign key NOT VALID, then validates it, each in its own migration", func(t *testing.T) {
+		files, _, err := new(postgresadapter.Generator).Generate(withinHead("within", "withintenancy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies := map[string]string{}
+		var names []string
+		for _, f := range files {
+			if dir, name := filepath.Split(f.Path); dir == filepath.Join("within", "migrations")+string(os.PathSeparator) {
+				bodies[strings.TrimSuffix(name, ".sql")] = string(f.Content)
+				names = append(names, strings.TrimSuffix(name, ".sql"))
+			}
+		}
+		want := []string{"001_initial", "step_0001_ticket-sprint-within_expand_index_01", "step_0001_ticket-sprint-within_expand_keys", "step_0001_ticket-sprint-within_expand_validate"}
+		for _, name := range want {
+			if _, ok := bodies[name]; !ok {
+				t.Fatalf("no migration %s among %v", name, names)
+			}
+		}
+		if initial := bodies["001_initial"]; strings.Contains(initial, "within") || strings.Contains(initial, "sprints_project_id_id_key") {
+			t.Errorf("001_initial holds the key that the step adds:\n%s", initial)
+		}
+		if body := bodies[want[1]]; !strings.Contains(body, `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "sprints_project_id_id_key" ON public."sprints" ("tenant_id", "project_id", "id")`) {
+			t.Errorf("the index migration does not build the unique key of sprints:\n%s", body)
+		}
+		if body := bodies[want[2]]; body != `ALTER TABLE public."tickets" ADD CONSTRAINT "tickets_sprint_id_within_fkey" FOREIGN KEY ("tenant_id", "project_id", "sprint_id") REFERENCES public."sprints" ("tenant_id", "project_id", "id") NOT VALID;`+"\n" {
+			t.Errorf("the keys migration is not the foreign key NOT VALID:\n%s", body)
+		}
+		if body := bodies[want[3]]; body != `ALTER TABLE public."tickets" VALIDATE CONSTRAINT "tickets_sprint_id_within_fkey";`+"\n" {
+			t.Errorf("the validate migration does not validate the key:\n%s", body)
+		}
+		// The step's own migration runs first and adds nothing: the key waits for the unique key it refers to.
+		if body := bodies["step_0001_ticket-sprint-within_expand"]; body != "" {
+			t.Errorf("the step's own migration adds the key before the unique key is built:\n%s", body)
+		}
+		fresh, _, err := new(postgresadapter.Generator).Generate(withinFresh("withinfresh", "withinfreshtenancy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		initial := generated(t, fresh, "withinfresh/migrations/001_initial.sql")
+		for _, part := range []string{`CREATE UNIQUE INDEX "sprints_project_id_id_key" ON public."sprints" ("tenant_id", "project_id", "id")`,
+			`CONSTRAINT "tickets_sprint_id_within_fkey" FOREIGN KEY ("tenant_id", "project_id", "sprint_id") REFERENCES public."sprints" ("tenant_id", "project_id", "id")`} {
+			if !strings.Contains(initial, part) {
+				t.Errorf("001_initial of a first release does not hold %s:\n%s", part, initial)
+			}
+		}
+		if strings.Index(initial, "sprints_project_id_id_key") > strings.Index(initial, "tickets_sprint_id_within_fkey") {
+			t.Errorf("001_initial adds the key before the unique key it refers to:\n%s", initial)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC46-T04 The composite key of a reference to its own entity, or across the tenant column, is refused", func(t *testing.T) {
+		self := withinFresh("withinself", "withinselftenancy")
+		self.Entities[2].Fields = append(self.Entities[2].Fields, types.Field{Name: "parent_id", Type: types.FieldTypeRef, To: "Ticket", Optional: true})
+		self.Entities[2].References["parent_id"] = types.Reference{Relation: "parent", Permission: "edit", Within: "project_id"}
+		if _, _, err := new(postgresadapter.Generator).Generate(self); err == nil || !strings.Contains(err.Error(), "parent_id refers to its own entity") {
+			t.Errorf("a within of a reference to its own entity gives %v", err)
+		}
+		shared := withinFresh("withinshared", "withinsharedtenancy")
+		shared.Entities[0].Tenant, shared.Entities[1].Tenant = "shared", "shared"
+		if _, _, err := new(postgresadapter.Generator).Generate(shared); err == nil || !strings.Contains(err.Error(), "only one of Ticket and Sprint holds the tenant column") {
+			t.Errorf("a within across the tenant column gives %v", err)
 		}
 	})
 }

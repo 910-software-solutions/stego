@@ -75,3 +75,110 @@ func (s *AuthzSchema) declaresPermission(resourceType, permission string) bool {
 func (s *AuthzSchema) permissionsOf(resourceType string) []string {
 	return sortedKeys(s.definitions[resourceType].permissions)
 }
+
+// validateWithin checks the within of each reference (ST-DECL-INV93, ST-DECL-Q42): within is none, or a field that
+// the entity and the referenced entity both declare, each a reference to the same entity that is required or is the
+// scope field of a collection over its entity, and not the reference itself. Any other within is refused, naming the
+// entity, the reference and the field.
+func validateWithin(entities []types.Entity, collections []types.Collection) []ValidationError {
+	var faults []ValidationError
+	byName := map[string]*types.Entity{}
+	for i := range entities {
+		byName[entities[i].Name] = &entities[i]
+	}
+	for ei, e := range entities {
+		for _, name := range sortedKeys(e.References) {
+			ref := e.References[name]
+			if ref.Within == "" || ref.Within == types.WithinNone {
+				continue
+			}
+			fault := func(message string) {
+				faults = append(faults, ValidationError{Category: "authorization", Rule: "reference-within",
+					Path: fmt.Sprintf("entities[%d].references.%s.within", ei, name), Found: ref.Within,
+					Message: fmt.Sprintf("entity %q reference %q is held within %q, but %s; name a field that both rows declare as a required reference to the same entity, or within: none", e.Name, name, ref.Within, message)})
+			}
+			reference, ok := findField(e, name)
+			to := byName[reference.To]
+			switch {
+			case ref.Within == name:
+				fault("a reference cannot be held within itself")
+				continue
+			case !ok || reference.Type != types.FieldTypeRef || to == nil:
+				// validateReferences refuses References of a field that is no reference.
+				continue
+			}
+			own, ok := withinField(e, ref.Within, collections)
+			if !ok {
+				fault(fmt.Sprintf("entity %q declares no required reference %q", e.Name, ref.Within))
+				continue
+			}
+			theirs, ok := withinField(*to, ref.Within, collections)
+			if !ok {
+				fault(fmt.Sprintf("the referenced entity %q declares no required reference %q", to.Name, ref.Within))
+				continue
+			}
+			if own.To != theirs.To {
+				fault(fmt.Sprintf("%q refers to %s on %q and to %s on %q", ref.Within, own.To, e.Name, theirs.To, to.Name))
+			}
+		}
+	}
+	return faults
+}
+
+// withinField gives the field name of the entity e when it is a reference that is required, or that is the scope
+// field of a collection over e, which a row of the collection always holds (ST-DECL-INV93).
+func withinField(e types.Entity, name string, collections []types.Collection) (types.Field, bool) {
+	f, ok := findField(e, name)
+	if !ok || f.Type != types.FieldTypeRef || f.To == "" {
+		return types.Field{}, false
+	}
+	if !f.Optional {
+		return f, true
+	}
+	for _, c := range collections {
+		if c.Entity == e.Name && c.ScopeField() == name {
+			return f, true
+		}
+	}
+	return types.Field{}, false
+}
+
+// WithinWarnings gives one warning for each reference with no within when the entity and the referenced entity both
+// declare a reference to the same third entity (ST-DECL-INV93): such a reference may join the rows of two
+// ancestors. The warning names the entity, the reference and the shared field, and tells how to declare within or
+// within: none. It is a warning, not a fault, because a link across an ancestor can be intended.
+func WithinWarnings(service *types.ServiceDeclaration) []ValidationError {
+	if service == nil {
+		return nil
+	}
+	var warnings []ValidationError
+	byName := map[string]*types.Entity{}
+	for i := range service.Entities {
+		byName[service.Entities[i].Name] = &service.Entities[i]
+	}
+	for ei, e := range service.Entities {
+		for _, name := range sortedKeys(e.References) {
+			if e.References[name].Within != "" {
+				continue
+			}
+			reference, ok := findField(e, name)
+			to := byName[reference.To]
+			if !ok || reference.Type != types.FieldTypeRef || to == nil {
+				continue
+			}
+			for _, f := range e.Fields {
+				if f.Name == name || f.Type != types.FieldTypeRef || f.To == "" || f.To == to.Name {
+					continue
+				}
+				if !slices.ContainsFunc(to.Fields, func(g types.Field) bool { return g.Type == types.FieldTypeRef && g.To == f.To }) {
+					continue
+				}
+				warnings = append(warnings, ValidationError{Category: "authorization", Rule: "reference-within",
+					Path: fmt.Sprintf("entities[%d].references.%s", ei, name), Found: name, Allowed: []string{f.Name, types.WithinNone},
+					Message: fmt.Sprintf("entity %q reference %q refers to %s, and both %s and %s refer to %s; a row may refer to a row under another %s. Add within: %s to the reference to hold both rows under the same %s, or within: none when the reference crosses it on purpose", e.Name, name, to.Name, e.Name, to.Name, f.To, f.To, f.Name, f.To)})
+				break
+			}
+		}
+	}
+	return warnings
+}

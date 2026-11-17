@@ -7,6 +7,7 @@ package check_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,12 @@ import (
 	"example.com/tables-check/boardsnote"
 	"example.com/tables-check/boardsslug"
 	"example.com/tables-check/tenancy"
+	"example.com/tables-check/within"
+	"example.com/tables-check/withinbase"
+	"example.com/tables-check/withinfresh"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
 )
@@ -439,5 +444,156 @@ CREATE EVENT TRIGGER ddl_start ON ddl_command_start EXECUTE FUNCTION public.ddl_
 			}
 		}
 		_ = uuid.Nil
+	})
+
+	// keyed runs one statement as the runtime role of tenant-a and gives the SQLSTATE and the constraint of its error,
+	// or two empty strings.
+	keyed := func(t *testing.T, db *sql.DB, statement string, args ...any) (string, string) {
+		t.Helper()
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		for _, setup := range []string{"SET LOCAL ROLE " + pgx.Identifier{tenancy.RuntimeRole}.Sanitize(), "SELECT pg_catalog.set_config('app.tenant', 'tenant-a', true)"} {
+			if _, err := tx.Exec(setup); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tx.Exec(statement, args...); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) {
+				return pgErr.Code, pgErr.ConstraintName
+			}
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		return "", ""
+	}
+	keyState := func(t *testing.T, db *sql.DB, table, name string) (present, validated bool) {
+		t.Helper()
+		if err := db.QueryRow(`SELECT count(*) > 0, coalesce(bool_and(convalidated), false) FROM pg_catalog.pg_constraint
+  WHERE conrelid = ('public.' || pg_catalog.quote_ident($1))::pg_catalog.regclass AND conname = $2`, table, name).Scan(&present, &validated); err != nil {
+			t.Fatal(err)
+		}
+		return present, validated
+	}
+	const withinKey, withinValidate = "tickets_sprint_id_within_fkey", "step_0001_ticket-sprint-within_expand_validate"
+	// tickets checks the rule of the key on a database whose tables hold it: a ticket in a sprint of its own project
+	// and a ticket with no sprint are written, a ticket in a sprint of another project is refused by the key, and a
+	// move of a sprint to another project while a ticket of the first project refers to it is refused too.
+	tickets := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		p1, p2, s1, s2 := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+		for _, statement := range []struct {
+			sql  string
+			args []any
+		}{
+			{`INSERT INTO public."projects" ("id", "name") VALUES ($1, 'core'), ($2, 'web')`, []any{p1, p2}},
+			{`INSERT INTO public."sprints" ("id", "project_id", "name") VALUES ($1, $2, 's1'), ($3, $4, 's2')`, []any{s1, p1, s2, p2}},
+			{`INSERT INTO public."tickets" ("id", "project_id", "sprint_id", "title") VALUES ($1, $2, $3, 'in its project')`, []any{uuid.NewString(), p1, s1}},
+			{`INSERT INTO public."tickets" ("id", "project_id", "sprint_id", "title") VALUES ($1, $2, NULL, 'no sprint')`, []any{uuid.NewString(), p2}},
+		} {
+			if code, key := keyed(t, db, statement.sql, statement.args...); code != "" {
+				t.Fatalf("%s gives %s on %s", statement.sql, code, key)
+			}
+		}
+		if code, key := keyed(t, db, `INSERT INTO public."tickets" ("id", "project_id", "sprint_id", "title") VALUES ($1, $2, $3, 'other project')`, uuid.NewString(), p2, s1); code != "23503" || key != withinKey {
+			t.Errorf("a ticket of web in a sprint of core gives %q on %q, want 23503 on %s", code, key, withinKey)
+		}
+		if code, key := keyed(t, db, `UPDATE public."sprints" SET "project_id" = $1 WHERE "id" = $2`, p2, s1); code != "23503" || key != withinKey {
+			t.Errorf("a move of a sprint with a ticket to another project gives %q on %q, want 23503 on %s", code, key, withinKey)
+		}
+		if code, key := keyed(t, db, `UPDATE public."sprints" SET "project_id" = $1 WHERE "id" = $2`, p1, s2); code != "" {
+			t.Errorf("a move of a sprint with no ticket gives %q on %q, want it written", code, key)
+		}
+	}
+
+	t.Run("ST-SUP-RC01-OC46-T01 A first release holds the composite key of a reference held within a field in 001_initial", func(t *testing.T) {
+		own, db := database(t, cfg, admin)
+		migrate(t, own, db, func(ctx context.Context, conn *sql.Conn) error { return withinfresh.Migrate(ctx, conn) }, "withinfresh_access.json")
+		if present, validated := keyState(t, db, "tickets", withinKey); !present || !validated {
+			t.Fatalf("the key %s is present %v and validated %v, want both", withinKey, present, validated)
+		}
+		tickets(t, db)
+	})
+
+	t.Run("ST-SUP-RC01-OC46-T02 A within step adds the key NOT VALID, validates it in its own migration, and stops on a row that breaks it", func(t *testing.T) {
+		own, db := database(t, cfg, admin)
+		migrate(t, own, db, func(ctx context.Context, conn *sql.Conn) error { return withinbase.Migrate(ctx, conn) }, "withinbase_access.json")
+		p1, p2, s1, bad := uuid.NewString(), uuid.NewString(), uuid.NewString(), uuid.NewString()
+		for _, statement := range []struct {
+			sql  string
+			args []any
+		}{
+			{`INSERT INTO public."projects" ("tenant_id", "id", "name") VALUES ('tenant-a', $1, 'core'), ('tenant-a', $2, 'web')`, []any{p1, p2}},
+			{`INSERT INTO public."sprints" ("tenant_id", "id", "project_id", "name") VALUES ('tenant-a', $1, $2, 's1')`, []any{s1, p1}},
+			{`INSERT INTO public."tickets" ("tenant_id", "id", "project_id", "sprint_id", "title") VALUES ('tenant-a', gen_random_uuid(), $1, $2, 'good'), ('tenant-a', $3, $4, $2, 'bad')`, []any{p1, s1, bad, p2}},
+		} {
+			if _, err := db.Exec(statement.sql, statement.args...); err != nil {
+				t.Fatal(err)
+			}
+		}
+		job := stdlib.OpenDB(*own)
+		defer job.Close()
+		conn, err := job.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.ExecContext(ctx, "SET ROLE "+pgx.Identifier{tenancy.OwnerRole}.Sanitize()); err != nil {
+			t.Fatal(err)
+		}
+		// The release before let a ticket of web into a sprint of core: the job stops at the validate migration with a
+		// refusal that names the step, the table and the key, and no row value.
+		err = within.Migrate(ctx, conn)
+		var refused interface{ Refusal() string }
+		if !errors.As(err, &refused) {
+			t.Fatalf("the job over a ticket outside its project gives %v, want a refusal", err)
+		}
+		text := refused.Refusal()
+		for _, part := range []string{withinValidate, withinKey, "public.tickets"} {
+			if !strings.Contains(text, part) {
+				t.Errorf("the refusal %q does not name %s", text, part)
+			}
+		}
+		for _, value := range []string{p1, p2, s1, bad, "tenant-a"} {
+			if strings.Contains(text, value) || strings.Contains(err.Error(), value) {
+				t.Errorf("the refusal %q holds the row value %s", err, value)
+			}
+		}
+		if present, validated := keyState(t, db, "tickets", withinKey); !present || validated {
+			t.Errorf("after the refusal the key is present %v and validated %v, want present and NOT VALID", present, validated)
+		}
+		if ledgerHolds(t, db, withinValidate) {
+			t.Errorf("after the refusal the ledger holds %s", withinValidate)
+		}
+		// The key migration comes after the index migration that builds the unique key it refers to.
+		for _, name := range []string{"step_0001_ticket-sprint-within_expand_index_01", "step_0001_ticket-sprint-within_expand_keys"} {
+			if !ledgerHolds(t, db, name) {
+				t.Errorf("after the refusal the ledger does not hold %s", name)
+			}
+		}
+		if present, valid := indexState(t, db, "sprints_project_id_id_key"); !present || !valid {
+			t.Errorf("the unique key of sprints is present %v and valid %v", present, valid)
+		}
+		// Once the row is corrected, the job validates the key, and the tables hold the rule.
+		if _, err := db.Exec(`UPDATE public."tickets" SET "sprint_id" = NULL WHERE "id" = $1`, bad); err != nil {
+			t.Fatal(err)
+		}
+		if err := within.Migrate(ctx, conn); err != nil {
+			t.Fatalf("the job after the row is corrected: %v", err)
+		}
+		if present, validated := keyState(t, db, "tickets", withinKey); !present || !validated {
+			t.Errorf("after the job the key is present %v and validated %v", present, validated)
+		}
+		if !ledgerHolds(t, db, withinValidate) {
+			t.Errorf("after the job the ledger does not hold %s", withinValidate)
+		}
+		if code, key := keyed(t, db, `INSERT INTO public."tickets" ("id", "project_id", "sprint_id", "title") VALUES ($1, $2, $3, 'other project')`, uuid.NewString(), p2, s1); code != "23503" || key != withinKey {
+			t.Errorf("after the job a ticket of web in a sprint of core gives %q on %q, want 23503 on %s", code, key, withinKey)
+		}
 	})
 }
