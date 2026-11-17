@@ -107,12 +107,16 @@ func schemaBypassDefaults(component, path string, schema map[string]types.Config
 	return faults
 }
 
-// fieldBypassDefaults checks one schema field and the schema of its items.
+// fieldBypassDefaults checks one schema field and the schema of its items. The default of the field is checked as a
+// value of the field, as a declaration's value is (valueBypassFaults): a bypass field with a default is a fault, and
+// so is the default of a list that gives a bypass field of its items a value (security review of #401, M1).
 func fieldBypassDefaults(component, key, place string, field types.ConfigField) []ValidationError {
 	var faults []ValidationError
-	if field.Bypass && field.Default != nil {
-		faults = append(faults, ValidationError{Category: "config", Rule: "no-bypass", Path: place + ".default",
-			Message: fmt.Sprintf("the setting %s of the component %s is marked as a bypass and states a default in the component's schema; a bypass setting has no default, so remove the default", key, component)})
+	if field.Default != nil {
+		for _, fault := range valueBypassFaults(component, key, place+".default", field.Default, field) {
+			fault.Message = fmt.Sprintf("the default of the setting %s of the component %s gives a value at %s to a setting that the component's schema marks as a bypass; a bypass setting has no default, so remove it from the default", key, component, fault.Path)
+			faults = append(faults, fault)
+		}
 	}
 	if field.Items == nil {
 		return faults
