@@ -11,7 +11,7 @@ var SYS = M.system.name;
 var LAYER_NAME = {"edge":"Edge","authentication":"Authentication","handler":"Handler","slot":"Slot","repository":"Repository","store":"Store","outside call":"Outside call"};
 var LAYER_VAR = {"edge":"edge","authentication":"authentication","handler":"handler","slot":"slot","repository":"repository","store":"store","outside call":"outside"};
 var BOUNDARY_STYLE = {"network":"10 5","verified identity":"","tenant scope":"3 3","fill code":"","process":"1 4"};
-var GLYPH = {"direct":"●","arrow":"↑","userset":"◎","caveat":"?","intersection":"&","exclusion":"−","wildcard":"*","recursion":"↻","depth limit":"⋯","expiration":"⌛","work limit":"⊘"};
+var GLYPH = {"direct":"●","arrow":"↑","userset":"◎","caveat":"?","intersection":"&","exclusion":"−","wildcard":"*","recursion":"↻","depth limit":"⋯","expiration":"⌛","work limit":"⊘","path limit":"⊞"};
 var state = {view:"overview", sel:null, flow:null, step:1, text:false, coll:"", q:""};
 // byId has no prototype, so a key that the model or the address gives never reads a property of Object (#342 F5).
 var byId = Object.create(null);
@@ -22,6 +22,10 @@ function put(list){ (list||[]).forEach(function(e){ if (e && e.id) byId[e.id] = 
  M.actions,M.flows,M.needs,M.boundaries,M.settings,M.authn_points,M.authz_points,M.access.checks,M.access.permissions,M.access.roles].forEach(put);
 M.entities.forEach(function(e){ put(e.fields); });
 M.access.permissions.forEach(function(p){ put(p.paths); });
+// PERM gives each permission of the model by its ID, so that a grant that names another element is no permission, as
+// in the Go view (security review of PR #388, Info).
+var PERM = Object.create(null);
+M.access.permissions.forEach(function(p){ if (p && p.id) PERM[p.id] = p; });
 if (M.flows.length) state.flow = M.flows[0].id;
 
 function short(id){ var i = String(id).indexOf(":"); return i >= 0 ? String(id).slice(i+1) : String(id); }
@@ -518,7 +522,7 @@ function grantSentence(p, g){
   return t;
 }
 function cellDetails(d, id){
-  var parts = id.slice(5).split("|"), c = byId[parts[0]], role = parts[1], p = c && byId[c.grants];
+  var parts = id.slice(5).split("|"), c = byId[parts[0]], role = parts[1], p = c && PERM[c.grants];
   d.appendChild(h("span", {"class":"type", text:"access matrix cell"}));
   d.appendChild(h("h3", {text:(role ? short(role) : "Paths that stop")+" · "+short(c.subject)}));
   var dl = h("dl");
@@ -528,26 +532,37 @@ function cellDetails(d, id){
   if (c.ancestors && c.ancestors.length){
     // The parent chain check (ST-SUP-RC20-OC24): the handler reads each ancestor first, the top one first.
     d.appendChild(h("strong", {text:"Ancestors read first, the top one first"}));
-    var al = h("ol", {id:"cellAncestors"}), cut = [];
+    var al = h("ol", {id:"cellAncestors"}), cut = [], gone = [];
     c.ancestors.forEach(function(a){
-      // A grant that names no permission, in a model that the reader edited, shows as not held (security review of PR #374, L1).
-      var q = a.grants && byId[a.grants], held = !!(q && Array.isArray(q.paths) && q.paths.some(function(g){ return (g.role || "") === role; }));
+      // The grants of the ancestor read are looked up among the permissions alone, as for the check (security review of
+      // PR #390, L1). A grant that names no permission, in a model that the reader edited, is not held by a named path.
+      var q = a.grants ? PERM[a.grants] : undefined, held = !!(q && Array.isArray(q.paths) && q.paths.some(function(g){ return (g.role || "") === role; }));
+      // An ancestor read that states a permission whose grants the model does not hold may be held by any role, so the
+      // cell never shows it as a definite no (security review of PR #390, L1).
+      var names = !a.public && !!(a.permission || a.grants), unknown = names && !q;
       // A limit cut the grant paths of the ancestor read short: more roles may hold it than the paths name, so the cell
       // never shows that set as complete (security review of PR #374, L2). A permission that does not say it is
       // complete counts as cut short, as in the Go view (security review of PR #383, L3).
-      var partial = !!(q && q.complete !== true);
+      var partial = !!(q && q.complete !== true) || unknown;
       var what = a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public"+(a.reason ? ": "+a.reason : "") : "no permission: "+(a.reason || ""));
-      var who = !a.permission || !role ? "" : (held ? "; this role grants it" : (partial ? "; no path that the model names gives it to this role alone, but a limit cut its paths short, so this role may hold it" : "; this role alone does not grant it, so the caller also needs it"));
+      var who = !names || !role ? "" : (held ? "; this role grants it" : (unknown ? "; the model holds no grant path of it, so this role may hold it" : (partial ? "; no path that the model names gives it to this role alone, but a limit cut its paths short, so this role may hold it" : "; this role alone does not grant it, so the caller also needs it")));
       var by = a.scope_source ? srcText(a.scope_source) : "";
-      if (partial) cut.push(nameOf(a.entity)+" ("+what+")");
-      al.appendChild(h("li", {"data-ancestor":a.id}, [nameOf(a.entity)+" ("+a.param+"): "+what+(partial ? " ⚠ incomplete: a limit was reached" : "")+who+(by ? "; in the path by "+by : "")]));
+      if (unknown) gone.push(nameOf(a.entity)+" ("+what+")");
+      else if (partial) cut.push(nameOf(a.entity)+" ("+what+")");
+      al.appendChild(h("li", {"data-ancestor":a.id}, [nameOf(a.entity)+" ("+a.param+"): "+what+(unknown ? " ⚠ incomplete: the model holds no grant path of it" : (partial ? " ⚠ incomplete: a limit was reached" : ""))+who+(by ? "; in the path by "+by : "")]));
     });
     d.appendChild(al);
     if (cut.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellAncestorIncomplete", text:"⚠ Incomplete: a limit was reached in the grant paths of the ancestor read "+cut.join(", ")+", so it may grant more roles than its paths name."}));
+    if (gone.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellAncestorUnknown", text:"⚠ Incomplete: the model holds no grant path of the ancestor read "+gone.join(", ")+", so it may grant roles that the model does not name."}));
     d.appendChild(h("p", {"class":"k", text:"A missing, denied or wrong ancestor answers 404, before the row is read or written."}));
   }
   var own = (p && Array.isArray(p.paths) ? p.paths : []).filter(function(g){ return (g.role || "") === role; });
-  if (p && p.complete !== true){
+  if (!c.public && !p){
+    // The model holds no permission of the name that the check grants by, as in a model that the reader edited: a role
+    // may hold it, and the cell never reads as no grant (security review of PR #388, Info).
+    d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: the model holds no grant path of "+c.resource_type+"#"+c.permission+", so it may grant roles that the model does not name."}));
+    d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellMayHold", text:"⚠ May hold: the model holds no grant path of the permission "+c.resource_type+"#"+c.permission+", so "+(role ? short(role) : "a role")+" may hold it."}));
+  } else if (!c.public && p.complete !== true){
     d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellIncomplete", text:"⚠ Incomplete: a limit was reached, so "+c.resource_type+"#"+c.permission+" may grant more roles than its paths name."}));
     // No named path gives the role the permission, but a limit cut its paths short: the role may hold it, and the
     // cell never reads as a definite no (security review of PR #383, L1).

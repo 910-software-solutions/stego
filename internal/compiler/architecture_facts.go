@@ -43,11 +43,14 @@ type FactOfList struct {
 	Source      ArchSource   `json:"source"`
 	Quoted      []QuotedText `json:"quoted,omitempty"`
 	Grants      *FactGrants  `json:"grants,omitempty"`
-	// GrantsUnknown is true when the check names a permission and the model holds no grant path of it.
+	// GrantsUnknown is true when the check states a permission and the model holds no grant path of it, as in a model
+	// that a reader edited. Its grants are then incomplete: a role may hold the permission (security review of PR #388,
+	// Info). A check of a service with no authorization bound states no permission, so it is never set then (security
+	// review of PR #390, M1).
 	GrantsUnknown bool `json:"grants_unknown,omitempty"`
 	// AncestorsIncomplete names, on the checks fact of an operation, each ancestor read whose grant paths a limit cut
-	// short, with the fact of that ancestor check: more roles may hold the read than its paths name (security review
-	// of PR #374, L2).
+	// short, or whose permission the model does not hold, with the fact of that ancestor check: more roles may hold the
+	// read than its paths name (security review of PR #374, L2; PR #390, L1).
 	AncestorsIncomplete []FactAncestor `json:"ancestors_incomplete,omitempty"`
 }
 
@@ -55,6 +58,8 @@ type FactOfList struct {
 type FactAncestor struct {
 	Fact       string `json:"fact"`
 	Permission string `json:"permission"`
+	// Unknown is true when the model holds no grant path of the permission.
+	Unknown bool `json:"unknown,omitempty"`
 }
 
 // QuotedText is free text of the declaration, such as the reason that an operation is public. It is shown as a
@@ -153,12 +158,16 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 					}
 					if p, ok := permissions[c.Grants]; ok {
 						item.Grants = factGrants(m, p)
-					} else if !c.Public && c.Permission != "" {
+					} else if checkNamesPermission(c) {
 						item.GrantsUnknown = true
 					}
 					for n, a := range c.Ancestors {
-						if p, ok := permissions[a.Grants]; ok && !p.Complete {
+						p, ok := permissions[a.Grants]
+						switch {
+						case ok && !p.Complete:
 							item.AncestorsIncomplete = append(item.AncestorsIncomplete, FactAncestor{Fact: ancestorFactName(n+1, a), Permission: p.ID})
+						case !ok && ancestorNamesPermission(a):
+							item.AncestorsIncomplete = append(item.AncestorsIncomplete, FactAncestor{Fact: ancestorFactName(n+1, a), Permission: ancestorPermission(a), Unknown: true})
 						}
 					}
 				}
@@ -170,7 +179,7 @@ func complianceFacts(m *ArchitectureModel, topic string) FactList {
 				}
 				if p, ok := permissions[a.Grants]; ok {
 					item.Grants = factGrants(m, p)
-				} else if a.Permission != "" {
+				} else if ancestorNamesPermission(a) {
 					item.GrantsUnknown = true
 				}
 			}
@@ -219,9 +228,13 @@ func factListText(list FactList) string {
 			writeGrants(&b, f.Grants)
 		}
 		if f.GrantsUnknown {
-			fmt.Fprintf(&b, "    the grants of %s are not known: the model holds no grant path of it\n", textValue(f.Value))
+			fmt.Fprintf(&b, "    the grants of %s are not known: the model holds no grant path of it, so they are incomplete, and a role may hold it\n", textValue(f.Value))
 		}
 		for _, a := range f.AncestorsIncomplete {
+			if a.Unknown {
+				fmt.Fprintf(&b, "    the model holds no grant path of the ancestor read %s (%s), so it can grant roles that the model does not name\n", nameText(a.Permission), nameText(a.Fact))
+				continue
+			}
 			fmt.Fprintf(&b, "    a limit cut a path of the ancestor read %s short (%s), so it can grant more roles than its paths name\n", nameText(a.Permission), nameText(a.Fact))
 		}
 	}
@@ -276,6 +289,15 @@ func limitsText(g *FactGrants) string {
 		return unnamedLimit
 	}
 	return nameText(strings.Join(g.Limits, " and "))
+}
+
+// ancestorPermission names the permission of the read of an ancestor: the permission it grants by, or else its
+// resource type and permission.
+func ancestorPermission(a ArchAncestor) string {
+	if a.Grants != "" {
+		return a.Grants
+	}
+	return "permission:" + a.ResourceType + "#" + a.Permission
 }
 
 // factSourceText names the source of a fact in words.

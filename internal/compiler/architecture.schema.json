@@ -1521,7 +1521,8 @@
               "recursion",
               "depth limit",
               "expiration",
-              "work limit"
+              "work limit",
+              "path limit"
             ]
           }
         },

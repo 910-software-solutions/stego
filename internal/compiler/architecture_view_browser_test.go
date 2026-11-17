@@ -869,6 +869,204 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		b.viewport(1280, 900)
 	})
 
+	t.Run("ST-GEN-UC08-R14-T15 The trust view names the path limit in the cell and the details of a path that it stops, and a cell of a check whose permission the model does not hold says may hold", func(t *testing.T) {
+		// The model of ST-GEN-UC08-R13-T04, which the path limit stops before a role.
+		_, data := deriveFixture(t, pathFixture(t))
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		limitPath := filepath.Join(t.TempDir(), "limit.html")
+		if err := os.WriteFile(limitPath, view, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// The model of the fixture, as a reader can edit it, whose check of docs.read names a permission that the
+		// model does not hold.
+		_, data = deriveFixture(t, archFixture(t))
+		var raw map[string]any
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range raw["access"].(map[string]any)["checks"].([]any) {
+			if c.(map[string]any)["subject"] == "operation:docs.read" {
+				c.(map[string]any)["grants"] = "permission:doc#gone"
+			}
+		}
+		edited, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view, err = RenderArchitectureView(edited); err != nil {
+			t.Fatal(err)
+		}
+		gonePath := filepath.Join(t.TempDir(), "gone.html")
+		if err := os.WriteFile(gonePath, view, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		type cell struct {
+			Found                            bool
+			Text, Title, Class, Own, MayHold string
+			Limit, Work                      int
+		}
+		pick := `function pick(sel){ var b = document.querySelector(sel);
+			if (!b) return {Found: false};
+			var c = {Found: true, Text: b.textContent, Title: b.getAttribute("title"), Class: b.className};
+			b.click();
+			function text(id){ return (document.getElementById(id)||{}).textContent || ""; }
+			c.Own = text("cellIncomplete"); c.MayHold = text("cellMayHold");
+			var items = Array.prototype.map.call(document.querySelectorAll("#details li[data-grant]"), function(l){ return l.textContent; });
+			c.Limit = items.filter(function(x){ return x.split(" ")[0].indexOf("⊞") >= 0 && x.indexOf("stops: the path limit of 512 paths") >= 0; }).length;
+			c.Work = items.filter(function(x){ return x.indexOf("⊘") >= 0 || x.indexOf("work limit") >= 0; }).length;
+			return c; }`
+		b.problems()
+		for _, width := range []int{1280, 400} {
+			b.viewport(width, 900)
+			b.open("file://" + limitPath + "#view=trust")
+			var limit struct {
+				Read          cell
+				Scroll, Width int
+			}
+			b.eval(`(function(){ `+pick+`
+				return {Read: pick('#view button.cell[data-check="check:operation:docs.read"][data-role=""]'), Scroll: document.documentElement.scrollWidth, Width: window.innerWidth}; })()`, &limit)
+			if !limit.Read.Found || !strings.Contains(limit.Read.Text, "⊞") || strings.Contains(limit.Read.Text, "⊘") ||
+				!strings.Contains(limit.Read.Title, "path limit") || strings.Contains(limit.Read.Title, "work limit") ||
+				!strings.Contains(limit.Read.Own, "doc#read may grant more roles") || limit.Read.Limit != 1 || limit.Read.Work != 0 {
+				t.Errorf("at %d px the cell of the paths that stop of docs.read shows %+v", width, limit.Read)
+			}
+			if limit.Scroll > limit.Width {
+				t.Errorf("at %d px the page of the path limit is %d px wide", width, limit.Scroll)
+			}
+			b.open("file://" + gonePath + "#view=trust")
+			var gone struct {
+				Read          cell
+				Cells, May    int
+				Scroll, Width int
+			}
+			b.eval(`(function(){ `+pick+`
+				var cells = document.querySelectorAll('#view td[data-check="check:operation:docs.read"]');
+				var may = document.querySelectorAll('#view td[data-check="check:operation:docs.read"] button.cell.may-hold');
+				return {Read: pick('#view button.cell.may-hold[data-check="check:operation:docs.read"]'), Cells: cells.length, May: may.length,
+					Scroll: document.documentElement.scrollWidth, Width: window.innerWidth}; })()`, &gone)
+			if !gone.Read.Found || gone.Read.Text != mayHoldGlyph || gone.Read.Title != mayHoldMissingText || gone.Cells == 0 || gone.May != gone.Cells ||
+				!strings.Contains(gone.Read.Own, "the model holds no grant path of doc#read") ||
+				!strings.Contains(gone.Read.MayHold, "the model holds no grant path of the permission doc#read") || !strings.Contains(gone.Read.MayHold, "may hold it") {
+				t.Errorf("at %d px the cells of docs.read, whose permission the model does not hold, show %+v", width, gone)
+			}
+			if gone.Scroll > gone.Width {
+				t.Errorf("at %d px the edited page is %d px wide", width, gone.Scroll)
+			}
+			if blocked, errors := b.problems(); len(blocked) > 0 || len(errors) > 0 {
+				t.Errorf("at %d px: blocked %v, errors %v", width, blocked, errors)
+			}
+		}
+		b.viewport(1280, 900)
+	})
+
+	t.Run("ST-GEN-UC08-R14-T18 The trust view of a service with no authorization shows no incomplete or may hold mark, and the details of an ancestor read whose permission the model does not hold say that the role may hold it", func(t *testing.T) {
+		dir := t.TempDir()
+		var paths []string
+		for name, data := range unboundModels(t) {
+			view, err := RenderArchitectureView(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, name+".html")
+			if err := os.WriteFile(path, view, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		_, data := ancestorGoneModel(t)
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gonePath := filepath.Join(dir, "gone.html")
+		if err := os.WriteFile(gonePath, view, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		b.problems()
+		for _, width := range []int{1280, 400} {
+			b.viewport(width, 900)
+			for _, path := range paths {
+				b.open("file://" + path + "#view=trust")
+				var got struct {
+					Text          string
+					May, Notes    int
+					Scroll, Width int
+				}
+				b.eval(`(function(){ var v = document.getElementById("view");
+					return {Text: v.textContent, May: v.querySelectorAll("button.may-hold").length, Notes: v.querySelectorAll("p.incomplete").length,
+						Scroll: document.documentElement.scrollWidth, Width: window.innerWidth}; })()`, &got)
+				if got.May != 0 || got.Notes != 0 || strings.Contains(got.Text, "⚠ incomplete") || strings.Contains(got.Text, "holds no grant path") ||
+					!strings.Contains(got.Text, "grants no role a permission that an operation checks") {
+					t.Errorf("at %d px the trust view of %s, with no authorization, shows %d may hold cells and %d incomplete notes", width, filepath.Base(path), got.May, got.Notes)
+				}
+				if got.Scroll > got.Width {
+					t.Errorf("at %d px %s is %d px wide", width, filepath.Base(path), got.Scroll)
+				}
+			}
+			b.open("file://" + gonePath + "#view=trust")
+			var gone struct {
+				Found              bool
+				List, Unknown, Cut string
+				Scroll, Width      int
+			}
+			b.eval(`(function(){ var btn = Array.prototype.filter.call(document.querySelectorAll('#view button.cell'), function(x){ return x.getAttribute("data-role") && x.textContent.indexOf("⤒") >= 0 && (x.getAttribute("title")||"").indexOf("Shelf") >= 0; })[0];
+				if (!btn) return {Found: false};
+				btn.click();
+				function text(id){ return (document.getElementById(id)||{}).textContent || ""; }
+				return {Found: true, List: text("cellAncestors"), Unknown: text("cellAncestorUnknown"), Cut: text("cellAncestorIncomplete"),
+					Scroll: document.documentElement.scrollWidth, Width: window.innerWidth}; })()`, &gone)
+			if !gone.Found || !strings.Contains(gone.List, "shelf#view ⚠ incomplete: the model holds no grant path of it; the model holds no grant path of it, so this role may hold it") ||
+				!strings.Contains(gone.Unknown, "the model holds no grant path of the ancestor read Shelf (shelf#view)") || gone.Cut != "" {
+				t.Errorf("at %d px the details of an ancestor read whose permission the model does not hold show %+v", width, gone)
+			}
+			if gone.Scroll > gone.Width {
+				t.Errorf("at %d px the edited page is %d px wide", width, gone.Scroll)
+			}
+			if blocked, errors := b.problems(); len(blocked) > 0 || len(errors) > 0 {
+				t.Errorf("at %d px: blocked %v, errors %v", width, blocked, errors)
+			}
+		}
+		b.viewport(1280, 900)
+	})
+
+	t.Run("ST-GEN-UC08-R07-T06 The trust view of a model with no role shows markup in the stop text of a grant path as text only, and runs none of it", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "index.html")
+		out, err := RenderArchitectureView(hostileStopsModel(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, out, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		b.do("Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": "window.__ran = 0; window.alert = function(){ window.__ran++; };"})
+		b.problems()
+		b.open("file://" + path + "#view=trust")
+		var got struct {
+			Note, Grant string
+			Found       bool
+			Images, Ran int
+		}
+		b.eval(`(function(){ var n = document.getElementById("no-role-named"), note = n && n.offsetHeight > 0 ? n.textContent : "";
+			var btn = document.querySelector('#view button.cell[data-check="check:operation:docs.read"][data-role=""]');
+			if (!btn) return {Note: note, Found: false};
+			btn.click();
+			var li = document.querySelector("#details li[data-grant]");
+			return {Note: note, Found: true, Grant: li ? li.textContent : "", Images: document.querySelectorAll("img").length, Ran: window.__ran}; })()`, &got)
+		if !strings.Contains(got.Note, "before a limit stopped it: "+hostileStops+".") {
+			t.Errorf("the note does not show the hostile stop text as text: %q", got.Note)
+		}
+		if !got.Found || !strings.Contains(got.Grant, "stops: "+hostileStops) || got.Images != 0 || got.Ran != 0 {
+			t.Errorf("the details of the cell of the paths that stop do not show the hostile stop text as text only: %+v", got)
+		}
+		if blocked, errors := b.problems(); len(blocked) > 0 || len(errors) > 0 {
+			t.Errorf("blocked %v, errors %v", blocked, errors)
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R02-T03 Every view and the tour work under the content security policy of the view, with no violation", func(t *testing.T) {
 		b.do("Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": `window.__csp = [];
 			document.addEventListener("securitypolicyviolation", function(e){ window.__csp.push(e.violatedDirective+" "+e.blockedURI+" "+e.sample); });`})
