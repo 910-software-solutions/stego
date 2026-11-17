@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
@@ -686,6 +689,9 @@ func TestConsumers(t *testing.T) {
 	// The tenant list of the consumers: every tenant is active but the ones a subtest retires.
 	retired := &retiredTenants{}
 	e.rt.cfg.Tenants = retired
+	// The log of the consumer attempts that do not commit (ST-SUP-RC35-OC06), set before the outbox worker starts.
+	consumerLogs := &logRecorder{}
+	e.rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(consumerLogs))).Logger("test")
 	e.consumer(w, func(c *outbox.WorkerConfig) { c.MaxAttempts = 3 }, func(ctx context.Context, m map[string]string, _ string, h *Handle[testProbe]) error {
 		calls.Add(1)
 		if fill, ok := cases.Load(m["case"]); ok {
@@ -986,6 +992,9 @@ func TestConsumers(t *testing.T) {
 			_, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: "r-dup", OrderID: "o-3", SKU: "s"})
 			return err
 		})
+		// The held clock gives the message one attempt until the test moves it: a unique violation in each attempt
+		// would park it as poison after PoisonAttempts (ST-SUP-RC35-OC06).
+		defer clock.hold()()
 		m := e.stage("t1", "o-3", map[string]string{"case": "unique"})
 		// The message ends done also when a check fails, so it does not run in the later subtests.
 		defer func() {
@@ -1006,6 +1015,164 @@ func TestConsumers(t *testing.T) {
 		// started, so the attempts are at least the runs.
 		if n := runs.Load(); n < 1 || int64(attempts) < n || conflicts != 0 {
 			t.Fatalf("after the unique violation: %d runs, %d attempts and %d conflicts, want an attempt for each run and no conflict", n, attempts, conflicts)
+		}
+	})
+
+	// awaitRow waits until the row of the message id holds what done tells, with no deadline: only the timeout of go
+	// test bounds it. It gives the row.
+	type row struct {
+		state, code         string
+		attempts, conflicts int
+	}
+	awaitRow := func(t *testing.T, id uuid.UUID, done func(r row) bool) row {
+		t.Helper()
+		for {
+			var r row
+			if err := e.admin.QueryRowContext(e.ctx, `SELECT state, failure_code, attempts, conflicts FROM stego_outbox.messages
+ WHERE id = $1`, id).Scan(&r.state, &r.code, &r.attempts, &r.conflicts); err != nil {
+				t.Fatal(err)
+			}
+			if done(r) {
+				return r
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	t.Run("ST-SUP-RC35-OC06-T05 A fill error that ends 5 attempts in a row parks the message as poison, and each attempt is reported and logged", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p1', 'new')`)
+		// The held clock gives the message one attempt each time the test moves it on.
+		defer clock.hold()()
+		// The fill reads a row that is not there, which is the same error in each attempt, but panics in the third
+		// attempt, which starts the count again.
+		var runs atomic.Int64
+		cases.Store("poison", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			if runs.Add(1) == 3 {
+				panic("the fill fails")
+			}
+			_, err := repo(t, h, e.orders).Get(ctx, "o-missing")
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-p1", map[string]string{"case": "poison"})
+		codes := []string{"fill.rolled_back.not_found.1", "fill.rolled_back.not_found.2", "fill.panicked.panic.1",
+			"fill.rolled_back.not_found.1", "fill.rolled_back.not_found.2", "fill.rolled_back.not_found.3",
+			"fill.rolled_back.not_found.4", PoisonCode}
+		for i, code := range codes {
+			r := awaitRow(t, m, func(r row) bool { return r.attempts == i+1 && r.state != "dispatching" })
+			want := "pending"
+			if code == PoisonCode {
+				want = "parked"
+			}
+			if r.state != want || r.code != code {
+				t.Fatalf("after attempt %d the message is %s with %q, want %s with %q", i+1, r.state, r.code, want, code)
+			}
+			if i < len(codes)-1 {
+				clock.add(time.Second)
+			}
+		}
+		// The parked message stays in the outbox, so a person can send it again (ST-SUP-RP01-LC13).
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND parked_from = 'dispatching' AND must_land`, m); n != 1 ||
+			runs.Load() != 8 || e.keyRows(m.String()) != 0 {
+			t.Fatalf("the poison message: kept %d, %d runs, %d key rows", n, runs.Load(), e.keyRows(m.String()))
+		}
+		wantCauses := []string{"rolled_back/not_found", "rolled_back/not_found", "panicked/panic", "rolled_back/not_found",
+			"rolled_back/not_found", "rolled_back/not_found", "rolled_back/not_found", "rolled_back/not_found"}
+		if got := e.consumed.causeList(from); strings.Join(got, ",") != strings.Join(wantCauses, ",") {
+			t.Fatalf("worker.run.failed sent %v, want %v", got, wantCauses)
+		}
+		var lines []string
+		for _, record := range consumerLogs.all() {
+			attributes := map[string]string{}
+			record.WalkAttributes(func(kv attribute.KeyValue) bool {
+				attributes[string(kv.Key)] = kv.Value.Emit()
+				return true
+			})
+			if attributes["event_id"] != m.String() {
+				continue
+			}
+			if record.EventName() != ConsumerFailedEvent || record.Severity() != otellog.SeverityWarn || len(attributes) != 6 ||
+				attributes["worker"] != "apply-partner-replies" || attributes["destination"] != "partner-replies" ||
+				record.Body().AsString() != "a consuming worker's run did not commit: apply-partner-replies "+attributes["outcome"]+" "+attributes["cause"] {
+				t.Fatalf("the log line is %s %v %q with %v", record.EventName(), record.Severity(), record.Body().AsString(), attributes)
+			}
+			lines = append(lines, attributes["attempt"]+" "+attributes["outcome"]+"/"+attributes["cause"])
+		}
+		wantLines := []string{"1 rolled_back/not_found", "2 rolled_back/not_found", "3 panicked/panic", "4 rolled_back/not_found",
+			"5 rolled_back/not_found", "6 rolled_back/not_found", "7 rolled_back/not_found", "8 rolled_back/not_found"}
+		if strings.Join(lines, ",") != strings.Join(wantLines, ",") {
+			t.Fatalf("the warn log holds %v, want %v", lines, wantLines)
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T06 A provider that cannot decide now and a conflict stay transient past 5 attempts, and each is reported", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p2', 'new'), ('t1', 'o-p3', 'new')`)
+		defer clock.hold()()
+		// The provider runs out of time on each decision of the worker's service account.
+		e.decision.setFail(func(subject string) error {
+			if subject == "service_account:apply-partner-replies" {
+				return fmt.Errorf("the provider call: %w", context.DeadlineExceeded)
+			}
+			return nil
+		})
+		defer e.decision.setFail(nil)
+		cases.Store("undecided", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			_, err := repo(t, h, e.orders).Get(ctx, "o-p2")
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		undecided := e.stage("t1", "o-p2", map[string]string{"case": "undecided"})
+		for i := 1; i <= PoisonAttempts+2; i++ {
+			r := awaitRow(t, undecided, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+			if r.state != "pending" || r.code != "delivery-refused" {
+				t.Fatalf("after attempt %d the undecided message is %s with %q, want pending with delivery-refused", i, r.state, r.code)
+			}
+			clock.add(time.Second)
+		}
+		e.decision.setFail(nil)
+		awaitRow(t, undecided, func(r row) bool { return r.state == "done" })
+		for _, got := range e.consumed.causeList(from) {
+			if got != "undecided/undecided" {
+				t.Fatalf("an undecided run sent %s", got)
+			}
+		}
+		// A conflict in each attempt: the fill reads the order, another transaction moves its version, and the
+		// update conflicts. The first 20 conflicts in a row count no attempt (ST-SUP-RP01-LC18).
+		var conflict atomic.Bool
+		conflict.Store(true)
+		cases.Store("conflict", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			r := repo(t, h, e.orders)
+			o, err := r.Get(ctx, "o-p3")
+			if err != nil {
+				return err
+			}
+			if conflict.Load() {
+				e.exec(`UPDATE orders SET version = version + 1 WHERE tenant_id = 't1' AND id = 'o-p3'`)
+			}
+			v := o.Value()
+			v.Status = "conflicted"
+			_, err = r.Update(ctx, o, v)
+			return err
+		})
+		from = len(e.consumed.causeList(0))
+		conflicted := e.stage("t1", "o-p3", map[string]string{"case": "conflict"})
+		for i := 1; i <= PoisonAttempts+2; i++ {
+			r := awaitRow(t, conflicted, func(r row) bool { return r.conflicts == i && r.state != "dispatching" })
+			if r.state != "pending" || r.code != "delivery-conflict" || r.attempts != 0 {
+				t.Fatalf("after conflict %d the message is %s with %q after %d attempts", i, r.state, r.code, r.attempts)
+			}
+			clock.add(time.Minute)
+		}
+		conflict.Store(false)
+		awaitRow(t, conflicted, func(r row) bool { return r.state == "done" })
+		got := e.consumed.causeList(from)
+		if len(got) < PoisonAttempts+2 {
+			t.Fatalf("the conflicts sent %v", got)
+		}
+		for _, outcome := range got {
+			if outcome != "conflict/conflict" {
+				t.Fatalf("a conflict sent %s", outcome)
+			}
 		}
 	})
 

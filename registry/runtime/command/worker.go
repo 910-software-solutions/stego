@@ -7,9 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
@@ -267,12 +270,20 @@ func (rt *Runtime) activeTenant(ctx context.Context, t tenant.Tenant) error {
 	active, err := rt.cfg.Tenants.Active(ctx, t)
 	switch {
 	case err != nil:
-		return outbox.TransientRefusal(internalf("the tenant list was not read"))
+		return outbox.TransientRefusal(errTenantList)
 	case !active:
 		return outbox.PermanentRefusal(errTenantNotActive)
 	}
 	return nil
 }
+
+// errTenantList is the transient refusal of a consumed message whose tenant list was not read.
+var errTenantList = internalf("the tenant list was not read")
+
+// errMessage matches the permanent refusal of a consumed message that the runtime cannot take: a row with no staging
+// principal or with a stager that the worker does not consume, a payload that is not one JSON value, or a key of the
+// message that is used for another payload.
+var errMessage = errors.New("command: the consumed message cannot be taken")
 
 // MessageFill is the fill of a worker with a consumes trigger: it gets the decoded message, its effect name and the
 // handle.
@@ -312,6 +323,13 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		}
 		finish(outcome, false, err != nil && !outbox.IsConflict(err))
 	}()
+	// Each attempt that does not commit is logged and carries its outcome and cause class to ObserveConsumer
+	// (ST-SUP-RC35-OC06).
+	defer func() {
+		if err != nil {
+			err = rt.consumerFailed(ctx, w.spec.Name, d, err)
+		}
+	}()
 	if err := rt.activeTenant(ctx, d.Tenant); err != nil {
 		return err
 	}
@@ -321,11 +339,11 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 
 	stagingPrincipal, err := authz.StagingPrincipal(staging.NewStaging(), d.Principal)
 	if err != nil {
-		return outbox.PermanentRefusal(fmt.Errorf("command: %s: the message has no staging principal", w.spec.Name))
+		return outbox.PermanentRefusal(fmt.Errorf("%w: %s: the message has no staging principal", errMessage, w.spec.Name))
 	}
 	stagerPermission, ok := w.spec.Stagers[d.Origin]
 	if !ok || stagerPermission == "" {
-		return outbox.PermanentRefusal(fmt.Errorf("command: %s consumes no message that %q stages", w.spec.Name, d.Origin))
+		return outbox.PermanentRefusal(fmt.Errorf("%w: %s consumes no message that %q stages", errMessage, w.spec.Name, d.Origin))
 	}
 	s := newState(ctx, rt, tx, d.Tenant, w.principal, modeConsumer, w.spec.Name, w.writes, w.destinations)
 	s.changeEvents = w.changeEvents
@@ -351,7 +369,7 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	}
 	fingerprint, err := idempotency.Fingerprint("CONSUME", d.Destination+"/"+d.Kind, d.Payload)
 	if err != nil {
-		return outbox.PermanentRefusal(fmt.Errorf("command: %s: the payload is not one JSON value", w.spec.Name))
+		return outbox.PermanentRefusal(fmt.Errorf("%w: %s: the payload is not one JSON value", errMessage, w.spec.Name))
 	}
 	call := rt.cfg.Probes.Bind(ctx, d.Tenant.ID(), w.principal.Subject().String(), w.spec.Name)
 	defer call.Rollback()
@@ -390,7 +408,9 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		if (errors.As(failure.err, &denied) && denied.staging) || errors.Is(failure.err, errDeclaredRefusal) {
 			return outbox.PermanentRefusal(failure.err)
 		}
-		return outbox.TransientRefusal(failure.err)
+		// A fill error or a panic that ends PoisonAttempts attempts of the message in a row parks it as poison; a
+		// provider that cannot decide now stays transient (ST-SUP-RC35-OC06).
+		return poisonStreak(d, failure.err)
 	case err != nil:
 		return outbox.TransientRefusal(internalf("the idempotency wrapper failed"))
 	case wrapped.Replayed:
@@ -400,7 +420,7 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	case wrapped.Problem == idempotency.ProblemInProgress:
 		return outbox.Conflict(&conflictError{text: "another delivery of the message is in progress"})
 	case wrapped.Problem != "" || !wrapped.Commit:
-		return outbox.PermanentRefusal(fmt.Errorf("command: %s: the key of the message is used for another payload", w.spec.Name))
+		return outbox.PermanentRefusal(fmt.Errorf("%w: %s: the key of the message is used for another payload", errMessage, w.spec.Name))
 	}
 	if rt.beforeCommit != nil {
 		if err := rt.beforeCommit(ctx, tx); err != nil {
@@ -414,6 +434,147 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	call.Commit()
 	return nil
 }
+
+// PoisonAttempts is the number of attempts in a row of one consumed message that end with the same fill error or
+// panic, of the same outcome and cause class, after which the message is parked as poison (ST-SUP-RC35-OC06): a fill
+// has no network, so such an error almost always comes again, and each attempt holds the locks of its run.
+const PoisonAttempts = 5
+
+// PoisonCode is the failure code of a message that is parked as poison. The message stays in the outbox and can be
+// sent again with Resolve, so a message that must land is never dropped.
+const PoisonCode = "poison"
+
+// ErrPoison matches the error of a consumer run that parks its message as poison.
+var ErrPoison = errors.New("command: the same fill error ended the attempts of the message in a row")
+
+// poisonError is the refusal of a run that parks its message as poison: it matches ErrPoison and unwraps to the
+// error of the run.
+type poisonError struct{ err error }
+
+func (e *poisonError) Error() string        { return ErrPoison.Error() + ": " + e.err.Error() }
+func (e *poisonError) Unwrap() error        { return e.err }
+func (e *poisonError) Is(target error) bool { return target == ErrPoison }
+
+// streakPrefix is the start of the failure code of a run that ended with a fill error or a panic.
+const streakPrefix = "fill."
+
+// poisonStreak gives the refusal of a run whose fill failed with err. A fill error or a panic is counted in the
+// failure code of the message, fill.<outcome>.<cause>.<n>, which the claim of the message's destination gives back:
+// the attempt that makes n reach PoisonAttempts with the same outcome and cause class is a permanent refusal with the
+// failure code poison, so the message is parked with the alert of ST-SUP-RP01-LC12; any other attempt between them,
+// such as a conflict, starts the count again. Any other error, such as a provider that cannot decide now, is a
+// transient refusal that is not counted.
+func poisonStreak(d outbox.Delivery, err error) error {
+	outcome, cause := consumerOutcome(err)
+	if outcome != probe.WorkerRolledBack && outcome != probe.WorkerPanicked {
+		return outbox.TransientRefusal(err)
+	}
+	prefix := streakPrefix + string(outcome) + "." + cause + "."
+	n := 1
+	if rest, ok := strings.CutPrefix(d.FailureCode, prefix); ok {
+		if before, err := strconv.Atoi(rest); err == nil && before >= 1 && before < PoisonAttempts {
+			n = before + 1
+		}
+	}
+	if n >= PoisonAttempts {
+		return outbox.WithFailureCode(outbox.PermanentRefusal(&poisonError{err: err}), PoisonCode)
+	}
+	return outbox.WithFailureCode(outbox.TransientRefusal(err), prefix+strconv.Itoa(n))
+}
+
+// consumerOutcome gives the fixed outcome and cause class of the error of a consumer run (ST-SUP-RC35-OC06).
+func consumerOutcome(err error) (probe.WorkerOutcome, string) {
+	// The attempt that parks its message as poison has the outcome and the cause class of its fill error.
+	var poison *poisonError
+	if errors.As(err, &poison) {
+		return consumerOutcome(poison.err)
+	}
+	var denied *deniedError
+	switch {
+	case errors.Is(err, ErrNotGranted):
+		return probe.WorkerNotGranted, "not_granted"
+	case outbox.IsConflict(err):
+		return probe.WorkerConflict, causeOf(err)
+	case errors.Is(err, errPanic):
+		return probe.WorkerPanicked, "panic"
+	case errors.Is(err, errDeclaredRefusal):
+		return probe.WorkerRefused, "declared_refusal"
+	case errors.As(err, &denied) && denied.staging:
+		return probe.WorkerDenied, "staging_denied"
+	case errors.Is(err, errTenantNotActive) || errors.Is(err, errTenantList):
+		if outbox.IsPermanent(err) {
+			return probe.WorkerRefused, "tenant"
+		}
+		return probe.WorkerRolledBack, "tenant"
+	case errors.Is(err, ErrUndecided) || authz.Transient(err):
+		return probe.WorkerUndecided, "undecided"
+	case errors.Is(err, errMessage):
+		return probe.WorkerRefused, "message"
+	case outbox.IsPermanent(err):
+		return probe.WorkerRefused, causeOf(err)
+	}
+	return probe.WorkerRolledBack, causeOf(err)
+}
+
+// causeOf gives the fixed cause class of the error of a run, one of probe.WorkerCauses, and never its text.
+func causeOf(err error) string {
+	switch {
+	case errors.Is(err, errPanic):
+		return "panic"
+	case errors.Is(err, errDeadline) || errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, lease.ErrFenced):
+		return "fenced"
+	case errors.Is(err, ErrInvalid):
+		return "invalid"
+	case errors.Is(err, ErrRefused):
+		return "refused"
+	case errors.Is(err, ErrNotFound):
+		return "not_found"
+	case errors.Is(err, ErrConflict):
+		return "conflict"
+	case errors.Is(err, ErrClosed):
+		return "closed"
+	case errors.Is(err, ErrInternal):
+		return "internal"
+	}
+	return "fill_error"
+}
+
+// runFailure is the error of a consumer run that did not commit, with its fixed outcome and cause class, which
+// ObserveConsumer sends as worker.run.failed. It unwraps to the error of the run, so the outbox reads its mark.
+type runFailure struct {
+	outcome probe.WorkerOutcome
+	cause   string
+	err     error
+}
+
+func (f *runFailure) Error() string { return f.err.Error() }
+func (f *runFailure) Unwrap() error { return f.err }
+
+// consumerFailed writes the one warn log line of a consumer attempt that did not commit, with the worker, the
+// consumed destination, the event ID of the message, the attempt number, the outcome and the cause class, and never
+// the error text or a value of the message, as the Kafka destination logs kafka.delivery_failed (ST-SUP-RC35-OC06);
+// it gives err with its outcome and cause class for ObserveConsumer.
+func (rt *Runtime) consumerFailed(ctx context.Context, worker string, d outbox.Delivery, err error) error {
+	outcome, cause := consumerOutcome(err)
+	if rt.logger != nil {
+		var record otellog.Record
+		record.SetEventName(ConsumerFailedEvent)
+		record.SetSeverity(otellog.SeverityWarn)
+		record.SetSeverityText("WARN")
+		record.SetBody(attribute.StringValue("a consuming worker's run did not commit: " + worker + " " + string(outcome) + " " + cause))
+		record.AddAttributes(attribute.String("worker", worker), attribute.String("destination", d.Destination),
+			attribute.String("event_id", d.ID.String()), attribute.Int64("attempt", d.Attempts),
+			attribute.String("outcome", string(outcome)), attribute.String("cause", cause))
+		rt.logger.Emit(context.WithoutCancel(ctx), record)
+	}
+	return &runFailure{outcome: outcome, cause: cause, err: err}
+}
+
+// ConsumerFailedEvent is the event name of the warn log line of a consumer attempt that did not commit
+// (ST-SUP-RC35-OC06).
+const ConsumerFailedEvent = "command.consumer.run_failed"
 
 // ErrNotGranted matches the error of a consumer run whose statement failed with SQLSTATE 42501, as the worker role
 // lacks a privilege that the fill needs: RunConsumer parks the message (decision on ST-SUP-Q141).
@@ -429,13 +590,35 @@ func (e *notGrantedError) Error() string {
 func (e *notGrantedError) Is(target error) bool { return target == ErrNotGranted }
 
 // ObserveConsumer reports the error err of one RunConsumer of a consuming worker to its built-in observations and
-// returns it: a run that the database refused for a missing privilege is sent as worker.run.failed with the outcome
-// not_granted (decision on ST-SUP-Q141). The generated destination handler of a consuming worker calls it.
+// returns it: each attempt that does not commit is sent as worker.run.failed with its outcome, such as not_granted
+// for a run that the database refused for a missing privilege (decision on ST-SUP-Q141), and its fixed cause class
+// (ST-SUP-RC35-OC06). The generated destination handler of a consuming worker calls it.
 func ObserveConsumer(ctx context.Context, observe WorkerObserver, err error) error {
-	if observe != nil && errors.Is(err, ErrNotGranted) {
-		observe.RunFailed(context.WithoutCancel(ctx), probe.WorkerNotGranted)
+	if observe == nil || err == nil {
+		return err
 	}
+	var failure *runFailure
+	if !errors.As(err, &failure) {
+		outcome, cause := consumerOutcome(err)
+		failure = &runFailure{outcome: outcome, cause: cause}
+	}
+	runFailed(context.WithoutCancel(ctx), observe, failure.outcome, failure.cause)
 	return err
+}
+
+// CauseObserver is a WorkerObserver that also takes the fixed cause class of a failed run: probe.Worker is one. An
+// observer that is not one gets RunFailed with the outcome only.
+type CauseObserver interface {
+	RunFailedCause(ctx context.Context, outcome probe.WorkerOutcome, cause string)
+}
+
+// runFailed sends worker.run.failed with the outcome and, when observe takes it, the cause class.
+func runFailed(ctx context.Context, observe WorkerObserver, outcome probe.WorkerOutcome, cause string) {
+	if with, ok := observe.(CauseObserver); ok {
+		with.RunFailedCause(ctx, outcome, cause)
+		return
+	}
+	observe.RunFailed(ctx, outcome)
 }
 
 // errDeclaredRefusal matches an error that Refusal marks.

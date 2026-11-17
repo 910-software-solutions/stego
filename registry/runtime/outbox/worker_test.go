@@ -377,6 +377,56 @@ func TestWorkerDelivery(t *testing.T) {
 			t.Fatalf("the row holds the handler's error text: %s", text)
 		}
 	})
+
+	t.Run("ST-SUP-RP01-LC06-T03 A failure code that the handler gives is kept only as a short label", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		w := newWorker(t, q, nil)
+		var answer atomic.Value
+		register(t, w, Destination{Name: "consumer", Idempotent: true, MustLand: true, Handler: func(context.Context, *sql.Tx, Delivery) error {
+			return answer.Load().(func() error)()
+		}})
+		ctx := context.Background()
+		for _, c := range []struct {
+			name, code, state string
+			answer            func() error
+		}{
+			{"a transient refusal with a code", "fill.rolled_back.not_found.1", "pending",
+				func() error {
+					return WithFailureCode(TransientRefusal(errors.New("x")), "fill.rolled_back.not_found.1")
+				}},
+			{"a permanent refusal with a code", "poison", "parked",
+				func() error { return WithFailureCode(PermanentRefusal(errors.New("x")), "poison") }},
+			{"a code that is not a label", "delivery-refused", "pending",
+				func() error { return WithFailureCode(TransientRefusal(errors.New("x")), "password=hunter2 refused") }},
+			{"a not sent with a code", "not-sent.1", "pending",
+				func() error { return WithFailureCode(NotSent(errors.New("x")), "not-sent.1") }},
+			{"a conflict keeps its own code", "delivery-conflict", "pending",
+				func() error { return WithFailureCode(Conflict(errors.New("x")), "fill.conflict") }},
+		} {
+			answer.Store(c.answer)
+			m := message("consumer", "key:"+c.name)
+			enqueue(t, db, q, m)
+			got, err := q.ClaimDestination(ctx, "consumer", 1, time.Minute)
+			if err != nil || len(got) != 1 {
+				t.Fatalf("%s: the claim gave %v, %v", c.name, got, err)
+			}
+			w.step(ctx, got[0])
+			if row := readRow(t, db, m.ID); row.State != State(c.state) || row.FailureCode != c.code {
+				t.Fatalf("%s: the message is %s with %q, want %s with %q", c.name, row.State, row.FailureCode, c.state, c.code)
+			}
+			clock.Advance(time.Hour)
+			if c.state == "pending" {
+				again, err := q.ClaimDestination(ctx, "consumer", 1, time.Minute)
+				if err != nil || len(again) != 1 || again[0].FailureCode != c.code {
+					t.Fatalf("%s: the next claim gave %+v, %v", c.name, again, err)
+				}
+				answer.Store(func() error { return nil })
+				w.step(ctx, again[0])
+			}
+		}
+	})
 }
 
 // faultConnector passes each statement to the real database and then loses a result, as a client that loses the

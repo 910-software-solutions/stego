@@ -291,7 +291,10 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// The worker runs and the consumed messages run on the runtime of the workers' entities; a consumer runs no
 		// fill for a message of a tenant that is not active (ST-SUP-RC27-OC12).
 		config.Entities = p.WorkerEntities
-		if svc.workers, err = command.New(ctx, config); err != nil {
+		// A consumer attempt that does not commit writes one warn log line (ST-SUP-RC35-OC06).
+		workers := config
+		workers.Logger = svc.telemetry.LoggerProvider()
+		if svc.workers, err = command.New(ctx, workers); err != nil {
 			return nil, err
 		}
 	}

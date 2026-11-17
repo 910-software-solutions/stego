@@ -454,6 +454,15 @@ func (o signalledObserver) RunFailed(ctx context.Context, outcome probe.WorkerOu
 	}
 }
 
+// RunFailedCause passes the cause class of a failed run on to the recorder (ST-SUP-RC35-OC06).
+func (o signalledObserver) RunFailedCause(ctx context.Context, outcome probe.WorkerOutcome, cause string) {
+	o.WorkerObserver.(command.CauseObserver).RunFailedCause(ctx, outcome, cause)
+	select {
+	case o.signals.failed <- outcome:
+	default:
+	}
+}
+
 func (o signalledObserver) TickSkipped() {
 	o.WorkerObserver.TickSkipped()
 	select {
@@ -726,13 +735,14 @@ func eventually(t *testing.T, what string, ok func() bool) {
 }
 
 // failed gives the outcomes of the worker.run.failed emissions, and fails the check on an emission with other
-// fields than the worker and the outcome.
+// fields than the worker, the outcome and a fixed cause class (ST-SUP-RC35-OC06).
 func (in *instance) failed(t *testing.T) []string {
 	t.Helper()
 	var out []string
 	for _, em := range in.rec.Emissions("worker.run.failed") {
-		if len(em.Fields) != 2 || em.Fields[0].Name != "worker" || em.Fields[0].Value != worker || em.Fields[1].Name != "outcome" {
-			t.Fatalf("worker.run.failed has the fields %v, want the worker %s and the outcome only", em.Fields, worker)
+		if len(em.Fields) != 3 || em.Fields[0].Name != "worker" || em.Fields[0].Value != worker || em.Fields[1].Name != "outcome" ||
+			em.Fields[2].Name != "cause" || em.Fields[2].Value == "unknown" || !slices.Contains(probe.WorkerCauses, em.Fields[2].Value) {
+			t.Fatalf("worker.run.failed has the fields %v, want the worker %s, the outcome and a fixed cause class only", em.Fields, worker)
 		}
 		out = append(out, em.Fields[1].Value)
 	}

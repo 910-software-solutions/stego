@@ -32,7 +32,9 @@ var (
 	// schema-change research, owner, 2026-11-13).
 	schemaMismatch = builtin("schema.manifest.mismatch", Event, Error, serviceClass, "class")
 
-	workerRunFailed   = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome")
+	// workerRunFailed has the fixed cause class of the run's error besides its outcome (ST-SUP-RC35-OC06, decision on
+	// ST-SUP-Q159).
+	workerRunFailed   = builtin("worker.run.failed", Event, Error, workerClass, "worker", "outcome", "cause")
 	workerTickSkipped = builtin("worker.tick.skipped", Counter, Warn, workerClass, "worker")
 	// workerTickFailed is a tick that did not read the tenant list, so it ran no tenant (security review of PR #337,
 	// L2; decision on ST-SUP-Q141).
@@ -116,7 +118,30 @@ const (
 	// WorkerNotGranted is the outcome of a consumer run that the database refused for a privilege that the worker
 	// role lacks (SQLSTATE 42501), whose message is parked (decision on ST-SUP-Q141).
 	WorkerNotGranted WorkerOutcome = "not_granted"
+	// WorkerRefused is the outcome of a consumer run that ends in a permanent refusal, such as a declared refusal of
+	// the fill or the message of a tenant that is not active; WorkerDenied of a run that the decision port denies as
+	// the staging principal; WorkerUndecided of a run whose provider could not decide now; and WorkerConflict of a
+	// run that met a conflict and is dispatched again (ST-SUP-RC35-OC06, decision on ST-SUP-Q159).
+	WorkerRefused   WorkerOutcome = "refused"
+	WorkerDenied    WorkerOutcome = "denied"
+	WorkerUndecided WorkerOutcome = "undecided"
+	WorkerConflict  WorkerOutcome = "conflict"
 )
+
+// workerOutcomes are the values of the field outcome of worker.run.failed.
+var workerOutcomes = []WorkerOutcome{WorkerRolledBack, WorkerFenced, WorkerPanicked, WorkerNotGranted, WorkerRefused,
+	WorkerDenied, WorkerUndecided, WorkerConflict}
+
+// WorkerCauses are the values of the field cause of worker.run.failed: the fixed class of the error of a run that did
+// not commit, never its text (ST-SUP-RC35-OC06). invalid, not_found, refused, conflict, closed and internal are the
+// errors of the handle; deadline is a run that reached its deadline; panic a fill that panicked; fill_error an error
+// of the fill that the runtime does not class; undecided a provider that could not decide now; not_granted a
+// privilege that the worker role lacks; declared_refusal a declared refusal of the fill; staging_denied a deny of
+// the staging principal; tenant a message of a tenant that is not active or a tenant list that was not read;
+// message a message that the runtime cannot take, such as a payload that is not one JSON value; fenced a run that
+// its lease fenced; and unknown a run whose class the observer did not get.
+var WorkerCauses = []string{"invalid", "not_found", "refused", "conflict", "closed", "internal", "deadline", "panic",
+	"fill_error", "undecided", "not_granted", "declared_refusal", "staging_denied", "tenant", "message", "fenced", "unknown"}
 
 // SchemaChange is one schema change of the declaration. Open is set when its last step is expand.
 type SchemaChange struct {
@@ -184,8 +209,9 @@ func (c *core) builtin(ctx context.Context, o *Observation, count int64, values 
 		case "class":
 			ok = slices.Contains(SchemaFaultClasses, v)
 		case "outcome":
-			outcome := WorkerOutcome(v)
-			ok = outcome == WorkerRolledBack || outcome == WorkerFenced || outcome == WorkerPanicked || outcome == WorkerNotGranted
+			ok = slices.Contains(workerOutcomes, WorkerOutcome(v))
+		case "cause":
+			ok = slices.Contains(WorkerCauses, v)
 		}
 		if !ok {
 			c.dropped.Add(1)
@@ -220,9 +246,16 @@ func (r *Runtime) Worker(name string) Worker { return Worker{core: r.core, name:
 // Worker gives the built-in observations of the worker, recorded.
 func (r *Recorder) Worker(name string) Worker { return Worker{core: r.core, name: name} }
 
-// RunFailed sends worker.run.failed for a run that did not commit, with the worker name and the outcome only.
+// RunFailed sends worker.run.failed for a run that did not commit, with the worker name, the outcome and the cause
+// unknown. Use RunFailedCause, which gives the cause class of the run.
 func (w Worker) RunFailed(ctx context.Context, outcome WorkerOutcome) {
-	w.core.builtin(ctx, workerRunFailed, 1, w.name, string(outcome))
+	w.RunFailedCause(ctx, outcome, "unknown")
+}
+
+// RunFailedCause sends worker.run.failed for a run that did not commit, with the worker name, the outcome and the
+// fixed cause class of its error, one of WorkerCauses, and nothing else (ST-SUP-RC35-OC06).
+func (w Worker) RunFailedCause(ctx context.Context, outcome WorkerOutcome, cause string) {
+	w.core.builtin(ctx, workerRunFailed, 1, w.name, string(outcome), cause)
 }
 
 // TickFailed sends worker.tick.failed for a tick that did not read the tenant list, with the worker name only.
