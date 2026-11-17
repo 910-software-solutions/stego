@@ -362,6 +362,8 @@ func TestOneOfGroups(t *testing.T) {
 			"postgres-adapter/relay-database-url":     {"STEGO_RELAY_DATABASE_URL", "STEGO_RELAY_DATABASE_URL_FILE"},
 			"kafka-producer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
 			"kafka-producer/kafka-topic":              {"STEGO_KAFKA_TOPIC", "STEGO_KAFKA_TOPIC_FILE"},
+			"kafka-consumer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
+			"kafka-consumer/kafka-consumer-topic":     {"STEGO_KAFKA_CONSUMER_TOPIC", "STEGO_KAFKA_CONSUMER_TOPIC_FILE"},
 			// The mode migrate of browser-backend reads the same owner connection as postgres-adapter (ST-SUP-RC02-OC56).
 			"browser-backend/migration-database-url": {"STEGO_MIGRATION_DATABASE_URL", "STEGO_MIGRATION_DATABASE_URL_FILE"},
 		}
@@ -433,6 +435,29 @@ needs:
 			_, err := ParseComponentFromBytes([]byte(strings.Replace(component, need, c.need, 1)), "env-a/component.yaml")
 			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "env-a") {
 				t.Errorf("%s: got %v, want a refusal that names the component and says %q", c.name, err, c.want)
+			}
+		}
+	})
+}
+
+func TestTopicAccess(t *testing.T) {
+	t.Run("ST-SUP-RC38-OC02-T02 Each shipped topic need gives its access, and a need with a wrong access is refused", func(t *testing.T) {
+		reg, err := Load("../../registry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{"kafka-consumer": "read", "kafka-producer": "write"}
+		for name, c := range reg.Components() {
+			for _, need := range c.Needs {
+				if need.Kind == "topic" && need.Access != want[name] {
+					t.Errorf("component %s: the topic need %s has the access %q, want %q", name, need.Name, need.Access, want[name])
+				}
+			}
+		}
+		for _, bad := range []Need{{Kind: "topic", Name: "{service}-events", Access: "all"}, {Kind: "egress", Name: "{service}-kafka", Port: 9093, Access: "read"}} {
+			component := &Component{Name: "env-a", Needs: []Need{bad}}
+			if err := checkNeeds(component); err == nil || !strings.Contains(err.Error(), "access") {
+				t.Errorf("the need %+v gave %v, want a refusal of its access", bad, err)
 			}
 		}
 	})

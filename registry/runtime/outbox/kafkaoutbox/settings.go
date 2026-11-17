@@ -349,3 +349,25 @@ func readSecret(name, path string) (string, error) {
 	}
 	return secret, nil
 }
+
+// The settings of the Kafka inbox that this package reads for it, by their fixed names (ST-SUP-RP01-LC38): the topic
+// that the inbox reads and its consumer group, each from its value or the file of its _FILE form.
+const (
+	ConsumerTopicSetting     = "STEGO_KAFKA_CONSUMER_TOPIC"
+	ConsumerTopicFileSetting = "STEGO_KAFKA_CONSUMER_TOPIC_FILE"
+	ConsumerGroupSetting     = "STEGO_KAFKA_CONSUMER_GROUP"
+	ConsumerGroupFileSetting = "STEGO_KAFKA_CONSUMER_GROUP_FILE"
+)
+
+// ReadConsumer reads the topic and the consumer group of the Kafka inbox from the process environment, each from its
+// setting or from the file of its _FILE form, never both, with the rules of the settings of the destination
+// (ST-SUP-RP01-LC32, ST-SUP-RP01-LC38). An empty value is not set.
+func ReadConsumer() (topic, group string, err error) {
+	if topic, err = value(ConsumerTopicSetting, ConsumerTopicFileSetting); err != nil {
+		return "", "", err
+	}
+	if group, err = value(ConsumerGroupSetting, ConsumerGroupFileSetting); err != nil {
+		return "", "", err
+	}
+	return topic, group, nil
+}

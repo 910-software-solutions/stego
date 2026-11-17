@@ -24,7 +24,7 @@ func selectionRegistry(t *testing.T) *registry.Registry {
 			"name: plain\nlanguage: go\nversion: 1.0.0\ncomponents: [api]\nconventions:\n  layout: flat\n",
 		"components/api/component.yaml": "kind: component\nenvironment: []\narchitecture:\n  layer: handler\n  flow: Serves the test.\n  ports:\n    http-api: inbound\nname: api\nversion: 1.0.0\nstage: ga\noutput_namespace: internal/api\nrequires: []\nprovides: [http-api]\nslots: []\n",
 	}
-	versions := map[string]string{"tenancy": "0.2.0", "audit-log": "0.1.1", "spicedb-authz": "0.2.2", "idempotency": "0.1.3", "ledger": "0.1.4"}
+	versions := map[string]string{"tenancy": "0.2.0", "audit-log": "0.1.1", "spicedb-authz": "0.2.2", "idempotency": "0.1.3", "ledger": "0.1.4", "kafka-consumer": "0.1.5"}
 	for name, version := range versions {
 		requires := "[]"
 		if name == "audit-log" {
@@ -70,6 +70,10 @@ var settings = []setting{
 	}},
 	{"ledger", "ledger", "0.1.4", func(s *types.ServiceDeclaration) {
 		s.Entities = append(s.Entities, types.Entity{Name: "Wallet", Kind: "ledger"})
+	}},
+	// A declared subscription selects kafka-consumer (decision on ST-SUP-Q158).
+	{"subscriptions", "kafka-consumer", "0.1.5", func(s *types.ServiceDeclaration) {
+		s.Subscriptions = []types.Subscription{{Name: "order-changes", Source: "orders", Events: []string{"orders.order.created"}}}
 	}},
 }
 

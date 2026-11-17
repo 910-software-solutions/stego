@@ -464,6 +464,18 @@ func TestContract(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC16-T01 The worker that consumes a subscription takes its messages with the subscription as the stager and its own permission", func(t *testing.T) {
+		ctx := workerContext(workerSlot)
+		ctx.Commands = nil
+		ctx.Workers[1].Trigger = "consumes shop-orders"
+		ctx.Destinations = []gen.Destination{{Name: "shop-orders", Component: "worker", MustLand: &yes, Idempotent: &yes}}
+		ctx.Subscriptions = []types.Subscription{{Name: "shop-orders", Source: "shop", Events: []string{"shop.order.created"}}}
+		runners := string(generated(t, ctx)["workers/runners/runners.go"])
+		if !strings.Contains(runners, `map[string]string{"shop-orders": "apply"},`) || !strings.Contains(runners, "Stagers:") {
+			t.Errorf("the consuming worker does not take the subscription as its stager with its own permission:\n%s", runners)
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC13-T02 Generation refuses a schema without the relation of a worker on tenant", func(t *testing.T) {
 		ctx := workerContext(workerSlot)
 		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\trelation worker_apply_partner_replies: service_account\n", "", 1))}

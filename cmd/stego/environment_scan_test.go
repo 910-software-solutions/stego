@@ -50,7 +50,7 @@ var (
 		"database_config.go":     {"postgres-adapter"},
 		"http_tls.go":            {"health-check"},
 		"assembler.go":           {"health-check"},
-		"runtime_wiring.go.tmpl": {"command", "kafka-producer"},
+		"runtime_wiring.go.tmpl": {"command", "kafka-producer", "kafka-consumer"},
 	}
 	compilerOwn = map[string][]string{"apply_hook.go": {"STEGO_TEST_APPLY_LOG", "STEGO_TEST_STOP_APPLY"}, "init.go": {"STEGO_REGISTRY"}}
 	// runtimeOwners are the runtime packages whose settings a component declares, by their path in the runtime
@@ -61,7 +61,8 @@ var (
 		"probe":              {"domain-probe"},
 		"otel":               {"otel-tracing"},
 		"audit/auditsink":    {"audit-log"},
-		"outbox/kafkaoutbox": {"kafka-producer"},
+		"outbox/kafkaoutbox": {"kafka-producer", "kafka-consumer"},
+		"outbox/kafkainbox":  {"kafka-consumer"},
 	}
 	// emitsAlso are the generator packages whose generator emits the code of another generator package too, such as
 	// rh-sso-auth, which emits the jwt-auth middleware.

@@ -37,6 +37,7 @@ import (
 	"github.com/jsell-rh/stego/internal/generator/httpapplication"
 	"github.com/jsell-rh/stego/internal/generator/idempotency"
 	"github.com/jsell-rh/stego/internal/generator/jwtauth"
+	"github.com/jsell-rh/stego/internal/generator/kafkaconsumer"
 	"github.com/jsell-rh/stego/internal/generator/kafkaproducer"
 	"github.com/jsell-rh/stego/internal/generator/keycloakprovider"
 	"github.com/jsell-rh/stego/internal/generator/kubernetesclient"
@@ -1322,7 +1323,7 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) (co
 		for _, need := range component.Needs {
 			needs = append(needs, delivery.Need{Kind: need.Kind, Name: need.Name, Keys: need.Keys, Engine: need.Engine, Port: need.Port,
 				APIGroup: need.APIGroup, Resource: need.Resource, Verbs: need.Verbs, ResourceNames: need.ResourceNames, Level: need.Level,
-				Variable: need.Variable, Value: need.Value})
+				Variable: need.Variable, Value: need.Value, Access: need.Access})
 		}
 		settings := map[string]string{}
 		for key, value := range component.Settings {
@@ -1392,6 +1393,7 @@ func defaultGenerators() map[string]gen.Generator {
 		"grpc-application":      &grpcapplication.Generator{},
 		"grpc-processes":        &grpcapplication.ProcessGenerator{},
 		"outbox":                &outbox.Generator{},
+		"kafka-consumer":        &kafkaconsumer.Generator{},
 		"kafka-producer":        &kafkaproducer.Generator{},
 		"postgres-adapter":      &postgresadapter.Generator{},
 		"tenancy":               &tenancy.Generator{},

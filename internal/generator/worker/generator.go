@@ -353,7 +353,8 @@ func (m *model) planLists(p *worker) error {
 }
 
 // planStagers finds, for each consuming worker, each command and worker that stages for its destination with its
-// own declared permission, which RunConsumer decides as the staging principal (ST-SUP-RP10-LC17).
+// own declared permission, which RunConsumer decides as the staging principal (ST-SUP-RP10-LC17), and the
+// subscription whose messages it consumes, with the worker's own permission.
 func (m *model) planStagers() error {
 	for _, w := range m.workers {
 		if w.consumes == "" {
@@ -372,6 +373,14 @@ func (m *model) planStagers() error {
 				if effect.Destination == w.consumes {
 					w.stagers[other.decl.Name] = other.decl.Permission
 				}
+			}
+		}
+		// The Kafka inbox of a subscription stages each message with the worker's own service account as the staging
+		// principal and the subscription as the stager, so the worker's own permission is decided twice
+		// (ST-SUP-RC35-OC16, decision on ST-SUP-Q158).
+		for _, s := range m.ctx.Subscriptions {
+			if s.Name == w.consumes {
+				w.stagers[s.Name] = w.decl.Permission
 			}
 		}
 	}

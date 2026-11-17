@@ -63,3 +63,16 @@ type ListTerm struct {
 	// the reference of a list over a child entity (ST-DECL-INV94).
 	Parent bool `yaml:"parent,omitempty"`
 }
+
+// Subscription is the change events of one other service that the service consumes from Kafka (ST-DECL-EN28): its
+// name, which is the destination that one worker consumes, the source service and the event kinds that it takes. The
+// kafka-consumer component writes each record of a declared kind into the outbox for that worker.
+type Subscription struct {
+	// Name is the subscription's name in lower kebab case: the destination of its messages, which the worker with the
+	// trigger consumes <name> consumes.
+	Name string `yaml:"name"`
+	// Source is the name of the service whose change events the subscription takes.
+	Source string `yaml:"source"`
+	// Events are the event kinds that the subscription takes, each <source>.<entity in kebab case>.<action>.
+	Events []string `yaml:"events"`
+}

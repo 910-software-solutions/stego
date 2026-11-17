@@ -55,6 +55,7 @@ requirements:
   - kind: topic
     name: user-management-events
     variable: STEGO_KAFKA_TOPIC
+    access: write
     components:
       - kafka-producer
   - kind: identity issuer

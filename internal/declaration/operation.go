@@ -63,6 +63,7 @@ func ValidateComposition(service *types.ServiceDeclaration, facts Facts) []Valid
 	faults = append(faults, validateWorkerLease(service.Workers)...)
 	faults = append(faults, validateWorkerCycles(service.Workers)...)
 	faults = append(faults, validateWorkerCount(service.Workers)...)
+	faults = append(faults, ValidateSubscriptions(service, facts)...)
 	faults = append(faults, validateSchemaChangeKind(service.SchemaChanges)...)
 	faults = append(faults, validateSchemaChangeEntity(service)...)
 	faults = append(faults, validateSchemaSteps(service)...)

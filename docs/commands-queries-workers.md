@@ -848,6 +848,11 @@ now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
 outbox, and a person can send it again or discard it.
 
+### Take the change events of another service
+
+A worker can consume the change events of another service through a
+subscription. See [Subscriptions](subscriptions.md).
+
 ### A reference held within a field
 
 A reference can be held within a field that the row and the referenced row
@@ -891,6 +896,15 @@ cause classes are:
 
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
+
+### Release notes for runtime v0.130.0
+
+- New package `outbox/kafkainbox`: the Kafka inbox of a subscription
+  (ST-SUP-RP01-LC35 to ST-SUP-RP01-LC38). New functions
+  `outbox.Queue.Receive`, `outbox.Worker.AddPurge`, `outbox.Worker.Retention`,
+  `kafkaoutbox.Connection` and `kafkaoutbox.ReadConsumer`. `service.WorkerParts` has the new field
+  `Inbox`, and `service.Migration` has the new field `Inbox` with the step
+  `kafka_inbox`. Code that does not set them needs no change.
 
 ### Release notes for runtime v0.127.0
 

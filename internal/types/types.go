@@ -420,6 +420,8 @@ type ServiceDeclaration struct {
 	Modes []string `yaml:"modes,omitempty"`
 	// Workers are the background work that the service's own code carries out (ST-DECL-EN25).
 	Workers []Worker `yaml:"workers,omitempty"`
+	// Subscriptions are the change events of other services that the service consumes (ST-DECL-EN28).
+	Subscriptions []Subscription `yaml:"subscriptions,omitempty"`
 	// Invariants are the rules across stored instances that the declaration states (ST-DECL-EN17).
 	Invariants []DeclaredInvariant `yaml:"invariants,omitempty"`
 	// SchemaChanges are the changes to the stored shape of the entities (ST-DECL-EN21), and SchemaHistory the

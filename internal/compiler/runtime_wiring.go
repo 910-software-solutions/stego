@@ -65,8 +65,11 @@ type runtimeWiringData struct {
 	Audit, Authz, Outbox, Storage, Tenancy, Idempotency, API, Commands, Queries string
 	// Workers is the runners package of the worker component for a service that declares workers (ST-SUP-RC35), and
 	// Tickers and Consumers tell whether a worker has an every trigger or a consumes trigger.
-	Workers                                                                         string
-	Tickers, Consumers                                                              bool
+	Workers            string
+	Tickers, Consumers bool
+	// Inbox is the package of the kafka-consumer component for a service that declares a subscription, whose Kafka
+	// inbox the worker mode runs (ST-SUP-RC38).
+	Inbox                                                                           string
 	Service, DeclarationVersion, SubjectType, TenantClaim, ProblemType, ProblemCode string
 	Issuer, Audience, Header, KeyFile, RoleClaim                                    string
 	// Discovery, CAFile, SubjectClaim and Algorithms are the settings of an auth provider that the verifier serves
@@ -148,6 +151,11 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 			consumes := strings.HasPrefix(w.Trigger, "consumes ")
 			data.Consumers = data.Consumers || consumes
 			data.Tickers = data.Tickers || !consumes
+		}
+	}
+	if len(svc.Subscriptions) > 0 {
+		if data.Inbox = pkg(kafkaConsumerComponent); data.Inbox == "" || data.Workers == "" {
+			return nil, ComponentWiring{}, fmt.Errorf("the declared subscription needs the components %s and %s, which generate its inbox and its consuming worker", kafkaConsumerComponent, workerComponent)
 		}
 	}
 	if data.ProblemCode == "" {

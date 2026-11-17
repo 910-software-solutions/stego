@@ -155,6 +155,7 @@
 {"source_id":"ST-DECL-EN22-DM","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-DECL-EN25-DM","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-DECL-EN27-DM","target_id":"ST-PAT-GO-CODE-SL02"}
+{"source_id":"ST-DECL-EN28-DM","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-DECL-INV01-RL","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DECL-INV02-RL","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DECL-INV03-RL","target_id":"ST-PAT-GO-CODE-SL01"}
@@ -240,6 +241,9 @@
 {"source_id":"ST-DECL-INV93-RL","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DECL-INV94-RL","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DECL-INV95-RL","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-DECL-INV96-RL","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-DECL-INV97-RL","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-DECL-INV98-RL","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DECL-QRY01-H","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-DECL-REPO01","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-DECL-RM01-PJ","target_id":"ST-PAT-GO-CODE-SL02"}
@@ -696,6 +700,8 @@
 {"source_id":"ST-SUP-RC36-G01","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RC37","target_id":"ST-PAT-GO-CODE-SL03"}
 {"source_id":"ST-SUP-RC37-G01","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-SUP-RC38","target_id":"ST-PAT-GO-CODE-SL03"}
+{"source_id":"ST-SUP-RC38-G01","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-REPO01","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-SUP-REPO02","target_id":"ST-PAT-GO-CODE-SL02"}
 {"source_id":"ST-SUP-REPO03","target_id":"ST-PAT-GO-CODE-SL02"}
@@ -719,6 +725,10 @@
 {"source_id":"ST-SUP-RP01-LF07","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RP01-LF08","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RP01-LF09","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-SUP-RP01-LF10","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-SUP-RP01-LF11","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-SUP-RP01-LF12","target_id":"ST-PAT-GO-CODE-SL01"}
+{"source_id":"ST-SUP-RP01-LF13","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RP02","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RP02-LF01","target_id":"ST-PAT-GO-CODE-SL01"}
 {"source_id":"ST-SUP-RP02-LF02","target_id":"ST-PAT-GO-CODE-SL01"}

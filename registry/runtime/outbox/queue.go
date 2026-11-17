@@ -956,19 +956,68 @@ func ValidateMessage(message Message) error { return validateMessage(message, Ma
 // which PostgreSQL delivers only after the commit. Call Enqueue once for each transaction with the whole batch and
 // commit only when it succeeds; a rollback removes the messages and their notices with the application write.
 func (q *Queue) Enqueue(ctx context.Context, tx *sql.Tx, messages ...Message) error {
+	_, err := q.enqueue(ctx, tx, false, messages)
+	return err
+}
+
+// Received tells what Receive did with a message.
+type Received int
+
+const (
+	// ReceivedWritten is a message that Receive wrote.
+	ReceivedWritten Received = iota + 1
+	// ReceivedDuplicate is a message whose ID the queue holds with the same kind and payload: Receive wrote nothing.
+	ReceivedDuplicate
+	// ReceivedDiffers is a message whose ID the queue holds with another kind or payload: Receive wrote nothing, and
+	// the queue keeps the first message.
+	ReceivedDiffers
+)
+
+// Receive writes one message that came from outside the service, such as a consumed Kafka record, inside the
+// caller's transaction tx, as Enqueue does, but with ON CONFLICT (id) DO NOTHING: a message whose ID the queue holds
+// already is not written again (ST-SUP-RP01-LC35). The caller derives the ID from the identity of the outside
+// message, so a redelivery of it is a no-op while the queue keeps the first row, done or not. Receive then compares
+// the kind and the payload of the row with the message, so the caller can refuse an identity used again for another
+// message. It sends the notice of a live event source only for a message that it wrote.
+func (q *Queue) Receive(ctx context.Context, tx *sql.Tx, message Message) (Received, error) {
+	n, err := q.enqueue(ctx, tx, true, []Message{message})
+	if err != nil {
+		return 0, err
+	}
+	if n == 1 {
+		return ReceivedWritten, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	var same bool
+	err = tx.QueryRowContext(ctx, `SELECT payload = $2::bytea AND kind = $3 FROM stego_outbox.messages WHERE id = $1`,
+		message.ID, []byte(message.Payload), message.Kind).Scan(&same)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ReceivedDiffers, nil
+	case err != nil:
+		return 0, canceled(ctx, err)
+	case same:
+		return ReceivedDuplicate, nil
+	}
+	return ReceivedDiffers, nil
+}
+
+// enqueue writes messages in tx and gives how many it wrote. With once, a message whose ID the queue holds is left.
+func (q *Queue) enqueue(ctx context.Context, tx *sql.Tx, once bool, messages []Message) (int64, error) {
 	if tx == nil {
-		return errors.New("outbox: Enqueue needs the caller's transaction")
+		return 0, errors.New("outbox: Enqueue needs the caller's transaction")
 	}
 	if len(messages) == 0 || len(messages) > MaxBatchSize {
-		return fmt.Errorf("outbox: a batch holds 1 to %d messages", MaxBatchSize)
+		return 0, fmt.Errorf("outbox: a batch holds 1 to %d messages", MaxBatchSize)
 	}
 	seen := make(map[uuid.UUID]bool)
 	for _, message := range messages {
 		if err := validateMessage(message, q.PayloadLimit(message.Destination)); err != nil {
-			return err
+			return 0, err
 		}
 		if seen[message.ID] {
-			return errors.New("outbox: a message ID is twice in the batch")
+			return 0, errors.New("outbox: a message ID is twice in the batch")
 		}
 		seen[message.ID] = true
 	}
@@ -976,10 +1025,10 @@ func (q *Queue) Enqueue(ctx context.Context, tx *sql.Tx, messages ...Message) er
 	defer cancel()
 	var tenantID sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT pg_catalog.current_setting('app.tenant', true)`).Scan(&tenantID); err != nil {
-		return canceled(ctx, fmt.Errorf("outbox: read the tenant of the transaction: %w", err))
+		return 0, canceled(ctx, fmt.Errorf("outbox: read the tenant of the transaction: %w", err))
 	}
 	if tenantID.String == "" {
-		return errors.New("outbox: the transaction holds no tenant; open it with tenant.Begin")
+		return 0, errors.New("outbox: the transaction holds no tenant; open it with tenant.Begin")
 	}
 	keys := make(map[int64]bool)
 	for _, message := range messages {
@@ -992,32 +1041,44 @@ func (q *Queue) Enqueue(ctx context.Context, tx *sql.Tx, messages ...Message) er
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
 	for _, key := range ordered {
 		if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_advisory_xact_lock($1)`, key); err != nil {
-			return canceled(ctx, err)
+			return 0, canceled(ctx, err)
 		}
+	}
+	conflict, written := "", int64(0)
+	if once {
+		conflict = "\n\t\t\tON CONFLICT (id) DO NOTHING"
 	}
 	for _, message := range messages {
 		outgoing := message.OutgoingKey
 		if outgoing == "" {
 			outgoing = message.ID.String()
 		}
-		if _, err := tx.ExecContext(ctx, `WITH `+nowCTE+`
+		result, err := tx.ExecContext(ctx, `WITH `+nowCTE+`
 			INSERT INTO stego_outbox.messages (id, tenant_id, destination, resource_key, kind, payload, outgoing_key,
 				group_id, principal, origin, must_land, idempotent, created_at, available_at)
-			SELECT $2, $3, $4, $5, $6, $7::bytea, $8, $9, $10, $11, $12, $13, now.t, now.t FROM now`,
+			SELECT $2, $3, $4, $5, $6, $7::bytea, $8, $9, $10, $11, $12, $13, now.t, now.t FROM now`+conflict,
 			q.now(), message.ID, tenantID.String, message.Destination, message.ResourceKey, message.Kind,
 			[]byte(message.Payload), outgoing, message.Group, message.Principal, message.Origin, message.MustLand,
-			message.Idempotent); err != nil {
-			return canceled(ctx, err)
+			message.Idempotent)
+		if err != nil {
+			return 0, canceled(ctx, err)
 		}
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			if err == nil && once && n == 0 {
+				continue
+			}
+			return 0, canceled(ctx, fmt.Errorf("outbox: the insert of a message wrote %d rows", n))
+		}
+		written++
 		if !q.notify {
 			continue
 		}
 		// The notice is the message identity alone: any role that can connect may LISTEN (ST-SUP-RP01-LC21).
 		if _, err := tx.ExecContext(ctx, `SELECT pg_catalog.pg_notify($1, $2)`, NoticeChannel, message.ID.String()); err != nil {
-			return canceled(ctx, err)
+			return 0, canceled(ctx, err)
 		}
 	}
-	return nil
+	return written, nil
 }
 
 // LockKey is the advisory lock that Enqueue takes for the messages of one key: the tenant, the destination and the

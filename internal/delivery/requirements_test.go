@@ -244,3 +244,26 @@ func TestNeedVariable(t *testing.T) {
 		}
 	})
 }
+
+func TestTopicAccessRequirement(t *testing.T) {
+	t.Run("ST-SUP-RC38-OC02-T03 The access of a topic need reaches the platform requirements, and a wrong one is refused", func(t *testing.T) {
+		needs := []ComponentNeeds{{Component: "kafka-consumer", Needs: []Need{{Kind: "topic", Name: "{service}-subscription", Access: "read"}}},
+			{Component: "kafka-producer", Needs: []Need{{Kind: "topic", Name: "{service}-events", Access: "write"}}}}
+		got, err := DeriveRequirements("fulfilment", needs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		access := map[string]string{}
+		for _, r := range got.Requirements {
+			access[r.Name] = r.Access
+		}
+		if access["fulfilment-subscription"] != "read" || access["fulfilment-events"] != "write" {
+			t.Fatalf("the requirements give the access %v", access)
+		}
+		for _, bad := range []Need{{Kind: "topic", Name: "x", Access: "all"}, {Kind: "egress", Name: "y", Port: 9093, Access: "read"}} {
+			if _, err := DeriveRequirements("fulfilment", []ComponentNeeds{{Component: "c", Needs: []Need{bad}}}); err == nil || !strings.Contains(err.Error(), "access") {
+				t.Errorf("the need %+v gave %v, want a refusal of its access", bad, err)
+			}
+		}
+	})
+}

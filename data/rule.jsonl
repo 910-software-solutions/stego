@@ -109,6 +109,9 @@
 {"id":"ST-DECL-INV93-RL","title":"declaration.validateWithin","invariant_id":"ST-DECL-INV93","file":"internal/declaration/references.go"}
 {"id":"ST-DECL-INV94-RL","title":"declaration.validateWorkerLists","invariant_id":"ST-DECL-INV94","file":"internal/declaration/worker.go"}
 {"id":"ST-DECL-INV95-RL","title":"declaration.checkAdminRelation","invariant_id":"ST-DECL-INV95","file":"internal/declaration/provisioning.go"}
+{"id":"ST-DECL-INV96-RL","title":"declaration.validateSubscriptionNames","invariant_id":"ST-DECL-INV96","file":"internal/declaration/subscription.go"}
+{"id":"ST-DECL-INV97-RL","title":"declaration.validateSubscriptionEvents","invariant_id":"ST-DECL-INV97","file":"internal/declaration/subscription.go"}
+{"id":"ST-DECL-INV98-RL","title":"declaration.validateSubscriptionConsumer","invariant_id":"ST-DECL-INV98","file":"internal/declaration/subscription.go"}
 {"id":"ST-DIS-INV06-RL","title":"lifecycle.oneSuccessor","invariant_id":"ST-DIS-INV06","file":"internal/lifecycle/rules.go"}
 {"id":"ST-DIS-INV09-RL","title":"build","invariant_id":"ST-DIS-INV09","file":"scripts/check-compiler-artifact.py"}
 {"id":"ST-DIS-INV10-RL","title":"verify_published_release","invariant_id":"ST-DIS-INV10","file":"scripts/qualify-compiler-release.py"}
