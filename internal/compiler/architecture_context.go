@@ -159,8 +159,8 @@ func (d *deriver) context() {
 			if c == nil || c.Architecture.Layer != "repository" || stated[componentID(c.Name)] {
 				continue
 			}
-			source := componentSource(c, "architecture.layer")
-			a := actor(ArchActor{ID: "actor:store." + c.Name, Kind: actorStore, Name: "Store of " + c.Name, StatedBy: componentID(c.Name), Source: source})
+			source := componentSource(c, "architecture.store")
+			a := actor(ArchActor{ID: "actor:store." + c.Name, Kind: actorStore, Name: c.Architecture.Store, StatedBy: componentID(c.Name), Source: source})
 			relate(service, a, "keeps rows", componentID(c.Name), "sync", source)
 		}
 	}

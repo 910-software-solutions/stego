@@ -127,7 +127,9 @@ func (d *deriver) flows() {
 			step("repository", componentID(c.Name), binding.Port, c.Architecture.Flow, "sync", componentSource(c, "architecture"))
 			stores := d.byLayer("store")
 			if len(stores) == 0 {
-				step("store", componentID(c.Name), "", "The store of "+c.Name+" keeps the rows.", "sync", componentSource(c, "architecture"))
+				// The repository states the store that keeps its rows (ST-GEN-Q44 (A)); servedKinds refused a
+				// repository that states none.
+				step("store", componentID(c.Name), "", c.Architecture.Store+" keeps the rows.", "sync", componentSource(c, "architecture.store"))
 			}
 			for _, s := range stores {
 				step("store", componentID(s.Name), "", s.Architecture.Flow, "sync", componentSource(s, "architecture"))
@@ -785,14 +787,10 @@ func (d *deriver) aspects() {
 		}
 		return ArchAspect{State: "empty", Reason: reason}
 	}
-	flowReason := reasonNoOperation
-	if len(m.Operations) > 0 && d.handler == nil {
-		flowReason = reasonNoServer
-	}
 	m.Aspects = ArchAspects{
 		Structure:       state(len(m.Components) > 0, reasonNoComponents),
 		DataModel:       state(len(m.Entities) > 0, reasonNoEntity),
-		RequestFlows:    state(len(m.Flows) > 0, flowReason),
+		RequestFlows:    state(len(m.Flows) > 0, reasonNoOperation),
 		PlatformEdges:   state(len(m.Needs)+len(m.Variables) > 0, reasonNoNeed),
 		TrustAndTenancy: state(true, ""),
 	}

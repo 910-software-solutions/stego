@@ -18,6 +18,7 @@ slots: []
 architecture:
   layer: handler
   flow: "Runs the declared query for the caller and gives back its rows."
+  serves: [queries]
   ports:
     queries: inbound
 
