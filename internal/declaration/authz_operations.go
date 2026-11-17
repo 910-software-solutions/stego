@@ -102,30 +102,87 @@ func validateQueryAuthorization(queries []types.Query, schema *AuthzSchema) []Va
 }
 
 // validateWorkerAuthorization checks that each worker names a resource type and a permission that the schema holds
-// (ST-DECL-INV69). The worker's handle decides its permission on each row it reads or writes, on the resource type
-// of the row's entity, so the resource type of each entity in its writes must hold the permission too; else
-// checking passes a worker whose every touch of that entity the runtime refuses.
+// (ST-DECL-INV69). A worker needs its permission on each entity it declares it writes: its handle decides the
+// permission on the rows it reads and changes, on the resource type of the row's entity, so the resource type of
+// each entity in its writes must hold it too, also for an entity that the worker only creates (least privilege,
+// stated in the declaration). A worker that consumes a destination also decides, on each row it touches, the
+// permission of each command and worker that stages for that destination, as the staging principal
+// (ST-SUP-RP10-LC17), so the resource type of each entity in its writes must hold each such permission too.
 func validateWorkerAuthorization(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	var faults []ValidationError
 	for i, worker := range service.Workers {
 		faults = append(faults, operationFaults("worker-authorization", operationAuthz{"worker", worker.Name, workerPath(i), worker.ResourceType, worker.Permission}, schema)...)
-		if schema == nil || worker.Permission == "" {
+		if schema == nil {
 			continue
 		}
+		needs := workerPermissions(service, worker)
 		for wi, name := range worker.Writes {
 			_, entity := entityIndex(service.Entities, name)
 			if entity == nil || entity.ResourceType == "" || entity.ResourceType == worker.ResourceType {
 				continue
 			}
 			definition, defined := schema.definitions[entity.ResourceType]
-			if !defined || definition.permissions[worker.Permission] {
+			if !defined {
 				continue
 			}
-			faults = append(faults, ValidationError{Category: "authorization", Rule: "worker-authorization", Path: fmt.Sprintf("%s.writes[%d]", workerPath(i), wi), Found: name, Allowed: sortedKeys(definition.permissions),
-				Message: fmt.Sprintf("worker %q writes the entity %s of the resource type %s, which lacks the worker's permission %q in the schema %s; the worker decides that permission on each row it touches, so the runtime would refuse each row of %s", worker.Name, name, entity.ResourceType, worker.Permission, schema.Path, name)})
+			for _, need := range needs {
+				if definition.permissions[need.permission] {
+					continue
+				}
+				faults = append(faults, ValidationError{Category: "authorization", Rule: "worker-authorization", Path: fmt.Sprintf("%s.writes[%d]", workerPath(i), wi), Found: name, Allowed: sortedKeys(definition.permissions),
+					Message: fmt.Sprintf("worker %q declares that it writes the entity %s, whose resource type %s lacks %s %q in the schema %s; a worker needs %s on each entity it declares it writes", worker.Name, name, entity.ResourceType, need.whose, need.permission, schema.Path, need.what)})
+			}
 		}
 	}
 	return faults
+}
+
+// workerPermission is one permission that a worker decides on each row it touches: its own, or that of a stager of
+// the destination it consumes, with the words that name it in a fault.
+type workerPermission struct {
+	permission, whose, what string
+}
+
+// workerPermissions gives the permissions that a worker decides on each row it touches: its own permission, and,
+// when it consumes a destination, the permission of each other command and worker that stages an effect for that
+// destination (ST-SUP-RP10-LC17), each once, in declaration order.
+func workerPermissions(service *types.ServiceDeclaration, worker types.Worker) []workerPermission {
+	var needs []workerPermission
+	seen := map[string]bool{}
+	add := func(need workerPermission) {
+		if need.permission != "" && !seen[need.permission] {
+			seen[need.permission] = true
+			needs = append(needs, need)
+		}
+	}
+	add(workerPermission{worker.Permission, "the worker's permission", "its permission"})
+	trigger, reason := parseTrigger(worker.Trigger)
+	if reason != "" || trigger.consumes == "" {
+		return needs
+	}
+	stages := func(effects []types.Effect) bool {
+		for _, effect := range effects {
+			if effect.Destination == trigger.consumes {
+				return true
+			}
+		}
+		return false
+	}
+	stager := func(kind, name, permission string) workerPermission {
+		return workerPermission{permission, fmt.Sprintf("the permission of the %s %q, which stages for %s", kind, name, trigger.consumes),
+			"the permission of each stager of the destination it consumes, which it decides for the staging principal,"}
+	}
+	for _, command := range service.Commands {
+		if stages(command.Effects) {
+			add(stager("command", command.Name, command.Permission))
+		}
+	}
+	for _, other := range service.Workers {
+		if other.Name != worker.Name && stages(other.Effects) {
+			add(stager("worker", other.Name, other.Permission))
+		}
+	}
+	return needs
 }
 
 // operationsAuthorization runs the authorization checks of the commands, queries and workers.

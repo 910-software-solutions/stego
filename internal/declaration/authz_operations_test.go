@@ -146,33 +146,70 @@ func TestWorkerAuthorization(t *testing.T) {
 	t.Run("ST-DECL-INV69-T A worker with the resource type invoice, which the schema lacks, is refused", func(t *testing.T) {
 		expectNamed(t, checkOperations(t, td03Worker(t, "resource_type: invoice", "permission: view"), operationFacts()), "worker-authorization", "sync-documents", "resource type \"invoice\"")
 	})
-	// The worker decides its permission on each row it touches, on the resource type of the row's entity, so each
-	// written entity's resource type must hold it too (docs1 review of PR #396).
-	written := func(permission string) []ValidationError {
-		service, schema := td03Files(t)
+	// A worker needs its permission on each entity it declares it writes, on the resource type of the entity (docs1
+	// review of PR #396; security review of PR #402, M1).
+	noteService := func(workers, commands string) string {
+		service, _ := td03Files(t)
 		service = change(t, service, "collections:\n", "  - name: Note\n    fields:\n      - {name: text, type: string}\n    resource_type: note\n"+
 			"    public_reasons: {create: a new note has no resource to decide on before it exists}\n"+
 			"    permissions: {create: public, read: edit, update: edit, delete: edit, list: edit}\n"+
 			"    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\n"+
 			"collections:\n  notes:\n    entity: Note\n    operations: [create, read, list]\n")
-		service += "modes: [api, worker]\nworkers:\n" + worker("sync-documents", "trigger: every 1m", "writes: [Todo, Note]", "fill: sync", "resource_type: document", "permission: "+permission)
-		schema += "\ndefinition note {\n\trelation owner: user | service_account\n\tpermission edit = owner\n}\n"
+		service += "modes: [api, worker]\nworkers:\n" + workers
+		if commands != "" {
+			service += "commands:\n" + commands
+		}
+		return service
+	}
+	withNote := func(service, permissions string) []ValidationError {
+		_, schema := td03Files(t)
+		schema += "\ndefinition note {\n\trelation owner: user | service_account\n" + permissions + "}\n"
 		decl := readTD03(t, service)
 		faults := Validate(decl).All()
 		faults = append(faults, ValidateComposition(decl, operationFacts())...)
 		return append(faults, CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})...)
 	}
+	editOnly := "\tpermission edit = owner\n"
+	written := func(permission string) []ValidationError {
+		return withNote(noteService(worker("sync-documents", "trigger: every 1m", "writes: [Todo, Note]", "fill: sync", "resource_type: document", "permission: "+permission), ""), editOnly)
+	}
+	onlyAt := func(t *testing.T, faults []ValidationError, path string) {
+		t.Helper()
+		for _, fault := range faults {
+			if fault.Rule == "worker-authorization" && fault.Path != path {
+				t.Errorf("the fault is at %s, want %s", fault.Path, path)
+			}
+		}
+	}
 	t.Run("ST-DECL-INV69-T A worker that writes Note, whose resource type note lacks its permission view, is refused", func(t *testing.T) {
 		faults := written("view")
-		expectNamed(t, faults, "worker-authorization", "sync-documents", "Note", "note", "\"view\"")
+		expectNamed(t, faults, "worker-authorization", "sync-documents", "Note", "note", "\"view\"", "needs its permission on each entity it declares it writes")
+		onlyAt(t, faults, "workers[0].writes[1]")
 		for _, fault := range faults {
-			if fault.Rule == "worker-authorization" && fault.Path != "workers[0].writes[1]" {
-				t.Errorf("the fault is at %s, want workers[0].writes[1]", fault.Path)
+			if strings.Contains(fault.Message, "refuse") {
+				t.Errorf("the fault says the runtime refuses each row, which is not so for a create: %s", fault.Message)
 			}
 		}
 	})
 	t.Run("ST-DECL-INV69-T A worker that writes Note with the permission edit, which document and note hold, is accepted", func(t *testing.T) {
 		expectAccepted(t, written("edit"))
+	})
+	// A consuming worker also decides the stager's permission on each row it touches (security review of PR #402, L1).
+	consumer := worker("apply-document-replies", "trigger: consumes document-replies", "writes: [Todo, Note]", "fill: apply", "resource_type: document", "permission: edit")
+	stager := standardCommand("reply", "resource_type: document", "permission: view", "resource_member: documentId", "effects:\n      - {destination: document-replies, name: reply}")
+	t.Run("ST-DECL-INV69-T A consuming worker that writes Note, whose resource type note lacks the permission view of its stager reply, is refused", func(t *testing.T) {
+		faults := withNote(noteService(consumer, stager), editOnly)
+		expectNamed(t, faults, "worker-authorization", "apply-document-replies", "Note", "note", "\"view\"", "\"reply\"", "document-replies")
+		onlyAt(t, faults, "workers[0].writes[1]")
+	})
+	t.Run("ST-DECL-INV69-T A consuming worker that writes Note, whose resource type note lacks the permission view of its stager worker sync-documents, is refused", func(t *testing.T) {
+		stagingWorker := worker("sync-documents", "trigger: every 1m", "writes: [Todo]", "fill: sync", "resource_type: document", "permission: view", "effects:\n      - {destination: document-replies, name: reply}")
+		faults := withNote(noteService(consumer+stagingWorker, ""), editOnly)
+		expectNamed(t, faults, "worker-authorization", "apply-document-replies", "Note", "note", "\"view\"", "\"sync-documents\"", "document-replies")
+		onlyAt(t, faults, "workers[0].writes[1]")
+	})
+	t.Run("ST-DECL-INV69-T A consuming worker that writes Note, whose resource type note holds its own permission and its stager's, is accepted", func(t *testing.T) {
+		expectAccepted(t, withNote(noteService(consumer, stager), editOnly+"\tpermission view = owner\n"))
 	})
 }
 
