@@ -1,0 +1,143 @@
+kind: service
+name: inventory
+archetype: rest-crud
+language: go
+base_path: /api/inventory/v1
+error_type_base: https://errors.example.test/inventory/
+
+tenancy:
+  kind: pooled
+  key: tenant_id
+  claim: tenant
+  provisioning: {resource_type: service, provision: provision, retire: retire}
+authorization:
+  provider: spicedb
+  schema_path: authz/schema.zed
+  subject_from_identity: user
+audit:
+  level: change
+
+entities:
+  - name: Warehouse
+    resource_type: warehouse
+    permissions: {create: public, read: view, list: view, update: manage, delete: manage}
+    public_reasons: {create: a new warehouse has no resource to decide on before it exists}
+    relationships:
+      - {relation: manager, subject_source: caller, subject_type: user}
+    fields:
+      - { name: code, type: string, unique: true, min_length: 2, max_length: 16 }
+      - { name: name, type: string, min_length: 1, max_length: 120 }
+      - { name: region, type: enum, values: [emea, amer, apac] }
+
+  - name: Bin
+    resource_type: bin
+    permissions: {create: public, read: view, list: view, update: manage, delete: manage}
+    public_reasons: {create: a new bin is decided on manage of its warehouse through the reference warehouse_id}
+    references:
+      warehouse_id: {relation: warehouse, permission: manage}
+    fields:
+      - { name: warehouse_id, type: ref, to: Warehouse }
+      - { name: label, type: string, min_length: 1, max_length: 32 }
+      - { name: capacity, type: int32, min: 1, max: 100000 }
+
+  - name: StockItem
+    resource_type: stock_item
+    permissions: {create: public, read: view, list: view, update: edit, delete: manage}
+    public_reasons: {create: a new stock item is decided on edit of its bin through the reference bin_id}
+    references:
+      bin_id: {relation: bin, permission: edit}
+    fields:
+      - { name: bin_id, type: ref, to: Bin }
+      - { name: sku, type: string, min_length: 3, max_length: 40 }
+      - { name: quantity, type: int32, min: 0, max: 1000000 }
+      - { name: reserved, type: int32, min: 0, max: 1000000, default: 0 }
+
+  - name: Order
+    resource_type: order
+    permissions: {create: public, read: view, list: view, update: edit, delete: manage}
+    public_reasons: {create: a new order is decided on edit of its warehouse through the reference warehouse_id}
+    references:
+      warehouse_id: {relation: warehouse, permission: edit}
+    fields:
+      - { name: warehouse_id, type: ref, to: Warehouse }
+      - { name: customer_email, type: string, max_length: 255, sensitivity: pii }
+      - { name: status, type: enum, values: [draft, placed, fulfilled, cancelled], default: draft }
+      - { name: total_units, type: int32, min: 0, max: 1000000, default: 0 }
+
+  - name: OrderLine
+    resource_type: order_line
+    permissions: {create: public, read: view, list: view, delete: edit}
+    public_reasons: {create: a new order line is decided on edit of its order through the reference order_id}
+    references:
+      order_id: {relation: order, permission: edit}
+    fields:
+      - { name: order_id, type: ref, to: Order }
+      - { name: sku, type: string, min_length: 3, max_length: 40 }
+      - { name: quantity, type: int32, min: 1, max: 10000 }
+
+collections:
+  warehouses:
+    entity: Warehouse
+    operations: [create, read, update, delete, list]
+  warehouse-bins:
+    entity: Bin
+    scope: { warehouse_id: Warehouse }
+    operations: [create, read, update, delete, list]
+  bin-stock:
+    entity: StockItem
+    scope: { bin_id: Bin }
+    operations: [create, read, update, delete, list]
+  warehouse-orders:
+    entity: Order
+    scope: { warehouse_id: Warehouse }
+    operations: [create, read, list]
+  order-lines:
+    entity: OrderLine
+    scope: { order_id: Order }
+    operations: [create, read, delete, list]
+
+commands:
+  - name: place-order
+    writes: [Order, StockItem]
+    resource_type: order
+    permission: edit
+    resource_member: order_id
+    fill: place-order
+    route: POST /orders/{order_id}/place
+    effects:
+      - {name: fulfill, destination: fulfillment}
+    refusals:
+      - {name: short_stock, code: stock.short, status: 409}
+      - {name: not_draft, code: order.not_draft, status: 409}
+
+queries:
+  - name: open-orders
+    reads: [Warehouse, Order]
+    resource_type: warehouse
+    permission: view
+    resource_member: warehouseId
+    fill: open-orders
+    route: GET /warehouses/{warehouseId}/open-orders
+
+workers:
+  - name: fulfill-orders
+    trigger: consumes fulfillment
+    writes: [Order, StockItem]
+    resource_type: order
+    permission: edit
+    fill: fulfill-orders
+
+experimental_acceptances:
+  - {component: worker, accepted_until: 2027-03-31, reason: the fulfillment worker reacts to placed orders}
+
+mixins:
+  - durable-events
+  - kafka-events
+
+overrides:
+  auth-provider: oidc-auth
+  oidc-auth:
+    issuer: https://127.0.0.1:59700/realms/inventory
+    audience: inventory
+  postgres-adapter: { schema_generation: tables-v1 }
+  command: { proto_files: [{path: proto/inventory.proto, import_path: inventory.proto}] }

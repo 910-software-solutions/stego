@@ -197,11 +197,39 @@ func stageRuntimeProxy(plan *Plan, stageRoot *os.Root, stage string) (string, er
 	if plan.runtime == nil || plan.registry == nil {
 		return "", nil
 	}
-	folder := plan.registry.RuntimeFolder()
+	return writeRuntimeProxy(plan.registry, *plan.runtime, stageRoot, stage)
+}
+
+// runtimeProxyStager gives the RuntimeProxy port of a fill check (FillCheck.RuntimeProxy): it stages the runtime proxy
+// of the archetype's pin in a folder that holds a copy of go.mod and go.sum, as stego deps does, and gives nil when the
+// archetype pins no runtime.
+func runtimeProxyStager(reg *registry.Registry, archetype string) func(stage string) (string, error) {
+	if reg == nil {
+		return nil
+	}
+	declared := reg.Archetype(archetype)
+	if declared == nil || declared.Runtime == nil {
+		return nil
+	}
+	pin := *declared.Runtime
+	return func(stage string) (string, error) {
+		stageRoot, err := os.OpenRoot(stage)
+		if err != nil {
+			return "", err
+		}
+		defer stageRoot.Close()
+		return writeRuntimeProxy(reg, pin, stageRoot, stage)
+	}
+}
+
+// writeRuntimeProxy writes the module proxy folder of pin from the registry's runtime folder under stage, and the
+// hashes of the pin into the go.sum of stageRoot. It gives "" when the registry has no runtime folder or the folder
+// does not hold the pinned version.
+func writeRuntimeProxy(reg *registry.Registry, pin registry.RuntimePin, stageRoot *os.Root, stage string) (string, error) {
+	folder := reg.RuntimeFolder()
 	if folder == "" {
 		return "", nil
 	}
-	pin := *plan.runtime
 	escaped, err := module.EscapePath(pin.Module)
 	if err != nil {
 		return "", err
