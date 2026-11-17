@@ -452,7 +452,11 @@ func renderRunners(m *model) []byte {
 	if m.has(false) {
 		w.f("\t\"context\"\n\t\"database/sql\"\n\t\"encoding/json\"\n\t\"errors\"\n")
 	}
-	w.f("\t\"time\"\n\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	// Only a worker with an every trigger needs time and lease: its interval and its lease TTL (ST-SUP-RC35-OC04).
+	if m.has(true) {
+		w.f("\t\"time\"\n")
+	}
+	w.f("\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
 	if m.has(true) {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/lease\"\n")
 	}
