@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"maps"
+	"math"
 	"path"
 	"regexp"
 	"slices"
@@ -1381,7 +1382,9 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", e.Name)
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, e.Name, e.Name)
 		w.clientTimeText(e.Name+"{}", e.Fields)
-		w.f("\tvar %s %s\n\tif err := json.Unmarshal(bodyBytes, &%s); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body does not decode into %s\")}\n\t}\n", c.lower, e.Name, c.lower, e.Name, e.Name)
+		w.f("\tvar %s %s\n", c.lower, e.Name)
+		w.presetDefaults(c.lower, e.Fields)
+		w.f("\tif err := json.Unmarshal(bodyBytes, &%s); err != nil {\n\t\treturn %s{}, &invalidRequest{problem: BadRequest(\"the body does not decode into %s\")}\n\t}\n", c.lower, e.Name, e.Name)
 		w.clientTimeValue(c.lower, e.Name+"{}", e.Fields, false)
 		w.f("\t%s.ID = \"\"\n", c.lower)
 		emitClearServerManagedFields(&w.Buffer, c.lower, e)
@@ -1575,7 +1578,7 @@ func zeroOf(goType string) string {
 func defaultLiteral(f types.Field) (string, error) {
 	switch value := f.Default.(type) {
 	case string:
-		if f.Type == types.FieldTypeString {
+		if f.Type == types.FieldTypeString || f.Type == types.FieldTypeEnum || f.Type == types.FieldTypeRef {
 			return strconv.Quote(value), nil
 		}
 	case bool:
@@ -1594,16 +1597,65 @@ func defaultLiteral(f types.Field) (string, error) {
 		if f.Type == types.FieldTypeInt64 {
 			return strconv.FormatUint(value, 10), nil
 		}
+	case float64:
+		if f.Type == types.FieldTypeDouble || f.Type == types.FieldTypeFloat && math.Abs(value) <= math.MaxFloat32 {
+			return strconv.FormatFloat(value, 'g', -1, 64), nil
+		}
 	}
-	return "", fmt.Errorf("the field %s of type %s has the default %#v, which is not a string, an integer or a boolean of its type", f.Name, f.Type, f.Default)
+	if isFloatType(f.Type) {
+		switch value := f.Default.(type) {
+		case int:
+			return strconv.FormatInt(int64(value), 10), nil
+		case int64:
+			return strconv.FormatInt(value, 10), nil
+		case uint64:
+			return strconv.FormatUint(value, 10), nil
+		}
+	}
+	return "", fmt.Errorf("the field %s of type %s has the default %#v, which is not a string, an integer, a number or a boolean of its type", f.Name, f.Type, f.Default)
 }
 
-// generationDefaults refuses an entity whose generation field has a default with no Go literal (defaultLiteral),
-// because the handlers write that default into the generated code.
+// isFloatType tells whether a field type is a float or a double.
+func isFloatType(t types.FieldType) bool {
+	return t == types.FieldTypeFloat || t == types.FieldTypeDouble
+}
+
+// presetsDefault tells whether the decode of a create or an update body writes the declared default of f into the
+// value before it reads the body: a field with a default that the client sets, of a type whose default has a Go
+// literal. A timestamp or a jsonb default stays with the column (ST-DECL-EN03).
+func presetsDefault(f types.Field) bool {
+	if f.Default == nil || isServerManaged(f) || f.Optional {
+		return false
+	}
+	switch f.Type {
+	case types.FieldTypeString, types.FieldTypeEnum, types.FieldTypeRef, types.FieldTypeBool, types.FieldTypeInt32,
+		types.FieldTypeInt64, types.FieldTypeFloat, types.FieldTypeDouble:
+		return true
+	}
+	return false
+}
+
+// presetDefaults writes, before the decode of a create or an update body into v, the declared default of each field
+// of presetsDefault, so that a body that leaves out the field, or sends it as null, stores its default: the default
+// is the value used when the field is absent (ST-DECL-EN03). Before this, an omitted enum field stored the empty
+// text and the CHECK of its values failed the write with 500.
+func (w *runtimeHandlerWriter) presetDefaults(v string, fields []types.Field) {
+	for _, f := range fields {
+		if !presetsDefault(f) {
+			continue
+		}
+		// ValidateContext refused a default that has no Go literal (generationDefaults).
+		literal, _ := defaultLiteral(f)
+		w.f("\t%s.%s = %s\n", v, toPascalCase(f.Name), literal)
+	}
+}
+
+// generationDefaults refuses an entity whose generation field, or a field of presetsDefault, has a default with no
+// Go literal (defaultLiteral), because the handlers write that default into the generated code.
 func generationDefaults(entities []types.Entity) error {
 	for _, e := range entities {
 		for _, f := range e.Fields {
-			if f.Name == "generation" && f.Default != nil {
+			if f.Name == "generation" && f.Default != nil || presetsDefault(f) {
 				if _, err := defaultLiteral(f); err != nil {
 					return fmt.Errorf("entity %s: %w", e.Name, err)
 				}

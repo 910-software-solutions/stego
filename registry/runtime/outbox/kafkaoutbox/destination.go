@@ -92,6 +92,15 @@ const (
 	FailureSASL            = "sasl-authentication"
 	FailureSCRAMBounds     = "scram-bounds"
 	FailureBrokerRefused   = "broker-not-allowed"
+	// FailureTopicRefused is a broker's refusal of the topic of a record: the event also names the topic and the
+	// reason, ReasonUnknownTopic or ReasonTopicNotAuthorized, and holds no part of the message.
+	FailureTopicRefused = "topic-refused"
+)
+
+// The reasons of the failure class FailureTopicRefused.
+const (
+	ReasonUnknownTopic       = "unknown-topic"
+	ReasonTopicNotAuthorized = "not-authorized"
 )
 
 // failure gives the fixed error and the failure class of a client error, or errUnavailable and "" when the error is
@@ -382,7 +391,7 @@ func (d *Destination) Deliver(ctx context.Context, _ *sql.Tx, delivery outbox.De
 		}
 		return ctx.Err()
 	}
-	return d.outcome(s, err)
+	return d.outcome(s, record.Topic, err)
 }
 
 // classError gives the fixed error of a failure class, or nil for no class.
@@ -403,7 +412,7 @@ func classError(class string) error {
 // outcome marks the error of a produce. A broker's refusal of the batch means the record is not in the log: it is
 // transient, or permanent for a record the broker can never take. A refusal after the append, a request timeout and
 // every other error leave the outcome not known.
-func (d *Destination) outcome(s *session, err error) error {
+func (d *Destination) outcome(s *session, topic string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -418,6 +427,15 @@ func (d *Destination) outcome(s *session, err error) error {
 		case kerr.NotEnoughReplicasAfterAppend, kerr.RequestTimedOut:
 			d.invalidate(s)
 			return errors.New("kafkaoutbox: the broker may hold the record: " + refusal.Message)
+		case kerr.UnknownTopicOrPartition, kerr.TopicAuthorizationFailed:
+			// The topic is not there, or the service may not write to it: the platform must make the topic or
+			// grant it, so the event names the topic and the reason, and the outbox tries again after its backoff.
+			reason := ReasonUnknownTopic
+			if refusal == kerr.TopicAuthorizationFailed {
+				reason = ReasonTopicNotAuthorized
+			}
+			d.topicFailed(context.Background(), topic, reason)
+			return outbox.TransientRefusal(errors.New("kafkaoutbox: the broker refused the topic " + topic + ": " + reason))
 		case kerr.MessageTooLarge, kerr.RecordListTooLarge, kerr.InvalidRecord, kerr.CorruptMessage, kerr.InvalidTopicException:
 			return outbox.PermanentRefusal(errors.New("kafkaoutbox: the broker can never take the record: " + refusal.Message))
 		default:
@@ -447,6 +465,21 @@ func (d *Destination) failed(ctx context.Context, class string) {
 	record.SetSeverityText("WARN")
 	record.SetBody(attribute.StringValue("a Kafka delivery failed: " + class))
 	record.AddAttributes(attribute.String("failure", class))
+	d.logger.Emit(ctx, record)
+}
+
+// topicFailed emits the event kafka.delivery_failed of the class FailureTopicRefused: the class, the topic and the
+// reason, and no part of the message.
+func (d *Destination) topicFailed(ctx context.Context, topic, reason string) {
+	if d.logger == nil {
+		return
+	}
+	var record otellog.Record
+	record.SetEventName("kafka.delivery_failed")
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetSeverityText("WARN")
+	record.SetBody(attribute.StringValue("a Kafka delivery failed: " + FailureTopicRefused + " " + topic + " " + reason))
+	record.AddAttributes(attribute.String("failure", FailureTopicRefused), attribute.String("topic", topic), attribute.String("reason", reason))
 	d.logger.Emit(ctx, record)
 }
 
