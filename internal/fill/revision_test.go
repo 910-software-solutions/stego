@@ -146,3 +146,67 @@ func TestRevisionFaultsContractFolder(t *testing.T) {
 		}
 	})
 }
+
+func TestRevisionFaultsGeneratedTree(t *testing.T) {
+	t.Run("ST-EXT-UC02-R02-T11 stego build refuses a package under out, at any depth, that holds a file go build takes that is not a Go file, or a link", func(t *testing.T) {
+		faults := func(dir string, service *types.ServiceDeclaration) string {
+			t.Helper()
+			found, err := RevisionFaults(dir, []string{"place-order"}, compiler.RevisionFillCheck(dir, "example.com/inventory", service))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return strings.Join(found, "\n")
+		}
+		write := func(t *testing.T, dir, name, text string) {
+			t.Helper()
+			full := filepath.Join(dir, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// The Go files of a sub-package, such as the handlers of the commands, are no fault.
+		dir, service := revisionProject(t, "command.command")
+		write(t, dir, "out/commands/handlers/handlers.go", "package handlers\n")
+		write(t, dir, "out/cmd/server/main.go", "package main\n")
+		if got := faults(dir, service); !strings.Contains(got, "signed against an older contract") || strings.Contains(got, "generated package") {
+			t.Fatalf("the build refused the Go files of the generated packages: %q", got)
+		}
+
+		// Each file that go build puts in the binary, other than a Go file, is refused in the handlers package and in
+		// a package outside the contract folders.
+		for _, name := range []string{"out/commands/handlers/stub.s", "out/commands/handlers/blob.syso", "out/queries/handlers/glue.c", "out/cmd/server/glue.h"} {
+			dir, service := revisionProject(t, "command.command")
+			write(t, dir, name, "x\n")
+			want := "the generated package " + filepath.ToSlash(filepath.Dir(name)) + " holds " + filepath.Base(name) + ", which is not a Go file"
+			if got := faults(dir, service); !strings.Contains(got, want) {
+				t.Fatalf("the build did not refuse %s: %q", name, got)
+			}
+		}
+
+		// A Go file that is a link in a sub-package is refused, and so is a sub-package folder that is a link.
+		outside := filepath.Join(t.TempDir(), "elsewhere.go")
+		if err := os.WriteFile(outside, []byte("package handlers\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		dir, service = revisionProject(t, "command.command")
+		write(t, dir, "out/commands/handlers/handlers.go", "package handlers\n")
+		if err := os.Symlink(outside, filepath.Join(dir, "out", "commands", "handlers", "fills.go")); err != nil {
+			t.Fatal(err)
+		}
+		if got := faults(dir, service); !strings.Contains(got, "the generated package out/commands/handlers holds fills.go, which is not a regular file") {
+			t.Fatalf("the build did not refuse the linked handler file: %q", got)
+		}
+		dir, service = revisionProject(t, "command.command")
+		write(t, dir, "out/cmd/main.go", "package main\n")
+		if err := os.Symlink(filepath.Dir(outside), filepath.Join(dir, "out", "cmd", "server")); err != nil {
+			t.Fatal(err)
+		}
+		if got := faults(dir, service); !strings.Contains(got, "the generated package out/cmd holds server, which is not a regular file") {
+			t.Fatalf("the build did not refuse the linked handler folder: %q", got)
+		}
+	})
+}

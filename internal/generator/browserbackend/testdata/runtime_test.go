@@ -38,18 +38,41 @@ func TestLoginProxyRestartLogout(t *testing.T) {
 		headers.Set("X-Forwarded-Host", "private.example")
 		headers.Set("Proxy-Authorization", "private")
 		headers.Set("X-Untrusted", "private")
+		headers.Set("Traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+		// The request headers of the STEGO API contract (W8-B3): a command needs Idempotency-Key, and a read
+		// after a write sends Authz-Revocation-After and may send Prefer.
+		allowed := map[string]string{
+			"Accept": "application/json", "Content-Type": "application/json", "If-Match": `"record-version"`, "If-None-Match": `"other-version"`,
+			"Idempotency-Key": "place-order-1", "Authz-Revocation-After": "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10", "Prefer": "wait=4",
+		}
+		for name, value := range allowed {
+			headers.Set(name, value)
+		}
 		// Cookies from the browser are consumed by the backend, never by the API.
 		delete(headers, "Cookie")
 		w := send(f.backend, "POST", apiPrefix+"/records", `{"name":"one"}`, []*http.Cookie{active}, headers)
 		require(t, w.Code == 201 && w.Body.String() == `{"id":"record-1","name":"one"}`, "API contract changed")
 		require(t, w.Header().Get("ETag") == `"record-version"` && w.Header().Get("Set-Cookie") == "" && w.Header().Get("X-Private") == "", "unsafe response headers")
+		require(t, w.Header().Get("Idempotent-Replayed") == "true" && w.Header().Get("Authz-Revocation") == "pending" &&
+			w.Header().Get("Authz-Revocation-Location") == "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10" && w.Header().Get("Preference-Applied") == "wait=4", "the response headers of the API contract did not reach the browser")
 		f.mu.Lock()
 		sent := f.requests[0]
 		f.mu.Unlock()
 		require(t, sent.Get("Authorization") == "Bearer initial-access-value", "server access token was not sent")
-		for _, name := range []string{"Cookie", "X-Forwarded-Host", "Proxy-Authorization", "X-Untrusted", CSRFHeader, "Origin"} {
+		for name, value := range allowed {
+			require(t, len(sent.Values(name)) == 1 && sent.Get(name) == value, "an allowed header did not reach the API as sent: "+name)
+		}
+		for name := range sent {
+			_, listed := allowed[name]
+			// The Go client adds Accept-Encoding, Content-Length and User-Agent of its own; none comes from the browser.
+			require(t, listed || name == "Authorization" || name == "Accept-Encoding" || name == "Content-Length" || name == "User-Agent", "a header off the allow list reached the API: "+name)
+		}
+		for _, name := range []string{"Cookie", "X-Forwarded-Host", "Proxy-Authorization", "X-Untrusted", "Traceparent", CSRFHeader, "Origin"} {
 			require(t, sent.Get(name) == "", "private header reached the API: "+name)
 		}
+		twice := mutationHeaders(csrf)
+		twice["Idempotency-Key"] = []string{"one", "two"}
+		require(t, send(f.backend, "POST", apiPrefix+"/records", `{"name":"one"}`, []*http.Cookie{active}, twice).Code == 400, "an allowed header given two times was forwarded")
 		f.backend.Close()
 		f.backend = f.start(t)
 		w = send(f.backend, "GET", apiPrefix+"/records/record-1", "", []*http.Cookie{active}, nil)

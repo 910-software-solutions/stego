@@ -749,6 +749,10 @@ func TestFirstGenerationRecheck(t *testing.T) {
 			t.Fatal(err)
 		}
 		p.must(t, "no-key", "init", "--archetype", "rest-crud")
+		// Init writes a go.mod; a project that an older stego init made, or whose author removed it, has none.
+		if err := os.Remove(p.path("go.mod")); err != nil {
+			t.Fatal(err)
+		}
 		p.bind(t)
 		if _, err := os.Stat(p.path("go.mod")); err == nil {
 			t.Fatal("the project has a go.mod before its first generation")

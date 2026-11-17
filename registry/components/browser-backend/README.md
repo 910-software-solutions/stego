@@ -37,16 +37,46 @@ the database and USAGE on the schema public, and a migration login that is a
 member of the owner role. Revoke the default PUBLIC grants on the database and
 on the schema public. The schema check refuses other attributes and grants, so
 use this SQL as it is. Replace `<service>` with the service name, with each `-`
-as `_`, and each password with a new secret.
+as `_`. Generation refuses a service name that gives a role name longer than
+the 63 bytes of a PostgreSQL name, because PostgreSQL cuts a longer name with
+no error.
 
 ```sql
 -- As a database administrator, connected to any database of the server:
 CREATE ROLE <service>_owner NOLOGIN NOINHERIT;
-CREATE ROLE <service>_runtime LOGIN NOINHERIT PASSWORD '<runtime password>';
-CREATE ROLE <service>_migrator LOGIN PASSWORD '<migration password>' IN ROLE <service>_owner;
+CREATE ROLE <service>_runtime LOGIN NOINHERIT;
+CREATE ROLE <service>_migrator LOGIN IN ROLE <service>_owner;
 CREATE DATABASE <service> OWNER <service>_owner;
 REVOKE ALL ON DATABASE <service> FROM PUBLIC;
 GRANT CONNECT ON DATABASE <service> TO <service>_runtime;
+```
+
+Then give each login a new secret in `psql`. First make sure that the server
+keeps secrets as SCRAM: `SHOW password_encryption` must give `scram-sha-256`.
+If it gives `md5`, do not go on; run `SET password_encryption =
+'scram-sha-256';` in the session first. The `\password` command asks for the
+secret and sends only its SCRAM verifier. The secret is then not in the SQL or
+the shell history, and the server log can hold only its SCRAM verifier:
+
+```psql
+SHOW password_encryption;
+\password <service>_runtime
+\password <service>_migrator
+```
+
+PostgreSQL gives CONNECT on the databases `postgres` and `template1` to PUBLIC.
+The block below revokes it, so that the runtime login cannot open them. It
+changes the server for each login: before you run it, grant CONNECT on these
+databases to each other login that uses them, such as a monitoring login or
+the `auth_query` login of PgBouncer. A database of another application where
+PUBLIC still has CONNECT stays open to the runtime login. The real limit is a
+`pg_hba.conf` rule such as `host <service> <service>_runtime <cidr>
+scram-sha-256`, with no other line that matches the role.
+
+```sql
+-- As a database administrator, after the grants to the other logins:
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
 ```
 
 ```sql
@@ -132,6 +162,33 @@ The service exposes GET `/auth/login`, GET `/auth/callback`, GET
 in. It does not include OAuth tokens. Mutations require the exact Origin and
 `X-CSRF-Token` headers. The API prefix forwards the user's server-held access
 token to the configured API. It does not accept bearer tokens from the browser.
+
+The API prefix sends to the API only the browser request headers of this
+list. It sends each one only when the browser gives it one time, and refuses
+a request with two values of one with 400. It sends no other browser header,
+such as `Cookie`, `Origin`, `X-CSRF-Token` or `traceparent`.
+
+| Request header | Why the API needs it |
+|---|---|
+| `Accept`, `Content-Type` | The media type of the request and of the answer. |
+| `If-Match`, `If-None-Match` | The version checks of a write and of a read. |
+| `Idempotency-Key` | Each STEGO command requires it. Send one new key for each command, and the same key when you send the command again. |
+| `Authz-Revocation-After` | A read after your own write waits for the revocation that the write gave in `Authz-Revocation-Location`. Give that value as it is. |
+| `Prefer` | `wait=<seconds>` sets the longest wait of that read. The API prefix sends only this one preference, and drops each other preference. |
+
+A read with `Authz-Revocation-After` waits at most 4 seconds, one second less
+than the request timeout of the API prefix: the API prefix sends `wait=4`
+when the browser gives no wait or a longer one. At most 4 such reads run at
+one time for the whole service, so that they never take the capacity of the
+other requests. The next one gets 503 with `Retry-After: 1`.
+
+The API prefix returns to the browser only the API response headers
+`Content-Type`, `ETag`, `Retry-After`, `Idempotent-Replayed`,
+`Authz-Revocation` and `Preference-Applied`, a `Location` under the API
+prefix, and an `Authz-Revocation-Location` only in the form
+`/authz/revocations/<uuid>`. That value is not a path under the API prefix:
+give it back in `Authz-Revocation-After`. It returns no `Set-Cookie` header of
+the API.
 
 The component does not supply domain pages, API authorization rules, identity
 provider administration, ingress certificates, or production database setup.

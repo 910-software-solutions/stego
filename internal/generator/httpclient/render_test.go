@@ -3,6 +3,7 @@ package httpclient
 import (
 	"context"
 	_ "embed"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,9 @@ var isolationTests []byte
 
 //go:embed testdata/options_test.go
 var optionTests []byte
+
+//go:embed testdata/key_test.go
+var keyTests []byte
 
 func TestStreamRequestIsolation(t *testing.T) { testStreams(t, false) }
 func TestStreamLimitOptions(t *testing.T)     { testStreams(t, true) }
@@ -47,6 +51,34 @@ func testStreams(t *testing.T, options bool) {
 		t.Fatalf("generated stream limits: %v\n%s", err, output)
 	}
 	t.Logf("%s", output)
+}
+
+func TestIdempotencyKeyClients(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC07-T02 Only the client of the API proxy sends Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
+		for _, proxy := range []bool{false, true} {
+			file, err := Render("client", "", FollowLinks)
+			if proxy {
+				file, err = RenderProxy("client", "", 0, FollowLinks)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			files := map[string][]byte{"go.mod": []byte("module example.com/key-test\ngo 1.26.11\n"), "client.go": file.Bytes(), "isolation_test.go": isolationTests,
+				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst proxyClient = %t\n", proxy))}
+			for name, data := range files {
+				if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.Command("go", "test", "-count=1", "-mod=readonly", "-run=^TestIdempotencyKeyHeader$", "./...")
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "GOWORK=off")
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("proxy client %t: %v\n%s", proxy, err, output)
+			}
+		}
+	})
 }
 
 func TestCredentialLinkPolicy(t *testing.T) {

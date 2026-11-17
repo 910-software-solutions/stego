@@ -24,6 +24,9 @@ type Facts struct {
 	// CollectionsUnserved is true when the active component set is known and has no component that serves
 	// collections (ST-DECL-INV92).
 	CollectionsUnserved bool
+	// ComponentsUnresolved is true when the active component set is not known, because its ports did not resolve.
+	// A check that needs a component then reports no fault of its own: the resolution fault names the cause.
+	ComponentsUnresolved bool
 }
 
 // The slots that the fills of commands, queries and workers implement. Each capability component (ST-SUP-RC32,

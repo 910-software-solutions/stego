@@ -17,6 +17,7 @@ import (
 	"github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
+	"golang.org/x/mod/modfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,15 +26,24 @@ type InitOptions struct {
 	Archetype  string
 	// Empty asks for a scaffold with no example content (ST-DECL-UC01-R05).
 	Empty bool
-	// Module is the module path that the placeholders of the example content take: the one generation then uses
-	// (ProjectModuleSettings). With no value, init takes the module of the project's go.mod or the default.
+	// Module is the module path of the service: the --module flag of stego init, or STEGO_MODULE. When the project
+	// holds no go.mod, init writes a go.mod that declares it, and each later command reads the module from that
+	// go.mod only. With no value, init takes the module of the project's go.mod or the default. A value that
+	// differs from the module of the project's go.mod is refused (ProjectModuleSettings).
 	Module string
-	Stderr io.Writer
+	// GoVersion is the Go version of the go.mod that init writes: STEGO_GO_VERSION, or with no value that of the
+	// project's go.mod or the default.
+	GoVersion string
+	Stderr    io.Writer
 }
 
 type InitResult struct {
 	Name    string
 	Created []string
+	// Module is the module path of the service, and ModuleFromProject tells that it is the one of the go.mod that the
+	// project held, so init wrote no go.mod.
+	Module            string
+	ModuleFromProject bool
 	// Owed names each setting that the archetype's components mark as author supplied, for an empty scaffold
 	// (ST-DECL-UC01-R05). A scaffold with example content gives them, so it owes none.
 	Owed []string
@@ -108,11 +118,19 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 			exampleFiles = append(exampleFiles, file)
 		}
 	}
-	module := opts.Module
-	if len(example) > 0 && module == "" {
-		if module, _, err = ProjectModuleSettings(project, "", ""); err != nil {
+	// The module that the placeholders of the example content take is the one that generation then uses: that
+	// of the project's go.mod, or the one that init writes in a new go.mod (walkthrough-7 B12, decision A).
+	module, goVersion, err := ProjectModuleSettings(project, opts.Module, opts.GoVersion)
+	if err != nil {
+		return nil, err
+	}
+	var goModule []byte
+	if _, err := root.Lstat("go.mod"); errors.Is(err, os.ErrNotExist) {
+		if goModule, err = minimalModule(module, goVersion); err != nil {
 			return nil, err
 		}
+	} else if err != nil {
+		return nil, err
 	}
 	document, err := declaration.Scaffold(name, opts.Archetype, arch.Language, exampleDeclaration, module, registry.ExampleService, registry.ExampleModule)
 	if err != nil {
@@ -159,7 +177,7 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 	// example content of this run as files that the project already holds (ST-DECL-UC01-R02). A file or folder
 	// that was there before the run is never removed.
 	var made []string
-	for _, file := range append([]string{"fills/.", ".stego/config.yaml", localStateIgnorePath, "service.yaml"}, examplePaths(exampleFiles)...) {
+	for _, file := range append([]string{"fills/.", ".stego/config.yaml", localStateIgnorePath, "go.mod", "service.yaml"}, examplePaths(exampleFiles)...) {
 		made = appendAbsentFolders(root, made, path.Dir(file))
 	}
 	defer func() {
@@ -167,13 +185,15 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 			err = errors.Join(err, removeMade(root, made))
 		}
 	}()
-	// create writes a new file and names it in made before the write when the project does not hold it, so a write
-	// that fails after the file is there removes it too. A path that the project held before is never named.
+	// create writes a new file and names it in made once this run has put it there, also when a later step of the
+	// write fails, so a write that fails after the file is there removes it too. A path that the project held
+	// before, or that another process made first, is never named (sec-419 LOW-1).
 	create := func(name string, data []byte) error {
-		if _, err := root.Lstat(name); errors.Is(err, os.ErrNotExist) && !slices.Contains(made, name) {
+		published, err := publishRootFile(root, name, data, 0644, false)
+		if published && !slices.Contains(made, name) {
 			made = append(made, name)
 		}
-		return createRootFile(root, name, data)
+		return err
 	}
 	created := []string{}
 	if err := root.Mkdir("fills", 0755); err == nil {
@@ -207,10 +227,30 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 		}
 		created = append(created, file.Path)
 	}
+	// A go.mod that the project holds is kept as written; one that another process makes first fails the write.
+	if goModule != nil {
+		if err := create("go.mod", goModule); err != nil {
+			return nil, err
+		}
+		created = append(created, "go.mod")
+	}
 	if err := create("service.yaml", document); err != nil {
 		return nil, err
 	}
-	return &InitResult{Name: name, Created: append(created, "service.yaml"), Owed: owed}, nil
+	return &InitResult{Name: name, Created: append(created, "service.yaml"), Owed: owed, Module: module, ModuleFromProject: goModule == nil}, nil
+}
+
+// minimalModule gives the go.mod that init writes in a project that holds none: the module and the Go version only.
+// Apply adds the requirements of the generated code to it (mergeProjectModule).
+func minimalModule(module, goVersion string) ([]byte, error) {
+	file := &modfile.File{}
+	if err := file.AddModuleStmt(module); err != nil {
+		return nil, err
+	}
+	if err := file.AddGoStmt(goVersion); err != nil {
+		return nil, err
+	}
+	return file.Format()
 }
 
 // examplePaths gives the path of each file of the example content.

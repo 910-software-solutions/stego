@@ -24,6 +24,7 @@ conventions:
   logging: structured-json
   cors: disabled
 bindings:
+  durable-outbox: outbox
   auth-provider: jwt-auth
   tracing: otel-tracing
   storage-adapter: postgres-adapter
