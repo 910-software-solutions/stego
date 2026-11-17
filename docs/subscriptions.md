@@ -31,6 +31,12 @@ experimental_acceptances:
 A service has one subscription while the component `kafka-consumer` is alpha.
 A subscription selects `kafka-consumer`, so accept it in the declaration.
 
+The inbox writes each record into the outbox, so `kafka-consumer` needs the
+port `durable-outbox`. The archetypes `rest-crud` and `rpc-service` bind this
+port to the component `outbox`, so you do not bind it in `overrides`. The
+archetype `browser-service` has no outbox, and thus a browser service cannot
+declare a subscription.
+
 In the worker mode, the Kafka inbox reads the topic in the consumer group
 `<service>.<subscription>`. For each record it checks the headers, the key and
 the payload, and it looks up the tenant of the header `stego-tenant` in the
