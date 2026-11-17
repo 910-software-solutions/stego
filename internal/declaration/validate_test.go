@@ -51,6 +51,9 @@ func TestValidateFieldDefaults(t *testing.T) {
 		{"an int with the default 1.5", "count", "1.5", "int32", []string{title, done, "- {name: count, type: int32, default: 1.5}"}},
 		{"an enum with the default archived", "state", "archived", "enum", []string{title, done, "- {name: state, type: enum, values: [open, closed], default: archived}"}},
 		{"a timestamp generation with a default", "generation", "x; panic(1)", "timestamp", []string{title, done, `- {name: generation, type: timestamp, default: "x; panic(1)"}`}},
+		{"a ref with a default that is not a UUID", "parent", "main", "ref", []string{title, done, "- {name: parent, type: ref, to: Todo, default: main}"}},
+		{"a ref with a UUID default that is one digit short", "parent", "0b5c3f2e-7d4a-4c1b-9e8f-2a6d5c4b3a2", "ref", []string{title, done, "- {name: parent, type: ref, to: Todo, default: 0b5c3f2e-7d4a-4c1b-9e8f-2a6d5c4b3a2}"}},
+		{"a ref with a number default", "parent", "12", "ref", []string{title, done, "- {name: parent, type: ref, to: Todo, default: 12}"}},
 	}
 	for _, c := range refused {
 		t.Run("ST-DECL-INV13-T A field default that does not suit the field's type is refused: "+c.name, func(t *testing.T) {
@@ -70,7 +73,8 @@ func TestValidateFieldDefaults(t *testing.T) {
 		})
 	}
 	t.Run("ST-DECL-INV13-T A field default that suits the field's type is accepted", func(t *testing.T) {
-		if faults := defaultFaults(t, title, "- {name: done, type: bool, default: true}", "- {name: count, type: int32, default: 0}"); len(faults) != 0 {
+		if faults := defaultFaults(t, title, "- {name: done, type: bool, default: true}", "- {name: count, type: int32, default: 0}",
+			"- {name: parent, type: ref, to: Todo, default: 0B5C3F2E-7d4a-4c1b-9e8f-2a6d5c4b3a21}"); len(faults) != 0 {
 			t.Fatalf("want no default fault, got %+v", faults)
 		}
 	})

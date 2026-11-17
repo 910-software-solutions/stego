@@ -227,8 +227,19 @@ The service needs pooled tenancy, SpiceDB authorization and the audit log. Each 
 its resource type and the permission of each operation. A create of a
 top-level entity is public, with a reason. A pooled service also names its tenant
 provisioning: the resource type, with a definition of its own, on which an operator
-is allowed to provision and retire tenants. Put the SpiceDB schema at
-`authz/schema.zed`:
+is allowed to provision and retire tenants.
+
+A collection is served at a path that STEGO makes from its entity name, not
+from the collection name: the base path, then the entity name in lower case
+and in the plural. Thus the collection `todos` of the entity `Todo` is served
+at `/api/my-svc/v1/todos`, and a collection of the entity `StockItem` is served
+at `/api/my-svc/v1/stockitems`, also when the collection has the name
+`stock-items`. A collection that is scoped to a parent entity puts the path of
+the parent's collection and the scope parameter before it. To use another
+path, give the collection `path_prefix`, for example `path_prefix:
+/stock-items`, which comes after the base path.
+
+Put the SpiceDB schema at `authz/schema.zed`:
 
 ```zed
 definition user {}
