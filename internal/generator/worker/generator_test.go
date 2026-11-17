@@ -390,6 +390,44 @@ func TestContract(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC15-T03 A worker list with parameters has a With function that takes them as typed Go arguments", func(t *testing.T) {
+		spaces := regexp.MustCompile(`[ \t]+`)
+		for _, keep := range []int{0, 1} {
+			ctx := workerContext(workerSlot)
+			ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "due_at", Type: types.FieldTypeTimestamp, ClientSet: true})
+			list := unsyncedList
+			list.Lock = false
+			list.Filter = []types.ListTerm{{Field: "status", Op: types.ListEquals, Param: "status"}, {Field: "due_at", Op: types.ListLessThan, Param: "type"},
+				{Field: "synced", Op: types.ListEquals, Value: false}}
+			ctx.Workers = ctx.Workers[keep : keep+1]
+			ctx.Workers[0].Lists = []types.WorkerList{list}
+			ctx.Workers[0].Writes = []string{"Order"}
+			files, _, err := new(Generator).Generate(ctx)
+			if err != nil {
+				t.Fatalf("worker %s: %v", ctx.Workers[0].Name, err)
+			}
+			var contract string
+			for _, f := range files {
+				if f.Path == "workers/workers.go" {
+					contract = spaces.ReplaceAllString(string(f.Content), " ")
+				}
+			}
+			name := mixedCase(ctx.Workers[0].Name) + "Unsynced"
+			for _, want := range []string{
+				`AND \"status\" = $3 AND \"due_at\" < $4 AND \"synced\" = $5 ORDER BY \"id\" LIMIT $2`,
+				`Values: command.DeclaredValues(command.ListValue{Param: "status"}, command.ListValue{Param: "type"}, command.ListValue{Constant: false})}))`,
+				// A parameter named as a Go keyword takes the suffix Value, and a timestamp takes a time.Time.
+				`func ` + name + `With(status string, typeValue time.Time) *command.List[Order] {`,
+				`return ` + name + `.With(status, typeValue)`,
+				" \"time\"\n",
+			} {
+				if !strings.Contains(contract, want) {
+					t.Errorf("worker %s: the contract does not hold %q:\n%s", ctx.Workers[0].Name, want, contract)
+				}
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC02-T03 The runners and the contract of a service whose workers all have one trigger import only what they use", func(t *testing.T) {
 		for _, keep := range []int{0, 1} {
 			ctx := workerContext(workerSlot)
