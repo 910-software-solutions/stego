@@ -86,10 +86,14 @@ func crudContext() gen.Context {
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "quota", Permissions: map[types.Operation]string{types.OpRead: "view", types.OpList: "view", types.OpUpsert: "edit"},
 				References: map[string]types.Reference{"folder_id": {Relation: "folder", Permission: "edit"}}}},
 		// Meeting gives timestamps that the client sets (ST-DECL-Q16): starts_at is required, ends_at optional, and
-		// noted_at stays server-managed (ST-SUP-RC20-OC17).
+		// noted_at stays server-managed (ST-SUP-RC20-OC17). Its state, seats, rate and remote have defaults, which a
+		// body that leaves them out stores (ST-DECL-EN03, ST-SUP-RC20-OC37-T14).
 		types.Entity{Name: "Meeting", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString},
 			{Name: "starts_at", Type: types.FieldTypeTimestamp, ClientSet: true}, {Name: "ends_at", Type: types.FieldTypeTimestamp, Optional: true, ClientSet: true},
-			{Name: "noted_at", Type: types.FieldTypeTimestamp}},
+			{Name: "noted_at", Type: types.FieldTypeTimestamp},
+			{Name: "state", Type: types.FieldTypeEnum, Values: []string{"planned", "held"}, Default: "planned"},
+			{Name: "seats", Type: types.FieldTypeInt32, Default: 8}, {Name: "rate", Type: types.FieldTypeDouble, Default: 1.5},
+			{Name: "remote", Type: types.FieldTypeBool, Default: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "meeting", Permissions: permissions(types.OpUpdate, types.OpPatch), PublicReasons: reasons}},
 		// Label gives an optional implicit field with a read: the view holds it as a pointer, and a row whose
 		// implicit column is NULL is not found in the collection (ST-SUP-RC20-OC23, ST-SUP-Q128 (B)).
@@ -346,7 +350,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.122.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.123.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -707,6 +711,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC37-T11 A denied create answers 404 with no empty ID, and a bad Idempotency-Key names its fault",
 	"ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause",
 	"ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC",
+	"ST-SUP-RC20-OC37-T14 A create or an update that leaves out a field with a default stores the default",
 	"ST-SUP-RC20-OC37-T12 An optional field that is NULL is absent from the answer, and an empty or false value is answered",
 	"ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response",
 	"ST-SUP-RC28-OC01-T07 A pii jsonb field is the redaction marker in the before, the after and the patch",

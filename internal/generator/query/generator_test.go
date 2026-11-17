@@ -196,6 +196,12 @@ func TestGenerator(t *testing.T) {
 			}, []string{"get-order", "net/http"}},
 			"a stream that does not declare the read permission": {func(c *gen.Context) { c.Queries[index(*c, "watch-orders")].Permission = "browse" },
 				[]string{"watch-orders", "browse", "view"}},
+			// A list query takes no path parameter, and the fault says so (walkthrough 5, U12).
+			"a list query with a path parameter": {func(c *gen.Context) { c.Queries[index(*c, "list-charges")].Route = "GET /shops/{shopId}/charges" },
+				[]string{"list-charges", "{shopId}", "names no resource member, so it is a list query, which takes no path parameter"}},
+			"a get query whose path parameter is not its resource member": {func(c *gen.Context) {
+				c.Queries[index(*c, "get-order")].Route = "GET /orders/{order_id}"
+			}, []string{"get-order", "{order_id}", "is not its resource member orderId", "{orderId}"}},
 			"an entity with no resource type while authorization is bound": {func(c *gen.Context) {
 				c.Entities[1].ResourceType = ""
 			}, []string{"list-charges", "Charge", "ST-STD-TXN-R18"}},

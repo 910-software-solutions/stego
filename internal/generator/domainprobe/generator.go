@@ -424,6 +424,11 @@ func loadedOf(ctx gen.Context, m *model, entity string, loaded map[string]*loade
 			}
 		}
 	}
+	if len(found) == 0 {
+		// The query component gives the loaded model of an entity that a declared query reads (ST-SUP-RC34-OC01), and
+		// no other component gives one (walkthrough 5, U6).
+		return nil, fmt.Errorf("the entity %s has no loaded Go model: the query component gives the model of an entity only when a declared query reads it, and no declared query reads %s; declare a query that reads %s, or give the field a type that is not an entity field", entity, entity, entity)
+	}
 	if len(found) != 1 {
 		return nil, fmt.Errorf("the entity %s needs exactly one Go model provider, and has %d (%s)", entity, len(found), strings.Join(found, ", "))
 	}
