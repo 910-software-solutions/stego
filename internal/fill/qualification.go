@@ -273,6 +273,12 @@ func RevisionFaults(dir string, fills []string, capability compiler.FillCheck) (
 				current.HasTests = true
 			}
 		}
+		// The fill of a command, query or worker must implement the slot that its binding names, as plan checks
+		// (misfit); else its contract digest would be compared with no contract, or with that of another slot.
+		if fault := capabilityMisfit(f, name, capability.Bindings); fault != "" {
+			faults = append(faults, fault)
+			continue
+		}
 		if f.Evidence != nil {
 			current.ContractDigest = f.Evidence.ContractDigest
 			if ref, err := types.ParseSlotRef(f.Implements); err == nil && capabilitySlot(ref) {
@@ -296,6 +302,21 @@ func RevisionFaults(dir string, fills []string, capability compiler.FillCheck) (
 		}
 	}
 	return faults, nil
+}
+
+// capabilityMisfit names why the fill does not fit a binding of a command, query or worker that names it, or gives ""
+// when it fits each such binding or no such binding names it. The slot of each such binding is named after its
+// component (command.command, query.query, worker.worker).
+func capabilityMisfit(f *Fill, name string, bindings []compiler.FillBinding) string {
+	for _, binding := range bindings {
+		if binding.Fill != name || binding.Owner == "" {
+			continue
+		}
+		if fault := misfit(f, []types.SlotRef{{Component: binding.Slot, Slot: binding.Slot}}, binding); fault != "" {
+			return fault
+		}
+	}
+	return ""
 }
 
 // fillPackageFolder refuses a fill name that is not one folder name under
