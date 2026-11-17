@@ -350,7 +350,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.123.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.125.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -652,11 +652,29 @@ func TestNestedScope(t *testing.T) {
 			"a full path that names the ancestors out of order": func(c *gen.Context) {
 				c.Collections[len(c.Collections)-1].PathPrefix = "/racks/{rack_id}/folders/{folder_id}/cards/{card_id}/marks"
 			},
+			// The link of the entity CardRack and the link of Card by its field rack have one Go name, CardRackLink
+			// (security review of PR #409, L2).
+			"two links of one Go name": func(c *gen.Context) {
+				c.Entities = append(c.Entities, types.Entity{Name: "CardRack", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}},
+					EntityAuthorization: types.EntityAuthorization{ResourceType: "cardrack", Permissions: map[types.Operation]string{types.OpCreate: "public", types.OpRead: "view", types.OpList: "view"},
+						PublicReasons: map[types.Operation]string{types.OpCreate: "a new row has no resource to decide on before it exists"}}})
+				for i := range c.Entities {
+					if c.Entities[i].Name == "Card" {
+						c.Entities[i].Fields = append(c.Entities[i].Fields, types.Field{Name: "rack", Type: types.FieldTypeRef, To: "CardRack"})
+						c.Entities[i].Permissions[types.OpUpdate] = "edit"
+					}
+				}
+				c.Collections = append(c.Collections,
+					types.Collection{Name: "card-racks", Entity: "CardRack", Operations: []types.Operation{types.OpCreate, types.OpRead}},
+					types.Collection{Name: "cardrack-cards", Entity: "Card", Scope: map[string]string{"rack": "CardRack"}, Operations: []types.Operation{types.OpRead, types.OpUpdate}})
+			},
 		} {
 			c := crudContext()
 			change(&c)
 			if files, wiring, err := new(Generator).Generate(c); err == nil || files != nil || wiring != nil {
 				t.Errorf("%s: generation gave %d files and %v, want a refusal", name, len(files), err)
+			} else if name == "two links of one Go name" && !strings.Contains(err.Error(), "CardRackLink") {
+				t.Errorf("%s: generation refused with %v, want the refusal of the link name CardRackLink", name, err)
 			}
 		}
 	})
@@ -727,9 +745,9 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC24-T06 A list cursor of one parent is refused for another",
 	"ST-SUP-RC20-OC24-T07 An upper-case UUID in a path or a ref names the same row as its lower-case form",
 	"ST-SUP-RC20-OC24-T09 A collection three levels under its top ancestor checks every ancestor of the path, and a wrong, foreign or smuggled ancestor is 404",
-	"ST-SUP-RC20-OC24-T10 A caller that may not read one ancestor of the path gets 404, the same as for a missing ancestor",
-	"ST-SUP-RC20-OC24-T12 A write by a caller that may edit the row but not read one ancestor of the path gets 404 and changes nothing",
-	"ST-SUP-RC20-OC24-T13 The parent chain check reads the ancestors from the top down, so a caller learns nothing of a row below an ancestor it may not read",
+	"ST-SUP-RC20-OC24-T10 A grant on a resource of the path reaches the rows below it through the scoped routes, and a caller with no grant gets 404",
+	"ST-SUP-RC20-OC24-T12 A missing, wrong or denied path gives the same 404 with the same calls to the authorization port, and changes nothing",
+	"ST-SUP-RC20-OC24-T13 The parent chain check reads the ancestors only after the decision on the deepest resource, and decides nothing on them",
 	"ST-SUP-RP11-LC20-T04 A search of the generated service uses the index of its field, and a sensitive field neither searches nor orders",
 	"ST-SUP-RC20-OC17-T05 A client-set timestamp keeps the client's time in UTC and refuses a value that is not an RFC 3339 time",
 	"ST-SUP-RC33-OC09-T02 A search of an entity of small expected cardinality reads only the rows that the caller may see, so hidden rows that match do not fill its pages",
@@ -1271,49 +1289,41 @@ func TestSlotsSeeCanonicalRefs(t *testing.T) {
 }
 
 func TestChangeEvents(t *testing.T) {
-	t.Run("ST-SUP-RC20-OC40-T01 With kafka-producer each write stages its change event for the Kafka destination after its write", func(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC40-T01 With kafka-producer each write gives the handle its change events for the Kafka destination", func(t *testing.T) {
 		ctx := crudContext()
 		ctx.PeerNamespaces["kafka-producer"] = "internal/events"
 		ctx.PeerNamespaces["outbox"] = "internal/outbox"
 		files := crudFiles(t, ctx)
-		for name, want := range map[string][]string{
+		order := `ChangeEvents: []command.ChangeEvents{{Entity: "Order", Created: "crud.order.created", Updated: "crud.order.updated", Deleted: "crud.order.deleted"}}`
+		for name, want := range map[string]map[string]int{
 			"api/orders_handler.go": {
-				`Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"orders.after_create"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.created"}}}`,
-				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.updated"}}}`,
-				`Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.order.deleted"}}}`,
-				`ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "crud.order.created", created, changeEvent("Order", "created", persisted.ID))`,
-				`ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "crud.order.updated", updated, changeEvent("Order", "updated", persisted.ID))`,
-				`ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "crud.order.deleted", from, changeEvent("Order", "deleted", id))`,
+				`Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"orders.after_create"}}},`: 1,
+				// The create, the update and the delete of orders each give the handle the events of Order.
+				order: 3,
 			},
 			"api/folder_settings_handler.go": {
-				`{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"crud.setting.created", "crud.setting.updated"}}`,
-				`ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "crud.setting.created", created, changeEvent("Setting", "created", persisted.ID))`,
-				`ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "crud.setting.updated", updated, changeEvent("Setting", "updated", persisted.ID))`,
+				// The upsert writes the setting and reads its folder through the handle: it gives the events of both.
+				`ChangeEvents: []command.ChangeEvents{{Entity: "Setting", Created: "crud.setting.created", Updated: "crud.setting.updated", Deleted: "crud.setting.deleted"}, {Entity: "Folder", Created: "crud.folder.created", Updated: "crud.folder.updated", Deleted: "crud.folder.deleted"}}`: 1,
 			},
-			"api/runtime.go": {"func changeEvent(entity, action, id string) json.RawMessage {"},
 		} {
 			source := string(files[name])
-			for _, w := range want {
-				if strings.Count(source, w) != 1 {
-					t.Errorf("%s holds %d times %s, want once", name, strings.Count(source, w), w)
+			for w, n := range want {
+				if strings.Count(source, w) != n {
+					t.Errorf("%s holds %d times %s, want %d", name, strings.Count(source, w), w, n)
 				}
 			}
 		}
-		// Each event is staged after the write of its command, in its fill, so a write that fails or a before slot
-		// that halts stages none.
-		orders := string(files["api/orders_handler.go"])
-		for write, stage := range map[string]string{"repo.Create(ctx,": `"crud.order.created", created`, "repo.Delete(ctx, from)": `"crud.order.deleted", from`} {
-			if i, j := strings.Index(orders, write), strings.Index(orders, stage); i < 0 || j < i {
-				t.Errorf("the event %s is not staged after %s", stage, write)
+		// The handle stages each event after the write of its row, so the fill stages none, has no payload helper, and
+		// the command declares no Kafka destination whose names a fill could stage (ST-SUP-RP10-LC36).
+		for name, source := range files {
+			if bytes.Contains(source, []byte("kafkaoutbox")) || bytes.Contains(source, []byte("changeEvent(")) {
+				t.Errorf("%s names the Kafka destination or stages a change event in the fill", name)
 			}
 		}
-		// A read stages nothing: the read handlers do not name the destination.
-		if strings.Contains(string(files["api/blue_events_handler.go"]), "crud.event.updated") {
-			t.Error("the collection blue-events, with create and list, stages an update event")
-		}
+		// Without kafka-producer no command names the Kafka destination or change events.
 		for name, source := range crudFiles(t, crudContext()) {
-			if bytes.Contains(source, []byte("kafkaoutbox")) || bytes.Contains(source, []byte("changeEvent")) {
-				t.Errorf("%s names the Kafka destination without kafka-producer", name)
+			if bytes.Contains(source, []byte("kafkaoutbox")) || bytes.Contains(source, []byte("ChangeEvents")) {
+				t.Errorf("%s names the Kafka destination or change events without kafka-producer", name)
 			}
 		}
 		for name, change := range map[string]func(*gen.Context){

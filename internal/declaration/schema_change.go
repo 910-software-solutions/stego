@@ -510,6 +510,19 @@ func validateSchemaChangeMode(service *types.ServiceDeclaration) []ValidationErr
 func ValueSuits(field types.Field, value any) (bool, string) { return valueSuits(field, value) }
 
 // definitionField reads the Definition of a dropped or a retyped field (gen.DefinitionField).
+// definitionDefaultFaults refuses the default of a Definition that does not suit the field that the Definition gives:
+// its type, its min_length, max_length and pattern, and its min and max (ST-DECL-INV62). Generation writes the default
+// into the DEFAULT clause of the column before the change, so a default such as abc of an int32 field gives DDL that
+// PostgreSQL refuses (security review of PR #408).
+func definitionDefaultFaults(change types.SchemaChange, field types.Field, fault func(path, found, message string)) {
+	if field.Default == nil {
+		return
+	}
+	if ok, reason := valueSuits(field, field.Default); !ok {
+		fault(".definition", change.Definition, fmt.Sprintf("the default %v of the definition %q does not suit the field it gives: %s", field.Default, change.Definition, reason))
+	}
+}
+
 func definitionField(definition string) (types.Field, string) { return gen.DefinitionField(definition) }
 
 // valueSuits tells whether a value suits the type and the constraints of a field, and gives the reason when it
@@ -604,6 +617,8 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 					fault(".definition", change.Definition, fmt.Sprintf("the definition %q cannot be read: %s", change.Definition, reason))
 				case string(old.Type) != change.From:
 					fault(".definition", change.Definition, fmt.Sprintf("the definition %q is of the type %s, and the retype is from %s; the Definition gives the field before the change", change.Definition, old.Type, change.From))
+				default:
+					definitionDefaultFaults(change, old, fault)
 				}
 			}
 			if change.Kind == "require" && (field.Optional || field.Default != nil) {
@@ -618,6 +633,7 @@ func validateSchemaChangeValues(service *types.ServiceDeclaration) []ValidationE
 				fault(".definition", change.Definition, fmt.Sprintf("the definition %q cannot be read: %s", change.Definition, reason))
 				continue
 			}
+			definitionDefaultFaults(change, field, fault)
 		default:
 			continue
 		}

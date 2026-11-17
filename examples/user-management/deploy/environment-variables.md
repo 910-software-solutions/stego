@@ -28,7 +28,7 @@ shows its name only: give its value through a secret of the platform.
 | `GOTRACEBACK` | string | no | `single` | no | none, single, all, system, crash | - | Read by the Go runtime: how much a crash report shows. When it has no value, it shows the goroutine that failed. |
 | `SSL_CERT_DIR` | string | no | none | no | - | - | Read by the Go TLS library for folders of system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection. |
 | `SSL_CERT_FILE` | path | no | none | no | - | - | Read by the Go TLS library for the system certificate authorities. The service does not start when it has a value: give a certificate authority in the setting of each connection. |
-| `STEGO_MODE` | list | no | `all` | no | api, worker, controller, all | `api,worker` | The modes that the process runs when no --mode option is given. When it has no value, the process runs all modes. |
+| `STEGO_MODE` | list | no | `all` | no | api, worker, controller, all | `api,worker` | The modes that the process runs when no --mode option is given: some of the modes that the declaration states, or all. When it has no value, the process runs the declared modes. |
 | `STEGO_SERVICE_VERSION` | string | no | none | no | - | `1.4.2` | The version of the release, which each audit row and the controller lease carry. When it has no value, they carry an empty version. |
 | `TZ` | string | no | none | no | - | `UTC` | Read by the Go time library: the local time zone of the process. When it has no value, it uses the system time zone. |
 

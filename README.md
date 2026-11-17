@@ -145,6 +145,17 @@ git init
 stego init --archetype rest-crud
 ```
 
+The scaffold of each archetype passes `stego validate` and builds as
+written. An archetype that cannot be empty writes its example content from the
+registry: `rpc-service` writes a proto file with one method, one query on it
+with its fill, and the settings that the query needs; `browser-service` writes
+an API prefix, one route and an index page. The service takes the name of the
+project folder, and the fill imports the module path of `STEGO_MODULE` (or
+`github.com/example/service`): give the same value to each later command. Use
+`stego init --archetype <name> --empty` for a scaffold with no example
+content. It then names each setting that you must give before `stego validate`
+accepts the declaration.
+
 Make the project in its own Git repository. `stego init` writes
 `.stego/.gitignore`, so the apply lock and the saved plan, which are local
 state, stay out of the commit and out of the build. This file keeps the two
@@ -216,8 +227,35 @@ The service needs pooled tenancy, SpiceDB authorization and the audit log. Each 
 its resource type and the permission of each operation. A create of a
 top-level entity is public, with a reason. A pooled service also names its tenant
 provisioning: the resource type, with a definition of its own, on which an operator
-is allowed to provision and retire tenants. Put the SpiceDB schema at
-`authz/schema.zed`:
+is allowed to provision and retire tenants.
+
+A collection is served at a path that STEGO makes from its entity name, not
+from the collection name: the base path, then the entity name in lower case
+and in the plural. Thus the collection `todos` of the entity `Todo` is served
+at `/api/my-svc/v1/todos`, and a collection of the entity `StockItem` is served
+at `/api/my-svc/v1/stockitems`, also when the collection has the name
+`stock-items`. A collection that is scoped to a parent entity puts the path of
+the parent's collection and the scope parameter before it. To use another
+path, give the collection `path_prefix`, for example `path_prefix:
+/stock-items`, which comes after the base path.
+
+A route of a scoped collection names each ancestor of the row, such as
+`/workspaces/{workspace_id}/projects/{project_id}/tickets/{id}`. The handler
+decides a permission only on the deepest resource that the route names: the
+row for a read, an update, a patch and a delete, and the parent for a list, a
+create and an upsert. For each ancestor above it, the handler checks only that
+the row exists in the tenant and is of the ancestor above it in the path. A
+missing, wrong or denied path gives the same 404. Thus a project that is shared
+with a user is open to that user through these routes, also when the user may
+not view the workspace. When a row must also need the permission of its parent,
+write that rule in the schema as an intersection, for example
+`permission view = viewer & parent->view`. A caller with no grant on the deepest
+resource learns nothing of the ancestors. A caller with a grant on it learns no
+field of an ancestor, but on a path of two or more levels it can find out, from
+200 against 404, whether an ancestor above the parent is of the next ancestor,
+and the `href` of the row names each ancestor.
+
+Put the SpiceDB schema at `authz/schema.zed`:
 
 ```zed
 definition user {}
@@ -336,6 +374,9 @@ slots:
     gate: [admin-policy]
 ```
 
+To declare commands, queries, workers and observations, and to write their
+fills, see [docs/commands-queries-workers.md](docs/commands-queries-workers.md).
+
 New fill methods return an error until you implement them. They use the generated
 slot types and include a constructor and an interface check. STEGO does not
 replace existing fill files.
@@ -443,7 +484,7 @@ hand; see [Specification checks](#specification-checks).
 | `stego image retrieve` | `stego image retrieve --record <file> --record-sha256 <digest> --build-record <file> --repository <repo> --registry-ca <file> --registry-ca-sha256 <digest> --credentials <file> [--token-origin <origin>]... [--blob-origin <origin>]... --work <folder> --spdx-bundle <file> --cyclonedx-bundle <file> --signer-issuer <url> --signer-subject <identity> --gh <path> --source-repository <owner/name>` |
 | `stego image sign` | `stego image sign --image <folder> (--record-sha256 <digest> \| --after <file>) --spdx-bundle <file> --cyclonedx-bundle <file> --signer-issuer <url> --signer-subject <identity> --gh <path> --source-repository <owner/name>` |
 | `stego image verify` | `stego image verify --record <file> --record-sha256 <digest> --image <folder> --build-record <file> --work <folder> --spdx-bundle <file> --cyclonedx-bundle <file> --signer-issuer <url> --signer-subject <identity> --gh <path> --source-repository <owner/name>` |
-| `stego init` | `stego init --archetype <name>` |
+| `stego init` | `stego init --archetype <name> [--empty]` |
 | `stego lifecycle supersede` | `stego lifecycle supersede --registry <folder> (--component <name> \| --runtime <module>) --digest <digest> --successor <digest> [--successor-component <name>] --fails-after <YYYY-MM-DD> --needs-declaration-change yes\|no --needs-fill-change yes\|no --summary <text> [--reference <url>]...` |
 | `stego lifecycle withdraw` | `stego lifecycle withdraw --registry <folder> (--component <name> \| --runtime <module>) --digest <digest> --fails-after <YYYY-MM-DD> --reason <text> [--reference <url>]...` |
 | `stego plan` | `stego plan [--show] [--base <ref>] [--strict]` |
@@ -498,6 +539,36 @@ and commit the result:
 ```sh
 go test ./internal/assure -run TestOwnTree -update-docs
 ```
+
+## Release notes
+
+### Nested routes: a grant on the deepest resource is enough; check your schema
+
+Before this release, a route of a scoped collection also decided the read
+permission of each ancestor in the path. Now it decides a permission only on
+the deepest resource that the route names (ST-SUP-Q156). For each ancestor
+above it, it checks only that the row exists and is of the ancestor above it.
+
+This can give more access to an existing service. For example, with
+`permission edit = owner + organization->edit` on a member, an owner of the
+member who may not view the organization could not change the member before.
+Now that owner can. `stego validate` and `stego plan` warn about each such
+permission (the rule `scoped-access`). Each warning names the entity, the
+permission and the parent, and gives the intersection that keeps the earlier
+access, such as:
+
+```zed
+permission edit = (owner + organization->edit) & organization->view
+```
+
+Read each warning, and change the schema where the earlier access is the one
+you want.
+
+The user-management examples do this for `member`: its view is now
+`organization->view` and its edit is
+`(owner + organization->edit) & organization->view`. Thus an owner of a member
+who may not view its organization no longer finds that member in the list
+`all-users` either.
 
 ## License
 

@@ -17,8 +17,35 @@ relative to the service project and a public `path`. Public assets use
 `{id}`. An optional `roles_claim` selects a dotted identity claim path.
 The compiler captures the declared asset files and checks their sizes.
 
-Use the generated `browser/schema.Bootstrap` function before service startup.
-Version 2 requires a separate schema owner and runtime login. An older deployment
+Run the service binary with the one argument `migrate` before service startup
+(version 4.6.0). The Kubernetes base writes this migration Job with the Secret
+`<service>-database-owner`, as for a rest-crud service. The mode migrate reads
+the name of the runtime login from `STEGO_RUNTIME_DATABASE_ROLE` (from the
+ConfigMap) and opens the owner connection of `STEGO_MIGRATION_DATABASE_URL`.
+Only this mode reads the two, and the Job holds no credential of the runtime
+login. When the migration login is not the database owner, it takes the owner
+role, so the login must be a member of it. Then it runs
+`browser/schema.Bootstrap` for the runtime login, which checks the owner, the
+login, the table, the columns, the constraints, the indexes and the grants of
+that login. It exits 0 only when Bootstrap passes. The start of the service runs
+`browser/schema.Verify` as the runtime login.
+You write no Go code or SQL to make the session table.
+
+The database administrator makes these before the first migration job: a
+NOLOGIN owner role that owns the database, a runtime login with only CONNECT on
+the database and USAGE on the schema public, and a migration login that is a
+member of the owner role. Revoke the default PUBLIC grants on the database and
+on the schema public.
+
+When Verify refuses the database, at startup or in the mode migrate, the
+failure record names the stage `database.schema`, the field `fault` (owner,
+login, table, column, constraint, index or grant) and the field `object` (the
+generated table, column, constraint or index). It holds no value, password or
+database error text. The stage `database.access` is kept for a connection that
+did not open or a login that could not be read.
+
+The generated `browser/schema.Bootstrap` function is also available to your own
+code. Version 2 requires a separate schema owner and runtime login. An older deployment
 that used the table owner as its runtime login must change its grants and table
 ownership before it uses this version. Startup rejects unsafe permissions.
 

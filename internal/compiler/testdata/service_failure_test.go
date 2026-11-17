@@ -14,6 +14,41 @@ type privateFailure struct{}
 
 func (privateFailure) Error() string { panic("error formatting exposed private data") }
 
+type classifiedFailure struct{ class, object string }
+
+func (classifiedFailure) Error() string        { panic("error formatting exposed private data") }
+func (f classifiedFailure) FaultClass() string  { return f.class }
+func (f classifiedFailure) FaultObject() string { return f.object }
+
+func TestFailureRecordFaultClass(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC57-T02 The failure record names a fault class and object of the strict form and drops any other", func(t *testing.T) {
+		for _, c := range []struct {
+			cause                 classifiedFailure
+			wantFault, wantObject string
+		}{
+			{classifiedFailure{"constraint", "stego_browser_sessions_payload_check"}, "constraint", "stego_browser_sessions_payload_check"},
+			{classifiedFailure{"column", "public.stego_browser_sessions.changed_at"}, "column", "public.stego_browser_sessions.changed_at"},
+			{classifiedFailure{"table", "password=secret"}, "", ""},
+			{classifiedFailure{"Table", "x"}, "", ""},
+			{classifiedFailure{"table\n", "x"}, "", ""},
+			{classifiedFailure{"table", strings.Repeat("a", 129)}, "", ""},
+			{classifiedFailure{"", "x"}, "", ""},
+		} {
+			var output bytes.Buffer
+			stegoReportFailure(&output, &stegoServiceFailure{stage: "database.schema", cause: c.cause})
+			var record map[string]any
+			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+				t.Fatal(e)
+			}
+			fault, _ := record["fault"].(string)
+			object, _ := record["object"].(string)
+			if fault != c.wantFault || object != c.wantObject || record["stage"] != "database.schema" {
+				t.Fatalf("the cause %q %q gave the record %v, want the fault %q and the object %q", c.cause.class, c.cause.object, record, c.wantFault, c.wantObject)
+			}
+		}
+	})
+}
+
 func TestFailureRecordDoesNotFormatCause(t *testing.T) {
 	t.Run("ST-GEN-INV16-T the record never formats its cause and keeps it for errors.Is and errors.As", func(t *testing.T) {
 		cause := privateFailure{}
@@ -48,6 +83,16 @@ func TestFailureRecordDoesNotFormatCause(t *testing.T) {
 			if _, e := time.Parse(time.RFC3339Nano, record["timestamp"].(string)); e != nil {
 				t.Fatal(e)
 			}
+		}
+		// The modes that the process runs are data of the record, with no error text (ST-GEN-INV26).
+		var output bytes.Buffer
+		stegoReportFailure(&output, &stegoServiceFailure{stage: "service.start.database", cause: cause, modes: []string{"api", "worker"}})
+		var record map[string]any
+		if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			t.Fatal(e)
+		}
+		if modes, _ := json.Marshal(record["modes"]); len(record) != 6 || string(modes) != `["api","worker"]` || record["stage"] != "service.start.database" {
+			t.Fatal("invalid failure record with modes", record)
 		}
 	})
 }

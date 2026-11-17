@@ -14,7 +14,6 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
 	"github.com/jsell-rh/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
@@ -26,18 +25,20 @@ var orgUsersCreateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 	Name:         "create",
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.after_create", "org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.created"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.after_create", "org-users.on_entity_changed"}}},
 }))
 
 // orgUsersReadQuery is the query of a read of org-users (ST-SUP-RP11).
-var orgUsersReadQuery = mustQuery(query.NewQuery("read", data.EntityUserView(), data.EntityOrganizationView()))
+var orgUsersReadQuery = mustQuery(query.NewQuery("read", data.EntityUserView(), data.EntityOrganizationLinkView()))
 
 // orgUsersUpdateCommand is the generated command of a update of org-users (ST-SUP-RC20-OC37).
 var orgUsersUpdateCommand = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{
 	Name:         "update",
-	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
+	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity, data.OrganizationLinkEntity, data.UserLinkEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.updated"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}, {Entity: "OrganizationLink", Created: "user-management.organization-link.created", Updated: "user-management.organization-link.updated", Deleted: "user-management.organization-link.deleted"}, {Entity: "UserLink", Created: "user-management.user-link.created", Updated: "user-management.user-link.updated", Deleted: "user-management.user-link.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -45,9 +46,10 @@ var orgUsersUpdateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 // orgUsersDeleteCommand is the generated command of a delete of org-users (ST-SUP-RC20-OC37).
 var orgUsersDeleteCommand = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{
 	Name:         "delete",
-	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
+	Writes:       []command.Declared{data.UserEntity, data.OrganizationLinkEntity, data.UserLinkEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.deleted"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "OrganizationLink", Created: "user-management.organization-link.created", Updated: "user-management.organization-link.updated", Deleted: "user-management.organization-link.deleted"}, {Entity: "UserLink", Created: "user-management.user-link.created", Updated: "user-management.user-link.updated", Deleted: "user-management.user-link.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -58,9 +60,10 @@ var orgUsersListQuery = mustQuery(query.NewListQuery("list", data.EntityUserView
 // orgUsersPatchCommand is the generated command of a patch of org-users (ST-SUP-RC20-OC37).
 var orgUsersPatchCommand = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{
 	Name:         "patch",
-	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
+	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity, data.OrganizationLinkEntity, data.UserLinkEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.updated"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}, {Entity: "OrganizationLink", Created: "user-management.organization-link.created", Updated: "user-management.organization-link.updated", Deleted: "user-management.organization-link.deleted"}, {Entity: "UserLink", Created: "user-management.user-link.created", Updated: "user-management.user-link.updated", Deleted: "user-management.user-link.deleted"}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -245,18 +248,18 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, "")
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersCreateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
-		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent is the deepest resource that the path names: it is read with the read permission of its entity,
+		// which decides it (ST-SUP-RC20-OC24).
 		{
-			ancestors, err := data.OrganizationRepository(ch)
+			parents, err := data.OrganizationRepository(ch)
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			ancestor, err := ancestors.Get(ctx, chain[0])
+			parent, err := parents.Get(ctx, chain[0])
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			_ = ancestor
+			_ = parent
 		}
 		id, err := uuid.NewV7()
 		if err != nil {
@@ -347,9 +350,6 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 				return idempotency.Response{}, err
 			}
 		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.created", created, changeEvent("User", "created", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
-		}
 		response, err := json.Marshal(orgUsersPresented(persisted))
 		if err != nil {
 			return idempotency.Response{}, err
@@ -395,19 +395,6 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := query.Run(r.Context(), h.rt.Queries, orgUsersReadQuery, h.rt.boundQuery(r.Context(), b, orgUsersReadQuery), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (User, error) {
-		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
-		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
-		{
-			ancestors, err := query.Repo(qh, data.EntityOrganizationView())
-			if err != nil {
-				return User{}, err
-			}
-			ancestor, err := ancestors.Get(ctx, chain[0])
-			if err != nil {
-				return User{}, err
-			}
-			_ = ancestor
-		}
 		repo, err := query.Repo(qh, data.EntityUserView())
 		if err != nil {
 			return User{}, err
@@ -419,6 +406,19 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		view := loaded.Value()
 		if view.OrgID != scope {
 			return User{}, query.ErrNotFound
+		}
+		// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor
+		// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).
+		{
+			links, err := query.Repo(qh, data.EntityOrganizationLinkView())
+			if err != nil {
+				return User{}, err
+			}
+			link, err := links.Get(ctx, chain[0])
+			if err != nil {
+				return User{}, err
+			}
+			_ = link
 		}
 		return orgUsersFromView(loaded.Value()), nil
 	})
@@ -462,18 +462,31 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersUpdateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
-		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
+		// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor
+		// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).
 		{
-			ancestors, err := data.OrganizationRepository(ch)
+			links, err := data.OrganizationLinkRepository(ch)
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			ancestor, err := ancestors.Get(ctx, chain[0])
+			link, err := links.Get(ctx, chain[0])
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			_ = ancestor
+			_ = link
+		}
+		{
+			links, err := data.UserLinkRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			link, err := links.Get(ctx, id)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if link.Value().Link != scope {
+				return idempotency.Response{}, command.ErrNotFound
+			}
 		}
 		repo, err := data.UserRepository(ch)
 		if err != nil {
@@ -516,9 +529,6 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 				return idempotency.Response{}, err
 			}
 		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.updated", updated, changeEvent("User", "updated", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
-		}
 		response, err := json.Marshal(orgUsersPresented(persisted))
 		if err != nil {
 			return idempotency.Response{}, err
@@ -558,18 +568,31 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersDeleteCommand, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
-		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
+		// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor
+		// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).
 		{
-			ancestors, err := data.OrganizationRepository(ch)
+			links, err := data.OrganizationLinkRepository(ch)
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			ancestor, err := ancestors.Get(ctx, chain[0])
+			link, err := links.Get(ctx, chain[0])
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			_ = ancestor
+			_ = link
+		}
+		{
+			links, err := data.UserLinkRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			link, err := links.Get(ctx, id)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if link.Value().Link != scope {
+				return idempotency.Response{}, command.ErrNotFound
+			}
 		}
 		repo, err := data.UserRepository(ch)
 		if err != nil {
@@ -595,9 +618,6 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 			if err := ch.Effects().Stage(ctx, AfterSlotsDestination, "org-users.on_entity_changed", from, slotPayload); err != nil {
 				return idempotency.Response{}, err
 			}
-		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.deleted", from, changeEvent("User", "deleted", id)); err != nil {
-			return idempotency.Response{}, err
 		}
 		return idempotency.Response{Status: http.StatusNoContent}, nil
 	})
@@ -674,18 +694,18 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, orgUsersListQuery, h.rt.boundQuery(r.Context(), b, orgUsersListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (orgUsersPage, error) {
-		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
-		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
+		// The parent is the deepest resource that the path names: it is read with the read permission of its entity,
+		// which decides it (ST-SUP-RC20-OC24).
 		{
-			ancestors, err := query.Repo(qh, data.EntityOrganizationView())
+			parents, err := query.Repo(qh, data.EntityOrganizationView())
 			if err != nil {
 				return orgUsersPage{}, err
 			}
-			ancestor, err := ancestors.Get(ctx, chain[0])
+			parent, err := parents.Get(ctx, chain[0])
 			if err != nil {
 				return orgUsersPage{}, err
 			}
-			_ = ancestor
+			_ = parent
 		}
 		repo, err := query.Repo(qh, data.EntityUserView())
 		if err != nil {
@@ -779,18 +799,31 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)
 	var persisted User
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersPatchCommand, req, decodeOrgUsersPatch, func(ctx context.Context, patch OrgUsersPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {
-		// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller
-		// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).
+		// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor
+		// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).
 		{
-			ancestors, err := data.OrganizationRepository(ch)
+			links, err := data.OrganizationLinkRepository(ch)
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			ancestor, err := ancestors.Get(ctx, chain[0])
+			link, err := links.Get(ctx, chain[0])
 			if err != nil {
 				return idempotency.Response{}, err
 			}
-			_ = ancestor
+			_ = link
+		}
+		{
+			links, err := data.UserLinkRepository(ch)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			link, err := links.Get(ctx, id)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if link.Value().Link != scope {
+				return idempotency.Response{}, command.ErrNotFound
+			}
 		}
 		repo, err := data.UserRepository(ch)
 		if err != nil {
@@ -841,9 +874,6 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 			if err := ch.Effects().Stage(ctx, AfterSlotsDestination, "org-users.on_entity_changed", updated, slotPayload); err != nil {
 				return idempotency.Response{}, err
 			}
-		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.user.updated", updated, changeEvent("User", "updated", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
 		}
 		response, err := json.Marshal(orgUsersPresented(persisted))
 		if err != nil {

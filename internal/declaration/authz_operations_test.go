@@ -68,6 +68,55 @@ func TestCommandAuthorization(t *testing.T) {
 		expectNamed(t, checkOperations(t, td03Command(t, lines...), operationFacts()), "command-authorization", "approve", "permission \"approve\"")
 	})
 
+	// A command on the resource type of the tenant provisioning is decided on the service-level resource in the
+	// tenant of the request (ST-SUP-RC32-OC15), so it names no resource member.
+	serviceLevel := func(t *testing.T, lines ...string) []ValidationError {
+		t.Helper()
+		_, schema := td03Files(t)
+		schema = change(t, schema, "permission retire = operator", "permission retire = operator\n\tpermission record = operator")
+		decl := readTD03(t, td03Command(t, lines...))
+		faults := Validate(decl).All()
+		faults = append(faults, ValidateComposition(decl, operationFacts())...)
+		return append(faults, CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})...)
+	}
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with no resource member is accepted", func(t *testing.T) {
+		expectAccepted(t, serviceLevel(t, "resource_type: service", "permission: record"))
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with a resource member is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: record", "resource_member: documentId"), "command-authorization", "approve", "documentId", "service-level resource", "remove resource_member")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with the provision permission is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: provision"), "command-authorization", "approve", "tenancy.provisioning.provision", "permission of its own")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with the retire permission is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: retire"), "command-authorization", "approve", "tenancy.provisioning.retire", "permission of its own")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource that writes a relation is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: record", "relationships_written: [document#viewer]"), "command-authorization", "approve", "relationships_written", "only the create")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource that writes an entity with a parent is refused", func(t *testing.T) {
+		service, schema := td03Files(t)
+		service = change(t, service, "collections:\n", "  - name: Line\n    fields:\n      - {name: todo_id, type: ref, to: Todo}\ncollections:\n")
+		schema = change(t, schema, "permission retire = operator", "permission retire = operator\n\tpermission record = operator")
+		decl := readTD03(t, service+"commands:\n"+command("approve", "writes: [Line]", "fill: reserve-and-charge", "route: POST /lines", "resource_type: service", "permission: record"))
+		faults := CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})
+		expectNamed(t, faults, "command-authorization", "approve", "writes[0]", "Line", "no parent")
+	})
+	t.Run("ST-DECL-INV40-T A command on service with no tenant provisioning names a resource member", func(t *testing.T) {
+		service, schema := td03Files(t)
+		service = change(t, service, "  provisioning: {resource_type: service, provision: provision, retire: retire}\n", "")
+		schema = change(t, schema, "permission retire = operator", "permission retire = operator\n\tpermission record = operator")
+		decl := readTD03(t, service+"commands:\n"+standardCommand("approve", "resource_type: service", "permission: record"))
+		faults := CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})
+		var named bool
+		for _, f := range faults {
+			named = named || (f.Rule == "command-authorization" && strings.Contains(f.Message, "no resource member"))
+		}
+		if !named {
+			t.Fatalf("want the fault command-authorization for no resource member, got %+v", faults)
+		}
+	})
+
 	relations := func(relation string) string {
 		return td03Command(t, append(full, "relationships_written: ["+relation+"]")...)
 	}
@@ -145,6 +194,71 @@ func TestWorkerAuthorization(t *testing.T) {
 	})
 	t.Run("ST-DECL-INV69-T A worker with the resource type invoice, which the schema lacks, is refused", func(t *testing.T) {
 		expectNamed(t, checkOperations(t, td03Worker(t, "resource_type: invoice", "permission: view"), operationFacts()), "worker-authorization", "sync-documents", "resource type \"invoice\"")
+	})
+	// A worker needs its permission on each entity it declares it writes, on the resource type of the entity (docs1
+	// review of PR #396; security review of PR #402, M1).
+	noteService := func(workers, commands string) string {
+		service, _ := td03Files(t)
+		service = change(t, service, "collections:\n", "  - name: Note\n    fields:\n      - {name: text, type: string}\n    resource_type: note\n"+
+			"    public_reasons: {create: a new note has no resource to decide on before it exists}\n"+
+			"    permissions: {create: public, read: edit, update: edit, delete: edit, list: edit}\n"+
+			"    relationships:\n      - {relation: owner, subject_source: caller, subject_type: user}\n"+
+			"collections:\n  notes:\n    entity: Note\n    operations: [create, read, list]\n")
+		service += "modes: [api, worker]\nworkers:\n" + workers
+		if commands != "" {
+			service += "commands:\n" + commands
+		}
+		return service
+	}
+	withNote := func(service, permissions string) []ValidationError {
+		_, schema := td03Files(t)
+		schema += "\ndefinition note {\n\trelation owner: user | service_account\n" + permissions + "}\n"
+		decl := readTD03(t, service)
+		faults := Validate(decl).All()
+		faults = append(faults, ValidateComposition(decl, operationFacts())...)
+		return append(faults, CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})...)
+	}
+	editOnly := "\tpermission edit = owner\n"
+	written := func(permission string) []ValidationError {
+		return withNote(noteService(worker("sync-documents", "trigger: every 1m", "writes: [Todo, Note]", "fill: sync", "resource_type: document", "permission: "+permission), ""), editOnly)
+	}
+	onlyAt := func(t *testing.T, faults []ValidationError, path string) {
+		t.Helper()
+		for _, fault := range faults {
+			if fault.Rule == "worker-authorization" && fault.Path != path {
+				t.Errorf("the fault is at %s, want %s", fault.Path, path)
+			}
+		}
+	}
+	t.Run("ST-DECL-INV69-T A worker that writes Note, whose resource type note lacks its permission view, is refused", func(t *testing.T) {
+		faults := written("view")
+		expectNamed(t, faults, "worker-authorization", "sync-documents", "Note", "note", "\"view\"", "needs its permission on each entity it declares it writes")
+		onlyAt(t, faults, "workers[0].writes[1]")
+		for _, fault := range faults {
+			if strings.Contains(fault.Message, "refuse") {
+				t.Errorf("the fault says the runtime refuses each row, which is not so for a create: %s", fault.Message)
+			}
+		}
+	})
+	t.Run("ST-DECL-INV69-T A worker that writes Note with the permission edit, which document and note hold, is accepted", func(t *testing.T) {
+		expectAccepted(t, written("edit"))
+	})
+	// A consuming worker also decides the stager's permission on each row it touches (security review of PR #402, L1).
+	consumer := worker("apply-document-replies", "trigger: consumes document-replies", "writes: [Todo, Note]", "fill: apply", "resource_type: document", "permission: edit")
+	stager := standardCommand("reply", "resource_type: document", "permission: view", "resource_member: documentId", "effects:\n      - {destination: document-replies, name: reply}")
+	t.Run("ST-DECL-INV69-T A consuming worker that writes Note, whose resource type note lacks the permission view of its stager reply, is refused", func(t *testing.T) {
+		faults := withNote(noteService(consumer, stager), editOnly)
+		expectNamed(t, faults, "worker-authorization", "apply-document-replies", "Note", "note", "\"view\"", "\"reply\"", "document-replies")
+		onlyAt(t, faults, "workers[0].writes[1]")
+	})
+	t.Run("ST-DECL-INV69-T A consuming worker that writes Note, whose resource type note lacks the permission view of its stager worker sync-documents, is refused", func(t *testing.T) {
+		stagingWorker := worker("sync-documents", "trigger: every 1m", "writes: [Todo]", "fill: sync", "resource_type: document", "permission: view", "effects:\n      - {destination: document-replies, name: reply}")
+		faults := withNote(noteService(consumer+stagingWorker, ""), editOnly)
+		expectNamed(t, faults, "worker-authorization", "apply-document-replies", "Note", "note", "\"view\"", "\"sync-documents\"", "document-replies")
+		onlyAt(t, faults, "workers[0].writes[1]")
+	})
+	t.Run("ST-DECL-INV69-T A consuming worker that writes Note, whose resource type note holds its own permission and its stager's, is accepted", func(t *testing.T) {
+		expectAccepted(t, withNote(noteService(consumer, stager), editOnly+"\tpermission view = owner\n"))
 	})
 }
 

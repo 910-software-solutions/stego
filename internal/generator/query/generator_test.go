@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -267,6 +268,57 @@ func TestExpectedCardinality(t *testing.T) {
 		}
 		if _, _, err := new(Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "small but it has no resource type") {
 			t.Errorf("an entity of small expected cardinality with no resource type gave %v, want a refusal that says so", err)
+		}
+	})
+}
+
+func TestContractRuntimeImports(t *testing.T) {
+	t.Run("ST-SUP-RC33-OC03-T02 The query contract imports exactly the runtime packages that the generator gives the fill check, for each declaration", func(t *testing.T) {
+		// The test service shop has the pii field card_last4; the second case takes the pii away.
+		for _, c := range []struct {
+			name string
+			pii  bool
+			want int
+		}{{"a read entity with a pii field", true, 2}, {"no pii field", false, 1}} {
+			ctx := shopContext(t)
+			if !c.pii {
+				for i := range ctx.Entities {
+					for j := range ctx.Entities[i].Fields {
+						if ctx.Entities[i].Fields[j].Sensitivity == "pii" {
+							ctx.Entities[i].Fields[j].Sensitivity = ""
+						}
+					}
+				}
+			}
+			found := map[string]bool{}
+			for name, data := range generated(t, ctx) {
+				if filepath.Dir(name) != "queries" || !strings.HasSuffix(name, ".go") {
+					continue
+				}
+				file, err := parser.ParseFile(token.NewFileSet(), name, data, parser.ImportsOnly)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, spec := range file.Imports {
+					if path, _ := strconv.Unquote(spec.Path.Value); strings.HasPrefix(path, "github.com/jsell-rh/stego/registry/runtime/") {
+						found[path] = true
+					}
+				}
+			}
+			listed := ContractRuntimeImports(ctx.Entities, ctx.Queries)
+			if len(listed) != c.want {
+				t.Errorf("%s: ContractRuntimeImports gives %v, want %d packages", c.name, listed, c.want)
+			}
+			for _, path := range listed {
+				if !found[path] {
+					t.Errorf("%s: ContractRuntimeImports gives %s, which the contract does not import, so the fill check admits more than the contract reaches", c.name, path)
+				}
+			}
+			for path := range found {
+				if !slices.Contains(listed, path) {
+					t.Errorf("%s: the contract imports %s, which ContractRuntimeImports does not give, so the fill check refuses a fill that imports it", c.name, path)
+				}
+			}
 		}
 	})
 }

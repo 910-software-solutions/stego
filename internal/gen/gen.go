@@ -503,12 +503,45 @@ func DefinitionField(definition string) (types.Field, string) {
 			}
 		case "pattern":
 			field.Pattern = value
-		case "default", "optional", "unique":
+		case "default":
+			// The field keeps its default, so the field before a retype or a drop keeps the DEFAULT of its column
+			// (ST-DECL-INV62, ST-GEN-INV33).
+			if value == "" {
+				return field, "the constraint default has no value"
+			}
+			field.Default = definitionDefault(field.Type, value)
+		case "optional", "unique":
 		default:
 			return field, fmt.Sprintf("the constraint %q is not one a field has", key)
 		}
 	}
 	return field, ""
+}
+
+// definitionDefault reads the value of the default item of a Definition as the declaration's YAML gives a default of
+// the field type typ: a whole number as int and a number with a fraction as float64 for a number field, true or
+// false for a bool field, and a string for every other field, without the quotes that it can have.
+func definitionDefault(typ types.FieldType, value string) any {
+	switch typ {
+	case types.FieldTypeInt32, types.FieldTypeInt64, types.FieldTypeFloat, types.FieldTypeDouble, types.FieldTypeMoney:
+		if number, err := strconv.Atoi(value); err == nil {
+			return number
+		}
+		if number, err := strconv.ParseFloat(value, 64); err == nil {
+			return number
+		}
+	case types.FieldTypeBool:
+		if truth, err := strconv.ParseBool(value); err == nil {
+			return truth
+		}
+	}
+	if unquoted, err := strconv.Unquote(value); err == nil && strings.HasPrefix(value, `"`) {
+		return unquoted
+	}
+	if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 // RetypeColumn gives the column of a field after a retype to the type typ: <field>_<type>, cut as the other
@@ -768,6 +801,15 @@ type Wiring struct {
 	// failure record still holds no error text (ST-SUP-RP14-LC05).
 	ConstructorStages map[int]string
 
+	// ModeSelection selects a generated function with signature
+	// func() ([]string, error) that gives the modes the process runs. The
+	// assembler calls it first in run, at the stage modes, before the
+	// database and every constructor, so a refused mode stops the start at
+	// its own stage, and the failure record of a later failure names the
+	// selected modes (ST-GEN-INV26, ST-GEN-INV16). Only one component can
+	// supply it.
+	ModeSelection *ModeSelectionSpec
+
 	// OuterMiddlewares lists middleware constructors that wrap the HTTP
 	// handler OUTSIDE the auth middleware layer. These are the outermost
 	// middleware in the chain — they run first on every request, before
@@ -795,6 +837,12 @@ type Wiring struct {
 	// migration job of the runtime library (tenant.MigrationJob). Only one
 	// component can supply it.
 	MigrationJob *MigrationJobSpec
+
+	// SchemaCheck selects a generated function with signature
+	// func(context.Context, *sql.DB) error that main.go runs after the
+	// database ping and before the access check, at the stage that the
+	// function Stage of the same package gives for its error (ST-SUP-RC02-OC57).
+	SchemaCheck *SchemaCheckSpec
 
 	// DiscoveryRoutes lists route registration expressions for main.go
 	// assembly that must be registered OUTSIDE the auth middleware chain.
@@ -827,6 +875,22 @@ type MigrationJobSpec struct {
 	Namespace string
 	Function  string
 	Stage     string
+}
+
+// SchemaCheckSpec names the generated schema check and the function with
+// signature func(error) string that gives the stage of its failure, both in
+// the package of the import path Namespace.
+type SchemaCheckSpec struct {
+	Namespace string
+	Function  string
+	Stage     string
+}
+
+// ModeSelectionSpec names the function of a generated package, in the
+// import path Namespace, that gives the modes the process runs.
+type ModeSelectionSpec struct {
+	Namespace string
+	Function  string
 }
 
 // MiddlewareSpec describes a middleware constructor and how it wraps the

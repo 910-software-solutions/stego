@@ -607,7 +607,7 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R14-T04 The access matrix names the ancestors that a nested operation reads first, and marks each role that alone does not grant the read of one", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R14-T04 The access matrix names the ancestors of a nested operation with what the handler checks on each, and marks each role that alone does not grant the read of a decided parent", func(t *testing.T) {
 		p := parseView(t, accessView)
 		perms := map[string]map[string]bool{}
 		for _, perm := range am.Access.Permissions {
@@ -630,16 +630,25 @@ func TestArchitectureView(t *testing.T) {
 			if (len(names) == 1) != (len(c.Ancestors) > 0) {
 				t.Errorf("the head of %s names the ancestors %d times; the check has %d", c.ID, len(names), len(c.Ancestors))
 			}
+			// A decided parent shows its permission; each other ancestor shows its existence check only, and no
+			// permission (ST-SUP-RC20-OC24, ST-SUP-Q156).
 			for _, a := range c.Ancestors {
-				if len(names) == 1 && !strings.Contains(textOf(names[0]), shortID(a.Entity)+" "+a.ResourceType+"#"+a.Permission) {
-					t.Errorf("the head of %s does not name the ancestor %s and its permission: %q", c.ID, a.Entity, textOf(names[0]))
+				want := shortID(a.Entity) + " " + ancestorLinked
+				if a.Decided {
+					want = shortID(a.Entity) + " " + a.ResourceType + "#" + a.Permission
+				}
+				if len(names) == 1 && !strings.Contains(textOf(names[0]), want) {
+					t.Errorf("the head of %s does not name the ancestor %s as %q: %q", c.ID, a.Entity, want, textOf(names[0]))
+				}
+				if len(names) == 1 && !a.Decided && strings.Contains(textOf(names[0]), "#") {
+					t.Errorf("the head of %s names a permission of an ancestor that is not decided: %q", c.ID, textOf(names[0]))
 				}
 			}
 			for _, r := range am.Access.Roles {
 				held := c.Public || perms[c.Grants][r.ID]
 				missing := false
 				for _, a := range c.Ancestors {
-					missing = missing || (a.Grants != "" && !perms[a.Grants][r.ID])
+					missing = missing || (a.Decided && a.Grants != "" && !perms[a.Grants][r.ID])
 				}
 				text := textOf(cells[r.ID+"|"+c.ID])
 				if want := held && missing; strings.Contains(text, "⤒") != want {
@@ -655,15 +664,21 @@ func TestArchitectureView(t *testing.T) {
 		if marked == 0 || clear == 0 {
 			t.Fatalf("the fixture proves too little: %d marked and %d clear cells of nested operations", marked, clear)
 		}
-		if got := textOf(cells["role:member#owner@user|check:operation:org-users.read"]); got != "●⤒" {
-			t.Errorf("the owner of a member who may not view its organization has the cell %q, not ●⤒", got)
+		// The owner of a member who may not view its organization reads and changes the member through the path, as
+		// through a query: the read decides only the row. The list decides the read of the organization, so the owner
+		// alone does not reach it.
+		if got := textOf(cells["role:member#owner@user|check:operation:org-users.read"]); got != "●" {
+			t.Errorf("the owner of a member who may not view its organization has the read cell %q, not ●", got)
 		}
-		// The table of what each operation checks names the ancestors too.
-		checks := p.all(func(n *html.Node) bool {
-			return n.Data == "tr" && attrOf(n, "data-id") == "check:operation:org-users.read"
-		})
-		if len(checks) != 1 || !strings.Contains(textOf(checks[0]), "Organization organization#view") {
-			t.Error("the table of what each operation checks does not name the ancestor of org-users.read")
+		if got := textOf(cells["role:member#owner@user|check:operation:org-users.list"]); got != "●⤒" {
+			t.Errorf("the owner of a member who may not view its organization has the list cell %q, not ●⤒", got)
+		}
+		// The table of what each operation checks names the ancestors too, with what is checked on each.
+		for id, want := range map[string]string{"check:operation:org-users.read": "Organization " + ancestorLinked, "check:operation:org-users.list": "Organization organization#view"} {
+			checks := p.all(func(n *html.Node) bool { return n.Data == "tr" && attrOf(n, "data-id") == id })
+			if len(checks) != 1 || !strings.Contains(textOf(checks[0]), want) {
+				t.Errorf("the table of what each operation checks does not name the ancestor of %s as %q", id, want)
+			}
 		}
 	})
 
@@ -1177,6 +1192,11 @@ func TestArchitectureView(t *testing.T) {
 				gone = gone || a.Grants == "permission:shelf#gone"
 			}
 			if !gone {
+				// An ancestor that is not decided is never marked incomplete: it names no permission.
+				if heads := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == c.ID }); len(c.Ancestors) > 0 &&
+					(len(heads) != 1 || strings.Contains(textOf(heads[0]), "Shelf shelf#view") || strings.Contains(textOf(heads[0]), mark)) {
+					t.Errorf("the head of %s names or marks the read of an ancestor that is not decided: %q", c.ID, textOf(heads[0]))
+				}
 				continue
 			}
 			n++
@@ -1298,7 +1318,8 @@ func ancestorGoneModel(t *testing.T) (*ArchitectureModel, []byte) {
 	model, _ := deriveFixture(t, nestedFixture(t))
 	for i := range model.Access.Checks {
 		for j := range model.Access.Checks[i].Ancestors {
-			if a := &model.Access.Checks[i].Ancestors[j]; a.Entity == "entity:Shelf" {
+			// Only a decided ancestor names grants: the shelf is decided as the parent of shelf-folders.list.
+			if a := &model.Access.Checks[i].Ancestors[j]; a.Entity == "entity:Shelf" && a.Decided {
 				a.Grants = "permission:shelf#gone"
 			}
 		}
@@ -1389,7 +1410,7 @@ func hostileModel(t *testing.T) ([]byte, string) {
 		// view writes the name in the marks of an incomplete ancestor read too (security review of PR #374, L2).
 		if len(ancestors) > 0 {
 			c.(map[string]any)["ancestors"] = append(ancestors, map[string]any{"id": "ancestor:" + hostileValue + "/cut", "entity": "entity:" + hostileValue,
-				"param": hostileValue, "resource_type": "organization", "permission": "view", "public": false, "grants": "permission:organization#view",
+				"param": hostileValue, "resource_type": "organization", "permission": "view", "public": false, "decided": true, "grants": "permission:organization#view",
 				"source": map[string]any{"declaration": "entities[0].permissions.read"}, "scope_source": map[string]any{"declaration": hostileValue}})
 		}
 	}

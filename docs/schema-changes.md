@@ -24,6 +24,14 @@ The release with the expand step adds. The release after it, with the contract
 step, removes what only the old release needed. The declaration keeps every
 schema change, also a finished one.
 
+A schema change does not change the API of the service. After a rename, also
+after its contract step, the API and the OpenAPI document keep the old name
+of the field: the `from` of its first rename. In the example above, a client
+still sends and reads `title`, and the column of the table has the new name
+`heading` (ST-GEN-UC12-R04). A retype keeps the name of the field in the API
+too. A new name in the API is a breaking change for each client, and a
+schema change never makes one.
+
 Checking holds each schema change against its field as its own step leaves
 it: the declared field with each later step undone, the last first
 (ST-DECL-Q17). So one field can change more than once. A retype from `int32`
@@ -62,7 +70,8 @@ no check, and plan and apply say so. A new repository with no commit holds no
 base: when the service has no record either, plan and apply take it as the
 first release, with no check, and say so. When the service has a record, a
 release may have run, so plan and apply stop: commit the service folder with
-its record. `stego init` tells you to commit before the first release. A
+its record. `stego init` tells you to commit before the first release, also
+the example content it writes (and `stego init --empty`, which writes none). A
 repository is new only when HEAD names no commit, it has no ref, it is not
 shallow, it has no `FETCH_HEAD`, and its object store holds no commit. A
 checkout by commit, such as `git fetch <url> <ref>` and

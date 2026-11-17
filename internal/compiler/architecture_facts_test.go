@@ -122,23 +122,28 @@ func TestComplianceFactList(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC16-R01-T04 The access list gives each ancestor check of a nested operation, with its permission and who it grants, or unstated with its rule when no authorization is bound", func(t *testing.T) {
+	t.Run("ST-GEN-UC16-R01-T04 The access list gives each ancestor check of a nested operation: the decided parent of a list with its permission and who it grants, each other ancestor as exists and linked, and unstated with its rule when no authorization is bound", func(t *testing.T) {
 		model, data := deriveFixture(t, nestedFixture(t))
 		text, list, _ := factsOf(t, archProject(t, data), "access")
 		facts := map[string]FactOfList{}
 		for _, f := range list.Facts {
 			facts[f.About+"|"+f.Name] = f
 		}
-		folder, ok := facts["operation:folder-docs.update|checks ancestor 2 Folder"]
+		// The list is decided on the folder, its parent; the shelf above it is checked for existence and its link.
+		folder, ok := facts["operation:folder-docs.list|checks ancestor 2 Folder"]
 		permission := pathsOf(model, "permission:folder#view")
 		if !ok || folder.Value != "folder#view" || folder.State != "stated" || folder.Source.Declaration != "entities[1].permissions.read" ||
 			folder.Grants == nil || folder.Grants.Permission != "permission:folder#view" || len(folder.Grants.Paths) != len(permission) || len(permission) == 0 {
 			t.Fatalf("the ancestor check of the folder is %+v", folder)
 		}
-		shelf, ok := facts["operation:folder-docs.update|checks ancestor 1 Shelf"]
-		if !ok || shelf.Value != "shelf#view" || shelf.Source.Declaration != "entities[2].permissions.read" || shelf.Grants == nil ||
-			shelf.Grants.Permission != "permission:shelf#view" || len(shelf.Quoted) != 0 {
-			t.Fatalf("the ancestor check of the shelf is %+v", shelf)
+		// An update and a read are decided on the row: each ancestor is checked for existence and its link only, and
+		// grants nothing (ST-SUP-RC20-OC24, ST-SUP-Q156).
+		for _, key := range []string{"operation:folder-docs.list|checks ancestor 1 Shelf", "operation:folder-docs.update|checks ancestor 1 Shelf",
+			"operation:folder-docs.update|checks ancestor 2 Folder", "operation:folder-docs.read|checks ancestor 2 Folder"} {
+			f, ok := facts[key]
+			if !ok || f.Value != ancestorLinkedFact || f.State != "stated" || f.Source.Rule != "ST-SUP-RC20-OC24" || f.Grants != nil || f.GrantsUnknown || len(f.Quoted) != 0 {
+				t.Fatalf("the ancestor check %s is %+v", key, f)
+			}
 		}
 		if _, ok := facts["operation:shelf-folders.read|checks ancestor 1 Shelf"]; !ok {
 			t.Fatal("the list holds no ancestor check of shelf-folders.read")
@@ -148,13 +153,13 @@ func TestComplianceFactList(t *testing.T) {
 				t.Fatalf("an operation with no scope has an ancestor check: %+v", f)
 			}
 		}
-		// The text gives the shelf before the folder, the order the handler reads them, and who folder#view grants.
-		at := strings.Index(text, "operation:folder-docs.update\n")
+		// The text gives the shelf before the folder, the top one first, and who folder#view grants.
+		at := strings.Index(text, "operation:folder-docs.list\n")
 		if at < 0 {
-			t.Fatalf("the text names no operation:folder-docs.update:\n%s", text)
+			t.Fatalf("the text names no operation:folder-docs.list:\n%s", text)
 		}
 		block := text[at:]
-		if s, f := strings.Index(block, "checks ancestor 1 Shelf: shelf#view"), strings.Index(block, "checks ancestor 2 Folder: folder#view"); s < 0 || f < s {
+		if s, f := strings.Index(block, "checks ancestor 1 Shelf: "+ancestorLinkedFact), strings.Index(block, "checks ancestor 2 Folder: folder#view"); s < 0 || f < s {
 			t.Fatalf("the text does not give the shelf, then the folder:\n%s", block)
 		}
 		for _, p := range folder.Grants.Paths {
@@ -162,22 +167,28 @@ func TestComplianceFactList(t *testing.T) {
 				t.Fatalf("the text does not name the role %s of the folder check:\n%s", p.Role, block)
 			}
 		}
-		// With no bound authorization, each ancestor fact is unstated, with the rule that binds none.
+		// With no bound authorization, the fact of a decided parent is unstated, with the rule that binds none; each
+		// other ancestor is still checked for existence and its link.
 		in := nestedFixture(t)
 		in.Service.Authorization, in.Schema = nil, nil
 		_, unbound := deriveFixture(t, in)
 		_, list, _ = factsOf(t, archProject(t, unbound), "access")
-		n := 0
+		decided, linked := 0, 0
 		for _, f := range list.Facts {
-			if strings.HasPrefix(f.Name, "checks ancestor") {
-				n++
-				if f.State != "unstated" || f.Source.Rule != "ST-DECL-UC06-R01" || f.Grants != nil {
-					t.Errorf("with no authorization, the ancestor fact is %+v", f)
-				}
+			if !strings.HasPrefix(f.Name, "checks ancestor") {
+				continue
+			}
+			switch {
+			case f.State == "unstated" && f.Source.Rule == "ST-DECL-UC06-R01" && f.Grants == nil:
+				decided++
+			case f.State == "stated" && f.Value == ancestorLinkedFact && f.Source.Rule == "ST-SUP-RC20-OC24" && f.Grants == nil:
+				linked++
+			default:
+				t.Errorf("with no authorization, the ancestor fact is %+v", f)
 			}
 		}
-		if n == 0 {
-			t.Error("with no authorization, the list holds no ancestor fact")
+		if decided == 0 || linked == 0 {
+			t.Errorf("with no authorization, the list holds %d decided and %d linked ancestor facts", decided, linked)
 		}
 	})
 
@@ -210,13 +221,13 @@ func TestComplianceFactList(t *testing.T) {
 		for _, f := range list.Facts {
 			facts[f.About+"|"+f.Name] = f
 		}
+		// Only the list decides the folder read; the update and the read of a doc decide no ancestor, so they name no
+		// incomplete ancestor read (ST-SUP-RC20-OC24, ST-SUP-Q156).
 		want := []FactAncestor{{Fact: "checks ancestor 2 Folder", Permission: "permission:folder#view"}}
-		for _, op := range []string{"operation:folder-docs.update", "operation:folder-docs.read"} {
-			if got := facts[op+"|checks"].AncestorsIncomplete; !slices.Equal(got, want) {
-				t.Errorf("the checks fact of %s names the incomplete ancestor reads %+v, not %+v", op, got, want)
-			}
+		if got := facts["operation:folder-docs.list|checks"].AncestorsIncomplete; !slices.Equal(got, want) {
+			t.Errorf("the checks fact of operation:folder-docs.list names the incomplete ancestor reads %+v, not %+v", got, want)
 		}
-		for _, op := range []string{"operation:docs.read", "operation:shelf-folders.read"} {
+		for _, op := range []string{"operation:docs.read", "operation:shelf-folders.read", "operation:folder-docs.update", "operation:folder-docs.read"} {
 			if got := facts[op+"|checks"].AncestorsIncomplete; len(got) != 0 {
 				t.Errorf("the checks fact of %s, which reads no ancestor with a permission, names %+v", op, got)
 			}
@@ -224,15 +235,15 @@ func TestComplianceFactList(t *testing.T) {
 		if !bytes.Contains(out, []byte(`"ancestors_incomplete"`)) {
 			t.Error("the JSON list does not name the incomplete ancestor read")
 		}
-		at := strings.Index(text, "operation:folder-docs.update\n")
+		at := strings.Index(text, "operation:folder-docs.list\n")
 		if at < 0 {
-			t.Fatalf("the text names no operation:folder-docs.update:\n%s", text)
+			t.Fatalf("the text names no operation:folder-docs.list:\n%s", text)
 		}
 		block := text[at:]
 		checks := strings.Index(block, "  checks: ")
 		line := strings.Index(block, "a limit cut a path of the ancestor read permission:folder#view short (checks ancestor 2 Folder), so it can grant more roles than its paths name")
 		if checks < 0 || line < checks || strings.Index(block, "checks ancestor 1 Shelf") < line {
-			t.Fatalf("the text does not mark the incomplete ancestor read at the checks fact of folder-docs.update:\n%s", block)
+			t.Fatalf("the text does not mark the incomplete ancestor read at the checks fact of folder-docs.list:\n%s", block)
 		}
 	})
 

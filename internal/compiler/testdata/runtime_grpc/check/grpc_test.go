@@ -69,7 +69,9 @@ type service struct {
 	key   *authntest.Key
 	base  string
 	shop  shop.ShopClient
-	log   *bytes.Buffer
+	// conn is the connection of shop, on which a check calls a method that no proto file declares.
+	conn *grpc.ClientConn
+	log  *bytes.Buffer
 }
 
 func must(t testing.TB, err error) {
@@ -291,6 +293,7 @@ func start(t *testing.T) *service {
 	must(t, err)
 	t.Cleanup(func() { client.Close() })
 	s.shop = shop.NewShopClient(client)
+	s.conn = client
 	return s
 }
 
@@ -497,6 +500,32 @@ func (s *service) provisioned(c caller) {
 	}
 }
 
+// relate writes the tuple resourceType:resourceID#relation@user:<subject of c> to SpiceDB.
+func (s *service) relate(resourceType, resourceID, relation string, c caller) {
+	_, err := v1.NewPermissionsServiceClient(s.spice).WriteRelationships(s.ctx, &v1.WriteRelationshipsRequest{Updates: []*v1.RelationshipUpdate{{
+		Operation: v1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &v1.Relationship{Resource: &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Relation: relation,
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}}}}})
+	must(s.t, err)
+}
+
+// granted waits until SpiceDB answers, at its quantized revision, that c has permission on resourceType:resourceID,
+// as the service asks it at the revocation floor.
+func (s *service) granted(resourceType, resourceID, permission string, c caller) {
+	t := s.t
+	t.Helper()
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+		answer, err := v1.NewPermissionsServiceClient(s.spice).CheckPermission(s.ctx, &v1.CheckPermissionRequest{
+			Consistency: &v1.Consistency{Requirement: &v1.Consistency_MinimizeLatency{MinimizeLatency: true}},
+			Resource:    &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Permission: permission,
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: c.subject}}})
+		if err == nil && answer.GetPermissionship() == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION {
+			return
+		}
+	}
+	t.Fatalf("after 60 s, SpiceDB does not answer that the caller has %s on %s:%s", permission, resourceType, resourceID)
+}
+
 func TestGRPC(t *testing.T) {
 	s := start(t)
 	owner := s.as("u-"+uuid.NewString()[:8], "t-"+uuid.NewString()[:8])
@@ -504,6 +533,23 @@ func TestGRPC(t *testing.T) {
 	s.provisioned(owner)
 	mine := s.order(owner, "a1", true)
 	theirs := s.order(owner, "b2", false)
+	// placer may place orders in the tenant of owner: its grant is on the tenant-qualified ID of the service-level
+	// resource (ST-SUP-RC32-OC15). platform holds the same relation on the ID with no tenant, which is the ID of
+	// Provision and Retire, and so may place no order in a tenant.
+	placer := s.as("u-"+uuid.NewString()[:8], owner.tenant.ID())
+	platform := s.as("u-"+uuid.NewString()[:8], owner.tenant.ID())
+	qualified, err := authz.ResourceID(owner.tenant, "grpc-shop")
+	must(t, err)
+	s.relate("service", qualified, "placer", placer)
+	s.relate("service", "grpc-shop", "placer", platform)
+	// stranger, a caller of another tenant, holds placer on the service-level resource of the tenant of owner, which
+	// grants nothing in its own tenant. placer may view theirs and not edit it.
+	stranger := s.as("u-"+uuid.NewString()[:8], "t-"+uuid.NewString()[:8])
+	s.provisioned(stranger)
+	s.relate("service", qualified, "placer", stranger)
+	theirsID, err := authz.ResourceID(owner.tenant, theirs)
+	must(t, err)
+	s.relate("order", theirsID, "viewer", placer)
 
 	t.Run("ST-SUP-RC27-OC11-T01 A gRPC call of a tenant that is not provisioned is refused before any handler", func(t *testing.T) {
 		s.t = t
@@ -606,15 +652,17 @@ func TestGRPC(t *testing.T) {
 		if a, b := deniedGRPCRows, s.newReads(mark, deniedHTTPRead); strings.Join(a, ";") != strings.Join(b, ";") {
 			t.Fatalf("the audit rows of the denied query over gRPC are %v and over HTTP %v, want the same rows", a, b)
 		}
-		// No token is Unauthenticated, and a method that no declaration names is Unimplemented.
+		// No token is Unauthenticated. A method that no command or query names is refused by checking
+		// (ST-DECL-INV75), so the proto file of the service holds none; a call of a method that the server does not
+		// register, such as shop.v1.Shop/CancelOrder, is still Unimplemented and runs no fill.
 		ctx, cancel = s.rpc(nil, "", "")
 		_, err = s.shop.GetOrderSummary(ctx, &shop.GetOrderSummaryRequest{OrderId: mine})
 		cancel()
 		wantCode(t, err, codes.Unauthenticated, "the query with no token")
 		ctx, cancel = s.rpc(&owner, "", "")
-		_, err = s.shop.CancelOrder(ctx, &shop.GetOrderSummaryRequest{OrderId: mine})
+		err = s.conn.Invoke(ctx, "/shop.v1.Shop/CancelOrder", &shop.GetOrderSummaryRequest{OrderId: mine}, &shop.OrderSummary{})
 		cancel()
-		wantCode(t, err, codes.Unimplemented, "the method that no declaration names")
+		wantCode(t, err, codes.Unimplemented, "the method that the server does not register")
 	})
 
 	t.Run("ST-SUP-RC33-OC08-T01 A stream query gets a gRPC stream and no HTTP route", func(t *testing.T) {
@@ -642,6 +690,98 @@ func TestGRPC(t *testing.T) {
 		var document map[string]any
 		if r := s.send(&owner, http.MethodGet, "/orders/"+mine+"/summary", "", "", ""); r.status != http.StatusOK || json.Unmarshal(r.body, &document) != nil {
 			t.Fatalf("the route of get-order-summary answered %d %s, want 200", r.status, r.body)
+		}
+	})
+	t.Run("ST-SUP-RC32-OC15-T03 A command on the service-level resource creates a row with no parent over gRPC and HTTP", func(t *testing.T) {
+		s.t = t
+		s.granted("service", qualified, "place_order", placer)
+		s.granted("service", "grpc-shop", "place_order", platform)
+		// A grant on the service-level resource with no tenant is not a grant in the tenant: NotFound, and no row.
+		ctx, cancel := s.rpc(&platform, "k-"+uuid.NewString(), "")
+		_, err := s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: "p0", Qty: 1, Email: "p0@example.com"})
+		cancel()
+		wantCode(t, err, codes.NotFound, "the command of a caller with a grant on the service-level resource with no tenant")
+		if got := s.send(&other, http.MethodPost, "/orders", "k-"+uuid.NewString(), "", `{"sku":"p0","qty":1,"email":"p0@example.com"}`); got.status != http.StatusNotFound {
+			t.Fatalf("the command of a caller with no grant over HTTP answered %d %s, want 404", got.status, got.body)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM orders WHERE sku = 'p0'`); n != 0 {
+			t.Fatalf("the denied commands wrote %d orders", n)
+		}
+		// The caller with the grant in the tenant creates an order over gRPC, and the replay gives the same order.
+		key := "k-" + uuid.NewString()
+		ctx, cancel = s.rpc(&placer, key, "")
+		placed, err := s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: "p1", Qty: 3, Email: "p1@example.com"})
+		cancel()
+		must(t, err)
+		ctx, cancel = s.rpc(&placer, key, "")
+		replayed, err := s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: "p1", Qty: 3, Email: "p1@example.com"})
+		cancel()
+		must(t, err)
+		if placed.GetOrderId() == "" || replayed.GetOrderId() != placed.GetOrderId() {
+			t.Fatalf("the replay gave the order %q, want %q", replayed.GetOrderId(), placed.GetOrderId())
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM orders WHERE id = $1 AND tenant_id = $2 AND sku = 'p1' AND qty = 3`, placed.GetOrderId(), placer.tenant.ID()); n != 1 {
+			t.Fatalf("the orders table holds %d rows of the placed order in the tenant of the caller, want 1", n)
+		}
+		// The same command over HTTP, at the route POST /orders.
+		got := s.send(&placer, http.MethodPost, "/orders", "k-"+uuid.NewString(), "", `{"sku":"p2","qty":4,"email":"p2@example.com"}`)
+		var answer map[string]any
+		if got.status != http.StatusCreated || json.Unmarshal(got.body, &answer) != nil || answer["orderId"] == nil {
+			t.Fatalf("the command over HTTP answered %d %s, want 201 with the order ID", got.status, got.body)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM orders WHERE sku = 'p2' AND tenant_id = $1`, placer.tenant.ID()); n != 1 {
+			t.Fatalf("the command over HTTP wrote %d orders, want 1", n)
+		}
+		// The audit rows: the command on the service-level resource and the create of the order.
+		if rows := strings.Join(s.auditRows("idempotency_key", key), ";"); !strings.Contains(rows, "place-order|place-order|order|ok") {
+			t.Fatalf("the audit rows of the command %s hold no create of the order", rows)
+		}
+		// The runtime enqueues the owner tuple of the new row, the caller, for the relay (ST-SUP-RP10-LC05).
+		resourceID, err := authz.ResourceID(placer.tenant, placed.GetOrderId())
+		must(t, err)
+		if n := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'authz'
+ AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,resource_type}' = 'order' AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,resource_id}' = $2
+ AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,relation}' = 'owner' AND convert_from(payload, 'UTF8')::jsonb #>> '{tuple,subject_id}' = $3`,
+			placer.tenant.ID(), resourceID, placer.subject); n != 1 {
+			t.Fatalf("the outbox holds %d owner tuples of the placed order for the relay, want 1", n)
+		}
+		// The owner reads the order back through the query once the relay has written its owner tuple; the check
+		// writes it as the relay does, since the service runs the api mode only.
+		s.relate("order", resourceID, "owner", placer)
+		s.granted("order", resourceID, "view", placer)
+		ctx, cancel = s.rpc(&placer, "", "")
+		summary, err := s.shop.GetOrderSummary(ctx, &shop.GetOrderSummaryRequest{OrderId: placed.GetOrderId()})
+		cancel()
+		must(t, err)
+		if summary.GetSku() != "p1" || summary.GetQty() != 3 {
+			t.Fatalf("the query gave %v, want the placed order with the sku p1 and the qty 3", summary)
+		}
+		// The grant is on the ID of one tenant: a caller of another tenant with it places no order.
+		s.granted("service", qualified, "place_order", stranger)
+		ctx, cancel = s.rpc(&stranger, "k-"+uuid.NewString(), "")
+		_, err = s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: "px", Qty: 1, Email: "px@example.com"})
+		cancel()
+		wantCode(t, err, codes.NotFound, "the command of a caller of another tenant with the grant of the tenant of owner")
+		// The handle reads with Get, decided by the read permission, and a create decides its reference: a note on
+		// an order that placer may not view, and one on an order that placer may view and not edit, are refused and
+		// leave no row; a note on the order that placer owns is written.
+		s.granted("order", theirsID, "view", placer)
+		s.granted("order", resourceID, "edit", placer)
+		for _, refused := range []struct{ sku, on, what string }{{"p3", mine, "an order that placer may not view"}, {"p4", theirs, "an order that placer may view and not edit"}} {
+			ctx, cancel = s.rpc(&placer, "k-"+uuid.NewString(), "")
+			_, err = s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: refused.sku, Qty: 1, Email: "n@example.com", NoteOn: refused.on, Note: "refused"})
+			cancel()
+			wantCode(t, err, codes.NotFound, "the command with a note on "+refused.what)
+		}
+		ctx, cancel = s.rpc(&placer, "k-"+uuid.NewString(), "")
+		_, err = s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: "p5", Qty: 1, Email: "n@example.com", NoteOn: placed.GetOrderId(), Note: "on my order"})
+		cancel()
+		must(t, err)
+		if n := count(t, s.admin, `SELECT (SELECT count(*) FROM orders WHERE sku IN ('px', 'p3', 'p4')) + (SELECT count(*) FROM notes WHERE text = 'refused')`); n != 0 {
+			t.Fatalf("the refused commands left %d rows", n)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM notes WHERE order_id = $1 AND text = 'on my order' AND tenant_id = $2`, placed.GetOrderId(), placer.tenant.ID()); n != 1 {
+			t.Fatalf("the notes table holds %d notes on the placed order, want 1", n)
 		}
 	})
 }

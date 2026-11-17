@@ -119,10 +119,13 @@ func Validate(service *types.ServiceDeclaration, undeclared ...parser.Undeclared
 	faults.Service = append(faults.Service, validateNameForms(service)...)
 	faults.Service = append(faults.Service, validateIdempotency(service)...)
 	faults.Service = append(faults.Service, validateIdempotencyValues(service)...)
+	faults.Service = append(faults.Service, validateProblemBase(service)...)
+	faults.Service = append(faults.Service, validateServerFactories(service)...)
 	faults.Service = append(faults.Service, validateDefaultsLeft(service)...)
 	faults.Service = append(faults.Service, validateTenancyClaim(service)...)
 	faults.Service = append(faults.Service, validateProvisioning(service)...)
 	faults.Entities = append(faults.Entities, validateEntityTenants(service.Entities)...)
+	faults.Entities = append(faults.Entities, validateLockAtMost(service.Entities)...)
 	faults.Service = append(faults.Service, validateTenantlessPaths(service)...)
 	faults.Service = append(faults.Service, validateAuditValues(service)...)
 	faults.Service = append(faults.Service, validateModesAndMixins(service)...)
@@ -221,7 +224,7 @@ func validateArchetype(archetype string) []ValidationError {
 
 // validateFieldDefaults checks that each field's default suits the type the field declares (ST-DECL-INV13): a
 // string for a string, true or false for a bool, a whole number in range for int32 and int64, a number for float
-// and double, and one of the values for an enum.
+// and double, one of the values for an enum, and a UUID for a ref.
 func validateFieldDefaults(entities []types.Entity) []ValidationError {
 	var errs []ValidationError
 	for ei, e := range entities {
@@ -243,9 +246,11 @@ func validateFieldDefaults(entities []types.Entity) []ValidationError {
 	return errs
 }
 
-// defaultSuits tells whether a field's default suits its type. A type whose default form the format does not fix
-// (bytes, timestamp, ref, jsonb) accepts any default here, except on the server-managed generation field, whose
-// default the generated handlers write as a Go literal, so it must be a string, an integer or a boolean of its type.
+// defaultSuits tells whether a field's default suits its type. A ref holds the key of the row it refers to, which
+// is a UUID, so its default must be a UUID in the 8-4-4-4-12 hex form: the create that leaves out the field stores
+// it (security review of PR #399, L1). A type whose default form the format does not fix (bytes, timestamp, jsonb)
+// accepts any default here, except on the server-managed generation field, whose default the generated handlers
+// write as a Go literal, so it must be a string, an integer or a boolean of its type.
 func defaultSuits(f types.Field) bool {
 	if f.Name == "generation" {
 		switch f.Type {
@@ -283,6 +288,9 @@ func defaultSuits(f types.Field) bool {
 			return !math.IsNaN(number) && !math.IsInf(number, 0)
 		}
 		return false
+	case types.FieldTypeRef:
+		text, ok := f.Default.(string)
+		return ok && uuidForm.MatchString(text)
 	case types.FieldTypeEnum:
 		text, ok := f.Default.(string)
 		if !ok {
@@ -306,6 +314,8 @@ var (
 	entityNameForm     = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,62}$`)
 	fieldNameForm      = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 	fillNameForm       = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	// uuidForm is the form of a ref default: the key of a row, a UUID as the runtime reads it (command.ValidUUID).
+	uuidForm = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
 // validateNameForms gives one fault for each service, collection, entity, field and slot-binding fill name outside

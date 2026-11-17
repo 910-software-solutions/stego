@@ -1447,6 +1447,7 @@
         "entity",
         "param",
         "public",
+        "decided",
         "source",
         "scope_source"
       ],
@@ -1473,6 +1474,9 @@
           "minLength": 1
         },
         "public": {
+          "type": "boolean"
+        },
+        "decided": {
           "type": "boolean"
         },
         "reason": {

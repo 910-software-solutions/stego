@@ -1,6 +1,6 @@
 kind: component
 name: browser-backend
-version: 4.5.0
+version: 4.6.0
 stage: ga
 output_namespace: browser
 config:
@@ -15,8 +15,10 @@ config:
   telemetry_service_name:
     type: string
     optional: true
+  # Every declaration gives its API prefix and its routes (ST-DECL-INV90).
   api_prefix:
     type: string
+    author_supplied: true
   logout_scope:
     type: string
     optional: true
@@ -25,6 +27,7 @@ config:
     optional: true
   routes:
     type: list
+    author_supplied: true
     items:
       type: string
   asset_bundle:
@@ -58,6 +61,31 @@ architecture:
     browser-session-http: inbound
 
 environment:
+  # The mode migrate reads the name of the runtime login and the owner connection (ST-SUP-RC02-OC56); postgres-adapter
+  # states the owner connection with the same facts.
+  - name: STEGO_RUNTIME_DATABASE_ROLE
+    type: string
+    required: false
+    description: "The name of the runtime login, to which the migration job grants the session table. The job does not start when it has no value or when the value is not a lower-case role name."
+    secret: false
+    read_by_mode: migrate
+    example: "portal_runtime"
+  - name: STEGO_MIGRATION_DATABASE_URL
+    type: string
+    required: false
+    description: "The PostgreSQL connection string of the migration job, or STEGO_MIGRATION_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
+    secret: true
+    one_of: migration-database-url
+    secret_source: {name: "{service}-database-owner", key: url}
+    read_by_mode: migrate
+  - name: STEGO_MIGRATION_DATABASE_URL_FILE
+    type: path
+    required: false
+    description: "The file that holds the PostgreSQL connection string of the migration job. Give it or STEGO_MIGRATION_DATABASE_URL, not the two."
+    secret: false
+    one_of: migration-database-url
+    read_by_mode: migrate
+    example: "/etc/stego/database-owner/url"
   - name: STEGO_HTTP_TLS_CERT
     type: path
     required: false

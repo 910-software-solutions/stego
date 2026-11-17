@@ -13,7 +13,10 @@ import (
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
+	commandgen "github.com/jsell-rh/stego/internal/generator/command"
+	querygen "github.com/jsell-rh/stego/internal/generator/query"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
+	workergen "github.com/jsell-rh/stego/internal/generator/worker"
 	"github.com/jsell-rh/stego/internal/ports"
 	"github.com/jsell-rh/stego/internal/registry"
 	"github.com/jsell-rh/stego/internal/types"
@@ -45,8 +48,39 @@ func Validate(input ReconcilerInput) (*ValidationResult, error) {
 	if result != nil {
 		result.Settings = declaration.ResolvedSettings(source.Service)
 		result.Warnings = aliasNotices(source.Registry, source.Service, declaration.Warnings(source.Service))
+		result.Warnings = append(result.Warnings, scopedAccessWarnings(source.Service, input.ProjectDir)...)
 	}
 	return result, err
+}
+
+// ScopedAccessWarnings gives the warnings of the declaration in the project of input about each permission of a scoped
+// collection that does not need the read of its parent (ST-SUP-Q156), which stego plan prints too. A declaration that
+// cannot be read gives none: stego validate reports it.
+func ScopedAccessWarnings(input ReconcilerInput) []ValidationError {
+	source, err := loadCompilationSource(input)
+	if err != nil {
+		return nil
+	}
+	return scopedAccessWarnings(source.Service, input.ProjectDir)
+}
+
+// scopedAccessWarnings gives the warnings of each permission of a scoped collection that does not need the read of
+// its parent (declaration.ScopedAccessWarnings, ST-SUP-Q156), from the schema that the declaration binds in the
+// project folder. A schema that cannot be read gives none: the checks of the schema report it.
+func scopedAccessWarnings(service *types.ServiceDeclaration, projectDir string) []ValidationError {
+	if service == nil || service.Authorization == nil || service.Authorization.SchemaPath == "" {
+		return nil
+	}
+	root, err := os.OpenRoot(projectDir)
+	if err != nil {
+		return nil
+	}
+	defer root.Close()
+	schema, err := declaration.ReadAuthzSchema(service, root.FS())
+	if err != nil {
+		return nil
+	}
+	return declaration.ScopedAccessWarnings(service, schema)
 }
 
 // aliasNotices gives, for each deprecated alias that the declaration binds, one notice that names the mixins of the
@@ -464,6 +498,14 @@ func compositionFacts(input ReconcilerInput, svcDecl *types.ServiceDeclaration, 
 		return facts, err
 	}
 	facts.GRPCMethods = methods
+	// The runtime data path, whose outbox relay, audit sink and audit jobs need the worker and controller modes
+	// (ST-DECL-INV89).
+	names := make([]string, 0, len(components))
+	for name := range components {
+		names = append(names, name)
+	}
+	facts.CollectionsUnserved = components != nil && !servesCollections(components)
+	facts.RuntimeData = runtimeDataPath(len(svcDecl.Entities) == 0 && len(svcDecl.Commands) == 0 && len(svcDecl.Queries) == 0, names)
 	for name := range components {
 		config, _ := svcDecl.Overrides[name].(map[string]any)
 		destinations, _ := config["destinations"].([]any)
@@ -507,7 +549,8 @@ const workerComponent = "worker"
 // fillCheck gives the fill check of a declaration with its active component
 // set.
 func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, components map[string]*registry.Component) FillCheck {
-	check := FillCheck{ProjectDir: input.ProjectDir, Contracts: reg, Module: input.ModuleName, RuntimeProxy: runtimeProxyStager(reg, svcDecl.Archetype)}
+	check := FillCheck{ProjectDir: input.ProjectDir, Contracts: reg, Module: input.ModuleName, RuntimeProxy: runtimeProxyStager(reg, svcDecl.Archetype),
+		ContractRuntime: map[string][]string{}}
 	for _, module := range svcDecl.FillModules {
 		check.FillModules = append(check.FillModules, module.Module)
 	}
@@ -562,6 +605,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		contract := generatedImportPath(input.ModuleName, outDirName, command.OutputNamespace)
+		check.ContractRuntime[contract] = commandgen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Commands)
 		for i, c := range svcDecl.Commands {
 			if len(c.Fill) == 1 && c.Fill[0] != "" && !strings.ContainsAny(c.Fill[0], `/\.`) {
 				check.CommandFills = append(check.CommandFills, CommandFill{Fill: c.Fill[0], Command: c.Name,
@@ -578,6 +622,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		check.QueryContract = generatedImportPath(input.ModuleName, outDirName, q.OutputNamespace)
+		check.ContractRuntime[check.QueryContract] = querygen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Queries)
 		for i, query := range svcDecl.Queries {
 			if len(query.Fill) == 1 && query.Fill[0] != "" && !strings.ContainsAny(query.Fill[0], `/\.`) {
 				check.QueryFills = append(check.QueryFills, QueryFill{Fill: query.Fill[0], Query: query.Name,
@@ -595,6 +640,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		check.WorkerContract = generatedImportPath(input.ModuleName, outDirName, w.OutputNamespace)
+		check.ContractRuntime[check.WorkerContract] = workergen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Workers)
 	}
 	for i, worker := range svcDecl.Workers {
 		if len(worker.Fill) == 1 && worker.Fill[0] != "" && !strings.ContainsAny(worker.Fill[0], `/\.`) {
@@ -805,4 +851,17 @@ func databaseConversions(components map[string]*registry.Component) (map[string]
 func validateSchemaConversions(service *types.ServiceDeclaration, components map[string]*registry.Component) []ValidationError {
 	conversions, declared := databaseConversions(components)
 	return declaration.ValidateSchemaConversions(service, conversions, declared)
+}
+
+// servesCollections tells whether a component of the active set serves the declared collections: one that provides
+// the port http-server of the CRUD API, which today only rest-api does (ST-DECL-INV92).
+func servesCollections(components map[string]*registry.Component) bool {
+	for _, component := range components {
+		for _, provided := range component.Provides {
+			if provided.Name == declaration.CollectionPort {
+				return true
+			}
+		}
+	}
+	return false
 }

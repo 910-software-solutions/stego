@@ -131,6 +131,10 @@ type Entity struct {
 	Conditions       map[string][]string `yaml:"conditions,omitempty"`
 	CleanupTargets   map[string]string   `yaml:"cleanup_targets,omitempty"`
 	CleanupOwners    []string            `yaml:"cleanup_owners,omitempty"`
+	// LockAtMost is the most rows that one locked list of the entity may lock, 1 to 1,000, or nil when the entity
+	// declares none (ST-DECL-EN02, ST-DECL-INV81). It is read as a number, so checking refuses a value that is not
+	// whole, such as 2.5, which YAML would cut to 2 for an int.
+	LockAtMost *float64 `yaml:"lock_at_most,omitempty" json:"LockAtMost,omitempty"`
 	// Tenant is owned, shared or system (ST-DECL-EN02). Omitted means owned.
 	Tenant string `yaml:"tenant,omitempty" json:"Tenant,omitempty"`
 	// Kind is data or ledger (ST-DECL-EN02). Omitted means data. A ledger entity selects the ledger component
@@ -219,6 +223,11 @@ type ConfigField struct {
 	// Bypass marks a setting whose value turns off a check of the service. Checking refuses a declaration that gives
 	// it a value (ST-SUP-EN09 field Config schema, ST-DECL-INV24, ST-DECL-SP07).
 	Bypass bool `yaml:"bypass,omitempty"`
+	// AuthorSupplied marks a setting that every declaration with the component must give. A setting that only the
+	// running service gets, such as a connection string or an issuer, is not author supplied. An empty scaffold
+	// names each one, and checking refuses a declaration that does not give one (ST-SUP-EN09 field Config schema,
+	// ST-DECL-INV90).
+	AuthorSupplied bool `yaml:"author_supplied,omitempty"`
 }
 
 // ConcurrencyMode for upsert operations.

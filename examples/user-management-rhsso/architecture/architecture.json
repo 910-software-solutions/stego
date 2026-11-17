@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.145.0",
+    "archetype_version": "3.151.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -380,7 +380,7 @@
     {
       "id": "component:command",
       "name": "command",
-      "version": "1.1.0",
+      "version": "1.3.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared command in the transaction of the caller's tenant.",
@@ -398,7 +398,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "architecture"
         }
       }
@@ -907,7 +907,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "provides"
         }
       }
@@ -1087,7 +1087,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.145.0",
+          "version": "3.151.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1110,7 +1110,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.145.0",
+          "version": "3.151.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -4345,7 +4345,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -4364,7 +4364,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -4382,7 +4382,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -4400,7 +4400,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -4419,7 +4419,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -5778,7 +5778,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -5796,7 +5796,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -6545,7 +6545,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -6654,7 +6654,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -6763,7 +6763,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.1.0",
+          "version": "1.3.0",
           "field": "environment"
         }
       }
@@ -7165,7 +7165,7 @@
     {
       "id": "authz:operation:org-settings.list",
       "element": "operation:org-settings.list",
-      "text": "Decides the permission view on the org_setting for the verified caller. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides the permission view on the org_setting for the verified caller. First it decides the read permission organization#view on the parent Organization. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[2].permissions.list"
       }
@@ -7173,7 +7173,7 @@
     {
       "id": "authz:operation:org-settings.upsert",
       "element": "operation:org-settings.upsert",
-      "text": "Decides the permission edit on the org_setting for the verified caller. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides the permission edit on the org_setting for the verified caller. First it decides the read permission organization#view on the parent Organization. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[2].permissions.upsert"
       }
@@ -7181,7 +7181,7 @@
     {
       "id": "authz:operation:org-users.create",
       "element": "operation:org-users.create",
-      "text": "Decides no permission on the row itself. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides no permission on the row itself. First it decides the read permission organization#view on the parent Organization. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[1].permissions.create"
       }
@@ -7189,7 +7189,7 @@
     {
       "id": "authz:operation:org-users.delete",
       "element": "operation:org-users.delete",
-      "text": "Decides the permission edit on the member for the verified caller. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides the permission edit on the member for the verified caller. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[1].permissions.delete"
       }
@@ -7197,7 +7197,7 @@
     {
       "id": "authz:operation:org-users.list",
       "element": "operation:org-users.list",
-      "text": "Decides the permission view on the member for the verified caller. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides the permission view on the member for the verified caller. First it decides the read permission organization#view on the parent Organization. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[1].permissions.list"
       }
@@ -7205,7 +7205,7 @@
     {
       "id": "authz:operation:org-users.patch",
       "element": "operation:org-users.patch",
-      "text": "Decides the permission edit on the member for the verified caller. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides the permission edit on the member for the verified caller. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[1].permissions.patch"
       }
@@ -7213,7 +7213,7 @@
     {
       "id": "authz:operation:org-users.read",
       "element": "operation:org-users.read",
-      "text": "Decides the permission view on the member for the verified caller. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides the permission view on the member for the verified caller. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[1].permissions.read"
       }
@@ -7221,7 +7221,7 @@
     {
       "id": "authz:operation:org-users.update",
       "element": "operation:org-users.update",
-      "text": "Decides the permission edit on the member for the verified caller. First it decides the read permission of each ancestor in the path, the top one first: organization#view on Organization.",
+      "text": "Decides the permission edit on the member for the verified caller. It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24).",
       "source": {
         "declaration": "entities[1].permissions.update"
       }
@@ -7302,6 +7302,7 @@
             "resource_type": "organization",
             "permission": "view",
             "public": false,
+            "decided": true,
             "grants": "permission:organization#view",
             "source": {
               "declaration": "entities[0].permissions.read"
@@ -7330,6 +7331,7 @@
             "resource_type": "organization",
             "permission": "view",
             "public": false,
+            "decided": true,
             "grants": "permission:organization#view",
             "source": {
               "declaration": "entities[0].permissions.read"
@@ -7357,6 +7359,7 @@
             "resource_type": "organization",
             "permission": "view",
             "public": false,
+            "decided": true,
             "grants": "permission:organization#view",
             "source": {
               "declaration": "entities[0].permissions.read"
@@ -7382,12 +7385,11 @@
             "id": "ancestor:org-users.delete/Organization",
             "entity": "entity:Organization",
             "param": "org_id",
-            "resource_type": "organization",
-            "permission": "view",
             "public": false,
-            "grants": "permission:organization#view",
+            "decided": false,
+            "reason": "The handler checks that the row exists in the tenant and is of the ancestor above it, and decides no permission on it: it is above the deepest resource that the request names.",
             "source": {
-              "declaration": "entities[0].permissions.read"
+              "rule": "ST-SUP-RC20-OC24"
             },
             "scope_source": {
               "declaration": "collections.org-users.scope"
@@ -7413,6 +7415,7 @@
             "resource_type": "organization",
             "permission": "view",
             "public": false,
+            "decided": true,
             "grants": "permission:organization#view",
             "source": {
               "declaration": "entities[0].permissions.read"
@@ -7438,12 +7441,11 @@
             "id": "ancestor:org-users.patch/Organization",
             "entity": "entity:Organization",
             "param": "org_id",
-            "resource_type": "organization",
-            "permission": "view",
             "public": false,
-            "grants": "permission:organization#view",
+            "decided": false,
+            "reason": "The handler checks that the row exists in the tenant and is of the ancestor above it, and decides no permission on it: it is above the deepest resource that the request names.",
             "source": {
-              "declaration": "entities[0].permissions.read"
+              "rule": "ST-SUP-RC20-OC24"
             },
             "scope_source": {
               "declaration": "collections.org-users.scope"
@@ -7466,12 +7468,11 @@
             "id": "ancestor:org-users.read/Organization",
             "entity": "entity:Organization",
             "param": "org_id",
-            "resource_type": "organization",
-            "permission": "view",
             "public": false,
-            "grants": "permission:organization#view",
+            "decided": false,
+            "reason": "The handler checks that the row exists in the tenant and is of the ancestor above it, and decides no permission on it: it is above the deepest resource that the request names.",
             "source": {
-              "declaration": "entities[0].permissions.read"
+              "rule": "ST-SUP-RC20-OC24"
             },
             "scope_source": {
               "declaration": "collections.org-users.scope"
@@ -7494,12 +7495,11 @@
             "id": "ancestor:org-users.update/Organization",
             "entity": "entity:Organization",
             "param": "org_id",
-            "resource_type": "organization",
-            "permission": "view",
             "public": false,
-            "grants": "permission:organization#view",
+            "decided": false,
+            "reason": "The handler checks that the row exists in the tenant and is of the ancestor above it, and decides no permission on it: it is above the deepest resource that the request names.",
             "source": {
-              "declaration": "entities[0].permissions.read"
+              "rule": "ST-SUP-RC20-OC24"
             },
             "scope_source": {
               "declaration": "collections.org-users.scope"
@@ -7564,11 +7564,14 @@
             "id": "grant:member#edit.001",
             "role": "role:member#owner@user",
             "kinds": [
-              "direct"
+              "intersection"
             ],
             "hops": [
               "member#edit",
               "member#owner"
+            ],
+            "requires": [
+              "member#organization->view"
             ],
             "source": {
               "declaration": "authorization.schema_path"
@@ -7578,13 +7581,57 @@
             "id": "grant:member#edit.002",
             "role": "role:organization#owner@user",
             "kinds": [
-              "arrow"
+              "arrow",
+              "intersection"
             ],
             "hops": [
               "member#edit",
               "member#organization->edit",
               "organization#edit",
               "organization#owner"
+            ],
+            "requires": [
+              "member#organization->view"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:member#edit.003",
+            "role": "role:organization#owner@user",
+            "kinds": [
+              "arrow",
+              "intersection"
+            ],
+            "hops": [
+              "member#edit",
+              "member#organization->view",
+              "organization#view",
+              "organization#owner"
+            ],
+            "requires": [
+              "member#(owner + organization->edit)"
+            ],
+            "source": {
+              "declaration": "authorization.schema_path"
+            }
+          },
+          {
+            "id": "grant:member#edit.004",
+            "role": "role:organization#viewer@user",
+            "kinds": [
+              "arrow",
+              "intersection"
+            ],
+            "hops": [
+              "member#edit",
+              "member#organization->view",
+              "organization#view",
+              "organization#viewer"
+            ],
+            "requires": [
+              "member#(owner + organization->edit)"
             ],
             "source": {
               "declaration": "authorization.schema_path"
@@ -7603,20 +7650,6 @@
         "paths": [
           {
             "id": "grant:member#view.001",
-            "role": "role:member#owner@user",
-            "kinds": [
-              "direct"
-            ],
-            "hops": [
-              "member#view",
-              "member#owner"
-            ],
-            "source": {
-              "declaration": "authorization.schema_path"
-            }
-          },
-          {
-            "id": "grant:member#view.002",
             "role": "role:organization#owner@user",
             "kinds": [
               "arrow"
@@ -7632,7 +7665,7 @@
             }
           },
           {
-            "id": "grant:member#view.003",
+            "id": "grant:member#view.002",
             "role": "role:organization#viewer@user",
             "kinds": [
               "arrow"
@@ -8009,10 +8042,10 @@
           "id": "fact:access/operation:org-users.delete/checks-ancestor-1-Organization",
           "about": "operation:org-users.delete",
           "name": "checks ancestor 1 Organization",
-          "value": "organization#view",
+          "value": "exists-and-linked",
           "state": "stated",
           "source": {
-            "declaration": "entities[0].permissions.read"
+            "rule": "ST-SUP-RC20-OC24"
           }
         },
         {
@@ -8049,10 +8082,10 @@
           "id": "fact:access/operation:org-users.patch/checks-ancestor-1-Organization",
           "about": "operation:org-users.patch",
           "name": "checks ancestor 1 Organization",
-          "value": "organization#view",
+          "value": "exists-and-linked",
           "state": "stated",
           "source": {
-            "declaration": "entities[0].permissions.read"
+            "rule": "ST-SUP-RC20-OC24"
           }
         },
         {
@@ -8069,10 +8102,10 @@
           "id": "fact:access/operation:org-users.read/checks-ancestor-1-Organization",
           "about": "operation:org-users.read",
           "name": "checks ancestor 1 Organization",
-          "value": "organization#view",
+          "value": "exists-and-linked",
           "state": "stated",
           "source": {
-            "declaration": "entities[0].permissions.read"
+            "rule": "ST-SUP-RC20-OC24"
           }
         },
         {
@@ -8089,10 +8122,10 @@
           "id": "fact:access/operation:org-users.update/checks-ancestor-1-Organization",
           "about": "operation:org-users.update",
           "name": "checks ancestor 1 Organization",
-          "value": "organization#view",
+          "value": "exists-and-linked",
           "state": "stated",
           "source": {
-            "declaration": "entities[0].permissions.read"
+            "rule": "ST-SUP-RC20-OC24"
           }
         },
         {
@@ -8530,7 +8563,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8545,7 +8578,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8560,7 +8593,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8575,7 +8608,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8590,7 +8623,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8605,7 +8638,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8620,7 +8653,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8635,7 +8668,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8650,7 +8683,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8665,7 +8698,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8680,7 +8713,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8695,7 +8728,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8710,7 +8743,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8725,7 +8758,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8740,7 +8773,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8755,7 +8788,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -8770,7 +8803,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -12250,7 +12283,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -12265,7 +12298,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -12280,7 +12313,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -12295,7 +12328,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -12310,7 +12343,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -12325,7 +12358,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14290,7 +14323,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14305,7 +14338,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14320,7 +14353,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14335,7 +14368,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14590,7 +14623,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14605,7 +14638,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14620,7 +14653,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14875,7 +14908,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14890,7 +14923,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }
@@ -14905,7 +14938,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.1.0",
+              "version": "1.3.0",
               "field": "environment"
             }
           }

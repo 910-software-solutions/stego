@@ -138,7 +138,7 @@ func nestedFixture(t *testing.T) ArchitectureInput {
 		{Name: "docs", Entity: "Doc", Operations: []types.Operation{"create", "read", "update"}},
 		{Name: "shelves", Entity: "Shelf", Operations: []types.Operation{"read"}},
 		{Name: "shelf-folders", Entity: "Folder", Scope: map[string]string{"shelf_id": "Shelf"}, Operations: []types.Operation{"read", "list"}},
-		{Name: "folder-docs", Entity: "Doc", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{"read", "update"}},
+		{Name: "folder-docs", Entity: "Doc", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{"read", "update", "list"}},
 	}
 	return in
 }
@@ -365,60 +365,113 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-GEN-UC08-R12-T02 The model holds the check of each ancestor in the path of a nested operation, the top one first, with its permission or why it has none, traced to the declaration", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R12-T02 The model holds the check of each ancestor in the path of a nested operation, the top one first: the decided parent of a list with its read permission, and each other ancestor with its existence and link only, traced to the declaration", func(t *testing.T) {
 		model, _ := deriveFixture(t, nestedFixture(t))
 		checks := map[string]ArchCheck{}
 		for _, c := range model.Access.Checks {
 			checks[c.Subject] = c
 		}
 		line := func(a ArchAncestor) string {
-			return fmt.Sprintf("%s param=%s link=%s %s#%s public=%v grants=%s source=%s%s scope=%s", a.Entity, a.Param, a.Link, a.ResourceType, a.Permission,
-				a.Public, a.Grants, a.Source.Declaration, a.Source.Rule, a.ScopeSource.Declaration)
+			return fmt.Sprintf("%s param=%s link=%s %s#%s public=%v decided=%v grants=%s source=%s%s scope=%s", a.Entity, a.Param, a.Link, a.ResourceType, a.Permission,
+				a.Public, a.Decided, a.Grants, a.Source.Declaration, a.Source.Rule, a.ScopeSource.Declaration)
 		}
-		var got []string
-		for _, a := range checks["operation:folder-docs.update"].Ancestors {
-			got = append(got, line(a))
+		ancestors := func(subject string) []string {
+			var got []string
+			for _, a := range checks[subject].Ancestors {
+				got = append(got, line(a))
+			}
+			return got
 		}
-		// The top ancestor first, as the handler reads them: the shelf, then the folder, each with its read
-		// permission view.
+		// The top ancestor first. An update is decided on the row: the shelf and the folder are checked for their
+		// existence and their link only, with no permission (ST-SUP-RC20-OC24, ST-SUP-Q156).
 		want := []string{
-			"entity:Shelf param=shelf_id link= shelf#view public=false grants=permission:shelf#view source=entities[2].permissions.read scope=collections.shelf-folders.scope",
-			"entity:Folder param=folder_id link=field:Folder.shelf_id folder#view public=false grants=permission:folder#view source=entities[1].permissions.read scope=collections.folder-docs.scope",
+			"entity:Shelf param=shelf_id link= # public=false decided=false grants= source=ST-SUP-RC20-OC24 scope=collections.shelf-folders.scope",
+			"entity:Folder param=folder_id link=field:Folder.shelf_id # public=false decided=false grants= source=ST-SUP-RC20-OC24 scope=collections.folder-docs.scope",
 		}
-		if !slices.Equal(got, want) {
-			t.Fatalf("the ancestors of folder-docs.update are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		for _, subject := range []string{"operation:folder-docs.update", "operation:folder-docs.read"} {
+			if got := ancestors(subject); !slices.Equal(got, want) {
+				t.Fatalf("the ancestors of %s are\n%s\nwant\n%s", subject, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
 		}
-		if a := checks["operation:folder-docs.update"].Ancestors[0]; a.ID != "ancestor:folder-docs.update/Shelf" {
-			t.Fatalf("the shelf check has the wrong ID: %+v", a)
+		// A list is decided on its parent, the deepest resource that the request names: the folder has its read
+		// permission view, and the shelf above it has its existence and its link only.
+		wantList := []string{
+			"entity:Shelf param=shelf_id link= # public=false decided=false grants= source=ST-SUP-RC20-OC24 scope=collections.shelf-folders.scope",
+			"entity:Folder param=folder_id link=field:Folder.shelf_id folder#view public=false decided=true grants=permission:folder#view source=entities[1].permissions.read scope=collections.folder-docs.scope",
 		}
-		if n := len(checks["operation:shelf-folders.list"].Ancestors); n != 1 {
-			t.Fatalf("shelf-folders.list has %d ancestor checks, want 1", n)
+		if got := ancestors("operation:folder-docs.list"); !slices.Equal(got, wantList) {
+			t.Fatalf("the ancestors of folder-docs.list are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wantList, "\n"))
+		}
+		if a := checks["operation:folder-docs.update"].Ancestors[0]; a.ID != "ancestor:folder-docs.update/Shelf" || a.Reason == "" {
+			t.Fatalf("the shelf check has the wrong ID or no reason: %+v", a)
+		}
+		if n := len(checks["operation:shelf-folders.list"].Ancestors); n != 1 || !checks["operation:shelf-folders.list"].Ancestors[0].Decided {
+			t.Fatalf("shelf-folders.list has %d ancestor checks, want 1 decided", n)
 		}
 		if n := len(checks["operation:docs.read"].Ancestors); n != 0 {
 			t.Fatalf("a collection with no scope has %d ancestor checks", n)
 		}
-		// The read permission of the folder has its grant paths, and the authorization point names the ancestor.
+		// The read permission of the decided folder has its grant paths.
 		if paths := pathsOf(model, "permission:folder#view"); len(paths) == 0 {
 			t.Fatal("the model holds no grant path of the ancestor permission folder#view")
 		}
-		var point string
+		points := map[string]string{}
 		for _, p := range model.AuthzPoints {
-			if p.Element == "operation:folder-docs.update" {
-				point = p.Text
-			}
+			points[p.Element] = p.Text
 		}
-		if !strings.Contains(point, "folder#view on Folder") {
-			t.Fatalf("the authorization point does not name the ancestor check: %q", point)
+		if point := points["operation:folder-docs.update"]; strings.Contains(point, "folder#view") || strings.Contains(point, "shelf#view") || !strings.Contains(point, ancestorRule) {
+			t.Fatalf("the authorization point of the update names an ancestor read, or not the existence check: %q", point)
 		}
-		// With no bound authorization, no ancestor gets a permission, and the rule says why.
+		if point := points["operation:folder-docs.list"]; !strings.Contains(point, "First it decides the read permission folder#view on the parent Folder.") || strings.Contains(point, "shelf#view") || !strings.Contains(point, ancestorRule) {
+			t.Fatalf("the authorization point of the list does not name the parent read only: %q", point)
+		}
+		// With no bound authorization, no ancestor gets a permission: the decided parent says why, and each other
+		// ancestor has its existence check.
 		in := nestedFixture(t)
 		in.Service.Authorization, in.Schema = nil, nil
 		unbound, _ := deriveFixture(t, in)
 		for _, c := range unbound.Access.Checks {
 			for _, a := range c.Ancestors {
-				if a.Permission != "" || a.Source.Rule != "ST-DECL-UC06-R01" {
+				rule := "ST-SUP-RC20-OC24"
+				if a.Decided {
+					rule = "ST-DECL-UC06-R01"
+				}
+				if a.Permission != "" || a.Source.Rule != rule {
 					t.Fatalf("with no authorization, %s checks %+v", c.Subject, a)
 				}
+			}
+		}
+		// A model that claims a permission on an ancestor that is not decided, or that marks a decided ancestor that
+		// no handler decides, or a decided parent with no permission, is not valid.
+		for _, mutate := range []func(m *ArchitectureModel){
+			func(m *ArchitectureModel) {
+				for i := range m.Access.Checks {
+					if m.Access.Checks[i].Subject == "operation:folder-docs.update" {
+						a := &m.Access.Checks[i].Ancestors[1]
+						a.ResourceType, a.Permission, a.Grants = "folder", "view", "permission:folder#view"
+					}
+				}
+			},
+			func(m *ArchitectureModel) {
+				for i := range m.Access.Checks {
+					if m.Access.Checks[i].Subject == "operation:folder-docs.read" {
+						m.Access.Checks[i].Ancestors[1].Decided = true
+					}
+				}
+			},
+			func(m *ArchitectureModel) {
+				for i := range m.Access.Checks {
+					if m.Access.Checks[i].Subject == "operation:folder-docs.list" {
+						a := &m.Access.Checks[i].Ancestors[1]
+						a.ResourceType, a.Permission, a.Grants = "", "", ""
+					}
+				}
+			},
+		} {
+			fresh, _ := deriveFixture(t, nestedFixture(t))
+			mutate(fresh)
+			if err := checkArchitectureRules(fresh); err == nil || !strings.Contains(err.Error(), "ancestor:folder-docs.") {
+				t.Fatalf("a model with a wrong ancestor decision is valid, or fails for another reason: %v", err)
 			}
 		}
 		// A model whose ancestor check names an entity that is not in it is not valid.
@@ -436,7 +489,7 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 		for _, mutate := range []func(m *ArchitectureModel) string{
 			func(m *ArchitectureModel) string {
 				for i := range m.Access.Checks {
-					if len(m.Access.Checks[i].Ancestors) > 1 {
+					if len(m.Access.Checks[i].Ancestors) > 1 && m.Access.Checks[i].Ancestors[1].Decided {
 						m.Access.Checks[i].Ancestors[1].Grants = m.Access.Roles[0].ID
 						return m.Access.Roles[0].ID
 					}

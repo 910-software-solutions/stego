@@ -1,0 +1,40 @@
+# The smallest declaration of an rpc-service that checking accepts (ST-DECL-UC01-R04): one query on one unary gRPC
+# method, with the settings that the query needs. Change each part to the service you build.
+kind: service
+name: {{service}}
+archetype: rpc-service
+language: go
+# The query runtime reads tenant-owned tables, so the service is pooled; an operator adds and retires tenants.
+tenancy:
+  kind: pooled
+  key: tenant_id
+  claim: tenant
+  provisioning: {resource_type: service, provision: provision, retire: retire}
+# Each query decides a permission of a resource type of the schema in authz/schema.zed.
+authorization:
+  provider: spicedb
+  schema_path: authz/schema.zed
+  subject_from_identity: user
+audit:
+  level: change
+overrides:
+  postgres-adapter:
+    schema_generation: tables-v1
+  grpc-application:
+    proto_files:
+      - {path: proto/service.proto, import_path: greeter/v1/service.proto}
+entities:
+  - name: Greeting
+    resource_type: greeting
+    permissions: {read: view, list: view}
+    fields:
+      - {name: text, type: string}
+queries:
+  - name: get-greeting
+    reads: [Greeting]
+    resource_type: greeting
+    permission: view
+    resource_member: name
+    route: GET /greetings/{name}
+    method: greeter.v1.Greeter/GetGreeting
+    fill: get-greeting

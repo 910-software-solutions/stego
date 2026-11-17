@@ -620,20 +620,27 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		if !strings.Contains(notice, "Incomplete: a limit was reached") {
 			t.Fatalf("the cell of an incomplete permission does not say so: %q", notice)
 		}
-		// A cell of a nested operation lists the ancestors that the handler reads first, and says whether the role
-		// grants the read of each (ST-SUP-RC20-OC24).
+		// A cell of a nested operation lists the ancestors in the path, and says whether the role grants the read of
+		// the decided parent of a list (ST-SUP-RC20-OC24, ST-SUP-Q156).
 		var chain []string
-		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:member#owner@user"]').click();
+		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.list"][data-role="role:member#owner@user"]').click();
 			return Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.getAttribute("data-ancestor")+" "+l.textContent; }); })()`, &chain)
 		// A limit cut the grant paths of organization#view short, so the role may hold it by a path past the limit.
-		if len(chain) != 1 || !strings.HasPrefix(chain[0], "ancestor:org-users.read/Organization Organization (org_id): organization#view") ||
+		if len(chain) != 1 || !strings.HasPrefix(chain[0], "ancestor:org-users.list/Organization Organization (org_id): organization#view") ||
 			!strings.Contains(chain[0], "no path that the model names gives it to this role alone") {
-			t.Fatalf("the cell of a nested operation lists the ancestors %q", chain)
+			t.Fatalf("the cell of a nested list lists the ancestors %q", chain)
 		}
-		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:organization#viewer@user"]').click();
+		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.list"][data-role="role:organization#viewer@user"]').click();
 			return Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.textContent; }); })()`, &chain)
 		if len(chain) != 1 || !strings.Contains(chain[0], "this role grants it") {
 			t.Fatalf("the cell of a role that may view the organization lists the ancestors %q", chain)
+		}
+		// A read is decided on the row: the organization is checked for existence and its link only, with no
+		// permission and no word on what the role grants.
+		b.eval(`(function(){ document.querySelector('#view button.cell[data-check="check:operation:org-users.read"][data-role="role:member#owner@user"]').click();
+			return Array.prototype.map.call(document.querySelectorAll("#cellAncestors li"), function(l){ return l.textContent; }); })()`, &chain)
+		if len(chain) != 1 || !strings.HasPrefix(chain[0], "Organization (org_id): exists and linked") || strings.Contains(chain[0], "#") || strings.Contains(chain[0], "grant") || strings.Contains(chain[0], "incomplete") {
+			t.Fatalf("the cell of a nested read lists the ancestors %q", chain)
 		}
 	})
 
@@ -678,7 +685,7 @@ func TestArchitectureViewBrowser(t *testing.T) {
 			return got
 		}
 		owner, viewer, top := "role:member#owner@user", "role:organization#viewer@user", "check:operation:organizations.read"
-		got := read(access, "check:operation:org-users.read", owner)
+		got := read(access, "check:operation:org-users.list", owner)
 		if len(got.Items) != 1 || !strings.Contains(got.Items[0], "organization#view ⚠ incomplete: a limit was reached") ||
 			!strings.Contains(got.Items[0], "a limit cut its paths short, so this role may hold it") || strings.Contains(got.Items[0], "this role alone does not grant it") {
 			t.Errorf("the cell of a role with no path of the incomplete ancestor read lists %q", got.Items)
@@ -686,14 +693,18 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		if !strings.Contains(got.Note, "Incomplete: a limit was reached in the grant paths of the ancestor read Organization (organization#view)") {
 			t.Errorf("the cell of a nested operation does not note the incomplete ancestor read: %q", got.Note)
 		}
-		got = read(access, "check:operation:org-users.read", viewer)
+		got = read(access, "check:operation:org-users.list", viewer)
 		if len(got.Items) != 1 || !strings.Contains(got.Items[0], "⚠ incomplete: a limit was reached") || !strings.Contains(got.Items[0], "this role grants it") || got.Note == "" {
 			t.Errorf("the cell of a role that holds the incomplete ancestor read shows %+v", got)
+		}
+		// A read decides no ancestor, so its cell marks no ancestor read as incomplete (ST-SUP-Q156).
+		if got = read(access, "check:operation:org-users.read", owner); len(got.Items) != 1 || strings.Contains(got.Items[0], "incomplete") || got.Note != "" {
+			t.Errorf("the cell of a nested read shows %+v", got)
 		}
 		if got = read(access, top, viewer); len(got.Items) != 0 || got.Note != "" {
 			t.Errorf("the cell of an operation with no ancestor shows %+v", got)
 		}
-		got = read("file://"+complete, "check:operation:org-users.read", owner)
+		got = read("file://"+complete, "check:operation:org-users.list", owner)
 		if len(got.Items) != 1 || strings.Contains(got.Items[0], "incomplete") || !strings.Contains(got.Items[0], "this role alone does not grant it, so the caller also needs it") || got.Note != "" {
 			t.Errorf("the cell of a complete ancestor read shows %+v", got)
 		}
@@ -755,7 +766,7 @@ func TestArchitectureViewBrowser(t *testing.T) {
 		if err := os.WriteFile(missing, view, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		got = read("file://"+missing, "check:operation:org-users.read", "role:organization#auditor@user")
+		got = read("file://"+missing, "check:operation:org-users.list", "role:organization#auditor@user")
 		if !strings.Contains(got.Own, "member#view may grant more roles") || !strings.Contains(got.MayHold, "the permission member#view") ||
 			len(got.Items) != 1 || !strings.Contains(got.Items[0], "organization#view ⚠ incomplete: a limit was reached") || got.Note == "" {
 			t.Errorf("the cell of permissions with no key complete shows %+v", got)

@@ -42,10 +42,6 @@ var runtimeSlots = map[string]bool{
 	"after_create": true, "after_patch": true, "after_delete": true, "on_entity_changed": true,
 }
 
-// eventTypePattern is an event type that is both an outbox message kind and a Kafka topic name that Kafka does not
-// keep for itself (ST-SUP-RP01-LC30).
-var eventTypePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
-
 // runtimeFieldTypes are the field types that a handler converts between the API type and the command runtime's row
 // type.
 var runtimeFieldTypes = map[types.FieldType]bool{
@@ -70,8 +66,12 @@ type runtimeCollection struct {
 	// and empty for a collection with no parent (ST-SUP-RC20-OC24).
 	scope string
 	// chain are the ancestors of a scoped collection, the parent first: each one is a row that the path names, which
-	// must exist in the tenant, be readable by the caller and be of the next ancestor of the path (ST-SUP-RC20-OC24).
+	// must exist in the tenant and be of the next ancestor of the path. Only the parent of a list, a create or an
+	// upsert is decided, on the read permission of its entity (ST-SUP-RC20-OC24, ST-SUP-Q156).
 	chain []ancestorLevel
+	// rowLink is the Go name of the link of the entity of a scoped collection by its scope field, through which an
+	// update, a patch and a delete check the parent of the row before they read it (ST-SUP-RC20-OC24).
+	rowLink string
 	// implicit are the implicit fields of the collection and their values, by field name (ST-SUP-RC20-OC23).
 	implicit [][2]string
 	// refs are the ref fields of the entity whose target has a resource type: a write that sets one loads the row it
@@ -84,6 +84,9 @@ type runtimeCollection struct {
 // ancestor.
 type ancestorLevel struct {
 	entity, param, link string
+	// linkType is the Go name of the link of the entity in the data package, which holds its key and link only
+	// (renderChainLinks).
+	linkType string
 }
 
 // parentChain gives the ancestors of the collection c, the parent first, by the one rule types.ParentChain, from
@@ -92,9 +95,20 @@ type ancestorLevel struct {
 func parentChain(c types.Collection, collectionMap map[string]types.Collection) []ancestorLevel {
 	var chain []ancestorLevel
 	for _, level := range types.ParentChain(c, collectionMap) {
-		chain = append(chain, ancestorLevel{entity: level.Entity, param: level.Param, link: level.Link})
+		chain = append(chain, ancestorLevel{entity: level.Entity, param: level.Param, link: level.Link,
+			linkType: linkTypeName(level.Entity, level.Link, collectionMap)})
 	}
 	return chain
+}
+
+// linkTypeName gives the Go name of the link of entity by its field field in the data package: <Entity>Link for the
+// scope field of the first collection of the entity, which the parent chain follows, and <Entity><Field>Link for the
+// scope field of another collection of the entity.
+func linkTypeName(entity, field string, first map[string]types.Collection) string {
+	if first[entity].ScopeField() == field {
+		return entity + "Link"
+	}
+	return entity + toPascalCase(field) + "Link"
 }
 
 // permission gives the permission that the operation decides, and empty for a public operation.
@@ -181,17 +195,14 @@ func validateRuntimeData(ctx gen.Context, entities map[string]types.Entity) erro
 			return fmt.Errorf("rest-api: collection %s binds the slot %s, which the runtime data path does not call yet", b.Collection, b.Slot)
 		}
 	}
-	if changeEvents(ctx) {
-		if ctx.PeerNamespaces["outbox"] == "" {
-			return fmt.Errorf("rest-api: the change events of the collections go to Kafka through the outbox, so the service needs the outbox component (ST-SUP-RC20-OC40)")
-		}
-		for _, c := range ctx.Collections {
-			for _, action := range []string{eventCreated, eventUpdated, eventDeleted} {
-				if name := eventType(ctx.ServiceName, c.Entity, action); !eventTypePattern.MatchString(name) {
-					return fmt.Errorf("rest-api: the event type %q of the entity %s is not an outbox kind and a Kafka topic name: [a-zA-Z0-9._-], at most 128 characters, starting with a letter or a digit (ST-SUP-RC20-OC40)", name, c.Entity)
-				}
-			}
-		}
+	// The handle stages the change event of each write, also of an entity that a collection only reads through the
+	// handle, so each written entity needs a valid event name (ST-SUP-RC20-OC40, ST-SUP-RP10-LC36).
+	written := make([]string, len(ctx.Entities))
+	for i, e := range ctx.Entities {
+		written[i] = e.Name
+	}
+	if err := command.CheckChangeEvents(ctx, "rest-api", "ST-SUP-RC20-OC40", written); err != nil {
+		return err
 	}
 	for _, c := range ctx.Collections {
 		e := entities[c.Entity]
@@ -417,6 +428,9 @@ func runtimeCollections(ctx gen.Context, entities map[string]types.Entity, colle
 		}
 		rc.scope = c.ScopeField()
 		rc.chain = parentChain(c, collectionMap)
+		if rc.scope != "" {
+			rc.rowLink = linkTypeName(e.Name, rc.scope, collectionMap)
+		}
 		for _, name := range slices.Sorted(maps.Keys(c.Implicit)) {
 			rc.implicit = append(rc.implicit, [2]string{name, c.Implicit[name]})
 		}
@@ -466,6 +480,13 @@ func generateRuntimeHandlers(ctx gen.Context, collections []*runtimeCollection, 
 	files := []gen.File{
 		{Path: path.Join(ctx.OutputNamespace, dataFolder, "entities.go"), Content: entityFile},
 		{Path: path.Join(ctx.OutputNamespace, dataFolder, "views.go"), Content: viewFile},
+	}
+	linkFile, err := renderChainLinks(ctx, collections)
+	if err != nil {
+		return nil, err
+	}
+	if linkFile != nil {
+		files = append(files, gen.File{Path: path.Join(ctx.OutputNamespace, dataFolder, "links.go"), Content: linkFile})
 	}
 	hasSlots := false
 	for _, c := range collections {
@@ -520,33 +541,12 @@ func renderRuntimeHelpers(ctx gen.Context, names []string, dataImport, slotsImpo
 	if hasSlots {
 		b.WriteString(slotCallerHelper)
 	}
-	if changeEvents(ctx) {
-		b.WriteString(changeEventHelper)
-	}
 	formatted, err := format.Source(b.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("rest-api: formatting runtime.go: %w\n%s", err, b.Bytes())
 	}
 	return formatted, nil
 }
-
-// changeEventHelper builds the payload of a change event (ST-SUP-RC20-OC40).
-const changeEventHelper = `// changeEvent gives the payload of a change event for the Kafka destination (ST-SUP-RC20-OC40): the entity, the
-// action and the ID of the row, and no field value, so no pii or secret field leaves the service in an event; a
-// consumer reads the row through the API, which decides its permission.
-func changeEvent(entity, action, id string) json.RawMessage {
-	payload, err := json.Marshal(struct {
-		Entity string ` + "`json:\"entity\"`" + `
-		Action string ` + "`json:\"action\"`" + `
-		ID     string ` + "`json:\"id\"`" + `
-	}{entity, action, id})
-	if err != nil {
-		panic(err)
-	}
-	return payload
-}
-
-`
 
 // listOrderHelper reads the orderBy and the fields parameters of a list (ST-SUP-RC20-OC38, ST-SUP-RC20-OC12).
 const listOrderHelper = `// errOrder is the error of an orderBy that names a field that is not declared, or a direction that is not asc or
@@ -1061,8 +1061,6 @@ type runtimeHandlerWriter struct {
 	keys       *idempotencyHeader
 	envelope   bool
 	slotsAlias string
-	// events tells whether each write stages its change event for the Kafka destination (ST-SUP-RC20-OC40).
-	events bool
 }
 
 func (w *runtimeHandlerWriter) f(format string, args ...any) { fmt.Fprintf(&w.Buffer, format, args...) }
@@ -1070,8 +1068,7 @@ func (w *runtimeHandlerWriter) f(format string, args ...any) { fmt.Fprintf(&w.Bu
 // renderRuntimeHandler writes the handler file of one collection: its command and query declarations, its handler
 // type, and one method per declared operation that calls Run.
 func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slotsImportPath string, keys *idempotencyHeader) ([]byte, error) {
-	w := &runtimeHandlerWriter{c: c, ctx: ctx, keys: keys, envelope: ctx.Conventions.ResponseFormat == "envelope",
-		events: changeEvents(ctx)}
+	w := &runtimeHandlerWriter{c: c, ctx: ctx, keys: keys, envelope: ctx.Conventions.ResponseFormat == "envelope"}
 	if c.ops[types.OpUpsert] {
 		read, err := command.KeyListRead(c.entity.Name, ctx.Entities, ctx.Tenancy.Key, c.decl.UpsertLookup())
 		if err != nil {
@@ -1123,9 +1120,6 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
 	if hasWrite {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n")
-	}
-	if hasWrite && w.events {
-		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox\"\n")
 	}
 	if c.ops[types.OpRead] || c.ops[types.OpList] {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n")
@@ -1204,9 +1198,9 @@ func (w *runtimeHandlerWriter) declarations() {
 	for _, op := range c.decl.Operations {
 		switch op {
 		case types.OpRead:
-			w.f("// %s is the query of a read of %s (ST-SUP-RP11).\nvar %s = mustQuery(query.NewQuery(%q, data.Entity%sView()%s))\n\n", w.commandVar(op), c.decl.Name, w.commandVar(op), string(op), e.Name, w.ancestorViews())
+			w.f("// %s is the query of a read of %s (ST-SUP-RP11).\nvar %s = mustQuery(query.NewQuery(%q, data.Entity%sView()%s))\n\n", w.commandVar(op), c.decl.Name, w.commandVar(op), string(op), e.Name, w.ancestorViews(false))
 		case types.OpList:
-			w.f("// %s is the query of a list of %s, on the list permission of %s (ST-SUP-RP11-LC07).\nvar %s = mustQuery(query.NewListQuery(%q, data.Entity%sView(), %q%s))\n\n", w.commandVar(op), c.decl.Name, e.Name, w.commandVar(op), string(op), e.Name, e.Permissions[types.OpList], w.ancestorViews())
+			w.f("// %s is the query of a list of %s, on the list permission of %s (ST-SUP-RP11-LC07).\nvar %s = mustQuery(query.NewListQuery(%q, data.Entity%sView(), %q%s))\n\n", w.commandVar(op), c.decl.Name, e.Name, w.commandVar(op), string(op), e.Name, e.Permissions[types.OpList], w.ancestorViews(true))
 		default:
 			w.f("// %s is the generated command of a %s of %s (ST-SUP-RC20-OC37).\n", w.commandVar(op), op, c.decl.Name)
 			writes := []string{"data." + e.Name + "Entity"}
@@ -1215,21 +1209,34 @@ func (w *runtimeHandlerWriter) declarations() {
 					writes = append(writes, name)
 				}
 			}
-			// The fill reads each ancestor of the path through the handle (ST-SUP-RC20-OC24).
-			for _, level := range c.chain {
-				if name := "data." + level.entity + "Entity"; !slices.Contains(writes, name) {
+			// The fill reads each ancestor of the path through the handle: the parent of a create or an upsert with the
+			// read permission of its entity, which the refs hold already, and every other ancestor through its link,
+			// with no decision (ST-SUP-RC20-OC24).
+			for i, level := range c.chain {
+				name := "data." + level.entity + "Entity"
+				if i > 0 || !decidesParent(op) {
+					name = "data." + level.linkType + "Entity"
+				}
+				if !slices.Contains(writes, name) {
 					writes = append(writes, name)
 				}
 			}
+			// An update, a patch and a delete check the parent of the row through its link too.
+			if len(c.chain) > 0 && !decidesParent(op) {
+				writes = append(writes, "data."+c.rowLink+"Entity")
+			}
 			w.f("var %s = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{\n\tName: %q,\n\tWrites: []command.Declared{%s},\n\tProbe: noProbe,\n", w.commandVar(op), string(op), strings.Join(writes, ", "))
+			// The handle stages the change event of each write of a written entity (ST-SUP-RC20-OC40, ST-SUP-RP10-LC36).
+			// The command runtime needs the names of each declared entity, also of a link: no write goes through a link,
+			// so the names of its events are never staged.
+			names := make([]string, len(writes))
+			for i, name := range writes {
+				names[i] = strings.TrimSuffix(strings.TrimPrefix(name, "data."), "Entity")
+			}
+			w.f("%s", command.ChangeEventsSpec(w.ctx, names))
 			var destinations []string
 			if effects := w.afterEffects(op); len(effects) > 0 {
 				destinations = append(destinations, fmt.Sprintf("{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{%s}}", quoteAll(effects)))
-			}
-			if w.events {
-				// The change events of the write go to Kafka, idempotent by the event ID and not must land, so an event
-				// whose attempts end is parked as on every other destination (ST-SUP-RP01-LC31).
-				destinations = append(destinations, fmt.Sprintf("{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{%s}}", quoteAll(w.eventTypes(op))))
 			}
 			if len(destinations) > 0 {
 				w.f("\tDestinations: []command.Destination{%s},\n", strings.Join(destinations, ", "))
@@ -1276,13 +1283,25 @@ func (w *runtimeHandlerWriter) declarations() {
 }
 
 // ancestorViews gives the views of the ancestors of the path, which a query of the collection reads too
-// (ST-SUP-RC20-OC24), each after a comma.
-func (w *runtimeHandlerWriter) ancestorViews() string {
+// (ST-SUP-RC20-OC24), each after a comma: the view of the parent of a list, on which it decides the read permission,
+// and the link of every other ancestor, which decides nothing.
+func (w *runtimeHandlerWriter) ancestorViews(list bool) string {
 	var views string
-	for _, level := range w.c.chain {
-		views += ", data.Entity" + level.entity + "View()"
+	for i, level := range w.c.chain {
+		if i == 0 && list {
+			views += ", data.Entity" + level.entity + "View()"
+		} else {
+			views += ", data.Entity" + level.linkType + "View()"
+		}
 	}
 	return views
+}
+
+// decidesParent tells whether the parent of the path is the deepest resource that a request of the operation op
+// names: a list, a create and an upsert name no row of the collection, so they decide on the parent, and a read, an
+// update, a patch and a delete decide on the row (ST-SUP-RC20-OC24).
+func decidesParent(op types.Operation) bool {
+	return op == types.OpList || op == types.OpCreate || op == types.OpUpsert
 }
 
 // fingerprintFields are the body fields that the client gives for an operation: for patch the patchable fields, and
@@ -1789,67 +1808,6 @@ func (w *runtimeHandlerWriter) after(op types.Operation, entityVar, ref string, 
 	}
 }
 
-// changeEvents tells whether the service publishes the change events of its collections to Kafka: it has the
-// kafka-producer component, whose events the Kafka destination of the outbox delivers (ST-SUP-RC20-OC40).
-func changeEvents(ctx gen.Context) bool { return ctx.PeerNamespaces[kafkaComponent] != "" }
-
-// kafkaComponent is the component whose change events go to Kafka.
-const kafkaComponent = "kafka-producer"
-
-// The actions of a change event: an upsert is created or updated by its branch, and a patch is updated.
-const (
-	eventCreated = "created"
-	eventUpdated = "updated"
-	eventDeleted = "deleted"
-)
-
-// eventType gives the event type of a change of the entity of the collection with action: the service name, the
-// entity name in lower-case words joined by hyphens, and the action, joined by periods, such as
-// user-management.org-setting.updated. It is the kind of the outbox message and, when the settings declare no
-// topic, the Kafka topic (ST-SUP-RP01-LC30).
-func (w *runtimeHandlerWriter) eventType(action string) string {
-	return eventType(w.ctx.ServiceName, w.c.entity.Name, action)
-}
-
-func eventType(service, entity, action string) string {
-	var b strings.Builder
-	for i, r := range entity {
-		if 'A' <= r && r <= 'Z' {
-			if i > 0 {
-				b.WriteByte('-')
-			}
-			r += 'a' - 'A'
-		}
-		b.WriteRune(r)
-	}
-	return service + "." + b.String() + "." + action
-}
-
-// eventTypes gives the event types that the command of a write stages.
-func (w *runtimeHandlerWriter) eventTypes(op types.Operation) []string {
-	switch op {
-	case types.OpCreate:
-		return []string{w.eventType(eventCreated)}
-	case types.OpUpsert:
-		return []string{w.eventType(eventCreated), w.eventType(eventUpdated)}
-	case types.OpDelete:
-		return []string{w.eventType(eventDeleted)}
-	}
-	return []string{w.eventType(eventUpdated)}
-}
-
-// event writes, inside the fill of a write's command, after its write, the staging of its change event for the
-// Kafka destination in the command's transaction, for the loaded value ref of the row with the ID id: so the event is
-// sent only after the command committed, never after a replay or a before slot that halted the command, and never
-// lost when the broker is down (ST-SUP-RC20-OC40).
-func (w *runtimeHandlerWriter) event(action, ref, id string) {
-	if !w.events {
-		return
-	}
-	w.f("\t\tif err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, %q, %s, changeEvent(%q, %q, %s)); err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n",
-		w.eventType(action), ref, w.c.entity.Name, action, id)
-}
-
 // afterEffects gives the effect names that the command of an operation stages for its after slots.
 func (w *runtimeHandlerWriter) afterEffects(op types.Operation) []string {
 	_, after := slotsForOp(op, w.c.slots)
@@ -1916,14 +1874,19 @@ func (w *runtimeHandlerWriter) start(body bool) {
 	}
 }
 
-// ancestors writes the parent chain check at the start of a fill: each ancestor that the path names is read in the
-// tenant, which decides the read permission that its entity declares, and must name the next ancestor of the path.
-// A missing, denied or wrong ancestor is not found, so a caller learns nothing of a row of another parent or tenant
-// (ST-SUP-RC20-OC24). The check reads the top ancestor first and goes down the path, so it compares the link of a row
-// only when the caller may read every ancestor above that row: a caller who may read a row but not its parent cannot
-// learn from the work of the check whether a parent ID that it sends is the row's (review of PR #333, L1). In a query (inQuery) the rows are read through the query handle qh, and in a command through
-// the command handle ch; zero is the zero value that the fill returns with an error.
-func (w *runtimeHandlerWriter) ancestors(inQuery bool, zero string) {
+// ancestors writes the parent chain check of a fill (ST-SUP-RC20-OC24, ST-SUP-Q156). It decides a permission only on
+// the deepest resource that the request names. For a list, a create and an upsert (decideParent) that is the parent:
+// the check reads it first with the read permission of its entity, which decides it, so a missing and a denied parent
+// cost the same calls. For a read, an update, a patch and a delete it is the row, which the fill reads and decides
+// before this check: a read loads it and checks it against the parent of the path first, and Run decides an update, a
+// patch and a delete before the fill, whose check then reads the link of the row last and compares it with the parent
+// of the path before the locked read. Each other ancestor is read through its link, with no decision: it must exist
+// in the tenant and its scope field must name the ancestor above it in the path. The check reads these from the top
+// ancestor down and stops at the first failure. A missing, denied or wrong ancestor is not
+// found, the same answer for each, with the same calls to the authorization port, and no field of an ancestor is in
+// a response. In a query (inQuery) the rows are read through the query handle qh, and in a command through the
+// command handle ch; zero is the zero value that the fill returns with an error.
+func (w *runtimeHandlerWriter) ancestors(inQuery bool, zero string, decideParent bool) {
 	if len(w.c.chain) == 0 {
 		return
 	}
@@ -1931,23 +1894,51 @@ func (w *runtimeHandlerWriter) ancestors(inQuery bool, zero string) {
 	if inQuery {
 		notFound = "query.ErrNotFound"
 	}
-	w.f("\t\t// The parent chain, from the top ancestor down: every ancestor of the path exists in the tenant, the caller\n\t\t// may read it, and it is of the ancestor above it (ST-SUP-RC20-OC24).\n")
-	for i := len(w.c.chain) - 1; i >= 0; i-- {
+	first := 0
+	if decideParent {
+		first = 1
+		level := w.c.chain[0]
+		w.f("\t\t// The parent is the deepest resource that the path names: it is read with the read permission of its entity,\n\t\t// which decides it (ST-SUP-RC20-OC24).\n\t\t{\n")
+		if inQuery {
+			w.f("\t\t\tparents, err := query.Repo(qh, data.Entity%sView())\n", level.entity)
+		} else {
+			w.f("\t\t\tparents, err := data.%sRepository(ch)\n", level.entity)
+		}
+		w.f("\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", zero)
+		w.f("\t\t\tparent, err := parents.Get(ctx, chain[0])\n\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", zero)
+		if level.link != "" {
+			w.f("\t\t\tif parent.Value().%s != chain[1] {\n\t\t\t\treturn %s, %s\n\t\t\t}\n", toPascalCase(level.link), zero, notFound)
+		} else {
+			w.f("\t\t\t_ = parent\n")
+		}
+		w.f("\t\t}\n")
+	}
+	if first == len(w.c.chain) {
+		return
+	}
+	w.f("\t\t// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor\n\t\t// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).\n")
+	for i := len(w.c.chain) - 1; i >= first; i-- {
 		level := w.c.chain[i]
 		w.f("\t\t{\n")
 		if inQuery {
-			w.f("\t\t\tancestors, err := query.Repo(qh, data.Entity%sView())\n", level.entity)
+			w.f("\t\t\tlinks, err := query.Repo(qh, data.Entity%sView())\n", level.linkType)
 		} else {
-			w.f("\t\t\tancestors, err := data.%sRepository(ch)\n", level.entity)
+			w.f("\t\t\tlinks, err := data.%sRepository(ch)\n", level.linkType)
 		}
 		w.f("\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", zero)
-		w.f("\t\t\tancestor, err := ancestors.Get(ctx, chain[%d])\n\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", i, zero)
+		w.f("\t\t\tlink, err := links.Get(ctx, chain[%d])\n\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", i, zero)
 		if level.link != "" {
-			w.f("\t\t\tif ancestor.Value().%s != chain[%d] {\n\t\t\t\treturn %s, %s\n\t\t\t}\n", toPascalCase(level.link), i+1, zero, notFound)
+			w.f("\t\t\tif link.Value().Link != chain[%d] {\n\t\t\t\treturn %s, %s\n\t\t\t}\n", i+1, zero, notFound)
 		} else {
-			w.f("\t\t\t_ = ancestor\n")
+			w.f("\t\t\t_ = link\n")
 		}
 		w.f("\t\t}\n")
+	}
+	if !inQuery && !decideParent {
+		// The row last: it is of the parent of the path. Its link is read before the row, so a row of another parent
+		// costs no more calls than a missing ancestor; the locked read checks the stored row again.
+		w.f("\t\t{\n\t\t\tlinks, err := data.%sRepository(ch)\n\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n", w.c.rowLink, zero)
+		w.f("\t\t\tlink, err := links.Get(ctx, id)\n\t\t\tif err != nil {\n\t\t\t\treturn %s, err\n\t\t\t}\n\t\t\tif link.Value().Link != scope {\n\t\t\t\treturn %s, %s\n\t\t\t}\n\t\t}\n", zero, zero, notFound)
 	}
 }
 
@@ -1984,7 +1975,7 @@ func (w *runtimeHandlerWriter) create() {
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, \"\")\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpCreate), c.pascal, c.lower, e.Name)
-	w.ancestors(false, "idempotency.Response{}")
+	w.ancestors(false, "idempotency.Response{}", true)
 	if w.envelope {
 		w.f("\t\tid, err := uuid.NewV7()\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n\t\t%s.ID = id.String()\n", c.lower)
 	} else {
@@ -1998,7 +1989,6 @@ func (w *runtimeHandlerWriter) create() {
 	w.f("\t\tcreated, err := repo.Create(ctx, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
 	w.f("\t\tpersisted = %s\n", w.fromData("created.Value()"))
 	w.after(types.OpCreate, "persisted", "created", nil)
-	w.event(eventCreated, "created", "persisted.ID")
 	w.respond("http.StatusCreated", "persisted")
 	w.f("\t})\n")
 	w.finish(types.OpCreate, "")
@@ -2015,7 +2005,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpdate), c.pascal, c.lower, e.Name)
-	w.ancestors(false, "idempotency.Response{}")
+	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
 	w.f("\t\t%s.ID = id\n", c.lower)
 	w.populateUpdate()
@@ -2025,7 +2015,6 @@ func (w *runtimeHandlerWriter) update() {
 	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpdate, "persisted", "updated", nil)
-	w.event(eventUpdated, "updated", "persisted.ID")
 	w.respond("http.StatusOK", "persisted")
 	w.f("\t})\n")
 	w.finish(types.OpUpdate, "id")
@@ -2122,7 +2111,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	}
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpsert), c.pascal, c.lower, e.Name)
-	w.ancestors(false, "idempotency.Response{}")
+	w.ancestors(false, "idempotency.Response{}", true)
 	// The before slots decide the requested value before the lookup, on both branches (ST-SUP-RC20-OC13). They see
 	// no server-managed field: the branch is not known yet, so a create-time value would be wrong on the update
 	// branch, and a client value is never taken (ST-SUP-RC20-OC17).
@@ -2164,7 +2153,6 @@ func (w *runtimeHandlerWriter) upsert() {
 	w.f("\t\tcreated, err := repo.Create(ctx, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
 	w.f("\t\tpersisted = %s\n", w.fromData("created.Value()"))
 	w.after(types.OpUpsert, "persisted", "created", nil)
-	w.event(eventCreated, "created", "persisted.ID")
 	w.respond("http.StatusCreated", "persisted")
 	w.f("\t\t}\n")
 	w.f("\t\tfrom, err := repo.GetForUpdate(ctx, found[0].ID())\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n")
@@ -2184,7 +2172,6 @@ func (w *runtimeHandlerWriter) upsert() {
 	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpsert, "persisted", "updated", nil)
-	w.event(eventUpdated, "updated", "persisted.ID")
 	w.respond("http.StatusOK", "persisted")
 	w.f("\t})\n")
 	w.finish(types.OpUpsert, "")
@@ -2228,7 +2215,7 @@ func (w *runtimeHandlerWriter) patch() {
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%sPatch, func(ctx context.Context, patch %sPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpPatch), c.pascal, c.pascal)
-	w.ancestors(false, "idempotency.Response{}")
+	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
 	w.f("\t\t%s := stored\n", c.lower)
 	w.before(types.OpPatch, fields)
@@ -2253,7 +2240,6 @@ func (w *runtimeHandlerWriter) patch() {
 	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpPatch, "persisted", "updated", fields)
-	w.event(eventUpdated, "updated", "persisted.ID")
 	w.respond("http.StatusOK", "persisted")
 	w.f("\t})\n")
 	w.finish(types.OpPatch, "id")
@@ -2268,12 +2254,11 @@ func (w *runtimeHandlerWriter) remove() {
 	w.f("\trequestID := command.NewID()\n\tfingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, nil)\n\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)\n")
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpDelete))
-	w.ancestors(false, "idempotency.Response{}")
+	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
 	w.before(types.OpDelete, nil)
 	w.f("\t\tif err := repo.Delete(ctx, from); err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n")
 	w.after(types.OpDelete, "", "from", nil)
-	w.event(eventDeleted, "from", "id")
 	w.f("\t\treturn idempotency.Response{Status: http.StatusNoContent}, nil\n\t})\n")
 	w.finish(types.OpDelete, "id")
 	w.f("\twriteResult(w, result)\n}\n\n")
@@ -2290,7 +2275,6 @@ func (w *runtimeHandlerWriter) read() {
 	// opens its transaction, as a list does, so a read right after a share sees it (ST-SUP-RC20-OC42, ST-SUP-Q119).
 	w.awaitWrite()
 	w.f("\tvalue, err := query.Run(r.Context(), h.rt.Queries, %s, h.rt.boundQuery(r.Context(), b, %s), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (%s, error) {\n", q, q, e.Name)
-	w.ancestors(true, e.Name+"{}")
 	w.f("\t\trepo, err := query.Repo(qh, data.Entity%sView())\n\t\tif err != nil {\n\t\t\treturn %s{}, err\n\t\t}\n", e.Name, e.Name)
 	w.f("\t\tloaded, err := repo.Get(ctx, id)\n\t\tif err != nil {\n\t\t\treturn %s{}, err\n\t\t}\n", e.Name)
 	// A row of another parent, or with other implicit values, is not found in this collection (ST-SUP-RC20-OC23,
@@ -2305,6 +2289,8 @@ func (w *runtimeHandlerWriter) read() {
 	if len(checks) > 0 {
 		w.f("\t\tview := loaded.Value()\n\t\tif %s {\n\t\t\treturn %s{}, query.ErrNotFound\n\t\t}\n", strings.Join(checks, " || "), e.Name)
 	}
+	// The row is the deepest resource that the path names: it is decided first, then the chain (ST-SUP-RC20-OC24).
+	w.ancestors(true, e.Name+"{}", false)
 	w.f("\t\treturn %sFromView(loaded.Value()), nil\n\t})\n", c.camel)
 	w.f("\tif err != nil {\n\t\tanswerRead(w, r, %q, id, err)\n\t\treturn\n\t}\n", e.Name)
 	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t_ = json.NewEncoder(w).Encode(%sPresented(%s))\n}\n\n", c.camel, w.presentedArgs("value"))
@@ -2367,7 +2353,7 @@ func (w *runtimeHandlerWriter) list() {
 	// opens its transaction, so it shows the write (ST-SUP-RC20-OC41, ST-SUP-RP11-LC21, ST-SUP-Q119).
 	w.awaitWrite()
 	w.f("\tpage, err := query.Run(r.Context(), h.rt.Queries, %s, h.rt.boundQuery(r.Context(), b, %s), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (%sPage, error) {\n", q, q, c.camel)
-	w.ancestors(true, c.camel+"Page{}")
+	w.ancestors(true, c.camel+"Page{}", true)
 	w.f("\t\trepo, err := query.Repo(qh, data.Entity%sView())\n\t\tif err != nil {\n\t\t\treturn %sPage{}, err\n\t\t}\n", e.Name, c.camel)
 	w.f("\t\tresult, err := repo.List(ctx, request)\n\t\tif err != nil {\n\t\t\treturn %sPage{}, err\n\t\t}\n", c.camel)
 	w.f("\t\tpage := %sPage{next: result.Next, more: result.More}\n\t\tfor _, item := range result.Items {\n\t\t\tpage.items = append(page.items, %sFromView(item.Value()))\n\t\t}\n\t\treturn page, nil\n\t})\n", c.camel, c.camel)
@@ -2389,4 +2375,95 @@ func (w *runtimeHandlerWriter) list() {
 	} else {
 		w.f("\t_ = json.NewEncoder(w).Encode(items)\n}\n\n")
 	}
+}
+
+// renderChainLinks writes links.go of the data package: for each entity of a parent chain, its link, which holds the
+// key of a row and the field that names the ancestor above it in the path, and nothing else. The parent chain check
+// reads an ancestor above the deepest resource of a request through its link, with no permission decision, so it
+// checks only that the row exists in the tenant and is of the ancestor above it (ST-SUP-RC20-OC24, ST-SUP-Q156). The
+// link has no resource type: the query runtime and the command runtime decide nothing on it. Its declaration for the
+// command runtime has write statements that match no row and write nothing, so no write goes through a link. It gives
+// nil when no collection has a parent chain.
+func renderChainLinks(ctx gen.Context, collections []*runtimeCollection) ([]byte, error) {
+	entities := map[string]types.Entity{}
+	for _, e := range ctx.Entities {
+		entities[e.Name] = e
+	}
+	// links gives the entity and the field of each link by its Go name: the link of each ancestor of a parent chain,
+	// and the link of the entity of each scoped collection with an update, a patch or a delete by its scope field.
+	links := map[string][2]string{}
+	for _, c := range collections {
+		var pairs [][3]string
+		for _, level := range c.chain {
+			pairs = append(pairs, [3]string{level.linkType, level.entity, level.link})
+		}
+		if len(c.chain) > 0 && (c.ops[types.OpUpdate] || c.ops[types.OpPatch] || c.ops[types.OpDelete]) {
+			pairs = append(pairs, [3]string{c.rowLink, c.entity.Name, c.scope})
+		}
+		// Two links of one Go name, such as the link CardRackLink of the entity CardRack and the link of Card by its
+		// field rack, would make one declaration hide the other: generation refuses them.
+		for _, p := range pairs {
+			if have, ok := links[p[0]]; ok && have != [2]string{p[1], p[2]} {
+				return nil, fmt.Errorf("rest-api: the link %s of the entity %s by %q has the name of the link of the entity %s by %q; rename one of the entities or fields", p[0], p[1], p[2], have[0], have[1])
+			}
+			links[p[0]] = [2]string{p[1], p[2]}
+		}
+	}
+	if len(links) == 0 {
+		return nil, nil
+	}
+	names := slices.Sorted(maps.Keys(links))
+	var b bytes.Buffer
+	b.WriteString("package data\n\nimport (\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n)\n\n")
+	tenant := strconv.Quote(ctx.Tenancy.Key)
+	for _, typeName := range names {
+		entity, link := links[typeName][0], links[typeName][1]
+		if _, ok := entities[typeName]; ok {
+			return nil, fmt.Errorf("rest-api: the entity %s has the name of the link of the entity %s in a parent chain; rename it", typeName, entity)
+		}
+		column := ""
+		for _, f := range entities[entity].Fields {
+			if f.Name == link {
+				column = f.ColumnName()
+			}
+		}
+		if link != "" && column == "" {
+			return nil, fmt.Errorf("rest-api: the entity %s has no field %s, which names its parent in the path", entity, link)
+		}
+		table := commandTableName(entity)
+		name := strings.TrimSuffix(typeName, "Link")
+		camel := strings.ToLower(name[:1]) + name[1:]
+		columns, viewColumns, scan := `"id"::text`, `"id"`, "&v.ID"
+		load := "\tif v.ID, err = r.Text(\"id\"); err != nil {\n\t\treturn " + name + "Link{}, err\n\t}\n"
+		if column != "" {
+			columns += ", " + strconv.Quote(column) + "::text"
+			viewColumns += ", " + strconv.Quote(column)
+			scan += ", &v.Link"
+			load += "\tif v.Link, err = r.Text(" + strconv.Quote(column) + "); err != nil {\n\t\treturn " + name + "Link{}, err\n\t}\n"
+		}
+		from := fmt.Sprintf(`%s FROM public.%s WHERE %s = $1`, columns, strconv.Quote(table), tenant)
+		row := from + ` AND "id" = $2::uuid`
+		fmt.Fprintf(&b, "// %sLink is the key of one stored %s", name, entity)
+		if column != "" {
+			fmt.Fprintf(&b, " and its field %s, which names its parent in the path", link)
+		}
+		fmt.Fprintf(&b, ".\n// The parent chain check reads it with no permission decision, and reads no other field of the row\n// (ST-SUP-RC20-OC24).\ntype %sLink struct {\n\tID   string\n\tLink string\n}\n\n", name)
+		fmt.Fprintf(&b, "// %sLinkView is the declaration of the link of %s for the query runtime. It has no resource type, so a read\n// through it decides no permission.\n", camel, entity)
+		fmt.Fprintf(&b, "var %sLinkView = must(query.NewEntity(query.Spec{Name: %q, Schema: \"public\", Table: %q, Key: \"id\",\n\tColumns: []string{%s},\n}, func(r query.Row) (%sLink, error) {\n\tvar v %sLink\n\tvar err error\n%s\treturn v, nil\n}))\n\n",
+			camel, name+"Link", table, viewColumns, name, name, load)
+		fmt.Fprintf(&b, "// Entity%sLinkView is the declaration of the link of %s that the parent chain check of a query reads through.\nfunc Entity%sLinkView() *query.Entity[%sLink] { return %sLinkView }\n\n", name, entity, name, name, camel)
+		fmt.Fprintf(&b, "// %sLinkEntity is the declaration of the link of %s for the command runtime. It has no resource type, so a read\n// through it decides no permission. Its write statements match no row, so no write goes through it.\n", name, entity)
+		fmt.Fprintf(&b, "var %sLinkEntity = command.Must(command.NewEntity(command.EntitySpec[%sLink]{\n\tName: %q,\n", name, name, name+"Link")
+		fmt.Fprintf(&b, "\tSelect: %q,\n\tSelectForUpdate: %q,\n\tSelectForDelete: %q,\n", "SELECT "+row, "SELECT "+row+" FOR NO KEY UPDATE", "SELECT "+row+" FOR UPDATE")
+		fmt.Fprintf(&b, "\tInsert: %q,\n\tUpdate: %q,\n\tDelete: %q,\n", "SELECT "+from+" AND false", "SELECT "+row+" AND $3::bigint IS NULL AND false",
+			fmt.Sprintf(`DELETE FROM public.%s WHERE %s = $1 AND "id" = $2::uuid AND "version" = $3 AND false`, strconv.Quote(table), tenant))
+		fmt.Fprintf(&b, "\tScan: func(row command.Scanner) (%sLink, command.Meta, error) {\n\t\tvar v %sLink\n\t\terr := row.Scan(%s)\n\t\treturn v, command.Meta{ID: v.ID}, err\n\t},\n", name, name, scan)
+		fmt.Fprintf(&b, "\tValues:     func(%sLink) []any { return nil },\n\tState:      func(v %sLink) map[string]any { return map[string]any{\"id\": v.ID} },\n\tKeyChanged: func(before, after %sLink) bool { return false },\n\tClone:      func(v %sLink) %sLink { return v },\n\tValidID:    command.ValidUUID,\n}))\n\n", name, name, name, name, name)
+		fmt.Fprintf(&b, "// %sLinkRepository gives the repository of the link of %s of a command handle.\nfunc %sLinkRepository[P any](h *command.Handle[P]) (*command.Repository[%sLink], error) {\n\treturn command.Repo(h, %sLinkEntity)\n}\n\n", name, entity, name, name, name)
+	}
+	out, err := format.Source(b.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("rest-api: format links.go: %w", err)
+	}
+	return out, nil
 }

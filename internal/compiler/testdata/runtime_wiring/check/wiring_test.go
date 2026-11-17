@@ -88,11 +88,17 @@ type service struct {
 	operator caller
 
 	weakMigration, weakStart, foreignMigration, legacyMigration, secondMigration, nextRelease, noKafka runResult
-	broker                                                                                             *kafkatest.Broker
-	foreignDB, legacyDB                                                                                *sql.DB
-	schemaBeforeNext                                                                                   string
+	// The refused starts of the modes (ST-GEN-INV26): an unknown mode, the worker mode with no connection string of
+	// the worker role, and the binary of the next release, which declares the modes api and worker, with the mode
+	// controller and with no mode option and no database setting.
+	unknownMode, noWorkerURL, allModes, declaredDefault runResult
+	broker                                              *kafkatest.Broker
+	foreignDB, legacyDB                                 *sql.DB
+	schemaBeforeNext                                    string
 	// restart stops the service process and starts it again.
 	restart func(t *testing.T)
+	// restartWith stops the service process and starts it again with the arguments given, such as --mode api.
+	restartWith func(t *testing.T, args ...string)
 }
 
 // runResult is the outcome of one run of the binary.
@@ -347,12 +353,29 @@ func start(t *testing.T) *service {
 		}
 	}
 	s.noKafka = run(binary, append(unset, kafkaoutbox.BrokersSetting+"=", kafkaoutbox.TopicSetting+"=", kafkaoutbox.InsecureLoopbackSetting+"="), "--mode=worker")
+	// The modes are read before the database: an unknown mode stops the start at the stage modes (ST-GEN-INV26).
+	s.unknownMode = run(binary, append(serviceEnv("verify-full"), "STEGO_MODE="), "--mode", "bogus")
+	// The worker mode reads the connection string of the worker role at the start, and names it when it is missing.
+	var noWorker []string
+	for _, v := range serviceEnv("verify-full") {
+		if !strings.HasPrefix(v, "STEGO_WORKER_DATABASE_URL=") {
+			noWorker = append(noWorker, v)
+		}
+	}
+	s.noWorkerURL = run(binary, append(noWorker, "STEGO_WORKER_DATABASE_URL=", "STEGO_WORKER_DATABASE_URL_FILE=", "STEGO_MODE="), "--mode", "worker")
+	// The next release declares its three modes out of order: with no mode option and with --mode all the binary
+	// selects them in the order api, worker, controller, which the failure record of the missing database setting
+	// names.
+	noDatabase := []string{"DATABASE_URL=", "DATABASE_URL_FILE=", "STEGO_MODE="}
+	s.allModes = run(next, noDatabase, "--mode", "all")
+	s.declaredDefault = run(next, noDatabase)
 
-	// start starts the service process in all modes and waits until it answers /livez; stop stops it and waits.
+	// start starts the service process with args, in all modes when args is empty, and waits until it answers
+	// /livez; stop stops it and waits.
 	var stop func()
-	start := func(t *testing.T) {
+	start := func(t *testing.T, args ...string) {
 		t.Helper()
-		process := exec.Command(binary)
+		process := exec.Command(binary, args...)
 		process.Env = append(append(os.Environ(), serviceEnv("verify-full")...), noTestMode)
 		process.Stdout, process.Stderr = s.log, s.log
 		must(t, process.Start())
@@ -398,6 +421,11 @@ func start(t *testing.T) *service {
 		t.Helper()
 		stop()
 		start(t)
+	}
+	s.restartWith = func(t *testing.T, args ...string) {
+		t.Helper()
+		stop()
+		start(t, args...)
 	}
 	schema, err := v1.NewSchemaServiceClient(s.spice).ReadSchema(s.ctx, &v1.ReadSchemaRequest{})
 	must(t, err)
@@ -1398,7 +1426,7 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
  FOR EACH ROW WHEN (NEW.sku = 'rolled-back') EXECUTE FUNCTION wiring_refuse_at_commit()`)
 		defer execAll(t, s.admin, "DROP TRIGGER wiring_refuse_at_commit ON orders", "DROP FUNCTION wiring_refuse_at_commit()")
 		messages := s.kafkaMessages(t)
-		before := len(s.broker.Records(t, changeTopic, 0, 10*time.Second, time.Second))
+		before := s.changeRecords(t, time.Second)
 		got := s.send(&owner, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"rolled-back","qty":1}`)
 		if got.status < http.StatusInternalServerError {
 			t.Fatalf("the create whose commit is refused answered %d %s, want a server error", got.status, got.body)
@@ -1409,8 +1437,81 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		if n := s.kafkaMessages(t); n != messages {
 			t.Errorf("the outbox holds %d events of the destination kafka after the refused create, want the %d of before", n, messages)
 		}
-		if after := len(s.broker.Records(t, changeTopic, 0, 10*time.Second, 3*time.Second)); after != before {
+		if after := s.changeRecords(t, 3*time.Second); after != before {
 			t.Errorf("the topic holds %d records after the refused create, want the %d of before", after, before)
+		}
+	})
+
+	t.Run("ST-SUP-RC32-OC14-T02 The write of a command sends the change event of its row to Kafka", func(t *testing.T) {
+		s.t = t
+		created := s.send(&owner, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"noted","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		s.own(owner, id)
+		s.canEdit(t, owner, id)
+		var added reply
+		// The decision of the command may see the owner tuple some time after canEdit does: a denied note writes
+		// nothing and stages nothing, so the check sends it again until it passes.
+		s.eventually(t, "the note of the owner passes", func() bool {
+			added = s.send(&owner, http.MethodPost, "/orders/"+id+"/notes", "k-"+uuid.NewString(), `{"text":"evented"}`)
+			return added.status/100 == 2
+		})
+		note := added.member(t, "noteId")
+		// The command add-note creates the note through the handle, which stages the event of the note in the
+		// transaction of the command, as a collection write does (ST-SUP-RP10-LC36).
+		m := s.eventDone(t, note, "wiring-shop.note.created")
+		if m.resourceKey != "note:"+note {
+			t.Errorf("the event of the note has the resource key %q, want note:%s", m.resourceKey, note)
+		}
+		records := s.records(t, note, 1)
+		if len(records) != 1 {
+			t.Fatalf("the topic holds %d records of the note, want the one event", len(records))
+		}
+		r := records[0]
+		if want := kafkaoutbox.Key(owner.tenant.ID(), m.resourceKey); string(r.Key) != want {
+			t.Errorf("the record key is %q, want %q", r.Key, want)
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(r.Value, &payload); err != nil || payload["entity"] != "Note" || payload["action"] != "created" || payload["id"] != note || len(payload) != 3 {
+			t.Errorf("the record value is %s (%v), want the entity Note, the action created and the ID %s only", r.Value, err, note)
+		}
+		for name, value := range map[string]string{kafkaoutbox.HeaderEventType: "wiring-shop.note.created", kafkaoutbox.HeaderEventAction: "created",
+			kafkaoutbox.HeaderEventID: m.id, kafkaoutbox.HeaderIdempotencyKey: m.outgoing, kafkaoutbox.HeaderTenant: owner.tenant.ID()} {
+			if got, once := kafkatest.Header(r, name); !once || got != value {
+				t.Errorf("the header %s is %q (once: %v), want %q", name, got, once, value)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC14-T02 The writes of a worker send the change events of their rows to Kafka", func(t *testing.T) {
+		s.t = t
+		// Each tick of sync-partner-orders in the kept tenant updates the seeded order through the handle.
+		s.eventually(t, "an event of a tick of the worker is done", func() bool {
+			return count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'kafka' AND tenant_id = $1
+ AND kind = 'wiring-shop.order.updated' AND resource_key = $2 AND state = 'done'`, kept, "order:"+syncedOrder) >= 1
+		})
+		var mine int
+		for _, r := range s.records(t, syncedOrder, 1) {
+			var payload map[string]string
+			must(t, json.Unmarshal(r.Value, &payload))
+			if tenant, _ := kafkatest.Header(r, kafkaoutbox.HeaderTenant); tenant == kept {
+				mine++
+				if payload["entity"] != "Order" || payload["action"] != "updated" || len(payload) != 3 || string(r.Key) != kafkaoutbox.Key(kept, "order:"+syncedOrder) {
+					t.Errorf("the record of the tick is %s with the key %q, want the entity Order, the action updated and the ID only", r.Value, r.Key)
+				}
+			}
+		}
+		if mine == 0 {
+			t.Error("the topic holds no record of a tick of the worker in the kept tenant")
+		}
+		// The consumer apply-note-replies updated an order of the kept tenant in ST-SUP-RC35-OC06-T04: RunConsumer
+		// stages its event too.
+		if n := count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages m JOIN orders o ON o.tenant_id = m.tenant_id
+ AND m.resource_key = 'order:' || o.id::text WHERE m.destination = 'kafka' AND m.tenant_id = $1 AND o.sku = 'consumed'
+ AND m.kind = 'wiring-shop.order.updated'`, kept); n != 1 {
+			t.Errorf("the outbox holds %d events of the consumer's update, want one", n)
 		}
 	})
 
@@ -1581,6 +1682,88 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 			time.Sleep(200 * time.Millisecond)
 		}
 	})
+
+	t.Run("ST-GEN-INV26-T The assembler wires each declared mode as a named set in one binary that a repeatable mode flag selects", func(t *testing.T) {
+		s.t = t
+		if order == "" {
+			t.Fatal("no order: the collection check did not pass")
+		}
+		// A refused start names its stage and the modes, with no error text and no value (ST-GEN-INV16).
+		refused := func(what string, r runResult, stage, modes string) {
+			t.Helper()
+			if r.err == nil || !strings.Contains(r.output, `"stage":"`+stage+`"`) {
+				t.Errorf("%s gave %v, want a refused start at the stage %s:\n%s", what, r.err, stage, r.output)
+			}
+			if modes != "" && !strings.Contains(r.output, `"modes":`+modes) {
+				t.Errorf("%s gave a failure record with no modes %s:\n%s", what, modes, r.output)
+			}
+			if strings.Contains(r.output, "bogus") || strings.Contains(r.output, "postgres://") {
+				t.Errorf("%s gave a failure record with an error text or a value:\n%s", what, r.output)
+			}
+		}
+		refused("an unknown mode", s.unknownMode, "modes", "")
+		refused("the worker mode with no connection string of the worker role", s.noWorkerURL, "service.start.setting.postgres-adapter.STEGO_WORKER_DATABASE_URL", `["worker"]`)
+		refused("the next release with --mode all and no database setting", s.allModes, "service.start.setting.postgres-adapter.DATABASE_URL", `["api","worker","controller"]`)
+		refused("the next release with no mode option and no database setting", s.declaredDefault, "service.start.setting.postgres-adapter.DATABASE_URL", `["api","worker","controller"]`)
+
+		workerConnections := func() int {
+			return count(t, s.admin, `SELECT count(*) FROM pg_stat_activity WHERE datname = $1 AND usename = $2`, s.dbName, stegoruntime.WorkerRole)
+		}
+		leaseHeld := func() bool {
+			return count(t, s.admin, `SELECT count(*) FROM leases WHERE name = 'stego.controller' AND expires_at > now()`) == 1
+		}
+		ready := func() bool {
+			response, err := http.Get(s.base + "/readyz/modes")
+			if err != nil {
+				return false
+			}
+			defer response.Body.Close()
+			return response.StatusCode == http.StatusOK
+		}
+		serves := func(mode string) {
+			t.Helper()
+			if read := s.send(&owner, http.MethodGet, "/orders/"+order, "", ""); read.status != http.StatusOK {
+				t.Errorf("%s: the read answered %d %s, want 200 from the api set", mode, read.status, read.body)
+			}
+		}
+		delivered := func() int {
+			return count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'rest-api.after-slots' AND state = 'done'`, owner.tenant.ID())
+		}
+
+		// With no mode option the binary runs all: the api set serves, the worker set holds connections as the worker
+		// role, and the controller set holds the controller lease.
+		s.eventually(t, "every mode is ready with no mode option", ready)
+		serves("no mode option")
+		s.eventually(t, "the worker set connects as the worker role with no mode option", func() bool { return workerConnections() > 0 })
+		s.eventually(t, "the controller set holds the controller lease with no mode option", leaseHeld)
+
+		// --mode api runs the api set alone: no worker pool is opened and the controller lease is not held.
+		s.restartWith(t, "--mode", "api")
+		s.eventually(t, "the api mode is ready", ready)
+		serves("--mode api")
+		s.eventually(t, "no connection as the worker role in the api mode", func() bool { return workerConnections() == 0 })
+		s.eventually(t, "no holder of the controller lease in the api mode", func() bool { return !leaseHeld() })
+
+		// --mode api --mode worker runs the two sets: the api set serves and the worker set delivers the after slot
+		// of a create; the controller lease stays free.
+		s.restartWith(t, "--mode", "api", "--mode", "worker")
+		s.eventually(t, "the api and worker modes are ready", ready)
+		serves("--mode api --mode worker")
+		before := delivered()
+		created := s.send(&owner, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"m1","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		s.eventually(t, "the worker set delivers the after slot of the create", func() bool { return delivered() == before+1 })
+		if workerConnections() == 0 {
+			t.Error("the worker mode holds no connection as the worker role")
+		}
+		if leaseHeld() {
+			t.Error("the controller lease is held, but the process does not run the controller mode")
+		}
+		// The process runs all modes again for the cleanup.
+		s.restartWith(t)
+	})
 }
 
 // tenantResource gives the ID of the tenant resource of tenantID, the tenant-qualified form with the tenant ID as
@@ -1663,7 +1846,20 @@ func (s *service) awaitPermission(t *testing.T, resourceType, resourceID, permis
 
 // kafkaMessages counts the outbox messages of the destination kafka.
 func (s *service) kafkaMessages(t *testing.T) int {
-	return count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'kafka'`)
+	return count(t, s.admin, `SELECT count(*) FROM stego_outbox.messages WHERE destination = 'kafka' AND tenant_id NOT LIKE 'org-w%'`)
+}
+
+// changeRecords counts the records of the change topic, but those of the tenants of the workers, whose ticks write
+// the seeded order and stage its change event every 10 s (ST-SUP-RP10-LC36).
+func (s *service) changeRecords(t *testing.T, quiet time.Duration) int {
+	t.Helper()
+	n := 0
+	for _, r := range s.broker.Records(t, changeTopic, 0, 10*time.Second, quiet) {
+		if tenant, _ := kafkatest.Header(r, kafkaoutbox.HeaderTenant); !strings.HasPrefix(tenant, "org-w") {
+			n++
+		}
+	}
+	return n
 }
 
 // canEdit waits until SpiceDB answers, at its quantized revision, that the caller may edit the order id, as the

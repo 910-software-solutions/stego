@@ -139,3 +139,21 @@ func TestProjectedDatabaseSecret(t *testing.T) {
 		}
 	}
 }
+
+func TestDatabaseStage(t *testing.T) {
+	t.Run("ST-GEN-INV16-T a refused database setting names its variable, or both, and no value", func(t *testing.T) {
+		const prefix = "service.start.setting.postgres-adapter."
+		for _, c := range []struct{ url, file, want string }{
+			{"", "", prefix + "DATABASE_URL"},
+			{"postgres://u:secret@h/db", "", prefix + "DATABASE_URL"},
+			{"", "relative", prefix + "DATABASE_URL_FILE"},
+			{"postgres://u:secret@h/db", "/run/secret", prefix + "DATABASE_URL+DATABASE_URL_FILE"},
+		} {
+			t.Setenv("DATABASE_URL", c.url)
+			t.Setenv("DATABASE_URL_FILE", c.file)
+			if got := stegoDatabaseStage(prefix); got != c.want {
+				t.Errorf("DATABASE_URL %q and DATABASE_URL_FILE %q gave the stage %q, want %q", c.url, c.file, got, c.want)
+			}
+		}
+	})
+}
