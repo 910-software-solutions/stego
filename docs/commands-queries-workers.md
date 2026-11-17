@@ -115,6 +115,11 @@ commands:
     refusals:
       - {name: short_stock, code: stock.short, status: 409}
       - {name: not_draft, code: order.not_draft, status: 409}
+    lists:
+      - name: stock-of-warehouse
+        entity: StockItem
+        filter:
+          - {field: warehouse_id, op: equals, param: warehouse_id}
   - name: grant-clerk
     writes: [Warehouse]
     resource_type: warehouse
@@ -452,6 +457,41 @@ The handle gives a repository for each entity in `writes`, such as
 `commands.OrderRepository(h)`. It gives no database, no network client and no
 other entity.
 
+### The lists of a command
+
+A command fill reads a set of rows through a declared list, as a worker fill
+does (ST-DECL-INV94). `place-order` reads the stock items of the warehouse of
+its order. The warehouse comes from the order, so the term gives a parameter
+in place of a value:
+
+<!-- excerpt -->
+```yaml
+    lists:
+      - name: stock-of-warehouse
+        entity: StockItem
+        filter:
+          - {field: warehouse_id, op: equals, param: warehouse_id}
+```
+
+`stego apply` writes the list `commands.PlaceOrderStockOfWarehouse` in
+`out/commands`. Because the list has a parameter, it also writes the function
+`commands.PlaceOrderStockOfWarehouseWith(warehouseID string)`. The fill gives
+the value of the parameter to this function:
+
+```go
+items, err := commands.StockItemRepository(h)
+if err != nil {
+	return nil, err
+}
+stock, err := items.List(ctx, commands.PlaceOrderStockOfWarehouseWith(order.Value().WarehouseID), 100)
+```
+
+The generator builds the statements of the list from the entity of the
+release. When a schema change adds or renames a field, the next release
+writes the list again with the new columns. The handle binds each parameter as
+a SQL parameter, never as text. A command on the service-level resource has no
+list.
+
 ## Declare a query
 
 <!-- excerpt -->
@@ -716,6 +756,7 @@ A worker fill reads a set of rows through a declared list (ST-DECL-INV94).
 | `op` | `equals`, `not_equals`, `less_than`, `less_than_or_equals`, `greater_than`, `greater_than_or_equals` or `is_set`. |
 | `value` | A constant of the field type. `is_set` takes no value. |
 | `now` | `true` in place of `value`: the time of the run. This is the time of the tick of an `every` worker, and the start of the run of a consuming worker. Use it only on a timestamp field. |
+| `param` | A name in lower snake case, in place of `value`: a parameter whose value the fill gives at call time, such as a field of the message. Each parameter has its own name in the list. `is_set` takes no parameter. |
 | `lock` | Optional. When true, `ListForUpdate` locks the rows. The entity must declare `lock_at_most`, a whole number from 1 to 1000. |
 
 `stego apply` writes one typed list for each declared list in `out/workers`.
@@ -736,7 +777,10 @@ if err != nil {
 low, err := items.List(ctx, workers.LowStockScanLowItems, 100)
 ```
 
-A declared list takes no filter values from the fill.
+A declared list takes no filter values from the fill. A list with a parameter
+has a generated function `<Worker><List>With`, which takes each parameter as a
+typed Go value, in the order of the terms. A consuming worker can give a field
+of its message as a parameter.
 
 ### A failed run of a consuming worker
 
@@ -755,6 +799,53 @@ refused resource, a unique violation and a panic. A provider that cannot decide
 now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
 outbox, and a person can send it again or discard it.
+
+### A failed statement
+
+When a statement of a command, a worker or a consumer fails and the failure is
+not a conflict, the runtime writes one log line `command: a statement failed`
+at the level error. The line gives the command or worker, the step, the cause
+class and the SQLSTATE class. It never gives a value or the database text. The
+cause classes are:
+
+| Cause | What it is |
+|---|---|
+| `data` | A value of the row does not fit, such as a foreign key or a check (SQLSTATE classes 22 and 23). |
+| `not_granted` | The role lacks a privilege (42501). |
+| `schema` | The statement does not fit the database, such as an undefined column (the other values of class 42). |
+| `statement` | Another SQLSTATE. |
+| `scan` | The row has other columns than the generated Scan of the entity reads. |
+| `other` | An error with no SQLSTATE, such as a lost connection. |
+
+The runtime writes at most one line for each command or worker, cause and
+SQLSTATE class in each 10 seconds, with the number of lines that it held back.
+
+### Release notes for runtime v0.127.0
+
+- A command fill gives no SQL text. Before v0.127.0, a command fill that read
+  a set of rows gave its own SQL text in `command.ListSpec` and made its list
+  with `command.NewList`. That SQL named the columns of the entity, so the
+  first schema change broke it with 500 `internal` (walkthrough 7, B1). Now
+  every handle takes only the lists that its declaration declares
+  (ST-SUP-RP10-LC38). The fill still compiles, but each call that uses its own
+  list fails with this error:
+
+  ```text
+  command: internal error: the command place-order reads the list of-order of
+  Line, which its declaration does not declare: since runtime v0.127.0 a fill
+  gives no SQL text, so declare the list under lists: of the command and use
+  the generated list of the command contract (ST-SUP-RP10-LC38)
+  ```
+
+  To move a fill, write the `WHERE` terms of its `Read` statement as `filter`
+  terms under `lists:` of the command. Write a term whose value came from the
+  fill as `param:`. Run `stego apply`. Then remove the `command.ListSpec` and
+  the `command.NewList` call from the fill, and call the generated
+  `<Command><List>With` function in place of the filter values.
+- A list term can give a parameter (`param:`), for a command and for a worker.
+- The generated upsert of a collection finds its row through a generated list.
+- A failed statement writes one log line with its cause class and SQLSTATE
+  class (see "A failed statement").
 
 ### Release notes for runtime v0.125.0
 
