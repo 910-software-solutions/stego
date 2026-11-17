@@ -312,6 +312,12 @@ func renderCommandHandlers(w *writer, m *model, c *command) {
 		w.f("commands.%sEntity", e.goName)
 	}
 	w.f("},\n")
+	// With kafka-producer, the handle stages the change event of each write (ST-SUP-RC32-OC14).
+	written := make([]string, len(c.writes))
+	for i, e := range c.writes {
+		written[i] = e.decl.Name
+	}
+	w.f("%s", ChangeEventsSpec(m.ctx, written))
 	if len(c.effects) > 0 {
 		w.f("\tDestinations: []command.Destination{")
 		for i, d := range c.effects {

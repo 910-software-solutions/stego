@@ -2,19 +2,10 @@ package fill
 
 import (
 	"errors"
-	"go/parser"
-	"go/token"
-	"os"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/compiler"
 )
-
-// runtimeModule is the module of the runtime library, whose packages a slot contract reaches.
-const runtimeModule = "github.com/jsell-rh/stego/registry/runtime"
 
 // querySlot and commandSlot are the slots whose contracts are not the package out/slots.
 const (
@@ -26,7 +17,7 @@ const (
 // slotContracts gives the packages that a fill of the slot implements may import besides the standard library and
 // the listed fill modules (ST-EXT-INV05): its slot's contract package, out/slots for a protobuf slot, out/queries for
 // the query slot and the command generator's package for the command slot, and the packages of the runtime library
-// that the contract package imports.
+// that the generator of the contract package can write into it.
 func slotContracts(check compiler.FillCheck, fill, implements string) []string {
 	contract := strings.TrimSuffix(check.Module, "/") + "/out/slots"
 	switch implements {
@@ -45,41 +36,9 @@ func slotContracts(check compiler.FillCheck, fill, implements string) []string {
 			contract = check.WorkerContract
 		}
 	}
-	return append([]string{contract}, contractRuntimeImports(check, contract)...)
-}
-
-// contractRuntimeImports gives the packages of the runtime library that the Go files of the contract package
-// import, as generated in the project; none when the package is not generated yet.
-func contractRuntimeImports(check compiler.FillCheck, contract string) []string {
-	relative, ok := strings.CutPrefix(contract, strings.TrimSuffix(check.Module, "/")+"/")
-	if !ok {
-		return nil
-	}
-	entries, err := os.ReadDir(filepath.Join(check.ProjectDir, filepath.FromSlash(relative)))
-	if err != nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	var out []string
-	fset := token.NewFileSet()
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, filepath.Join(check.ProjectDir, filepath.FromSlash(relative), entry.Name()), nil, parser.ImportsOnly)
-		if err != nil {
-			continue
-		}
-		for _, spec := range file.Imports {
-			path, err := strconv.Unquote(spec.Path.Value)
-			if err == nil && strings.HasPrefix(path, runtimeModule+"/") && !seen[path] {
-				seen[path] = true
-				out = append(out, path)
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
+	// The runtime packages come from the generator of the contract (FillCheck.ContractRuntime), not from the
+	// generated folder, so the check is the same before the first generation and after out/ is removed.
+	return append([]string{contract}, check.ContractRuntime[contract]...)
 }
 
 // checkImports refuses a fill that breaks the fill rules (ST-EXT-INV05, ST-EXT-UC01-R03, ST-EXT-UC01-R05,

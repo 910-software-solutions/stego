@@ -47,6 +47,10 @@ type WorkerSpec[P any] struct {
 	Stagers map[string]string
 	// Probe wraps the probe of one call in the worker's typed probe.
 	Probe func(*probe.Probe) P
+	// ChangeEvents are the names of the change events of each entity that the worker writes, which the generator
+	// gives when the service has the kafka-producer component, or none: each create, update and delete of the
+	// handle in RunWorker and RunConsumer then stages its change event (ST-SUP-RC35-OC14, ST-SUP-RP10-LC36).
+	ChangeEvents []ChangeEvents
 }
 
 // Worker is one checked worker declaration.
@@ -57,6 +61,7 @@ type Worker[P any] struct {
 	destinations map[string]Destination
 	bound        []authz.Relation
 	own          map[authz.Relation]bool
+	changeEvents map[string]ChangeEvents
 }
 
 // NewWorker checks the declaration of one worker.
@@ -79,8 +84,13 @@ func NewWorker[P any](spec WorkerSpec[P]) (*Worker[P], error) {
 	if err != nil {
 		return nil, err
 	}
+	changeEvents, err := checkChangeEvents(spec.Name, spec.Writes, destinations, spec.ChangeEvents)
+	if err != nil {
+		return nil, err
+	}
 	bound, own := boundRelations(spec.Relations, spec.Writes)
-	return &Worker[P]{spec: spec, principal: principal, writes: writes, destinations: destinations, bound: bound, own: own}, nil
+	return &Worker[P]{spec: spec, principal: principal, writes: writes, destinations: destinations, bound: bound, own: own,
+		changeEvents: changeEvents}, nil
 }
 
 // TickFill is the fill of a worker with an every trigger: it gets the scheduled tick time and the handle.
@@ -151,6 +161,7 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		}
 	}()
 	s := newState(ctx, rt, tx, t, w.principal, modeWorker, w.spec.Name, w.writes, w.destinations)
+	s.changeEvents = w.changeEvents
 	s.request = Request{RequestID: uuid.NewString()}
 	s.permission = w.spec.Permission
 	s.lockTimeout = DefaultLockTimeout
@@ -317,6 +328,7 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		return outbox.PermanentRefusal(fmt.Errorf("command: %s consumes no message that %q stages", w.spec.Name, d.Origin))
 	}
 	s := newState(ctx, rt, tx, d.Tenant, w.principal, modeConsumer, w.spec.Name, w.writes, w.destinations)
+	s.changeEvents = w.changeEvents
 	s.request = Request{RequestID: uuid.NewString(), Key: d.ID.String()}
 	s.permission = w.spec.Permission
 	s.stagingPermission = stagerPermission

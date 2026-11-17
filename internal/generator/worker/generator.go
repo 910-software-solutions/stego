@@ -41,6 +41,22 @@ const (
 	tenantType     = "tenant"
 )
 
+// ContractRuntimeImports gives the packages of the runtime library that the worker slot contract out/workers imports
+// for the declared entities and workers: the audit package when an entity that a worker writes has a pii or secret
+// field (the repository declarations of command.EntityFile), and the command runtime. A fill of the worker slot may
+// import them (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill check admits them also before out/workers is generated,
+// and admits no package that the contract does not import.
+func ContractRuntimeImports(entities []types.Entity, workers []types.Worker) []string {
+	var writes []string
+	for _, w := range workers {
+		writes = append(writes, w.Writes...)
+	}
+	if command.WritesSensitive(entities, writes) {
+		return []string{"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/command"}
+	}
+	return []string{"github.com/jsell-rh/stego/registry/runtime/command"}
+}
+
 // The grammars of the declared names that the generated code holds.
 var (
 	workerName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -188,10 +204,41 @@ func plan(ctx gen.Context) (*model, error) {
 	if err := m.planStagers(); err != nil {
 		return nil, err
 	}
+	if err := m.checkChangeEvents(); err != nil {
+		return nil, err
+	}
 	if err := m.checkTenantRelations(); err != nil {
 		return nil, err
 	}
 	return m, m.checkNames()
+}
+
+// checkChangeEvents refuses, for a service with the kafka-producer component, a service without the outbox
+// component, a written entity whose change event name Kafka refuses, and a declared effect named as a change event of
+// the service, which only the handle stages (ST-SUP-RC35-OC14, ST-SUP-RP10-LC36).
+func (m *model) checkChangeEvents() error {
+	if !command.ChangeEvents(m.ctx) {
+		return nil
+	}
+	if err := command.CheckChangeEvents(m.ctx, "worker", "ST-SUP-RC35-OC14", m.entityNames); err != nil {
+		return err
+	}
+	events := map[string]bool{}
+	for _, e := range m.ctx.Entities {
+		for _, action := range []string{command.EventCreated, command.EventUpdated, command.EventDeleted} {
+			events[command.ChangeEventType(m.ctx.ServiceName, e.Name, action)] = true
+		}
+	}
+	for _, wk := range m.workers {
+		for _, d := range wk.effects {
+			for _, name := range wk.effectNames[d] {
+				if events[name] {
+					return fmt.Errorf("worker: the worker %s declares the effect %s, which is the name of a change event that the handle stages for each write (ST-SUP-RC35-OC14)", wk.decl.Name, name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // planWorker checks one worker: its one fill of the worker slot (ST-SUP-RC35-OC02), its trigger, its writes, its
@@ -549,6 +596,9 @@ func renderWorker(w *writer, m *model, wk *worker) {
 		w.f("%s.%sEntity", m.pkg, name)
 	}
 	w.f("},\n")
+	// With kafka-producer, the handle stages the change event of each write in RunWorker and RunConsumer
+	// (ST-SUP-RC35-OC14).
+	w.f("%s", command.ChangeEventsSpec(m.ctx, wk.decl.Writes))
 	if len(wk.effects) > 0 {
 		w.f("\tDestinations: []command.Destination{")
 		for i, d := range wk.effects {

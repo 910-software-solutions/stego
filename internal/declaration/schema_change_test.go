@@ -169,12 +169,28 @@ func TestSchemaChangeValues(t *testing.T) {
 	t.Run("ST-DECL-INV62-T A require of owner with the fill value nobody is accepted", func(t *testing.T) {
 		wantNoFault(t, schemaFaults(t, with(required, "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: nobody}")))
 	})
+	for _, c := range []struct{ name, owner, change string }{
+		{"a retype whose Definition gives an int32 the default 0 in its range", "{name: owner, type: int64}", "{id: points-retype, kind: retype, entity: Todo, field: owner, from: int32, conversion: integer_to_int64, inverse_conversion: int64_to_integer, definition: \"int32, min 0, max 100, default 0\"}"},
+		{"a drop whose Definition gives a double the whole default 1", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"double, default 1\"}"},
+		{"a drop whose Definition gives a string a quoted default", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, max_length 5, default \\\"ab\\\"\"}"},
+	} {
+		t.Run("ST-DECL-INV62-T "+c.name+" is accepted", func(t *testing.T) {
+			wantNoFault(t, schemaFaults(t, with(c.owner, c.change)))
+		})
+	}
 	for _, c := range []struct{ name, owner, change, names string }{
 		{"a require of a field with a default", "{name: owner, type: string, max_length: 20, default: x}", "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: nobody}", `"owner-require"`},
 		{"a fill value longer than 20", required, "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: " + strings.Repeat("n", 21) + "}", "max_length 20"},
 		{"a drop of legacy whose Definition is int64 with the fill value abc", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: int64, fill_value: abc}", "abc"},
 		{"a retype of owner whose Definition is not of its type From", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: int32}", "the retype is from string"},
 		{"a retype of owner whose Definition cannot be read", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, colour red\"}", "cannot be read"},
+		// The default of a Definition suits the field that the Definition gives (security review of PR #408).
+		{"a retype whose Definition gives an int32 the default abc", "{name: owner, type: int64}", "{id: points-retype, kind: retype, entity: Todo, field: owner, from: int32, conversion: integer_to_int64, inverse_conversion: int64_to_integer, definition: \"int32, default abc\"}", "does not suit the type int32"},
+		{"a retype whose Definition gives an int32 the default 1.5", "{name: owner, type: int64}", "{id: points-retype, kind: retype, entity: Todo, field: owner, from: int32, conversion: integer_to_int64, inverse_conversion: int64_to_integer, definition: \"int32, default 1.5\"}", "does not suit the type int32"},
+		{"a retype whose Definition default is above its max", "{name: owner, type: int64}", "{id: points-retype, kind: retype, entity: Todo, field: owner, from: int32, conversion: integer_to_int64, inverse_conversion: int64_to_integer, definition: \"int32, min 0, max 100, default 200\"}", "default 200"},
+		{"a retype whose Definition default is longer than its max_length", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, max_length 3, default abcd\"}", "longer than the max_length 3"},
+		{"a retype whose Definition default does not match its pattern", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, default ABC, pattern ^[a-z]+$\"}", "does not match the pattern"},
+		{"a drop whose Definition gives an int64 the default x", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"int64, default x\"}", "does not suit the type int64"},
 	} {
 		t.Run("ST-DECL-INV62-T "+c.name+" is refused", func(t *testing.T) {
 			wantFault(t, schemaFaults(t, with(c.owner, c.change), "schema-change-value"), c.names)
