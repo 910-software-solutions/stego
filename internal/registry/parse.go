@@ -116,6 +116,9 @@ var (
 	// needWord is fixed text of a need name, a secret key or a backing store engine: letters, digits, '-' and
 	// '_', so that it cannot hold a host name, an address or a path.
 	needWord = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	// needLabel is one allowed value of a setting that a need name holds: a DNS label of lower-case letters, digits
+	// and '-', of 1 to 63 characters, that starts and ends with a letter or a digit (ST-SUP-INV23).
+	needLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	// needPlaceholder is one placeholder of a need name.
 	needPlaceholder = regexp.MustCompile(`\{[^{}]*\}`)
 	// apiGroup is a Kubernetes API group, such as apps or rbac.authorization.k8s.io.
@@ -203,7 +206,9 @@ func checkNeeds(component *Component) error {
 }
 
 // checkNeedName holds a need name to fixed text and the placeholders {service} and {settings.<key>}, where key is a
-// setting of the component (ST-DLV-Q04 (A)).
+// text setting of the component that is not secret and whose allowed values are DNS labels alone (ST-DLV-Q04 (A),
+// ST-SUP-INV23, decision on ST-SUP-Q153). So no secret, no free text and no value that differs per environment goes
+// into a need name.
 func checkNeedName(component *Component, name string) error {
 	if name == "" {
 		return fmt.Errorf("a need must give its name")
@@ -223,6 +228,9 @@ func checkNeedName(component *Component, name string) error {
 		}
 		if setting.Secret {
 			return fmt.Errorf("the placeholder %s names the secret setting %s; a name never holds a secret (ST-SUP-INV23)", placeholder, key)
+		}
+		if setting.Type != "string" || len(setting.Enum) == 0 || slices.ContainsFunc(setting.Enum, func(value string) bool { return !needLabel.MatchString(value) }) {
+			return fmt.Errorf("the placeholder %s names the setting %s, which does not allow only DNS labels of lower-case letters, digits and '-'; give it an enum of such labels (ST-SUP-INV23)", placeholder, key)
 		}
 	}
 	for _, text := range needPlaceholder.Split(name, -1) {

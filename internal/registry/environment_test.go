@@ -129,7 +129,7 @@ func TestEnvironmentDeclaration(t *testing.T) {
 			t.Fatalf("a name from a setting of names is refused: %v", err)
 		}
 	})
-	t.Run("ST-SUP-INV23-T A secret variable or setting states no default and no example, and no name holds a secret setting", func(t *testing.T) {
+	t.Run("ST-SUP-INV23-T A secret variable or setting states no default and no example, and a name holds only a setting of a closed list of names", func(t *testing.T) {
 		expectRefused(t, []refusal{
 			{"a secret with a default", "    secret: true\n", "    secret: true\n    default: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "default"},
 			{"a secret with an example", "    secret: true\n", "    secret: true\n    example: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "example"},
@@ -154,6 +154,26 @@ needs:
 		_, err := ParseComponentFromBytes([]byte(component), "env-a/component.yaml")
 		if err == nil || !strings.Contains(err.Error(), "secret setting key") {
 			t.Fatalf("a need name that holds a secret setting is accepted, or the refusal does not name it: %v", err)
+		}
+		// A need name holds only a text setting whose enum allows DNS labels alone (decision on ST-SUP-Q153).
+		const secretSetting = "key: {type: string, secret: true}"
+		accepted := strings.Replace(component, secretSetting, "key: {type: string, enum: [orders, stock-2]}", 1)
+		if _, err := ParseComponentFromBytes([]byte(accepted), "env-a/component.yaml"); err != nil {
+			t.Fatalf("a need name from a setting of DNS labels is refused: %v", err)
+		}
+		for _, c := range []struct{ name, setting string }{
+			{"free text", "key: {type: string}"},
+			{"a number", "key: {type: integer, enum: [1, 2]}"},
+			{"an upper-case value", "key: {type: string, enum: [orders, Stock]}"},
+			{"a value with '_'", "key: {type: string, enum: [stock_items]}"},
+			{"a value that ends with '-'", "key: {type: string, enum: [stock-]}"},
+			{"a URL", "key: {type: string, enum: [\"https://issuer.example.com\"]}"},
+			{"a value longer than 63 characters", "key: {type: string, enum: [" + strings.Repeat("a", 64) + "]}"},
+		} {
+			_, err := ParseComponentFromBytes([]byte(strings.Replace(component, secretSetting, c.setting, 1)), "env-a/component.yaml")
+			if err == nil || !strings.Contains(err.Error(), "setting key") || !strings.Contains(err.Error(), "DNS labels") {
+				t.Errorf("a need name from a setting of %s is accepted, or the refusal does not name the setting and the rule: %v", c.name, err)
+			}
 		}
 	})
 	t.Run("ST-SUP-INV24-T A required variable states no default, and a default or an example is of its type and inside its allowed values", func(t *testing.T) {

@@ -107,7 +107,10 @@ wire stops the change.
 
 A need name is a Kubernetes name: lower-case letters, digits and `-`, which starts and ends with a letter or a digit,
 of at most 63 characters, also after `{service}` and the settings fill it. `stego apply` refuses a need name with a
-capital letter or `_`, and names the component and the need.
+capital letter or `_`, and names the component and the need. A component can put a setting into a need name with
+`{settings.<key>}` only when the setting is text, is not secret, and has an `enum` whose values are each such a
+label. The registry refuses a component that puts free text, a number, a secret, a URL or another value that
+differs per environment into a need name, and names the placeholder and the setting.
 
 When a required key is not there, the pod does not start. The kubelet does not start the container, and the pod
 stays in `CreateContainerConfigError`. The pod event names the Secret or the ConfigMap and the key, for example
