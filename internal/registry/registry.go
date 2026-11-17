@@ -160,6 +160,9 @@ func LoadSources(sources ...Source) (*Registry, error) {
 		if err := checkRuntimePin(item); err != nil {
 			return nil, fmt.Errorf("%s: %w", file, err)
 		}
+		if item.Example, err = r.archetypeExample(name); err != nil {
+			return nil, err
+		}
 		r.archetypes[name] = item
 	}
 	for _, name := range r.childDirectories("components") {
@@ -389,4 +392,39 @@ func validateConfig(cfg *RegistryConfig) error {
 		}
 	}
 	return nil
+}
+
+// exampleSuffix ends the name of each file of an archetype's example content, so that no tool of the registry
+// takes a template as a source file.
+const exampleSuffix = ".tmpl"
+
+// exampleFile tells whether a registry path is a file of an archetype's example content:
+// archetypes/<name>/example/<path>.tmpl.
+func exampleFile(name string) bool {
+	parts := strings.SplitN(name, "/", 4)
+	return len(parts) == 4 && parts[0] == "archetypes" && parts[2] == "example" && strings.HasSuffix(parts[3], exampleSuffix) && len(parts[3]) > len(exampleSuffix)
+}
+
+// archetypeExample reads the example content of an archetype (ST-SUP-EN03 field Example content) from the files
+// of its example folder, in path order, each at its path in the project without the suffix. Content that holds no
+// declaration text is refused, because stego init writes the declaration from it.
+func (r *Registry) archetypeExample(name string) ([]ExampleFile, error) {
+	prefix := path.Join("archetypes", name, "example") + "/"
+	var files []ExampleFile
+	declared := false
+	for _, file := range slices.Sorted(maps.Keys(r.source.files)) {
+		if !strings.HasPrefix(file, prefix) || !exampleFile(file) {
+			continue
+		}
+		target := strings.TrimSuffix(strings.TrimPrefix(file, prefix), exampleSuffix)
+		if err := gen.ValidatePath(target); err != nil {
+			return nil, fmt.Errorf("%s: example file path: %w", file, err)
+		}
+		declared = declared || target == ExampleDeclaration
+		files = append(files, ExampleFile{Path: target, Text: bytes.Clone(r.source.files[file].data)})
+	}
+	if len(files) > 0 && !declared {
+		return nil, fmt.Errorf("archetype %s: the example content holds no %s%s, the declaration that stego init writes", name, ExampleDeclaration, exampleSuffix)
+	}
+	return files, nil
 }

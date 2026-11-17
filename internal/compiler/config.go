@@ -39,6 +39,7 @@ func validateComponentConfig(service *types.ServiceDeclaration, components map[s
 		schemas[name] = component.Config
 	}
 	errors = append(errors, declaration.ValidateNoBypass(service, schemas)...)
+	errors = append(errors, declaration.ValidateAuthorSupplied(service, schemas)...)
 	for _, name := range sortedKeys(components) {
 		for _, key := range sortedKeys(components[name].Config) {
 			field := components[name].Config[key]

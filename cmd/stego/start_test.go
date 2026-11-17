@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -232,6 +233,24 @@ func TestStartAServiceDeclaration(t *testing.T) {
 				t.Errorf("%s: the refused scaffold changed a file", path)
 			}
 		}
+		// The paths of the example content of rpc-service: a folder and a file each.
+		for _, path := range []string{"proto", "proto/service.proto", "fills/get-greeting", "authz/schema.zed"} {
+			project, outside := declaringProject(t), t.TempDir()
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(project, path)), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(project, path)); err != nil {
+				t.Fatal(err)
+			}
+			before, beforeOutside := treeOf(t, project), treeOf(t, outside)
+			run := stegoIn(t, project, nil, "init", "--archetype", "rpc-service")
+			if run.code == 0 || !strings.Contains(run.stderr, path) {
+				t.Errorf("%s: want a refusal that names the path, got exit %d: %s", path, run.code, run.stderr)
+			}
+			if !reflect.DeepEqual(before, treeOf(t, project)) || !reflect.DeepEqual(beforeOutside, treeOf(t, outside)) {
+				t.Errorf("%s: the refused scaffold changed a file", path)
+			}
+		}
 	})
 
 	t.Run("ST-DECL-UC01-R07-T01 Init keeps the apply lock and the saved plan out of the commit, and an existing ignore file as written", func(t *testing.T) {
@@ -338,4 +357,232 @@ func sortStrings(values []string) []string {
 	sorted := append([]string(nil), values...)
 	sort.Strings(sorted)
 	return sorted
+}
+
+// exampleArchetypes are the archetypes of the fixture registry whose scaffold holds example content, with the files
+// of that content beside the declaration.
+var exampleArchetypes = map[string][]string{
+	"rpc-service":     {"authz/schema.zed", "fills/get-greeting/fill.go", "fills/get-greeting/fill.yaml", "proto/service.proto"},
+	"browser-service": {"ui/index.html"},
+}
+
+// validationFault is one line of the faults that stego validate prints: the rule and the path.
+var validationFault = regexp.MustCompile(`(?m)^\s+\[([a-z-]+)\] ([^:\s]+):`)
+
+// faultPaths gives the paths of the faults of one rule that stego validate printed, in order.
+func faultPaths(output, rule string) []string {
+	var paths []string
+	for _, match := range validationFault.FindAllStringSubmatch(output, -1) {
+		if match[1] == rule {
+			paths = append(paths, match[2])
+		}
+	}
+	return paths
+}
+
+// owedSettings gives the settings that stego init printed for an empty scaffold.
+func owedSettings(output string) []string {
+	_, list, found := strings.Cut(output, "Give these settings in service.yaml before stego validate accepts it:\n")
+	if !found {
+		return nil
+	}
+	var settings []string
+	for _, line := range strings.Split(list, "\n") {
+		if !strings.HasPrefix(line, "  ") {
+			break
+		}
+		settings = append(settings, strings.TrimSpace(line))
+	}
+	return settings
+}
+
+// namedProject makes a project folder with the configuration of ST-DECL-TD01, named as a service may be named: the
+// service takes the name of its folder, and a name such as 001 gives no SQL role or service identity.
+func namedProject(t *testing.T) string {
+	t.Helper()
+	project := filepath.Join(t.TempDir(), "greeter")
+	putFile(t, project, ".stego/config.yaml", declaringConfig(t))
+	return project
+}
+
+// moduleOf is the module path that a test project of the archetype takes, through STEGO_MODULE.
+func moduleOf(archetype string) []string {
+	return []string{"STEGO_MODULE=example.com/" + archetype, "GOWORK=off"}
+}
+
+// initialized makes a project folder with namedProject and runs stego init in it.
+func initialized(t *testing.T, archetype string, args ...string) (string, stegoRun) {
+	t.Helper()
+	project := namedProject(t)
+	run := stegoIn(t, project, moduleOf(archetype), append([]string{"init", "--archetype", archetype}, args...)...)
+	if run.code != 0 {
+		t.Fatalf("stego init --archetype %s %v: exit %d: %s", archetype, args, run.code, run.stderr)
+	}
+	return project, run
+}
+
+func TestArchetypeScaffolds(t *testing.T) {
+	t.Parallel()
+	t.Run("ST-DECL-UC01-R01-T01 The scaffold of each archetype passes checking with no change", func(t *testing.T) {
+		for _, archetype := range declaredArchetypes(t) {
+			project, _ := initialized(t, archetype)
+			before := treeOf(t, project)
+			if run := stegoIn(t, project, moduleOf(archetype), "validate"); run.code != 0 {
+				t.Errorf("%s: stego validate refused the scaffold: %s%s", archetype, run.stdout, run.stderr)
+			}
+			if after := treeOf(t, project); !reflect.DeepEqual(before, after) {
+				t.Errorf("%s: stego validate changed the scaffold", archetype)
+			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-R01-T02 The scaffold of each archetype applies and builds as written", func(t *testing.T) {
+		for _, archetype := range declaredArchetypes(t) {
+			project, _ := initialized(t, archetype)
+			environment := moduleOf(archetype)
+			for _, command := range [][]string{{"validate"}, {"apply"}, {"deps"}, {"apply"}, {"drift"}} {
+				if run := stegoIn(t, project, environment, command...); run.code != 0 {
+					t.Fatalf("%s: stego %v: exit %d: %s%s", archetype, command, run.code, run.stdout, run.stderr)
+				}
+			}
+			build := exec.Command("go", "build", "-mod=readonly", "-o", filepath.Join(t.TempDir(), "service"), "./out")
+			build.Dir = project
+			build.Env = append(os.Environ(), "GOWORK=off")
+			if output, err := build.CombinedOutput(); err != nil {
+				t.Errorf("%s: go build ./out: %v\n%s", archetype, err, output)
+			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-R04-T01 Removing any one part of a scaffold's example content makes checking refuse it", func(t *testing.T) {
+		// The parts of a proto file: each service and message, and each method of a service.
+		protoParts := []*regexp.Regexp{regexp.MustCompile(`(?ms)^(?:service|message) \w+ \{.*?^\}\n`), regexp.MustCompile(`(?m)^  rpc [^\n]*\n`)}
+		for archetype, files := range exampleArchetypes {
+			scaffold, _ := initialized(t, archetype)
+			type cut struct{ name, file, text string }
+			var cuts []cut
+			for _, file := range files {
+				cuts = append(cuts, cut{"the file " + file, file, ""})
+				if filepath.Ext(file) != ".proto" {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(scaffold, file))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, parts := range protoParts {
+					for _, at := range parts.FindAllStringIndex(string(data), -1) {
+						part := string(data[at[0]:at[1]])
+						cuts = append(cuts, cut{"the part " + strings.SplitN(strings.TrimSpace(part), "\n", 2)[0] + " of " + file, file, string(data[:at[0]]) + string(data[at[1]:])})
+					}
+				}
+			}
+			if archetype == "rpc-service" && len(cuts) != len(files)+4 {
+				t.Fatalf("rpc-service: want each file, and the service, the two messages and the method of the proto file, got %d parts", len(cuts))
+			}
+			for _, part := range cuts {
+				project := filepath.Join(t.TempDir(), filepath.Base(scaffold))
+				if err := os.CopyFS(project, os.DirFS(scaffold)); err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(project, part.file)
+				var err error
+				if part.text == "" {
+					err = os.Remove(target)
+				} else {
+					err = os.WriteFile(target, []byte(part.text), 0644)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				// A fill with no Go code yet passes stego validate, because apply writes the contract it is written
+				// against; apply then checks the fill rules again with go.mod and refuses it.
+				if run := stegoIn(t, project, moduleOf(archetype), "validate"); run.code != 0 {
+					continue
+				}
+				if run := stegoIn(t, project, moduleOf(archetype), "apply"); run.code == 0 {
+					t.Errorf("%s: stego validate and stego apply accepted the scaffold without %s", archetype, part.name)
+				}
+			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-R05-T01 An empty scaffold leaves the example content out", func(t *testing.T) {
+		project, _ := initialized(t, "rpc-service", "--empty")
+		var paths []string
+		for path := range treeOf(t, project) {
+			paths = append(paths, path)
+		}
+		want := []string{"./", ".stego/", ".stego/.gitignore", ".stego/apply.lock", ".stego/config.yaml", "fills/", "service.yaml"}
+		if strings.Join(sortStrings(paths), " ") != strings.Join(want, " ") {
+			t.Errorf("the empty scaffold holds %v, want %v", sortStrings(paths), want)
+		}
+		data, err := os.ReadFile(filepath.Join(project, "service.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var service map[string]any
+		if err := yaml.Unmarshal(data, &service); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"entities", "collections", "queries", "commands", "overrides"} {
+			if value, ok := service[key]; ok && reflect.ValueOf(value).Len() != 0 {
+				t.Errorf("the empty scaffold holds %s: %v", key, value)
+			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-R05-T02 An empty scaffold names, as it is written, each setting that checking then asks for", func(t *testing.T) {
+		for archetype := range exampleArchetypes {
+			project, run := initialized(t, archetype, "--empty")
+			owed := owedSettings(run.stdout)
+			if len(owed) == 0 {
+				t.Errorf("%s: stego init named no setting: %s", archetype, run.stdout)
+			}
+			check := stegoIn(t, project, moduleOf(archetype), "validate")
+			if check.code == 0 {
+				t.Fatalf("%s: stego validate accepted the empty scaffold", archetype)
+			}
+			if asked := faultPaths(check.stdout+check.stderr, "author-supplied"); !reflect.DeepEqual(asked, owed) {
+				t.Errorf("%s: stego init named %v, and stego validate asked for %v", archetype, owed, asked)
+			}
+			if all := validationFault.FindAllString(check.stdout+check.stderr, -1); len(all) != len(owed) {
+				t.Errorf("%s: stego validate gave faults other than the settings stego init named: %s", archetype, check.stdout)
+			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-FL-T An author scaffolds an rpc-service declaration that checking accepts as written", func(t *testing.T) {
+		project := namedProject(t)
+		config, err := os.ReadFile(filepath.Join(project, ".stego", "config.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := stegoIn(t, project, nil, "init", "--archetype", "rpc-service")
+		if run.code != 0 {
+			t.Fatalf("stego init: exit %d: %s", run.code, run.stderr)
+		}
+		name := filepath.Base(project)
+		if !strings.Contains(run.stdout, `"`+name+`"`) {
+			t.Errorf("stego init did not print the project name %s: %s", name, run.stdout)
+		}
+		for _, file := range append([]string{"service.yaml", "fills/"}, exampleArchetypes["rpc-service"]...) {
+			if !strings.Contains(run.stdout, "  "+file+"\n") {
+				t.Errorf("stego init did not print %s: %s", file, run.stdout)
+			}
+			if _, err := os.Stat(filepath.Join(project, file)); err != nil {
+				t.Error(err)
+			}
+		}
+		if after, err := os.ReadFile(filepath.Join(project, ".stego", "config.yaml")); err != nil || string(after) != string(config) {
+			t.Errorf("stego init changed the configuration: %v", err)
+		}
+		declaration, err := os.ReadFile(filepath.Join(project, "service.yaml"))
+		if err != nil || !strings.Contains(string(declaration), "name: "+name+"\n") || strings.Contains(string(declaration), "{{") {
+			t.Errorf("the declaration does not hold the service name in place of its placeholders: %v\n%s", err, declaration)
+		}
+		if check := stegoIn(t, project, nil, "validate"); check.code != 0 {
+			t.Errorf("stego validate refused the scaffold: %s%s", check.stdout, check.stderr)
+		}
+	})
 }

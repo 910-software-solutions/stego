@@ -182,6 +182,7 @@ func printUsage() {
 func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	archetype := fs.String("archetype", "", "archetype name (required)")
+	empty := fs.Bool("empty", false, "write no example content, and name each setting the author must supply")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -197,7 +198,7 @@ func runInit(args []string) error {
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
-	result, err := compiler.Initialize(compiler.InitOptions{ProjectDir: projectDir, Archetype: *archetype, Stderr: os.Stderr})
+	result, err := compiler.Initialize(compiler.InitOptions{ProjectDir: projectDir, Archetype: *archetype, Empty: *empty, Stderr: os.Stderr})
 	if err != nil {
 		return err
 	}
@@ -205,6 +206,14 @@ func runInit(args []string) error {
 	fmt.Println("Created:")
 	for _, path := range result.Created {
 		fmt.Printf("  %s\n", path)
+	}
+	// An empty scaffold names each setting that the archetype's components mark as author supplied: checking
+	// refuses the declaration until it gives them (ST-DECL-UC01-R05, ST-DECL-INV90).
+	if len(result.Owed) > 0 {
+		fmt.Println("Give these settings in service.yaml before stego validate accepts it:")
+		for _, setting := range result.Owed {
+			fmt.Printf("  %s\n", setting)
+		}
 	}
 	// Plan and apply check each release against the record of the default branch, and a repository with no
 	// commit holds none (decision on finding G1 of the walkthrough re-run, 2026-11-14).
