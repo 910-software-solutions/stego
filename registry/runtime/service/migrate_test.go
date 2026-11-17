@@ -2168,7 +2168,7 @@ func (f *fixture) migration(calls *int) Migration {
 			_, err := v1.NewSchemaServiceClient(conn).WriteSchema(ctx, &v1.WriteSchemaRequest{Schema: spiceSchema})
 			return err
 		},
-		Definitions: []string{"user", "service", "order", "stego_floor"},
+		Definitions: []string{"user", "service", "order", "outbox_destination", "stego_floor"},
 		Grants:      fixtureGrants,
 	}
 }
@@ -2213,6 +2213,10 @@ definition order {
 	relation owner: user
 	permission view = owner
 	permission create_order = owner
+}
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
 }
 definition stego_floor {
 	relation marker: stego_floor

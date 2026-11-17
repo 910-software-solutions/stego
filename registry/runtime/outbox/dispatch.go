@@ -736,15 +736,61 @@ func (w *Worker) resolve(ctx context.Context, tx *sql.Tx, request ResolveRequest
 	if w.auditor == nil {
 		return errors.New("outbox: the worker has no auditor, so it refuses every resolution")
 	}
+	// The worker resolves by the registration of the destination on it.
+	rules := func(destination string, _ resolveRow) (resolveRules, error) {
+		reg, ok := w.destinations[destination]
+		if !ok {
+			return resolveRules{}, fmt.Errorf("outbox: the destination %s is not registered on this worker", destination)
+		}
+		return resolveRules{mustLand: reg.MustLand, idempotent: reg.Idempotent, hook: reg.StateHook}, nil
+	}
+	hookFailed := func(ctx context.Context, destination string) {
+		w.hookFailures.Add(1)
+		w.metrics.hookFailed(ctx, destination)
+	}
+	seconds, to, err := resolveCore(ctx, tx, request, w.decider, w.auditor, w.queue.now(), rules, hookFailed)
+	if err != nil {
+		return err
+	}
+	*out = Resolved{worker: w, destination: request.Destination, delay: time.Duration(seconds * float64(time.Second)),
+		done: to == Done}
+	return nil
+}
+
+// ErrRefusedOutcome is the error of a resolution, after an allow, whose outcome the destination of the message
+// refuses: acted for an idempotent destination, and discarded for a destination that need not land
+// (ST-SUP-RP01-LC13).
+var ErrRefusedOutcome = errors.New("outbox: the destination of the message refuses this resolution")
+
+// resolveRow is what the row of a parked message recorded at enqueue.
+type resolveRow struct {
+	mustLand   bool
+	idempotent bool
+}
+
+// resolveRules are the rules of one destination that a resolution follows: whether it must land, whether it is
+// idempotent, and its state hook.
+type resolveRules struct {
+	mustLand   bool
+	idempotent bool
+	hook       StateHook
+}
+
+// resolveCore applies one resolution in tx (ST-SUP-RP01-LC13, ST-SUP-RP01-LC17): it checks the request, asks the
+// decision port before it reads the message, reads the message under the tenant policy, applies the rules that
+// rules gives for the destination, changes the state through the relay function resolve, runs the state hook and
+// writes the audit row last. It gives the age of the message in seconds and its new state.
+func resolveCore(ctx context.Context, tx *sql.Tx, request ResolveRequest, decider Decider, auditor Auditor, now any,
+	rules func(destination string, row resolveRow) (resolveRules, error), hookFailed func(ctx context.Context, destination string)) (float64, State, error) {
 	subject, ok := seal.SubjectOf(request.Principal)
 	if !ok || !validText(subject, MaxKeyBytes) {
-		return errors.New("outbox: a resolution needs a principal of the authorization runtime")
+		return 0, "", errors.New("outbox: a resolution needs a principal of the authorization runtime")
 	}
 	if tx == nil || request.ID == uuid.Nil || !labelPattern.MatchString(request.Destination) {
-		return errors.New("outbox: a resolution needs a transaction, a message ID and a destination name")
+		return 0, "", errors.New("outbox: a resolution needs a transaction, a message ID and a destination name")
 	}
 	if request.Resolution != Acted && request.Resolution != NotActed && request.Resolution != Discard {
-		return fmt.Errorf("outbox: %q is not a resolution", request.Resolution)
+		return 0, "", fmt.Errorf("outbox: %q is not a resolution", request.Resolution)
 	}
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
@@ -753,70 +799,70 @@ func (w *Worker) resolve(ctx context.Context, tx *sql.Tx, request ResolveRequest
 	// decision, under the tenant policy, so a message of another tenant is not found (ST-SUP-RP01-LC19).
 	owner, err := scanTenant(ctx, tx, `SELECT pg_catalog.current_setting('app.tenant', true)`)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
-	allowed, err := w.decider.Decide(ctx, DecisionRequest{Subject: subject, Permission: "resolve",
+	allowed, err := decider.Decide(ctx, DecisionRequest{Subject: subject, Permission: "resolve",
 		Resource: resource + destination, Tenant: owner})
 	if err != nil {
-		return fmt.Errorf("outbox: the decision port failed, so the resolution is refused: %w", err)
+		return 0, "", fmt.Errorf("outbox: the decision port failed, so the resolution is refused: %w", err)
 	}
 	if !allowed {
-		return ErrNotAllowed
+		return 0, "", ErrNotAllowed
 	}
 	var state, group string
-	err = tx.QueryRowContext(ctx, `SELECT state, group_id FROM stego_outbox.messages WHERE id = $1 AND destination = $2`,
-		request.ID, destination).Scan(&state, &group)
+	var row resolveRow
+	err = tx.QueryRowContext(ctx, `SELECT state, group_id, must_land, idempotent FROM stego_outbox.messages WHERE id = $1 AND destination = $2`,
+		request.ID, destination).Scan(&state, &group, &row.mustLand, &row.idempotent)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotFound
+		return 0, "", ErrNotFound
 	}
 	if err != nil {
-		return canceled(ctx, err)
+		return 0, "", canceled(ctx, err)
 	}
 	if State(state) != Parked {
-		return ErrNotParked
+		return 0, "", ErrNotParked
 	}
-	reg, ok := w.destinations[destination]
-	if !ok {
-		return fmt.Errorf("outbox: the destination %s is not registered on this worker", destination)
+	reg, err := rules(destination, row)
+	if err != nil {
+		return 0, "", err
 	}
 	switch {
-	case request.Resolution == Discard && !reg.MustLand:
-		return fmt.Errorf("outbox: a message of %s, which need not land, cannot be discarded", destination)
-	case request.Resolution == Acted && reg.Idempotent:
-		return fmt.Errorf("outbox: a message of the idempotent destination %s is resolved as not acted or discarded", destination)
+	case request.Resolution == Discard && !reg.mustLand:
+		return 0, "", fmt.Errorf("%w: a message of %s, which need not land, cannot be discarded", ErrRefusedOutcome, destination)
+	case request.Resolution == Acted && reg.idempotent:
+		return 0, "", fmt.Errorf("%w: a message of the idempotent destination %s is resolved as not acted or discarded", ErrRefusedOutcome, destination)
 	}
 	to := map[Resolution]State{Acted: Done, NotActed: Pending, Discard: Discarded}[request.Resolution]
 	if err := Transition(Parked, to); err != nil {
-		return err
+		return 0, "", err
 	}
 	var at time.Time
 	var seconds float64
 	// The state changes only through the relay function resolve, which requires the transaction's tenant
 	// (ST-SUP-RP01-LC19).
 	err = tx.QueryRowContext(ctx, `SELECT o_resolved_at, o_age_seconds FROM stego_outbox.resolve($1::timestamptz, $2::uuid, $3::text, $4::text, $5::text)`,
-		w.queue.now(), request.ID, string(to), string(request.Resolution), subject).Scan(&at, &seconds)
+		now, request.ID, string(to), string(request.Resolution), subject).Scan(&at, &seconds)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotParked
+		return 0, "", ErrNotParked
 	}
 	if err != nil {
-		return canceled(ctx, err)
+		return 0, "", canceled(ctx, err)
 	}
-	if reg.StateHook != nil {
-		if err := callHook(ctx, reg.StateHook, tx, StateChange{ID: request.ID, Group: group, Destination: destination,
+	if reg.hook != nil {
+		if err := callHook(ctx, reg.hook, tx, StateChange{ID: request.ID, Group: group, Destination: destination,
 			Tenant: owner, State: to}); err != nil {
-			w.hookFailures.Add(1)
-			w.metrics.hookFailed(ctx, destination)
-			return fmt.Errorf("outbox: the state hook of %s refused the resolution: %w", destination, err)
+			if hookFailed != nil {
+				hookFailed(ctx, destination)
+			}
+			return 0, "", fmt.Errorf("outbox: the state hook of %s refused the resolution: %w", destination, err)
 		}
 	}
 	// The audit row is the last write before the caller's commit, as the audit runtime asks (ST-SUP-RP05-LC12).
-	if err := w.auditor.Record(ctx, tx, AuditEntry{MessageID: request.ID, Tenant: owner, Destination: destination,
+	if err := auditor.Record(ctx, tx, AuditEntry{MessageID: request.ID, Tenant: owner, Destination: destination,
 		Subject: subject, Resolution: request.Resolution, At: at}); err != nil {
-		return fmt.Errorf("outbox: write the audit row of the resolution: %w", err)
+		return 0, "", fmt.Errorf("outbox: write the audit row of the resolution: %w", err)
 	}
-	*out = Resolved{worker: w, destination: destination, delay: time.Duration(seconds * float64(time.Second)),
-		done: to == Done}
-	return nil
+	return seconds, to, nil
 }
 
 // scanTenant reads the tenant of one row of one column that query gives in tx, through tenant.ScanRows, and refuses
