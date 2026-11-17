@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -36,7 +38,7 @@ func bindingFaults(t *testing.T, name string, data []byte) []string {
 			}
 		}
 	}
-	faults = append(faults, blankVarCalls(file)...)
+	faults = append(faults, packageVarCalls(file)...)
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch n := node.(type) {
 		case *ast.FuncDecl:
@@ -63,11 +65,117 @@ func bindingFaults(t *testing.T, name string, data []byte) []string {
 	return faults
 }
 
-// blankVarCalls gives a fault for each package-level var of only blank names whose value calls a function: such a
-// var runs code at start for its effect alone, as a func init does (#394 security review L3). A conversion to a
-// parenthesized type, such as (*T)(nil) in var _ I = (*T)(nil), calls nothing. A named var, such as one that
-// compiles a regular expression or builds a command, keeps its value and is no fault.
-func blankVarCalls(file *ast.File) []string {
+// startCalls are the functions that a package-level var of generated code may call, by the import path of their
+// package ("" for a builtin or a function of the same package), each a pattern of names. A var runs its value at
+// start, as a func init does, so any other call there is a fault (ST-GEN-INV14; security review of #401, L3). Each
+// entry is one that a generator writes: an error value, a compiled pattern, the declared commands, queries,
+// entities, refusals and workers of the runtime, the parsed relations of authorization, the entity views of the
+// generated data package, and the helpers must, mustCommand, mustQuery and declare that wrap them, and make in the
+// protobuf code.
+var startCalls = map[string]*regexp.Regexp{
+	"":       regexp.MustCompile(`^(make|must|mustCommand|mustQuery|declare)$`),
+	"errors": regexp.MustCompile(`^New$`),
+	"regexp": regexp.MustCompile(`^MustCompile$`),
+	"github.com/jsell-rh/stego/registry/runtime/command": regexp.MustCompile(`^(Must|NewCommand|NewEntity|NewList|NewRefusal|NewWorker)$`),
+	"github.com/jsell-rh/stego/registry/runtime/query":   regexp.MustCompile(`^(NewEntity|NewQuery|NewListQuery)$`),
+	"github.com/jsell-rh/stego/registry/runtime/authz":   regexp.MustCompile(`^ParseRelation$`),
+	"/internal/api/data": regexp.MustCompile(`^Entity[A-Za-z0-9]+View$`),
+}
+
+// startCallAllowed tells whether a call in the value of a package-level var is one of startCalls or a conversion:
+// to a parenthesized type (conversion) or to a type that the file declares (typeNames).
+// The package of a qualified call is found by the imports of the file; the generated data package is matched by the
+// end of its path, which holds the module of the service.
+func startCallAllowed(call *ast.CallExpr, imports map[string]string, typeNames map[string]bool) bool {
+	if conversion(call, typeNames) {
+		return true
+	}
+	switch fun := call.Fun.(type) {
+	case *ast.Ident:
+		// A name of a type that the file declares is a conversion, such as Edition(1) in the defaults of the
+		// protobuf code.
+		return typeNames[fun.Name] || startCalls[""].MatchString(fun.Name)
+	case *ast.SelectorExpr:
+		x, isIdent := fun.X.(*ast.Ident)
+		if !isIdent {
+			return false
+		}
+		path, imported := imports[x.Name]
+		if !imported {
+			return false
+		}
+		if names, listed := startCalls[path]; listed {
+			return names.MatchString(fun.Sel.Name)
+		}
+		return strings.HasSuffix(path, "/internal/api/data") && startCalls["/internal/api/data"].MatchString(fun.Sel.Name)
+	}
+	return false
+}
+
+// conversion tells whether a call is a conversion to a type that only a type expression can name: a call of a
+// parenthesized pointer type with the one argument nil, such as (*T)(nil), of a parenthesized type that the file
+// declares (typeNames), such as (Edition)(0), or of a parenthesized array, map,
+// channel, function, interface or struct type. A parenthesized name or selector, such as (register)() or
+// (os.Setenv)("A", "b"), is a call (security review of #401, L1).
+func conversion(call *ast.CallExpr, typeNames map[string]bool) bool {
+	paren, isParen := call.Fun.(*ast.ParenExpr)
+	if !isParen {
+		return false
+	}
+	switch inner := paren.X.(type) {
+	case *ast.Ident:
+		// (Edition)(0) in the type list of the protobuf code: a type that the file declares.
+		return typeNames[inner.Name]
+	case *ast.StarExpr:
+		nilArg := len(call.Args) == 1
+		if nilArg {
+			ident, isIdent := call.Args[0].(*ast.Ident)
+			nilArg = isIdent && ident.Name == "nil"
+		}
+		switch inner.X.(type) {
+		case *ast.Ident, *ast.SelectorExpr:
+			return nilArg
+		}
+	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType, *ast.StructType:
+		return true
+	}
+	return false
+}
+
+// declaredTypes gives the names of the types that a file declares at package level.
+func declaredTypes(file *ast.File) map[string]bool {
+	names := map[string]bool{}
+	for _, decl := range file.Decls {
+		if gen, ok := decl.(*ast.GenDecl); ok && gen.Tok == token.TYPE {
+			for _, spec := range gen.Specs {
+				names[spec.(*ast.TypeSpec).Name.Name] = true
+			}
+		}
+	}
+	return names
+}
+
+// fileImports gives the import path of each package name of a file: its alias, or the last element of its path.
+func fileImports(file *ast.File) map[string]string {
+	imports := map[string]string{}
+	for _, spec := range file.Imports {
+		path, _ := strconv.Unquote(spec.Path.Value)
+		name := path[strings.LastIndex(path, "/")+1:]
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		imports[name] = path
+	}
+	return imports
+}
+
+// packageVarCalls gives a fault for each call in the value of a package-level var, of any name, that startCalls does
+// not list and that is not a conversion: such a var runs code at start as a func init does (security review of
+// #394, L3, and of #401, L3). The body of a function literal in a value runs only when it is called, so it is not
+// checked here.
+func packageVarCalls(file *ast.File) []string {
+	imports := fileImports(file)
+	typeNames := declaredTypes(file)
 	var faults []string
 	for _, decl := range file.Decls {
 		gen, ok := decl.(*ast.GenDecl)
@@ -75,27 +183,18 @@ func blankVarCalls(file *ast.File) []string {
 			continue
 		}
 		for _, spec := range gen.Specs {
-			value := spec.(*ast.ValueSpec)
-			blank := true
-			for _, name := range value.Names {
-				blank = blank && name.Name == "_"
-			}
-			if !blank {
-				continue
-			}
-			for _, expression := range value.Values {
-				calls := false
+			for _, expression := range spec.(*ast.ValueSpec).Values {
 				ast.Inspect(expression, func(node ast.Node) bool {
-					if call, isCall := node.(*ast.CallExpr); isCall {
-						if _, conversion := call.Fun.(*ast.ParenExpr); !conversion {
-							calls = true
+					switch n := node.(type) {
+					case *ast.FuncLit:
+						return false
+					case *ast.CallExpr:
+						if !startCallAllowed(n, imports, typeNames) {
+							faults = append(faults, fmt.Sprintf("calls %s in the value of a package-level var, which runs at start as a func init does", types.ExprString(n.Fun)))
 						}
 					}
-					return !calls
+					return true
 				})
-				if calls {
-					faults = append(faults, "calls a function in a package-level var _, which runs at start as a func init does")
-				}
 			}
 		}
 	}
@@ -106,11 +205,11 @@ func blankVarCalls(file *ast.File) []string {
 // descriptors.
 var protobufInit = regexp.MustCompile(`^file_[A-Za-z0-9_]+_init$`)
 
-// protobufCalls are the calls that the body of a file_<name>_init of protoc-gen-go makes, beside the
-// file_<name>_init of the files it imports: it builds the file's types from its raw descriptor with
-// protoimpl.TypeBuilder and reads its own package path (google.golang.org/protobuf/cmd/protoc-gen-go/internal_gengo,
+// protobufCalls are the package functions that the body of a file_<name>_init of protoc-gen-go calls, beside len,
+// the file_<name>_init of the files it imports, PkgPath and Build (registersOnly): it builds the file's types from its
+// raw descriptor and reads its own package path (google.golang.org/protobuf/cmd/protoc-gen-go/internal_gengo,
 // genReflectFileDescriptor).
-var protobufCalls = map[string]bool{"len": true, "reflect.TypeOf": true, "unsafe.Slice": true, "unsafe.StringData": true, ".PkgPath": true, ".Build": true}
+var protobufCalls = map[string]bool{"reflect.TypeOf": true, "unsafe.Slice": true, "unsafe.StringData": true}
 
 // protobufRegistration tells whether the func init is the one that protoc-gen-go emits: a file with the
 // protoc-gen-go header whose init only calls file_<name>_init(), which the same file declares, and whose body makes
@@ -136,15 +235,17 @@ func protobufRegistration(data []byte, file *ast.File, init *ast.FuncDecl) bool 
 	}
 	for _, decl := range file.Decls {
 		if register, isFunc := decl.(*ast.FuncDecl); isFunc && register.Recv == nil && register.Name.Name == name.Name && register.Body != nil {
-			return registersOnly(register.Body)
+			return registersOnly(register.Body, declaredTypes(file))
 		}
 	}
 	return false
 }
 
 // registersOnly tells whether every call in the body of a file_<name>_init is one that protoc-gen-go's
-// registration makes.
-func registersOnly(body *ast.BlockStmt) bool {
+// registration makes: a file_<name>_init, len, reflect.TypeOf, unsafe.Slice, unsafe.StringData, a conversion such
+// as (*T)(nil), PkgPath only on the value of reflect.TypeOf, and Build only on a protoimpl.TypeBuilder literal
+// (security review of #401, L2).
+func registersOnly(body *ast.BlockStmt, typeNames map[string]bool) bool {
 	only := true
 	ast.Inspect(body, func(node ast.Node) bool {
 		call, isCall := node.(*ast.CallExpr)
@@ -153,16 +254,22 @@ func registersOnly(body *ast.BlockStmt) bool {
 		}
 		switch fun := call.Fun.(type) {
 		case *ast.ParenExpr:
-			// A conversion, such as (*T)(nil) in the oneof wrappers.
+			only = only && conversion(call, typeNames)
 		case *ast.Ident:
 			only = only && (fun.Name == "len" || protobufInit.MatchString(fun.Name))
 		case *ast.SelectorExpr:
-			// A package function by its qualified name, such as reflect.TypeOf; a method on the value of an
-			// expression by its name alone, such as the Build of a protoimpl.TypeBuilder literal.
-			if x, isIdent := fun.X.(*ast.Ident); isIdent {
+			switch x := fun.X.(type) {
+			case *ast.Ident:
 				only = only && protobufCalls[x.Name+"."+fun.Sel.Name]
-			} else {
-				only = only && protobufCalls["."+fun.Sel.Name]
+			case *ast.CallExpr:
+				// reflect.TypeOf(x{}).PkgPath()
+				inner, isSelector := x.Fun.(*ast.SelectorExpr)
+				only = only && fun.Sel.Name == "PkgPath" && isSelector && types.ExprString(inner) == "reflect.TypeOf"
+			case *ast.CompositeLit:
+				// protoimpl.TypeBuilder{...}.Build()
+				only = only && fun.Sel.Name == "Build" && x.Type != nil && types.ExprString(x.Type) == "protoimpl.TypeBuilder"
+			default:
+				only = false
 			}
 		default:
 			only = false
@@ -251,6 +358,10 @@ func TestProtobufRegistrationIsTheOneAllowedInit(t *testing.T) {
 			{"a file_<name>_init that also calls a function of the package", header + "func init() { file_shop_proto_init() }\n" + protobufInitBody("register()") + "func register() {}\n", false},
 			{"a file_<name>_init that also calls a function of another package", header + "func init() { file_shop_proto_init() }\n" + protobufInitBody("os.Setenv(\"A\", \"b\")"), false},
 			{"a file_<name>_init that calls Build of another package", header + "func init() { file_shop_proto_init() }\n" + protobufInitBody("evil.Build()"), false},
+			{"a file_<name>_init that calls a parenthesized function", header + "func init() { file_shop_proto_init() }\n" + protobufInitBody("(os.Setenv)(\"A\", \"b\")"), false},
+			{"a file_<name>_init that calls Build on another value", header + "func init() { file_shop_proto_init() }\n" + protobufInitBody("(evil).Build()"), false},
+			{"a file_<name>_init that calls Build on a field", header + "func init() { file_shop_proto_init() }\n" + protobufInitBody("a.b.Build()"), false},
+			{"a file_<name>_init that calls PkgPath on another value", header + "func init() { file_shop_proto_init() }\n" + protobufInitBody("evil().PkgPath()"), false},
 		} {
 			faults := bindingFaults(t, "shop.pb.go", []byte(c.source))
 			if allowed := len(faults) == 0; allowed != c.allowed {
@@ -271,17 +382,23 @@ func protobufInitBody(extra string) string {
 }
 
 func TestPackageStartCalls(t *testing.T) {
-	t.Run("ST-GEN-INV14-T A package-level var _ whose value calls a function is refused, and a named var or a conversion is not", func(t *testing.T) {
-		header := "// Code generated by stego. DO NOT EDIT.\n\npackage v1\n\nimport \"regexp\"\n\n"
+	t.Run("ST-GEN-INV14-T A package-level var whose value calls a function that a generator does not write there is refused, and a listed call or a conversion is not", func(t *testing.T) {
+		header := "// Code generated by stego. DO NOT EDIT.\n\npackage v1\n\nimport (\n\t\"errors\"\n\t\"os\"\n\t\"regexp\"\n\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n\tdata \"github.com/example/service/out/internal/api/data\"\n)\n\n"
 		for _, c := range []struct {
 			name, source string
 			allowed      bool
 		}{
 			{"a var _ that calls a function of the package", header + "var _ = register()\nfunc register() bool { return true }\n", false},
-			{"a var _ that calls a function of another package", header + "var _ = regexp.MustCompile(\"x\")\n", false},
-			{"a var _ in a group whose value calls inside a literal", header + "var (\n\t_ = []bool{register()}\n)\nfunc register() bool { return true }\n", false},
+			{"a named var that calls a function of the package", header + "var hidden = register()\nfunc register() bool { return true }\n", false},
+			{"a var of two names whose second value calls", header + "var a, _ = 1, register()\nfunc register() bool { return true }\n", false},
+			{"a var in a group whose value calls inside a literal", header + "var (\n\tlist = []bool{register()}\n)\nfunc register() bool { return true }\n", false},
+			{"a var that calls a function of another package", header + "var set = os.Setenv(\"A\", \"b\")\n", false},
+			{"a var that calls a parenthesized function", header + "var _ = (register)()\nfunc register() bool { return true }\n", false},
+			{"a var that calls a parenthesized function of another package", header + "var _ = (os.Setenv)(\"A\", \"b\")\n", false},
+			{"a var that calls a function of the runtime that no generator writes there", header + "var run = command.Run()\n", false},
 			{"a var _ that converts nil to a pointer type", header + "type T struct{}\ntype I interface{}\nvar _ I = (*T)(nil)\n", true},
-			{"a named var that compiles a regular expression", header + "var name = regexp.MustCompile(\"x\")\n", true},
+			{"a var that converts a number to a type of the file", header + "type Edition int32\nvar Default_Edition = Edition(1)\nvar goTypes = []any{(Edition)(0)}\n", true},
+			{"the listed calls of the generators", header + "var errFields = errors.New(\"x\")\nvar name = regexp.MustCompile(\"x\")\nvar entity = command.Must(command.NewEntity(\"x\"))\nvar view = must(data.EntityOrderView())\nvar types = make([]int, 2)\nvar call = func() bool { return os.Getenv(\"A\") == \"\" }\n", true},
 		} {
 			faults := bindingFaults(t, "shop.go", []byte(c.source))
 			if allowed := len(faults) == 0; allowed != c.allowed {
