@@ -54,14 +54,16 @@ environment:
   - name: STEGO_KAFKA_TOPIC
     type: string
     required: false
-    description: "The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place. When the two have no value, each message goes to the topic of its event type."
+    description: "The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place: the topic of the topic need. The service needs one, as with none each message goes to the topic of its event type."
     secret: false
+    one_of: kafka-topic
     example: "orders.changes"
   - name: STEGO_KAFKA_TOPIC_FILE
     type: path
     required: false
     description: "The file that holds the topic of every message. Give it or STEGO_KAFKA_TOPIC, not the two."
     secret: false
+    one_of: kafka-topic
     example: "/etc/stego/kafka/topic"
   - name: STEGO_KAFKA_CA_FILE
     type: path
