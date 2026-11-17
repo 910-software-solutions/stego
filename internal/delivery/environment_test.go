@@ -256,3 +256,59 @@ func TestRequirementMet(t *testing.T) {
 		}
 	})
 }
+
+func TestNeedValues(t *testing.T) {
+	t.Run("ST-DLV-UC02-R02-T08 The check refuses a topic or an issuer that differs from the variable that carries it or from the issuer that the declaration fixes", func(t *testing.T) {
+		requirementsData, err := os.ReadFile(filepath.Join("testdata", "environment", "platform-requirements.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The topic need of kafka-producer names STEGO_KAFKA_TOPIC; the issuer need of rh-sso-auth names
+		// STEGO_AUTH_ISSUER and holds the issuer that the declaration fixes (ST-DLV-Q26 (A)).
+		text := strings.Replace(string(requirementsData), "    name: order-events\n    components:", "    name: order-events\n    variable: STEGO_KAFKA_TOPIC\n    components:", 1)
+		text = strings.Replace(text, "    name: sso\n    components:", "    name: sso\n    variable: STEGO_AUTH_ISSUER\n    value: https://sso.dev.example.com/auth/realms/dev\n    components:", 1)
+		requirements, err := LoadRequirements([]byte(text))
+		if err != nil {
+			t.Fatalf("the requirements with a variable and a value do not load: %v", err)
+		}
+		_, data := environmentFixture(t)
+		check := func(name string, file []byte) []FitRow {
+			t.Helper()
+			fit, err := CheckEnvironment(requirements, file)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			return unmetRows(fit)
+		}
+		if unmet := check("the fixture", data); len(unmet) != 0 {
+			t.Fatalf("the environment file whose values agree is refused: %+v", unmet)
+		}
+		withIssuer := replaceOnce(t, data, "configuration:\n", "configuration:\n  STEGO_AUTH_ISSUER: https://sso.dev.example.com/auth/realms/dev\n")
+		if unmet := check("an issuer variable of the same value", withIssuer); len(unmet) != 0 {
+			t.Fatalf("an issuer variable of the same value is refused: %+v", unmet)
+		}
+		for _, c := range []struct {
+			name, requirement, want string
+			file                    []byte
+		}{
+			{"another topic in the variable", "topic order-events", "the configuration value of STEGO_KAFKA_TOPIC",
+				replaceOnce(t, data, "  STEGO_KAFKA_TOPIC: dev.orders.order-events\n", "  STEGO_KAFKA_TOPIC: dev.orders.other\n")},
+			{"another topic in the need", "topic order-events", "the configuration value of STEGO_KAFKA_TOPIC",
+				replaceOnce(t, data, "    topic: dev.orders.order-events\n", "    topic: dev.orders.other\n")},
+			{"another issuer than the declaration fixes", "identity issuer sso", "the declaration fixes the issuer https://sso.dev.example.com/auth/realms/dev",
+				replaceOnce(t, data, "    issuer: https://sso.dev.example.com/auth/realms/dev\n", "    issuer: https://sso.other.example.com/auth/realms/dev\n")},
+			{"another issuer in the variable", "identity issuer sso", "the configuration value of STEGO_AUTH_ISSUER",
+				replaceOnce(t, withIssuer, "  STEGO_AUTH_ISSUER: https://sso.dev.example.com/auth/realms/dev\n", "  STEGO_AUTH_ISSUER: https://sso.other.example.com/auth/realms/dev\n")},
+		} {
+			unmet := check(c.name, c.file)
+			if len(unmet) != 1 || unmet[0].Requirement != c.requirement || unmet[0].Status != WrongType || !strings.Contains(unmet[0].Detail, c.want) {
+				t.Errorf("%s: the check gives %+v, want %s of the wrong type with %q", c.name, unmet, c.requirement, c.want)
+			}
+		}
+		// The *_FILE form is not compared, because the check reads no file.
+		fileForm := replaceOnce(t, data, "  STEGO_KAFKA_TOPIC: dev.orders.order-events\n", "  STEGO_KAFKA_TOPIC_FILE: /etc/stego/kafka/topic\n")
+		if unmet := check("the file form", fileForm); len(unmet) != 0 {
+			t.Errorf("the file form of the topic variable is compared: %+v", unmet)
+		}
+	})
+}

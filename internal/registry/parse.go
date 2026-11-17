@@ -116,6 +116,9 @@ var (
 	// needWord is fixed text of a need name, a secret key or a backing store engine: letters, digits, '-' and
 	// '_', so that it cannot hold a host name, an address or a path.
 	needWord = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	// needLabel is one allowed value of a setting that a need name holds: a DNS label of lower-case letters, digits
+	// and '-', of 1 to 63 characters, that starts and ends with a letter or a digit (ST-SUP-INV23).
+	needLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	// needPlaceholder is one placeholder of a need name.
 	needPlaceholder = regexp.MustCompile(`\{[^{}]*\}`)
 	// apiGroup is a Kubernetes API group, such as apps or rbac.authorization.k8s.io.
@@ -178,6 +181,9 @@ func checkNeeds(component *Component) error {
 		if need.Engine != "" && (len(need.Engine) > maxNeedWord || !needWord.MatchString(need.Engine)) {
 			return fault("engine", "the engine %q is not an engine name of at most %d letters, digits, '-' or '_'", need.Engine, maxNeedWord)
 		}
+		if err := checkNeedVariable(component, need); err != nil {
+			return err
+		}
 		if need.Port != 0 && (need.Port < 1 || need.Port > 65535) {
 			return fault("port", "the port %d is not a port number from 1 to 65535", need.Port)
 		}
@@ -202,8 +208,50 @@ func checkNeeds(component *Component) error {
 	return nil
 }
 
+// checkNeedVariable holds the variable and the value of a need (ST-SUP-EN09 field Platform needs, ST-DLV-Q26 (A)):
+// only a topic or an identity issuer names a variable, which is a variable of the component that is not secret; only
+// an identity issuer holds a value, which is one {settings.<key>} of a text setting of the component that is not
+// secret.
+func checkNeedVariable(component *Component, need Need) error {
+	fault := func(field, format string, args ...any) error {
+		return &NeedError{Component: component.Name, Need: need.Name, Field: field, Reason: fmt.Sprintf(format, args...)}
+	}
+	if need.Variable != "" {
+		if need.Kind != "topic" && need.Kind != "identity issuer" {
+			return fault("variable", "the %s need has no field variable; only a topic or an identity issuer names the variable that carries its value", need.Kind)
+		}
+		var found *EnvironmentVariable
+		if component.Environment != nil {
+			for i, variable := range *component.Environment {
+				if variable.Name == need.Variable {
+					found = &(*component.Environment)[i]
+				}
+			}
+		}
+		if found == nil {
+			return fault("variable", "the variable %s is not an environment variable of the component", need.Variable)
+		}
+		if found.IsSecret() {
+			return fault("variable", "the variable %s is secret; the value of a %s is not secret", need.Variable, need.Kind)
+		}
+	}
+	if need.Value != "" {
+		if need.Kind != "identity issuer" {
+			return fault("value", "the %s need has no field value; only an identity issuer holds the issuer that the declaration fixes", need.Kind)
+		}
+		key, isSetting := settingOf(need.Value)
+		setting, declared := component.Config[key]
+		if !isSetting || !declared || setting.Secret || setting.Type != "string" {
+			return fault("value", "the value %q is not one {settings.<key>} of a text setting of the component that is not secret", need.Value)
+		}
+	}
+	return nil
+}
+
 // checkNeedName holds a need name to fixed text and the placeholders {service} and {settings.<key>}, where key is a
-// setting of the component (ST-DLV-Q04 (A)).
+// text setting of the component that is not secret and whose allowed values are DNS labels alone (ST-DLV-Q04 (A),
+// ST-SUP-INV23, decision on ST-SUP-Q153). So no secret, no free text and no value that differs per environment goes
+// into a need name.
 func checkNeedName(component *Component, name string) error {
 	if name == "" {
 		return fmt.Errorf("a need must give its name")
@@ -223,6 +271,9 @@ func checkNeedName(component *Component, name string) error {
 		}
 		if setting.Secret {
 			return fmt.Errorf("the placeholder %s names the secret setting %s; a name never holds a secret (ST-SUP-INV23)", placeholder, key)
+		}
+		if setting.Type != "string" || len(setting.Enum) == 0 || slices.ContainsFunc(setting.Enum, func(value string) bool { return !needLabel.MatchString(value) }) {
+			return fmt.Errorf("the placeholder %s names the setting %s, which does not allow only DNS labels of lower-case letters, digits and '-'; give it an enum of such labels (ST-SUP-INV23)", placeholder, key)
 		}
 	}
 	for _, text := range needPlaceholder.Split(name, -1) {

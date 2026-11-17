@@ -56,7 +56,12 @@ func ReadArchitecture(projectDir string) (*ArchitectureRead, error) {
 		return nil, &ArchitectureReadError{File: file, Cause: "the architecture model does not match the record; it was changed after apply, so run stego apply"}
 	}
 	if err := ValidateArchitecture(data); err != nil {
-		return nil, &ArchitectureReadError{File: file, Cause: err.Error()}
+		cause := err.Error()
+		var version *ArchitectureVersionError
+		if build := state.LastApplied.CompilerBuild; errors.As(err, &version) && version.Found > ArchitectureSchemaVersion && build != nil && build.ModuleVersion != "unknown" {
+			cause += fmt.Sprintf(" (the record names STEGO %s)", build.ModuleVersion)
+		}
+		return nil, &ArchitectureReadError{File: file, Cause: cause}
 	}
 	read := &ArchitectureRead{Data: data, Record: state.LastApplied}
 	decoder := json.NewDecoder(bytes.NewReader(data))

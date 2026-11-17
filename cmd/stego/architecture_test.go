@@ -375,9 +375,10 @@ func queryRefusals(t *testing.T, project func(t *testing.T) string, env []string
 			if err != nil {
 				t.Fatal(err)
 			}
-			invalid := strings.Replace(string(data), `"schema_version": 1`, `"schema_version": 2`, 1)
+			version := fmt.Sprintf(`"schema_version": %d`, compiler.ArchitectureSchemaVersion)
+			invalid := strings.Replace(string(data), version, version+`, "notes": "hand-written"`, 1)
 			if invalid == string(data) {
-				t.Fatal("the model has no schema_version 1")
+				t.Fatalf("the model has no %s", version)
 			}
 			if err := os.WriteFile(model, []byte(invalid), 0o644); err != nil {
 				t.Fatal(err)

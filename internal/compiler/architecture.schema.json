@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "stego:architecture/1",
+  "$id": "stego:architecture/2",
   "title": "STEGO architecture model",
-  "description": "The architecture model that stego apply writes as architecture/architecture.json (ST-GEN-RM04). Version 1.",
+  "description": "The architecture model that stego apply writes as architecture/architecture.json (ST-GEN-RM04). Version 2: each change of the schema raises the version (ST-GEN-Q43).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -34,7 +34,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "record": {
       "type": "object",
@@ -1079,6 +1079,7 @@
             "authenticate",
             "authorize",
             "handle",
+            "fill",
             "slot",
             "repository",
             "store",

@@ -52,21 +52,7 @@ func (d *deriver) flows() {
 	if h == nil {
 		return
 	}
-	var outbox *registry.Component
-	var events []*registry.Component
-	for _, name := range d.in.Names {
-		c := d.in.Components[name]
-		for _, p := range c.Provides {
-			if p.Name == outboxPort && outbox == nil {
-				outbox = c
-			}
-		}
-	}
-	for _, c := range d.byLayer("outside call") {
-		if _, binding := d.provider(c.Name, outboxPort); binding.ID != "" {
-			events = append(events, c)
-		}
-	}
+	outbox, events := d.outboxAndEvents()
 	for _, op := range d.model.Operations {
 		flow := ArchFlow{ID: op.Flow, Operation: op.ID, Steps: []ArchStep{}, Exits: []ArchExit{}, Source: op.Source}
 		step := func(kind, element, via, text, mode string, source ArchSource) int {
@@ -82,8 +68,15 @@ func (d *deriver) flows() {
 		}
 		step("operation", op.ID, "", text, "sync", op.Source)
 		// Authentication: the providers bound to the handler's ports first, then each other component of the layer.
+		// The derivation knows how rest-api authenticates a request; for another handler, which plannedReads admits
+		// only for a service with no resource type, the model states no authentication step that it cannot know
+		// (security review of #404, L1).
 		seen := map[string]bool{}
+		known := h.Name == restAPIComponent
 		for _, p := range h.Requires {
+			if !known {
+				break
+			}
 			if c, binding := d.provider(h.Name, p.Name); c != nil && c.Architecture.Layer == "authentication" {
 				seen[c.Name] = true
 				n := step("authenticate", componentID(c.Name), binding.Port, c.Architecture.Flow, "sync", componentSource(c, "architecture"))
@@ -91,7 +84,7 @@ func (d *deriver) flows() {
 			}
 		}
 		for _, c := range d.byLayer("authentication") {
-			if !seen[c.Name] {
+			if known && !seen[c.Name] {
 				step("authenticate", componentID(c.Name), "", c.Architecture.Flow, "sync", componentSource(c, "architecture"))
 			}
 		}
@@ -119,20 +112,7 @@ func (d *deriver) flows() {
 				exit(n, "a fill of the chain stops it", "the request stops with the answer of the fill", slot.Source)
 			}
 		}
-		for _, p := range h.Requires {
-			c, binding := d.provider(h.Name, p.Name)
-			if c == nil || c.Architecture.Layer != "repository" {
-				continue
-			}
-			step("repository", componentID(c.Name), binding.Port, c.Architecture.Flow, "sync", componentSource(c, "architecture"))
-			stores := d.byLayer("store")
-			if len(stores) == 0 {
-				step("store", componentID(c.Name), "", "The store of "+c.Name+" keeps the rows.", "sync", componentSource(c, "architecture"))
-			}
-			for _, s := range stores {
-				step("store", componentID(s.Name), "", s.Architecture.Flow, "sync", componentSource(s, "architecture"))
-			}
-		}
+		d.storeSteps(h, step)
 		write := slices.Contains(writeOperations, op.Verb)
 		afterMode := "sync"
 		if write && outbox != nil {
@@ -145,6 +125,127 @@ func (d *deriver) flows() {
 		if write {
 			for _, c := range events {
 				step("event", componentID(c.Name), "port:"+outboxPort, c.Architecture.Flow, "async", componentSource(c, "architecture"))
+			}
+		}
+		d.model.Flows = append(d.model.Flows, flow)
+	}
+}
+
+// outboxAndEvents gives the component that provides the durable outbox, or nil, and the components of the outside
+// call layer that the outbox feeds.
+func (d *deriver) outboxAndEvents() (*registry.Component, []*registry.Component) {
+	var outbox *registry.Component
+	var events []*registry.Component
+	for _, name := range d.in.Names {
+		c := d.in.Components[name]
+		for _, p := range c.Provides {
+			if p.Name == outboxPort && outbox == nil {
+				outbox = c
+			}
+		}
+	}
+	for _, c := range d.byLayer("outside call") {
+		if _, binding := d.provider(c.Name, outboxPort); binding.ID != "" {
+			events = append(events, c)
+		}
+	}
+	return outbox, events
+}
+
+// storeSteps adds the repository and the store steps of a flow that the component serves: each repository that it
+// is bound to, then each component of the store layer, or the store that the repository states when no component
+// is of the store layer (ST-GEN-Q44 (A), ST-GEN-Q45 (b)).
+func (d *deriver) storeSteps(server *registry.Component, step func(kind, element, via, text, mode string, source ArchSource) int) {
+	stores := d.byLayer("store")
+	for _, r := range d.repositories(server) {
+		step("repository", componentID(r.component.Name), r.port, r.component.Architecture.Flow, "sync", componentSource(r.component, "architecture"))
+		if len(stores) == 0 {
+			// servedKinds refused a repository that states no store.
+			step("store", componentID(r.component.Name), "", r.component.Architecture.Store+" keeps the rows.", "sync", componentSource(r.component, "architecture.store"))
+		}
+		for _, s := range stores {
+			step("store", componentID(s.Name), "", s.Architecture.Flow, "sync", componentSource(s, "architecture"))
+		}
+	}
+}
+
+// actionFlows builds one request flow for each command, query and worker of the declaration (ST-GEN-UC08-R18):
+// the action, the authentication of a command or a query, the decision of its permission, the component that
+// serves its kind, its fill, the repository and the store, and for one that writes the outbox and each event, and
+// each effect that it may stage, at the component that delivers its destination.
+func (d *deriver) actionFlows() {
+	svc := d.in.Service
+	outbox, events := d.outboxAndEvents()
+	destinations := map[string]string{}
+	for _, destination := range declaredDestinations(svc, d.in.Names) {
+		if _, taken := destinations[destination.Name]; !taken {
+			destinations[destination.Name] = destination.Component
+		}
+	}
+	type action struct {
+		kind, name, path, trigger string
+		fill                      types.FillNames
+		writes                    []string
+		effects                   []types.Effect
+	}
+	var actions []action
+	for i, c := range svc.Commands {
+		actions = append(actions, action{"command", c.Name, fmt.Sprintf("commands[%d]", i), "", c.Fill, c.Writes, c.Effects})
+	}
+	for i, q := range svc.Queries {
+		actions = append(actions, action{"query", q.Name, fmt.Sprintf("queries[%d]", i), "", q.Fill, nil, nil})
+	}
+	for i, w := range svc.Workers {
+		actions = append(actions, action{"worker", w.Name, fmt.Sprintf("workers[%d]", i), w.Trigger, w.Fill, w.Writes, w.Effects})
+	}
+	for _, a := range actions {
+		server := d.servers[map[string]string{"command": "commands", "query": "queries", "worker": "workers"}[a.kind]]
+		if server == nil {
+			continue
+		}
+		id := a.kind + ":" + a.name
+		source := ArchSource{Declaration: a.path}
+		flow := ArchFlow{ID: "flow:" + a.kind + "." + a.name, Operation: id, Steps: []ArchStep{}, Exits: []ArchExit{}, Source: source}
+		step := func(kind, element, via, text, mode string, source ArchSource) int {
+			flow.Steps = append(flow.Steps, ArchStep{N: len(flow.Steps) + 1, Kind: kind, Element: element, ViaPort: via, Text: text, Mode: mode, Source: source})
+			return len(flow.Steps)
+		}
+		text := "The " + a.kind + " " + a.name + " is called."
+		if a.kind == "worker" {
+			text = "The worker " + a.name + " runs: " + a.trigger + "."
+		}
+		step("operation", id, "", text, "sync", source)
+		// A command and a query come with a request of a caller; a worker runs with no caller.
+		if a.kind != "worker" {
+			for _, c := range d.byLayer("authentication") {
+				n := step("authenticate", componentID(c.Name), "", c.Architecture.Flow, "sync", componentSource(c, "architecture"))
+				flow.Exits = append(flow.Exits, ArchExit{AfterStep: n, When: "the request has no valid token", Result: "401 Unauthorized", Source: componentSource(c, "architecture")})
+			}
+		}
+		if check, ok := d.checks[id]; ok && check.Permission != "" {
+			who := "the caller"
+			if a.kind == "worker" {
+				who = "the worker"
+			}
+			step("authorize", check.ID, "", fmt.Sprintf("Decides the permission %s on the %s for %s.", check.Permission, check.ResourceType, who), "sync", check.Source)
+		}
+		step("handle", componentID(server.Name), "", server.Architecture.Flow, "sync", componentSource(server, "architecture"))
+		for _, fill := range fillIDs(a.fill) {
+			step("fill", fill, "", "The fill "+strings.TrimPrefix(fill, "fill:")+" carries out the "+a.kind+".", "sync", ArchSource{Declaration: a.path + ".fill"})
+		}
+		d.storeSteps(server, step)
+		afterMode := "sync"
+		if len(a.writes) > 0 && outbox != nil {
+			step("outbox", componentID(outbox.Name), "port:"+outboxPort, outbox.Architecture.Flow, "sync", componentSource(outbox, "architecture"))
+			afterMode = "async"
+			for _, c := range events {
+				step("event", componentID(c.Name), "port:"+outboxPort, c.Architecture.Flow, "async", componentSource(c, "architecture"))
+			}
+		}
+		for j, effect := range a.effects {
+			if component, known := destinations[effect.Destination]; known {
+				step("outside call", componentID(component), "", fmt.Sprintf("Delivers the effect %s to the destination %s.", effect.Name, effect.Destination),
+					afterMode, ArchSource{Declaration: fmt.Sprintf("%s.effects[%d]", a.path, j)})
 			}
 		}
 		d.model.Flows = append(d.model.Flows, flow)
@@ -440,7 +541,10 @@ func (d *deriver) plannedReads() error {
 		view        bool
 	}
 	var uses []use
-	if d.handler != nil && len(svc.Collections) > 0 {
+	// A planned entity matters only when it has a resource type, so the derivation refuses a handler other than
+	// rest-api, whose planned entities it does not know, only for a service with an entity of a resource type.
+	typed := slices.ContainsFunc(svc.Entities, func(e types.Entity) bool { return e.ResourceType != "" })
+	if d.handler != nil && len(svc.Collections) > 0 && (d.handler.Name == restAPIComponent || typed) {
 		if d.handler.Name != restAPIComponent {
 			return &ArchitectureRefusal{fmt.Errorf("the component %s serves the collections, and the derivation knows the data path of the component %s alone; it cannot state which entities %s plans and reads, so it builds no model",
 				d.handler.Name, restAPIComponent, d.handler.Name)}
@@ -785,14 +889,10 @@ func (d *deriver) aspects() {
 		}
 		return ArchAspect{State: "empty", Reason: reason}
 	}
-	flowReason := reasonNoOperation
-	if len(m.Operations) > 0 && d.handler == nil {
-		flowReason = reasonNoServer
-	}
 	m.Aspects = ArchAspects{
 		Structure:       state(len(m.Components) > 0, reasonNoComponents),
 		DataModel:       state(len(m.Entities) > 0, reasonNoEntity),
-		RequestFlows:    state(len(m.Flows) > 0, flowReason),
+		RequestFlows:    state(len(m.Flows) > 0, reasonNoOperation),
 		PlatformEdges:   state(len(m.Needs)+len(m.Variables) > 0, reasonNoNeed),
 		TrustAndTenancy: state(true, ""),
 	}

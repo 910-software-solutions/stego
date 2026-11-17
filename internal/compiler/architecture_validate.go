@@ -31,11 +31,11 @@ func compiledArchitectureSchema() (*jsonschema.Schema, error) {
 		}
 		compiler := jsonschema.NewCompiler()
 		compiler.DefaultDraft(jsonschema.Draft2020)
-		if err := compiler.AddResource("stego:architecture/1", document); err != nil {
+		if err := compiler.AddResource(ArchitectureSchemaID, document); err != nil {
 			architectureSchemaErr = err
 			return
 		}
-		architectureSchema, architectureSchemaErr = compiler.Compile("stego:architecture/1")
+		architectureSchema, architectureSchemaErr = compiler.Compile(ArchitectureSchemaID)
 	})
 	return architectureSchema, architectureSchemaErr
 }
@@ -51,8 +51,11 @@ func ValidateArchitecture(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("the model is not JSON: %w", err)
 	}
+	if err := checkArchitectureVersion(instance); err != nil {
+		return err
+	}
 	if err := schema.Validate(instance); err != nil {
-		return fmt.Errorf("the model does not match the schema stego:architecture/1: %w", err)
+		return fmt.Errorf("the model does not match the schema %s: %w", ArchitectureSchemaID, err)
 	}
 	var model ArchitectureModel
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -61,6 +64,39 @@ func ValidateArchitecture(data []byte) error {
 		return err
 	}
 	return checkArchitectureRules(&model)
+}
+
+// ArchitectureVersionError is a model of a schema version that this STEGO does not read (decision on ST-GEN-Q43). An
+// older model is derived output, so apply writes it again; a newer model needs the STEGO that wrote it.
+type ArchitectureVersionError struct {
+	Found int
+}
+
+// Error says which version the model has, which version this STEGO reads, and what to do.
+func (e *ArchitectureVersionError) Error() string {
+	if e.Found < ArchitectureSchemaVersion {
+		return fmt.Sprintf("the model is of the architecture schema version %d, and this STEGO reads version %d only; run stego apply to write the model again", e.Found, ArchitectureSchemaVersion)
+	}
+	return fmt.Sprintf("the model is of the architecture schema version %d, which is newer than version %d that this STEGO reads; use the STEGO that wrote the model", e.Found, ArchitectureSchemaVersion)
+}
+
+// checkArchitectureVersion refuses, before the schema, a model whose schema_version is a whole number other than the
+// version of this STEGO, so that the refusal says why and does not list each part of the schema that differs. A
+// model with no schema_version or one that is not a whole number goes on to the schema, which refuses it.
+func checkArchitectureVersion(instance any) error {
+	object, isObject := instance.(map[string]any)
+	if !isObject {
+		return nil
+	}
+	number, isNumber := object["schema_version"].(json.Number)
+	if !isNumber {
+		return nil
+	}
+	found, err := number.Int64()
+	if err != nil || found == ArchitectureSchemaVersion || found < 0 || found > 1<<20 {
+		return nil
+	}
+	return &ArchitectureVersionError{Found: int(found)}
 }
 
 // checkArchitectureRules checks the rules between the elements of a model.
@@ -269,7 +305,7 @@ func checkArchitectureRules(m *ArchitectureModel) error {
 }
 
 // stepLayer gives the place of a step kind in the order of a flow; a slot step takes its place from its phase.
-var stepLayer = map[string]int{"operation": 0, "authenticate": 1, "authorize": 2, "handle": 3, "repository": 5, "store": 6, "outbox": 7, "event": 9, "outside call": 10}
+var stepLayer = map[string]int{"operation": 0, "authenticate": 1, "authorize": 2, "handle": 3, "fill": 4, "repository": 5, "store": 6, "outbox": 7, "event": 9, "outside call": 10}
 
 // checkFlowOrder checks that the steps of a flow are numbered 1 to n and follow the layer order, each slot at its
 // phase.

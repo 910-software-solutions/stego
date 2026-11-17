@@ -176,3 +176,71 @@ func TestRequirementsFileNames(t *testing.T) {
 		}
 	})
 }
+
+func TestNeedVariable(t *testing.T) {
+	t.Run("ST-DLV-UC01-R01-T05 The requirements state the variable of a topic or an issuer and the issuer that the declaration fixes, and refuse one of another kind or that no component reads", func(t *testing.T) {
+		components := func() []ComponentNeeds {
+			return []ComponentNeeds{{Component: "auth", Settings: map[string]string{"issuer": "https://sso.example.com/realms/main"},
+				Needs: []Need{{Kind: "identity issuer", Name: "{service}-issuer", Variable: "STEGO_AUTH_ISSUER", Value: "{settings.issuer}"}},
+				Variables: []Variable{
+					{Name: "STEGO_AUTH_ISSUER", Type: "url", Description: "The issuer."},
+					{Name: "STEGO_AUTH_KEY", Type: "string", Secret: true, Description: "The key."},
+				}}}
+		}
+		files, err := WriteRequirements("orders", components())
+		if err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := LoadRequirements(files.Requirements)
+		if err != nil {
+			t.Fatalf("the written requirements do not load: %v", err)
+		}
+		got := loaded.Requirements[0]
+		if got.Variable != "STEGO_AUTH_ISSUER" || got.Value != "https://sso.example.com/realms/main" {
+			t.Fatalf("the issuer requirement holds the variable %q and the value %q", got.Variable, got.Value)
+		}
+		// A setting that the declaration does not give fixes no value.
+		unset := components()
+		unset[0].Settings = map[string]string{}
+		if requirements, err := DeriveRequirements("orders", unset); err != nil || requirements.Requirements[0].Value != "" {
+			t.Fatalf("an issuer setting that the declaration does not give: %v, %+v", err, requirements.Requirements)
+		}
+		for name, c := range map[string]struct {
+			change func([]ComponentNeeds)
+			want   string
+		}{
+			"a variable on a secret need": {func(c []ComponentNeeds) {
+				c[0].Needs = []Need{{Kind: "secret", Name: "db", Keys: []string{"url"}, Variable: "STEGO_AUTH_ISSUER"}}
+			}, "the secret need has no field variable"},
+			"a value on a topic": {func(c []ComponentNeeds) {
+				c[0].Needs = []Need{{Kind: "topic", Name: "events", Value: "{settings.issuer}"}}
+			}, "the topic need has no field value"},
+			"a variable no component reads": {func(c []ComponentNeeds) { c[0].Needs[0].Variable = "STEGO_OTHER" }, "the variable STEGO_OTHER is not an environment variable"},
+			"a secret variable":             {func(c []ComponentNeeds) { c[0].Needs[0].Variable = "STEGO_AUTH_KEY" }, "the variable STEGO_AUTH_KEY is not an environment variable"},
+			"a value that is not a setting": {func(c []ComponentNeeds) { c[0].Needs[0].Value = "https://sso.example.com" }, "is not one {settings.<key>}"},
+			"an issuer that is not https":   {func(c []ComponentNeeds) { c[0].Settings["issuer"] = "http://sso.example.com/realms/main" }, "is not an https URL"},
+		} {
+			changed := components()
+			c.change(changed)
+			if _, err := DeriveRequirements("orders", changed); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("%s: got %v, want a refusal that says %q", name, err, c.want)
+			}
+		}
+		// LoadRequirements refuses the same faults in a file that apply did not write.
+		text := string(files.Requirements)
+		for name, edit := range map[string][3]string{
+			"a variable that the list does not hold": {"variable: STEGO_AUTH_ISSUER", "variable: STEGO_OTHER", "not an environment variable of the list"},
+			"a secret variable":                      {"variable: STEGO_AUTH_ISSUER", "variable: STEGO_AUTH_KEY", "not an environment variable of the list"},
+			"a value that is not https":              {"value: https://sso.example.com/realms/main", "value: http://sso.example.com/realms/main", "not an https URL"},
+			"a value on another kind":                {"kind: identity issuer", "kind: topic", "the topic need has no field value"},
+		} {
+			changed := strings.Replace(text, edit[0], edit[1], 1)
+			if changed == text {
+				t.Fatalf("%s: the edit does not apply:\n%s", name, text)
+			}
+			if _, err := LoadRequirements([]byte(changed)); err == nil || !strings.Contains(err.Error(), edit[2]) {
+				t.Errorf("%s: LoadRequirements gives %v, want a refusal that says %q", name, err, edit[2])
+			}
+		}
+	})
+}
