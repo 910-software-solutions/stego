@@ -2880,6 +2880,11 @@ func TestInboxReadiness(t *testing.T) {
 		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "the component inbox-order-changes stopped" {
 			t.Fatalf("the reason is %q", reason)
 		}
+		// An inbox that its retention check stopped names that stage (core builder 16).
+		w.inbox = &failingInbox{stage: "kafka-consumer.retention"}
+		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "the component inbox-order-changes stopped at the stage kafka-consumer.retention" {
+			t.Fatalf("the reason of an inbox stopped by its retention is %q", reason)
+		}
 		w.track("inbox-order-changes")
 		if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
 			t.Fatalf("a running inbox gives the reason %q", reason)
@@ -2888,7 +2893,9 @@ func TestInboxReadiness(t *testing.T) {
 }
 
 // failingInbox is an inbox whose sessions fail with class, or do not fail when it is empty.
-type failingInbox struct{ class string }
+type failingInbox struct{ class, stage string }
+
+func (f *failingInbox) Failed() string { return f.stage }
 
 func (f *failingInbox) Failing() string { return f.class }
 

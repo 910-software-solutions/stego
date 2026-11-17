@@ -215,7 +215,11 @@ type Workers struct {
 	inboxName string
 	// inbox tells the failure class of an inbox whose sessions fail in a row, which makes the worker mode not ready
 	// (security review of PR #418, M2).
-	inbox      interface{ Failing() string }
+	inbox interface {
+		Failing() string
+		// Failed gives the stage of the failure that stopped the inbox for good, such as kafka-consumer.retention.
+		Failed() string
+	}
 	relay      *authz.Relay
 	periodic   *lease.Periodic
 	tickers    []*command.Ticker
@@ -643,7 +647,15 @@ func (w *Workers) stopped(names ...string) string {
 	for _, c := range w.components {
 		for _, name := range names {
 			if c.name == name && !c.running.Load() {
-				out = append(out, "the component "+c.name+" stopped")
+				text := "the component " + c.name + " stopped"
+				// A stopped inbox names the stage that stopped it, as the docs and the event kafka.consumer.start_refused
+				// give it (core builder 16).
+				if c.name == w.inboxName && w.inbox != nil {
+					if stage := w.inbox.Failed(); stage != "" {
+						text += " at the stage " + stage
+					}
+				}
+				out = append(out, text)
 			}
 		}
 	}
