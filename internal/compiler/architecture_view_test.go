@@ -1124,6 +1124,80 @@ func TestArchitectureView(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC08-R14-T16 The access matrix of a service with no authorization bound says that no permission is checked, and never incomplete or may hold", func(t *testing.T) {
+		for name, data := range unboundModels(t) {
+			var model ArchitectureModel
+			if err := json.Unmarshal(data, &model); err != nil {
+				t.Fatal(err)
+			}
+			checks := 0
+			for _, c := range model.Access.Checks {
+				if !c.Public && c.Grants == "" && c.Permission == "" {
+					checks++
+				}
+			}
+			if checks == 0 || len(model.Access.Roles) != 0 || !model.Access.RolesComplete {
+				t.Fatalf("%s: the unbound model proves too little: %d checks with no permission, %d roles", name, checks, len(model.Access.Roles))
+			}
+			view, err := RenderArchitectureView(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := parseView(t, view)
+			form := textOf(p.byID("form-trust"))
+			if p.byID("no-role-missing") != nil || p.byID("no-role-named") != nil || p.byID("roles-incomplete") != nil {
+				t.Errorf("%s: the matrix of a service with no authorization has a note that it is incomplete", name)
+			}
+			if p.byID("no-role") == nil {
+				t.Errorf("%s: the matrix of a service with no authorization does not say that no role is granted", name)
+			}
+			for _, bad := range []string{"⚠ incomplete", "⚠ Incomplete", "holds no grant path of it", "holds no grant path of a permission"} {
+				if strings.Contains(form, bad) {
+					t.Errorf("%s: the trust view of a service with no authorization says %q", name, bad)
+				}
+			}
+			if len(p.all(func(n *html.Node) bool { return n.Data == "button" && strings.Contains(attrOf(n, "class"), "may-hold") })) != 0 {
+				t.Errorf("%s: a cell of a service with no authorization says may hold", name)
+			}
+		}
+	})
+
+	t.Run("ST-GEN-UC08-R14-T17 An ancestor read whose grants name a permission that the model does not hold reads incomplete, and its cells say that the role may hold it", func(t *testing.T) {
+		model, data := ancestorGoneModel(t)
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := parseView(t, view)
+		const mark = "⚠ incomplete: the model holds no grant path of it"
+		n, cells := 0, 0
+		for _, c := range model.Access.Checks {
+			gone := false
+			for _, a := range c.Ancestors {
+				gone = gone || a.Grants == "permission:shelf#gone"
+			}
+			if !gone {
+				continue
+			}
+			n++
+			heads := p.all(func(n *html.Node) bool { return n.Data == "th" && attrOf(n, "data-id") == c.ID })
+			if len(heads) != 1 || !strings.Contains(textOf(heads[0]), "Shelf shelf#view "+mark) || !strings.Contains(attrOf(heads[0], "title"), "Shelf shelf#view "+mark) {
+				t.Errorf("the head of %s does not mark the ancestor read of Shelf as incomplete", c.ID)
+			}
+			for _, b := range p.all(func(n *html.Node) bool {
+				return n.Data == "button" && attrOf(n, "data-check") == c.ID && attrOf(n, "data-role") != ""
+			}) {
+				if !strings.Contains(textOf(b), "⤒") || !strings.Contains(attrOf(b, "title"), "Shelf (shelf#view), whose grant paths are incomplete: the model holds no grant path of it, so this role may hold it") {
+					t.Errorf("the cell of %s and %s does not say that the role may hold the read of Shelf: %q", attrOf(b, "data-role"), c.ID, attrOf(b, "title"))
+				}
+				cells++
+			}
+		}
+		if n == 0 || cells == 0 {
+			t.Fatalf("the edited model proves too little: %d checks, %d cells", n, cells)
+		}
+	})
+
 	t.Run("ST-GEN-UC08-R15-T01 The matrix of the data model is titled Operations each collection offers", func(t *testing.T) {
 		data := page.byID("form-data")
 		tables := within(data, func(n *html.Node) bool { return n.Data == "table" && attrOf(n, "class") == "matrix" })
@@ -1203,6 +1277,38 @@ func contrast(a, b [3]float64) float64 {
 
 // hostileValue is free text that would end a script block and run code if the view inserted it as markup.
 const hostileValue = "</script><img src=x onerror=alert(1)><!-- \u2028 & end"
+
+// unboundModels gives the models of the fixture and of the nested fixture with no authorization bound: each check
+// names no permission, and no permission is checked.
+func unboundModels(t *testing.T) map[string][]byte {
+	t.Helper()
+	out := map[string][]byte{}
+	for name, in := range map[string]ArchitectureInput{"flat": archFixture(t), "nested": nestedFixture(t)} {
+		in.Service.Authorization = nil
+		_, data := deriveFixture(t, in)
+		out[name] = data
+	}
+	return out
+}
+
+// ancestorGoneModel gives the model of the nested fixture with the grants of each ancestor read of Shelf set to
+// permission:shelf#gone, which the model does not hold, as a reader can edit it.
+func ancestorGoneModel(t *testing.T) (*ArchitectureModel, []byte) {
+	t.Helper()
+	model, _ := deriveFixture(t, nestedFixture(t))
+	for i := range model.Access.Checks {
+		for j := range model.Access.Checks[i].Ancestors {
+			if a := &model.Access.Checks[i].Ancestors[j]; a.Entity == "entity:Shelf" {
+				a.Grants = "permission:shelf#gone"
+			}
+		}
+	}
+	data, err := json.MarshalIndent(model, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model, data
+}
 
 // hostileStops is free text, as a reader can edit it into the stop text of a grant path: markup that would end a
 // script block and run code, and control and bidirectional characters that would change the colors or reorder a line

@@ -427,6 +427,42 @@ func TestComplianceFactList(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-GEN-UC16-R01-T10 The access facts of a service with no authorization bound never say that grants are unknown or incomplete, and an ancestor read whose permission the model does not hold is named as incomplete", func(t *testing.T) {
+		for name, data := range unboundModels(t) {
+			text, list, raw := factsOf(t, archProject(t, data), "access")
+			for _, f := range list.Facts {
+				if f.GrantsUnknown || f.Grants != nil || len(f.AncestorsIncomplete) > 0 {
+					t.Errorf("%s: the fact %s of a service with no authorization has grants: %+v", name, f.ID, f)
+				}
+			}
+			for _, bad := range []string{"not known", "may hold", "incomplete", "grant path"} {
+				if strings.Contains(text, bad) {
+					t.Errorf("%s: the facts of a service with no authorization say %q:\n%s", name, bad, text)
+				}
+			}
+			if bytes.Contains(raw, []byte("grants_unknown")) || !strings.Contains(text, "unstated") && !strings.Contains(text, "none") {
+				t.Errorf("%s: the facts do not say that no permission is checked:\n%s", name, text)
+			}
+		}
+		// The reader refuses grants that name no element of the model, so the facts of an edited model are taken
+		// from the model itself.
+		model, _ := ancestorGoneModel(t)
+		list := complianceFacts(model, "access")
+		gone := 0
+		for _, f := range list.Facts {
+			for _, a := range f.AncestorsIncomplete {
+				if a.Permission == "permission:shelf#gone" && a.Unknown {
+					gone++
+				}
+			}
+		}
+		text := factListText(list)
+		if gone == 0 || !strings.Contains(text, "    the model holds no grant path of the ancestor read permission:shelf#gone (") ||
+			!strings.Contains(text, "so it can grant roles that the model does not name\n") {
+			t.Fatalf("the facts do not name the ancestor read whose permission the model does not hold:\n%s", text)
+		}
+	})
+
 	t.Run("ST-GEN-UC16-R02-T01 Each fact of a list names its one source, in the text and in the JSON", func(t *testing.T) {
 		_, project := claimFixtureProject(t, "a new doc has no resource before it exists")
 		for _, topic := range ComplianceTopics {

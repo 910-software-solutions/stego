@@ -646,7 +646,7 @@ func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchP
 			w.text(shortID(a.Entity) + " " + ancestorText(a))
 			if ancestorIncomplete(a, perms) {
 				w.text(" ")
-				w.tag("span", " class=\"incomplete\"", incompleteMark)
+				w.tag("span", " class=\"incomplete\"", ancestorMark(a, perms))
 			}
 		}
 		w.raw("</span>")
@@ -675,7 +675,7 @@ func ancestorsShort(c ArchCheck, perms map[string]*ArchPermission) string {
 	for _, a := range c.Ancestors {
 		part := shortID(a.Entity) + " " + ancestorText(a)
 		if ancestorIncomplete(a, perms) {
-			part += " " + incompleteMark
+			part += " " + ancestorMark(a, perms)
 		}
 		parts = append(parts, part)
 	}
@@ -689,6 +689,12 @@ func ancestorsText(c ArchCheck, perms map[string]*ArchPermission) string {
 
 // incompleteMark marks the read of an ancestor whose grant paths a limit cut short.
 const incompleteMark = "⚠ incomplete: a limit was reached"
+
+// ancestorMark marks the read of an ancestor whose grant paths are incomplete: a limit cut them short, or the model
+// holds no permission of the name that the ancestor grants by (security review of PR #390, L1).
+func ancestorMark(a ArchAncestor, perms map[string]*ArchPermission) string {
+	return "⚠ incomplete: " + incompleteWhy(perms[a.Grants])
+}
 
 // mayHoldGlyph and mayHoldText mark a cell of a role that no named path gives the permission of the operation, when
 // a limit cut the grant paths of that permission short: the role may hold it by a path past the limit.
@@ -774,11 +780,24 @@ func permissionIncomplete(p *ArchPermission) bool { return p != nil && !p.Comple
 // the check grants by, as in a model that a reader edited. So the view fails toward "may hold" (security review of PR
 // #388, Info). A public check needs no permission.
 func checkIncomplete(c ArchCheck, perms map[string]*ArchPermission) bool {
-	if c.Public {
+	if !checkNamesPermission(c) {
 		return false
 	}
 	p := perms[c.Grants]
 	return p == nil || permissionIncomplete(p)
+}
+
+// checkNamesPermission says whether a check states a permission: a check that is not public and names a permission
+// or the permission that it grants by. A check of a service with no authorization bound names none, and no permission
+// is checked; it is never incomplete (security review of PR #390, M1).
+func checkNamesPermission(c ArchCheck) bool {
+	return !c.Public && (c.Permission != "" || c.Grants != "")
+}
+
+// ancestorNamesPermission says whether the read of an ancestor states a permission, as checkNamesPermission does for
+// a check.
+func ancestorNamesPermission(a ArchAncestor) bool {
+	return !a.Public && (a.Permission != "" || a.Grants != "")
 }
 
 // incompleteWhy says why the grant paths of the permission of a check are incomplete.
@@ -790,8 +809,14 @@ func incompleteWhy(p *ArchPermission) string {
 }
 
 // ancestorIncomplete says whether a limit cut short the grant paths of the read permission of an ancestor.
+// An ancestor whose grants name a permission that the model does not hold is incomplete too, so its read never reads
+// as a definite no (security review of PR #390, L1).
 func ancestorIncomplete(a ArchAncestor, perms map[string]*ArchPermission) bool {
-	return a.Grants != "" && permissionIncomplete(perms[a.Grants])
+	if !ancestorNamesPermission(a) {
+		return false
+	}
+	p := perms[a.Grants]
+	return p == nil || permissionIncomplete(p)
 }
 
 // missingAncestors gives the ancestors whose read permission the role alone does not hold by a path that the model
@@ -801,10 +826,11 @@ func ancestorIncomplete(a ArchAncestor, perms map[string]*ArchPermission) bool {
 func missingAncestors(c ArchCheck, role string, perms map[string]*ArchPermission) []string {
 	var out []string
 	for _, a := range c.Ancestors {
-		if a.Grants != "" && len(matrixCell(perms[a.Grants], role)) == 0 {
+		if ancestorNamesPermission(a) && len(matrixCell(perms[a.Grants], role)) == 0 {
 			name := shortID(a.Entity) + " (" + ancestorText(a) + ")"
 			if ancestorIncomplete(a, perms) {
-				name += ", whose grant paths are incomplete: a limit was reached"
+				// The role may hold the read by a path that the model does not name (security review of PR #390, L1).
+				name += ", whose grant paths are incomplete: " + incompleteWhy(perms[a.Grants]) + ", so this role may hold it"
 			}
 			out = append(out, name)
 		}
@@ -901,7 +927,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	// model does not name, so the matrix never says that no role is granted then (security review of PR #388, Info).
 	missing := false
 	for _, c := range checks {
-		missing = missing || (!c.Public && perms[c.Grants] == nil)
+		missing = missing || (checkNamesPermission(c) && perms[c.Grants] == nil)
 	}
 	if len(roles) == 0 && missing {
 		w.tag("p", " class=\"incomplete\" role=\"note\" id=\"no-role-missing\"", "⚠ Incomplete: the model holds no grant path of a permission that an operation checks, so it names no role that holds it. A role may hold that permission; this matrix does not say that no role holds one.")
