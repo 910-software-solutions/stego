@@ -299,7 +299,6 @@ type (
 // withinKey is the composite key of the sprint of a ticket, as the postgres-adapter names it (ST-SUP-RC01-OC46).
 const withinKey = "wtickets_sprint_id_within_fkey"
 
-
 // withinEntities makes the tables and the entities of the within test. The tables hold the composite key of the
 // sprint of a ticket, as the postgres-adapter emits it, so a write past the runtime check meets the key.
 func withinEntities(e *env) (*Entity[wProject], *Entity[wSprint], *Entity[wTicket]) {
