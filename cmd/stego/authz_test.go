@@ -447,6 +447,68 @@ func TestDeclareAuthorization(t *testing.T) {
 	})
 }
 
+// registryWithBypassMark gives the project configuration of a copy of the registry of ST-DECL-TD01 whose
+// authorization component spicedb-authz declares two settings more, written into its files and not through a registry
+// command: skip_authz, marked as a bypass, and cache_ttl, not marked. It is pinned at the full commit of the copy.
+func registryWithBypassMark(t *testing.T) string {
+	t.Helper()
+	source, _ := declaringRegistry(t)
+	dir := filepath.Join(t.TempDir(), "registry")
+	if output, err := exec.Command("cp", "-R", source, dir).CombinedOutput(); err != nil {
+		t.Fatalf("copy the registry: %v\n%s", err, output)
+	}
+	if err := os.RemoveAll(filepath.Join(dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(dir, "components", "spicedb-authz", "component.yaml")
+	data, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := edit(t, string(data), "\nconfig:\n", "\nconfig:\n  skip_authz:\n    type: bool\n    optional: true\n    bypass: true\n  cache_ttl:\n    type: string\n    optional: true\n")
+	if err := os.WriteFile(manifest, []byte(marked), 0644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "init", "-q")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "fixture registry with a bypass mark")
+	return fmt.Sprintf("registry:\n  - url: %s\n    ref: %s\n", dir, git(t, dir, "rev-parse", "HEAD"))
+}
+
+// TestNoBypass runs the system tests of the no-bypass rule over the settings of a component (ST-DECL-UC06-R03).
+func TestNoBypass(t *testing.T) {
+	td03 := td03Service(t)
+	marked := registryWithBypassMark(t)
+	settings := func(value string) string {
+		return edit(t, td03, "overrides:\n", "overrides:\n  spicedb-authz:\n    "+value+"\n")
+	}
+	t.Run("ST-DECL-UC06-R03-T02 A value for a setting that the component's schema marks as a bypass is refused, naming the component and the setting", func(t *testing.T) {
+		refused := td03Project(t, settings("skip_authz: true"))
+		putFile(t, refused, ".stego/config.yaml", marked)
+		fault := expectRefusal(t, refused, "no-bypass", "spicedb-authz", "skip_authz", "bypass")
+		if fault.Path != "overrides.spicedb-authz.skip_authz" {
+			t.Errorf("the fault is not at the setting: %+v", fault)
+		}
+		accepted := td03Project(t, settings("cache_ttl: 30s"))
+		putFile(t, accepted, ".stego/config.yaml", marked)
+		expectAcceptance(t, accepted)
+	})
+	t.Run("ST-DECL-UC06-R03-T01 A slot binding cannot give a slot input a value, so no binding holds a bypass", func(t *testing.T) {
+		project := td03Project(t, td03+"slots:\n  - collection: todos\n    slot: before_create\n    gate: [policy]\n    skip_check: true\n")
+		document, run := validateJSON(t, project)
+		if run.code == 0 || document.Accepted {
+			t.Fatalf("stego validate accepted a binding that gives the input skip_check:\n%s", run.stdout)
+		}
+		named := false
+		for _, fault := range document.Faults {
+			named = named || strings.Contains(fault.Path+" "+fault.Found+" "+fault.Message, "skip_check")
+		}
+		if !named {
+			t.Errorf("no fault names skip_check:\n%s", run.stdout)
+		}
+	})
+}
+
 // registryWithout gives the project configuration of a copy of the registry of ST-DECL-TD01 without the component,
 // pinned at the full commit of the copy.
 func registryWithout(t *testing.T, component string) string {

@@ -57,7 +57,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -116,7 +116,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -237,7 +237,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -328,7 +328,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -541,7 +541,7 @@
     {
       "id": "component:postgres-adapter",
       "name": "postgres-adapter",
-      "version": "6.7.0",
+      "version": "6.7.1",
       "stage": "ga",
       "layer": "repository",
       "flow_part": "Reads and writes the rows of each entity in PostgreSQL in one transaction.",
@@ -559,7 +559,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "architecture"
         }
       }
@@ -1745,7 +1745,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -1761,7 +1761,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -1889,7 +1889,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -1905,7 +1905,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2033,7 +2033,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2049,7 +2049,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2232,7 +2232,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2248,7 +2248,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2442,7 +2442,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2458,7 +2458,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2639,7 +2639,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2655,7 +2655,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2783,7 +2783,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2799,7 +2799,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -2993,7 +2993,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3009,7 +3009,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3145,7 +3145,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3161,7 +3161,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3355,7 +3355,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3371,7 +3371,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3554,7 +3554,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3570,7 +3570,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3740,7 +3740,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3756,7 +3756,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3884,7 +3884,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3900,7 +3900,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "architecture"
             }
           }
@@ -3947,7 +3947,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -4029,7 +4029,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -4130,7 +4130,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -4147,7 +4147,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "needs"
         }
       }
@@ -4309,7 +4309,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -4327,7 +4327,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5105,7 +5105,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5327,7 +5327,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5345,7 +5345,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5363,7 +5363,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5381,7 +5381,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5399,7 +5399,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5417,7 +5417,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5435,7 +5435,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5453,7 +5453,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5471,7 +5471,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5489,7 +5489,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5507,7 +5507,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5525,7 +5525,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5543,7 +5543,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5561,7 +5561,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5579,7 +5579,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5597,7 +5597,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5615,7 +5615,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5633,7 +5633,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5651,7 +5651,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5669,7 +5669,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5687,7 +5687,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5705,7 +5705,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5723,7 +5723,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -5741,7 +5741,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6089,7 +6089,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6108,7 +6108,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6127,7 +6127,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6145,7 +6145,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6164,7 +6164,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6508,7 +6508,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6526,7 +6526,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6618,7 +6618,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6636,7 +6636,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6727,7 +6727,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -6745,7 +6745,7 @@
         "registry": {
           "part": "component",
           "name": "postgres-adapter",
-          "version": "6.7.0",
+          "version": "6.7.1",
           "field": "environment"
         }
       }
@@ -8440,7 +8440,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -8455,7 +8455,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -8470,7 +8470,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -8485,7 +8485,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -8500,7 +8500,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -8515,7 +8515,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -10480,7 +10480,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -10495,7 +10495,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -10510,7 +10510,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11110,7 +11110,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11125,7 +11125,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11140,7 +11140,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11155,7 +11155,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11170,7 +11170,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11185,7 +11185,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11200,7 +11200,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11215,7 +11215,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11230,7 +11230,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11245,7 +11245,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11260,7 +11260,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11275,7 +11275,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11290,7 +11290,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11305,7 +11305,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11320,7 +11320,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11335,7 +11335,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11350,7 +11350,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11365,7 +11365,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11380,7 +11380,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11395,7 +11395,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11410,7 +11410,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11425,7 +11425,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11440,7 +11440,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11455,7 +11455,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11470,7 +11470,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11485,7 +11485,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11500,7 +11500,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11515,7 +11515,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11530,7 +11530,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11545,7 +11545,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11560,7 +11560,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11575,7 +11575,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11590,7 +11590,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11605,7 +11605,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11620,7 +11620,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11635,7 +11635,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11650,7 +11650,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11665,7 +11665,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11680,7 +11680,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11695,7 +11695,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11710,7 +11710,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11725,7 +11725,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11740,7 +11740,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11755,7 +11755,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11770,7 +11770,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11785,7 +11785,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11800,7 +11800,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11815,7 +11815,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11830,7 +11830,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11845,7 +11845,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11860,7 +11860,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11875,7 +11875,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11890,7 +11890,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11905,7 +11905,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11920,7 +11920,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11935,7 +11935,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11950,7 +11950,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11965,7 +11965,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11980,7 +11980,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -11995,7 +11995,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12010,7 +12010,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12025,7 +12025,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12040,7 +12040,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12055,7 +12055,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12070,7 +12070,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12085,7 +12085,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12100,7 +12100,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12115,7 +12115,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12130,7 +12130,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12145,7 +12145,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12160,7 +12160,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -12175,7 +12175,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13075,7 +13075,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13090,7 +13090,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13105,7 +13105,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13120,7 +13120,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13135,7 +13135,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13150,7 +13150,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13165,7 +13165,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13180,7 +13180,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13195,7 +13195,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13210,7 +13210,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13225,7 +13225,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13240,7 +13240,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13255,7 +13255,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13270,7 +13270,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13285,7 +13285,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13300,7 +13300,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13315,7 +13315,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13330,7 +13330,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -13345,7 +13345,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14200,7 +14200,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14215,7 +14215,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14230,7 +14230,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14245,7 +14245,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14260,7 +14260,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14275,7 +14275,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14500,7 +14500,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14515,7 +14515,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14530,7 +14530,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14545,7 +14545,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14560,7 +14560,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14575,7 +14575,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14785,7 +14785,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14800,7 +14800,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14815,7 +14815,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14830,7 +14830,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14845,7 +14845,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }
@@ -14860,7 +14860,7 @@
             "registry": {
               "part": "component",
               "name": "postgres-adapter",
-              "version": "6.7.0",
+              "version": "6.7.1",
               "field": "environment"
             }
           }

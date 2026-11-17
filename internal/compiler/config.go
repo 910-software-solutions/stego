@@ -33,6 +33,12 @@ func validateComponentConfig(service *types.ServiceDeclaration, components map[s
 		}
 		errors = append(errors, declaration.ValidateSettings("overrides."+name, config, component.Config, false)...)
 	}
+	// No setting holds a value for a setting that its component's schema marks as a bypass (ST-DECL-INV24).
+	schemas := make(map[string]map[string]types.ConfigField, len(components))
+	for name, component := range components {
+		schemas[name] = component.Config
+	}
+	errors = append(errors, declaration.ValidateNoBypass(service, schemas)...)
 	for _, name := range sortedKeys(components) {
 		for _, key := range sortedKeys(components[name].Config) {
 			field := components[name].Config[key]
