@@ -17,7 +17,8 @@ config:
       import_path:
         type: string
 
-requires: []
+requires:
+  - storage-adapter
 
 provides:
   - commands
@@ -31,6 +32,7 @@ architecture:
   flow: "Runs the declared command in the transaction of the caller's tenant."
   serves: [commands]
   ports:
+    storage-adapter: outbound
     commands: inbound
 
 environment:

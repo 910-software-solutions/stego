@@ -10,7 +10,8 @@ output_namespace: workers
 
 config: {}
 
-requires: []
+requires:
+  - storage-adapter
 
 provides:
   - workers
@@ -24,6 +25,7 @@ architecture:
   flow: "Runs the fill of each declared worker at its trigger, in a transaction of each tenant."
   serves: [workers]
   ports:
+    storage-adapter: outbound
     workers: inbound
 
 # The worker reads no environment variable of its own: the worker mode reads the settings of the service runtime,

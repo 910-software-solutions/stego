@@ -6,7 +6,8 @@ output_namespace: queries
 
 config: {}
 
-requires: []
+requires:
+  - storage-adapter
 
 provides:
   - queries
@@ -20,6 +21,7 @@ architecture:
   flow: "Runs the declared query for the caller and gives back its rows."
   serves: [queries]
   ports:
+    storage-adapter: outbound
     queries: inbound
 
 environment:
