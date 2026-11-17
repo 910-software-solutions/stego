@@ -1,5 +1,8 @@
 # Worker grants in each tenant
 
+To declare a worker and write its fill, see
+[Commands, queries and workers](commands-queries-workers.md#declare-a-worker).
+
 A worker of a pooled service with tenant provisioning acts in a tenant through
 its own relation on the tenant resource. The schema of the service gives the
 type `tenant` one relation `worker_<worker name in snake case>` of the subject

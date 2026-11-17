@@ -34,21 +34,21 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117094834-ea2461a4eecf
+        module_version: v0.0.0-20261117093330-37358d2946ac
         vcs: git
-        revision: ea2461a4eecf2201c4076d40acb5971c58a08829
+        revision: 37358d2946acd993e20bb1b6d7c82708efccb511
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: bd8c7fabc4a37546697187f693ac762cab45bd3af926da9db9779fd3239cccc6
+    registry_content_sha256: 1463163dd7daeaf80c6bdeac485f79fddeac80702812d7df47de70ba5ff87bd8
     components:
         audit-log:
             version: 1.1.1
             sha: 666192671fc660e36cdc49a35f10b5cfbd800673d3140cc3fb9caeeefd1a3dac
         command:
-            version: 1.3.0
-            sha: 5f21497de0a7abcf5c7ffc8cd81e52b3185bfc388bc4e5c64ed518d73e5e54c2
+            version: 1.2.0
+            sha: 46b10e13b9553225350bdafdba8e7889bd0d2ea40efef6d3112cf91e336a41f9
         domain-probe:
             version: 1.0.1
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
@@ -169,7 +169,7 @@ last_applied:
         internal/tenancy/migrations/roles.sql: 131dcb112a94f82ead145bcb5797c5915ad94a230564e2181883d19944450fc9
         internal/tenancy/migrations/row_security.sql: 6813d74ed06f5df636433d5335339bcb4338f05de418002cd7ef94b60f44b6d9
         internal/tenancy/row_security.go: b49ceb1b85177e84037254ebc7872f9c1d048f24a27b02babc9937603a2360e1
-        main.go: 6e44636a1d5216120d2f8914db6d2e54236d9036f63a8a2967b2a0657ec2997b
+        main.go: e806bc8effb0a068d8db4da415fc2a822c650a51e496e8f3de7887b876937b51
         probes/observations.json: 3219f8292bdb4a47a2882aa87528a231132ea9219db88c094ea0051559fad046
         probes/probes.go: 7b1f0c4ba4b67cf9ba9890be0743d793cc9603cfbf4e43b1193cc2e8b1fe8bf9
         slots/after_create.go: 03242bcad46578176c9ac819f42390080ebebb94f72c480316f09740289ad80f
@@ -209,8 +209,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 71031cade54de7e681b1079d2e7000ec53426c610ff8af554dad1fc928432d63
-        architecture/index.html: 5a1fe2626287b3f9382db37547aab24b3c3a48cb201c24a8a741ce8458178339
+        architecture/architecture.json: bb46500c12770c45c4a6bd1e33de898b13fc0c596282252811d57d24fd86a509
+        architecture/index.html: 728261e664c3cab6a7f65232c87181fb477347cb3908f5756a32fd514a257038
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
         deploy/base/migration-job.yaml: 289f913b022acfd203adefc6f98fb131e9c924d79397225ed1e23b46a01271db
