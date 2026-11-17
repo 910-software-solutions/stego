@@ -281,6 +281,12 @@ func TestGeneratedManagedBrowserSchema(t *testing.T) {
 	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(ManagedBrowserSchema|BrowserSchemaRefusesDrift|BrowserSchemaRefusesRuntimeGrantDrift|BrowserSchemaBootstrapRollsBack)$")
 }
 
+// TestGeneratedBrowserSchemaMigrate runs the mode migrate and the fault classes of the schema check against the local
+// PostgreSQL server (ST-SUP-RC02-OC56, ST-SUP-RC02-OC57).
+func TestGeneratedBrowserSchemaMigrate(t *testing.T) {
+	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(BrowserSchemaMigrate|BrowserSchemaFaultClass)$")
+}
+
 func TestGeneratedSchemaInputs(t *testing.T) {
 	testGeneratedRuntime(t, new(Generator), fixture(), false, "^TestSchemaInputValidation$")
 }

@@ -838,6 +838,12 @@ type Wiring struct {
 	// component can supply it.
 	MigrationJob *MigrationJobSpec
 
+	// SchemaCheck selects a generated function with signature
+	// func(context.Context, *sql.DB) error that main.go runs after the
+	// database ping and before the access check, at the stage that the
+	// function Stage of the same package gives for its error (ST-SUP-RC02-OC57).
+	SchemaCheck *SchemaCheckSpec
+
 	// DiscoveryRoutes lists route registration expressions for main.go
 	// assembly that must be registered OUTSIDE the auth middleware chain.
 	// These are unauthenticated documentation/discovery endpoints (e.g.
@@ -866,6 +872,15 @@ type DatabaseOpenerSpec struct {
 // in the same package that gives the stage of a failure, which the failure
 // record names in place of migrate. The stage holds no error text.
 type MigrationJobSpec struct {
+	Namespace string
+	Function  string
+	Stage     string
+}
+
+// SchemaCheckSpec names the generated schema check and the function with
+// signature func(error) string that gives the stage of its failure, both in
+// the package of the import path Namespace.
+type SchemaCheckSpec struct {
 	Namespace string
 	Function  string
 	Stage     string

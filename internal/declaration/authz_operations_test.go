@@ -68,6 +68,55 @@ func TestCommandAuthorization(t *testing.T) {
 		expectNamed(t, checkOperations(t, td03Command(t, lines...), operationFacts()), "command-authorization", "approve", "permission \"approve\"")
 	})
 
+	// A command on the resource type of the tenant provisioning is decided on the service-level resource in the
+	// tenant of the request (ST-SUP-RC32-OC15), so it names no resource member.
+	serviceLevel := func(t *testing.T, lines ...string) []ValidationError {
+		t.Helper()
+		_, schema := td03Files(t)
+		schema = change(t, schema, "permission retire = operator", "permission retire = operator\n\tpermission record = operator")
+		decl := readTD03(t, td03Command(t, lines...))
+		faults := Validate(decl).All()
+		faults = append(faults, ValidateComposition(decl, operationFacts())...)
+		return append(faults, CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})...)
+	}
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with no resource member is accepted", func(t *testing.T) {
+		expectAccepted(t, serviceLevel(t, "resource_type: service", "permission: record"))
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with a resource member is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: record", "resource_member: documentId"), "command-authorization", "approve", "documentId", "service-level resource", "remove resource_member")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with the provision permission is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: provision"), "command-authorization", "approve", "tenancy.provisioning.provision", "permission of its own")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource with the retire permission is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: retire"), "command-authorization", "approve", "tenancy.provisioning.retire", "permission of its own")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource that writes a relation is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: record", "relationships_written: [document#viewer]"), "command-authorization", "approve", "relationships_written", "only the create")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource that writes an entity with a parent is refused", func(t *testing.T) {
+		service, schema := td03Files(t)
+		service = change(t, service, "collections:\n", "  - name: Line\n    fields:\n      - {name: todo_id, type: ref, to: Todo}\ncollections:\n")
+		schema = change(t, schema, "permission retire = operator", "permission retire = operator\n\tpermission record = operator")
+		decl := readTD03(t, service+"commands:\n"+command("approve", "writes: [Line]", "fill: reserve-and-charge", "route: POST /lines", "resource_type: service", "permission: record"))
+		faults := CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})
+		expectNamed(t, faults, "command-authorization", "approve", "writes[0]", "Line", "no parent")
+	})
+	t.Run("ST-DECL-INV40-T A command on service with no tenant provisioning names a resource member", func(t *testing.T) {
+		service, schema := td03Files(t)
+		service = change(t, service, "  provisioning: {resource_type: service, provision: provision, retire: retire}\n", "")
+		schema = change(t, schema, "permission retire = operator", "permission retire = operator\n\tpermission record = operator")
+		decl := readTD03(t, service+"commands:\n"+standardCommand("approve", "resource_type: service", "permission: record"))
+		faults := CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})
+		var named bool
+		for _, f := range faults {
+			named = named || (f.Rule == "command-authorization" && strings.Contains(f.Message, "no resource member"))
+		}
+		if !named {
+			t.Fatalf("want the fault command-authorization for no resource member, got %+v", faults)
+		}
+	})
+
 	relations := func(relation string) string {
 		return td03Command(t, append(full, "relationships_written: ["+relation+"]")...)
 	}

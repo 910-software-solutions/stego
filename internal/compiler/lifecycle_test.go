@@ -69,6 +69,15 @@ func TestGeneratedHTTPLifecycle(t *testing.T) {
 			t.Fatalf("generated failure record: %v\n%s", err, output)
 		}
 	})
+	t.Run("ST-SUP-RC02-OC57-T02 The failure record names a fault class and object of the strict form and drops any other", func(t *testing.T) {
+		command := exec.Command("go", "test", "-race", "-mod=readonly", "-timeout=20s", "-count=1", "-run", "^TestFailureRecordFaultClass$", "-v", "./...")
+		command.Dir = project
+		command.Env = append(os.Environ(), "GOWORK=off")
+		output, err := command.CombinedOutput()
+		if err != nil || !strings.Contains(string(output), "--- PASS: TestFailureRecordFaultClass/ST-SUP-RC02-OC57-T02") {
+			t.Fatalf("generated failure record: %v\n%s", err, output)
+		}
+	})
 	if os.Getenv("STEGO_CROSS_COMPILE") == "1" {
 		for _, target := range []struct{ os, arch string }{{"windows", "amd64"}, {"darwin", "arm64"}} {
 			command := exec.Command("go", "test", "-c", "-mod=readonly", "-o", filepath.Join(t.TempDir(), "http-test"))
