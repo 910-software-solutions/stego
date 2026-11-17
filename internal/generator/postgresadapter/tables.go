@@ -415,7 +415,62 @@ func tableModels(ctx gen.Context) ([]tableModel, error) {
 		}
 		models = append(models, table)
 	}
+	if err := checkNamesApart(models); err != nil {
+		return nil, err
+	}
 	return models, nil
+}
+
+// checkNamesApart refuses two constraints of one table, or two tables or indexes of the schema, that take the same
+// name. PostgreSQL refuses such a migration only when it runs; generation names both parts here, before any
+// migration is written. The names stay as they are, so no database that holds them needs a rename (sec-413 I1): a
+// field named <reference>_within, for example, gives its foreign key the name of the composite key of a within on
+// <reference>.
+func checkNamesApart(models []tableModel) error {
+	relations := map[string]string{}
+	claim := func(names map[string]string, name, part string) error {
+		if other, ok := names[name]; ok {
+			return fmt.Errorf("the names of %s and %s are both %s; give one of the fields another name so that the database can hold both", other, part, name)
+		}
+		names[name] = part
+		return nil
+	}
+	for _, table := range models {
+		if err := claim(relations, table.name, "the table "+table.name); err != nil {
+			return err
+		}
+	}
+	for _, table := range models {
+		constraints := map[string]string{}
+		primary := primaryName(table.name)
+		if err := claim(constraints, primary, "the primary key of "+table.name); err != nil {
+			return err
+		}
+		if err := claim(relations, primary, "the primary key of "+table.name); err != nil {
+			return err
+		}
+		for _, check := range table.checks {
+			if err := claim(constraints, check.name, "the CHECK "+check.name+" of "+table.name); err != nil {
+				return err
+			}
+		}
+		for _, fk := range table.foreign {
+			if err := claim(constraints, fk.name, "the foreign key from "+table.name+" ("+strings.Join(fk.from, ", ")+")"); err != nil {
+				return err
+			}
+		}
+		for _, columns := range table.unique {
+			if err := claim(relations, uniqueName(table.name, columns), "the unique index of "+table.name+" ("+strings.Join(columns, ", ")+")"); err != nil {
+				return err
+			}
+		}
+		for _, column := range table.search {
+			if err := claim(relations, searchName(table.name, column), "the search index of "+table.name+" ("+column+")"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // withinKey is the composite key of one reference that declares within a field (ST-SUP-RC01-OC46): the referring

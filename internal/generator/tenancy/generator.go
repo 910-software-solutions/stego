@@ -62,6 +62,12 @@ var roleSuffixes = []string{"_runtime", "_owner", "_worker", "_relay", "_idempot
 // part before it, _outbox, gives the relay role shop_outbox_relay, which is the outbox relay role of the prefix shop
 // (ST-SUP-RC27-OC04). Decided by the orchestrator under the Product owner's delegation, 2026-11-11 (ST-SUP-Q107, a).
 func checkPrefix(prefix string) error {
+	// PostgreSQL cuts a longer name to 63 bytes with no error, so two roles could become one (sec-415 L3).
+	for _, suffix := range roleSuffixes {
+		if role := prefix + suffix; len(role) > 63 {
+			return fmt.Errorf("the role %s is longer than the 63 bytes of a PostgreSQL name; give the service a shorter name, or set runtime_role and owner_role with a shorter prefix", role)
+		}
+	}
 	for _, long := range roleSuffixes {
 		for _, short := range roleSuffixes {
 			if long == short || !strings.HasSuffix(long, short) {
