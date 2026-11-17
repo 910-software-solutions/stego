@@ -489,7 +489,7 @@ func commitResolvedModules(ctx context.Context, input ReconcilerInput, resolve M
 	if err != nil {
 		return err
 	}
-	if plan.hasOutputChanges() {
+	if plan.hasCodeChanges() {
 		return fmt.Errorf("generated code is not current; run 'stego apply' before 'stego deps'")
 	}
 	project, err := os.OpenRoot(plan.projectDir)
