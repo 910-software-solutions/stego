@@ -1307,7 +1307,12 @@ func runningReleases(ctx context.Context, tx *sql.Tx, c ContractStep) error {
 		return err
 	}
 	if len(running) > 0 {
-		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need the old column; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand)}
+		// The contract of a drop of an entity drops a table, and every other contract step an old column.
+		old := "the old column"
+		if c.Drop && c.From == "" {
+			old = "the old table"
+		}
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for the release before to stop: the releases %s run and do not know the migration %s, so they still need %s; stop them, and run the migration job again", c.Change, strings.Join(running, ", "), c.Expand, old)}
 	}
 	return nil
 }

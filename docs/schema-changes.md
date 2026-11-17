@@ -213,7 +213,8 @@ is at the step of the drop: a field that an earlier step dropped is not
 there. An item that the Definition does not name, the field did not have.
 `stego compat` names the Definition to declare when a field of the base is
 gone: for example, `the Definition string, max_length 200, optional, after
-name`. When the Definition does not give the field back exactly, the first
+name`. When you drop more than one field of an entity, declare the drops in
+the order that `stego compat` names them: then each place is right. When the Definition does not give the field back exactly, the first
 migration of the head is not the one of the base, and `stego compat` refuses
 it.
 

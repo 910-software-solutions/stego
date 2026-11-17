@@ -936,11 +936,15 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 		return SuggestedChange{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-require", Kind: "require", Entity: head.Name, Field: field.Name, Needs: "a fill value", Phase: "expand"}
 	}
 	for i, field := range dropped {
-		// The Definition of a drop also gives the place of the field, after the field before it in the base, or first
-		// (ST-DECL-EN21).
+		// The Definition of a drop also gives the place of the field, as the entity is at the step of the drop
+		// (ST-DECL-EN21): after the nearest field before it in the base that the head keeps, or first. So the drops
+		// of one entity, declared in the order of these faults, each give back their field in its place.
 		place := ", first"
-		if at := base.field(field.Name); at > 0 {
-			place = ", after " + base.Fields[at-1].Name
+		for at := base.field(field.Name) - 1; at >= 0; at-- {
+			if head.field(base.Fields[at].Name) >= 0 {
+				place = ", after " + base.Fields[at].Name
+				break
+			}
 		}
 		declare := []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-drop", Kind: "drop", Entity: head.Name, Field: field.Name, Needs: "the Definition " + definitionOf(field.Shape) + place, Phase: "expand"}}
 		message := fmt.Sprintf("the head removes %s.%s, which no schema step declares; the release that runs now still reads and writes the column %s", head.Name, field.Name, field.Name)
