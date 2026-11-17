@@ -947,6 +947,9 @@ type renewGate struct {
 	sent     chan struct{}
 	proceed  chan struct{}
 	returned chan struct{}
+	// detach sends the statement with a context that the end of the context of the renew does not end, so the
+	// database gives its own answer.
+	detach bool
 }
 
 func (g *renewGate) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
@@ -955,6 +958,9 @@ func (g *renewGate) QueryRowContext(ctx context.Context, query string, args ...a
 	}
 	g.sent <- struct{}{}
 	<-g.proceed
+	if g.detach {
+		ctx = context.WithoutCancel(ctx)
+	}
 	row := g.DB.QueryRowContext(ctx, query, args...)
 	close(g.returned)
 	return row
@@ -1033,6 +1039,113 @@ func holdReleaseAfterRenew(t *testing.T, during bool) {
 	if _, err := newClient(t, d.other, "stego.controller", "h2", Settings{}).Acquire(context.Background()); err != nil {
 		t.Fatalf("the next holder cannot take the lease at once: %v", err)
 	}
+}
+
+// committedRenewGate is a DB whose Renew statement commits on the server and whose answer the end of the context
+// of the renew cuts off: it sends the statement with a context that does not end, tells the test on committed,
+// waits for the end of the context of the renew, and then gives the renew the error of that context, as a client
+// whose reply did not come before its context ended.
+type committedRenewGate struct {
+	DB
+	committed chan struct{}
+}
+
+func (g *committedRenewGate) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if query != renewStatement {
+		return g.DB.QueryRowContext(ctx, query, args...)
+	}
+	if _, err := g.DB.ExecContext(context.WithoutCancel(ctx), query, args...); err != nil {
+		panic(err)
+	}
+	close(g.committed)
+	<-ctx.Done()
+	return g.DB.QueryRowContext(ctx, query, args...)
+}
+
+// holdOnce starts Hold on c with a work that waits for its context, and gives the held lease and the result of Hold.
+func holdOnce(ctx context.Context, c *Client) (*Held, chan error) {
+	held := make(chan *Held, 1)
+	result := make(chan error, 1)
+	go func() {
+		result <- c.Hold(ctx, func(ctx context.Context, h *Held) error {
+			held <- h
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+	return <-held, result
+}
+
+// TestHoldReleaseAfterCommittedRenew is the case of the review of PR #389, L1: the UPDATE of a renew commits on the
+// server, so the row holds the next token, but the end of ctx cuts off the answer, so the holder keeps the token
+// before it. The release must also try the next token, or it matches no row and the next holder waits for the lease
+// to expire.
+func TestHoldReleaseAfterCommittedRenew(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC06-T06 A holder whose renew commits on the server but whose context ends before the answer releases the lease", func(t *testing.T) {
+		d := openDatabase(t)
+		if err := Declare(context.Background(), d.other, "stego.controller"); err != nil {
+			t.Fatal(err)
+		}
+		gate := &committedRenewGate{DB: d.db, committed: make(chan struct{})}
+		clock := newArmClock()
+		c := newClient(t, gate, "stego.controller", "h1", Settings{Clock: clock})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		h, result := holdOnce(ctx, c)
+		token := h.Token()
+		(<-clock.armed) <- clock.Now()
+		<-gate.committed
+		if holder, now, _ := d.leaseRow(t, "stego.controller"); holder != "h1" || now != token+1 {
+			t.Fatalf("after the renew committed the row has holder %s and token %d; want h1 and %d", holder, now, token+1)
+		}
+		cancel()
+		err := <-result
+		if !errors.Is(err, context.Canceled) || errors.Is(err, ErrLost) {
+			t.Fatalf("Hold returned %v, want the end of ctx and not a lost lease", err)
+		}
+		if h.Token() != token {
+			t.Fatalf("the holder has token %d, want %d: the renew gave no answer", h.Token(), token)
+		}
+		holder, after, expires := d.leaseRow(t, "stego.controller")
+		if holder != "h1" || after != token+1 || !expires.Equal(time.Unix(0, 0)) {
+			t.Fatalf("after Hold the row has holder %s, token %d, expires_at %v; want h1, %d and released (-infinity)", holder, after, expires, token+1)
+		}
+		if _, err := newClient(t, d.other, "stego.controller", "h2", Settings{}).Acquire(context.Background()); err != nil {
+			t.Fatalf("the next holder cannot take the lease at once: %v", err)
+		}
+	})
+}
+
+// TestHoldLostWithContextEnd is the case of the review of PR #389, L2: a renew finds the lease taken while ctx ends.
+// Hold must return ErrLost with the end of ctx, so a caller that classifies by ErrLost sees the lost lease.
+func TestHoldLostWithContextEnd(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC04-T06 A holder whose renew finds the lease lost while its context ends returns the lost lease with the end of the context", func(t *testing.T) {
+		d := openDatabase(t)
+		if err := Declare(context.Background(), d.other, "stego.controller"); err != nil {
+			t.Fatal(err)
+		}
+		gate := &renewGate{DB: d.db, sent: make(chan struct{}), proceed: make(chan struct{}), returned: make(chan struct{}), detach: true}
+		clock := newArmClock()
+		c := newClient(t, gate, "stego.controller", "h1", Settings{Clock: clock})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		_, result := holdOnce(ctx, c)
+		(<-clock.armed) <- clock.Now()
+		<-gate.sent
+		// Another holder takes the lease before the renew goes to the database, and ctx ends at the same time.
+		d.exec(t, "UPDATE leases SET holder='h2', token=token+1, expires_at=now()+interval '1 hour' WHERE name='stego.controller'")
+		_, taken, _ := d.leaseRow(t, "stego.controller")
+		cancel()
+		close(gate.proceed)
+		err := <-result
+		if !errors.Is(err, ErrLost) || !errors.Is(err, context.Canceled) {
+			t.Fatalf("Hold returned %v, want the lost lease and the end of ctx", err)
+		}
+		holder, after, expires := d.leaseRow(t, "stego.controller")
+		if holder != "h2" || after != taken || !expires.After(time.Now()) {
+			t.Fatalf("after Hold the row has holder %s, token %d, expires_at %v; want the lease of h2 with token %d as it was", holder, after, expires, taken)
+		}
+	})
 }
 
 // within receives from ch, and fails the test when nothing comes within 10 seconds.
