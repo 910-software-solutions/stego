@@ -19,7 +19,7 @@ import (
 	"github.com/jsell-rh/stego/internal/types"
 )
 
-// ArchitectureSchema is the JSON Schema 2020-12 of the architecture model, $id stego:architecture/1, shipped in the
+// ArchitectureSchema is the JSON Schema 2020-12 of the architecture model, $id stego:architecture/2, shipped in the
 // compiler and never fetched.
 //
 //go:embed architecture.schema.json

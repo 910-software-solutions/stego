@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/jsell-rh/stego/internal/buildidentity"
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/command"
@@ -889,7 +890,7 @@ func TestArchitectureValidation(t *testing.T) {
 			{"a bad side", `"side": "inbound"`, `"side": "left"`, "side"},
 			{"no phase", `"phase": "before_store",`, ``, "phase"},
 			{"an empty aspect with no reason", `"reason": "No component of the active set states a platform need or an environment variable."`, `"x": 1`, "platform_edges"},
-			{"an extra field", `"schema_version": 1,`, `"schema_version": 1, "notes": "hand-written",`, "notes"},
+			{"an extra field", `"schema_version": 2,`, `"schema_version": 2, "notes": "hand-written",`, "notes"},
 			{"a dangling ID", `"offered_by": "component:rest-api"`, `"offered_by": "component:gone"`, "component:gone"},
 			{"a step out of order", `"n": 2,`, `"n": 3,`, "numbered"},
 		} {
@@ -1070,6 +1071,56 @@ func TestReadArchitecture(t *testing.T) {
 		// A cause can quote a value of the model, and the message goes to a terminal (security review of #338).
 		if message := (&ArchitectureReadError{File: ArchitectureFile, Cause: "the value \x1b[2J\u202e is not valid"}).Error(); strings.ContainsAny(message, "\x1b\u202e") || !strings.Contains(message, `\u001b[2J\u202e`) {
 			t.Fatalf("the refusal prints the characters of the model as they are: %q", message)
+		}
+	})
+	t.Run("ST-GEN-UC16-R06-T04 The reader refuses a model of another schema version and says to run stego apply or which STEGO wrote it", func(t *testing.T) {
+		_, data := deriveFixture(t, archFixture(t))
+		current := fmt.Sprintf(`"schema_version": %d,`, ArchitectureSchemaVersion)
+		if !bytes.Contains(data, []byte(current)) || !bytes.Contains(ArchitectureSchema, []byte(`"$id": "`+ArchitectureSchemaID+`"`)) {
+			t.Fatalf("the derived model or the schema does not state version %d", ArchitectureSchemaVersion)
+		}
+		project := t.TempDir()
+		write := func(model []byte, build *buildidentity.Record) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Join(project, "architecture"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(project, ArchitectureFile), model, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			state := &State{FormatVersion: StateFormatVersion, LastApplied: &AppliedState{CompilerBuild: build, ProjectFiles: map[string]string{ArchitectureFile: HashBytes(model)}}}
+			if err := SaveState(filepath.Join(project, ".stego", "state.yaml"), state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		older := bytes.Replace(data, []byte(current), []byte(`"schema_version": 1,`), 1)
+		write(older, nil)
+		_, err := ReadArchitecture(project)
+		if err == nil || !strings.Contains(err.Error(), ArchitectureFile) || !strings.Contains(err.Error(), "version 1") || !strings.Contains(err.Error(), "run stego apply") {
+			t.Fatalf("an older model is not refused with its version and the step to take: %v", err)
+		}
+		if strings.Contains(err.Error(), "does not match the schema") {
+			t.Errorf("the refusal of an older model lists schema faults in place of the version: %v", err)
+		}
+		newer := bytes.Replace(data, []byte(current), []byte(fmt.Sprintf(`"schema_version": %d,`, ArchitectureSchemaVersion+1)), 1)
+		build := func(version string) *buildidentity.Record {
+			return &buildidentity.Record{GoVersion: "go1.26.11", GOOS: "linux", GOARCH: "amd64", ModuleVersion: version, VCS: "unknown", Revision: "unknown", SourceState: "unknown"}
+		}
+		write(newer, build("v9.9.9"))
+		_, err = ReadArchitecture(project)
+		if err == nil || !strings.Contains(err.Error(), "newer") || !strings.Contains(err.Error(), "the record names STEGO v9.9.9") {
+			t.Fatalf("a newer model is not refused with the STEGO that the record names: %v", err)
+		}
+		write(newer, build("unknown"))
+		if _, err = ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), "use the STEGO that wrote the model") || strings.Contains(err.Error(), "record names") {
+			t.Fatalf("a newer model with no known STEGO version: %v", err)
+		}
+		// A version that is not a whole number goes to the schema, which refuses it.
+		for _, odd := range []string{`"schema_version": "2",`, `"schema_version": 2.5,`, `"schema_version": -1,`} {
+			write(bytes.Replace(data, []byte(current), []byte(odd), 1), nil)
+			if _, err := ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), "schema") {
+				t.Errorf("a model with %s is accepted: %v", odd, err)
+			}
 		}
 	})
 }

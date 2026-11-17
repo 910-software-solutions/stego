@@ -1,12 +1,19 @@
 package compiler
 
+import "fmt"
+
 // The architecture model (ST-GEN-RM04, ST-GEN-DS04): the data file architecture/architecture.json that apply writes
-// at the service root, valid against the schema architecture.schema.json ($id stego:architecture/1). Each struct
+// at the service root, valid against the schema architecture.schema.json ($id stego:architecture/2). Each struct
 // gives its keys in a fixed order, every list is sorted by id except the steps of a flow and the layers, and every
 // element names its source (ST-GEN-UC08-R03), so the same inputs give the same bytes (ST-GEN-UC09-R03).
 
-// ArchitectureSchemaVersion is the major version of the architecture schema. A change that breaks readers raises it.
-const ArchitectureSchemaVersion = 1
+// ArchitectureSchemaVersion is the version of the architecture schema. Each change of the schema raises it, also a new
+// value of an enum such as an access kind, because a reader that skips a value it does not know shows less than the
+// model holds (decision on ST-GEN-Q43). Version 2 adds the access kind 'path limit'.
+const ArchitectureSchemaVersion = 2
+
+// ArchitectureSchemaID is the $id of the architecture schema of this version.
+var ArchitectureSchemaID = fmt.Sprintf("stego:architecture/%d", ArchitectureSchemaVersion)
 
 // ArchitectureFile is the path, in the project folder, of the architecture model.
 const ArchitectureFile = "architecture/architecture.json"
