@@ -15,8 +15,10 @@ config:
   telemetry_service_name:
     type: string
     optional: true
+  # Every declaration gives its API prefix and its routes (ST-DECL-INV90).
   api_prefix:
     type: string
+    author_supplied: true
   logout_scope:
     type: string
     optional: true
@@ -25,6 +27,7 @@ config:
     optional: true
   routes:
     type: list
+    author_supplied: true
     items:
       type: string
   asset_bundle:

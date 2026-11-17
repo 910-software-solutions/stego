@@ -40,6 +40,7 @@ func validateComponentConfig(service *types.ServiceDeclaration, components map[s
 		schemas[name] = component.Config
 	}
 	errors = append(errors, declaration.ValidateNoBypass(service, schemas)...)
+	errors = append(errors, declaration.ValidateAuthorSupplied(service, schemas)...)
 	// A bypass setting states no default, and no environment variable takes its default from one, since either would
 	// hold the flag when the declaration gives no value (#394 security review L1).
 	errors = append(errors, declaration.ValidateBypassDefaults(schemas, settingDefaults(components))...)
