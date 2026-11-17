@@ -69,6 +69,21 @@ type EntityAuthorization struct {
 type Reference struct {
 	Relation   string `yaml:"relation"`
 	Permission string `yaml:"permission"`
+	// Within is the field that this row and the referenced row must have equal, such as project_id for the sprint
+	// of a ticket, or WithinNone for a reference across that ancestor on purpose; empty states no choice
+	// (ST-DECL-EN02, ST-DECL-INV93, ST-DECL-Q42).
+	Within string `yaml:"within,omitempty" json:",omitempty"`
+}
+
+// WithinNone is the within of a reference that crosses its ancestor on purpose (ST-DECL-INV93).
+const WithinNone = "none"
+
+// WithinField gives the field that the reference is held within, or empty for no within and for WithinNone.
+func (r Reference) WithinField() string {
+	if r.Within == WithinNone {
+		return ""
+	}
+	return r.Within
 }
 
 // The expected cardinalities of an entity (ST-DECL-EN02).

@@ -3,11 +3,13 @@ package command
 import (
 	"fmt"
 	"go/token"
+	"maps"
 	"slices"
 	"strings"
 
 	authzschema "github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -63,6 +65,12 @@ type entity struct {
 	// generated Parent list declares (ST-SUP-RP10-LC05, ST-DECL-EN02).
 	references []reference
 	keys       []*entityField // the fields of a unique key besides the ID (ST-SUP-RP10-LC24)
+	// within are the fields that a reference of this entity, or of another entity to this one, is held within, which
+	// the generated Within map reads (ST-SUP-RP10-LC37, ST-DECL-Q42).
+	within []*entityField
+	// referrers are the composite keys of the references of other entities to this one that are held within a field
+	// (ST-SUP-RP10-LC37): a write of this entity that a row of theirs refuses is invalid, never internal.
+	referrers []referrer
 	// relationships are the declared relationships of the entity, which the generated Relationships list declares
 	// and the runtime writes (ST-DECL-UC06-R04, ST-SUP-Q118).
 	relationships []relationship
@@ -82,12 +90,18 @@ type relationship struct {
 	resource              bool
 }
 
+// referrer is the composite key of a reference of another entity to this one: the key name, the reference as
+// Entity.field, and the within field.
+type referrer struct{ key, field, within string }
+
 // reference is one reference of an entity to an entity with a resource type: the field, the referenced entity and
 // its resource type, and the relation and the permission that the declaration names for it.
 type reference struct {
 	field                *entityField
 	entity, resourceType string
 	relation, permission string
+	// within is the field that the row and the referenced row must have equal, or empty (ST-DECL-INV93).
+	within string
 }
 
 // entityField is one declared field of an entity.
@@ -156,6 +170,25 @@ func SchemaRelations(ctx gen.Context) (Relations, error) {
 	return relations, nil
 }
 
+// withinHeld tells whether the field name of the entity e is the within of a reference: held when a reference of e
+// or of another entity to e is held within it, and referenced when a reference of another entity to e is, so that
+// the field is in the unique key that the composite key of that reference refers to (ST-SUP-RC01-OC46).
+func withinHeld(e types.Entity, byName map[string]types.Entity, name string) (held, referenced bool) {
+	for _, ref := range e.References {
+		if ref.WithinField() == name {
+			held = true
+		}
+	}
+	for _, other := range byName {
+		for _, f := range other.Fields {
+			if f.Type == types.FieldTypeRef && f.To == e.Name && other.References[f.Name].WithinField() == name {
+				held, referenced = true, true
+			}
+		}
+	}
+	return held, referenced
+}
+
 // planEntity checks one entity that a command writes and builds its repository declaration; relations are the
 // schema relations of each resource type (SchemaRelations).
 func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string, relations Relations) (*entity, error) {
@@ -213,8 +246,14 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 		default:
 			return nil, fmt.Errorf("the field %s has the sensitivity %s, which is not pii or secret", f.Name, f.Sensitivity)
 		}
-		if f.Unique || len(f.UniqueComposite) > 0 {
+		// A within field of another entity's reference to this one is in the unique key that the composite key of
+		// that reference refers to (ST-SUP-RC01-OC46), and a within field of this entity's own reference is read too.
+		held, referenced := withinHeld(e, byName, f.Name)
+		if f.Unique || len(f.UniqueComposite) > 0 || referenced {
 			p.keys = append(p.keys, ef)
+		}
+		if held {
+			p.within = append(p.within, ef)
 		}
 		if f.Type == types.FieldTypeRef && byName[f.To].ResourceType != "" {
 			refs = append(refs, ef)
@@ -233,7 +272,15 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 			relation = ""
 		}
 		p.references = append(p.references, reference{field: f, entity: to.Name, resourceType: to.ResourceType,
-			relation: relation, permission: declared.Permission})
+			relation: relation, permission: declared.Permission, within: declared.WithinField()})
+	}
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		other := byName[name]
+		for _, f := range other.Fields {
+			if within := other.References[f.Name].WithinField(); f.Type == types.FieldTypeRef && f.To == e.Name && within != "" {
+				p.referrers = append(p.referrers, referrer{key: postgresadapter.WithinKeyName(other.Name, f.ColumnName()), field: other.Name + "." + f.Name, within: within})
+			}
+		}
 	}
 	resourceTypes := map[string]bool{}
 	for _, other := range byName {
@@ -417,7 +464,29 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 			if r.relation != "" {
 				w.f(", Relation: %q", r.relation)
 			}
+			if r.within != "" {
+				// The runtime compares the within field of the row and of the referenced row (ST-SUP-RP10-LC37).
+				w.f(", Field: %q, Within: %q, Key: %q", r.field.decl.Name, r.within, postgresadapter.WithinKeyName(e.decl.Name, r.field.decl.ColumnName()))
+			}
 			w.f("},\n")
+		}
+		w.f("\t},\n")
+	}
+	if len(e.within) > 0 {
+		w.f("\tWithin: map[string]func(v %s) string{\n", e.goName)
+		for _, f := range e.within {
+			read := fmt.Sprintf("func(v %s) string { return v.%s }", e.goName, f.goName)
+			if f.pointer {
+				read = fmt.Sprintf("func(v %s) string {\n\t\tif v.%s == nil {\n\t\t\treturn \"\"\n\t\t}\n\t\treturn *v.%s\n\t}", e.goName, f.goName, f.goName)
+			}
+			w.f("\t\t%q: %s,\n", f.decl.Name, read)
+		}
+		w.f("\t},\n")
+	}
+	if len(e.referrers) > 0 {
+		w.f("\tReferrers: []command.Referrer{\n")
+		for _, k := range e.referrers {
+			w.f("\t\t{Key: %q, Field: %q, Within: %q},\n", k.key, k.field, k.within)
 		}
 		w.f("\t},\n")
 	}

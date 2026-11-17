@@ -113,6 +113,54 @@ func TestBaseCompat(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ST-GEN-INV33-T A within added to a reference of a base entity needs a within step, and a within that the head drops is refused", func(t *testing.T) {
+		t.Parallel()
+		td01 := string(userManagementBase(t))
+		// The base: a User refers to an optional OrgSetting, and both refer to their Organization.
+		setting := func(within string) string {
+			declaration := strings.Replace(td01, "      org_id: {relation: organization, permission: edit}\n    fields:\n      - { name: email,",
+				"      org_id: {relation: organization, permission: edit}\n      setting_id: {relation: setting, permission: edit"+within+"}\n    fields:\n      - { name: email,", 1)
+			return strings.Replace(declaration, "      - { name: metadata, type: jsonb, optional: true }\n", "      - { name: metadata, type: jsonb, optional: true }\n      - { name: setting_id, type: ref, to: OrgSetting, optional: true }\n", 1)
+		}
+		within := "  - {id: user-setting-id-within, kind: within, entity: User, field: setting_id}\n"
+		withinExpand := "  - {change: user-setting-id-within, phase: expand}\n"
+		cases := []struct {
+			name, base, head string
+			says             string
+			suggest          bool
+		}{
+			{"within with no step", setting(""), setting(", within: org_id"), "holds the reference User.setting_id within org_id, which no schema step declares", true},
+			{"within with its within step", setting(""), withChanges(setting(", within: org_id"), within, withinExpand), "", false},
+			{"within: none with no step", setting(""), setting(", within: none"), "", false},
+			{"within dropped", withChanges(setting(", within: org_id"), within, withinExpand), withChanges(setting(""), within, withinExpand), "changes the within of the reference User.setting_id from org_id", false},
+		}
+		for _, c := range cases {
+			base := []byte(c.base)
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			if c.says == "" {
+				if check.HasFaults() {
+					t.Errorf("%s: want accepted, got %+v", c.name, check.Faults)
+				}
+				continue
+			}
+			found := false
+			for _, fault := range check.Faults {
+				if fault.Entity != "User" || fault.Field != "setting_id" || !strings.Contains(fault.Message, c.says) {
+					continue
+				}
+				found = true
+				if c.suggest && (len(fault.Declare) != 1 || fault.Declare[0].Kind != "within" || fault.Declare[0].Field != "setting_id" || fault.Declare[0].Phase != "expand") {
+					t.Errorf("%s: the fault suggests %+v, want the within step of User.setting_id", c.name, fault.Declare)
+				}
+			}
+			if !found {
+				t.Errorf("%s: no fault on User.setting_id says %q: %+v", c.name, c.says, check.Faults)
+			}
+		}
+	})
 	t.Run("ST-GEN-INV33-T A change to what a step of the base added, required or retyped, or to a unique invariant or an entity's table settings, is refused", func(t *testing.T) {
 		t.Parallel()
 		td01 := string(userManagementBase(t))

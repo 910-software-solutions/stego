@@ -354,6 +354,10 @@ func tableModels(ctx gen.Context) ([]tableModel, error) {
 			upsertKeys[collection.Entity] = append(upsertKeys[collection.Entity], collection.UpsertLookup())
 		}
 	}
+	within, err := withinKeys(ctx.Entities, owned)
+	if err != nil {
+		return nil, err
+	}
 	var models []tableModel
 	for _, entity := range ordered {
 		table := tableModel{name: tableName(entity.Name), entity: entity.Name, owned: owned[entity.Name]}
@@ -396,11 +400,92 @@ func tableModels(ctx gen.Context) ([]tableModel, error) {
 			}
 			table.foreign = append(table.foreign, foreignModel{name: sqlName(table.name, field.ColumnName(), "fkey"), table: tableName(field.To), from: from, to: to})
 		}
+		for _, key := range within.from[entity.Name] {
+			table.foreign = append(table.foreign, key.foreign(table.lead))
+		}
 		table.search = searchColumns(entity, ctx.Collections)
 		table.unique = uniqueKeys(entity, upsertKeys[entity.Name])
+		for _, columns := range within.to[entity.Name] {
+			if !slices.ContainsFunc(table.unique, func(u []string) bool { return slices.Equal(u, columns) }) {
+				table.unique = append(table.unique, columns)
+			}
+		}
 		models = append(models, table)
 	}
 	return models, nil
+}
+
+// withinKey is the composite key of one reference that declares within a field (ST-SUP-RC01-OC46): the referring
+// table and its reference column, the referenced table, and the column of the within field in each table.
+type withinKey struct {
+	table, column, referenced, own, theirs string
+}
+
+// WithinKeyName gives the name of the composite foreign key of the reference column of the table of entity, which
+// the runtime maps to the refusal of the reference (ST-SUP-RP10-LC37).
+func WithinKeyName(entity, column string) string {
+	return sqlName(tableName(entity), column, "within", "fkey")
+}
+
+// foreign gives the foreign key of the within key: the tenant column lead, the within field and the reference onto
+// the unique key of the tenant column, the within field and the key id of the referenced table, MATCH SIMPLE, so a
+// reference that is not set is not checked.
+func (k withinKey) foreign(lead []string) foreignModel {
+	return foreignModel{name: sqlName(k.table, k.column, "within", "fkey"), table: k.referenced,
+		from: append(append([]string{}, lead...), k.own, k.column), to: append(append([]string{}, lead...), k.theirs, keyColumn)}
+}
+
+// withinKeySet holds, for each entity, the within keys of its references (from) and the column lists, after the tenant
+// column, of the unique keys that the within keys of other tables need on its table (to).
+type withinKeySet struct {
+	from map[string][]withinKey
+	to   map[string][][]string
+}
+
+// withinKeys gives the composite key of each reference that declares within a field (ST-DECL-INV93,
+// ST-SUP-RC01-OC46), in the order of the entities and of their fields. It refuses a within of a reference of an
+// entity to itself, whose key would refer to a unique key that its own CREATE TABLE does not hold yet, and of two
+// tables of which only one holds the tenant column, whose keys cannot match.
+func withinKeys(entities []types.Entity, owned map[string]bool) (withinKeySet, error) {
+	set := withinKeySet{from: map[string][]withinKey{}, to: map[string][][]string{}}
+	byName := map[string]types.Entity{}
+	for _, e := range entities {
+		byName[e.Name] = e
+	}
+	column := func(e types.Entity, name string) (string, bool) {
+		for _, f := range e.Fields {
+			if f.Name == name {
+				return f.ColumnName(), true
+			}
+		}
+		return "", false
+	}
+	for _, e := range entities {
+		for _, field := range e.Fields {
+			ref, ok := e.References[field.Name]
+			within := ref.WithinField()
+			if !ok || within == "" || field.Type != types.FieldTypeRef {
+				continue
+			}
+			to, known := byName[field.To]
+			own, ownOK := column(e, within)
+			theirs, theirsOK := column(to, within)
+			switch {
+			case !known || !ownOK || !theirsOK:
+				return withinKeySet{}, fmt.Errorf("entity %s: the reference %s is held within %s, which %s and %s do not both declare", e.Name, field.Name, within, e.Name, field.To)
+			case field.To == e.Name:
+				return withinKeySet{}, fmt.Errorf("entity %s: the reference %s refers to its own entity and is held within %s; the composite key of a reference to its own table is not built", e.Name, field.Name, within)
+			case owned[e.Name] != owned[field.To]:
+				return withinKeySet{}, fmt.Errorf("entity %s: the reference %s is held within %s, but only one of %s and %s holds the tenant column, so the composite key cannot match", e.Name, field.Name, within, e.Name, field.To)
+			}
+			set.from[e.Name] = append(set.from[e.Name], withinKey{table: tableName(e.Name), column: field.ColumnName(), referenced: tableName(field.To), own: own, theirs: theirs})
+			columns := []string{theirs, keyColumn}
+			if !slices.ContainsFunc(set.to[field.To], func(c []string) bool { return slices.Equal(c, columns) }) {
+				set.to[field.To] = append(set.to[field.To], columns)
+			}
+		}
+	}
+	return set, nil
 }
 
 // quoted quotes each name as a PostgreSQL identifier.
