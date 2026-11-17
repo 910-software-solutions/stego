@@ -708,6 +708,11 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 			return nil, fmt.Errorf("%s is not the component of a command, query or worker", component)
 		}
 		folder := path.Join("out", namespace)
+		// go build follows a link, so a link in the contract package could give the binary code that is not in the
+		// source revision. The folder and each Go file in it must be what they seem, or the contract is refused.
+		if info, err := os.Lstat(filepath.Join(projectDir, filepath.FromSlash(folder))); err == nil && !info.IsDir() {
+			return nil, fmt.Errorf("the contract package %s is not a folder", folder)
+		}
 		entries, err := os.ReadDir(filepath.Join(projectDir, filepath.FromSlash(folder)))
 		if err != nil {
 			return nil, fmt.Errorf("the contract package %s cannot be read: %w", folder, err)
@@ -715,8 +720,11 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 		files := map[string][]byte{}
 		for _, entry := range entries {
 			name := entry.Name()
-			if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				continue
+			}
+			if !entry.Type().IsRegular() {
+				return nil, fmt.Errorf("the contract package %s holds %s, which is not a regular file; go build would compile it, so stego build refuses it", folder, name)
 			}
 			data, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(folder), name))
 			if err != nil {
