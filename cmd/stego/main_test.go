@@ -634,6 +634,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     auth-provider: outbound
     storage-adapter: outbound

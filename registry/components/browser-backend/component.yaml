@@ -155,7 +155,7 @@ environment:
 needs:
   - {kind: secret, name: "{service}-tls", keys: [tls-crt, tls-key]}
   - {kind: secret, name: "{service}-browser", keys: [client-secret, session-keys]}
-  - {kind: identity issuer, name: "{service}-issuer"}
+  - {kind: identity issuer, name: "{service}-issuer", variable: STEGO_BROWSER_ISSUER}
   - {kind: egress, name: "{service}-issuer-keys", port: 443}
   - {kind: ingress, name: http, port: 8080}
   - {kind: pod security, name: pod-security, level: restricted}

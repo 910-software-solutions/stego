@@ -339,7 +339,10 @@ function renderData(root){
 // stepLane gives the index of the layer of a step, which the model gives (steps[].layer).
 function stepLane(f, i){ return Math.max(0, M.layers.indexOf(f.steps[i].layer)); }
 function openFlow(id, step){ if (!id || !byId[id]) return; state.view = "flows"; state.flow = id; state.step = step || 1; state.sel = byId[id].steps[(step||1)-1].element; render(); }
-function opLabel(f){ var o = byId[f.operation]; return o ? (o.method ? o.method+" " : "")+short(o.collection)+" · "+o.verb : short(f.id); }
+function opLabel(f){ var o = byId[f.operation]; if (o && o.kind) return o.kind+" · "+o.name; return o ? (o.method ? o.method+" " : "")+short(o.collection)+" · "+o.verb : short(f.id); }
+// flowless gives the commands, queries and workers that have no request flow: those that the platform carries out,
+// such as the tenant provisioning commands.
+function flowless(){ return M.actions.filter(function(a){ return !M.flows.some(function(f){ return f.operation === a.id; }); }); }
 function renderFlows(root){
   var mini = h("div", {"class":"mini", role:"group", "aria-label":"All request flows, one for each operation"});
   M.flows.forEach(function(f){
@@ -357,11 +360,12 @@ function renderFlows(root){
   });
   root.appendChild(h("h3", {text:"All flows"}));
   root.appendChild(mini);
-  if (M.actions.length) root.appendChild(h("p", {"class":"question", id:"noFlowActions", text:"The model has a request flow only for each operation of a collection. These commands, queries and workers have no flow here; the access matrix shows what each one checks: "+M.actions.map(function(a){ return a.name+" ("+a.kind+")"; }).join(", ")+"."}));
+  var without = flowless();
+  if (without.length) root.appendChild(h("p", {"class":"question", id:"noFlowActions", text:"The model has a request flow for each operation of a collection and for each declared command, query and worker. These actions of the platform have no flow here; the access matrix shows what each one checks: "+without.map(function(a){ return a.name+" ("+a.kind+")"; }).join(", ")+"."}));
   var f = byId[state.flow]; if (!f) return;
   var n = f.steps.length; state.step = Math.min(Math.max(state.step, 1), n);
   var o = byId[f.operation];
-  root.appendChild(h("h3", {id:"flowTitle", text:"Step by step: "+(o && o.method ? o.method+" "+o.path : short(f.operation))}));
+  root.appendChild(h("h3", {id:"flowTitle", text:"Step by step: "+(o && o.method ? o.method+" "+o.path : o && o.kind ? o.kind+" "+o.name : short(f.operation))}));
   root.appendChild(h("div", {"class":"stepper"}, [
     h("button", {"class":"btn", type:"button", id:"prevStep", text:"◀ Previous", onclick:function(){ go(-1); }}),
     h("button", {"class":"btn", type:"button", id:"nextStep", text:"Next ▶", onclick:function(){ go(1); }}),
