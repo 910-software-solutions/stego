@@ -78,6 +78,9 @@ type runtimeWiringData struct {
 	// Provisioning is true for a service that declares its tenant provisioning, whose two routes the service serves
 	// itself (ST-SUP-RC27-OC09).
 	Provisioning bool
+	// Modes are the modes that the declaration states, in the order api, worker, controller; all three when it
+	// states none (ST-GEN-INV26, ST-DECL-EN01).
+	Modes []string
 }
 
 // runtimeWiring gives the runtime wiring package of a service on the runtime data path and its wiring of main.go
@@ -144,6 +147,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	}
 	data.Grants = runtimeGrants(in.Wirings)
 	data.Provisioning = svc.Tenancy.Provisioning != nil
+	data.Modes = declaredModes(svc.Modes)
 	source, err := renderRuntimeWiring(data)
 	if err != nil {
 		return nil, ComponentWiring{}, err
@@ -164,6 +168,8 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		// The tenant check reads the pattern that the main router, mux, matches (ST-SUP-RC27-OC11).
 		MiddlewareWrapExpr: "%s.Middleware(mux, %s)",
 		MigrationJob:       &gen.MigrationJobSpec{Namespace: RuntimeWiringNamespace, Function: "Migrate", Stage: "MigrationStage"},
+		// The modes of the process are read first, so a refused mode has its own stage (ST-GEN-INV26).
+		ModeSelection: &gen.ModeSelectionSpec{Namespace: RuntimeWiringNamespace, Function: "Modes"},
 		GoModRequires: map[string]string{
 			"google.golang.org/grpc": "v1.83.2",
 		},

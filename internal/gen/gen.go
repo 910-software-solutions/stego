@@ -801,6 +801,15 @@ type Wiring struct {
 	// failure record still holds no error text (ST-SUP-RP14-LC05).
 	ConstructorStages map[int]string
 
+	// ModeSelection selects a generated function with signature
+	// func() ([]string, error) that gives the modes the process runs. The
+	// assembler calls it first in run, at the stage modes, before the
+	// database and every constructor, so a refused mode stops the start at
+	// its own stage, and the failure record of a later failure names the
+	// selected modes (ST-GEN-INV26, ST-GEN-INV16). Only one component can
+	// supply it.
+	ModeSelection *ModeSelectionSpec
+
 	// OuterMiddlewares lists middleware constructors that wrap the HTTP
 	// handler OUTSIDE the auth middleware layer. These are the outermost
 	// middleware in the chain — they run first on every request, before
@@ -860,6 +869,13 @@ type MigrationJobSpec struct {
 	Namespace string
 	Function  string
 	Stage     string
+}
+
+// ModeSelectionSpec names the function of a generated package, in the
+// import path Namespace, that gives the modes the process runs.
+type ModeSelectionSpec struct {
+	Namespace string
+	Function  string
 }
 
 // MiddlewareSpec describes a middleware constructor and how it wraps the
