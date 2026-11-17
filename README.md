@@ -148,8 +148,11 @@ stego init --archetype rest-crud
 The scaffold of each archetype passes `stego validate` and builds as
 written. An archetype that cannot be empty writes its example content from the
 registry: `rpc-service` writes a proto file with one method, one query on it
-with its fill, and the settings that the query needs; `browser-service` writes
-an API prefix, one route and an index page. The service takes the name of the
+with its fill and the fill's test, and the settings that the query needs;
+`browser-service` writes an API prefix, one route and an index page. The fill
+of the query carries no signature: before validate, plan and apply accept it,
+list your key in `SIGNERS`, run `stego test`, then
+`stego fill sign get-greeting`. The service takes the name of the
 project folder, and the fill imports the module path of `STEGO_MODULE` (or
 `github.com/example/service`): give the same value to each later command. Use
 `stego init --archetype <name> --empty` for a scaffold with no example

@@ -109,8 +109,12 @@ func capabilitySlot(ref types.SlotRef) bool {
 }
 
 // nextSteps tells what to run so that a fill of the standing becomes
-// qualified: stego test, then stego fill sign, or only stego fill sign.
-func nextSteps(fill string, standing Standing) string {
+// qualified: stego test, then stego fill sign; only stego fill sign; or, for a
+// key that SIGNERS does not list, what to list or sign with.
+func nextSteps(fill string, standing Standing, reasons []string) string {
+	if standing == Unsigned && slices.Contains(reasons, "SIGNERS does not list its key") {
+		return fmt.Sprintf("list the signer's public key in the project's SIGNERS file, or run stego fill sign %s with a key that SIGNERS lists", fill)
+	}
 	if standing == Unsigned {
 		return fmt.Sprintf("run stego fill sign %s", fill)
 	}
@@ -286,7 +290,7 @@ func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 				}
 			}
 			faults = append(faults, compiler.FillFault{Rule: "fill-qualified", Path: binding.Path, Found: binding.Fill,
-				Message: fmt.Sprintf("fill %q is %s %s: %s; %s", binding.Fill, row.Standing, at, strings.Join(reasons, "; "), nextSteps(binding.Fill, row.Standing))})
+				Message: fmt.Sprintf("fill %q is %s %s: %s; %s", binding.Fill, row.Standing, at, strings.Join(reasons, "; "), nextSteps(binding.Fill, row.Standing, row.Reasons))})
 		}
 		if misfits[i] != "" {
 			faults = append(faults, compiler.FillFault{Rule: "fill-fits-binding", Path: binding.Path, Found: binding.Fill,
