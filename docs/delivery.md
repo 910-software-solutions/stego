@@ -130,6 +130,14 @@ The schema migration of a release runs in a Kubernetes Job of its own, `deploy/b
 runs the service binary with the one argument `migrate`. The migration job makes and changes the tables, writes
 the authorization schema to SpiceDB, runs the backfills, and then checks the database against the schema manifest.
 
+After the job writes the authorization schema, it waits until SpiceDB serves each definition of the schema to a
+check at an older revision. SpiceDB can choose a revision from before the write for a short time after it serves
+the new schema: the quantization interval (`--datastore-revision-quantization-interval`, 5 s by default) times the
+max staleness percent (`--datastore-revision-quantization-max-staleness-percent`, 0.1 by default), so 0.5 s by
+default. A check of a new resource type in that time fails. So the job waits until SpiceDB serves the schema on
+probe rounds in a row that span 1 s. If your SpiceDB uses a product of these two flags of more than 1 s, a check of
+a new resource type can fail for a short time after the release starts.
+
 ### Two database roles
 
 The service uses two kinds of database role:
