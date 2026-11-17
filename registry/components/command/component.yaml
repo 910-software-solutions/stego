@@ -35,7 +35,7 @@ environment:
     type: list
     required: false
     default: "all"
-    description: "The modes that the process runs when no --mode option is given. When it has no value, the process runs all modes."
+    description: "The modes that the process runs when no --mode option is given: some of the modes that the declaration states, or all. When it has no value, the process runs the declared modes."
     secret: false
     example: "api,worker"
     allowed: {values: ["api", "worker", "controller", "all"]}
