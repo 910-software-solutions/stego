@@ -383,7 +383,7 @@ func TestContract(t *testing.T) {
 			s.Commands[0].Lists = append(s.Commands[0].Lists, types.WorkerList{Name: "holds", Entity: "Hold",
 				Filter: []types.ListTerm{{Field: "order_id", Op: types.ListEquals, Param: "order_id"}}})
 		}))["commands/commands.go"])), " ")
-		if !strings.Contains(key, `command.ListValue{Param: "order_id", Key: true, ValidKey: command.ValidUUID}`) {
+		if !strings.Contains(key, `command.ListValue{Param: "order_id", Key: true, KeyOf: command.KeyUUID}`) {
 			t.Errorf("a reference parameter is not a key:\n%s", key)
 		}
 		for name, c := range map[string]struct {

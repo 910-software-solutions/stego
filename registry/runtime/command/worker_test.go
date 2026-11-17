@@ -1665,7 +1665,7 @@ func TestCommandLists(t *testing.T) {
 		// (security review of PR #416, sec-416b): a key that the listed entity takes and the referenced entity
 		// refuses gives an empty list and runs no statement.
 		referenced, err := NewList(e.users, ListSpec{Name: "referenced", Read: keyed.spec.Read,
-			Values: DeclaredValues(ListValue{Param: "org_id", Key: true, ValidKey: ValidUUID})})
+			Values: DeclaredValues(ListValue{Param: "org_id", Key: true, KeyOf: KeyUUID})})
 		if err != nil {
 			t.Fatal(err)
 		}
