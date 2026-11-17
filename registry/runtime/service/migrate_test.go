@@ -86,7 +86,7 @@ func TestMigrate(t *testing.T) {
 		if !errors.As(err, &step) || step.Step != StepSchemaServed || Stage(err) != "migrate.authorization_schema_served" || !errors.Is(err, authz.ErrSchemaNotServed) {
 			t.Fatalf("a schema that SpiceDB does not serve gives %v, want a fault of the step %s with authz.ErrSchemaNotServed", err, StepSchemaServed)
 		}
-		if len(waited) != 1 || !slices.Equal(waited[0], []string{"user", "service", "order", "stego_floor"}) || writesBefore != 2 {
+		if len(waited) != 1 || !slices.Equal(waited[0], []string{"user", "service", "order", "outbox_destination", "stego_floor"}) || writesBefore != 2 {
 			t.Fatalf("the job waited for %v after %d schema writes, want one wait for every definition after both", waited, writesBefore)
 		}
 		if last := s.names[len(s.names)-1]; last != StepSchemaServed || slices.Contains(s.names, StepManifestBefore) {
@@ -1674,7 +1674,7 @@ func TestMigrateLocks(t *testing.T) {
 		want := map[string]string{"public.orders": "SELECT,INSERT,UPDATE", "public.audit_event": "INSERT",
 			"public.audit_chain_heads": "SELECT,INSERT,UPDATE", "public.idempotency_keys": "SELECT,INSERT,UPDATE",
 			"public.authz_floor": "SELECT", "public.audit_anchor_boundaries": "", "public.audit_retention_checkpoints": "",
-			"public.authz_revocations": "", "public.stego_tenants": ""}
+			"public.authz_revocations": "SELECT", "public.authz_revocation_tuples": "SELECT", "public.stego_tenants": ""}
 		// The job with a consuming worker that writes orders passes its schema manifest check at its end, which holds
 		// the grant of the worker role on the revocation floor and on the key table.
 		if err := Migrate(context.Background(), settings, consuming("orders")); err != nil {
@@ -1703,6 +1703,14 @@ func TestMigrateLocks(t *testing.T) {
 		}
 		if err := asWorker(`UPDATE public.orders SET status = 'synced' WHERE id = 'o1'`); err != nil {
 			t.Fatalf("the update of a declared write as the worker role gave %v, want it to pass", err)
+		}
+		// A consuming worker that creates a row with a reference records the revocation of its tuples, with the
+		// column grants of the runtime role (walkthrough 8, W8-B1).
+		if err := asWorker(`INSERT INTO public.authz_revocations (id, tenant_id, principal) VALUES (gen_random_uuid(), 't1', 'service_account:w')`); err != nil {
+			t.Fatalf("the revocation record of a worker write gave %v, want it to pass", err)
+		}
+		if err := asWorker(`UPDATE public.authz_revocations SET done = 1`); err == nil {
+			t.Fatal("the worker role updated the revocation counts, which only the outbox relay role may")
 		}
 		var coded interface{ SQLState() string }
 		if err := asWorker(`DELETE FROM public.orders WHERE id = 'o1'`); !errors.As(err, &coded) || coded.SQLState() != "42501" {

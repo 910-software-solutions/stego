@@ -477,7 +477,7 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 		for i := range want.Tables {
 			t := &want.Tables[i]
 			if t.CheckGrants && t.Schema == g.schema && t.Name == g.table && t.Name != "idempotency_keys" {
-				t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: g.privileges})
+				t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: g.privileges, Columns: g.columns})
 			}
 		}
 	}

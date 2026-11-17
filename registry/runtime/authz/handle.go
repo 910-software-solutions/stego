@@ -1124,7 +1124,7 @@ CREATE TABLE IF NOT EXISTS {{schema}}.authz_revocation_tuples (
 GRANT SELECT ON {{schema}}.authz_revocation_tuples TO {{runtime_role}}, {{outbox_relay}};
 GRANT INSERT (message_id, revocation_id, tenant_id) ON {{schema}}.authz_revocation_tuples TO {{runtime_role}};
 GRANT UPDATE (state) ON {{schema}}.authz_revocation_tuples TO {{outbox_relay}};
-{{hook_table_grants}}GRANT USAGE ON SCHEMA {{schema}} TO {{outbox_relay}};
+GRANT USAGE ON SCHEMA {{schema}} TO {{outbox_relay}};
 
 -- The outbox relay role makes the two functions itself, so the role that runs the text needs only SET membership in
 -- it. CREATE on the schema is given for that alone and taken back below, in the same transaction.
@@ -1276,7 +1276,7 @@ func Migration(schema, runtimeRole, relayRole, outboxRelayRole string, hookRoles
 			return "", fmt.Errorf("authz: the runtime role %s and the hook role %s must be two roles", quotedRuntime, quotedRuntime)
 		}
 	}
-	var grants, tableGrants strings.Builder
+	var grants strings.Builder
 	var hooks []string
 	for _, role := range hookRoles {
 		quoted, err := quoteName("hook role", role)
@@ -1287,20 +1287,12 @@ func Migration(schema, runtimeRole, relayRole, outboxRelayRole string, hookRoles
 			return "", fmt.Errorf("authz: the relay role %s and the hook role %s must be two roles", quotedRelay, quoted)
 		}
 		grants.WriteString("GRANT EXECUTE ON FUNCTION " + quotedSchema + ".authz_revocation_state(uuid, uuid, text) TO " + quoted + ";\n")
-		// A hook role, the worker role, runs the writes of the workers, which read the floor in their transaction and
-		// record the revocation of each tuple they relate, as the runtime role does: it gets the same least grants
-		// (walkthrough 8, W8-B1; ST-SUP-RP06-LC23).
-		tableGrants.WriteString("GRANT SELECT ON " + quotedSchema + ".authz_floor TO " + quoted + ";\n" +
-			"GRANT SELECT ON " + quotedSchema + ".authz_revocations TO " + quoted + ";\n" +
-			"GRANT INSERT (id, tenant_id, principal, tuple_count) ON " + quotedSchema + ".authz_revocations TO " + quoted + ";\n" +
-			"GRANT SELECT ON " + quotedSchema + ".authz_revocation_tuples TO " + quoted + ";\n" +
-			"GRANT INSERT (message_id, revocation_id, tenant_id) ON " + quotedSchema + ".authz_revocation_tuples TO " + quoted + ";\n")
 		hooks = append(hooks, sqlText(role))
 	}
 	return strings.NewReplacer("{{schema}}", quotedSchema, "{{runtime_role}}", quotedRuntime,
 		"{{relay_role}}", quotedRelay, "{{runtime_text}}", sqlText(runtimeRole), "{{relay_text}}", sqlText(relayRole),
 		"{{outbox_relay}}", `"`+outboxRelayRole+`"`, "{{outbox_relay_text}}", sqlText(outboxRelayRole), "{{schema_text}}", sqlText(schema), "{{schema_quoted_text}}", sqlText(quotedSchema),
-		"{{hook_array}}", "ARRAY["+strings.Join(hooks, ", ")+"]", "{{hook_grants}}", grants.String(), "{{hook_table_grants}}", tableGrants.String()).Replace(migrationText), nil
+		"{{hook_array}}", "ARRAY["+strings.Join(hooks, ", ")+"]", "{{hook_grants}}", grants.String()).Replace(migrationText), nil
 }
 
 // Manifest gives what the code of the revocation floor and the revocation records needs of the database that
@@ -1401,15 +1393,6 @@ func Manifest(schema, runtimeRole, relayRole, outboxRelayRole string, hookRoles 
 			{Role: runtimeRole, Privileges: []string{"INSERT"}, Columns: []string{"message_id", "revocation_id", "tenant_id"}},
 			{Role: outboxRelayRole, Privileges: []string{"UPDATE"}, Columns: []string{"state"}},
 		}}
-	// The hook roles, the worker role, have the least grants of the runtime role on the floor and the revocation
-	// records (walkthrough 8, W8-B1).
-	for _, role := range hookRoles {
-		floor.Grants = append(floor.Grants, manifest.Grant{Role: role, Privileges: []string{"SELECT"}})
-		revocations.Grants = append(revocations.Grants, manifest.Grant{Role: role, Privileges: []string{"SELECT"}},
-			manifest.Grant{Role: role, Privileges: []string{"INSERT"}, Columns: []string{"id", "tenant_id", "principal", "tuple_count"}})
-		tuples.Grants = append(tuples.Grants, manifest.Grant{Role: role, Privileges: []string{"SELECT"}},
-			manifest.Grant{Role: role, Privileges: []string{"INSERT"}, Columns: []string{"message_id", "revocation_id", "tenant_id"}})
-	}
 	state := manifest.Function{Name: schema + ".authz_revocation_state", Args: "uuid, uuid, text", Language: "plpgsql", Source: stateSource,
 		SecurityDefiner: true, Config: config, Owner: outboxRelayRole, Execute: append([]string{runtimeRole}, hookRoles...), Returns: "boolean"}
 	// The schema may be public, which holds the objects of others, so only its CREATE is checked: no role but its

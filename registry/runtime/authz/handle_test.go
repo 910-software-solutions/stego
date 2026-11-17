@@ -1022,11 +1022,18 @@ func TestHandleWrites(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RP06-LC23-T01 The worker role records the revocation of a tuple that a worker relates, and a refused grant keeps its SQLSTATE", func(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC18-T01 The worker role records the revocation of a tuple that a worker relates, and a refused grant keeps its SQLSTATE", func(t *testing.T) {
 		// A worker writes in a transaction of the worker role, which is not a member of the runtime role: the
-		// migration gives it the least grants of the runtime role on the floor and the revocation records
-		// (walkthrough 8, W8-B1).
+		// migration job of the service gives a consuming worker the least grants of the runtime role on the floor and
+		// the revocation records (service.consumerGrants; walkthrough 8, W8-B1).
 		env := newPG(t)
+		for _, grant := range []string{"SELECT ON {s}.authz_floor", "SELECT ON {s}.authz_revocations",
+			"INSERT (id, tenant_id, principal, tuple_count) ON {s}.authz_revocations", "SELECT ON {s}.authz_revocation_tuples",
+			"INSERT (message_id, revocation_id, tenant_id) ON {s}.authz_revocation_tuples"} {
+			if _, err := env.admin.ExecContext(ctx, "GRANT "+strings.ReplaceAll(grant, "{s}", env.schema)+" TO "+env.roles[1]); err != nil {
+				t.Fatal(err)
+			}
+		}
 		rt, err := New(Config{Provider: &recorder{}, DB: env.runtime, Schema: env.schema, Outbox: env.wqueue, Poll: 10 * time.Millisecond})
 		if err != nil {
 			t.Fatal(err)
