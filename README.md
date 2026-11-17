@@ -401,9 +401,11 @@ changes a declaration that they use. A fill folder that holds
 only `fill.yaml` does not stop apply: apply writes the contract, then names the
 fill to write. Then write the fill, and run `stego test`, `stego fill sign`
 and `stego apply`: `stego deps` and `stego build` refuse a fill that is not
-qualified, as plan and apply do. `stego test` passes only `-v`, `-race`,
-`-count`, `-timeout`, `-failfast` and `-json` to `go test`, so the evidence
-covers every test of the fill.
+qualified, as plan and apply do, and `stego build` also refuses a fill signed
+against an older contract than the revision holds. `stego test` passes only
+`-v`, `-race`, `-count` (1 or more), `-timeout` and `-failfast` to `go test`,
+reads no Go environment file, and records evidence only when at least one
+test of the fill ran and passed.
 
 Each unfinished fill returns `ErrNotImplemented`, and its test expects that
 error. Change the test when you write the fill.

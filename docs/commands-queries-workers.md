@@ -773,36 +773,34 @@ the slot `worker.worker`.
    write the fill. Fill create refuses a fill that no command, query or worker
    of `service.yaml` names, and a fill that exists.
 
-3. Generate the contract, and resolve the dependencies:
+3. Write the fill in `fills/place-order/fill.go`, and write its tests. Then
+   test the fill and sign its evidence with your own key:
+
+   ```bash
+   stego test
+   stego fill sign place-order
+   stego fill status
+   ```
+
+   `stego test` tests the fill against the contract that apply plans to write,
+   so you can do this before the first apply. The project's files do not
+   change. `stego fill status` shows the fill as `qualified`.
+
+4. Generate the contract, resolve the dependencies and build:
 
    ```bash
    stego apply
    stego deps
-   ```
-
-   Apply writes the contract of the fill in `out/commands`, `out/queries` or
-   `out/workers`. Apply fails if a fill folder holds no Go code, and names the
-   fill. Commit the project with `go.mod` and `go.sum`.
-
-4. Write the fill in `fills/place-order/fill.go`, and write its tests. Then
-   run the tests:
-
-   ```bash
-   stego test
-   ```
-
-   At this time, `stego test` does not run the tests of these fills. See
-   [Security gap](#security-gap-these-fills-are-not-qualified). Run them with
-   `go test ./fills/...`.
-
-5. Apply again and build:
-
-   ```bash
-   stego apply
    go build -o service ./out
    ```
 
-The file `fill.yaml` names the fill and its slot:
+   Plan and apply refuse a fill of a command, query or worker that is not
+   qualified, and name it and what to run. A fill folder that holds only
+   `fill.yaml` does not stop apply: apply writes the contract, then names the
+   fill to write.
+
+The file `fill.yaml` names the fill and its slot, and no collection: the
+command, query or worker that names the fill is its binding.
 
 ```yaml
 kind: fill
@@ -813,14 +811,25 @@ implements: command.command
 The slot of a command fill is `command.command`, of a query fill
 `query.query`, and of a worker fill `worker.worker`.
 
-### Security gap: these fills are not qualified
+### Qualification of these fills
 
-**Warning:** At this time, STEGO does not qualify the fills of commands,
-queries and workers. `stego test` records no evidence for them, and
-`stego fill sign` and `stego fill status` do not show them. Validate, plan
-and apply accept these fills with no sign-off. The service then runs code
-that no listed key signed, with write access to the entities in `writes`.
+These fills ship in the service with write access to the entities in
+`writes`, so they are qualified as each slot fill is (decision ST-EXT-Q30).
+The contract digest of such a fill covers the part of the generated package
+(`out/commands`, `out/queries` or `out/workers`) that the fill compiles
+against: the declarations of its own command, query or worker, and the
+declarations that the fill uses. A change to the fill, or to that part, makes
+the fill stale: run `stego test`, then `stego fill sign <name>` again. A new or
+changed command does not make the other command fills stale, unless it changes
+a declaration that they use.
 
-This is a known gap, and it is being closed: these fills must be tested and
-signed as each slot fill is (decision ST-EXT-Q30). Until then, review each
-change to these fills before you apply it.
+`stego deps` and `stego build` refuse such a fill that is not qualified, as
+plan and apply do. `stego build` also compares the contract digest of the
+evidence with the contract that the source revision holds. `stego test` passes
+only `-v`, `-race`, `-count` (1 or more), `-timeout` and `-failfast` to
+`go test`, and records evidence only when at least one test of the fill ran
+and passed.
+
+Upgrade: a project whose fills of commands, queries or workers have no
+signed evidence is refused at plan. Run `stego test`, then
+`stego fill sign <name>` for each fill that plan names.

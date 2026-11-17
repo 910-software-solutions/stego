@@ -404,9 +404,10 @@ func GoTestSetup(check compiler.FillCheck) ([]string, []string, func(), error) {
 	if overlay != "" {
 		flags = append(flags, "-overlay="+overlay)
 	}
-	goFlags := "GOFLAGS="
+	// An explicit GOFLAGS, as an empty one would let the Go environment file give one (GOENV is off too).
+	goFlags := "GOFLAGS=-mod=readonly"
 	if slices.Contains(strings.Fields(os.Getenv("GOFLAGS")), "-modcacherw") {
-		goFlags += "-modcacherw"
+		goFlags += " -modcacherw"
 	}
 	_, statErr := os.Stat(filepath.Join(check.ProjectDir, "go.mod"))
 	if _, planned := check.Planned[filepath.Join(check.ProjectDir, "go.mod")]; statErr != nil && !planned {
@@ -454,7 +455,9 @@ func moduleSources(runtimeProxy string) []string {
 	if runtimeProxy != "" {
 		proxy = (&url.URL{Scheme: "file", Path: filepath.ToSlash(runtimeProxy)}).String() + "," + proxy
 	}
-	var env []string
+	// GOENV=off: the go command treats an empty variable as unset and would read it from the Go environment file
+	// (go env -w), such as GONOSUMDB=* or GOFLAGS=-run=^$, so the file is not read.
+	env := []string{"GOENV=off"}
 	for _, key := range []string{"GOPROXY", "GOSUMDB", "GOPRIVATE", "GONOPROXY", "GONOSUMDB", "GOINSECURE", "GOAUTH", "GOVCS", "GIT_TERMINAL_PROMPT"} {
 		value := map[string]string{"GOPROXY": proxy, "GOSUMDB": "sum.golang.org", "GOAUTH": "off", "GOVCS": "*:off", "GIT_TERMINAL_PROMPT": "0"}[key]
 		env = append(env, key+"="+value)

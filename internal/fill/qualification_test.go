@@ -1,6 +1,7 @@
 package fill
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +151,29 @@ func TestFitsBinding(t *testing.T) {
 		} {
 			if FitsBinding(f, binding, "org-users") {
 				t.Errorf("%s for %s fits the binding of rest-api.before_create for org-users", f.Implements, f.Collection)
+			}
+		}
+	})
+}
+
+func TestReadTestReport(t *testing.T) {
+	t.Run("ST-EXT-UC02-R01-T04 A go test report in which no test passed, or a test failed, records no evidence", func(t *testing.T) {
+		event := func(action, test, output string) string {
+			return fmt.Sprintf("{\"Action\":%q,\"Test\":%q,\"Output\":%q}\n", action, test, output)
+		}
+		for name, c := range map[string]struct {
+			report string
+			pass   bool
+		}{
+			"one test passed":      {event("run", "TestA", "") + event("pass", "TestA", "") + event("output", "", "ok  \tx\n") + event("pass", "", ""), true},
+			"no test to run":       {event("output", "", "ok  \tx\t[no tests to run]\n") + event("pass", "", ""), false},
+			"a test failed":        {event("pass", "TestA", "") + event("fail", "TestB", "") + event("fail", "", ""), false},
+			"a report not in JSON": {"FAIL x [build failed]\n", false},
+		} {
+			var printed strings.Builder
+			err := ReadTestReport(strings.NewReader(c.report), &printed)
+			if (err == nil) != c.pass {
+				t.Errorf("%s: got %v, want pass %v", name, err, c.pass)
 			}
 		}
 	})

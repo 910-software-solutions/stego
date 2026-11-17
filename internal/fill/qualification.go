@@ -235,9 +235,12 @@ func QualificationFaults(check compiler.FillCheck) ([]compiler.FillFault, error)
 // changed after its evidence, or a key that SIGNERS lists did not sign that
 // evidence. Each fault names the fill and what to run. It reads no registry
 // and no module, so stego build can run it offline on a copy of the source
-// revision; the contract digest of the evidence is taken as it is, since only
-// apply, which checks it, changes a contract (ST-GEN-INV10).
-func RevisionFaults(dir string, fills []string) ([]string, error) {
+// revision. The contract digest of the evidence of a fill of a command, query
+// or worker must be the digest of the contract that the folder holds
+// (capability, from compiler.RevisionFillCheck); the contract digest of
+// another fill is taken as it is, since its contract is in the registry
+// (ST-GEN-INV10).
+func RevisionFaults(dir string, fills []string, capability compiler.FillCheck) ([]string, error) {
 	signers, err := ReadSigners(dir)
 	if err != nil {
 		return nil, err
@@ -272,6 +275,17 @@ func RevisionFaults(dir string, fills []string) ([]string, error) {
 		}
 		if f.Evidence != nil {
 			current.ContractDigest = f.Evidence.ContractDigest
+			if ref, err := types.ParseSlotRef(f.Implements); err == nil && capabilitySlot(ref) {
+				digest, err := CapabilityContractDigest(capability, name, ref)
+				if err != nil {
+					faults = append(faults, fmt.Sprintf("fill %q: its contract cannot be read: %v", name, err))
+					continue
+				}
+				if digest != f.Evidence.ContractDigest {
+					faults = append(faults, fmt.Sprintf("fill %q is stale: the fill was signed against an older contract than the revision holds; %s", name, nextSteps(name, Stale, nil)))
+					continue
+				}
+			}
 		}
 		if standing, reason := assess(f, current, signers); standing != Qualified {
 			var reasons []string

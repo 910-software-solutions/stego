@@ -238,7 +238,7 @@ func (d contractDecls) add(fset *token.FileSet, path string, file *ast.File) err
 	}
 	sum := sha256.Sum256([]byte(strings.Join(constraints, "\n")))
 	d.byName[buildConstraints] = append(d.byName[buildConstraints], contractDecl{key: path + " " + buildConstraints, digest: hex.EncodeToString(sum[:])})
-	inits := 0
+	inits, blanks := 0, 0
 	for _, decl := range file.Decls {
 		switch decl := decl.(type) {
 		case *ast.FuncDecl:
@@ -259,7 +259,7 @@ func (d contractDecls) add(fset *token.FileSet, path string, file *ast.File) err
 				return err
 			}
 		case *ast.GenDecl:
-			for i, spec := range decl.Specs {
+			for _, spec := range decl.Specs {
 				switch spec := spec.(type) {
 				case *ast.TypeSpec:
 					if err := record(d.byName, spec.Name.Name, spec.Name.Name, spec, "type "); err != nil {
@@ -277,7 +277,9 @@ func (d contractDecls) add(fset *token.FileSet, path string, file *ast.File) err
 					for _, name := range spec.Names {
 						key := name.Name
 						if key == "_" {
-							key = fmt.Sprintf("_#%d", i)
+							// Blank declarations are numbered across the file, as init functions are.
+							blanks++
+							key = fmt.Sprintf("_#%d", blanks)
 						}
 						if err := record(d.byName, name.Name, key, node, prefix); err != nil {
 							return err

@@ -1,7 +1,10 @@
 package fill
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"time"
 
@@ -101,4 +104,47 @@ func recordOne(check compiler.FillCheck, name string, run TestRun, build buildid
 	}
 	result.Passed = &FillTestsPassed{FillName: name, FillDigest: evidence.FillDigest, ContractDigest: evidence.ContractDigest}
 	return result
+}
+
+// testEvent is one event of the report of go test -json.
+type testEvent struct {
+	Action string
+	Test   string
+	Output string
+}
+
+// ReadTestReport reads the report of go test -json of the tests of one fill from r, writes the text of its output to
+// w, and gives an error unless at least one test passed and none failed: a run with no test to run, such as -count=0
+// or a run filter from the environment, records no evidence (ST-EXT-UC02-R01). A report that cannot be read is an
+// error too.
+func ReadTestReport(r io.Reader, w io.Writer) error {
+	decoder := json.NewDecoder(r)
+	passed, failed := 0, 0
+	for {
+		var event testEvent
+		err := decoder.Decode(&event)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			_, _ = io.Copy(io.Discard, r)
+			return fmt.Errorf("the report of go test cannot be read: %w", err)
+		}
+		if event.Output != "" {
+			fmt.Fprint(w, event.Output)
+		}
+		switch {
+		case event.Action == "pass" && event.Test != "":
+			passed++
+		case event.Action == "fail":
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d test or package failed", failed)
+	}
+	if passed == 0 {
+		return errors.New("no test of the fill ran")
+	}
+	return nil
 }

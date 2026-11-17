@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,6 +170,27 @@ func TestCapabilityFillQualification(t *testing.T) {
 		}
 		p.must(t, "no-key", "plan")
 
+		// A Go environment file that filters the tests out does not turn a failing test into evidence, and neither
+		// does a count of 0.
+		p.write(t, "fills/place-order/fail_test.go", "package place_order\n\nimport \"testing\"\n\nfunc TestFails(t *testing.T) { t.Fatal(\"fails\") }\n")
+		goEnv := filepath.Join(t.TempDir(), "go.env")
+		if err := os.WriteFile(goEnv, []byte("GOFLAGS=-run=^$\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		before := p.read(t, "fills/place-order/fill.yaml")
+		for _, run := range []struct {
+			extra []string
+			args  []string
+		}{{[]string{"GOENV=" + goEnv}, []string{"test"}}, {nil, []string{"test", "--", "-count=0"}}} {
+			stdout, stderr, err := p.stegoWith(t, "no-key", run.extra, run.args...)
+			if err == nil || !bytes.Equal(before, p.read(t, "fills/place-order/fill.yaml")) {
+				t.Fatalf("stego test %v with %v passed a failing test or wrote evidence: %v\n%s\n%s", run.args, run.extra, err, stdout, stderr)
+			}
+		}
+		if err := os.Remove(p.path("fills/place-order/fail_test.go")); err != nil {
+			t.Fatal(err)
+		}
+
 		// A test file that imports a module that go.mod does not hold fails: stego test fetches no module for it.
 		p.write(t, "fills/place-order/quote_test.go", "package place_order\n\nimport (\n\t\"testing\"\n\n\t\"rsc.io/quote\"\n)\n\nfunc TestQuote(t *testing.T) { _ = quote.Go() }\n")
 		if stdout, stderr, err := p.stego(t, "no-key", "test"); err == nil || !strings.Contains(stdout, "fill place-order: no evidence recorded") {
@@ -291,7 +313,7 @@ func probeContractDigest(t *testing.T) {
 	project := t.TempDir()
 	const contract = "example.com/probe/out/commands"
 	putFile(t, project, "fills/probe/fill.go", "package probe\n\nimport commands \""+contract+"\"\n\nvar _ commands.PlaceOrderFill\n\nvar _ = commands.Limit + commands.Second\n")
-	base := "package commands\n\n// PlaceOrderFill is the fill.\ntype PlaceOrderFill func() error\n\nconst (\n\tFirst = iota\n\tSecond\n)\n\nconst Limit = 1\n\nvar registered []string\n\nfunc init() { registered = append(registered, \"place-order\") }\n"
+	base := "package commands\n\n// PlaceOrderFill is the fill.\ntype PlaceOrderFill func() error\n\nconst (\n\tFirst = iota\n\tSecond\n)\n\nconst Limit = 1\n\nvar registered []string\n\nfunc init() { registered = append(registered, \"place-order\") }\n\nvar _ = \"one\"\n\nvar _ = \"two\"\n"
 	digest := func(source string) string {
 		t.Helper()
 		check := compiler.FillCheck{ProjectDir: project, Module: "example.com/probe",
@@ -312,6 +334,8 @@ func probeContractDigest(t *testing.T) {
 		"a change to the body of init":                        strings.Replace(base, `"place-order")`, `"other")`, 1),
 		"a constant that becomes a variable":                  strings.Replace(base, "const Limit = 1", "var Limit = 1", 1),
 		"a build constraint on the file":                      "//go:build linux\n\n" + base,
+		"a change to the first of two blank declarations":     strings.Replace(base, `var _ = "one"`, `var _ = "uno"`, 1),
+		"a change to the second of two blank declarations":    strings.Replace(base, `var _ = "two"`, `var _ = "dos"`, 1),
 	} {
 		if source == base {
 			t.Fatalf("%s: the probe does not change the contract", change)
@@ -340,27 +364,82 @@ func TestBuildRefusesUnqualifiedFill(t *testing.T) {
 			t.Fatal(err)
 		}
 		git(t, project, "init", "-q")
-		git(t, project, "add", "-A")
-		git(t, project, "commit", "-q", "-m", "fills")
-		revision := strings.TrimSpace(git(t, project, "rev-parse", "HEAD"))
-		root := t.TempDir()
-		cache := filepath.Join(root, "cache")
-		if err := os.Mkdir(cache, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		printed, err := capture(t, runBuild, "--source", project, "--revision", revision, "--target", "out", "--go", pinnedGo(t),
-			"--work", filepath.Join(root, "work"), "--output", filepath.Join(root, "result"), "--module-cache", cache)
-		if err == nil || !strings.Contains(err.Error(), `fill "place-order" is untested`) || !strings.Contains(err.Error(), "run stego test, then stego fill sign place-order") {
-			t.Fatalf("stego build did not refuse the unqualified fill and name what to run: %v\n%s", err, printed)
-		}
-		for _, folder := range []string{"work", "result"} {
-			if _, err := os.Stat(filepath.Join(root, folder)); err == nil {
-				t.Errorf("the refused build wrote %s", folder)
+		build := func() error {
+			t.Helper()
+			git(t, project, "add", "-A")
+			git(t, project, "commit", "-q", "--allow-empty", "-m", "change")
+			revision := strings.TrimSpace(git(t, project, "rev-parse", "HEAD"))
+			root := t.TempDir()
+			cache := filepath.Join(root, "cache")
+			if err := os.Mkdir(cache, 0o700); err != nil {
+				t.Fatal(err)
 			}
+			_, err := capture(t, runBuild, "--source", project, "--revision", revision, "--target", "out", "--go", pinnedGo(t),
+				"--work", filepath.Join(root, "work"), "--output", filepath.Join(root, "result"), "--module-cache", cache)
+			if err != nil && strings.Contains(err.Error(), "binds fills that are not qualified") {
+				for _, folder := range []string{"work", "result"} {
+					if _, statErr := os.Stat(filepath.Join(root, folder)); statErr == nil {
+						t.Errorf("the refused build wrote %s", folder)
+					}
+				}
+			}
+			return err
+		}
+		if err := build(); err == nil || !strings.Contains(err.Error(), `fill "place-order" is untested`) || !strings.Contains(err.Error(), "run stego test, then stego fill sign place-order") {
+			t.Fatalf("stego build did not refuse the unqualified fill and name what to run: %v", err)
 		}
 		// stego deps refuses the fill too.
 		if _, err := capture(t, runDependencies); err == nil || !strings.Contains(err.Error(), "run stego test, then stego fill sign place-order") {
 			t.Fatalf("stego deps did not refuse the unqualified fill: %v", err)
+		}
+
+		// Once the fills are qualified, the fill check of the build passes; the build then stops at the empty module
+		// cache, which is no fill fault.
+		qualifyInProcess(t)
+		mustRun(t, runApply)
+		if err := build(); err == nil || strings.Contains(err.Error(), "not qualified") {
+			t.Fatalf("stego build refused qualified fills, or built from an empty module cache: %v", err)
+		}
+
+		// A sign-off by a key that SIGNERS does not list stops the build.
+		keys := testFillKeys(t)
+		t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(keys.homes["unlisted-ssh"], ".gitconfig"))
+		mustRun(t, runFillSign, "place-order")
+		if err := build(); err == nil || !strings.Contains(err.Error(), "SIGNERS does not list its key") {
+			t.Fatalf("stego build did not refuse the sign-off of an unlisted key: %v", err)
+		}
+		qualifyInProcess(t)
+
+		// A fill signed against an older contract stops the build: its Go files go, the command changes, apply
+		// writes the new contract and passes the fill that holds no code, and the same files come back.
+		saved := map[string][]byte{}
+		for _, name := range []string{"fill.go", "fill_test.go"} {
+			data, err := os.ReadFile(filepath.Join("fills", "place-order", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved[name] = data
+			if err := os.Remove(filepath.Join("fills", "place-order", name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		declaration, err := os.ReadFile("service.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		changed := strings.Replace(string(declaration), "{name: not_draft, code: order.not_draft, status: 409}", "{name: not_draft, code: order.not_draft, status: 422}", 1)
+		if changed == string(declaration) {
+			t.Fatal("the declaration holds no refusal not_draft")
+		}
+		writeProjectFile(t, "service.yaml", changed)
+		if _, err := capture(t, runApply); err == nil || !strings.Contains(err.Error(), "holds no Go code yet") {
+			t.Fatalf("apply did not pass the fill that holds no code: %v", err)
+		}
+		for name, data := range saved {
+			writeProjectFile(t, filepath.Join("fills", "place-order", name), string(data))
+		}
+		if err := build(); err == nil || !strings.Contains(err.Error(), "signed against an older contract") || !strings.Contains(err.Error(), "run stego test, then stego fill sign place-order") {
+			t.Fatalf("stego build did not refuse the fill signed against an older contract: %v", err)
 		}
 	})
 }

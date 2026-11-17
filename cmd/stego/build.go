@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/jsell-rh/stego/internal/compiler"
 	"github.com/jsell-rh/stego/internal/fill"
 	"github.com/jsell-rh/stego/internal/parser"
 )
@@ -138,7 +139,11 @@ func checkBuildFills(module string) error {
 	for _, w := range service.Workers {
 		fills = append(fills, w.Fill...)
 	}
-	faults, err := fill.RevisionFaults(module, fills)
+	moduleName, _, err := compiler.ProjectModuleSettings(module, os.Getenv("STEGO_MODULE"), os.Getenv("STEGO_GO_VERSION"))
+	if err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	faults, err := fill.RevisionFaults(module, fills, compiler.RevisionFillCheck(module, moduleName, service))
 	if err != nil {
 		return err
 	}

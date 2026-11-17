@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -809,14 +810,26 @@ func runTest(args []string) error {
 		if err != nil {
 			return err
 		}
-		goArgs := append(append([]string{"test"}, overlayArgs...), "./"+filepath.ToSlash(relative)+"/...")
+		goArgs := append(append([]string{"test", "-json"}, overlayArgs...), "./"+filepath.ToSlash(relative)+"/...")
 		goArgs = append(goArgs, testArgs...)
 		cmd := exec.Command("go", goArgs...)
 		cmd.Dir = input.ProjectDir
 		cmd.Env = append(os.Environ(), testEnv...)
-		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		// The report of go test, not only its exit status, decides: a run in which no test of the fill passed
+		// records no evidence (fill.ReadTestReport).
+		report := fill.ReadTestReport(stdout, os.Stdout)
+		if err := cmd.Wait(); err != nil {
+			return err
+		}
+		return report
 	}
 	results, err := fill.RecordEvidence(check, run, buildidentity.Current(), time.Now)
 	if err != nil {
@@ -844,19 +857,26 @@ func runTest(args []string) error {
 
 // testFlags are the go test flags that stego test passes on: they change how the tests of a fill run and report, not
 // which tests run or which files they build, so the evidence still covers every test of the fill's files.
-var testFlags = map[string]bool{"v": false, "race": false, "count": true, "timeout": true, "failfast": false, "json": false}
+var testFlags = map[string]bool{"v": false, "race": false, "count": true, "timeout": true, "failfast": false}
 
 // checkTestArgs refuses each argument of stego test that is not a flag of testFlags, such as -run, -skip, -short,
 // -tags or -overlay, which change which tests run or which files they build, and names it (decision on ST-EXT-Q30).
 func checkTestArgs(args []string) error {
 	for i := 0; i < len(args); i++ {
-		name, _, valued := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+		name, value, valued := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
 		takesValue, known := testFlags[name]
 		if !strings.HasPrefix(args[i], "-") || !known {
-			return fmt.Errorf("stego test does not pass %q to go test: evidence must cover every test of the fill as its files are; only -v, -race, -count, -timeout, -failfast and -json are passed", args[i])
+			return fmt.Errorf("stego test does not pass %q to go test: evidence must cover every test of the fill as its files are; only -v, -race, -count, -timeout and -failfast are passed", args[i])
 		}
-		if takesValue && !valued {
+		if takesValue && !valued && i+1 < len(args) {
 			i++
+			value = args[i]
+		}
+		if name == "count" {
+			// A count below 1 runs no test, so go test passes with nothing tested.
+			if n, err := strconv.Atoi(value); err != nil || n < 1 {
+				return fmt.Errorf("stego test does not pass -count=%s to go test: the count must be a whole number of 1 or more, so each test runs", value)
+			}
 		}
 	}
 	return nil
