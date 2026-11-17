@@ -514,7 +514,7 @@ const workerComponent = "worker"
 // fillCheck gives the fill check of a declaration with its active component
 // set.
 func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *registry.Registry, components map[string]*registry.Component) FillCheck {
-	check := FillCheck{ProjectDir: input.ProjectDir, Contracts: reg, Module: input.ModuleName}
+	check := FillCheck{ProjectDir: input.ProjectDir, Contracts: reg, Module: input.ModuleName, RuntimeProxy: runtimeProxyStager(reg, svcDecl.Archetype)}
 	for _, module := range svcDecl.FillModules {
 		check.FillModules = append(check.FillModules, module.Module)
 	}
