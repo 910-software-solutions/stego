@@ -511,10 +511,11 @@ func (s *service) grantOn(c caller, resourceID string) {
 	must(s.t, err)
 }
 
-// provision calls Provision for the tenant id as c, with the idempotency key given.
+// provision calls Provision for the tenant id as c, with the idempotency key given, and one first administrator.
 func (s *service) provision(c *caller, id, key string) reply {
 	s.t.Helper()
-	body, err := json.Marshal(map[string]string{"tenant_id": id})
+	// The provisioning declares admin, so each Provision names a first administrator of the tenant (ST-SUP-RC27-OC13).
+	body, err := json.Marshal(map[string]any{"tenant_id": id, "admins": []map[string]string{{"subject": "admin-of-" + id}}})
 	must(s.t, err)
 	return s.send(c, http.MethodPost, "/stego/tenants", key, string(body))
 }

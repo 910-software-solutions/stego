@@ -45,6 +45,12 @@ through queries.
    go build -o service ./out
    ```
 
+The scaffold is an example. Change it to your service before the first
+`stego apply`: apply writes the record of the service, and plan and apply
+check each later release against it and against the default branch. Then an
+entity that a release removes, such as `Greeting`, is a schema change. To try
+the scaffold as it is, build it in a folder of its own.
+
 `stego apply` writes `deploy/environment-variables.md`, which names each
 setting of the binary. The binary with the one argument `migrate` is the
 migration job: it writes the tables and the SpiceDB schema before the
