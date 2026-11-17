@@ -26,6 +26,25 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
+// Clock is the interface of a clock of the revocation retention.
+//
+// Deprecated: Config.Clock is no longer a way to set the clock, and New refuses a configuration that sets it. The
+// type stays so the API of the module stays compatible (ST-STD-RUNTIME-R03); the tests of the runtime module set
+// the clocks through an internal package (review of PR #387, L1).
+type Clock interface {
+	Now() time.Time
+}
+
+// WaitClock is the interface of a clock of the waits of WaitFor (ST-SUP-RP06-LC24).
+//
+// Deprecated: as Clock, for Config.WaitClock.
+type WaitClock interface {
+	// WithTimeout gives a context that ends d after it is made, or when parent ends.
+	WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
+	// After gives a channel that receives the time when d has passed.
+	After(d time.Duration) <-chan time.Time
+}
+
 // systemClock is the clock of the revocation retention of a runtime: the real clock.
 type systemClock struct{}
 
@@ -75,6 +94,16 @@ type Config struct {
 	// Meter gives the metric of the search results that a handle drops because they name another tenant
 	// (ST-SUP-RP06-LC22). Nil records no metric; DroppedResults counts them still.
 	Meter metric.MeterProvider
+	// Clock must be nil: New refuses a configuration that sets it. A clock of the retention that the code of a
+	// service set could keep a revocation record from expiring.
+	//
+	// Deprecated: the field stays only so the API of the module stays compatible (ST-STD-RUNTIME-R03).
+	Clock Clock
+	// WaitClock must be nil: New refuses a configuration that sets it. A wait clock that never fires could hold the
+	// waiter places of WaitFor (review of PR #387, L1).
+	//
+	// Deprecated: the field stays only so the API of the module stays compatible (ST-STD-RUNTIME-R03).
+	WaitClock WaitClock
 
 	// clocks are the clocks of the retention and of the waits of WaitFor. They are the real clocks, except in a
 	// test of the runtime module, which sets them through the internal package authzclock (review of PR #387, L1).
@@ -137,6 +166,8 @@ func New(cfg Config) (*Runtime, error) {
 	switch {
 	case cfg.Outbox == nil:
 		return nil, errors.New("authz: no outbox queue")
+	case cfg.Clock != nil || cfg.WaitClock != nil:
+		return nil, errors.New("authz: Config.Clock and Config.WaitClock are not used; the runtime keeps the real clocks")
 	case cfg.Poll < 0:
 		return nil, errors.New("authz: the poll time is negative")
 	case cfg.Retention != 0 && cfg.Retention < MinRetention:

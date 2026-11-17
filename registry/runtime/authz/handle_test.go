@@ -1662,6 +1662,39 @@ func TestHandleWrites(t *testing.T) {
 	})
 }
 
+func TestPublicClocks(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC24-T05 New refuses a clock in the public configuration, and the internal hook sets it", func(t *testing.T) {
+		queue, err := outbox.New(fakeDB(t), outbox.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := Config{Provider: &recorder{}, DB: fakeDB(t), Schema: "public", Outbox: queue}
+		retention, wait := fixedClock{t: time.Unix(0, 0)}, systemWaitClock{}
+		withRetention, withWait := base, base
+		withRetention.Clock = retention
+		withWait.WaitClock = wait
+		for name, cfg := range map[string]Config{"Clock": withRetention, "WaitClock": withWait} {
+			if rt, err := New(cfg); err == nil || rt != nil {
+				t.Fatalf("New with Config.%s gave %v, %v; want a refusal", name, rt, err)
+			}
+		}
+		hooked := base
+		if !authzclock.Set(&hooked, authzclock.Clocks{Retention: retention, Wait: wait}) {
+			t.Fatal("the authz package registers no clock setter")
+		}
+		rt, err := New(hooked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rt.clock != authzclock.Clock(retention) || rt.waitClock != authzclock.WaitClock(wait) {
+			t.Fatalf("the runtime has the clocks %v and %v, want those of the hook", rt.clock, rt.waitClock)
+		}
+		if plain, err := New(base); err != nil || plain.clock != authzclock.Clock(systemClock{}) || plain.waitClock != authzclock.WaitClock(systemWaitClock{}) {
+			t.Fatalf("with no clock the runtime has %v and %v (%v), want the real clocks", plain.clock, plain.waitClock, err)
+		}
+	})
+}
+
 func TestWaitPoll(t *testing.T) {
 	t.Run("ST-SUP-RP06-LC24-T04 A long wait reads with a time that doubles from the poll time up to one second", func(t *testing.T) {
 		for poll, want := range map[time.Duration]time.Duration{50 * time.Millisecond: 100 * time.Millisecond,
