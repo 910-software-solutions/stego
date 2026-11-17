@@ -278,6 +278,11 @@ type CommandSpec[P any] struct {
 	// gives when the service has the kafka-producer component, or none: each create, update and delete of the
 	// handle then stages its change event (ST-SUP-RC32-OC14, ST-SUP-RP10-LC36).
 	ChangeEvents []ChangeEvents
+	// Lists are the lists of the command's declaration, which the generator emits in the command contract from the
+	// entity of the release (ST-SUP-RC32-OC16), and the generated upsert key of a collection. The command's handle
+	// takes only these lists, so its fill gives no SQL text (ST-SUP-RP10-LC38). Each is a list of an entity in
+	// Writes.
+	Lists []AnyList
 }
 
 // Resource is the generated declaration of the resource of a command (ST-SUP-RP10-LC31): its resource type at the
@@ -308,6 +313,8 @@ type Command[P any] struct {
 	own   map[authz.Relation]bool
 	// changeEvents are the checked change events by entity name.
 	changeEvents map[string]ChangeEvents
+	// lists are the declared lists, which the handle takes only (ST-SUP-RP10-LC38).
+	lists map[AnyList]bool
 }
 
 // NewCommand checks the declaration of one command.
@@ -333,9 +340,13 @@ func NewCommand[P any](spec CommandSpec[P]) (*Command[P], error) {
 	if err != nil {
 		return nil, err
 	}
+	lists, err := checkLists(spec.Name, spec.Lists, writes)
+	if err != nil {
+		return nil, err
+	}
 	bound, own := boundRelations(spec.Relations, spec.Writes)
 	return &Command[P]{spec: spec, writes: writes, destinations: destinations, bound: bound, own: own,
-		changeEvents: changeEvents}, nil
+		changeEvents: changeEvents, lists: lists}, nil
 }
 
 // boundRelations gives the relations of an authorization handle: the declared ones, which the fill may write, and
@@ -567,6 +578,9 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	s := newState(ctx, rt, tx, req.Tenant, req.Principal, modeCommand, cmd.spec.Name, cmd.writes, cmd.destinations)
 	s.request = req
 	s.changeEvents = cmd.changeEvents
+	// The handle takes only the declared lists, and a list value RunTime takes the start of the attempt on the
+	// runtime's clock (ST-SUP-RP10-LC38).
+	s.lists, s.runTime = cmd.lists, rt.clock().Now()
 	s.commandPermission = cmd.spec.Permission
 	s.lockTimeout = cmd.spec.LockTimeout
 	if s.lockTimeout == 0 {

@@ -329,7 +329,7 @@ func TestCommandPermissionOnRows(t *testing.T) {
 		req.Resource = "o5"
 		var listed []string
 		if _, err := e.run(withUsers, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
-			rows, err := repo(t, h, e.users).ListForUpdate(ctx, e.admins, nil, "org1")
+			rows, err := repo(t, h, e.users).ListForUpdate(ctx, e.admins.With("org1"), nil)
 			for _, u := range rows {
 				listed = append(listed, u.Value().ID)
 			}
@@ -500,11 +500,11 @@ func TestCommandPermissionOnRows(t *testing.T) {
 				return err
 			}, ErrNotFound},
 			"a locked list under o6": {func(ctx context.Context, h *Handle[testProbe]) error {
-				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder, get(ctx, h, "o6"), "o6")
+				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder.With("o6"), get(ctx, h, "o6"))
 				return err
 			}, ErrNotFound},
 			"a locked list whose rows name another parent": {func(ctx context.Context, h *Handle[testProbe]) error {
-				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder, get(ctx, h, "o5"), "o6")
+				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder.With("o6"), get(ctx, h, "o5"))
 				return err
 			}, ErrInternal},
 			"an update under o6": {func(ctx context.Context, h *Handle[testProbe]) error {
@@ -531,7 +531,7 @@ func TestCommandPermissionOnRows(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if _, err := r.ListForUpdate(ctx, e.ofOrder, o5, "o5"); err != nil {
+			if _, err := r.ListForUpdate(ctx, e.ofOrder.With("o5"), o5); err != nil {
 				return err
 			}
 			_, err = r.Update(ctx, v, reservation{ID: "r5", OrderID: "o5", SKU: "changed"}, o5)
