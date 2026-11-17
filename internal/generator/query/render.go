@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/format"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,11 +23,27 @@ const (
 	protoImport = "google.golang.org/protobuf/proto"
 )
 
-// ContractRuntimeImports gives the packages of the runtime library that the query slot contract out/queries can
-// import, for any declaration. A fill of the query slot may import them (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill
-// check admits them also before out/queries is generated.
-func ContractRuntimeImports() []string {
-	return []string{auditImport, queryImport}
+// ContractRuntimeImports gives the packages of the runtime library that the query slot contract out/queries imports
+// for the declared entities and queries: the audit package when an entity that a query reads has a pii field
+// (model.sensitive; a secret field is not in the read-only value), and the query runtime. A fill of the query slot
+// may import them (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill check admits them also before out/queries is
+// generated, and admits no package that the contract does not import.
+func ContractRuntimeImports(entities []types.Entity, queries []types.Query) []string {
+	var reads []string
+	for _, q := range queries {
+		reads = append(reads, q.Reads...)
+	}
+	for _, e := range entities {
+		if !slices.Contains(reads, e.Name) {
+			continue
+		}
+		for _, f := range e.Fields {
+			if f.Sensitivity == "pii" {
+				return []string{auditImport, queryImport}
+			}
+		}
+	}
+	return []string{queryImport}
 }
 
 // render gives the contract package and the handler package of the model.

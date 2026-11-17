@@ -27,10 +27,12 @@ func TestSlotContracts(t *testing.T) {
 		// the fill check, so a fresh clone and a removed out/ give the same answer as a generated project.
 		dir := t.TempDir()
 		check := compiler.FillCheck{ProjectDir: dir, Module: "example.com/shop", QueryContract: "example.com/shop/out/queries",
-			CommandFills: []compiler.CommandFill{{Fill: "add-note", Contract: "example.com/shop/out/commands"}},
+			CommandFills:   []compiler.CommandFill{{Fill: "add-note", Contract: "example.com/shop/out/commands"}},
+			WorkerContract: "example.com/shop/out/workers",
 			ContractRuntime: map[string][]string{
 				"example.com/shop/out/queries":  {"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/query"},
 				"example.com/shop/out/commands": {"github.com/jsell-rh/stego/registry/runtime/command"},
+				"example.com/shop/out/workers":  {"github.com/jsell-rh/stego/registry/runtime/command"},
 			}}
 		fill := func(name, imports string) string {
 			fillDir := filepath.Join(dir, "fills", name)
@@ -51,6 +53,13 @@ func TestSlotContracts(t *testing.T) {
 				"\t\"example.com/shop/out/commands\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n", ""},
 			{"a command fill of the query contract", "add-note", commandSlot, "\t\"example.com/shop/out/queries\"\n", "example.com/shop/out/queries"},
 			{"a protobuf slot fill of out/slots", "admin-policy", "rest-api.before_create", "\t\"example.com/shop/out/slots\"\n", ""},
+			{"a protobuf slot fill of a runtime package", "admin-policy-rt", "rest-api.before_create",
+				"\t\"example.com/shop/out/slots\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n", "github.com/jsell-rh/stego/registry/runtime/command"},
+			{"a worker fill of its worker contract and the runtime command package", "sync-orders", workerSlot,
+				"\t\"example.com/shop/out/workers\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n", ""},
+			{"a worker fill of a runtime package that its contract does not reach", "sync-orders-audit", workerSlot,
+				"\t\"example.com/shop/out/workers\"\n\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n", "github.com/jsell-rh/stego/registry/runtime/audit"},
+			{"a worker fill of the command contract", "sync-orders-cmd", workerSlot, "\t\"example.com/shop/out/commands\"\n", "example.com/shop/out/commands"},
 			{"a protobuf slot fill of the query contract", "admin-policy-q", "rest-api.before_create", "\t\"example.com/shop/out/queries\"\n", "example.com/shop/out/queries"},
 		}
 		for _, c := range cases {

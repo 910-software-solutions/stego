@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"go/token"
+	"slices"
 	"strings"
 
 	authzschema "github.com/jsell-rh/stego/internal/declaration"
@@ -10,13 +11,42 @@ import (
 	"github.com/jsell-rh/stego/internal/types"
 )
 
-// ContractRuntimeImports gives the packages of the runtime library that the command slot contract out/commands can
-// import, for any declaration: the command runtime, the audit package for the entities with a pii or secret field,
-// and the authz package for a command that writes relations. A fill of the command slot may import them
-// (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill check admits them also before out/commands is generated.
-func ContractRuntimeImports() []string {
-	return []string{"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/authz",
-		"github.com/jsell-rh/stego/registry/runtime/command"}
+// ContractRuntimeImports gives the packages of the runtime library that the command slot contract out/commands
+// imports for the declared entities and commands: the audit package when an entity that a command writes has a pii
+// or secret field (model.usesAudit), the authz package when a command writes relations (model.hasRelations), and the
+// command runtime. A fill of the command slot may import them (ST-EXT-INV05, ST-EXT-UC01-R03), so the fill check
+// admits them also before out/commands is generated, and admits no package that the contract does not import.
+func ContractRuntimeImports(entities []types.Entity, commands []types.Command) []string {
+	var writes []string
+	relations := false
+	for _, c := range commands {
+		writes = append(writes, c.Writes...)
+		relations = relations || len(c.RelationshipsWritten) > 0
+	}
+	var out []string
+	if WritesSensitive(entities, writes) {
+		out = append(out, "github.com/jsell-rh/stego/registry/runtime/audit")
+	}
+	if relations {
+		out = append(out, "github.com/jsell-rh/stego/registry/runtime/authz")
+	}
+	return append(out, "github.com/jsell-rh/stego/registry/runtime/command")
+}
+
+// WritesSensitive tells whether one of the entities named in names has a pii or secret field, so that its generated
+// repository declaration imports the audit package (model.usesAudit).
+func WritesSensitive(entities []types.Entity, names []string) bool {
+	for _, e := range entities {
+		if !slices.Contains(names, e.Name) {
+			continue
+		}
+		for _, f := range e.Fields {
+			if f.Sensitivity == "pii" || f.Sensitivity == "secret" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // entity is one entity that a command writes, with its repository declaration (ST-SUP-RP10-LC02).

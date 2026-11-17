@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -646,20 +647,49 @@ func contractRuntime(t *testing.T, files map[string][]byte, namespace string) ma
 }
 
 func TestContractRuntimeImports(t *testing.T) {
-	t.Run("ST-SUP-RC32-OC03-T05 The command contract imports only the runtime packages that the generator gives the fill check", func(t *testing.T) {
-		// The test declaration has a pii field and a command that writes a relation, so the contract imports each
-		// runtime package that the generator can write into it.
-		found := contractRuntime(t, generated(t, commandContext(t, declaration(t), commandSlot)), "commands")
-		listed := map[string]bool{}
-		for _, path := range ContractRuntimeImports() {
-			listed[path] = true
-			if !found[path] {
-				t.Errorf("ContractRuntimeImports gives %s, which the contract of the test declaration does not import", path)
+	t.Run("ST-SUP-RC32-OC03-T05 The command contract imports exactly the runtime packages that the generator gives the fill check, for each declaration", func(t *testing.T) {
+		// The test declaration has the pii field card_last4 and a command that writes a relation. The variants take
+		// away the relations, the pii and secret fields, or both, so each runtime package is in and out once.
+		noRelations := func(svc *types.ServiceDeclaration) {
+			for i := range svc.Commands {
+				svc.Commands[i].RelationshipsWritten = nil
 			}
 		}
-		for path := range found {
-			if !listed[path] {
-				t.Errorf("the command contract imports %s, which ContractRuntimeImports does not give, so the fill check refuses a fill that imports it", path)
+		noSensitive := func(svc *types.ServiceDeclaration) {
+			for i := range svc.Entities {
+				for j := range svc.Entities[i].Fields {
+					svc.Entities[i].Fields[j].Sensitivity = ""
+				}
+			}
+		}
+		for _, c := range []struct {
+			name    string
+			changes []func(*types.ServiceDeclaration)
+			want    int
+		}{
+			{"pii and relations", nil, 3},
+			{"pii and no relations", []func(*types.ServiceDeclaration){noRelations}, 2},
+			{"relations and no pii", []func(*types.ServiceDeclaration){noSensitive}, 2},
+			{"no pii and no relations", []func(*types.ServiceDeclaration){noRelations, noSensitive}, 1},
+		} {
+			svc := declaration(t)
+			for _, change := range c.changes {
+				change(svc)
+			}
+			found := contractRuntime(t, generated(t, commandContext(t, svc, commandSlot)), "commands")
+			listed := ContractRuntimeImports(svc.Entities, svc.Commands)
+			if len(listed) != c.want {
+				t.Errorf("%s: ContractRuntimeImports gives %v, want %d packages", c.name, listed, c.want)
+			}
+			for _, path := range listed {
+				if !found[path] {
+					t.Errorf("%s: ContractRuntimeImports gives %s, which the contract does not import, so the fill check admits more than the contract reaches", c.name, path)
+				}
+			}
+			for path := range found {
+				if !slices.Contains(listed, path) {
+					t.Errorf("%s: the contract imports %s, which ContractRuntimeImports does not give, so the fill check refuses a fill that imports it", c.name, path)
+				}
 			}
 		}
 	})

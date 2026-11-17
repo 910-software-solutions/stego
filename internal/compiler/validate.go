@@ -573,7 +573,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		contract := generatedImportPath(input.ModuleName, outDirName, command.OutputNamespace)
-		check.ContractRuntime[contract] = commandgen.ContractRuntimeImports()
+		check.ContractRuntime[contract] = commandgen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Commands)
 		for i, c := range svcDecl.Commands {
 			if len(c.Fill) == 1 && c.Fill[0] != "" && !strings.ContainsAny(c.Fill[0], `/\.`) {
 				check.CommandFills = append(check.CommandFills, CommandFill{Fill: c.Fill[0], Command: c.Name,
@@ -590,7 +590,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		check.QueryContract = generatedImportPath(input.ModuleName, outDirName, q.OutputNamespace)
-		check.ContractRuntime[check.QueryContract] = querygen.ContractRuntimeImports()
+		check.ContractRuntime[check.QueryContract] = querygen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Queries)
 		for i, query := range svcDecl.Queries {
 			if len(query.Fill) == 1 && query.Fill[0] != "" && !strings.ContainsAny(query.Fill[0], `/\.`) {
 				check.QueryFills = append(check.QueryFills, QueryFill{Fill: query.Fill[0], Query: query.Name,
@@ -608,7 +608,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 		check.WorkerContract = generatedImportPath(input.ModuleName, outDirName, w.OutputNamespace)
-		check.ContractRuntime[check.WorkerContract] = workergen.ContractRuntimeImports()
+		check.ContractRuntime[check.WorkerContract] = workergen.ContractRuntimeImports(svcDecl.Entities, svcDecl.Workers)
 	}
 	for i, worker := range svcDecl.Workers {
 		if len(worker.Fill) == 1 && worker.Fill[0] != "" && !strings.ContainsAny(worker.Fill[0], `/\.`) {
