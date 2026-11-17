@@ -308,4 +308,165 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 			}
 		}
 	})
+	t.Run("ST-SUP-RC27-OC13-T02 Provision checks its admins, stages their grants in the new tenant only, and a replay with other admins is refused", func(t *testing.T) {
+		e := newEnv(t)
+		migration, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(migration)
+		rt := e.runtime(func(c *Config) { c.Entities = nil })
+		serve := func(admin string) *http.ServeMux {
+			mux := http.NewServeMux()
+			for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+				"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+				relation := admin
+				if action == tenant.RetireAction {
+					relation = ""
+				}
+				h, err := ServeTenant(rt, TenantSpec{Action: action, ResourceType: "service", Permission: string(action), Schema: "public",
+					SubjectType: "user", AdminRelation: relation})
+				if err != nil {
+					t.Fatal(err)
+				}
+				mux.Handle(route, h)
+			}
+			return mux
+		}
+		withAdmin, withoutAdmin := serve("admin"), serve("")
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+		claims["tenant"] = "ops"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+		defer e.decision.setAllow(nil)
+		type answer struct {
+			status int
+			body   string
+		}
+		send := func(mux *http.ServeMux, path, key, body string) answer {
+			r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("Idempotency-Key", `"`+key+`"`)
+			w := httptest.NewRecorder()
+			verifier.Middleware(mux).ServeHTTP(w, r)
+			return answer{w.Code, w.Body.String()}
+		}
+		tuples := func(tenantID string) []string {
+			rows, err := e.admin.QueryContext(e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
+ (p->'tuple'->>'relation') || '@' || (p->'tuple'->>'subject_type') || ':' || (p->'tuple'->>'subject_id')
+ FROM (SELECT convert_from(payload, 'UTF8')::jsonb AS p, created_at, id FROM stego_outbox.messages
+ WHERE tenant_id = $1 AND destination = 'authz') m ORDER BY created_at, id`, tenantID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var out []string
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					t.Fatal(err)
+				}
+				out = append(out, line)
+			}
+			return out
+		}
+		person := func(issuer, sub string) string {
+			subject, err := authz.PersonSubject("user", issuer, sub)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return subject.String()
+		}
+		// Each refused body is 400 with the field admins, before any decision, and changes nothing.
+		long := strings.Repeat("x", 1025)
+		many := make([]string, 11)
+		for i := range many {
+			many[i] = `{"subject":"u` + string(rune('a'+i)) + `"}`
+		}
+		for name, c := range map[string]struct {
+			mux  *http.ServeMux
+			path string
+			body string
+		}{
+			"no admins":           {withAdmin, "/stego/tenants", `{"tenant_id":"org-n"}`},
+			"an empty list":       {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[]}`},
+			"eleven persons":      {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[` + strings.Join(many, ",") + `]}`},
+			"the same person":     {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"alice"},{"subject":"alice","issuer":"https://issuer.example"}]}`},
+			"an empty subject":    {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":""}]}`},
+			"a control character": {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"al\u0000ice"}]}`},
+			"a long issuer":       {withAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"alice","issuer":"` + long + `"}]}`},
+			"admins when none":    {withoutAdmin, "/stego/tenants", `{"tenant_id":"org-n","admins":[{"subject":"alice"}]}`},
+			"admins on a retire":  {withAdmin, "/stego/tenants/org-n/retire", `{"tenant_id":"org-n","admins":[{"subject":"alice"}]}`},
+		} {
+			got := send(c.mux, c.path, "k-"+NewID(), c.body)
+			if got.status != http.StatusBadRequest || !strings.Contains(got.body, `"admins"`) {
+				t.Errorf("%s: answered %d %s, want 400 with the field admins", name, got.status, got.body)
+			}
+		}
+		if e.count(`SELECT count(*) FROM stego_tenants WHERE tenant_id = 'org-n'`) != 0 || len(tuples("org-n")) != 0 {
+			t.Fatal("a refused body changed the tenant list or staged a tuple")
+		}
+		// A body with an unknown member of an admin is refused as a bad request.
+		if got := send(withAdmin, "/stego/tenants", "k-"+NewID(), `{"tenant_id":"org-n","admins":[{"subject":"alice","role":"owner"}]}`); got.status != http.StatusBadRequest {
+			t.Errorf("an unknown member of an admin answered %d, want 400", got.status)
+		}
+		// Provision stages one touch for each admin on the tenant-qualified service-level resource of the new tenant.
+		const body = `{"tenant_id":"org-a","admins":[{"subject":"alice"},{"subject":"bob","issuer":"https://other.example"}]}`
+		if got := send(withAdmin, "/stego/tenants", "k-org-a", body); got.status != http.StatusCreated {
+			t.Fatalf("the provision of org-a with admins answered %d %s, want 201", got.status, got.body)
+		}
+		resource, err := authz.NewResource(mustTenant(t, "org-a"), "service", "orders")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"touch service:" + resource.ID + "#admin@" + person("https://issuer.example", "alice"),
+			"touch service:" + resource.ID + "#admin@" + person("https://other.example", "bob")}
+		if got := tuples("org-a"); !slices.Equal(got, want) {
+			t.Fatalf("the provision of org-a staged %v, want %v", got, want)
+		}
+		if !strings.Contains(resource.ID, "/") {
+			t.Fatalf("the grant is on %s, which is not tenant-qualified", resource.ID)
+		}
+		// The audit row names the relation and the count, and no subject or issuer.
+		var after string
+		if err := e.admin.QueryRowContext(e.ctx, `SELECT coalesce(after::text, '') FROM audit_event WHERE tenant_id = 'org-a' AND action = $1`, ProvisionCommand).Scan(&after); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(after, `"admin_relation": "admin"`) || !strings.Contains(after, `"admins": 2`) || strings.Contains(after, "alice") || strings.Contains(after, "issuer") {
+			t.Fatalf("the audit row of the provision holds the after state %s, want the relation and the count only", after)
+		}
+		// The same key with the same body replays the answer and stages nothing again; with other admins it is refused.
+		if got := send(withAdmin, "/stego/tenants", "k-org-a", body); got.status != http.StatusCreated {
+			t.Fatalf("the replay of the provision of org-a answered %d, want 201", got.status)
+		}
+		other := `{"tenant_id":"org-a","admins":[{"subject":"mallory"}]}`
+		if got := send(withAdmin, "/stego/tenants", "k-org-a", other); got.status != http.StatusUnprocessableEntity {
+			t.Fatalf("the replay of the key with other admins answered %d %s, want 422", got.status, got.body)
+		}
+		if got := send(withAdmin, "/stego/tenants", "k-org-a-2", other); got.status != http.StatusConflict {
+			t.Fatalf("a second provision of org-a with other admins answered %d %s, want 409", got.status, got.body)
+		}
+		if got := tuples("org-a"); !slices.Equal(got, want) {
+			t.Fatalf("the replays staged more tuples: %v", got)
+		}
+		// An admin relation that the runtime writes itself, or that is no relation, is refused before any request.
+		for _, relation := range []string{"tenant", "worker_sync", "a b"} {
+			if _, err := ServeTenant(rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",
+				Schema: "public", SubjectType: "user", AdminRelation: relation}); err == nil {
+				t.Errorf("the admin relation %q was accepted", relation)
+			}
+		}
+	})
+
 }

@@ -152,7 +152,10 @@ with its fill and the fill's test, and the settings that the query needs;
 `browser-service` writes an API prefix, one route and an index page. The fill
 of the query carries no signature, so `stego validate` gives a warning for it.
 Before plan, apply and build accept it, list your key in `SIGNERS`, run
-`stego test`, then `stego fill sign get-greeting`. The service takes the name of the
+`stego test`, then `stego fill sign get-greeting`. The
+[rpc-service guide](registry/archetypes/rpc-service/README.md) goes on from
+the scaffold to the first tenant, its first administrator and the first row.
+The service takes the name of the
 project folder, and the fill imports the module path of `STEGO_MODULE` (or
 `github.com/example/service`): give the same value to each later command. Use
 `stego init --archetype <name> --empty` for a scaffold with no example

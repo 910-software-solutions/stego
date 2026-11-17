@@ -397,6 +397,40 @@ func randomReachSchema(r *rand.Rand) string {
 	return b.String()
 }
 
+func TestAdminRelation(t *testing.T) {
+	const inv95 = "ST-DECL-INV95-T Checking refuses an admin relation of the provisioning that the schema lacks, that does not admit the person, or that the runtime writes"
+	const line = "  provisioning: {resource_type: service, provision: provision, retire: retire}\n"
+	service, schema := td03Files(t)
+	const plain = "definition service {\n\trelation operator: user\n\tpermission provision = operator\n\tpermission retire = operator\n}\n"
+	if !strings.Contains(schema, plain) {
+		t.Fatal("the schema of TD03 holds no definition service")
+	}
+	withAdmin := strings.Replace(schema, plain, "definition service {\n\trelation operator: user\n\trelation admin: user\n\trelation crew: document\n\trelation tenant: user\n\tpermission provision = operator\n\tpermission retire = operator\n}\n", 1)
+	declared := func(admin string) string {
+		return change(t, service, line, "  provisioning: {resource_type: service, provision: provision, retire: retire, admin: "+admin+"}\n")
+	}
+	t.Run(inv95+": the relation admin of user is accepted, and no admin relation is accepted as before", func(t *testing.T) {
+		expectAccepted(t, checkTD03(t, declared("admin"), withAdmin))
+		expectAccepted(t, checkTD03(t, service, withAdmin))
+	})
+	for _, c := range []struct {
+		name, admin string
+		texts       []string
+	}{
+		{"a relation that the schema lacks", "owner", []string{"admin relation", "owner", "lacks"}},
+		{"a relation that does not admit user", "crew", []string{"admin relation", "crew", "subject type user"}},
+		{"the relation tenant", "tenant", []string{"admin relation", "tenant", "runtime writes itself"}},
+		{"a worker relation", "worker_sync", []string{"admin relation", "worker_sync", "runtime writes itself"}},
+	} {
+		t.Run(inv95+": "+c.name, func(t *testing.T) {
+			fault := expectOneFault(t, checkTD03(t, declared(c.admin), withAdmin), "tenant-provisioning", c.texts...)
+			if fault.Path != "tenancy.provisioning.admin" || fault.Found != c.admin {
+				t.Errorf("want the fault at tenancy.provisioning.admin with %s, got %+v", c.admin, fault)
+			}
+		})
+	}
+}
+
 func TestOwnRoutes(t *testing.T) {
 	t.Run("ST-SUP-RC27-OC09-T04 A declared route or path_prefix under <base path>/stego/ is refused", func(t *testing.T) {
 		service := &types.ServiceDeclaration{BasePath: "/api/shop/v1",

@@ -235,6 +235,10 @@ func provisioning() *service.Provisioning {
 			p.Retire, p.RetireRoute = o.Permission, o.Route
 		}
 	}
+{{- if .AdminRelation}}
+	// Provision gives each first administrator that its body names this relation in the new tenant (ST-SUP-RC27-OC13).
+	p.AdminRelation = {{printf "%q" .AdminRelation}}
+{{- end}}
 	return p
 }
 {{- end}}

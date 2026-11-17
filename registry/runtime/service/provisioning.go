@@ -25,6 +25,9 @@ type Provisioning struct {
 	Provision, Retire string
 	// ProvisionRoute is POST <base path>/stego/tenants, and RetireRoute POST <base path>/stego/tenants/{tenantId}/retire.
 	ProvisionRoute, RetireRoute string
+	// AdminRelation is the declared relation of ResourceType that Provision gives each first administrator of a new
+	// tenant, or "" when the provisioning declares none (ST-SUP-RC27-OC13, ST-DECL-EN27).
+	AdminRelation string
 }
 
 // The path of the provisioning routes after the base path.
@@ -86,11 +89,12 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 		spec.Reader = svc.provider
 	}
 	var err error
-	spec.Action, spec.Permission = tenant.ProvisionAction, p.Provision
+	spec.Action, spec.Permission, spec.AdminRelation = tenant.ProvisionAction, p.Provision, p.AdminRelation
 	if tp.provision, err = command.ServeTenant(rt, spec); err != nil {
 		return nil, err
 	}
-	spec.Action, spec.Permission = tenant.RetireAction, p.Retire
+	// A Retire takes no admins (ST-SUP-RC27-OC13).
+	spec.Action, spec.Permission, spec.AdminRelation = tenant.RetireAction, p.Retire, ""
 	if tp.retire, err = command.ServeTenant(rt, spec); err != nil {
 		return nil, err
 	}
