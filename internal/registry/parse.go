@@ -157,6 +157,13 @@ func checkNeeds(component *Component) error {
 			return fault("name", "the component states the need twice")
 		}
 		seen[need.Name] = true
+		// A resource name is the name of a cluster object, so it holds the same placeholders as a need name: a
+		// declaration cannot choose the object of another service (ST-SUP-INV23, #404 security review L5).
+		for _, resourceName := range need.ResourceNames {
+			if err := checkNeedName(component, resourceName); err != nil {
+				return fault("resource_names", "the resource name %q: %s", resourceName, err)
+			}
+		}
 		given := map[string]bool{"keys": len(need.Keys) > 0, "engine": need.Engine != "", "port": need.Port != 0,
 			"api_group": need.APIGroup != "", "resource": need.Resource != "", "verbs": len(need.Verbs) > 0, "level": need.Level != "",
 			"resource_names": len(need.ResourceNames) > 0}
