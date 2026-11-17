@@ -1099,7 +1099,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.151.0",
+          "version": "3.154.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1127,7 +1127,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.151.0",
+          "version": "3.154.0",
           "field": "bindings.storage-adapter"
         }
       }
