@@ -212,13 +212,13 @@ type Workers struct {
 	worker            *outbox.Worker
 	// inboxName is the component name of the Kafka inbox of a declared subscription, or empty: a stopped inbox, such
 	// as one that the retention of its topic stopped, makes the worker mode not ready (ST-SUP-RP14-LC08).
-	inboxName string
-	relay             *authz.Relay
-	periodic          *lease.Periodic
-	tickers           []*command.Ticker
-	anchorer          *audit.Anchorer
-	maintainer        *audit.Maintainer
-	reconcile         *command.WorkerReconcile
+	inboxName  string
+	relay      *authz.Relay
+	periodic   *lease.Periodic
+	tickers    []*command.Ticker
+	anchorer   *audit.Anchorer
+	maintainer *audit.Maintainer
+	reconcile  *command.WorkerReconcile
 
 	// controller ends the controller lease loop, which releases the lease; controllerDone is closed when it returned.
 	controller     context.CancelFunc

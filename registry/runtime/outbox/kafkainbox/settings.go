@@ -13,11 +13,11 @@ import (
 // (ST-SUP-RP01-LC38). The connection settings are the settings of the Kafka destination (ST-SUP-RP01-LC32).
 const (
 	// TopicSetting is the topic that the inbox reads: the topic of the source service's change events.
-	TopicSetting     = "STEGO_KAFKA_CONSUMER_TOPIC"
-	TopicFileSetting = "STEGO_KAFKA_CONSUMER_TOPIC_FILE"
+	TopicSetting     = kafkaoutbox.ConsumerTopicSetting
+	TopicFileSetting = kafkaoutbox.ConsumerTopicFileSetting
 	// GroupSetting is the consumer group. Unset: <service>.<subscription>.
-	GroupSetting     = "STEGO_KAFKA_CONSUMER_GROUP"
-	GroupFileSetting = "STEGO_KAFKA_CONSUMER_GROUP_FILE"
+	GroupSetting     = kafkaoutbox.ConsumerGroupSetting
+	GroupFileSetting = kafkaoutbox.ConsumerGroupFileSetting
 	// InfiniteRetentionSetting set to 1 lets the inbox read a topic whose retention is infinite. The inbox keeps its
 	// dedup rows for the done retention of the outbox only, so an offset reset to a record older than that can apply
 	// it again; the setting says that the operator accepts this.
@@ -60,10 +60,7 @@ func ReadSettings(service, subscription string) (Settings, error) {
 	}
 	connection.Topic = ""
 	s := Settings{Connection: connection}
-	if s.Topic, err = kafkaoutbox.ReadValue(TopicSetting, TopicFileSetting); err != nil {
-		return Settings{}, err
-	}
-	if s.Group, err = kafkaoutbox.ReadValue(GroupSetting, GroupFileSetting); err != nil {
+	if s.Topic, s.Group, err = kafkaoutbox.ReadConsumer(); err != nil {
 		return Settings{}, err
 	}
 	if s.Group == "" {

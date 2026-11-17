@@ -865,7 +865,7 @@ SQLSTATE class in each 10 seconds, with the number of lines that it held back.
 - New package `outbox/kafkainbox`: the Kafka inbox of a subscription
   (ST-SUP-RP01-LC35 to ST-SUP-RP01-LC38). New functions `tenant.Lookup`,
   `outbox.Queue.Receive`, `outbox.Worker.AddPurge`, `outbox.Worker.Retention`
-  and `kafkaoutbox.Connection`. `service.WorkerParts` has the new field
+  `kafkaoutbox.Connection` and `kafkaoutbox.ReadConsumer`. `service.WorkerParts` has the new field
   `Inbox`, and `service.Migration` has the new field `Inbox` with the step
   `kafka_inbox`. Code that does not set them needs no change.
 
