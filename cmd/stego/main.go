@@ -291,6 +291,14 @@ func runFillCreate(args []string) error {
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
+	if capabilitySlots[*slotName] != "" {
+		// The slot of a command, query or worker fill is a Go contract that generation writes from the
+		// declaration, not a slot of a registry component (ST-EXT-UC01-R01).
+		if *componentName != "" || *collectionName != "" {
+			return fmt.Errorf("the slot %s takes no --component and no --collection: the declaration names the %s that the fill serves", *slotName, capabilitySlots[*slotName])
+		}
+		return createCapabilityFill(projectDir, fillName, packageName, *slotName)
+	}
 
 	// Load registry to find the slot's proto definition.
 	result, err := registry.ResolveRegistry(registry.ResolveOptions{ProjectDir: projectDir})
@@ -315,6 +323,9 @@ func runFillCreate(args []string) error {
 	}
 
 	if len(matchingComps) == 0 {
+		if capabilitySlots[*slotName+"."+*slotName] != "" {
+			return fmt.Errorf("slot %q not found in any component; the fill of a %s implements the slot %s.%s", *slotName, *slotName, *slotName, *slotName)
+		}
 		return fmt.Errorf("slot %q not found in any component", *slotName)
 	}
 

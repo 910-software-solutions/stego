@@ -333,6 +333,23 @@ New fill methods return an error until you implement them. They use the generate
 slot types and include a constructor and an interface check. STEGO does not
 replace existing fill files.
 
+The fill of a command, a query or a worker implements the slot
+`command.command`, `query.query` or `worker.worker`. Declare the command, query
+or worker with its `fill` first. Then `stego fill create` writes its fill, also
+before the apply that writes its contract:
+
+```bash
+stego fill create place-order --slot command.command   # New() gives the fill
+stego fill create open-orders --slot query.query       # the function Fill
+stego fill create fulfill-orders --slot worker.worker  # New(), for the trigger
+stego apply         # write the contracts in out/commands, out/queries, out/workers
+stego deps          # resolve the modules, then check the fills again
+go build ./out
+```
+
+Each unfinished fill returns `ErrNotImplemented`, and its test expects that
+error. Change the test when you write the fill.
+
 A fill must be qualified before a binding can use it. `stego test` runs the
 fill tests and, when they pass, records the evidence in the fill's `fill.yaml`:
 the digests of the fill's files and of its slot contract, and the compiler that

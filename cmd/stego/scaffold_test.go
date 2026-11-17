@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -292,4 +293,67 @@ func TestStrictFillManifest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "qualifed_by") {
 		t.Fatalf("got %v, want error containing %q", err, "qualifed_by")
 	}
+}
+
+// goInProject runs the go command in the project folder, with the module files read only, and fails the test on an
+// error.
+func goInProject(t *testing.T, args ...string) {
+	t.Helper()
+	cmd := exec.Command("go", args...)
+	cmd.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go %v: %v\n%s", args, err, output)
+	}
+}
+
+// walkthroughFirstBuild runs the user flow of the fifth walkthrough up to its first binary, with no step by hand:
+// stego init, the inventory declaration, stego fill create for the command, the query and the consuming worker,
+// validate, apply, deps and go build. It gives the path of the binary.
+func walkthroughFirstBuild(t *testing.T) string {
+	t.Helper()
+	walkthroughProject(t)
+	for name, slot := range map[string]string{"place-order": "command.command", "open-orders": "query.query", "fulfill-orders": "worker.worker"} {
+		mustRun(t, runFillCreate, name, "--slot", slot)
+		for _, file := range []string{"fill.yaml", "fill.go", "fill_test.go"} {
+			if _, err := os.Stat(filepath.Join("fills", name, file)); err != nil {
+				t.Fatalf("fill create wrote no %s for %s: %v", file, name, err)
+			}
+		}
+	}
+	mustRun(t, runValidate)
+	mustRun(t, runApply)
+	mustRun(t, runDependencies)
+	binary := filepath.Join(t.TempDir(), "inventory")
+	goInProject(t, "build", "-o", binary, "./out")
+	goInProject(t, "vet", "./fills/...")
+	goInProject(t, "test", "./fills/...")
+	return binary
+}
+
+func TestCapabilityFillScaffold(t *testing.T) {
+	t.Run("ST-EXT-UC01-R01-T03 Fills scaffolded for a command, a query and a consuming worker compile against their contracts and build into the service", func(t *testing.T) {
+		walkthroughFirstBuild(t)
+		data, err := os.ReadFile(filepath.Join("fills", "fulfill-orders", fill.ManifestFile))
+		var manifest fill.Fill
+		if err == nil {
+			err = yaml.Unmarshal(data, &manifest)
+		}
+		if err != nil || manifest.Implements != "worker.worker" || manifest.Name != "fulfill-orders" || manifest.Kind != "fill" {
+			t.Fatalf("the manifest of fulfill-orders is %+v, %v; want the fill fulfill-orders of the slot worker.worker", manifest, err)
+		}
+		// A fill that the declaration does not name, and a fill that exists, are refused, and nothing is written.
+		before := projectTree(t)
+		if _, err := capture(t, runFillCreate, "restock", "--slot", "worker.worker"); err == nil || !strings.Contains(err.Error(), "no worker of the declaration names the fill") {
+			t.Fatalf("fill create wrote a fill that no worker names: %v", err)
+		}
+		if _, err := capture(t, runFillCreate, "place-order", "--slot", "command.command"); err == nil {
+			t.Fatal("fill create wrote over the fill place-order")
+		}
+		if _, err := capture(t, runFillCreate, "place-order", "--slot", "command"); err == nil || !strings.Contains(err.Error(), "command.command") {
+			t.Fatalf("fill create of the slot command does not name the slot command.command: %v", err)
+		}
+		if !maps.Equal(before, projectTree(t)) {
+			t.Fatal("a refused fill create changed the project")
+		}
+	})
 }
