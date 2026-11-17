@@ -87,3 +87,62 @@ func TestRevisionFaultsCapabilityFill(t *testing.T) {
 		}
 	})
 }
+
+func TestRevisionFaultsContractFolder(t *testing.T) {
+	t.Run("ST-EXT-UC02-R02-T10 stego build refuses a contract package that holds a file go build takes that is not a Go file, any file that is a link, or a linked out folder", func(t *testing.T) {
+		faults := func(dir string, service *types.ServiceDeclaration) string {
+			t.Helper()
+			found, err := RevisionFaults(dir, []string{"place-order"}, compiler.RevisionFillCheck(dir, "example.com/inventory", service))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return strings.Join(found, "\n")
+		}
+
+		// Each file that go build puts in the binary, other than a Go file, is refused by its name.
+		for _, name := range []string{"stub.s", "blob.syso", "glue.c", "glue.h"} {
+			dir, service := revisionProject(t, "command.command")
+			if err := os.WriteFile(filepath.Join(dir, "out", "commands", name), []byte("x\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			want := "out/commands holds " + name + ", which is not a Go file"
+			if got := faults(dir, service); !strings.Contains(got, want) {
+				t.Fatalf("the build did not refuse %s: %q", name, got)
+			}
+		}
+
+		// A file that go build does not take is no fault, and the fill reaches the contract check.
+		dir, service := revisionProject(t, "command.command")
+		if err := os.WriteFile(filepath.Join(dir, "out", "commands", "README.md"), []byte("notes\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := faults(dir, service); !strings.Contains(got, "signed against an older contract") || strings.Contains(got, "README.md") {
+			t.Fatalf("the build refused a file that go build does not take: %q", got)
+		}
+
+		// A link that is not a Go file is refused too.
+		outside := filepath.Join(t.TempDir(), "notes.txt")
+		if err := os.WriteFile(outside, []byte("notes\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, "out", "commands", "notes.txt")); err != nil {
+			t.Fatal(err)
+		}
+		if got := faults(dir, service); !strings.Contains(got, "out/commands holds notes.txt, which is not a regular file") {
+			t.Fatalf("the build did not refuse the linked file: %q", got)
+		}
+
+		// An out folder that is a link is refused, though the contract folder under it is a real folder.
+		dir, service = revisionProject(t, "command.command")
+		real := filepath.Join(t.TempDir(), "out")
+		if err := os.Rename(filepath.Join(dir, "out"), real); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(real, filepath.Join(dir, "out")); err != nil {
+			t.Fatal(err)
+		}
+		if got := faults(dir, service); !strings.Contains(got, "the generated folder out is not a folder") {
+			t.Fatalf("the build did not refuse the linked out folder: %q", got)
+		}
+	})
+}
