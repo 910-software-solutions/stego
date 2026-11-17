@@ -49,7 +49,9 @@ const (
 // holds already, active or retired, so a retired tenant's ID never serves another customer and its rows stay apart;
 // and a Retire of a tenant that the list does not hold as active.
 const (
-	ErrorCodeProvisioned    = "tenant.provisioned"
+	ErrorCodeProvisioned = "tenant.provisioned"
+	// ErrorCodeRetired is the code of a Provision of a tenant that the list holds as retired (walkthrough 8, K13).
+	ErrorCodeRetired        = "tenant.retired"
 	ErrorCodeNotProvisioned = tenant.ErrNotProvisionedCode
 )
 
@@ -396,8 +398,8 @@ func tenantOutcome(err error) Outcome {
 // (ST-SUP-RC27-OC10). A deny is 404 and changes nothing. A denied or failed call writes its outcome row in its own
 // short transaction in the caller's tenant, so a caller without the permission writes no row into the tenant it
 // names; when the caller's own tenant is not an active tenant of the list (Active), it writes no row at all, only a
-// counted log line (UnlistedOutcomes). A Provision of a tenant that the list holds, active or retired, and a Retire of a tenant that the list does
-// not hold as active are 409, unless the key of the request holds the answer of an earlier call, which is replayed.
+// counted log line (UnlistedOutcomes). A Provision of a tenant that the list holds, active (tenant.provisioned) or retired (tenant.retired), and a Retire of a
+// tenant that the list does not hold as active are 409, unless the key of the request holds the answer of an earlier call, which is replayed.
 // Retire deletes no row (ST-SUP-RC27-OC12).
 func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 	if err := spec.check(rt); err != nil {
@@ -661,6 +663,9 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, a
 		return result, nil
 	case errors.Is(err, unchanged):
 		// The list holds the change already: a request that is sent again gets the stored answer of its first call.
+		if errors.Is(err, tenant.ErrRetired) {
+			code = ErrorCodeRetired
+		}
 		replayed, found, err := replayTenant(ctx, rt, target, keyRequest)
 		if err != nil {
 			return Result{}, internalf("the idempotency key of the request was not read")

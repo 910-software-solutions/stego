@@ -16,6 +16,11 @@ import (
 // ErrProvisioned is the error of Provision for a tenant that the tenant list already holds, retired or not.
 var ErrProvisioned = errors.New("tenant: the tenant is already in the tenant list")
 
+// ErrRetired is the error of Provision for a tenant that the tenant list holds as retired. It matches ErrProvisioned
+// too: the ID of a retired tenant never serves another customer, and the caller can tell the two cases apart
+// (walkthrough 8, K13).
+var ErrRetired = errors.New("tenant: the tenant is retired in the tenant list")
+
 // ErrNotProvisioned is the error of Retire for a tenant that the tenant list does not hold, or holds as retired.
 var ErrNotProvisioned = errors.New("tenant: the tenant is not an active tenant of the tenant list")
 
@@ -309,6 +314,14 @@ func change(ctx context.Context, db *sql.DB, schema string, t Tenant, hooks []Ho
 		return fmt.Errorf("tenant: change the tenant list for %s: %w", t.id, err)
 	}
 	if !changed {
+		if errors.Is(unchanged, ErrProvisioned) {
+			var retired bool
+			err := tx.QueryRowContext(ctx, "SELECT retired_at IS NOT NULL FROM "+quotedSchema+".stego_tenants WHERE tenant_id = $1", t.id).Scan(&retired)
+			if err == nil && retired {
+				_ = tx.Rollback()
+				return fmt.Errorf("%w: %w: %s", ErrProvisioned, ErrRetired, t.id)
+			}
+		}
 		_ = tx.Rollback()
 		return fmt.Errorf("%w: %s", unchanged, t.id)
 	}
