@@ -300,3 +300,29 @@ func TestSSOStartupContext(t *testing.T) {
 		h.Stop()
 	})
 }
+
+func TestSSODeclaredTrustWins(t *testing.T) {
+	t.Run("ST-SUP-RC21-OC09-T02 The emitted SSO handler takes its issuer and audience through the declared-value rule, which refuses another value", func(t *testing.T) {
+		_ = ssoFixture(t)
+		t.Setenv("STEGO_AUTH_ISSUER", "https://other.example/realm")
+		if _, err := declaredValue("STEGO_AUTH_ISSUER", "https://issuer.example/realm"); err == nil || !strings.Contains(err.Error(), "STEGO_AUTH_ISSUER") {
+			t.Fatalf("an issuer override gives %v, want a refusal that names the variable", err)
+		}
+		source, err := os.ReadFile("sso.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"STEGO_AUTH_ISSUER", "STEGO_AUTH_AUDIENCE"} {
+			if !strings.Contains(string(source), `declaredValue("`+name+`"`) || strings.Contains(string(source), `envOrDefault("`+name+`"`) {
+				t.Errorf("the emitted SSO handler does not take %s through declaredValue", name)
+			}
+		}
+		// With no declared issuer the variable is taken, so the handler starts on the issuer of the fixture.
+		t.Setenv("STEGO_AUTH_ISSUER", "https://issuer.example/realm")
+		h, err := NewJWTHandler()
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.Stop()
+	})
+}
