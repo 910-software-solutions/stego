@@ -2141,6 +2141,12 @@ FROM pg_catalog.pg_class c WHERE c.oid = $1::pg_catalog.regclass`, "public."+tab
 		if !errors.As(err, &pgErr) || pgErr.Code != "23503" || !strings.Contains(err.Error(), validate) {
 			t.Fatalf("the job over a row that the key refuses gives %v, want the foreign key violation 23503 at %s", err, validate)
 		}
+		// The refusal names the step, the table and the key, and no row value (ST-SUP-RC01-OC46).
+		var refused interface{ Refusal() string }
+		if !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), validate) || !strings.Contains(refused.Refusal(), "boards_parent_id_fkey") ||
+			!strings.Contains(refused.Refusal(), "public.boards") || strings.Contains(refused.Refusal(), first) {
+			t.Fatalf("the job over a row that the key refuses gives no refusal that names the step, the table and the key and no row value: %v", err)
+		}
 		if validated, rows := state(); validated || rows != 0 {
 			t.Errorf("after the refusal the key is validated %v with %d ledger rows of %s, want it NOT VALID and no row", validated, rows, validate)
 		}
