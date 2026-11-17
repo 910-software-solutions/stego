@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -274,7 +275,7 @@ type Context struct {
 // length of the schema history is the context itself. An add of an entity is undone with the entity and each
 // collection over it, an add of a field with the field, a rename by giving the field the column From, with its
 // API name kept (StoredNames), and a relax by giving the field what it was before the change
-// (types.SchemaChange.RelaxedFrom). Generation carries out no other kind of schema change yet, so AtSchemaStep
+// (types.SchemaChange.RelaxedFrom), and a within by taking the within off its reference. Generation carries out no other kind of schema change yet, so AtSchemaStep
 // refuses one, and a change with no step.
 func (c Context) AtSchemaStep(steps int) (Context, error) {
 	first := map[string]int{}
@@ -289,7 +290,7 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if !stepped {
 			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
 		}
-		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" {
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" {
 			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
 		}
 		if at >= steps {
@@ -316,6 +317,19 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		}
 		if at < 0 {
 			return Context{}, fmt.Errorf("schema change %q adds to the entity %s, which the declaration does not have", change.ID, change.Entity)
+		}
+		if change.Kind == "within" {
+			// A within is undone by taking the within off its reference, so the composite key leaves the shape
+			// (ST-SUP-RC01-OC46, ST-DECL-Q42).
+			ref, ok := shaped.Entities[at].References[change.Field]
+			if !ok || ref.WithinField() == "" {
+				return Context{}, fmt.Errorf("schema change %q adds the key of the reference %s.%s, which declares no within", change.ID, change.Entity, change.Field)
+			}
+			references := maps.Clone(shaped.Entities[at].References)
+			ref.Within = ""
+			references[change.Field] = ref
+			shaped.Entities[at].References = references
+			continue
 		}
 		if change.Kind == "relax" {
 			fields := shaped.Entities[at].Fields
