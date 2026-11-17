@@ -782,6 +782,21 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 					return nil
 				}
 			}
+			if s.Guard && c.Drop {
+				// A statement of a drop takes the lock of its table first and checks the step after it, in the same
+				// transaction: a process of the release before that reports itself after the check can no longer
+				// write the table before the statement commits (security review of PR #423, M1 and I2).
+				table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
+				var there bool
+				if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass($1) IS NOT NULL", table).Scan(&there); err != nil {
+					return err
+				}
+				if there {
+					if _, err := tx.ExecContext(ctx, "LOCK TABLE "+table+" IN ACCESS EXCLUSIVE MODE"); err != nil {
+						return err
+					}
+				}
+			}
 			if s.Guard {
 				if err := checkContract(ctx, tx, c); err != nil {
 					return err
