@@ -297,6 +297,11 @@ go build -o service ./out
 Run the following STEGO commands from the project directory that contains
 `service.yaml`. The build command keeps that working directory unchanged.
 
+A generated file that is missing, as in a clone with no `out/` folder, holds
+no hand edit: `stego apply` writes it again with no flag, and the plan names it
+as `restore`. A generated file that you changed stops the apply until you
+restore it or run `stego apply --replace-hand-edits`.
+
 `stego validate` prints every fault of the declaration, or that there is none.
 With `--json` it prints one JSON document for an agent: `accepted`, the
 `faults` (each with its rule, path, value found, allowed values and message),

@@ -56,6 +56,8 @@ commit them with the record. `stego plan` lists the steps that apply writes
 and saves no plan until they are in the declaration. Apply writes no other
 kind of step: declare a rename, a retype, a require, a drop or a unique
 yourself.
+A generated file that is missing is written again by `stego apply` with no
+flag; only a generated file that was edited by hand stops the apply.
 
 The other flags of plan and apply, such as `--strict`, do not change this
 check: `--strict` holds the secret sources of the environment variables, as
