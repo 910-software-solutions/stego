@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117090216-5af4a98509d0
+        module_version: v0.0.0-20261117094834-ea2461a4eecf
         vcs: git
-        revision: 5af4a98509d0cf9958bb2cdb2d1975697607d5aa
+        revision: ea2461a4eecf2201c4076d40acb5971c58a08829
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 55f1716789eae4477cf938a630a4c52591f15db14e3f17e79fe5c17100620bb6
+    registry_content_sha256: bd8c7fabc4a37546697187f693ac762cab45bd3af926da9db9779fd3239cccc6
     components:
         audit-log:
             version: 1.1.1
@@ -169,7 +169,7 @@ last_applied:
         internal/tenancy/migrations/roles.sql: 131dcb112a94f82ead145bcb5797c5915ad94a230564e2181883d19944450fc9
         internal/tenancy/migrations/row_security.sql: 6813d74ed06f5df636433d5335339bcb4338f05de418002cd7ef94b60f44b6d9
         internal/tenancy/row_security.go: b49ceb1b85177e84037254ebc7872f9c1d048f24a27b02babc9937603a2360e1
-        main.go: 6dbbf9eef6fef6108e2fc6e51edf3c91ea43585e0d75e22cf6b0b2d49c37087d
+        main.go: 6e44636a1d5216120d2f8914db6d2e54236d9036f63a8a2967b2a0657ec2997b
         probes/observations.json: 3219f8292bdb4a47a2882aa87528a231132ea9219db88c094ea0051559fad046
         probes/probes.go: 7b1f0c4ba4b67cf9ba9890be0743d793cc9603cfbf4e43b1193cc2e8b1fe8bf9
         slots/after_create.go: 03242bcad46578176c9ac819f42390080ebebb94f72c480316f09740289ad80f

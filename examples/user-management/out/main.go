@@ -254,6 +254,21 @@ func (e *stegoServiceFailure) Unwrap() error { return e.cause }
 // stegoReportFailure writes one fixed record before process exit. The stage
 // comes from generated code. The cause is never formatted or serialized.
 // A blocked output can retain one worker until the process exits.
+// stegoFaultName tells whether a fault class or object has the form of a name of the generated code,
+// ^[a-z][a-z0-9_.]{0,127}$; the record drops any other text.
+func stegoFaultName(value string) bool {
+	if len(value) == 0 || len(value) > 128 || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		c := value[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 func stegoReportFailure(output io.Writer, err error) {
 	stage := "service.run"
 	var tasks, abortedTasks, modes []string
@@ -270,7 +285,7 @@ func stegoReportFailure(output io.Writer, err error) {
 		FaultClass() string
 		FaultObject() string
 	}
-	if errors.As(err, &classified) {
+	if errors.As(err, &classified) && stegoFaultName(classified.FaultClass()) && stegoFaultName(classified.FaultObject()) {
 		fault, object = classified.FaultClass(), classified.FaultObject()
 	}
 	record := struct {
