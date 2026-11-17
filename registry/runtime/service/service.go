@@ -147,18 +147,21 @@ type Service struct {
 	pool, auditDB *sql.DB
 	keys          *authn.KeySet
 	verifier      *authn.Verifier
-	spice         *grpc.ClientConn
-	telemetry     *otel.Runtime
-	probes        *probe.Runtime
-	queue         *outbox.Queue
-	authz         *authz.Runtime
-	writer        *audit.Writer
-	commands      *command.Runtime
-	collections   *command.Runtime
-	workers       *command.Runtime
-	queries       *query.Runtime
-	beat          *lease.Beat
-	tenants       *tenantProvisioning
+	// issuer is the issuer whose tokens the verifier accepts, the one trusted issuer of an admin of Provision
+	// (ST-SUP-RC27-OC13).
+	issuer      string
+	spice       *grpc.ClientConn
+	telemetry   *otel.Runtime
+	probes      *probe.Runtime
+	queue       *outbox.Queue
+	authz       *authz.Runtime
+	writer      *audit.Writer
+	commands    *command.Runtime
+	collections *command.Runtime
+	workers     *command.Runtime
+	queries     *query.Runtime
+	beat        *lease.Beat
+	tenants     *tenantProvisioning
 }
 
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
@@ -255,6 +258,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if svc.keys, err = authn.NewKeySet(ctx, source); err != nil {
 		return nil, err
 	}
+	svc.issuer = s.Issuer
 	if svc.verifier, err = authn.New(authn.Settings{Issuer: s.Issuer, Audience: s.Audience, Algorithms: s.Algorithms,
 		SubjectClaim: s.SubjectClaim, TenantClaim: p.TenantClaim,
 		Header: s.Header, RoleClaim: s.RoleClaim, ProblemType: p.ProblemType, ProblemCode: p.ProblemCode,

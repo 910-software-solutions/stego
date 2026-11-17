@@ -425,7 +425,8 @@ func TestBaseCompat(t *testing.T) {
 				if err == nil && entry.IsDir() && entry.Name() == "example" {
 					return fs.SkipDir
 				}
-				if err != nil || entry.IsDir() {
+				// A Markdown guide of an archetype is a user doc, not registry data: it shows the tenancy settings.
+				if err != nil || entry.IsDir() || strings.HasSuffix(path, ".md") {
 					return err
 				}
 				data, err := os.ReadFile(path)

@@ -8,7 +8,8 @@ tenancy:
   kind: pooled
   key: tenant_id
   claim: tenant
-  provisioning: {resource_type: service, provision: provision, retire: retire}
+  # Provision gives each first administrator that its body names the relation admin in the new tenant (ST-SUP-RC27-OC13).
+  provisioning: {resource_type: service, provision: provision, retire: retire, admin: admin}
 authorization:
   provider: spicedb
   schema_path: authz/schema.zed

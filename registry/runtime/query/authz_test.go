@@ -733,6 +733,8 @@ func startSpiceDB(t *testing.T) *spiceEnv {
 			return
 		}
 		spiceServer.name = name
+		// The SpiceDB image has no time limit: the reaper removes the container also when the test binary is killed.
+		pgtest.Reap("docker", name)
 		out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
 		if err != nil {
 			spiceServer.err = fmt.Errorf("read the port of the SpiceDB container: %v", err)

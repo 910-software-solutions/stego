@@ -5,3 +5,4 @@ docs/compat.md
 docs/schema-changes.md
 docs/environment-file.md
 docs/commands-queries-workers.md
+registry/archetypes/rpc-service/README.md

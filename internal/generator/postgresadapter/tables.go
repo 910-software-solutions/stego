@@ -402,6 +402,9 @@ func tableModels(ctx gen.Context) ([]tableModel, error) {
 		}
 		for _, key := range within.from[entity.Name] {
 			table.foreign = append(table.foreign, key.foreign(table.lead))
+			if check, ok := key.check(); ok {
+				table.checks = append(table.checks, check)
+			}
 		}
 		table.search = searchColumns(entity, ctx.Collections)
 		table.unique = uniqueKeys(entity, upsertKeys[entity.Name])
@@ -419,6 +422,9 @@ func tableModels(ctx gen.Context) ([]tableModel, error) {
 // table and its reference column, the referenced table, and the column of the within field in each table.
 type withinKey struct {
 	table, column, referenced, own, theirs string
+	// optional tells that the within field of the referring table may be NULL: it is the scope field of a
+	// collection, which ST-DECL-INV93 accepts.
+	optional bool
 }
 
 // WithinKeyName gives the name of the composite foreign key of the reference column of the table of entity, which
@@ -433,6 +439,25 @@ func WithinKeyName(entity, column string) string {
 func (k withinKey) foreign(lead []string) foreignModel {
 	return foreignModel{name: sqlName(k.table, k.column, "within", "fkey"), table: k.referenced,
 		from: append(append([]string{}, lead...), k.own, k.column), to: append(append([]string{}, lead...), k.theirs, keyColumn)}
+}
+
+// WithinCheckName gives the name of the CHECK that holds the within field of the table of entity set when its
+// reference column is set. The suffix wcheck keeps it apart from the CHECK of a field named <column>_within.
+func WithinCheckName(entity, column string) string {
+	return sqlName(tableName(entity), column, "wcheck")
+}
+
+// check gives the CHECK of a within key whose within field may be NULL: the reference is NULL or the within field is
+// set. MATCH SIMPLE checks no key that holds a NULL, so without it a row written outside the collection whose scope
+// field is the within field (a second collection or a worker) could refer to a row of another ancestor (security
+// review of PR #413, L1). A within field that is NOT NULL needs no CHECK.
+func (k withinKey) check() (checkModel, bool) {
+	if !k.optional {
+		return checkModel{}, false
+	}
+	expression := sqlIdentifier(k.column) + " IS NULL OR " + sqlIdentifier(k.own) + " IS NOT NULL"
+	definition := "CHECK (((" + deparsedName(k.column) + " IS NULL) OR (" + deparsedName(k.own) + " IS NOT NULL)))"
+	return checkModel{name: sqlName(k.table, k.column, "wcheck"), expression: expression, definition: definition}, true
 }
 
 // withinKeySet holds, for each entity, the within keys of its references (from) and the column lists, after the tenant
@@ -460,6 +485,14 @@ func withinKeys(entities []types.Entity, owned map[string]bool) (withinKeySet, e
 		}
 		return "", false
 	}
+	optional := func(e types.Entity, name string) bool {
+		for _, f := range e.Fields {
+			if f.Name == name {
+				return f.Optional
+			}
+		}
+		return false
+	}
 	for _, e := range entities {
 		for _, field := range e.Fields {
 			ref, ok := e.References[field.Name]
@@ -478,7 +511,8 @@ func withinKeys(entities []types.Entity, owned map[string]bool) (withinKeySet, e
 			case owned[e.Name] != owned[field.To]:
 				return withinKeySet{}, fmt.Errorf("entity %s: the reference %s is held within %s, but only one of %s and %s holds the tenant column, so the composite key cannot match", e.Name, field.Name, within, e.Name, field.To)
 			}
-			set.from[e.Name] = append(set.from[e.Name], withinKey{table: tableName(e.Name), column: field.ColumnName(), referenced: tableName(field.To), own: own, theirs: theirs})
+			set.from[e.Name] = append(set.from[e.Name], withinKey{table: tableName(e.Name), column: field.ColumnName(), referenced: tableName(field.To), own: own, theirs: theirs,
+				optional: optional(e, within)})
 			columns := []string{theirs, keyColumn}
 			if !slices.ContainsFunc(set.to[field.To], func(c []string) bool { return slices.Equal(c, columns) }) {
 				set.to[field.To] = append(set.to[field.To], columns)

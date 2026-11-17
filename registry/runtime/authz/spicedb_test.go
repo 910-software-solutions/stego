@@ -158,6 +158,8 @@ func startContainerOn(network string, args ...string) (string, string, error) {
 	if err := run.Run(); err != nil {
 		return "", "", fmt.Errorf("start the SpiceDB container: %v: %s", err, stderr.String())
 	}
+	// The SpiceDB image has no time limit: the reaper removes the container also when the test binary is killed.
+	pgtest.Reap("docker", name)
 	out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
 	if err != nil {
 		return name, "", fmt.Errorf("read the port of the SpiceDB container: %v", err)
@@ -246,6 +248,7 @@ func startPostgresSpiceDB(t *testing.T, schema string) *spiceEnv {
 			s.err = fmt.Errorf("start the PostgreSQL container of SpiceDB: %v: %s", err, out)
 			return
 		}
+		pgtest.Reap("docker", database)
 		uri := "postgres://postgres:spicedb@" + database + ":5432/postgres?sslmode=disable"
 		deadline := time.Now().Add(2 * time.Minute)
 		for {
@@ -893,15 +896,25 @@ func TestAwaitSchema(t *testing.T) {
 		if err := awaitSchema(ctx, refused, []string{"comment"}, Fresh(), 5); err == nil || errors.Is(err, ErrSchemaNotServed) || refused.probes != 1 {
 			t.Errorf("a refused probe gives %v after %d probes, want the refusal after 1", err, refused.probes)
 		}
-		// served, not served, served, served: two rounds in a row end the wait, after 4 rounds.
-		flaky := &schemaProbes{answers: []error{nil, unknownDefinition(t), nil, nil}}
-		if err := awaitSchema(ctx, flaky, []string{"comment"}, Fresh(), 10); err != nil || flaky.probes != 4 {
-			t.Errorf("the flaky SpiceDB gives %v after %d probes, want nil after 4", err, flaky.probes)
+		// The served rounds in a row span the staleness allowance of SpiceDB, in which it can still choose a revision
+		// from before the write, and there are at least two of them.
+		if time.Duration(schemaRounds-1)*SchemaPause < SchemaStaleness || schemaRounds < 2 {
+			t.Fatalf("%d rounds %v apart do not span the staleness %v, or are fewer than two", schemaRounds, SchemaPause, SchemaStaleness)
+		}
+		// One round fewer than schemaRounds, then a round that is not served, then schemaRounds: a run that is one
+		// round short does not end the wait.
+		answers := make([]error, 0, schemaRounds+1)
+		for range schemaRounds - 1 {
+			answers = append(answers, nil)
+		}
+		flaky := &schemaProbes{answers: append(answers, unknownDefinition(t), nil)}
+		if err := awaitSchema(ctx, flaky, []string{"comment"}, Fresh(), 4*schemaRounds); err != nil || flaky.probes != 2*schemaRounds {
+			t.Errorf("the flaky SpiceDB gives %v after %d probes, want nil after %d", err, flaky.probes, 2*schemaRounds)
 		}
 		// Each definition is probed in a round; the second is not served on the first round.
-		two := &schemaProbes{answers: []error{nil, unknownDefinition(t), nil, nil, nil, nil}}
-		if err := awaitSchema(ctx, two, []string{"task", "comment"}, Fresh(), 10); err != nil || two.probes != 6 {
-			t.Errorf("two definitions give %v after %d probes, want nil after 6", err, two.probes)
+		two := &schemaProbes{answers: []error{nil, unknownDefinition(t), nil}}
+		if err := awaitSchema(ctx, two, []string{"task", "comment"}, Fresh(), 4*schemaRounds); err != nil || two.probes != 2+2*schemaRounds {
+			t.Errorf("two definitions give %v after %d probes, want nil after %d", err, two.probes, 2+2*schemaRounds)
 		}
 		// A probe that hangs ends at its own deadline and counts as one round that is not served: the wait keeps
 		// its bound of rounds, and a hang of the probe before a served answer does not stop it.
@@ -912,9 +925,9 @@ func TestAwaitSchema(t *testing.T) {
 		if err := awaitSchema(ctx, hung, []string{"comment"}, Fresh(), 3); !errors.Is(err, ErrSchemaNotServed) || hung.probes != 3 {
 			t.Errorf("a probe that hangs gives %v after %d probes, want ErrSchemaNotServed after 3", err, hung.probes)
 		}
-		late := &schemaProbes{answers: []error{errHang, nil, nil}}
-		if err := awaitSchema(ctx, late, []string{"comment"}, Fresh(), 5); err != nil || late.probes != 3 {
-			t.Errorf("a hang and then two served rounds give %v after %d probes, want nil after 3", err, late.probes)
+		late := &schemaProbes{answers: []error{errHang, nil}}
+		if err := awaitSchema(ctx, late, []string{"comment"}, Fresh(), 4*schemaRounds); err != nil || late.probes != 1+schemaRounds {
+			t.Errorf("a hang and then the served rounds give %v after %d probes, want nil after %d", err, late.probes, 1+schemaRounds)
 		}
 		if err := AwaitSchema(ctx, nil, []string{"comment"}, Token{}); err == nil {
 			t.Error("AwaitSchema takes no connection")

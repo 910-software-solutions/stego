@@ -167,6 +167,14 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 			err = errors.Join(err, removeMade(root, made))
 		}
 	}()
+	// create writes a new file and names it in made before the write when the project does not hold it, so a write
+	// that fails after the file is there removes it too. A path that the project held before is never named.
+	create := func(name string, data []byte) error {
+		if _, err := root.Lstat(name); errors.Is(err, os.ErrNotExist) && !slices.Contains(made, name) {
+			made = append(made, name)
+		}
+		return createRootFile(root, name, data)
+	}
 	created := []string{}
 	if err := root.Mkdir("fills", 0755); err == nil {
 		created = append(created, "fills/")
@@ -177,16 +185,14 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 		return nil, err
 	}
 	if !existed {
-		if err := createRootFile(root, ".stego/config.yaml", config); err != nil {
+		if err := create(".stego/config.yaml", config); err != nil {
 			return nil, err
 		}
-		made = append(made, ".stego/config.yaml")
 		created = append(created, ".stego/config.yaml")
 	}
 	// The apply lock and a saved plan are local state: they are not committed, so no build takes them as input
 	// (ST-DECL-UC01-R07). An ignore file that the author already has is kept as written.
-	if err := createRootFile(root, localStateIgnorePath, []byte(localStateIgnore)); err == nil {
-		made = append(made, localStateIgnorePath)
+	if err := create(localStateIgnorePath, []byte(localStateIgnore)); err == nil {
 		created = append(created, localStateIgnorePath)
 	} else if !errors.Is(err, os.ErrExist) {
 		return nil, err
@@ -196,13 +202,12 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 			return nil, err
 		}
 		text := strings.NewReplacer(registry.ExampleService, name, registry.ExampleModule, module).Replace(string(file.Text))
-		if err := createRootFile(root, file.Path, []byte(text)); err != nil {
+		if err := create(file.Path, []byte(text)); err != nil {
 			return nil, err
 		}
-		made = append(made, file.Path)
 		created = append(created, file.Path)
 	}
-	if err := createRootFile(root, "service.yaml", document); err != nil {
+	if err := create("service.yaml", document); err != nil {
 		return nil, err
 	}
 	return &InitResult{Name: name, Created: append(created, "service.yaml"), Owed: owed}, nil

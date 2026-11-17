@@ -2,9 +2,12 @@ package compiler
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -305,4 +308,73 @@ func serviceFolder(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return folder
+}
+
+func TestInitializeRemovesPartlyWrittenFile(t *testing.T) {
+	t.Run("ST-DECL-UC01-R02-T03 A write that fails after its file is there removes the file, and keeps a file the project held before", func(t *testing.T) {
+		t.Setenv("STEGO_REGISTRY", "")
+		// tree lists each path under the project, with the text of each file; the apply lock stays after each
+		// refused scaffold that took it, so it and its folder are left out.
+		tree := func(project string) map[string]string {
+			t.Helper()
+			found := map[string]string{}
+			err := filepath.WalkDir(project, func(path string, entry os.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				name, _ := filepath.Rel(project, path)
+				name = filepath.ToSlash(name)
+				if name == "." || name == ".stego" || name == ".stego/apply.lock" {
+					return nil
+				}
+				if entry.IsDir() {
+					found[name] = "folder"
+					return nil
+				}
+				data, err := os.ReadFile(path)
+				found[name] = string(data)
+				return err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return found
+		}
+		for _, failing := range []string{".stego/config.yaml", localStateIgnorePath, "service.yaml"} {
+			for _, held := range []bool{false, true} {
+				t.Run(failing+fmt.Sprintf("/ignore-file-held-%t", held), func(t *testing.T) {
+					project := serviceFolder(t)
+					initDefaultRegistry(t, "example")
+					if held {
+						initTestFile(t, project, localStateIgnorePath, "author's own ignore lines\n")
+					}
+					before := tree(project)
+					publishedFault = func(name string) error {
+						if name == failing {
+							return errors.New("the temporary file cannot be removed")
+						}
+						return nil
+					}
+					t.Cleanup(func() { publishedFault = nil })
+					_, err := Initialize(InitOptions{ProjectDir: project, Archetype: "example"})
+					if held && failing == localStateIgnorePath {
+						// The project holds the ignore file, so it is not written and its write does not fail.
+						if err != nil {
+							t.Fatalf("stego init: %v", err)
+						}
+						if data, err := os.ReadFile(filepath.Join(project, localStateIgnorePath)); err != nil || string(data) != "author's own ignore lines\n" {
+							t.Fatalf("the author's ignore file changed: %q, %v", data, err)
+						}
+						return
+					}
+					if err == nil || !strings.Contains(err.Error(), "the temporary file cannot be removed") {
+						t.Fatalf("want the failed write of %s, got %v", failing, err)
+					}
+					if after := tree(project); !reflect.DeepEqual(before, after) {
+						t.Fatalf("the failed scaffold left files: before %v, after %v", before, after)
+					}
+				})
+			}
+		}
+	})
 }

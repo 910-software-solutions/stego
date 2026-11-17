@@ -2,6 +2,7 @@ package declaration
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/jsell-rh/stego/internal/types"
 )
@@ -54,6 +55,37 @@ func validateProvisioning(service *types.ServiceDeclaration) []ValidationError {
 	return faults
 }
 
+// checkAdminRelation holds the admin relation of the tenant provisioning to the schema (ST-DECL-INV95): a relation
+// of the provisioning resource type that admits the subject type of the persons, and not the relation tenant or a
+// relation worker_<name>, which the runtime writes itself. A provisioning with no admin relation passes.
+func checkAdminRelation(service *types.ServiceDeclaration, schema *AuthzSchema, definition schemaDefinition) []ValidationError {
+	provisioning := service.Tenancy.Provisioning
+	admin := provisioning.Admin
+	if admin == "" {
+		return nil
+	}
+	const path = "tenancy.provisioning.admin"
+	fault := func(allowed []string, format string, args ...any) []ValidationError {
+		return []ValidationError{{Category: "authorization", Rule: "tenant-provisioning", Path: path, Found: admin, Allowed: allowed, Message: fmt.Sprintf(format, args...)}}
+	}
+	subjectType := service.Authorization.SubjectFromIdentity
+	switch {
+	case admin == "tenant" || strings.HasPrefix(admin, "worker_"):
+		return fault(nil, "the tenant provisioning names the admin relation %q, which the runtime writes itself; name a relation of %s for the first administrators, such as admin", admin, provisioning.ResourceType)
+	case definition.relations == nil || !hasRelation(definition, admin):
+		return fault(sortedKeys(definition.relations), "the tenant provisioning names the admin relation %q, which the resource type %s of the schema %s lacks; add it, such as relation %s: %s", admin, provisioning.ResourceType, schema.Path, admin, subjectType)
+	case !schema.RelationAdmits(provisioning.ResourceType, admin, subjectType):
+		return fault(nil, "the tenant provisioning names the admin relation %q, which does not admit the subject type %s of the persons; declare it as relation %s: %s", admin, subjectType, admin, subjectType)
+	}
+	return nil
+}
+
+// hasRelation tells whether the definition declares the relation.
+func hasRelation(definition schemaDefinition, relation string) bool {
+	_, ok := definition.relations[relation]
+	return ok
+}
+
 // checkProvisioningSchema holds the names of the tenant provisioning to the authorization schema (ST-DECL-INV78):
 // the schema defines the resource type, and the resource type has the Provision and the Retire permission. Each
 // fault names the tenant provisioning and the name that the schema lacks.
@@ -90,5 +122,5 @@ func checkProvisioningSchema(service *types.ServiceDeclaration, schema *AuthzSch
 				Message: fmt.Sprintf("the tenant provisioning names the %s permission %q, which reaches a wildcard subject of the schema %s, so anyone could hold it; Provision and Retire are never public", part.what, part.value, schema.Path)})
 		}
 	}
-	return faults
+	return append(faults, checkAdminRelation(service, schema, definition)...)
 }

@@ -449,7 +449,7 @@ func validateLists(kind, name, at string, writes []string, lists []types.WorkerL
 		}
 		for k, term := range list.Filter {
 			at := fmt.Sprintf(".filter[%d]", k)
-			reason := listTermFault(entity, term)
+			reason := listTermFault(entity, term, byName)
 			if reason == "" && term.Param != "" {
 				if params[term.Param] {
 					reason = "the parameter " + strconv.Quote(term.Param) + " is used twice in the list; give each parameter its own name"
@@ -482,8 +482,9 @@ func childEntity(entity types.Entity, byName map[string]types.Entity) (bool, int
 // listParam is the form of a parameter name: lower snake case, at most 63 characters.
 var listParam = regexp.MustCompile(`^[a-z][a-z0-9]*(_[a-z0-9]+)*$`)
 
-// listTermFault gives why a term of a list over entity is refused, or nothing.
-func listTermFault(entity types.Entity, term types.ListTerm) string {
+// listTermFault gives why a term of a list over entity is refused, or nothing. byName holds the declared entities by
+// name.
+func listTermFault(entity types.Entity, term types.ListTerm, byName map[string]types.Entity) string {
 	var field *types.Field
 	for i := range entity.Fields {
 		if entity.Fields[i].Name == term.Field {
@@ -502,6 +503,10 @@ func listTermFault(entity types.Entity, term types.ListTerm) string {
 		}
 		if field.Type != types.FieldTypeRef {
 			return "a parent term needs a reference field"
+		}
+		if byName[field.To].ResourceType == "" {
+			// The decided parent row is a row of an entity with a resource type (ST-DECL-INV94).
+			return "a parent term needs a reference to an entity with a resource type, and " + field.To + " has none"
 		}
 		return ""
 	}

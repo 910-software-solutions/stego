@@ -84,6 +84,9 @@ type runtimeWiringData struct {
 	// Provisioning is true for a service that declares its tenant provisioning, whose two routes the service serves
 	// itself (ST-SUP-RC27-OC09).
 	Provisioning bool
+	// AdminRelation is the declared relation that Provision gives each first administrator of a new tenant, or ""
+	// (ST-SUP-RC27-OC13).
+	AdminRelation string
 	// Modes are the modes that the declaration states, in the order api, worker, controller; all three when it
 	// states none (ST-GEN-INV26, ST-DECL-EN01).
 	Modes []string
@@ -163,6 +166,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	}
 	data.Grants = runtimeGrants(in.Wirings)
 	data.Provisioning = svc.Tenancy.Provisioning != nil
+	data.AdminRelation = tenancy.AdminRelation(svc.Tenancy.Provisioning)
 	data.Modes = declaredModes(svc.Modes)
 	source, err := renderRuntimeWiring(data)
 	if err != nil {

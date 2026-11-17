@@ -96,6 +96,7 @@ func TestOperationRoutes(t *testing.T) {
 		{"a route that a collection serves", "    route: POST /todos\n", "POST /todos"},
 		{"no route", "", "no route"},
 		{"a pattern that is not valid", "    route: POST /orders/{orderId\n", "POST /orders/{orderId"},
+		{"the AIP custom method form {orderId}:reserve", "    route: POST /orders/{orderId}:reserve\n", "a wildcard {name} must be a whole segment of the path, so give the verb its own segment, such as POST /orders/{orderId}/reserve"},
 	} {
 		t.Run("ST-DECL-INV47-T A command with "+c.name+" is refused", func(t *testing.T) {
 			project := commandProject(t, command(c.route), "reserve-and-charge")

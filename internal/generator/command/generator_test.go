@@ -393,6 +393,14 @@ func TestContract(t *testing.T) {
 				s.Commands[0].Lists = append(s.Commands[0].Lists, types.WorkerList{Name: "holds", Entity: "Hold",
 					Filter: []types.ListTerm{{Field: "order_id", Op: types.ListEquals, Parent: true}}})
 			}, "Hold is not a child entity"},
+			"a parent term on a reference to an entity with no resource type": {func(s *types.ServiceDeclaration) {
+				for i := range s.Entities {
+					if s.Entities[i].Name == "Reservation" {
+						s.Entities[i].Fields = append(s.Entities[i].Fields, types.Field{Name: "charge_id", Type: types.FieldTypeRef, To: "Charge"})
+					}
+				}
+				s.Commands[0].Lists[0].Filter[0] = types.ListTerm{Field: "charge_id", Op: types.ListEquals, Parent: true}
+			}, "a parent term needs a reference to an entity with a resource type, and Charge has none"},
 			"a parent that the command does not write": {func(s *types.ServiceDeclaration) {
 				s.Commands[0].Writes = []string{"Reservation", "Charge", "Hold"}
 				s.Commands[0].RelationshipsWritten = nil

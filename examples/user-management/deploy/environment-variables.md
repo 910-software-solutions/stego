@@ -56,8 +56,8 @@ shows its name only: give its value through a secret of the platform.
 | `STEGO_AUTHN_ISSUER` | url | no | none | no | - | `https://sso.example.com/realms/main` | The issuer that each bearer token must name, which must be equal to the issuer setting. When it has no value, the verifier uses the issuer setting. |
 | `STEGO_AUTHN_KEYS_FILE` | path | no | none | no | - | `/etc/stego/authn/keys.json` | The file of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_URL when the component states no key file and no discovery. |
 | `STEGO_AUTHN_KEYS_URL` | url | no | none | no | - | `https://sso.example.com/realms/main/certs` | The HTTPS URL of the key set of the issuer. Give it or STEGO_AUTHN_KEYS_FILE when the component states no key file and no discovery. |
-| `STEGO_AUTH_AUDIENCE` | string | no | none | no | - | `my-service` | The audience that each token must name. When it has no value, the verifier uses the audience setting. |
-| `STEGO_AUTH_ISSUER` | url | no | none | no | - | `https://sso.example.com/realms/main` | The issuer that each token must name. When it has no value, the verifier uses the issuer setting. |
+| `STEGO_AUTH_AUDIENCE` | string | no | none | no | - | `my-service` | The audience that each token must name, which must be equal to the audience setting when the declaration states one. When it has no value, the verifier uses the audience setting. |
+| `STEGO_AUTH_ISSUER` | url | no | none | no | - | `https://sso.example.com/realms/main` | The issuer that each token must name, which must be equal to the issuer setting when the declaration states one. When it has no value, the verifier uses the issuer setting. |
 | `STEGO_AUTH_PUBLIC_KEY_FILE` | path | no | none | no | - | `/etc/stego/auth/public.pem` | The file of the RSA public key that verifies tokens. When it has no value, the verifier uses the public_key_file setting. |
 | `STEGO_AUTH_ROLES_CLAIM` | string | no | none | no | - | `realm_access.roles` | The claim of the token that holds the roles of the caller. When it has no value, the verifier uses the roles_claim setting. |
 

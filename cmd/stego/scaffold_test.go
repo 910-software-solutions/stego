@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -342,6 +343,15 @@ func TestCapabilityFillScaffold(t *testing.T) {
 		}
 		if err != nil || manifest.Implements != "worker.worker" || manifest.Name != "fulfill-orders" || manifest.Kind != "fill" {
 			t.Fatalf("the manifest of fulfill-orders is %+v, %v; want the fill fulfill-orders of the slot worker.worker", manifest, err)
+		}
+		// The package of a fill is its name with no hyphen, as Go names a package (walkthrough 7, B12).
+		for name, pkg := range map[string]string{"place-order": "placeorder", "open-orders": "openorders", "fulfill-orders": "fulfillorders"} {
+			for _, file := range []string{"fill.go", "fill_test.go"} {
+				source, err := os.ReadFile(filepath.Join("fills", name, file))
+				if err != nil || !regexp.MustCompile(`(?m)^package `+pkg+`$`).Match(source) {
+					t.Fatalf("fills/%s/%s is not in the package %s: %v\n%s", name, file, pkg, err, source)
+				}
+			}
 		}
 		// The fill of a worker serves no collection, so its manifest holds no collection key (walkthrough 7, B12).
 		if strings.Contains(string(data), "collection") {
