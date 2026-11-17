@@ -256,7 +256,8 @@ command `place-order`, STEGO looks for the messages `PlaceOrderRequest` and
 Put the messages in one or more proto files in your project. Name each file
 in the setting `proto_files` of the component `command`:
 
-```yaml excerpt
+<!-- excerpt -->
+```yaml
   command: { proto_files: [{path: proto/inventory.proto, import_path: inventory.proto}] }
 ```
 
@@ -282,7 +283,8 @@ field names, such as `stock_item_id`.
 
 ## Declare a command
 
-```yaml excerpt
+<!-- excerpt -->
+```yaml
 commands:
   - name: place-order
     writes: [Order, StockItem]
@@ -383,7 +385,8 @@ message is about, and the payload as JSON.
 
 The command `grant-clerk` makes a user a clerk of a warehouse:
 
-```yaml excerpt
+<!-- excerpt -->
+```yaml
   - name: grant-clerk
     writes: [Warehouse]
     resource_type: warehouse
@@ -440,7 +443,8 @@ other entity.
 
 ## Declare a query
 
-```yaml excerpt
+<!-- excerpt -->
+```yaml
 queries:
   - name: open-orders
     reads: [Order]
@@ -548,7 +552,8 @@ caller. Another cursor gives 400.
 
 ## Declare a worker
 
-```yaml excerpt
+<!-- excerpt -->
+```yaml
 workers:
   - name: fulfill-orders
     trigger: consumes fulfillment
@@ -579,7 +584,8 @@ workers:
 The component `worker` is at the stage alpha. Accept it in the declaration
 with a date before its sunset (2027-04-30) and a reason:
 
-```yaml excerpt
+<!-- excerpt -->
+```yaml
 experimental_acceptances:
   - {component: worker, accepted_until: 2027-03-31, reason: the fulfillment worker reacts to placed orders}
 ```
@@ -604,7 +610,8 @@ Do these steps in the schema for each worker:
 1. Give the type `tenant` the relation `worker_<worker name in snake case>`
    of the subject type `service_account`:
 
-   ```zed excerpt
+   <!-- excerpt -->
+   ```zed
    definition tenant {
    	relation worker_fulfill_orders: service_account
    	relation worker_low_stock_scan: service_account
@@ -618,7 +625,8 @@ Do these steps in the schema for each worker:
    relation. The runtime relates each row to its tenant when it creates the
    row.
 
-   ```zed excerpt
+   <!-- excerpt -->
+   ```zed
    	relation tenant: tenant
    	permission fulfill = tenant->worker_fulfill_orders
    ```
@@ -674,7 +682,8 @@ func New() workers.LowStockScanFill {
 An observation is the only correct path for a fill to emit a log line or a
 domain signal.
 
-```yaml excerpt
+<!-- excerpt -->
+```yaml
 observations:
   - name: low_stock
     kind: event

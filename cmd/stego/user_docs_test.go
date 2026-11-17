@@ -21,9 +21,10 @@ var (
 	protoBlockPattern = regexp.MustCompile("(?s)```proto\n(.*?)```")
 )
 
-// excerptBlockPattern is a fenced block whose info string is a language and the word excerpt, such as yaml excerpt,
-// at any indentation, with its indentation, its language and its body.
-var excerptBlockPattern = regexp.MustCompile("(?ms)^([ \t]*)```(\\w+) excerpt\n(.*?)^[ \t]*```[ \t]*$")
+// excerptBlockPattern is a fenced block of a language that the line <!-- excerpt --> comes just before, at any
+// indentation, with its indentation, its language and its body. The marker is a line of its own, so the info string
+// of the fence stays one word, as the docs standard reads fences (ST-STD-DOCS-R02).
+var excerptBlockPattern = regexp.MustCompile("(?ms)^([ \t]*)<!-- excerpt -->\n[ \t]*```(\\w+)\n(.*?)^[ \t]*```[ \t]*$")
 
 // docDeclaration is the part of a whole declaration in a user doc that names other files of the project: the fills of
 // the commands, queries and workers, and the proto files of the command messages.
