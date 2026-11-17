@@ -13,6 +13,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/parser"
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 // Registry holds indexed archetypes, components, and mixins loaded from a
@@ -183,6 +184,9 @@ func LoadSources(sources ...Source) (*Registry, error) {
 		}
 		if err := checkStage(item); err != nil {
 			return nil, err
+		}
+		if err := checkAuthorSupplied(name, item.Config, ""); err != nil {
+			return nil, fmt.Errorf("%s: %w", file, err)
 		}
 		r.components[name] = item
 	}
@@ -405,6 +409,75 @@ func exampleFile(name string) bool {
 	return len(parts) == 4 && parts[0] == "archetypes" && parts[2] == "example" && strings.HasSuffix(parts[3], exampleSuffix) && len(parts[3]) > len(exampleSuffix)
 }
 
+// exampleFolders are the folders of a project that example content may write into, beside the declaration: the
+// fills, the proto files, the authorization schema and the browser assets. No example file may write the generated
+// code, the module files, the state of STEGO or a CI workflow.
+var exampleFolders = map[string]bool{"fills": true, "proto": true, "authz": true, "ui": true}
+
+// checkExamplePath refuses a path of example content that is not the declaration or a file in exampleFolders, or
+// that has a part that starts with a dot.
+func checkExamplePath(target string) error {
+	if err := gen.ValidatePath(target); err != nil {
+		return err
+	}
+	parts := strings.Split(target, "/")
+	for _, part := range parts {
+		if strings.HasPrefix(part, ".") {
+			return fmt.Errorf("a path part starts with a dot; example content may not write a hidden file or folder")
+		}
+	}
+	switch {
+	case target == ExampleDeclaration:
+		return nil
+	case len(parts) == 1 && (target == "go.mod" || target == "go.sum"):
+		return fmt.Errorf("example content may not write the module files; generation writes them")
+	case parts[0] == "out":
+		return fmt.Errorf("example content may not write into out/, which generation writes")
+	case len(parts) < 2 || !exampleFolders[parts[0]]:
+		return fmt.Errorf("example content writes only %s and files under %s", ExampleDeclaration, strings.Join(slices.Sorted(maps.Keys(exampleFolders)), "/, ")+"/")
+	}
+	return nil
+}
+
+// checkAuthorSupplied refuses a setting of a component's config schema that is marked author supplied and also
+// secret, a bypass, optional or with a default: a declaration must give an author-supplied setting, so it has no
+// default and may be left out nowhere, and a secret or a bypass is never a value the declaration must give
+// (ST-SUP-EN09 field Config schema). Settings of list items are checked too.
+func checkAuthorSupplied(component string, config map[string]types.ConfigField, path string) error {
+	for _, setting := range slices.Sorted(maps.Keys(config)) {
+		field := config[setting]
+		place := path + setting
+		if field.AuthorSupplied {
+			var conflicts []string
+			if field.Secret {
+				conflicts = append(conflicts, "secret")
+			}
+			if field.Bypass {
+				conflicts = append(conflicts, "bypass")
+			}
+			if field.Optional {
+				conflicts = append(conflicts, "optional")
+			}
+			if field.Default != nil {
+				conflicts = append(conflicts, "default")
+			}
+			if len(conflicts) > 0 {
+				return fmt.Errorf("component %s: the setting %s is marked author_supplied and also %s; an author-supplied setting is one that every declaration must give", component, place, strings.Join(conflicts, " and "))
+			}
+		}
+		if field.Items != nil {
+			items := field.Items.Fields
+			if field.Items.Inline != nil {
+				items = map[string]types.ConfigField{"[]": *field.Items.Inline}
+			}
+			if err := checkAuthorSupplied(component, items, place+"."); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // archetypeExample reads the example content of an archetype (ST-SUP-EN03 field Example content) from the files
 // of its example folder, in path order, each at its path in the project without the suffix. Content that holds no
 // declaration text is refused, because stego init writes the declaration from it.
@@ -417,8 +490,8 @@ func (r *Registry) archetypeExample(name string) ([]ExampleFile, error) {
 			continue
 		}
 		target := strings.TrimSuffix(strings.TrimPrefix(file, prefix), exampleSuffix)
-		if err := gen.ValidatePath(target); err != nil {
-			return nil, fmt.Errorf("%s: example file path: %w", file, err)
+		if err := checkExamplePath(target); err != nil {
+			return nil, fmt.Errorf("archetype %s: example file %s: %w", name, target, err)
 		}
 		declared = declared || target == ExampleDeclaration
 		files = append(files, ExampleFile{Path: target, Text: bytes.Clone(r.source.files[file].data)})

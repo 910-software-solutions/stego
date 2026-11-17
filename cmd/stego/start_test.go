@@ -360,6 +360,23 @@ func sortStrings(values []string) []string {
 	return sorted
 }
 
+// registryWith copies the shipped registry into a new folder with one file written over it, and gives the folder.
+func registryWith(t *testing.T, name, data string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "registry")
+	if err := shippedRegistryInto(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // keysOf gives the keys of a map in order.
 func keysOf(values map[string]any) []string {
 	return slices.Sorted(maps.Keys(values))
@@ -456,6 +473,74 @@ func TestArchetypeScaffolds(t *testing.T) {
 			build.Env = append(os.Environ(), "GOWORK=off")
 			if output, err := build.CombinedOutput(); err != nil {
 				t.Errorf("%s: go build ./out: %v\n%s", archetype, err, output)
+			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-R06-T07 An example file outside the declaration and the example folders, or in a hidden folder, is refused, naming the archetype and the path", func(t *testing.T) {
+		for _, target := range []string{
+			".github/workflows/evil.yml", ".stego/state.yaml", "fills/.hidden/fill.go", "proto/.env",
+			"out/main.go", "go.mod", "go.sum", "Containerfile", "deploy/base/deployment.yaml", "fills", "README.md",
+		} {
+			registry := registryWith(t, "archetypes/rpc-service/example/"+target+".tmpl", "x\n")
+			project := namedProject(t)
+			before := treeOf(t, project)
+			run := stegoIn(t, project, append(moduleOf("rpc-service"), "STEGO_REGISTRY="+registry), "init", "--archetype", "rpc-service")
+			if run.code == 0 || !strings.Contains(run.stderr, "archetype rpc-service") || !strings.Contains(run.stderr, target) {
+				t.Errorf("%s: want a refusal that names the archetype and the path, got exit %d: %s", target, run.code, run.stderr)
+			}
+			if !reflect.DeepEqual(before, treeOf(t, project)) {
+				t.Errorf("%s: the refused scaffold wrote a file", target)
+			}
+		}
+		registry := registryWith(t, "archetypes/rpc-service/example/ui/app.js.tmpl", "x\n")
+		project := namedProject(t)
+		if run := stegoIn(t, project, append(moduleOf("rpc-service"), "STEGO_REGISTRY="+registry), "init", "--archetype", "rpc-service"); run.code != 0 {
+			t.Errorf("an example file under ui/ is refused: %s", run.stderr)
+		} else if _, err := os.Stat(filepath.Join(project, "ui", "app.js")); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("ST-SUP-UC01-R07-T03 A component that marks a setting author supplied and also secret, bypass, optional or with a default is refused, naming the component and the setting", func(t *testing.T) {
+		const component = "components/grpc-application/component.yaml"
+		data, err := os.ReadFile(filepath.Join("..", "..", "registry", filepath.FromSlash(component)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mark := "    author_supplied: true\n"
+		if !strings.Contains(string(data), mark) {
+			t.Fatal("grpc-application marks no setting author supplied")
+		}
+		changes := map[string]string{}
+		for conflict, extra := range map[string]string{"secret": "    secret: true\n", "bypass": "    bypass: true\n", "optional": "    optional: true\n", "default": "    default: []\n"} {
+			changes[conflict] = strings.Replace(string(data), mark, mark+extra, 1)
+		}
+		reference := "      reference:\n        type: string\n        optional: true\n"
+		if !strings.Contains(string(data), reference) {
+			t.Fatal("the proto_files items have no optional reference")
+		}
+		changes["proto_files.reference"] = strings.Replace(string(data), reference, reference+"        author_supplied: true\n", 1)
+		for want, changed := range changes {
+			registry := registryWith(t, component, changed)
+			run := stegoIn(t, namedProject(t), append(moduleOf("rpc-service"), "STEGO_REGISTRY="+registry), "init", "--archetype", "rpc-service")
+			if run.code == 0 || !strings.Contains(run.stderr, "grpc-application") || !strings.Contains(run.stderr, "proto_files") || !strings.Contains(run.stderr, want) {
+				t.Errorf("%s: want a refusal that names the component, the setting and %s, got exit %d: %s", want, want, run.code, run.stderr)
+			}
+		}
+	})
+
+	t.Run("ST-DECL-UC01-R01-T03 Init refuses a project folder whose name is not a service name, and writes nothing", func(t *testing.T) {
+		for _, name := range []string{"Greeter", "greeter_service", "-greeter", "<img src=x onerror=alert(1)>"} {
+			project := filepath.Join(t.TempDir(), name)
+			putFile(t, project, ".stego/config.yaml", declaringConfig(t))
+			before := treeOf(t, project)
+			run := stegoIn(t, project, moduleOf("browser-service"), "init", "--archetype", "browser-service")
+			if run.code == 0 || !strings.Contains(run.stderr, "is not a service name") {
+				t.Errorf("%q: want a refusal that the folder name is not a service name, got exit %d: %s", name, run.code, run.stderr)
+			}
+			if !reflect.DeepEqual(before, treeOf(t, project)) {
+				t.Errorf("%q: the refused scaffold wrote a file", name)
 			}
 		}
 	})

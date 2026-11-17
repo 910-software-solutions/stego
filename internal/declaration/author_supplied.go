@@ -23,7 +23,8 @@ func AuthorSuppliedSettings(schemas map[string]map[string]types.ConfigField) []s
 }
 
 // ValidateAuthorSupplied gives one fault of the author-supplied rule (ST-DECL-INV90) for each setting that a config
-// schema of an active component marks as author supplied and the declaration gives no value for. Each fault is at
+// schema of an active component marks as author supplied and the declaration gives no value for, or an empty
+// value: an empty text, list or map. Each fault is at
 // overrides.<component>.<setting> and names the component and the setting. The faults come in the order of
 // AuthorSuppliedSettings.
 func ValidateAuthorSupplied(service *types.ServiceDeclaration, schemas map[string]map[string]types.ConfigField) []ValidationError {
@@ -34,7 +35,7 @@ func ValidateAuthorSupplied(service *types.ServiceDeclaration, schemas map[strin
 			if !schemas[component][setting].AuthorSupplied {
 				continue
 			}
-			if value, given := values[setting]; given && value != nil {
+			if value, given := values[setting]; given && !emptyValue(value) {
 				continue
 			}
 			faults = append(faults, ValidationError{Category: "config", Rule: "author-supplied", Path: "overrides." + component + "." + setting,
@@ -42,4 +43,19 @@ func ValidateAuthorSupplied(service *types.ServiceDeclaration, schemas map[strin
 		}
 	}
 	return faults
+}
+
+// emptyValue tells whether a setting's value gives nothing: no value, an empty text, an empty list or an empty map.
+func emptyValue(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	case []any:
+		return len(v) == 0
+	case map[string]any:
+		return len(v) == 0
+	}
+	return false
 }

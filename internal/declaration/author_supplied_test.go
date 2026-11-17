@@ -40,6 +40,9 @@ func TestAuthorSuppliedSettings(t *testing.T) {
 			"no grpc-application":     {"postgres-adapter": map[string]any{"schema_generation": "tables-v1"}},
 			"other settings only":     {"grpc-application": map[string]any{"reflection": true}},
 			"a setting with no value": {"grpc-application": map[string]any{"proto_files": nil}},
+			"an empty text":           {"grpc-application": map[string]any{"proto_files": ""}},
+			"an empty list":           {"grpc-application": map[string]any{"proto_files": []any{}}},
+			"an empty map":            {"grpc-application": map[string]any{"proto_files": map[string]any{}}},
 		} {
 			faults := ValidateAuthorSupplied(&types.ServiceDeclaration{Overrides: overrides}, schemas)
 			if len(faults) != 1 || faults[0].Rule != "author-supplied" || faults[0].Path != "overrides.grpc-application.proto_files" {
