@@ -955,6 +955,9 @@ SQLSTATE class in each 10 seconds, with the number of lines that it held back.
   ST-SUP-RP14-LC10): `service.ParkedRoutes`, `Service.RegisterParked`,
   `outbox.Resolver`, `outbox.Queue.Parked`, `outbox.ErrRefusedOutcome`,
   `authz.Runtime.StateHook`, `query.KeyCursor` and `query.Cursor.Key`.
+- New function `command.Snapshot`: the generated contract package takes a
+  copy of each declared list when it starts, and the handle refuses a list
+  that a fill changed after that.
 - `command.ListValue` has the new field `KeyOf` (`command.KeyUUID`), and `command.Reference`
   the new field `Check`. Generated code sets them; code that does not set them
   needs no change.
