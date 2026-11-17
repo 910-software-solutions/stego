@@ -15,7 +15,7 @@ last_applied:
                 mode: 420
             authz/schema.zed:
                 exists: true
-                sha256: 4185ebd235edc2b5326b9e701f7ceb06e7183089c48b339fbecdc25a96e601c8
+                sha256: 87e9c0b65aca9a22c4e7386893b21b0c86f0d2f1f2f7f7988bf1ba8b5546559f
                 mode: 420
             go.mod:
                 exists: true
@@ -29,14 +29,14 @@ last_applied:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: 09cfd015eb2a92cd046c74c39c55154140ea18963165a56b8e86835b6f95a367
+        sha256: 9a316ffbba73a1467326cdd130e3a34da491c763902f9d1aa2c0074c950bd8ab
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117121628-95bd5e629aad
+        module_version: v0.0.0-20261117124031-18dcf05fea4c
         vcs: git
-        revision: 95bd5e629aadff87536ca575515784a904486e1c
+        revision: 18dcf05fea4cc63160846c788f1e4f495c5244b6
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -142,21 +142,22 @@ last_applied:
         internal/api/all_users_handler.go: d1ef5853a1e9b9cd35607eda0f7fac1a17ba35b3c1e2f8640ca3a92873617498
         internal/api/cors.go: 5b7863e6f7fa7f104ffbc0f97418542b07bc428766642a1856de26eac9e1fc2c
         internal/api/data/entities.go: 63255775f57b77931da7cd741ad91200c3dd7a7d376cc9f14f21184cdb9a5cee
+        internal/api/data/links.go: 92680df2e0cb956c0174060a07b161d63f810d91bea7ddfd37875d0360020240
         internal/api/data/views.go: 01dfbc46db937a9df1e217fc53befc30593453c08319ed964724c37c4df3fc59
         internal/api/discovery.go: f5dc2a3505da0dc3b98bab336e01b9c22ae67d0a04911d5e964d71b58eeb4edc
         internal/api/errors.go: 8746d7f2437f9d6409c35b3ce25a67f3b71f5888ad3cdfe721b55663674f2ec7
         internal/api/openapi.json: 8b7fca8bd9817f4edc6fb039efce9ef59b050dd09244b3426f15c00bd3545598
         internal/api/org_activity_handler.go: 0eafa7c74ad193cfb87081a7a3819c50ec5a51c76554b9ff98530bd83ead0bd8
-        internal/api/org_settings_handler.go: 1ed4cafd0b4c43dcac18852ce414de45f2389c1fa2485009147b81eae560c41f
-        internal/api/org_users_handler.go: 98aade8019111ab979593de33f00f35c0d27f0fb641c9d48d824d8cea8df21ed
+        internal/api/org_settings_handler.go: fed8f9a62cd8aba81c3636a0675533e7f064e3d71a8f688f7776342c18805f77
+        internal/api/org_users_handler.go: a92e38fd3f50fe0773d013fdb7d5576391cc0e4ca6955aa65a4417158b9df864
         internal/api/organizations_handler.go: 7795161675479569835a820d9e396cc5c1589efa47641cac2f6569a8349f452a
         internal/api/router.go: d6124ed4af38af0415a23e5bfcc77ada26e18fe0cea5cf71dee839d28ff93fa6
         internal/api/runtime.go: 40b314935d34a80db8ec210860f3bea629f94b069e19547d0c377d63c4050f4b
         internal/api/user_activity_handler.go: 879317fda7698a24710044d6422617cd0cc6d71ddc0a0cbad2134533952060d4
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: 7fa2142f0f392775f4e230cef051034f050d33723732be342d1ae8eed40364fc
-        internal/authz/authz.go: bcd5166c619d644f6d24f237c57824396616b093550cfa20a58090eb3bde5bfd
-        internal/authz/schema.zed: b92eda055de3d7b9a0cfe4fa015c3ab5ab12a1849f6178ee8aeaac5a56f729b2
+        internal/authz/authz.go: 5455408e2aa38c878ccb43b032314fd8f6474725935b089b6b88afe38ef31dc8
+        internal/authz/schema.zed: 5dc471ea0e3cee6c2a66ebe4280a044fa6108f5de24eb11c47a668d5c55e61d9
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
         internal/stegoruntime/runtime.go: 01ec750e2c0ee39de91901153e5e2b4ae6323dff0a6bcbe82bba791fad97d257
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
@@ -209,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: ad48dd7df861393f826cb60b9ce716a27395de624ae59a926a6b6009a5bc5d0c
-        architecture/index.html: 44659efa6216147df57d6bab22be4c5a157eed66d5d5dad9990f707f5510d05a
+        architecture/architecture.json: c21faf76c7c32faf21f7238e1c10d29331cb114743aea200dbb940cbf9d30fb4
+        architecture/index.html: 03027932eda1153c7cb431e4de9c6bd2790381a53bcae4f9e240e7ca73c882d1
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
         deploy/base/migration-job.yaml: bcec1d7e6ca8c686bb996a5947d6360f6360b6029336b488476915d5d32276c2
