@@ -18,7 +18,7 @@ func Scaffold(name, archetype, language string, example []byte, module, serviceP
 	// The service takes the name of the project folder. Init refuses a name that checking would refuse, before the
 	// name goes into any file (ST-DECL-INV86).
 	if !serviceNameForm.MatchString(name) {
-		return nil, fmt.Errorf("the project folder name %q is not a service name: a service name is 1 to 63 lower-case letters, digits and hyphens, and starts with a letter or a digit; rename the folder and run stego init again", name)
+		return nil, fmt.Errorf("the project folder name %q is not a service name: a service name is 1 to 63 lower-case letters, digits and hyphens, and starts with a letter, because the Kubernetes Service and the database roles take it (ST-DECL-Q43); rename the folder and run stego init again", name)
 	}
 	if len(example) == 0 {
 		return yaml.Marshal(types.ServiceDeclaration{Kind: "service", Name: name, Archetype: archetype, Language: language, Entities: []types.Entity{}, Collections: []types.Collection{}})

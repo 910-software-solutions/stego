@@ -73,9 +73,20 @@ func declaringConfig(t *testing.T) string {
 // declaringProject makes an empty project folder with the configuration of ST-DECL-TD01.
 func declaringProject(t *testing.T) string {
 	t.Helper()
-	project := t.TempDir()
+	project := serviceFolder(t)
 	putFile(t, project, ".stego/config.yaml", declaringConfig(t))
 	return project
+}
+
+// serviceFolder makes an empty project folder whose name is a service name: the folder of t.TempDir is a number,
+// which a service name may not be (ST-DECL-INV86, ST-DECL-Q43).
+func serviceFolder(t *testing.T) string {
+	t.Helper()
+	folder := filepath.Join(t.TempDir(), "service")
+	if err := os.Mkdir(folder, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return folder
 }
 
 // td02 is the accepted rest-crud declaration of ST-DECL-TD02. The entity id is implicit in the declaration

@@ -100,7 +100,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 			},
 		}
 		for name, make := range forms {
-			project, outside := t.TempDir(), t.TempDir()
+			project, outside := serviceFolder(t), t.TempDir()
 			putFile(t, project, ".stego/config.yaml", declaringConfig(t))
 			make(t, project, outside)
 			before, beforeOutside := treeOf(t, project), treeOf(t, outside)
@@ -244,7 +244,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 	t.Run("ST-DECL-UC01-R06-T03 Init keeps an existing configuration byte for byte", func(t *testing.T) {
 		registryDir, commit := declaringRegistry(t)
 		config := "# The team's registry.\n\nregistry:   \n  - ref: " + commit + "   \n    url: " + registryDir + "\n\n# end\n"
-		project := t.TempDir()
+		project := serviceFolder(t)
 		putFile(t, project, ".stego/config.yaml", config)
 		if run := stegoIn(t, project, nil, "init", "--archetype", "rest-crud"); run.code != 0 {
 			t.Fatalf("stego init: %s", run.stderr)
@@ -257,7 +257,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 
 	t.Run("ST-DECL-UC01-R06-T04 A symbolic link at each path init would write is refused, naming the path", func(t *testing.T) {
 		for _, path := range []string{"service.yaml", ".stego/config.yaml", ".stego", ".stego/apply.lock", ".stego/.gitignore", "fills"} {
-			project, outside := t.TempDir(), t.TempDir()
+			project, outside := serviceFolder(t), t.TempDir()
 			if path != ".stego" {
 				putFile(t, project, ".stego/config.yaml", declaringConfig(t))
 			}
@@ -297,7 +297,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 	})
 
 	t.Run("ST-DECL-UC01-R07-T01 Init keeps the apply lock and the saved plan out of the commit, and an existing ignore file as written", func(t *testing.T) {
-		project := t.TempDir()
+		project := serviceFolder(t)
 		putFile(t, project, ".stego/config.yaml", declaringConfig(t))
 		run := stegoIn(t, project, nil, "init", "--archetype", "rest-crud")
 		if run.code != 0 || !strings.Contains(run.stdout, ".stego/.gitignore") {
@@ -326,7 +326,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 			}
 		}
 		// An ignore file that the author already has is kept as written.
-		other := t.TempDir()
+		other := serviceFolder(t)
 		putFile(t, other, ".stego/config.yaml", declaringConfig(t))
 		putFile(t, other, ".stego/.gitignore", "# the team's own\n*.tmp\n")
 		if run := stegoIn(t, other, nil, "init", "--archetype", "rest-crud"); run.code != 0 || strings.Contains(run.stdout, ".stego/.gitignore") {
@@ -349,7 +349,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 			t.Fatalf("copy the registry: %v\n%s", err, output)
 		}
 		environment := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + configHome}
-		project := t.TempDir()
+		project := serviceFolder(t)
 		if run := stegoIn(t, project, environment, "init", "--archetype", "rest-crud"); run.code != 0 {
 			t.Fatalf("stego init: %s", run.stderr)
 		}
@@ -364,7 +364,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 
 	t.Run("ST-DECL-UC01-R06-T06 With no configuration and STEGO_REGISTRY set, init writes a configuration that names the override", func(t *testing.T) {
 		registryDir, _ := declaringRegistry(t)
-		project := t.TempDir()
+		project := serviceFolder(t)
 		if run := stegoIn(t, project, []string{"STEGO_REGISTRY=" + registryDir}, "init", "--archetype", "rest-crud"); run.code != 0 {
 			t.Fatalf("stego init: %s", run.stderr)
 		}
@@ -578,7 +578,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 	})
 
 	t.Run("ST-DECL-UC01-R01-T03 Init refuses a project folder whose name is not a service name, and writes nothing", func(t *testing.T) {
-		for _, name := range []string{"Greeter", "greeter_service", "-greeter", "<img src=x onerror=alert(1)>"} {
+		for _, name := range []string{"Greeter", "greeter_service", "-greeter", "001", "<img src=x onerror=alert(1)>"} {
 			project := filepath.Join(t.TempDir(), name)
 			putFile(t, project, ".stego/config.yaml", declaringConfig(t))
 			before := treeOf(t, project)

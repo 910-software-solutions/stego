@@ -50,7 +50,7 @@ func TestFillScaffoldRejectsExistingDirectoryAndLinks(t *testing.T) {
 func TestFillWorkflowBuild(t *testing.T) {
 	t.Run("ST-EXT-UC01-R01-T01 A scaffolded fill compiles against its slot contract, and its test runs in the generated service", func(t *testing.T) {
 		registry := shippedRegistryCopy(t)
-		project := t.TempDir()
+		project := serviceFolder(t)
 		t.Chdir(project)
 		t.Setenv("STEGO_REGISTRY", registry)
 		t.Setenv("STEGO_MODULE", "example.com/fill-workflow")
