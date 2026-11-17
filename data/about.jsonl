@@ -145,6 +145,8 @@
 {"source_id":"ST-GEN-Q44","target_id":"ST-GEN-UC08-R05"}
 {"source_id":"ST-GEN-Q44","target_id":"ST-GEN-UC08-R07"}
 {"source_id":"ST-GEN-Q44","target_id":"ST-GEN-UC08-R12"}
+{"source_id":"ST-GEN-Q45","target_id":"ST-GEN-UC08-R05"}
+{"source_id":"ST-GEN-Q45","target_id":"ST-GEN-UC08-R18"}
 {"source_id":"ST-SUP-Q110","target_id":"ST-SUP-RC20"}
 {"source_id":"ST-SUP-Q110","target_id":"ST-SUP-RP10-LC25"}
 {"source_id":"ST-SUP-Q118","target_id":"ST-DECL-UC06-R04"}
