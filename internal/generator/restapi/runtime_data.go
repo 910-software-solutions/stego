@@ -2097,6 +2097,16 @@ func (w *runtimeHandlerWriter) parents(stored string) {
 		default:
 			cond, id = fmt.Sprintf("%s != %s.%s", v, stored, name), v
 		}
+		// A reference held within a field is compared with its row when that field moves too, so the write loads the
+		// row then (ST-SUP-RP10-LC37).
+		if within := c.entity.References[f.Name].WithinField(); within != "" && stored != "" {
+			moved := w.withinMoved(within, stored)
+			if f.Optional {
+				cond = fmt.Sprintf("%s != nil && *%s != \"\" && (%s.%s == nil || *%s.%s != *%s || %s)", v, v, stored, name, stored, name, v, moved)
+			} else {
+				cond = fmt.Sprintf("%s != %s.%s || %s", v, stored, name, moved)
+			}
+		}
 		if cond == "true" {
 			w.f("\t\t{\n")
 		} else {
@@ -2105,6 +2115,19 @@ func (w *runtimeHandlerWriter) parents(stored string) {
 		w.f("\t\t\trefs, err := data.%sRepository(ch)\n\t\t\tif err != nil {\n\t\t\t\treturn idempotency.Response{}, err\n\t\t\t}\n", f.To)
 		w.f("\t\t\tparent, err := refs.Get(ctx, %s)\n\t\t\tif err != nil {\n\t\t\t\treturn idempotency.Response{}, err\n\t\t\t}\n\t\t\tparents = append(parents, parent)\n\t\t}\n", id)
 	}
+}
+
+// withinMoved gives the condition that the write of a stored row changes the field within of the entity.
+func (w *runtimeHandlerWriter) withinMoved(within, stored string) string {
+	c := w.c
+	name := toPascalCase(within)
+	v := c.lower + "." + name
+	for _, f := range c.entity.Fields {
+		if f.Name == within && f.Optional {
+			return fmt.Sprintf("!command.EqualPointer(%s, %s.%s)", v, stored, name)
+		}
+	}
+	return fmt.Sprintf("%s != %s.%s", v, stored, name)
 }
 
 // upsert writes the upsert of the collection: one generated command that finds the row of the natural key with no

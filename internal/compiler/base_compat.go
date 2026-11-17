@@ -219,6 +219,7 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	faults = append(faults, onePhaseFaults(base, head)...)
 	faults = append(faults, uniqueAddFaults(base, head)...)
 	faults = append(faults, relaxFaults(base, head)...)
+	faults = append(faults, withinFaults(base, head)...)
 	generated, ok := generatedBaselines(applied, base, head)
 	if !ok {
 		// Generation does not carry out each kind of the declarations yet, so the indexes are compared as the
@@ -997,6 +998,40 @@ func relaxFaults(base, head *types.ServiceDeclaration) []BaseFault {
 		}
 		if reason != "" {
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: change.Entity, Field: change.Field, Message: fmt.Sprintf("the relax %s of %s.%s does not relax the field in place: %s", change.ID, change.Entity, change.Field, reason)})
+		}
+	}
+	return faults
+}
+
+// withinFaults refuses a head that holds a reference of an entity of the base within another field than the base
+// does, with no new schema change of kind within on the reference (ST-SUP-RC01-OC46, ST-DECL-Q42): the tables of the
+// base have rows, so a composite key that the head adds is a within step, which builds the unique key, adds the key
+// NOT VALID and validates it over the rows. A key that the head drops or moves has no step yet, so it is refused
+// with no suggestion. A reference that the head adds with its field is a new column, which an add step adds.
+func withinFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	var faults []BaseFault
+	for _, now := range head.Entities {
+		at := slices.IndexFunc(base.Entities, func(e types.Entity) bool { return e.Name == now.Name })
+		if at < 0 {
+			continue
+		}
+		was := base.Entities[at]
+		for _, name := range slices.Sorted(maps.Keys(now.References)) {
+			before, after := was.References[name].WithinField(), now.References[name].WithinField()
+			if before == after || !slices.ContainsFunc(was.Fields, func(f types.Field) bool { return f.Name == name }) {
+				continue
+			}
+			stepped := slices.ContainsFunc(head.SchemaChanges, func(c types.SchemaChange) bool {
+				return c.Kind == "within" && c.Entity == now.Name && c.Field == name && !slices.ContainsFunc(base.SchemaChanges, func(b types.SchemaChange) bool { return b.ID == c.ID })
+			})
+			switch {
+			case before == "" && stepped:
+			case before == "":
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: now.Name, Field: name, Message: fmt.Sprintf("the head holds the reference %s.%s within %s, which no schema step declares; the tables of the release that runs now have rows, so declare a within step, which adds the key and checks the rows", now.Name, name, after),
+					Declare: []SuggestedChange{{ID: kebab(now.Name) + "-" + kebab(name) + "-within", Kind: "within", Entity: now.Name, Field: name, Phase: "expand"}}})
+			default:
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: now.Name, Field: name, Message: fmt.Sprintf("the head changes the within of the reference %s.%s from %s, and no schema step drops a composite key yet; keep within: %s", now.Name, name, before, before)})
+			}
 		}
 	}
 	return faults

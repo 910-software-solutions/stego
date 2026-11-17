@@ -76,10 +76,22 @@ type contractStatement struct {
 // rows, the SQL of the migration after those indexes that adds the sync trigger of a rename, and the constraints that
 // it validates.
 type stepAddition struct {
-	body      strings.Builder
-	indexes   []stepIndex
+	body    strings.Builder
+	indexes []stepIndex
+	// keys adds, NOT VALID, each foreign key onto a unique key that the step builds CONCURRENTLY, after its index
+	// migrations, so the key it refers to exists (ST-SUP-RC01-OC46).
+	keys      strings.Builder
 	sync      strings.Builder
 	validates []validation
+	// deferred tells whether a foreign key refers to a unique key that the step builds, so it goes to keys.
+	deferred func(fk foreignModel) bool
+}
+
+// addKey adds the foreign key fk of table NOT VALID in the keys migration, and its validation.
+func (out *stepAddition) addKey(table tableModel, fk foreignModel) {
+	qualified := "public." + sqlIdentifier(table.name)
+	fmt.Fprintf(&out.keys, "ALTER TABLE %s ADD CONSTRAINT %s %s NOT VALID;\n", qualified, sqlIdentifier(fk.name), foreignSQL(fk))
+	out.validates = append(out.validates, validation{table: qualified, schema: "public", tableName: table.name, name: fk.name, foreign: true})
 }
 
 // validation is one constraint that the validate migration of a step validates: the qualified table as SQL text, its
@@ -108,6 +120,10 @@ type stepIndex struct{ name, statement, definition string }
 // after name and before the next step.
 func IndexMigrationName(name string, n int) string { return fmt.Sprintf("%s_index_%02d", name, n) }
 
+// KeysMigrationName gives the ledger name of the migration that adds the foreign keys of the step name onto the
+// unique keys that its index migrations build, after them (ST-SUP-RC01-OC46).
+func KeysMigrationName(name string) string { return name + "_keys" }
+
 // ValidateMigrationName gives the ledger name of the migration that validates the constraints of the step name.
 func ValidateMigrationName(name string) string { return name + "_validate" }
 
@@ -125,7 +141,7 @@ func StepMigrationName(position int, change, phase string) string {
 }
 
 // stepName is the grammar of the ledger name of a step migration.
-var stepName = regexp.MustCompile(`^step_[0-9]{4}_[a-z0-9]+(-[a-z0-9]+)*_(expand|contract)(_index_[0-9]{2}|_sync|_validate|_validate_finish)?$`)
+var stepName = regexp.MustCompile(`^step_[0-9]{4}_[a-z0-9]+(-[a-z0-9]+)*_(expand|contract)(_index_[0-9]{2}|_keys|_sync|_validate|_validate_finish)?$`)
 
 // CheckLedgerName refuses a ledgered migration whose name is not 001_initial, 100_tenancy_row_security or the name of
 // a schema step (ST-SUP-RC01-OC43): the ledger applies and checks migrations in the byte order of their names, so a
@@ -211,9 +227,9 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema_history[%d] names the schema change %q, which schema_changes does not declare", i, step.Change)
 		}
-		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || ((change.Kind == "add" || change.Kind == "relax") && step.Phase == "expand")
+		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within") && step.Phase == "expand")
 		if !built || (step.Phase != "expand" && step.Phase != "contract") {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add and of a relax and the expand and contract steps of a rename, a retype and a require", i, step.Phase, change.ID, change.Kind)
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax and a within and the expand and contract steps of a rename, a retype and a require", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {
@@ -287,7 +303,7 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if err != nil {
 			return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
 		}
-		if added.body.Len() == 0 && len(added.indexes) == 0 {
+		if added.body.Len() == 0 && len(added.indexes) == 0 && added.keys.Len() == 0 {
 			return nil, fmt.Errorf("schema change %s adds nothing to the tables", change.ID)
 		}
 		if len(added.indexes) > maxStepIndexes {
@@ -297,6 +313,9 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		steps = append(steps, schemaStep{Name: name, Change: change, Phase: step.Phase, Body: added.body.String()})
 		for n, index := range added.indexes {
 			steps = append(steps, schemaStep{Name: IndexMigrationName(name, n+1), Change: change, Phase: step.Phase, Body: index.statement, Index: index.name, Definition: index.definition})
+		}
+		if added.keys.Len() > 0 {
+			steps = append(steps, schemaStep{Name: KeysMigrationName(name), Change: change, Phase: step.Phase, Body: added.keys.String()})
 		}
 		if added.sync.Len() > 0 {
 			steps = append(steps, schemaStep{Name: SyncMigrationName(name), Change: change, Phase: step.Phase, Body: added.sync.String()})
@@ -327,6 +346,21 @@ func addedSQL(before, after []tableModel, key string, rowSecurity bool) (*stepAd
 		}
 	}
 	out := &stepAddition{}
+	// A unique key that the step adds to a table with rows is built CONCURRENTLY after the step's own migration, so
+	// a foreign key onto it waits for the keys migration (ST-SUP-RC01-OC46).
+	built := map[string]bool{}
+	for _, table := range after {
+		old, there := present[table.name]
+		if !there {
+			continue
+		}
+		for _, columns := range table.unique {
+			if !slices.ContainsFunc(old.unique, func(u []string) bool { return slices.Equal(u, columns) }) {
+				built[table.name+"\x00"+strings.Join(append(append([]string{}, table.lead...), columns...), "\x00")] = true
+			}
+		}
+	}
+	out.deferred = func(fk foreignModel) bool { return built[fk.table+"\x00"+strings.Join(fk.to, "\x00")] }
 	for _, table := range after {
 		for _, fk := range table.foreign {
 			if !known[fk.table] {
@@ -335,7 +369,14 @@ func addedSQL(before, after []tableModel, key string, rowSecurity bool) (*stepAd
 		}
 		old, there := present[table.name]
 		if !there {
-			out.body.WriteString(createTableSQL(table))
+			created := table
+			created.foreign = slices.DeleteFunc(slices.Clone(table.foreign), out.deferred)
+			out.body.WriteString(createTableSQL(created))
+			for _, fk := range table.foreign {
+				if out.deferred(fk) {
+					out.addKey(table, fk)
+				}
+			}
 			if rowSecurity && table.owned {
 				out.body.WriteString(TenantRowSecurity(table.entity, key))
 			}
@@ -390,6 +431,10 @@ func addedToTable(old, next tableModel, out *stepAddition) error {
 	}
 	for _, fk := range next.foreign {
 		if !slices.ContainsFunc(old.foreign, func(f foreignModel) bool { return reflect.DeepEqual(f, fk) }) {
+			if out.deferred != nil && out.deferred(fk) {
+				out.addKey(next, fk)
+				continue
+			}
 			fmt.Fprintf(&out.body, "ALTER TABLE %s ADD CONSTRAINT %s %s NOT VALID;\n", table, sqlIdentifier(fk.name), foreignSQL(fk))
 			validate(fk.name, true)
 		}

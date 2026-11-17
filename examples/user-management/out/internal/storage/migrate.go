@@ -176,6 +176,12 @@ func RegisterValidateStep(name, body string, constraints ...ValidateConstraint) 
 			table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
 			if c.Foreign {
 				if err := runtimetenant.ValidateForeignKey(ctx, tx, table, c.Name); err != nil {
+					// A row that the key refuses stops the migration job with a refusal that names the step, the
+					// table and the key, and no row value (ST-SUP-RC01-OC46).
+					var coded interface{ SQLState() string }
+					if errors.As(err, &coded) && coded.SQLState() == "23503" {
+						return &keyRefusal{text: fmt.Sprintf("the step %s does not validate the foreign key %s of %s.%s: a row of the table breaks it; correct or remove the rows that break it, then run the migration job again", name, c.Name, c.Schema, c.Table), err: err}
+					}
 					return err
 				}
 				continue
@@ -796,6 +802,19 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 		}
 	}
 }
+
+// keyRefusal is the refusal of a validate migration whose foreign key a row
+// breaks: its text names the step, the table and the key and no row value, so
+// the migration job may log it (Refusal). It wraps the database error, whose
+// SQLSTATE 23503 the job keeps.
+type keyRefusal struct {
+	text string
+	err  error
+}
+
+func (r *keyRefusal) Error() string   { return r.text }
+func (r *keyRefusal) Refusal() string { return r.text }
+func (r *keyRefusal) Unwrap() error   { return r.err }
 
 // contractRefusal is the refusal of a contract step: its text names the
 // change, the counts and the labels of the running releases, and no row

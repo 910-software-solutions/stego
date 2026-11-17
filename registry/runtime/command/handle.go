@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/internal/loaded"
@@ -201,6 +203,13 @@ type EntitySpec[T any] struct {
 	// entity that has none. A create, a move and the work on a child take the loaded value of each reference that
 	// is set, and nothing else (ST-SUP-RP10-LC05).
 	Parent []Reference[T]
+	// Within reads each field of a value that a reference of this entity, or of another entity to this one, is held
+	// within (Reference.Within), by its declared name, such as project_id and value.ProjectID; an empty string is a
+	// field that is not set (ST-SUP-RP10-LC37).
+	Within map[string]func(value T) string
+	// Referrers are the composite keys of the references of other entities to this one that are held within a field
+	// of this entity (ST-SUP-RP10-LC37).
+	Referrers []Referrer
 	// Relationships are the declared relationships of the entity (ST-DECL-UC06-R04), which the runtime writes as it
 	// writes the relations of the references (ST-SUP-RP10-LC05, ST-SUP-Q118): a create touches the tuple of each one
 	// whose subject is set, an update that changes a field subject deletes the old tuple and touches the new one,
@@ -255,12 +264,27 @@ type Reference[T any] struct {
 	// when the row is created or the reference moves, and deletes the old one on a move. Empty writes none. It
 	// needs a resource type on the entity.
 	Relation string
+	// Field is the declared name of the reference, such as sprint_id, which a refusal names. Within is the declared
+	// field that the row and the referenced row must have equal, such as project_id, or empty for a reference with no
+	// within; both entities read it through their EntitySpec.Within. Key is the name of the composite foreign key
+	// that holds the same rule in the database (ST-SUP-RP10-LC37, ST-SUP-RC01-OC46).
+	Field, Within, Key string
+}
+
+// Referrer is the composite foreign key of a reference of another entity to this one that is held within a field
+// of this entity (ST-SUP-RP10-LC37): Key is the name of the key, Field the reference as Entity.field, such as
+// Ticket.sprint_id, and Within the field of this entity, such as project_id. A write of this entity that the key
+// refuses, such as an update that moves the row to another project while a ticket refers to it, is ErrInvalid.
+type Referrer struct {
+	Key, Field, Within string
 }
 
 // reference is one set reference of a value: the referenced entity and ID, and the declared permission and
 // relation.
 type reference struct {
 	entity, resourceType, id, permission, relation string
+	// field, within and key are the Field, Within and Key of the declared reference (ST-SUP-RP10-LC37).
+	field, within, key string
 }
 
 // references gives the set references of value, in the order of the declaration.
@@ -269,7 +293,7 @@ func (e *Entity[T]) references(value T) []reference {
 	for _, r := range e.spec.Parent {
 		if id := r.ID(value); id != "" {
 			refs = append(refs, reference{entity: r.Entity, resourceType: r.ResourceType, id: id, permission: r.Permission,
-				relation: r.Relation})
+				relation: r.Relation, field: r.Field, within: r.Within, key: r.Key})
 		}
 	}
 	return refs
@@ -532,6 +556,10 @@ func NewEntity[T any](spec EntitySpec[T]) (*Entity[T], error) {
 	for i, r := range spec.Parent {
 		if r.Entity == "" || r.ID == nil {
 			return nil, fmt.Errorf("command: a reference of %s needs the referenced entity and the reader of its ID", spec.Name)
+		}
+		// A reference held within a field names itself and its key, and the entity reads the field (ST-SUP-RP10-LC37).
+		if r.Within != "" && (r.Field == "" || r.Key == "" || spec.Within[r.Within] == nil) {
+			return nil, fmt.Errorf("command: the reference of %s to %s is held within %s, which needs its Field, its Key and a reader of %s in Within", spec.Name, r.Entity, r.Within, r.Within)
 		}
 		if r.Relation != "" {
 			if spec.ResourceType == "" || r.ResourceType == "" {
@@ -815,6 +843,8 @@ type rowRef struct {
 	id           string
 	token        string
 	lock         lockMode
+	// value is the loaded value itself, which a within check reads (ST-SUP-RP10-LC37).
+	value Ref
 }
 
 func refOf(r Ref) rowRef {
@@ -824,7 +854,7 @@ func refOf(r Ref) rowRef {
 	}
 	st, _ := ref.Owner.(*state)
 	return rowRef{st: st, entity: ref.EntityName, entityRef: ref.Entity, resourceType: ref.ResourceType, id: ref.ID,
-		token: ref.Token, lock: lockMode(ref.Lock)}
+		token: ref.Token, lock: lockMode(ref.Lock), value: r}
 }
 
 // newLoaded makes the loaded value of one row that the handle state s read or wrote.
@@ -963,24 +993,48 @@ func (r *Repository[T]) decideParents(ctx context.Context, verb string, parents 
 func (r *Repository[T]) decideMove(ctx context.Context, parents []Ref, from, value T) ([]moved, error) {
 	s, e := r.st, r.entity
 	if r.isChild() || len(e.spec.Parent) == 0 {
-		return nil, r.decideParents(ctx, "update", parents, from, value)
+		if err := r.decideParents(ctx, "update", parents, from, value); err != nil {
+			return nil, err
+		}
+		// A child holds the loaded value of each row that it refers to, so each reference held within a field is
+		// compared with its row (ST-SUP-RP10-LC37).
+		refs := e.references(value)
+		if len(refs) == 0 {
+			return nil, nil
+		}
+		rows, err := s.matchParents("update", e.spec.Name, refs, nonNil(parents), make([]bool, len(nonNil(parents))))
+		if err != nil {
+			return nil, err
+		}
+		for i, ref := range refs {
+			if err := r.checkWithin(value, ref, rows[i]); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
 	}
 	parents = nonNil(parents)
 	var moves []moved
-	var refs []reference
+	var refs, held []reference
 	for _, ref := range e.spec.Parent {
 		oldID, newID := ref.ID(from), ref.ID(value)
 		if oldID == newID {
+			// A reference that stays while the field that it is held within moves is compared with its row too, so
+			// parents must hold that row (ST-SUP-RP10-LC37).
+			if ref.Within != "" && newID != "" && e.withinMoved(ref.Within, from, value) {
+				held = append(held, reference{entity: ref.Entity, resourceType: ref.ResourceType, id: newID,
+					permission: ref.Permission, relation: ref.Relation, field: ref.Field, within: ref.Within, key: ref.Key})
+			}
 			continue
 		}
 		m := moved{entity: ref.Entity, resourceType: ref.ResourceType, relation: ref.Relation, oldID: oldID, newID: newID}
 		moves = append(moves, m)
 		if newID != "" {
 			refs = append(refs, reference{entity: ref.Entity, resourceType: ref.ResourceType, id: newID,
-				permission: ref.Permission, relation: ref.Relation})
+				permission: ref.Permission, relation: ref.Relation, field: ref.Field, within: ref.Within, key: ref.Key})
 		}
 	}
-	if len(moves) == 0 {
+	if len(moves) == 0 && len(held) == 0 {
 		if len(parents) > 0 {
 			return nil, s.breakWith(internalf("an update of %s that keeps its references takes no parent", e.spec.Name))
 		}
@@ -988,6 +1042,10 @@ func (r *Repository[T]) decideMove(ctx context.Context, parents []Ref, from, val
 	}
 	used := make([]bool, len(parents))
 	rows, err := s.matchParents("move", e.spec.Name, refs, parents, used)
+	if err != nil {
+		return nil, err
+	}
+	heldRows, err := s.matchParents("move", e.spec.Name, held, parents, used)
 	if err != nil {
 		return nil, err
 	}
@@ -999,7 +1057,106 @@ func (r *Repository[T]) decideMove(ctx context.Context, parents []Ref, from, val
 			return nil, err
 		}
 	}
+	// A held reference stays, so it is not decided again; it is only compared (ST-SUP-RP10-LC05, ST-SUP-RP10-LC37).
+	checks, checked := slices.Concat(refs, held), slices.Concat(rows, heldRows)
+	for i, ref := range checks {
+		if err := r.checkWithin(value, ref, checked[i]); err != nil {
+			return nil, err
+		}
+	}
 	return moves, nil
+}
+
+// reasonWithin is the fixed reason of a refused reference held within a field (ST-SUP-RP10-LC37): it names the
+// declared field and never a value.
+func reasonWithin(within string) string {
+	return "the referenced row has another " + within + "; the reference is held within " + within
+}
+
+// reasonReferred is the fixed reason of a refused write of a row that another entity's reference is held within
+// (ST-SUP-RP10-LC37).
+func reasonReferred(referrer string) string {
+	return "a row refers to this row through " + referrer + ", which is held within this field"
+}
+
+// withinMoved tells whether an update from before to after changes the field within, or whether the entity cannot
+// read it, which checkWithin refuses.
+func (e *Entity[T]) withinMoved(within string, before, after T) bool {
+	read := e.spec.Within[within]
+	return read == nil || read(before) != read(after)
+}
+
+// withinReader is an entity that reads a within field of its own loaded values; every *Entity[T] is one.
+type withinReader interface {
+	withinOf(ref Ref, field string) (string, bool)
+}
+
+// withinOf reads the field of a loaded value of the entity through EntitySpec.Within.
+func (e *Entity[T]) withinOf(ref Ref, field string) (string, bool) {
+	l, ok := ref.(Loaded[T])
+	if !ok {
+		return "", false
+	}
+	value, _, ok := loaded.Fields(l)
+	read := e.spec.Within[field]
+	if !ok || read == nil {
+		return "", false
+	}
+	return read(value), true
+}
+
+// checkWithin compares, for a reference held within a field, the field of value with the field of the loaded
+// referenced row p, before the row statement (ST-SUP-RP10-LC37). A difference is ErrInvalid that names the
+// reference and writes nothing; a field of value that is not set is not compared, as the composite key does not
+// check it (MATCH SIMPLE). An entity that cannot read the field is a fault of the generated code, an internal error.
+func (r *Repository[T]) checkWithin(value T, ref reference, p rowRef) error {
+	if ref.within == "" {
+		return nil
+	}
+	s, e := r.st, r.entity
+	read := e.spec.Within[ref.within]
+	if read == nil {
+		return s.breakWith(internalf("the entity %s does not read the field %s that its reference %s is held within", e.spec.Name, ref.within, ref.field))
+	}
+	mine := read(value)
+	if mine == "" {
+		return nil
+	}
+	reader, ok := p.entityRef.(withinReader)
+	if !ok {
+		return s.breakWith(internalf("the row that %s.%s refers to is no loaded value of this handle", e.spec.Name, ref.field))
+	}
+	theirs, ok := reader.withinOf(p.value, ref.within)
+	if !ok {
+		return s.breakWith(internalf("the entity %s does not read the field %s that %s.%s is held within", p.entity, ref.within, e.spec.Name, ref.field))
+	}
+	if theirs != mine {
+		return s.breakWith(&invalidError{field: ref.field, reason: reasonWithin(ref.within)})
+	}
+	return nil
+}
+
+// failWrite is fail for the row statement of a create or an update of the entity: a foreign key violation (SQLSTATE
+// 23503) of the composite key of a reference held within a field, from a race or from a write of the referenced
+// row, is ErrInvalid naming the reference, never an internal error and never a run again (ST-SUP-RP10-LC37). The
+// key of a reference of this entity names the reference; the key of a reference of another entity to this one
+// names the field of this entity that it is held within.
+func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) error {
+	s, e := r.st, r.entity
+	var pg *pgconn.PgError
+	if sqlState(err) == "23503" && errors.As(err, &pg) && pg.ConstraintName != "" {
+		for _, ref := range e.spec.Parent {
+			if ref.Key == pg.ConstraintName {
+				return s.breakWith(&invalidError{field: ref.Field, reason: reasonWithin(ref.Within)})
+			}
+		}
+		for _, k := range e.spec.Referrers {
+			if k.Key == pg.ConstraintName {
+				return s.breakWith(&invalidError{field: k.Within, reason: reasonReferred(k.Field)})
+			}
+		}
+	}
+	return s.fail(ctx, step, err)
 }
 
 // moved is one reference that an update moves: the referenced entity, its resource type, the relation, and the old
@@ -1886,6 +2043,13 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 			return nil, err
 		}
 	}
+	// A reference held within a field is compared with its loaded referenced row before the row statement
+	// (ST-SUP-RP10-LC37). A worker's create that gives no parent is held by the composite key alone.
+	for i, p := range rows {
+		if err := r.checkWithin(value, refs[i], p); err != nil {
+			return nil, err
+		}
+	}
 	// Every declared tuple is built and checked before the row statement (ST-SUP-Q118).
 	tuples, err := r.subjects(value, true)
 	if err != nil {
@@ -1897,7 +2061,7 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	}
 	stored, meta, err := e.spec.Scan(row)
 	if err != nil {
-		return nil, s.fail(ctx, "create "+e.spec.Name, scanFailed(err))
+		return nil, r.failWrite(ctx, "create "+e.spec.Name, scanFailed(err))
 	}
 	if len(rows) > 0 {
 		if err := r.relate(ctx, meta.ID, refs, nil); err != nil {
@@ -1962,7 +2126,7 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 		return nil, s.conflict
 	}
 	if err != nil {
-		return nil, s.fail(ctx, step, err)
+		return nil, r.failWrite(ctx, step, err)
 	}
 	// A moved reference moves its relation: the old tuple goes and the new one is written.
 	var touch, drop []reference
