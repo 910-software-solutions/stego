@@ -90,11 +90,9 @@ type docOperation struct {
 	Fill string `yaml:"fill"`
 }
 
-// putDocProjectFiles writes the files of a project that a whole declaration of a user doc names besides its schema:
-// each proto file of the setting proto_files, from the doc's proto block, and the fill.yaml of each fill of a
-// command, query or worker, which implements the slot that stego validate asks for (ST-DECL-INV39, ST-DECL-INV45,
-// ST-DECL-INV68).
-func putDocProjectFiles(t *testing.T, project, doc, text, declaration string, block int) {
+// putDocProtoFiles writes each proto file of the setting proto_files that a whole declaration of a user doc names,
+// from the doc's proto block, and gives the declaration's parts that name other files of the project.
+func putDocProtoFiles(t *testing.T, project, doc, text, declaration string, block int) docDeclaration {
 	t.Helper()
 	var decl docDeclaration
 	if err := yaml.Unmarshal([]byte(declaration), &decl); err != nil {
@@ -107,10 +105,23 @@ func putDocProjectFiles(t *testing.T, project, doc, text, declaration string, bl
 		}
 		putFile(t, project, file.Path, proto[1])
 	}
-	for slot, operations := range map[string][]docOperation{"command.command": decl.Commands, "query.query": decl.Queries, "worker.worker": decl.Workers} {
+	return decl
+}
+
+// createDocFills runs stego fill create, as step 2 of the fill workflow of docs/commands-queries-workers.md gives
+// it, for each fill of a command, query or worker of the declaration, with the slot that stego validate asks for
+// (ST-DECL-INV39, ST-DECL-INV45, ST-DECL-INV68, ST-EXT-UC01-R01).
+func createDocFills(t *testing.T, project, doc string, environment []string, decl docDeclaration, block int) {
+	t.Helper()
+	for _, slot := range []string{"command.command", "query.query", "worker.worker"} {
+		operations := map[string][]docOperation{"command.command": decl.Commands, "query.query": decl.Queries, "worker.worker": decl.Workers}[slot]
 		for _, operation := range operations {
-			if operation.Fill != "" {
-				putFile(t, project, filepath.Join("fills", operation.Fill, "fill.yaml"), "kind: fill\nname: "+operation.Fill+"\nimplements: "+slot+"\n")
+			if operation.Fill == "" {
+				continue
+			}
+			run := stegoIn(t, project, environment, "fill", "create", operation.Fill, "--slot", slot)
+			if run.code != 0 {
+				t.Errorf("%s, YAML block %d: stego fill create %s --slot %s exits %d:\n%s%s", doc, block, operation.Fill, slot, run.code, run.stdout, run.stderr)
 			}
 		}
 	}
@@ -162,12 +173,14 @@ func TestUserDocDeclarations(t *testing.T) {
 					}
 					putFile(t, project, path[1], schema[1])
 				}
-				putDocProjectFiles(t, project, doc, string(data), block[1], i+1)
+				decl := putDocProtoFiles(t, project, doc, string(data), block[1], i+1)
 				git(t, project, "init", "-q")
 				if err := os.MkdirAll(filepath.Join(project, "fills"), 0o755); err != nil {
 					t.Fatal(err)
 				}
-				run := stegoIn(t, project, []string{"STEGO_REGISTRY=" + registry}, "validate")
+				environment := []string{"STEGO_REGISTRY=" + registry}
+				createDocFills(t, project, doc, environment, decl, i+1)
+				run := stegoIn(t, project, environment, "validate")
 				if run.code != 0 {
 					t.Errorf("%s, YAML block %d: stego validate exits %d:\n%s%s", doc, i+1, run.code, run.stdout, run.stderr)
 				}
