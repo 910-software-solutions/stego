@@ -119,6 +119,27 @@ func TestSchemaConversions(t *testing.T) {
 			}
 		})
 	}
+	t.Run("ST-DECL-INV63-T a retype of two integer types with no definition names the definition to give", func(t *testing.T) {
+		// The walkthrough 7 case K12: Line.discount_pct, an int32 of 0 to 100, becomes an int64 of 0 to 100, and the
+		// change leaves its definition out.
+		service := &types.ServiceDeclaration{Entities: []types.Entity{{Name: "Todo", Fields: []types.Field{{Name: "priority", Type: types.FieldTypeInt64, Min: f(0), Max: f(100)}}}},
+			SchemaChanges: []types.SchemaChange{{ID: "todo-priority-retype", Kind: "retype", Entity: "Todo", Field: "priority", From: "int32", Conversion: "integer_to_int64", InverseConversion: "int64_to_integer"}},
+			SchemaHistory: []types.SchemaStep{{Change: "todo-priority-retype", Phase: "expand"}}}
+		faults := ValidateSchemaConversions(service, conversions, true)
+		if len(faults) != 1 || !strings.Contains(faults[0].Message, "the change gives no definition") || !strings.Contains(faults[0].Message, `give the field before the change in definition, such as definition: "int32, min 0, max 100"`) {
+			t.Fatalf("checking gives %v, want one fault that names the definition to give", faults)
+		}
+		// With the definition, the retype passes.
+		service.SchemaChanges[0].Definition = "int32, min 0, max 100"
+		if faults := ValidateSchemaConversions(service, conversions, true); len(faults) != 0 {
+			t.Fatalf("checking refuses the retype with its definition: %v", faults)
+		}
+		// A retype that gives a definition with other bounds is not told to give one.
+		service.SchemaChanges[0].Definition = "int32, min 0, max 50"
+		if faults := ValidateSchemaConversions(service, conversions, true); len(faults) != 1 || strings.Contains(faults[0].Message, "no definition") {
+			t.Fatalf("checking gives %v, want one fault on the bounds that names no missing definition", faults)
+		}
+	})
 	for _, c := range []struct{ name, conversion, inverse, want string }{
 		{"a conversion that the database component does not declare", "text_to_money", "integer_to_text", "text_to_money is not one that the database component declares from string to int32"},
 		{"a conversion of other types", "text_to_int64", "integer_to_text", "text_to_int64 is not one that the database component declares from string to int32"},

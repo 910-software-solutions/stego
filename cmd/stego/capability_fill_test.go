@@ -163,7 +163,7 @@ func TestCapabilityFillQualification(t *testing.T) {
 		p.must(t, "no-key", "plan")
 
 		// A fill that imports its contract with a dot is refused, as it hides the names that its digest counts.
-		p.write(t, "fills/place-order/dot.go", "package place_order\n\nimport . \"example.com/fills/out/commands\"\n\nvar _ PlaceOrderFill\n")
+		p.write(t, "fills/place-order/dot.go", "package placeorder\n\nimport . \"example.com/fills/out/commands\"\n\nvar _ PlaceOrderFill\n")
 		expectRefused(t, p, "place-order", "with a dot")
 		if err := os.Remove(p.path("fills/place-order/dot.go")); err != nil {
 			t.Fatal(err)
@@ -172,7 +172,7 @@ func TestCapabilityFillQualification(t *testing.T) {
 
 		// A Go environment file that filters the tests out does not turn a failing test into evidence, and neither
 		// does a count of 0.
-		p.write(t, "fills/place-order/fail_test.go", "package place_order\n\nimport \"testing\"\n\nfunc TestFails(t *testing.T) { t.Fatal(\"fails\") }\n")
+		p.write(t, "fills/place-order/fail_test.go", "package placeorder\n\nimport \"testing\"\n\nfunc TestFails(t *testing.T) { t.Fatal(\"fails\") }\n")
 		goEnv := filepath.Join(t.TempDir(), "go.env")
 		if err := os.WriteFile(goEnv, []byte("GOFLAGS=-run=^$\n"), 0o600); err != nil {
 			t.Fatal(err)
@@ -192,7 +192,7 @@ func TestCapabilityFillQualification(t *testing.T) {
 		}
 
 		// A test file that imports a module that go.mod does not hold fails: stego test fetches no module for it.
-		p.write(t, "fills/place-order/quote_test.go", "package place_order\n\nimport (\n\t\"testing\"\n\n\t\"rsc.io/quote\"\n)\n\nfunc TestQuote(t *testing.T) { _ = quote.Go() }\n")
+		p.write(t, "fills/place-order/quote_test.go", "package placeorder\n\nimport (\n\t\"testing\"\n\n\t\"rsc.io/quote\"\n)\n\nfunc TestQuote(t *testing.T) { _ = quote.Go() }\n")
 		if stdout, stderr, err := p.stego(t, "no-key", "test"); err == nil || !strings.Contains(stdout, "fill place-order: no evidence recorded") {
 			t.Fatalf("stego test passed a test that imports a module that go.mod does not hold: %v\n%s\n%s", err, stdout, stderr)
 		}

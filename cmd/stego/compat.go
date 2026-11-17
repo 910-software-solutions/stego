@@ -395,6 +395,18 @@ type baseGate struct {
 	newSteps []int
 }
 
+// baseRemedy gives what the author does about the faults of the base check: declare the schema changes that it names
+// when a fault names one, or else correct each fault as its text says, as a base that was changed without stego apply
+// needs no schema change (walkthrough 7, rank 3).
+func baseRemedy(check compiler.BaseCheck) string {
+	for _, fault := range check.Faults {
+		if len(fault.Declare) > 0 {
+			return "declare the schema changes that it names"
+		}
+	}
+	return "correct each fault as its text says"
+}
+
 // checkBaseBeforePlan runs the check against the base for plan and apply (ST-GEN-UC12-R05): against the ref the
 // author names, or the default branch. It reads service.yaml in the working folder, adds the missing add steps to
 // it in memory, and refuses, with the faults, a declaration that the check refuses then. It writes nothing.
@@ -442,7 +454,7 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 	gate.checked = true
 	if check.HasFaults() {
 		fmt.Fprint(stdout, formatBaseCheck(check))
-		return gate, fmt.Errorf("the check against the base ref %s refuses the declaration, so nothing is written: declare the schema changes that it names", gate.ref)
+		return gate, fmt.Errorf("the check against the base ref %s refuses the declaration, so nothing is written: %s", gate.ref, baseRemedy(check))
 	}
 	if check.Released {
 		fmt.Fprintf(stdout, "Base: %s at commit %s; the declaration can run beside it.\n", gate.ref, base.Commit)

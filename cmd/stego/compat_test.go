@@ -94,6 +94,12 @@ func TestCompat(t *testing.T) {
 				t.Errorf("the fault does not name %q:\n%s", want, output)
 			}
 		}
+		// Plan refuses the same base, and its last line asks for no schema change, as the fault needs none
+		// (walkthrough 7, rank 3).
+		stdout, stderr, err := s.stego(t, "plan", "--base", "HEAD")
+		if code := exitCode(t, err); code == 0 || !strings.Contains(stderr, "correct each fault as its text says") || strings.Contains(stdout+stderr, "declare the schema changes") {
+			t.Fatalf("plan gave exit %d, want a refusal that asks to correct each fault and names no schema change:\n%s%s", code, stdout, stderr)
+		}
 	})
 	t.Run("ST-GEN-UC14-R02-T01 With no record at the base ref, any stored shape is accepted", func(t *testing.T) {
 		t.Parallel()

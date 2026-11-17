@@ -719,7 +719,11 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 		}
 		folder := path.Join("out", namespace)
 		// go build follows a link, so a link in the contract package could give the binary code that is not in the
-		// source revision. The folder and each Go file in it must be what they seem, or the contract is refused.
+		// source revision. The out folder, the contract folder and each file in it must be what they seem, or the
+		// contract is refused.
+		if info, err := os.Lstat(filepath.Join(projectDir, "out")); err == nil && !info.IsDir() {
+			return nil, fmt.Errorf("the generated folder out is not a folder")
+		}
 		if info, err := os.Lstat(filepath.Join(projectDir, filepath.FromSlash(folder))); err == nil && !info.IsDir() {
 			return nil, fmt.Errorf("the contract package %s is not a folder", folder)
 		}
@@ -730,11 +734,18 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 		files := map[string][]byte{}
 		for _, entry := range entries {
 			name := entry.Name()
-			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			if entry.IsDir() {
+				// A sub-folder is another package, which go build compiles only when a file imports it.
 				continue
 			}
 			if !entry.Type().IsRegular() {
 				return nil, fmt.Errorf("the contract package %s holds %s, which is not a regular file; go build would compile it, so stego build refuses it", folder, name)
+			}
+			if buildsWithGo(name) {
+				return nil, fmt.Errorf("the contract package %s holds %s, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, name)
+			}
+			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
 			}
 			data, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(folder), name))
 			if err != nil {
@@ -748,6 +759,17 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 		return files, nil
 	}
 	return check
+}
+
+// buildsWithGo tells if go build puts a file of this name in the package it builds, other than a Go file: assembler,
+// cgo sources and headers, SWIG files and system objects (go help packages lists them).
+func buildsWithGo(name string) bool {
+	switch path.Ext(name) {
+	case ".s", ".S", ".sx", ".syso", ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".m", ".f", ".F",
+		".for", ".f90", ".swig", ".swigcxx":
+		return true
+	}
+	return false
 }
 
 // capabilityBindings gives the binding of the fill of each command, query and worker of the declaration that names

@@ -2,6 +2,8 @@ package declaration
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/types"
@@ -75,10 +77,30 @@ func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions ma
 			fault("schema-change-total", ".inverse_conversion", change.InverseConversion, fmt.Sprintf("the inverse conversion %s is not total over the field %s.%s after the change, so a write of the release of the change could fail it; give the field a constraint under which it is total%s", change.InverseConversion, change.Entity, change.Field, at))
 		}
 		if reason := checksKept(before, after); reason != "" && okForward && okInverse {
-			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused%s", change.Entity, change.Field, reason, at))
+			// A retype with no Definition takes the field before the change as its From type alone, with no
+			// constraint, so the author who left the Definition out is told to give it (walkthrough 7, K12).
+			missing := ""
+			integer := func(t types.FieldType) bool { return t == types.FieldTypeInt32 || t == types.FieldTypeInt64 }
+			if strings.TrimSpace(change.Definition) == "" && integer(before.Type) && integer(after.Type) {
+				missing = fmt.Sprintf("; the change gives no definition, so the field before the change is taken as %s with no constraint: give the field before the change in definition, such as definition: \"%s\"", change.From, sideDefinition(change.From, after))
+			}
+			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused%s%s", change.Entity, change.Field, reason, missing, at))
 		}
 	}
 	return faults
+}
+
+// sideDefinition gives an example Definition of a field of the type from with the bounds min and max of field, the
+// form that a retype of two integer types needs.
+func sideDefinition(from string, field types.Field) string {
+	items := []string{from}
+	if field.Min != nil {
+		items = append(items, "min "+strconv.FormatFloat(*field.Min, 'f', -1, 64))
+	}
+	if field.Max != nil {
+		items = append(items, "max "+strconv.FormatFloat(*field.Max, 'f', -1, 64))
+	}
+	return strings.Join(items, ", ")
 }
 
 // checksKept tells why a value that one side of a retype holds could break the CHECK of the column of the other

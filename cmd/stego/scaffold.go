@@ -19,11 +19,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// fillPackageName gives the Go package name of the fill name: the name with no hyphen, as Go names a package in
+// lower case with no underscore, so the fill place-order is the package placeorder (walkthrough 7, B12). An underscore
+// of the fill name stays.
 func fillPackageName(name string) (string, error) {
 	if err := gen.ValidatePath(name); err != nil || strings.Contains(name, "/") {
 		return "", fmt.Errorf("fill name must be one safe path segment: %q", name)
 	}
-	packageName := strings.ReplaceAll(name, "-", "_")
+	packageName := strings.ReplaceAll(name, "-", "")
 	if !token.IsIdentifier(packageName) || packageName == "_" || packageName == "main" {
 		return "", fmt.Errorf("fill name %q does not form a Go package name", name)
 	}
