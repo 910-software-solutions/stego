@@ -26,7 +26,10 @@ platform supplies those values.
   `buildah build --network=none -v "$PWD/modules-copy:/cachi2/output/deps/gomod/pkg/mod" -f Containerfile .`.
   The build stage copies `go.mod`, `go.sum`, the output folder, the `fills` folder when it holds a fill, and each
   folder of the project that a `replace` directive of `go.mod` names with no version (a local module). A local
-  module out of the project folder is not copied, and the plan says so: move it into the project folder.
+  module out of the project folder, in a folder whose name is not plain (a space, or a first `_` or `.`), or in a
+  folder that holds the output folder is not copied, and the plan says so: move it to a plain folder of the
+  project. A module in another local module folder is copied with that folder. After you add a `replace`,
+  `stego deps` runs with no new apply, and the next `stego apply` writes the Containerfile again.
   `stego apply` checks the text that it writes against the offline shape before it writes the file, and the record
   keeps the digest of the file: `stego apply` and `stego drift` refuse a hand edit, so do not edit it. Check out the
   file with LF line ends: a CRLF checkout changes the digest.

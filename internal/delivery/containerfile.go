@@ -55,11 +55,56 @@ const containerHeader = "# The offline Containerfile of the service. stego apply
 
 // ContainerSource is what the build stage copies from the project folder: the folder of the generated output, the
 // entry point of the build, whether the fills folder holds a fill, which the generated code then imports, and the
-// folders of the project that go.mod replaces a module with, which the build reads as stego build does.
+// folders of the project that go.mod replaces a module with, which the build reads as stego build does. Replacements
+// are the paths of the replace directives of go.mod as it gives them; WriteDeployment makes Modules from them
+// (ModuleFolders).
 type ContainerSource struct {
-	OutputDir string
-	Fills     bool
-	Modules   []string
+	OutputDir    string
+	Fills        bool
+	Modules      []string
+	Replacements []string
+}
+
+// moduleNote is the plan line for a local module that the Containerfile does not copy, with the path quoted, so
+// that no text of go.mod can change the line (security review of PR #395, L1).
+const moduleNote = "the Containerfile does not copy the local module %q that go.mod replaces a module with: %s, so the image build cannot read it"
+
+// ModuleFolders gives the folders that the build stage copies for the local module replacements of go.mod, in path
+// order, and a plan line for each replacement that it does not copy as its own folder. A replacement in the output
+// folder, in a copied fills folder or the project folder itself needs no copy of its own. A replacement in another
+// replaced folder is copied with that folder. A replacement out of the project folder, with a name that the
+// Containerfile cannot hold, or that holds the output folder or the fills folder, is not copied, and the line says
+// why, so that apply does not fail on a layout that stego build accepts (security review of PR #395, L2).
+func ModuleFolders(replacements []string, outputDir string, fills bool) ([]string, []string) {
+	copied := []string{outputDir}
+	if fills {
+		copied = append(copied, "fills")
+	}
+	within := func(folder, parent string) bool { return folder == parent || strings.HasPrefix(folder, parent+"/") }
+	var candidates, notes []string
+	for _, given := range replacements {
+		folder := path.Clean(given)
+		switch {
+		case path.IsAbs(given) || strings.ContainsAny(given, "\\:") || folder == ".." || strings.HasPrefix(folder, "../"):
+			notes = append(notes, fmt.Sprintf(moduleNote, given, "it is out of the project folder"))
+		case folder == "." || slices.ContainsFunc(copied, func(c string) bool { return within(folder, c) }):
+		case !sourceFolder.MatchString(folder):
+			notes = append(notes, fmt.Sprintf(moduleNote, given, "its folder is not a relative path of letters, digits, '.', '_' and '-' that starts with a letter or a digit"))
+		case slices.ContainsFunc(copied, func(c string) bool { return within(c, folder) }):
+			notes = append(notes, fmt.Sprintf(moduleNote, given, "its folder holds the output folder or the fills folder, which the Containerfile copies on its own"))
+		case !slices.Contains(candidates, folder):
+			candidates = append(candidates, folder)
+		}
+	}
+	slices.Sort(candidates)
+	var folders []string
+	for _, folder := range candidates {
+		if slices.ContainsFunc(folders, func(parent string) bool { return within(folder, parent) }) {
+			continue
+		}
+		folders = append(folders, folder)
+	}
+	return folders, notes
 }
 
 // sourceFolder is a folder of the project that the Containerfile names: a relative path of plain names, so that no

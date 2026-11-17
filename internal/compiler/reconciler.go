@@ -113,6 +113,22 @@ func (p *Plan) hasOutputChanges() bool {
 	return false
 }
 
+// hasCodeChanges tells whether the plan changes a file that comes from the declaration, which module resolution
+// waits for (ST-BLD-UC01-R03). The offline Containerfile is left out: it also copies the local module folders that
+// go.mod replaces a module with, so a replace directive that the service author adds before stego deps changes it,
+// with no change of the declaration. The next apply writes it.
+func (p *Plan) hasCodeChanges() bool {
+	if len(p.EntityChanges) > 0 {
+		return true
+	}
+	for _, f := range p.Files {
+		if f.Action != ActionUnchanged && f.Path != ContainerFile {
+			return true
+		}
+	}
+	return false
+}
+
 // ReconcilerInput gathers everything needed to compute a plan.
 type ReconcilerInput struct {
 	// ProjectDir is the root of the project (where service.yaml lives).
@@ -527,19 +543,13 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 				moduleFile = file.Content
 			}
 		}
-		modules, outside, err := localModuleFolders(moduleFile, filepath.ToSlash(outDirName), resolved.HoldsFills)
+		modules, err := localModuleReplacements(moduleFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading the local module replacements of go.mod: %w", err)
 		}
 		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, modules, schemaDigest(allFiles, runtime))
 		if err != nil {
 			return nil, err
-		}
-		for _, replacement := range outside {
-			if !slices.ContainsFunc(files, func(file gen.File) bool { return file.Path == ContainerFile }) {
-				break
-			}
-			written = append(written, fmt.Sprintf("the Containerfile does not copy the local module %s that go.mod replaces a module with: it is out of the project folder, so the image build cannot read it", replacement))
 		}
 		allFiles = append(allFiles, files...)
 		notes = written
@@ -755,8 +765,9 @@ type DeploymentInput struct {
 	// Containerfile copies both (ST-DLV-INV07).
 	OutputDir  string
 	HoldsFills bool
-	// LocalModules are the folders of the project that go.mod replaces a module with, which the offline
-	// Containerfile copies too (localModuleFolders).
+	// LocalModules are the paths, as go.mod gives them, that go.mod replaces a module with (a replace directive
+	// with no version), which the offline Containerfile copies when they are folders of the project
+	// (localModuleReplacements).
 	LocalModules []string
 	// Release is the digest of the schema of the release, in hex (schemaDigest), which names the migration Job of
 	// the base (ST-DLV-UC07-R06).

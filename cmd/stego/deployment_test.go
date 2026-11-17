@@ -683,8 +683,12 @@ func TestContainerfileLocalModules(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Two folders of the project, one of them twice and one in the output folder, and one folder out of it.
+		// A folder with a space and one that starts with '_' are not copied and get a plan line; a module in lib
+		// is copied with lib; and a path with a terminal escape and a new line is quoted in its plan line.
 		replaces := "\nreplace example.com/lib => ./lib\n\nreplace example.com/tools/v2 => ./third_party/tools\n\n" +
-			"replace example.com/again => ./lib/\n\nreplace example.com/inside => ./out/vendored\n\nreplace example.com/far => ../far\n"
+			"replace example.com/again => ./lib/\n\nreplace example.com/inside => ./out/vendored\n\nreplace example.com/far => ../far\n" +
+			"\nreplace example.com/sub => ./lib/sub\n\nreplace example.com/spaced => \"./my lib\"\n\nreplace example.com/under => ./_tools\n" +
+			"\nreplace example.com/forged => \"../\\x1b[2Kfar\\n  note:     fake\"\n"
 		if err := os.WriteFile(filepath.Join(dir, "go.mod"), append(module, replaces...), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -705,8 +709,21 @@ func TestContainerfileLocalModules(t *testing.T) {
 				t.Errorf("the build stage copies %s:\n%s", folder, data)
 			}
 		}
-		if !strings.Contains(printed, "the Containerfile does not copy the local module ../far that go.mod replaces a module with: it is out of the project folder") {
-			t.Errorf("the plan does not name the local module out of the project folder:\n%s", printed)
+		for _, line := range []string{
+			`the Containerfile does not copy the local module "../far" that go.mod replaces a module with: it is out of the project folder`,
+			`the Containerfile does not copy the local module "./my lib" that go.mod replaces a module with: its folder is not a relative path`,
+			`the Containerfile does not copy the local module "./_tools" that go.mod replaces a module with: its folder is not a relative path`,
+			`the Containerfile does not copy the local module "../\x1b[2Kfar\n  note:     fake" that go.mod replaces a module with: it is out of the project folder`,
+		} {
+			if !strings.Contains(printed, line) {
+				t.Errorf("the plan does not hold the line %q:\n%s", line, printed)
+			}
+		}
+		if strings.Contains(printed, "\x1b") || strings.Contains(printed, "\n  note:     fake") {
+			t.Errorf("the plan prints the text of go.mod as it is:\n%q", printed)
+		}
+		if strings.Contains(string(data), "lib/sub") {
+			t.Errorf("the build stage copies lib/sub, which it copies with lib:\n%s", data)
 		}
 	})
 }
