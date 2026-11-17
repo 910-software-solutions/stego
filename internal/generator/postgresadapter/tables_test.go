@@ -192,7 +192,9 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 		{boardRenameContract("boardsrnc", "boardsrnctenancy"), "boardsrnc_access.json"},
 		{boardRetypeBase("boardsrtbase", "boardsrtbasetenancy"), "boardsrtbase_access.json"}, {boardRetype("boardsrt", "boardsrttenancy"), "boardsrt_access.json"},
 		{boardRetypeContract("boardsrtc", "boardsrtctenancy"), "boardsrtc_access.json"},
-		{relaxBase("boardsrxbase", "boardsrxbasetenancy"), "boardsrxbase_access.json"}, {relaxHead("boardsrx", "boardsrxtenancy"), "boardsrx_access.json"}} {
+		{relaxBase("boardsrxbase", "boardsrxbasetenancy"), "boardsrxbase_access.json"}, {relaxHead("boardsrx", "boardsrxtenancy"), "boardsrx_access.json"},
+		{withinBase("withinbase", "withinbasetenancy"), "withinbase_access.json"}, {withinHead("within", "withintenancy"), "within_access.json"},
+		{withinFresh("withinfresh", "withinfreshtenancy"), "withinfresh_access.json"}} {
 		// The adapter names the roles of the tenancy component in the migration of a step.
 		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
 		files, wiring, err := new(postgresadapter.Generator).Generate(service.ctx)
@@ -443,6 +445,8 @@ func TestTables(t *testing.T) {
 	})
 
 	t.Run("ST-GEN-UC12-R02-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-GEN-UC12-R02-T02") })
+	t.Run("ST-SUP-RC01-OC46-T01 on PostgreSQL", func(t *testing.T) { onSteps(t, "ST-SUP-RC01-OC46-T01") })
+	t.Run("ST-SUP-RC01-OC46-T02 on PostgreSQL", func(t *testing.T) { onSteps(t, "ST-SUP-RC01-OC46-T02") })
 	t.Run("ST-SUP-RC01-OC23-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T01") })
 	t.Run("ST-SUP-RC01-OC25-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC25-T01") })
 	t.Run("ST-SUP-RC01-OC23-T05 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC23-T05") })
