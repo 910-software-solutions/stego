@@ -109,8 +109,17 @@ func TestProbeSinks(t *testing.T) {
 		release := stdout.hold()
 		emitCalls(r, event, 500)
 		stdout.waitEntered(t)
+		// The limit of Close tells the test that Close started its drain, so the test lets standard output go only
+		// while Close waits for it (review of PR #391, L4). The limit has no end here: the drain completes.
+		started := make(chan struct{})
+		var open deadlineFunc = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+			close(started)
+			return context.WithCancel(parent)
+		}
+		r.deadline = &open
 		drained := make(chan error, 1)
 		go func() { drained <- r.Close(context.Background()) }()
+		<-started
 		release()
 		if err := <-drained; err != nil {
 			t.Fatal(err)
