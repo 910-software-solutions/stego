@@ -96,6 +96,9 @@ func statesPlace(component *Component) *PlaceError {
 			return fault("architecture.ports."+name, "the component neither provides nor requires the port %s", name)
 		}
 	}
+	if len(role.Serves) > 0 && role.Layer != "handler" {
+		return fault("architecture.serves", "only a component of the handler layer serves a kind of operation; the component is of the layer %s", role.Layer)
+	}
 	for i, kind := range role.Serves {
 		if !slices.Contains(ServedKinds, kind) {
 			return fault("architecture.serves", "the kind %q is not one of %s", kind, strings.Join(ServedKinds, ", "))

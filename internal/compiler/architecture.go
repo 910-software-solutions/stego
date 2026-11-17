@@ -279,6 +279,15 @@ func (d *deriver) servedKinds() error {
 			return &ArchitectureRefusal{fmt.Errorf("the service has %s, and no component of the active set states in architecture.serves that their request flows start at it", kind)}
 		}
 	}
+	// The derivation knows the request path of the capability components alone, so a command, a query or a worker
+	// flow starts only at command, query or worker; another component that states it serves them is refused, as
+	// plannedReads refuses a collection handler other than rest-api (security review of #404, M1).
+	for kind, name := range map[string]string{"commands": commandComponent, "queries": queryComponent, "workers": workerComponent} {
+		if c := d.servers[kind]; c != nil && c.Name != name {
+			return &ArchitectureRefusal{fmt.Errorf("the component %s states in architecture.serves that the %s start at it, and the derivation knows the request path of the component %s alone; it cannot state how %s authenticates and authorizes them, so it builds no model",
+				c.Name, kind, name, c.Name)}
+		}
+	}
 	d.handler = d.servers["collection operations"]
 	// The component that serves a kind of operation of the service is bound to a repository, through which its
 	// flows pass (ST-GEN-Q45 (b), ST-GEN-UC08-R05).

@@ -79,15 +79,23 @@ func archFixture(t *testing.T) ArchitectureInput {
 		registry.SlotDefinition{Name: "after_create", Phase: "after_store", Operations: []string{"create"}},
 		registry.SlotDefinition{Name: "validate", Phase: "before_store", Operations: []string{"create", "update"}})
 	api.Config = map[string]types.ConfigField{"expose": {Type: "list"}}
-	// The handler of the small service serves each kind of operation, so a test can add a query or a worker
-	// (ST-GEN-Q44 (A)).
-	api.Architecture.Serves = slices.Clone(registry.ServedKinds)
+	// rest-api serves the collection operations, and the capability components serve the commands, queries and
+	// workers, so a test can add a query or a worker (ST-GEN-Q44 (A), ST-GEN-Q45 (b)).
+	api.Architecture.Serves = []string{"collection operations"}
+	capability := func(name, kind string) *registry.Component {
+		c := archComponent(name, "handler", []string{"storage-adapter"}, nil)
+		c.Architecture.Serves = []string{kind}
+		return c
+	}
 	store := archComponent("store", "repository", nil, []string{"storage-adapter"})
 	store.Architecture.Store = "DocsDB"
 	components := map[string]*registry.Component{
 		"rest-api": api,
 		"auth":     archComponent("auth", "authentication", nil, []string{"auth-provider"}),
 		"store":    store,
+		"command":  capability("command", "commands"),
+		"query":    capability("query", "queries"),
+		"worker":   capability("worker", "workers"),
 		"outbox":   archComponent("outbox", "repository", nil, []string{"durable-outbox"}),
 		"events":   archComponent("events", "outside call", []string{"durable-outbox"}, []string{"event-publisher"}),
 	}
@@ -111,7 +119,7 @@ func archFixture(t *testing.T) ArchitectureInput {
 	wiring := &gen.Wiring{Constructors: []string{"api.NewDocsHandler(store)"}, ConstructorCollections: map[int]string{0: "docs"},
 		Routes: []string{`mux.HandleFunc("POST /v1/docs", docsHandler.Create)`, `mux.HandleFunc("GET /v1/docs/{id}", docsHandler.Read)`}}
 	return ArchitectureInput{Service: service, Archetype: &registry.Archetype{Name: "arch", Version: "2.0.0", Bindings: map[string]string{"auth-provider": "auth"}},
-		Components: components, Names: []string{"rest-api", "auth", "store", "outbox", "events"}, Wirings: []ComponentWiring{{Name: "rest-api", Wiring: wiring}}, Schema: schema}
+		Components: components, Names: []string{"rest-api", "auth", "store", "outbox", "events", "command", "query", "worker"}, Wirings: []ComponentWiring{{Name: "rest-api", Wiring: wiring}}, Schema: schema}
 }
 
 // nestedFixtureSchema is the schema of archFixture with a shelf, whose keeper may view it.
@@ -261,7 +269,7 @@ func TestArchitectureDeterminism(t *testing.T) {
 			// The maps of the declaration and of the registry parts are given anew, so they iterate in another
 			// order; the registry parts are also given as new values.
 			reordered := map[string]*registry.Component{}
-			for _, name := range []string{"events", "outbox", "store", "auth", "rest-api"} {
+			for _, name := range []string{"worker", "events", "query", "outbox", "store", "command", "auth", "rest-api"} {
 				reordered[name] = in.Components[name]
 			}
 			in.Components = reordered
@@ -563,9 +571,21 @@ func TestArchitectureRefusals(t *testing.T) {
 			}, []string{"mixin extra", "slots[on_change].phase"}},
 			// The kinds of operation and the store (ST-GEN-Q44 (A)).
 			{"no component that serves the command", func(in ArchitectureInput) {
-				in.Components["rest-api"].Architecture.Serves = []string{"collection operations"}
+				in.Components["command"].Architecture.Serves = nil
 			}, []string{"the service has commands", "architecture.serves"}},
+			// Only command, query and worker serve their kinds: the derivation knows no other request path
+			// (security review of #404, M1).
+			{"another component that serves the commands", func(in ArchitectureInput) {
+				in.Components["command"].Architecture.Serves = nil
+				in.Components["rest-api"].Architecture.Serves = []string{"collection operations", "commands"}
+			}, []string{"the component rest-api states in architecture.serves that the commands start at it", "the component command alone"}},
+			{"another component that serves the workers", func(in ArchitectureInput) {
+				in.Components["worker"].Architecture.Serves = nil
+				in.Components["auth"].Architecture.Layer = "handler"
+				in.Components["auth"].Architecture.Serves = []string{"workers"}
+			}, []string{"the component auth states in architecture.serves that the workers start at it"}},
 			{"two components that serve the collections", func(in ArchitectureInput) {
+				in.Components["auth"].Architecture.Layer = "handler"
 				in.Components["auth"].Architecture.Serves = []string{"collection operations"}
 			}, []string{"the components rest-api and auth", "collection operations", "one component serves each kind"}},
 			{"a repository with no store", func(in ArchitectureInput) { in.Components["store"].Architecture.Store = "" }, []string{"component store", "architecture.store"}},
@@ -1646,9 +1666,9 @@ func TestArchitectureActionFlows(t *testing.T) {
 			kinds[f.ID] = strings.Join(parts, ", ")
 		}
 		for id, want := range map[string]string{
-			"flow:command.archive": "operation command:archive, authenticate component:auth, authorize check:command:archive, handle component:rest-api, fill fill:archiver, repository component:store, store component:store, outbox component:outbox, event component:events, outside call component:events",
-			"flow:query.recent":    "operation query:recent, authenticate component:auth, authorize check:query:recent, handle component:rest-api, fill fill:reader, repository component:store, store component:store",
-			"flow:worker.sweeper":  "operation worker:sweeper, authorize check:worker:sweeper, handle component:rest-api, fill fill:sweep, repository component:store, store component:store, outbox component:outbox, event component:events",
+			"flow:command.archive": "operation command:archive, authenticate component:auth, authorize check:command:archive, handle component:command, fill fill:archiver, repository component:store, store component:store, outbox component:outbox, event component:events, outside call component:events",
+			"flow:query.recent":    "operation query:recent, authenticate component:auth, authorize check:query:recent, handle component:query, fill fill:reader, repository component:store, store component:store",
+			"flow:worker.sweeper":  "operation worker:sweeper, authorize check:worker:sweeper, handle component:worker, fill fill:sweep, repository component:store, store component:store, outbox component:outbox, event component:events",
 		} {
 			if kinds[id] != want {
 				t.Errorf("the flow %s is\n%s\nwant\n%s", id, kinds[id], want)
@@ -1669,6 +1689,47 @@ func TestArchitectureActionFlows(t *testing.T) {
 					t.Errorf("the fill step of %s is in the layer %s", f.ID, s.Layer)
 				}
 			}
+		}
+	})
+}
+
+func TestArchitectureUnknownHandler(t *testing.T) {
+	t.Run("ST-GEN-UC08-R05-T03 For a collection handler other than rest-api the flows state no authentication step, and the registry refuses serves outside the handler layer", func(t *testing.T) {
+		// A service with no resource type may have its collections served by another handler (plannedReads); the
+		// derivation does not know how it authenticates, so it states no step for it (security review of #404, L1).
+		in := archFixture(t)
+		in.Service.Authorization = nil
+		in.Service.Entities[0].ResourceType, in.Service.Entities[0].Permissions, in.Service.Entities[0].PublicReasons = "", nil, nil
+		in.Service.Commands = nil
+		api := in.Components["rest-api"]
+		delete(in.Components, "rest-api")
+		api.Name = "other-api"
+		in.Components["other-api"] = api
+		in.Names[slices.Index(in.Names, "rest-api")] = "other-api"
+		in.Wirings[0].Name = "other-api"
+		model, _ := deriveFixture(t, in)
+		if len(model.Flows) == 0 {
+			t.Fatal("the model holds no flow")
+		}
+		for _, f := range model.Flows {
+			for _, s := range f.Steps {
+				if s.Kind == "authenticate" {
+					t.Errorf("the flow %s of the handler other-api states the authentication step %s", f.ID, s.Element)
+				}
+			}
+		}
+		// The same service with rest-api states the authentication of its bound provider.
+		in = archFixture(t)
+		model, _ = deriveFixture(t, in)
+		if !slices.ContainsFunc(model.Flows[0].Steps, func(s ArchStep) bool { return s.Kind == "authenticate" }) {
+			t.Error("the flows of rest-api state no authentication step")
+		}
+		// serves outside the handler layer is refused (security review of #404, L2).
+		in = archFixture(t)
+		in.Components["store"].Architecture.Serves = []string{"queries"}
+		var refusal *ArchitectureRefusal
+		if _, err := WriteArchitecture(in); !errors.As(err, &refusal) || !strings.Contains(err.Error(), "only a component of the handler layer serves") {
+			t.Errorf("serves on a repository is not refused: %v", err)
 		}
 	})
 }

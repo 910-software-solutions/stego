@@ -68,8 +68,15 @@ func (d *deriver) flows() {
 		}
 		step("operation", op.ID, "", text, "sync", op.Source)
 		// Authentication: the providers bound to the handler's ports first, then each other component of the layer.
+		// The derivation knows how rest-api authenticates a request; for another handler, which plannedReads admits
+		// only for a service with no resource type, the model states no authentication step that it cannot know
+		// (security review of #404, L1).
 		seen := map[string]bool{}
+		known := h.Name == restAPIComponent
 		for _, p := range h.Requires {
+			if !known {
+				break
+			}
 			if c, binding := d.provider(h.Name, p.Name); c != nil && c.Architecture.Layer == "authentication" {
 				seen[c.Name] = true
 				n := step("authenticate", componentID(c.Name), binding.Port, c.Architecture.Flow, "sync", componentSource(c, "architecture"))
@@ -77,7 +84,7 @@ func (d *deriver) flows() {
 			}
 		}
 		for _, c := range d.byLayer("authentication") {
-			if !seen[c.Name] {
+			if known && !seen[c.Name] {
 				step("authenticate", componentID(c.Name), "", c.Architecture.Flow, "sync", componentSource(c, "architecture"))
 			}
 		}
