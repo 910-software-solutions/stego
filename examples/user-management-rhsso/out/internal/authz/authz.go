@@ -44,7 +44,9 @@ definition member {
 	relation organization: organization
 	relation owner: user
 	permission view = owner + organization->view
-	permission edit = owner + organization->edit
+	// The routes of a member name its organization, and decide only on the member (ST-SUP-RC20-OC24): an owner of a
+	// member who may not view its organization may not change it.
+	permission edit = (owner + organization->edit) & organization->view
 }
 
 definition org_setting {
