@@ -26,7 +26,9 @@ var methodName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0
 // validateGRPCMethods checks the gRPC method of each command and query (ST-DECL-INV73): a command's Method names a
 // unary method, and a query's Method a unary method or a server stream, of a service in a proto file that the
 // grpc-application component declares; a Method is given only when that component is active (facts.GRPCMethods is
-// not nil), and no two commands or queries name the same Method. Each fault names the method.
+// not nil), and no two commands or queries name the same Method. Each fault names the method. When the component set
+// did not resolve (facts.ComponentsUnresolved), it gives no fault for a missing component: the resolution fault names
+// the cause.
 func validateGRPCMethods(service *types.ServiceDeclaration, facts Facts) []ValidationError {
 	type operation struct {
 		kind, name, path, method string
@@ -51,6 +53,9 @@ func validateGRPCMethods(service *types.ServiceDeclaration, facts Facts) []Valid
 		}
 		kind, declared := facts.GRPCMethods[op.method]
 		switch {
+		case facts.GRPCMethods == nil && facts.ComponentsUnresolved:
+			// The component set did not resolve, so it is not known whether grpc-application is active.
+			continue
 		case facts.GRPCMethods == nil:
 			fault("needs the grpc-application component; add the component or remove the method")
 			continue

@@ -31,7 +31,7 @@ const CSRFHeader="X-CSRF-Token"
 type asset struct{Source,Path,Hash string}
 type configuration struct{DynamicStyles bool;RuntimeConfigOffset int;Prefix,RolesClaim,LogoutScope,TelemetryService,OAuthScope string;Routes []string;Assets []asset;ScriptHashes []string}
 type options struct{Origin,Upstream,UpstreamCA,Issuer,IssuerCA,ClientID,SecretFile,KeyFile string}
-type Backend struct{ {{if .LocalApplication}}sockets socketSet;{{end}}telemetryMu sync.Mutex;telemetryLimits map[string]telemetryBucket;store *sessionStore;provider *oauthProvider;upstream *client.Client;origin *url.URL;config configuration;logoutTarget,logoutOrigin string;routes []*regexp.Regexp;close sync.Once;permits chan struct{}}
+type Backend struct{ {{if .LocalApplication}}sockets socketSet;{{end}}telemetryMu sync.Mutex;telemetryLimits map[string]telemetryBucket;store *sessionStore;provider *oauthProvider;upstream *client.Client;waits chan struct{};origin *url.URL;config configuration;logoutTarget,logoutOrigin string;routes []*regexp.Regexp;close sync.Once;permits chan struct{}}
 
 // NewBrowserBackendWithTelemetry binds startup to the process telemetry runtime.
 // Generated assembly closes the backend before it closes that runtime.
@@ -93,7 +93,7 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
  err=startupStep(ctx,telemetry.StartupBrowserAuthorization,func(context.Context)error{
   authorization,_:=httpsURL(provider.metadata.Authorization);if cookieHost(authorization)==cookieHost(origin){return errors.New("browser authorization requires a separate HTTPS cookie host")};return nil
  });if err!=nil{provider.close();upstream.Close();return nil,err}
- b:=&Backend{store:store,provider:provider,upstream:upstream,origin:origin,permits:make(chan struct{},client.MaxConcurrentRequests)}
+ b:=&Backend{store:store,provider:provider,upstream:upstream,origin:origin,permits:make(chan struct{},client.MaxConcurrentRequests),waits:make(chan struct{},MaxWaitingReads)}
  err=startupStep(ctx,telemetry.StartupBrowserRoutes,func(context.Context)error{
   if json.Unmarshal([]byte(generatedConfiguration),&b.config)!=nil{return errors.New("invalid generated browser configuration")}
   if b.config.LogoutScope=="identity_provider"{var err error;b.logoutTarget,b.logoutOrigin,err=provider.logoutTarget(origin);if err!=nil{return err}}
