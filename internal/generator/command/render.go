@@ -530,6 +530,11 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 			if term.Op != types.ListEquals || field.decl.Type != types.FieldTypeRef || term.Param != "" || term.Value != nil || term.Now {
 				return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: a parent term needs a reference field and equals, and no value", list.Name, term.Field)
 			}
+			if byName[field.decl.To].ResourceType == "" {
+				// The decided parent row is a row of an entity with a resource type (ST-DECL-INV94); the handle
+				// cannot decide a row of another entity.
+				return ListPlan{}, fmt.Errorf("command: the list %s, the term on %s: a parent term needs a reference to an entity with a resource type, and %s has none (ST-DECL-INV94)", list.Name, term.Field, field.decl.To)
+			}
 			value = fmt.Sprintf("command.ListValue{Parent: %q}", field.decl.To)
 			plan.Parents = append(plan.Parents, field.decl.To)
 			plan.Params = append(plan.Params, ListParam{Name: term.Field, GoName: paramName(strings.TrimSuffix(term.Field, "_id")), GoType: "Loaded" + field.decl.To})

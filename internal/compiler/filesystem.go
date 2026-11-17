@@ -128,7 +128,16 @@ func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, 
 		return err
 	}
 	if replace {
-		return root.Rename(temporary, name)
+		err = root.Rename(temporary, name)
+	} else {
+		err = root.Link(temporary, name)
 	}
-	return root.Link(temporary, name)
+	if err == nil && publishedFault != nil {
+		err = publishedFault(name)
+	}
+	return err
 }
+
+// publishedFault is nil in a product build. A test sets it to make the write of a file fail after the file is
+// there, as when the removal of the temporary file fails.
+var publishedFault func(name string) error

@@ -200,8 +200,8 @@ func TestRunFillCreate(t *testing.T) {
 	if !strings.Contains(string(ifaceData), "BeforeCreateSlot") {
 		t.Error("fill.go should contain BeforeCreateSlot interface")
 	}
-	if !strings.Contains(string(ifaceData), "package my_policy") {
-		t.Error("fill.go should have sanitized package name my_policy")
+	if !strings.Contains(string(ifaceData), "package mypolicy") {
+		t.Error("fill.go should have package name mypolicy, the fill name with no hyphen")
 	}
 }
 
