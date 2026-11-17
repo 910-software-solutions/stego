@@ -1,0 +1,11 @@
+# The smallest declaration of a browser-service that checking accepts (ST-DECL-UC01-R04): an API prefix, the root
+# route and the index page. Change each part to the application you build.
+kind: service
+name: {{service}}
+archetype: browser-service
+language: go
+overrides:
+  browser-backend:
+    api_prefix: /api/{{service}}
+    routes: [/]
+    assets: [{source: ui/index.html, path: /index.html}]

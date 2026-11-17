@@ -13,7 +13,8 @@ func td02Idempotency(t *testing.T, requiredOn string) *types.ServiceDeclaration 
 	t.Helper()
 	data := strings.Replace(td02Fields, "%s", "      - {name: title, type: string, min_length: 1, max_length: 255}\n      - {name: done, type: bool, default: false}", 1)
 	data = strings.Replace(data, "operations: [create, read, update, delete, list]", "operations: [create, read, update, delete, list, patch]\n    patchable: [title, done]", 1)
-	data += "idempotency:\n  required_on: [" + requiredOn + "]\n"
+	// The problem base that idempotency needs (ST-DECL-INV83).
+	data += "error_type_base: https://errors.example.com/todo/\nidempotency:\n  required_on: [" + requiredOn + "]\n"
 	service, undeclared, err := parser.ReadServiceDeclaration([]byte(data), "service.yaml")
 	if err != nil || len(undeclared) != 0 {
 		t.Fatalf("read the declaration: %v %v", err, undeclared)
@@ -80,7 +81,7 @@ func TestIdempotencyOnIgnoredMethod(t *testing.T) {
 func td02IdempotencyValues(t *testing.T, lines string) *types.ServiceDeclaration {
 	t.Helper()
 	data := strings.Replace(td02Fields, "%s", "      - {name: title, type: string, min_length: 1, max_length: 255}\n      - {name: done, type: bool, default: false}", 1)
-	data += "idempotency:\n  required_on: [create]\n" + lines
+	data += "error_type_base: https://errors.example.com/todo/\nidempotency:\n  required_on: [create]\n" + lines
 	service, undeclared, err := parser.ReadServiceDeclaration([]byte(data), "service.yaml")
 	if err != nil || len(undeclared) != 0 {
 		t.Fatalf("read the declaration: %v %v", err, undeclared)

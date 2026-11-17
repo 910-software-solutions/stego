@@ -1,14 +1,41 @@
 package compiler
 
-import "bytes"
+import (
+	"bytes"
+	"fmt"
+)
 
-func writeDatabaseConfiguration(buf *bytes.Buffer) {
+// writeDatabaseConfiguration reads the connection string of the main.go pool. A refused setting gives the stage
+// service.start.setting.<component>.<variable>, as the runtime names it (ST-SUP-RP14-LC05), where component is the
+// component that supplies the database opener, read from the wiring; with no such component the stage has no
+// component.
+func writeDatabaseConfiguration(buf *bytes.Buffer, component string) {
+	prefix := "service.start.setting."
+	if componentName.MatchString(component) {
+		prefix += component + "."
+	}
 	buf.WriteString("\tstegoStage = \"database.configure\"\n")
-	buf.WriteString("\tdsn, err := stegoDatabaseURL()\n\tif err != nil { return err }\n")
+	fmt.Fprintf(buf, "\tdsn, err := stegoDatabaseURL()\n\tif err != nil {\n\t\tstegoStage = stegoDatabaseStage(%q)\n\t\treturn err\n\t}\n", prefix)
 }
 
 // The process reads database secrets before it creates a pool or a listener.
+// A refused setting names its variable in the stage, as the runtime names it
+// (ST-SUP-RP14-LC05), and never its value.
 const databaseConfigSource = `
+
+// stegoDatabaseStage names the setting that stegoDatabaseURL refused, after
+// prefix: both settings when both are set, the file form when only it is
+// set, else DATABASE_URL. It reads no value.
+func stegoDatabaseStage(prefix string) string {
+ url, file := os.Getenv("DATABASE_URL") != "", os.Getenv("DATABASE_URL_FILE") != ""
+ switch {
+ case url && file:
+  return prefix + "DATABASE_URL+DATABASE_URL_FILE"
+ case file:
+  return prefix + "DATABASE_URL_FILE"
+ }
+ return prefix + "DATABASE_URL"
+}
 
 func stegoDatabaseURL() (string,error) {
  value:=os.Getenv("DATABASE_URL")

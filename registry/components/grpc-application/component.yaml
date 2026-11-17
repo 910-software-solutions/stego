@@ -6,8 +6,10 @@ version: 2.1.0
 stage: ga
 output_namespace: grpcapi
 config:
+  # Every declaration gives its proto files: the archetype's example content holds one (ST-DECL-INV90).
   proto_files:
     type: list
+    author_supplied: true
     items:
       path:
         type: string

@@ -37,8 +37,8 @@ type registrySnapshot struct {
 	hash        string
 }
 
-// Capture only YAML and protobuf input files. Other regular files are not
-// compiler inputs. Git metadata is excluded. All reads remain inside the root.
+// Capture only YAML and protobuf input files, and the template files of an archetype's example content
+// (exampleFile). Other regular files are not compiler inputs. Git metadata is excluded. All reads remain inside the root.
 func captureRegistry(dir string, keepData bool) (*registrySnapshot, error) {
 	return captureRegistryBounded(dir, keepData, maxRegistryBytes, maxRegistryFiles)
 }
@@ -110,7 +110,7 @@ func captureRegistryBounded(dir string, keepData bool, byteLimit int64, fileLimi
 				if !info.Mode().IsRegular() {
 					return fmt.Errorf("registry input must be a regular file: %s", relative)
 				}
-				if extension := path.Ext(relative); extension != ".yaml" && extension != ".proto" {
+				if extension := path.Ext(relative); extension != ".yaml" && extension != ".proto" && !exampleFile(relative) {
 					continue
 				}
 				if len(snapshot.files) >= fileLimit {
