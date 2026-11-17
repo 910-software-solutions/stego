@@ -674,3 +674,85 @@ func TestDeliveryStanzaChecks(t *testing.T) {
 		}
 	})
 }
+
+func TestContainerfileLocalModules(t *testing.T) {
+	t.Run("ST-DLV-UC03-R04-T05 Apply copies each local module folder that go.mod replaces a module with into the build stage, and names a replacement out of the project", func(t *testing.T) {
+		dir, env, _ := appliedBase(t)
+		module, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Two folders of the project, one of them twice and one in the output folder, and one folder out of it.
+		// A folder with a space and one that starts with '_' are not copied and get a plan line; a module in lib
+		// is copied with lib; and a path with a terminal escape and a new line is quoted in its plan line.
+		replaces := "\nreplace example.com/lib => ./lib\n\nreplace example.com/tools/v2 => ./third_party/tools\n\n" +
+			"replace example.com/again => ./lib/\n\nreplace example.com/inside => ./out/vendored\n\nreplace example.com/far => ../far\n" +
+			"\nreplace example.com/sub => ./lib/sub\n\nreplace example.com/spaced => \"./my lib\"\n\nreplace example.com/under => ./_tools\n" +
+			"\nreplace example.com/forged => \"../\\x1b[2Kfar\\n  note:     fake\"\n"
+		if err := os.WriteFile(filepath.Join(dir, "go.mod"), append(module, replaces...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		printed := mustRunInProject(t, dir, env, "apply")
+		data, err := os.ReadFile(filepath.Join(dir, delivery.ContainerFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := delivery.LoadContainerfile(data); err != nil {
+			t.Fatalf("the Containerfile with the local module folders does not read back: %v", err)
+		}
+		want := "COPY go.mod go.sum ./\nCOPY out/ ./out/\nCOPY lib/ ./lib/\nCOPY third_party/tools/ ./third_party/tools/\nRUN "
+		if !strings.Contains(string(data), want) {
+			t.Errorf("the build stage does not copy the output folder and then each local module folder once, in path order:\n%s", data)
+		}
+		for _, folder := range []string{"out/vendored", "far"} {
+			if strings.Contains(string(data), "COPY "+folder) || strings.Contains(string(data), "COPY ../") {
+				t.Errorf("the build stage copies %s:\n%s", folder, data)
+			}
+		}
+		for _, line := range []string{
+			`the Containerfile does not copy the local module "../far" that go.mod replaces a module with: it is out of the project folder`,
+			`the Containerfile does not copy the local module "./my lib" that go.mod replaces a module with: its folder is not a relative path`,
+			`the Containerfile does not copy the local module "./_tools" that go.mod replaces a module with: its folder is not a relative path`,
+			`the Containerfile does not copy the local module "../\x1b[2Kfar\n  note:     fake" that go.mod replaces a module with: it is out of the project folder`,
+		} {
+			if !strings.Contains(printed, line) {
+				t.Errorf("the plan does not hold the line %q:\n%s", line, printed)
+			}
+		}
+		if strings.Contains(printed, "\x1b") || strings.Contains(printed, "\n  note:     fake") {
+			t.Errorf("the plan prints the text of go.mod as it is:\n%q", printed)
+		}
+		if strings.Contains(string(data), "lib/sub") {
+			t.Errorf("the build stage copies lib/sub, which it copies with lib:\n%s", data)
+		}
+	})
+}
+
+func TestDeployFolderLink(t *testing.T) {
+	t.Run("ST-DLV-UC01-R05-T05 Apply refuses a deploy folder that is a symbolic link and writes nothing through it", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		env := requirementsEnv(registry)
+		for _, link := range []string{"deploy", delivery.BaseFolder} {
+			dir := requirementsProject(t)
+			outside := t.TempDir()
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, link)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(dir, link)); err != nil {
+				t.Fatal(err)
+			}
+			_, stderr, err := runInProject(t, dir, env, "apply")
+			if err == nil {
+				t.Errorf("%s: apply accepted a folder that is a symbolic link", link)
+			} else if !strings.Contains(stderr, "symbolic link") {
+				t.Errorf("%s: the refusal does not name the symbolic link:\n%s", link, stderr)
+			}
+			if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+				t.Errorf("%s: apply wrote through the link: %v, %v", link, entries, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, ".stego", "state.yaml")); !os.IsNotExist(err) {
+				t.Errorf("%s: the refused apply wrote the record: %v", link, err)
+			}
+		}
+	})
+}

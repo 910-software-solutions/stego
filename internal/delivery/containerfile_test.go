@@ -1,19 +1,29 @@
 package delivery
 
 import (
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 func TestLoadContainerfile(t *testing.T) {
 	t.Run("ST-DLV-UC03-R04-T04 The Containerfile reads back only as the exact text that apply writes, and a file with more text, another image, a directive or a heredoc is refused", func(t *testing.T) {
-		for _, source := range []ContainerSource{{OutputDir: "out"}, {OutputDir: "out", Fills: true}, {OutputDir: "gen/service"}} {
+		for _, source := range []ContainerSource{{OutputDir: "out"}, {OutputDir: "out", Fills: true}, {OutputDir: "gen/service"},
+			{OutputDir: "out", Modules: []string{"lib", "third_party/tools"}}, {OutputDir: "out", Fills: true, Modules: []string{"lib"}}} {
 			data, err := WriteContainerfile("orders", source)
 			if err != nil {
 				t.Fatalf("the Containerfile of %+v is not written: %v", source, err)
 			}
 			if _, err := LoadContainerfile(data); err != nil {
 				t.Errorf("the Containerfile of %+v does not read back: %v", source, err)
+			}
+		}
+		// A local module folder that is not a relative path of plain names, or that is in a copied folder or holds
+		// one, is refused.
+		for _, module := range []string{"../far", "/abs", "lib dir", "out", "out/vendored", "fills/x", "lib/../out"} {
+			if _, err := WriteContainerfile("orders", ContainerSource{OutputDir: "out", Fills: true, Modules: []string{module}}); err == nil {
+				t.Errorf("WriteContainerfile accepts the local module folder %q", module)
 			}
 		}
 		data, err := WriteContainerfile("orders", ContainerSource{OutputDir: "out", Fills: true})
@@ -66,6 +76,28 @@ func TestLoadContainerfile(t *testing.T) {
 		_, err = LoadContainerfile([]byte(strings.Replace(text, "COPY fills/ ./fills/\n", "COPY --link --from=other /x /src/x\n", 1)))
 		if err == nil || !strings.Contains(err.Error(), "the build stage copies from another image: --link --from=other") {
 			t.Errorf("the refusal of a COPY with --from after another flag is %v", err)
+		}
+	})
+}
+
+func TestModuleFolders(t *testing.T) {
+	t.Run("ST-DLV-UC03-R04-T06 The local module replacements give each folder that the build stage copies once, and a quoted plan line for each that it cannot copy", func(t *testing.T) {
+		replacements := []string{"./gen", "./lib", "lib/sub", "./lib/", "gen/service/x", ".", "./my lib", "_tools", "/abs", "C:\\mod", "../far", "./fills/x", "./tools"}
+		folders, notes := ModuleFolders(replacements, "gen/service", true)
+		if want := []string{"lib", "tools"}; !slices.Equal(folders, want) {
+			t.Errorf("the folders are %v, want %v", folders, want)
+		}
+		for _, given := range []string{"./gen", "./my lib", "_tools", "/abs", "C:\\mod", "../far"} {
+			if !slices.ContainsFunc(notes, func(note string) bool { return strings.Contains(note, strconv.Quote(given)) }) {
+				t.Errorf("no plan line names %q: %v", given, notes)
+			}
+		}
+		if len(notes) != 6 {
+			t.Errorf("the plan lines are %v, want one for each of the six folders that are not copied", notes)
+		}
+		source := ContainerSource{OutputDir: "gen/service", Fills: true, Modules: folders}
+		if _, err := WriteContainerfile("orders", source); err != nil {
+			t.Errorf("the Containerfile of the folders is refused: %v", err)
 		}
 	})
 }
