@@ -268,8 +268,9 @@ func TestScopedAccessWarning(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		old := strings.NewReplacer("permission view = organization->view", "permission view = owner + organization->view",
-			"permission edit = (owner + organization->edit) & organization->view", "permission edit = owner + organization->edit").Replace(string(data))
+		// Only member has its edit next to its view; org_setting has a view of the same text.
+		old := strings.Replace(string(data), "permission view = organization->view\n\tpermission edit = (owner + organization->edit) & organization->view",
+			"permission view = owner + organization->view\n\tpermission edit = owner + organization->edit", 1)
 		if old == string(data) {
 			t.Fatal("the example schema has no intersection of member to remove")
 		}
