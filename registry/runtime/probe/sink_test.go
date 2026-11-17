@@ -135,12 +135,13 @@ func TestProbeSinks(t *testing.T) {
 		type sharedLimit struct{}
 		limits := make(chan limit, 2)
 		var end context.CancelFunc
-		r.deadline = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+		var bound deadlineFunc = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 			ctx, cancel := context.WithCancel(context.WithValue(parent, sharedLimit{}, true))
 			end = cancel
 			limits <- limit{d: d}
 			return ctx, cancel
 		}
+		r.deadline = &bound
 		if !oteldeadline.Set(telemetry, func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
 			limits <- limit{d: d, shared: parent.Value(sharedLimit{}) != nil}
 			return context.WithCancel(parent)
