@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/compiler"
@@ -89,6 +90,9 @@ func writeFillScaffoldFiles(projectDir, name string, files []scaffoldFile) error
 	return nil
 }
 
+// capabilityName is the form of a command, query or worker name that the scaffold puts into Go names and comments.
+var capabilityName = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
+
 // capabilitySlots are the slots of the fills of commands, queries and workers, with the declaration part whose fill
 // implements each (ST-SUP-RC32-OC01, ST-SUP-RC33-OC01, ST-SUP-RC35-OC01).
 var capabilitySlots = map[string]string{"command.command": "command", "query.query": "query", "worker.worker": "worker"}
@@ -131,6 +135,9 @@ func createCapabilityFill(projectDir, name, packageName, slot string) error {
 	}
 	if owner == "" {
 		return fmt.Errorf("no %s of the declaration names the fill %q; declare the %s with fill: %s in service.yaml first", kind, name, kind, name)
+	}
+	if !capabilityName.MatchString(owner) {
+		return fmt.Errorf("the %s name %q is not lower case letters, digits, - and _ that start with a letter, so it gives no fill code; correct the name in service.yaml", kind, owner)
 	}
 	if contract == "" {
 		return fmt.Errorf("the %s %s has no contract package: the component %s is not active", kind, owner, kind)

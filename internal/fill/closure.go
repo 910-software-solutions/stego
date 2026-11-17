@@ -231,19 +231,26 @@ func fillFaults(check compiler.FillCheck, dir, fill string, contracts []string, 
 }
 
 // holdsGoCode tells whether the fill folder dir holds a Go file that is not a test file, at any depth and whatever its
-// name. A folder that holds only fill.yaml, test files and test data builds nothing into the service yet.
+// name. A folder that holds only fill.yaml, test files and test data builds nothing into the service yet. It gives true
+// for a path that is not a real folder, such as a symbolic link, and for a folder that cannot be read, so that the
+// fill rules hold such a fill and refuse it.
 func holdsGoCode(dir string) bool {
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() {
+		return true
+	}
 	found := false
-	_ = filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || found {
+	err = filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil {
 			return err
 		}
 		if !entry.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
 			found = true
+			return fs.SkipAll
 		}
 		return nil
 	})
-	return found
+	return found || err != nil
 }
 
 // CodelessFills gives the fills of the commands, queries and workers of the declaration whose fill folder exists and
@@ -330,6 +337,8 @@ func unresolvedModules(stderr string) bool {
 // listResolved lists the packages of patterns with a copy of the project's go.mod and go.sum in a folder of its own,
 // which go list may complete with the modules that the packages reach (-mod=mod). The project's files do not change.
 func listResolved(projectDir string, patterns []string) ([]byte, string, error) {
+	// The copy goes in the temporary folder (TMPDIR), as the staged module files of stego deps do, outside the
+	// project's package tree; it holds copies only, private to the user, and goes when the listing ends.
 	stage, err := os.MkdirTemp("", "stego-fill-modules-")
 	if err != nil {
 		return nil, "", err
@@ -364,6 +373,17 @@ func runList(projectDir, modFile, mode string, patterns []string) ([]byte, strin
 	// The service's build settings, not the host's, so go list sees the files and imports that the build sees.
 	cmd.Env = append(os.Environ(), "GOFLAGS=-mod="+mode)
 	for key, value := range compiler.TargetBuildSettings() {
+		cmd.Env = append(cmd.Env, key+"="+value)
+	}
+	// The module sources that the application build trusts, not the host's: the public proxy and checksum database,
+	// no direct version control and no credentials, so that a module that go list completes for a fill comes from
+	// where stego build takes it (ST-BLD-UC01-R02). A host that turns the proxy off keeps it off.
+	proxy := "https://proxy.golang.org"
+	if os.Getenv("GOPROXY") == "off" {
+		proxy = "off"
+	}
+	for key, value := range map[string]string{"GOPROXY": proxy, "GOSUMDB": "sum.golang.org", "GOPRIVATE": "", "GONOPROXY": "",
+		"GONOSUMDB": "", "GOINSECURE": "", "GOAUTH": "off", "GOVCS": "*:off", "GIT_TERMINAL_PROMPT": "0"} {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
 	cmd.WaitDelay = time.Second
