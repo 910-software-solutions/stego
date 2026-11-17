@@ -214,15 +214,29 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 	if migration != "" && (!fallible || !(hasRoutes || hasTasks)) {
 		return gen.File{}, fmt.Errorf("the migration job needs a service with routes or background tasks")
 	}
+	modeSelection, err := modeSelectionExpression(input, imports, consumedWirings)
+	if err != nil {
+		return gen.File{}, err
+	}
+	if modeSelection != "" && !fallible {
+		return gen.File{}, fmt.Errorf("the mode selection needs a service that can fail")
+	}
 	if fallible {
 		buf.WriteString("func main() {\n\tstegoRefuseEnvironment()\n")
 		writeMigrationJob(&buf, migration, migrationStage)
 		buf.WriteString("\tif err := run(); err != nil {\n\t\tstegoReportFailure(os.Stderr, err)\n\t\tos.Exit(1)\n\t}\n}\n\nfunc run() (stegoErr error) {\n\tstegoStage := \"startup\"\n")
+		if modeSelection != "" {
+			buf.WriteString("\tvar stegoModes []string\n")
+		}
 		buf.WriteString("\tdefer func() { if stegoErr != nil { stegoErr = &stegoServiceFailure{stage: stegoStage, cause: stegoErr")
 		if hasTasks {
 			buf.WriteString(", tasks: stegoTaskNames(stegoErr), abortedTasks: stegoAbortedTaskNames(stegoErr)")
 		}
+		if modeSelection != "" {
+			buf.WriteString(", modes: stegoModes")
+		}
 		buf.WriteString("} } }()\n")
+		writeModeSelection(&buf, modeSelection)
 	} else {
 		buf.WriteString("func main() {\n\tstegoRefuseEnvironment()\n")
 	}
@@ -237,7 +251,7 @@ func generateMainGo(input AssemblerInput) (gen.File, error) {
 		if hasRoutes || hasTasks {
 			parent = "ctx"
 		}
-		writeDBSetup(&buf, opener, parent)
+		writeDBSetup(&buf, opener, databaseOpenerComponent(input), parent)
 
 		if needsDatabaseAccessCheck(input, consumedWirings) {
 			fmt.Fprintf(&buf, "\tstegoStage = \"database.access\"\n\tif err := %s.VerifyRuntime(%s, db); err != nil { return err }\n", imports.DatabaseAccessAlias, parent)
@@ -534,8 +548,8 @@ func writeMainImports(buf *bytes.Buffer, input AssemblerInput, hasRoutes, hasDB,
 	}
 }
 
-func writeDBSetup(buf *bytes.Buffer, opener, parent string) {
-	writeDatabaseConfiguration(buf)
+func writeDBSetup(buf *bytes.Buffer, opener, component, parent string) {
+	writeDatabaseConfiguration(buf, component)
 	buf.WriteString("\tstegoStage = \"database.open\"\n")
 	if opener == "" {
 		opener = "sql.Open(\"pgx\", dsn)"
@@ -566,7 +580,7 @@ func writePostDBCalls(buf *bytes.Buffer, input AssemblerInput, consumedWirings m
 			continue
 		}
 		for callIndex, call := range cw.Wiring.PostDBCalls {
-			fmt.Fprintf(buf, "\tstegoStage = %q\n", fmt.Sprintf("component[%d].database[%d]", i, callIndex))
+			fmt.Fprintf(buf, "\tstegoStage = %q\n", componentStage(i, cw.Name, "database", callIndex))
 			resolvedCall := call
 			if renames, ok := imports.Renames[i]; ok {
 				for oldBase, newAlias := range renames {
@@ -1112,7 +1126,8 @@ func writeConstructors(buf *bytes.Buffer, input AssemblerInput, slotVarsByCollec
 		}
 
 		if cw.Wiring.ConstructorReturnsError[entry.ConstructorIndex] {
-			fmt.Fprintf(buf, "\tstegoStage = %q\n", fmt.Sprintf("component[%d].constructor[%d]", entry.WiringIndex, entry.ConstructorIndex))
+			// The stage names the component, so a refused start tells which component refused it (ST-GEN-INV16).
+			fmt.Fprintf(buf, "\tstegoStage = %q\n", componentStage(entry.WiringIndex, cw.Name, "constructor", entry.ConstructorIndex))
 			fmt.Fprintf(buf, "\t%s, err := %s\n", varName, expr)
 			if stage := cw.Wiring.ConstructorStages[entry.ConstructorIndex]; stage != "" {
 				// The constructor's package names the stage of a refused start, with no error text (ST-SUP-RP14-LC05).

@@ -77,6 +77,41 @@ func validateGRPCMethods(service *types.ServiceDeclaration, facts Facts) []Valid
 	return faults
 }
 
+// validateGRPCServed checks the methods of the proto files of the grpc-application component when it is active
+// (ST-DECL-INV75): each unary method and each server stream is the Method of a command or a query, and no service has
+// a client stream or a bidirectional stream. Each fault names the method; the fault of a stream both ways or from the
+// client says that such streams are not supported yet. A Method named twice is the fault of validateGRPCMethods.
+func validateGRPCServed(service *types.ServiceDeclaration, facts Facts) []ValidationError {
+	if facts.GRPCMethods == nil {
+		return nil
+	}
+	served := map[string]bool{}
+	for _, c := range service.Commands {
+		served[c.Method] = true
+	}
+	for _, q := range service.Queries {
+		served[q.Method] = true
+	}
+	names := make([]string, 0, len(facts.GRPCMethods))
+	for name := range facts.GRPCMethods {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	const path = "overrides.grpc-application.proto_files"
+	var faults []ValidationError
+	for _, name := range names {
+		switch kind := facts.GRPCMethods[name]; {
+		case kind == MethodClientStream || kind == MethodBidiStream:
+			faults = append(faults, ValidationError{Category: "grpc", Rule: "grpc-method-stream", Path: path, Found: name,
+				Message: fmt.Sprintf("the gRPC method %s is a %s, and client streams and bidirectional streams are not supported yet; remove it from the proto file, or make it a unary method for a command or query, or a server stream for a query", name, kind)})
+		case !served[name]:
+			faults = append(faults, ValidationError{Category: "grpc", Rule: "grpc-method-unserved", Path: path, Found: name,
+				Message: fmt.Sprintf("the gRPC method %s is a %s that no command or query serves; give it as the method of a command (a unary method) or of a query (a unary method or a server stream), or remove it from the proto file", name, kind)})
+		}
+	}
+	return faults
+}
+
 // QueryStreams gives the names of the queries whose gRPC method is a server stream of the proto files of the
 // grpc-application component (ST-DECL-INV73, ST-SUP-RC33-OC08). The compiler marks each as a stream query in
 // gen.Context.QueryStreams.

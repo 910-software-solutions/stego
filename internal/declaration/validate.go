@@ -119,6 +119,8 @@ func Validate(service *types.ServiceDeclaration, undeclared ...parser.Undeclared
 	faults.Service = append(faults.Service, validateNameForms(service)...)
 	faults.Service = append(faults.Service, validateIdempotency(service)...)
 	faults.Service = append(faults.Service, validateIdempotencyValues(service)...)
+	faults.Service = append(faults.Service, validateProblemBase(service)...)
+	faults.Service = append(faults.Service, validateServerFactories(service)...)
 	faults.Service = append(faults.Service, validateDefaultsLeft(service)...)
 	faults.Service = append(faults.Service, validateTenancyClaim(service)...)
 	faults.Service = append(faults.Service, validateProvisioning(service)...)

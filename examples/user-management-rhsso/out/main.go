@@ -50,11 +50,16 @@ func main() {
 
 func run() (stegoErr error) {
 	stegoStage := "startup"
+	var stegoModes []string
 	defer func() {
 		if stegoErr != nil {
-			stegoErr = &stegoServiceFailure{stage: stegoStage, cause: stegoErr, tasks: stegoTaskNames(stegoErr), abortedTasks: stegoAbortedTaskNames(stegoErr)}
+			stegoErr = &stegoServiceFailure{stage: stegoStage, cause: stegoErr, tasks: stegoTaskNames(stegoErr), abortedTasks: stegoAbortedTaskNames(stegoErr), modes: stegoModes}
 		}
 	}()
+	stegoStage = "modes"
+	if stegoModes, stegoErr = stegoruntime.Modes(); stegoErr != nil {
+		return stegoErr
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// Slot wiring — fills composed via operators.
@@ -79,18 +84,18 @@ func run() (stegoErr error) {
 	validationMiddleware := api.NewValidationMiddleware()
 	cORSMiddleware := api.NewCORSMiddleware()
 	discoveryHandler := api.NewDiscoveryHandler()
-	stegoStage = "component[6].constructor[0]"
+	stegoStage = "component.otel-tracing.constructor[0]"
 	tracingRuntime, err := tracing.NewTracingRuntime(nil)
 	if err != nil {
 		return err
 	}
 	defer tracingRuntime.Close()
-	stegoStage = "component[7].constructor[0]"
+	stegoStage = "component.health-check.constructor[0]"
 	monitor, err := health.NewMonitor(ctx)
 	if err != nil {
 		return err
 	}
-	stegoStage = "component[12].constructor[0]"
+	stegoStage = "component.stego-runtime.constructor[0]"
 	service, err := stegoruntime.NewService(ctx)
 	if err != nil {
 		if stage := stegoruntime.StartStage(err); stage != "" {
@@ -222,6 +227,7 @@ type stegoServiceFailure struct {
 	cause        error
 	tasks        []string
 	abortedTasks []string
+	modes        []string
 }
 
 func (e *stegoServiceFailure) Error() string { return "service failed at " + e.stage }
@@ -232,11 +238,12 @@ func (e *stegoServiceFailure) Unwrap() error { return e.cause }
 // A blocked output can retain one worker until the process exits.
 func stegoReportFailure(output io.Writer, err error) {
 	stage := "service.run"
-	var tasks, abortedTasks []string
+	var tasks, abortedTasks, modes []string
 	if failure, ok := err.(*stegoServiceFailure); ok {
 		stage = failure.stage
 		tasks = failure.tasks
 		abortedTasks = failure.abortedTasks
+		modes = failure.modes
 	}
 	record := struct {
 		Timestamp    string   `json:"timestamp"`
@@ -246,7 +253,8 @@ func stegoReportFailure(output io.Writer, err error) {
 		Stage        string   `json:"stage"`
 		Tasks        []string `json:"tasks,omitempty"`
 		AbortedTasks []string `json:"aborted_tasks,omitempty"`
-	}{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks}
+		Modes        []string `json:"modes,omitempty"`
+	}{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

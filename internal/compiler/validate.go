@@ -464,6 +464,13 @@ func compositionFacts(input ReconcilerInput, svcDecl *types.ServiceDeclaration, 
 		return facts, err
 	}
 	facts.GRPCMethods = methods
+	// The runtime data path, whose outbox relay, audit sink and audit jobs need the worker and controller modes
+	// (ST-DECL-INV89).
+	names := make([]string, 0, len(components))
+	for name := range components {
+		names = append(names, name)
+	}
+	facts.RuntimeData = runtimeDataPath(len(svcDecl.Entities) == 0 && len(svcDecl.Commands) == 0 && len(svcDecl.Queries) == 0, names)
 	for name := range components {
 		config, _ := svcDecl.Overrides[name].(map[string]any)
 		destinations, _ := config["destinations"].([]any)
