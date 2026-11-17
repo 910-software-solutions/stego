@@ -485,3 +485,37 @@ func TestTrustedJWKSSelection(t *testing.T) {
 		}
 	})
 }
+
+func TestDeclaredTrustWins(t *testing.T) {
+	t.Run("ST-SUP-RC11-OC04-T02 A trust variable set to another value than the declared issuer or audience is refused, and the declared value wins", func(t *testing.T) {
+		const declared = "https://issuer.example"
+		for _, name := range []string{"STEGO_AUTH_ISSUER", "STEGO_AUTH_AUDIENCE"} {
+			t.Setenv(name, "https://other.example")
+			if value, err := declaredValue(name, declared); err == nil || !strings.Contains(err.Error(), name) || strings.Contains(err.Error(), "other.example") {
+				t.Errorf("%s set to another value gives %q, %v; want a refusal that names the variable and not its value", name, value, err)
+			}
+			t.Setenv(name, declared)
+			if value, err := declaredValue(name, declared); err != nil || value != declared {
+				t.Errorf("%s set to the declared value gives %q, %v", name, value, err)
+			}
+			t.Setenv(name, "")
+			if value, err := declaredValue(name, declared); err != nil || value != declared {
+				t.Errorf("%s not set gives %q, %v; want the declared value", name, value, err)
+			}
+			t.Setenv(name, "https://only.example")
+			if value, err := declaredValue(name, ""); err != nil || value != "https://only.example" {
+				t.Errorf("%s with no declared value gives %q, %v; want the variable", name, value, err)
+			}
+		}
+		// The verifier takes both trust values through the rule, never through envOrDefault.
+		source, err := os.ReadFile("middleware.go")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"STEGO_AUTH_ISSUER", "STEGO_AUTH_AUDIENCE"} {
+			if !strings.Contains(string(source), `declaredValue("`+name+`"`) || strings.Contains(string(source), `envOrDefault("`+name+`"`) {
+				t.Errorf("the emitted middleware does not take %s through declaredValue", name)
+			}
+		}
+	})
+}

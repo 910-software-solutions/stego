@@ -611,9 +611,18 @@ func Transient(err error) bool {
 const (
 	SchemaPolls = 120
 	SchemaPause = 250 * time.Millisecond
-	// schemaRounds is the number of rounds in a row in which every definition must be served, so a SpiceDB of
-	// more than one node behind a balancer has shown the schema on more than one answer.
-	schemaRounds = 2
+	// SchemaStaleness is the longest time for which SpiceDB can still choose a revision older than one it has
+	// already served. It must be at least the quantization interval of SpiceDB times its max staleness percent
+	// (the flags --datastore-revision-quantization-interval, 5 s by default, and
+	// --datastore-revision-quantization-max-staleness-percent, 0.1 by default, so 0.5 s): the optimized revision of
+	// SpiceDB v1.57 picks a candidate at a time up to that allowance in the past, at random, so for that time after
+	// a round that serves the new schema, a check can still read a revision before the write.
+	SchemaStaleness = time.Second
+	// schemaRounds is the number of rounds in a row in which every definition must be served: enough rounds,
+	// SchemaPause apart, to span SchemaStaleness, so that no candidate revision from before the write is left when
+	// the wait returns; and at least two, so a SpiceDB of more than one node behind a balancer has shown the schema
+	// on more than one answer.
+	schemaRounds = max(int((SchemaStaleness+SchemaPause-1)/SchemaPause)+1, 2)
 )
 
 // ErrSchemaNotServed is the error of AwaitSchema when SpiceDB does not serve every definition of the written schema
@@ -653,7 +662,8 @@ func SchemaToken(ctx context.Context, conn grpc.ClientConnInterface) (Token, err
 }
 
 // AwaitSchema waits until SpiceDB serves each of definitions to a read at least as fresh as since, a token from
-// before the schema write (SchemaToken), for schemaRounds probe rounds in a row; with a zero since it probes fresh.
+// before the schema write (SchemaToken), for schemaRounds probe rounds in a row, which span SchemaStaleness; with a
+// zero since it probes fresh.
 // A check of the service at least as fresh as a floor older than the write reads at a revision no newer than the
 // probe's, so it does not know a new definition before the probe does. A probe is one ReadRelationships call with a
 // limit of 1 on the resource type; SpiceDB checks the type against the schema it reads at the revision of the call,

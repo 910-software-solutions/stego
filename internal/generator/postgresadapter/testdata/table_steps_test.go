@@ -481,6 +481,17 @@ CREATE EVENT TRIGGER ddl_start ON ddl_command_start EXECUTE FUNCTION public.ddl_
 		return present, validated
 	}
 	const withinKey, withinValidate = "tickets_sprint_id_within_fkey", "step_0001_ticket-sprint-within_expand_validate"
+	// withinCheck holds the optional within field project_id set while sprint_id is set, which MATCH SIMPLE does not
+	// (security review of PR #413, L1).
+	const withinCheck = "tickets_sprint_id_wcheck"
+	// unscoped writes a ticket in the sprint s with no project, as a writer outside the collection whose scope field
+	// is project_id can, and expects the CHECK to refuse it.
+	unscoped := func(t *testing.T, db *sql.DB, s string) {
+		t.Helper()
+		if code, key := keyed(t, db, `INSERT INTO public."tickets" ("id", "project_id", "sprint_id", "title") VALUES ($1, NULL, $2, 'no project')`, uuid.NewString(), s); code != "23514" || key != withinCheck {
+			t.Errorf("a ticket in a sprint with no project gives %q on %q, want 23514 on %s", code, key, withinCheck)
+		}
+	}
 	// tickets checks the rule of the key on a database whose tables hold it: a ticket in a sprint of its own project
 	// and a ticket with no sprint are written, a ticket in a sprint of another project is refused by the key, and a
 	// move of a sprint to another project while a ticket of the first project refers to it is refused too.
@@ -509,6 +520,7 @@ CREATE EVENT TRIGGER ddl_start ON ddl_command_start EXECUTE FUNCTION public.ddl_
 		if code, key := keyed(t, db, `UPDATE public."sprints" SET "project_id" = $1 WHERE "id" = $2`, p1, s2); code != "" {
 			t.Errorf("a move of a sprint with no ticket gives %q on %q, want it written", code, key)
 		}
+		unscoped(t, db, s2)
 	}
 
 	t.Run("ST-SUP-RC01-OC46-T01 A first release holds the composite key of a reference held within a field in 001_initial", func(t *testing.T) {
@@ -595,5 +607,9 @@ CREATE EVENT TRIGGER ddl_start ON ddl_command_start EXECUTE FUNCTION public.ddl_
 		if code, key := keyed(t, db, `INSERT INTO public."tickets" ("id", "project_id", "sprint_id", "title") VALUES ($1, $2, $3, 'other project')`, uuid.NewString(), p2, s1); code != "23503" || key != withinKey {
 			t.Errorf("after the job a ticket of web in a sprint of core gives %q on %q, want 23503 on %s", code, key, withinKey)
 		}
+		if present, validated := keyState(t, db, "tickets", withinCheck); !present || !validated {
+			t.Errorf("after the job the CHECK %s is present %v and validated %v", withinCheck, present, validated)
+		}
+		unscoped(t, db, s1)
 	})
 }

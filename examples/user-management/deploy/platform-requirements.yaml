@@ -844,14 +844,14 @@ environment:
       - jwt-auth
     type: string
     required: false
-    description: The audience that each token must name. When it has no value, the verifier uses the audience setting.
+    description: The audience that each token must name, which must be equal to the audience setting when the declaration states one. When it has no value, the verifier uses the audience setting.
     secret: false
   - name: STEGO_AUTH_ISSUER
     read_by:
       - jwt-auth
     type: url
     required: false
-    description: The issuer that each token must name. When it has no value, the verifier uses the issuer setting.
+    description: The issuer that each token must name, which must be equal to the issuer setting when the declaration states one. When it has no value, the verifier uses the issuer setting.
     secret: false
   - name: STEGO_AUTH_PUBLIC_KEY_FILE
     read_by:

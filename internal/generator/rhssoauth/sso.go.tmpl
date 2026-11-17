@@ -25,8 +25,12 @@ func NewJWTHandlerWithContext(ctx context.Context) (*JWTHandler,error) {
  if ctx==nil{return nil,errors.New("SSO startup requires a context")}
  enabled:=os.Getenv("AUTH_ENABLED")
  if enabled!="" && !strings.EqualFold(enabled,"true") {return nil,errors.New("SSO authentication cannot be disabled")}
+ issuer,err:=declaredValue("STEGO_AUTH_ISSUER",{{printf "%q" .Issuer}})
+ if err!=nil{return nil,err}
+ audience,err:=declaredValue("STEGO_AUTH_AUDIENCE",{{printf "%q" .Audience}})
+ if err!=nil{return nil,err}
  verifier,err:=NewJWKSVerifier(ctx,JWKSConfig{
-  Trust:Config{Issuer:envOrDefault("STEGO_AUTH_ISSUER",{{printf "%q" .Issuer}}),Audience:envOrDefault("STEGO_AUTH_AUDIENCE",{{printf "%q" .Audience}})},
+  Trust:Config{Issuer:issuer,Audience:audience},
   URL:envOrDefault("JWK_CERT_URL",{{printf "%q" .URL}}),
   File:envOrDefault("JWK_CERT_FILE",{{printf "%q" .File}}),
   CAFile:envOrDefault("JWK_CA_FILE",{{printf "%q" .CAFile}}),

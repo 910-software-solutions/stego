@@ -1,6 +1,6 @@
 kind: component
 name: jwt-auth
-version: 2.5.0
+version: 2.6.0
 stage: ga
 output_namespace: internal/auth
 
@@ -47,14 +47,14 @@ environment:
     type: url
     required: false
     default: "{settings.issuer}"
-    description: "The issuer that each token must name. When it has no value, the verifier uses the issuer setting."
+    description: "The issuer that each token must name, which must be equal to the issuer setting when the declaration states one. When it has no value, the verifier uses the issuer setting."
     secret: false
     example: "https://sso.example.com/realms/main"
   - name: STEGO_AUTH_AUDIENCE
     type: string
     required: false
     default: "{settings.audience}"
-    description: "The audience that each token must name. When it has no value, the verifier uses the audience setting."
+    description: "The audience that each token must name, which must be equal to the audience setting when the declaration states one. When it has no value, the verifier uses the audience setting."
     secret: false
     example: "my-service"
   - name: STEGO_AUTH_ROLES_CLAIM

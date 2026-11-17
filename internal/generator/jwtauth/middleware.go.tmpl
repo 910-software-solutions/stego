@@ -298,6 +298,16 @@ func envOrDefault(name, fallback string) string {
     return fallback
 }
 
+// declaredValue gives the value that the declaration states, or the variable name when it states none. A variable
+// set to another value than the stated one is refused, so an override cannot make the service accept tokens of
+// another issuer or audience: the declaration wins (ST-SUP-RC11-OC04, ST-SUP-RC21-OC09).
+func declaredValue(name, stated string) (string, error) {
+    value := os.Getenv(name)
+    if stated == "" { return value, nil }
+    if value != "" && value != stated { return "", errors.New(name + " differs from the value that the declaration states, which wins") }
+    return stated, nil
+}
+
 // NewAuthMiddleware loads a public key once. Restart after a key change.
 func NewAuthMiddleware() (func(http.Handler) http.Handler, error) {
     verifier, err := NewVerifierFromEnvironment()
@@ -324,9 +334,13 @@ func NewVerifierFromEnvironment() (*Verifier, error) {
     }
     key, err := jwt.ParseRSAPublicKeyFromPEM(data)
     if err != nil { return nil, fmt.Errorf("invalid authentication public key: %w", err) }
+    issuer, err := declaredValue("STEGO_AUTH_ISSUER", {{printf "%q" .Issuer}})
+    if err != nil { return nil, err }
+    audience, err := declaredValue("STEGO_AUTH_AUDIENCE", {{printf "%q" .Audience}})
+    if err != nil { return nil, err }
     verifier, err := NewVerifier(Config{
-        Issuer: envOrDefault("STEGO_AUTH_ISSUER", {{printf "%q" .Issuer}}),
-        Audience: envOrDefault("STEGO_AUTH_AUDIENCE", {{printf "%q" .Audience}}),
+        Issuer: issuer,
+        Audience: audience,
         PublicKey: key,
         RolesClaim: envOrDefault("STEGO_AUTH_ROLES_CLAIM", {{printf "%q" .RolesClaim}}),
     })

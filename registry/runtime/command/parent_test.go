@@ -461,6 +461,39 @@ func TestWithin(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP10-LC37-T05 A create whose reference decision is denied is not found before the within compare, never invalid", func(t *testing.T) {
+		e, projects, sprints, tickets, run := setup(t)
+		// edit on the sprint s1 of core is denied; view stays, so the fill can load the sprint.
+		var allow []string
+		for _, r := range [][2]string{{"project", "core"}, {"project", "web"}, {"sprint", "s1"}, {"sprint", "s2"}, {"ticket", "t4"}} {
+			allow = append(allow, relation(t, "user:u-7", "view", "t1", r[0], r[1]), relation(t, "user:u-7", "plan", "t1", r[0], r[1]))
+			if r != [2]string{"sprint", "s1"} {
+				allow = append(allow, relation(t, "user:u-7", "edit", "t1", r[0], r[1]))
+			}
+		}
+		e.decision.setRelations(append(allow, relation(t, "user:u-7", "plan", "t1", "service", "tracker"))...)
+		// A ticket of web in the sprint of core: the projects differ, but the denied decision answers first, so the
+		// answer does not tell that the sprint is of another project.
+		err := run("k-lc37-t05", func(ctx context.Context, h *Handle[testProbe]) error {
+			web, err := repo(t, h, projects).Get(ctx, "web")
+			if err != nil {
+				return err
+			}
+			s1, err := repo(t, h, sprints).Get(ctx, "s1")
+			if err != nil {
+				return err
+			}
+			_, err = repo(t, h, tickets).Create(ctx, wTicket{ID: "t4", ProjectID: "web", SprintID: "s1"}, web, s1)
+			return err
+		})
+		if !errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalid) {
+			t.Fatalf("the create with edit denied on the sprint of another project gave %v, want not found and not invalid", err)
+		}
+		if e.count(`SELECT count(*) FROM wtickets WHERE id = 't4'`) != 0 || e.keyRows("k-lc37-t05") != 0 {
+			t.Fatal("the denied create left a row or a key row")
+		}
+	})
+
 	t.Run("ST-SUP-RP10-LC37-T02 An update that moves the reference or the field is compared, and needs the referenced row", func(t *testing.T) {
 		e, projects, sprints, tickets, run := setup(t)
 		// A move of the sprint of t1 to the sprint of web is refused.

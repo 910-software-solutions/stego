@@ -79,3 +79,54 @@ func TestScopedAccessWarningsEachScope(t *testing.T) {
 		}
 	})
 }
+
+// nestedTickets is a declaration whose Ticket is scoped by a Project, and the Project by an Organization, so the
+// path of the tickets holds the organization and the project.
+func nestedTickets() *types.ServiceDeclaration {
+	entity := func(name, resourceType string) types.Entity {
+		e := types.Entity{Name: name}
+		e.ResourceType = resourceType
+		e.Permissions = map[types.Operation]string{types.OpRead: "view"}
+		return e
+	}
+	project, ticket := entity("Project", "project"), entity("Ticket", "ticket")
+	project.References = map[string]types.Reference{"org_id": {Relation: "organization"}}
+	ticket.References = map[string]types.Reference{"project_id": {Relation: "project"}}
+	return &types.ServiceDeclaration{
+		Entities: []types.Entity{entity("Organization", "organization"), project, ticket},
+		Collections: []types.Collection{
+			{Name: "org-projects", Entity: "Project", Operations: []types.Operation{types.OpRead}, Scope: map[string]string{"org_id": "Organization"}},
+			{Name: "project-tickets", Entity: "Ticket", Operations: []types.Operation{types.OpRead}, Scope: map[string]string{"project_id": "Project"}},
+		},
+	}
+}
+
+func TestScopedAccessWarningsAncestors(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC24-T16 The scoped-access warning also checks that the read of each ancestor needs the read of the ancestor above it", func(t *testing.T) {
+		const top = "definition user {}\n" +
+			"definition organization {\n\trelation member: user\n\tpermission view = member\n}\n"
+		const ticket = "definition ticket {\n\trelation project: project\n\trelation owner: user\n\tpermission view = owner & project->view\n}\n"
+
+		// The view of a ticket needs the view of its project, but the view of the project does not need the view of
+		// its organization: the routes of project-tickets open a ticket to a caller that may not read the organization.
+		got := scopedWarnings(t, nestedTickets(), top+ticket+
+			"definition project {\n\trelation organization: organization\n\trelation member: user\n\tpermission view = member\n}\n")
+		var ancestor []string
+		for _, line := range got {
+			if strings.Contains(line, "an ancestor in the path of collections.project-tickets") {
+				ancestor = append(ancestor, line)
+			}
+		}
+		if len(ancestor) != 1 || !strings.HasPrefix(ancestor[0], "entities[1].permissions.read: ") ||
+			!strings.Contains(ancestor[0], "of its parent Organization through the relation organization") ||
+			!strings.Contains(ancestor[0], "permission view = (member) & organization->view") || !strings.Contains(ancestor[0], "opens the Ticket there") {
+			t.Fatalf("want one warning on the read of Project for the path of project-tickets, got %q", got)
+		}
+
+		// A project view that needs the view of its organization guards the path: no warning at all.
+		if got := scopedWarnings(t, nestedTickets(), top+ticket+
+			"definition project {\n\trelation organization: organization\n\trelation member: user\n\tpermission view = member & organization->view\n}\n"); len(got) != 0 {
+			t.Fatalf("the guarded path was warned about: %q", got)
+		}
+	})
+}

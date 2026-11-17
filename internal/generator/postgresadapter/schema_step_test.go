@@ -527,7 +527,7 @@ func withinEntities(within string) []types.Entity {
 		{Name: "Sprint", Fields: []types.Field{{Name: "project_id", Type: types.FieldTypeRef, To: "Project"}, {Name: "name", Type: types.FieldTypeString}}},
 		{Name: "Ticket", EntityAuthorization: types.EntityAuthorization{References: map[string]types.Reference{
 			"sprint_id": {Relation: "sprint", Permission: "edit", Within: within}}},
-			Fields: []types.Field{{Name: "project_id", Type: types.FieldTypeRef, To: "Project"}, {Name: "sprint_id", Type: types.FieldTypeRef, To: "Sprint", Optional: true},
+			Fields: []types.Field{{Name: "project_id", Type: types.FieldTypeRef, To: "Project", Optional: true}, {Name: "sprint_id", Type: types.FieldTypeRef, To: "Sprint", Optional: true},
 				{Name: "title", Type: types.FieldTypeString}}},
 	}
 }
@@ -580,12 +580,14 @@ func TestWithinKeys(t *testing.T) {
 		if body := bodies[want[2]]; body != `ALTER TABLE public."tickets" ADD CONSTRAINT "tickets_sprint_id_within_fkey" FOREIGN KEY ("tenant_id", "project_id", "sprint_id") REFERENCES public."sprints" ("tenant_id", "project_id", "id") NOT VALID;`+"\n" {
 			t.Errorf("the keys migration is not the foreign key NOT VALID:\n%s", body)
 		}
-		if body := bodies[want[3]]; body != `ALTER TABLE public."tickets" VALIDATE CONSTRAINT "tickets_sprint_id_within_fkey";`+"\n" {
-			t.Errorf("the validate migration does not validate the key:\n%s", body)
+		if body := bodies[want[3]]; body != `ALTER TABLE public."tickets" VALIDATE CONSTRAINT "tickets_sprint_id_wcheck";`+"\n"+
+			`ALTER TABLE public."tickets" VALIDATE CONSTRAINT "tickets_sprint_id_within_fkey";`+"\n" {
+			t.Errorf("the validate migration does not validate the CHECK and the key:\n%s", body)
 		}
-		// The step's own migration runs first and adds nothing: the key waits for the unique key it refers to.
-		if body := bodies["step_0001_ticket-sprint-within_expand"]; body != "" {
-			t.Errorf("the step's own migration adds the key before the unique key is built:\n%s", body)
+		// The step's own migration runs first and adds only the CHECK of the optional within field NOT VALID: the key
+		// waits for the unique key it refers to.
+		if body := bodies["step_0001_ticket-sprint-within_expand"]; body != `ALTER TABLE public."tickets" ADD CONSTRAINT "tickets_sprint_id_wcheck" CHECK ("sprint_id" IS NULL OR "project_id" IS NOT NULL) NOT VALID;`+"\n" {
+			t.Errorf("the step's own migration is not the CHECK of the within field NOT VALID:\n%s", body)
 		}
 		fresh, _, err := new(postgresadapter.Generator).Generate(withinFresh("withinfresh", "withinfreshtenancy"))
 		if err != nil {
@@ -600,6 +602,29 @@ func TestWithinKeys(t *testing.T) {
 		}
 		if strings.Index(initial, "sprints_project_id_id_key") > strings.Index(initial, "tickets_sprint_id_within_fkey") {
 			t.Errorf("001_initial adds the key before the unique key it refers to:\n%s", initial)
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC46-T05 A reference held within an optional field gets a CHECK that the field is set when the reference is set, and one held within a required field gets none", func(t *testing.T) {
+		const check = `CONSTRAINT "tickets_sprint_id_wcheck" CHECK ("sprint_id" IS NULL OR "project_id" IS NOT NULL)`
+		fresh, _, err := new(postgresadapter.Generator).Generate(withinFresh("withinopt", "withinopttenancy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if initial := generated(t, fresh, "withinopt/migrations/001_initial.sql"); !strings.Contains(initial, check) {
+			t.Errorf("001_initial of an optional within field does not hold %s:\n%s", check, initial)
+		}
+		if manifest := generated(t, fresh, "withinopt/schema_manifest.go"); !strings.Contains(manifest, `CHECK (((sprint_id IS NULL) OR (project_id IS NOT NULL)))`) {
+			t.Errorf("the schema manifest does not hold the CHECK as pg_get_constraintdef writes it:\n%s", manifest)
+		}
+		required := withinFresh("withinreq", "withinreqtenancy")
+		required.Entities[2].Fields[0].Optional = false
+		files, _, err := new(postgresadapter.Generator).Generate(required)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if initial := generated(t, files, "withinreq/migrations/001_initial.sql"); strings.Contains(initial, "wcheck") || !strings.Contains(initial, "tickets_sprint_id_within_fkey") {
+			t.Errorf("001_initial of a required within field holds a CHECK of the field, or no key:\n%s", initial)
 		}
 	})
 

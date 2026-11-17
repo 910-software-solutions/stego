@@ -1077,6 +1077,7 @@ func ScopedAccessWarnings(service *types.ServiceDeclaration, schema *AuthzSchema
 	}
 	var warnings []ValidationError
 	seen := map[string]bool{}
+	first := types.FirstCollections(service.Collections)
 	for _, c := range service.Collections {
 		scope := c.ScopeField()
 		ei, ok := index[c.Entity]
@@ -1112,6 +1113,60 @@ func ScopedAccessWarnings(service *types.ServiceDeclaration, schema *AuthzSchema
 				Message: fmt.Sprintf("the permission %s of %s (the %s of collections.%s) does not need the read %s of its parent %s through the relation %s. The routes of collections.%s decide only on the %s (ST-SUP-Q156), so a grant on a %s alone opens it there, also to a caller that may not read the %s; an earlier STEGO also decided the read of the %s. Write it as an intersection, which keeps the access of an earlier STEGO: permission %s = (%s) & %s->%s",
 					permission, e.ResourceType, op, c.Name, read, p.Name, relation, c.Name, e.Name, e.ResourceType, p.Name, p.Name, permission, expression, relation, read)})
 		}
+		warnings = append(warnings, ancestorWarnings(service, schema, c, index, first, seen)...)
+	}
+	return warnings
+}
+
+// ancestorWarnings gives one warning for each ancestor above the parent in the path of the scoped collection c whose
+// read does not need the read of the ancestor above it through the relation of its own scope reference. The routes
+// of c decide only on the row (ST-SUP-Q156), so the read of the parent stands for the reads of the ancestors above it
+// only when each ancestor's read needs the read of the next one: else a grant on the parent alone opens the row to
+// a caller that may not read the grandparent, which an earlier STEGO also decided (security review of PR #409). It
+// warns only when c serves a route that decides on its row, and once for each pair of ancestors.
+func ancestorWarnings(service *types.ServiceDeclaration, schema *AuthzSchema, c types.Collection, index map[string]int,
+	first map[string]types.Collection, seen map[string]bool) []ValidationError {
+	decides := false
+	if ei, ok := index[c.Entity]; ok && service.Entities[ei].ResourceType != "" {
+		for _, op := range []types.Operation{types.OpRead, types.OpUpdate, types.OpPatch, types.OpDelete} {
+			permission := service.Entities[ei].Permissions[op]
+			decides = decides || (slices.Contains(c.Operations, op) && permission != "" && permission != types.PermissionPublic)
+		}
+	}
+	if !decides {
+		return nil
+	}
+	var warnings []ValidationError
+	chain := types.ParentChain(c, first)
+	for i := 0; i+1 < len(chain); i++ {
+		ai, aOK := index[chain[i].Entity]
+		gi, gOK := index[chain[i+1].Entity]
+		if !aOK || !gOK {
+			continue
+		}
+		a, g := service.Entities[ai], service.Entities[gi]
+		relation := a.References[chain[i].Link].Relation
+		read, above := a.Permissions[types.OpRead], g.Permissions[types.OpRead]
+		if a.ResourceType == "" || g.ResourceType == "" || relation == "" || read == "" || read == types.PermissionPublic || above == "" || above == types.PermissionPublic {
+			continue
+		}
+		key := strings.Join([]string{"ancestor", a.Name, read, relation, g.ResourceType, above}, "#")
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		rewrite, isPermission := schema.PermissionRewrite(a.ResourceType, read)
+		guard := scopeGuard{schema: schema, resourceType: a.ResourceType, relation: relation, parentType: g.ResourceType, read: above}
+		if isPermission && guard.guarded(rewrite, 0) {
+			continue
+		}
+		expression := read
+		if isPermission {
+			expression = rewriteText(rewrite)
+		}
+		warnings = append(warnings, ValidationError{Category: "authorization", Rule: "scoped-access", Path: fmt.Sprintf("entities[%d].permissions.%s", ai, types.OpRead), Found: a.ResourceType + "#" + read,
+			Message: fmt.Sprintf("the read %s of %s, an ancestor in the path of collections.%s, does not need the read %s of its parent %s through the relation %s. The routes of collections.%s decide only on the %s (ST-SUP-Q156), so a grant on a %s alone opens the %s there, also to a caller that may not read the %s; an earlier STEGO also decided the read of each ancestor. Write it as an intersection, which keeps the access of an earlier STEGO: permission %s = (%s) & %s->%s",
+				read, a.ResourceType, c.Name, above, g.Name, relation, c.Name, c.Entity, a.ResourceType, c.Entity, g.Name, read, expression, relation, above)})
 	}
 	return warnings
 }

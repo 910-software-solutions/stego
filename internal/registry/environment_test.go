@@ -175,6 +175,29 @@ needs:
 				t.Errorf("a need name from a setting of %s is accepted, or the refusal does not name the setting and the rule: %v", c.name, err)
 			}
 		}
+		// A resource name of a cluster permission holds a setting by the same rule (#404 security review L5), so a
+		// declaration cannot name the object of another service.
+		const topicNeed = `{kind: topic, name: "{settings.key}-events"}`
+		const permissionNeed = `{kind: cluster permission, name: "{service}-read", resource: secrets, verbs: [get], resource_names: ["{settings.key}-tls"]}`
+		permission := strings.Replace(component, topicNeed, permissionNeed, 1)
+		enumSetting := strings.Replace(permission, secretSetting, "key: {type: string, enum: [orders, stock-2]}", 1)
+		if _, err := ParseComponentFromBytes([]byte(enumSetting), "env-a/component.yaml"); err != nil {
+			t.Fatalf("a resource name from a setting of DNS labels is refused: %v", err)
+		}
+		for _, c := range []struct{ name, setting, want string }{
+			{"a secret", secretSetting, "secret setting key"},
+			{"free text", "key: {type: string}", "DNS labels"},
+			{"a URL", "key: {type: string, enum: [\"https://issuer.example.com\"]}", "DNS labels"},
+		} {
+			_, err := ParseComponentFromBytes([]byte(strings.Replace(permission, secretSetting, c.setting, 1)), "env-a/component.yaml")
+			if err == nil || !strings.Contains(err.Error(), "resource_names") || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("a resource name from a setting of %s is accepted, or the refusal does not name the field and the rule: %v", c.name, err)
+			}
+		}
+		other := strings.Replace(permission, `"{settings.key}-tls"`, `"{settings.other}-tls"`, 1)
+		if _, err := ParseComponentFromBytes([]byte(other), "env-a/component.yaml"); err == nil || !strings.Contains(err.Error(), "resource_names") {
+			t.Errorf("a resource name from a setting that the component does not state is accepted: %v", err)
+		}
 	})
 	t.Run("ST-SUP-INV24-T A required variable states no default, and a default or an example is of its type and inside its allowed values", func(t *testing.T) {
 		expectRefused(t, []refusal{
