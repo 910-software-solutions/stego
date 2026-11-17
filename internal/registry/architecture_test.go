@@ -51,6 +51,22 @@ func TestStatesPlace(t *testing.T) {
 			{"an operation that is not a collection operation", func(c *Component) { c.Slots[1].Operations = []string{"create", "merge"} }, apiA, "slots[after_create].operations"},
 			{"an operation twice", func(c *Component) { c.Slots[1].Operations = []string{"create", "create"} }, apiA, "slots[after_create].operations"},
 			{"no side for its provided port", func(c *Component) { delete(c.Architecture.Ports, "store-port") }, storeA, "architecture.ports.store-port"},
+			// The kinds of operation a component serves and the store of a repository (ST-GEN-Q44 (A)).
+			{"a kind of operation that is not served", func(c *Component) { c.Architecture.Serves = []string{"collection operations", "events"} }, apiA, "architecture.serves"},
+			{"a kind of operation twice", func(c *Component) { c.Architecture.Serves = []string{"commands", "commands"} }, apiA, "architecture.serves"},
+			{"a store on a handler", func(c *Component) { c.Architecture.Store = "PostgreSQL" }, apiA, "architecture.store"},
+			{"serves on a repository", func(c *Component) { c.Architecture.Serves = []string{"queries"} }, storeA, "architecture.serves"},
+			{"a store of 41 characters", func(c *Component) { c.Architecture.Store = strings.Repeat("a", 41) }, storeA, "architecture.store"},
+			{"a store on two lines", func(c *Component) { c.Architecture.Store = "Postgre\nSQL" }, storeA, "architecture.store"},
+			{"a store with a control character", func(c *Component) { c.Architecture.Store = "Postgre\x1bSQL" }, storeA, "architecture.store"},
+		}
+		served, stored := apiA(), storeA()
+		served.Architecture.Serves = []string{"collection operations", "commands", "queries", "workers"}
+		stored.Architecture.Store = "PostgreSQL"
+		for _, full := range []*Component{served, stored} {
+			if fault := statesPlace(full); fault != nil {
+				t.Fatalf("the role of %s with serves and store is refused: %v", full.Name, fault)
+			}
 		}
 		for _, tc := range cases {
 			component := tc.base()

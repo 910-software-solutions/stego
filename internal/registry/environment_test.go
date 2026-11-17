@@ -129,7 +129,7 @@ func TestEnvironmentDeclaration(t *testing.T) {
 			t.Fatalf("a name from a setting of names is refused: %v", err)
 		}
 	})
-	t.Run("ST-SUP-INV23-T A secret variable or setting states no default and no example, and no name holds a secret setting", func(t *testing.T) {
+	t.Run("ST-SUP-INV23-T A secret variable or setting states no default and no example, and a name holds only a setting of a closed list of names", func(t *testing.T) {
 		expectRefused(t, []refusal{
 			{"a secret with a default", "    secret: true\n", "    secret: true\n    default: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "default"},
 			{"a secret with an example", "    secret: true\n", "    secret: true\n    example: CANARY-SECRET-VALUE\n", "ENV_A_DATABASE_URL", "example"},
@@ -154,6 +154,26 @@ needs:
 		_, err := ParseComponentFromBytes([]byte(component), "env-a/component.yaml")
 		if err == nil || !strings.Contains(err.Error(), "secret setting key") {
 			t.Fatalf("a need name that holds a secret setting is accepted, or the refusal does not name it: %v", err)
+		}
+		// A need name holds only a text setting whose enum allows DNS labels alone (decision on ST-SUP-Q153).
+		const secretSetting = "key: {type: string, secret: true}"
+		accepted := strings.Replace(component, secretSetting, "key: {type: string, enum: [orders, stock-2]}", 1)
+		if _, err := ParseComponentFromBytes([]byte(accepted), "env-a/component.yaml"); err != nil {
+			t.Fatalf("a need name from a setting of DNS labels is refused: %v", err)
+		}
+		for _, c := range []struct{ name, setting string }{
+			{"free text", "key: {type: string}"},
+			{"a number", "key: {type: integer, enum: [1, 2]}"},
+			{"an upper-case value", "key: {type: string, enum: [orders, Stock]}"},
+			{"a value with '_'", "key: {type: string, enum: [stock_items]}"},
+			{"a value that ends with '-'", "key: {type: string, enum: [stock-]}"},
+			{"a URL", "key: {type: string, enum: [\"https://issuer.example.com\"]}"},
+			{"a value longer than 63 characters", "key: {type: string, enum: [" + strings.Repeat("a", 64) + "]}"},
+		} {
+			_, err := ParseComponentFromBytes([]byte(strings.Replace(component, secretSetting, c.setting, 1)), "env-a/component.yaml")
+			if err == nil || !strings.Contains(err.Error(), "setting key") || !strings.Contains(err.Error(), "DNS labels") {
+				t.Errorf("a need name from a setting of %s is accepted, or the refusal does not name the setting and the rule: %v", c.name, err)
+			}
 		}
 	})
 	t.Run("ST-SUP-INV24-T A required variable states no default, and a default or an example is of its type and inside its allowed values", func(t *testing.T) {
@@ -337,6 +357,60 @@ func TestOneOfGroups(t *testing.T) {
 		}
 		if len(got) != len(want) {
 			t.Errorf("the shipped registry states the groups %v, want only %v", got, want)
+		}
+	})
+}
+
+func TestNeedVariable(t *testing.T) {
+	t.Run("ST-SUP-UC01-R09-T04 The registry refuses a need variable or value on the wrong kind, of a variable that the component does not state or that is secret, or that is not one text setting", func(t *testing.T) {
+		component := `kind: component
+name: env-a
+version: 1.0.0
+stage: ga
+config:
+  issuer: {type: string}
+  key: {type: string, secret: true}
+  count: {type: integer}
+requires: []
+provides: []
+slots: []
+architecture: {layer: handler, flow: "Serves the test.", ports: {}}
+environment:
+  - name: ENV_A_ISSUER
+    type: url
+    required: false
+    description: "The issuer of the tokens."
+    secret: false
+  - name: ENV_A_TOKEN
+    type: string
+    required: false
+    description: "The token of the test."
+    secret: true
+needs:
+  - {kind: identity issuer, name: "{service}-issuer", variable: ENV_A_ISSUER, value: "{settings.issuer}"}
+`
+		parsed, err := ParseComponentFromBytes([]byte(component), "env-a/component.yaml")
+		if err != nil {
+			t.Fatalf("an issuer need with a variable and a value is refused: %v", err)
+		}
+		if need := parsed.Needs[0]; need.Variable != "ENV_A_ISSUER" || need.Value != "{settings.issuer}" {
+			t.Fatalf("the need holds the variable %q and the value %q", need.Variable, need.Value)
+		}
+		const need = `  - {kind: identity issuer, name: "{service}-issuer", variable: ENV_A_ISSUER, value: "{settings.issuer}"}`
+		for _, c := range []struct{ name, need, want string }{
+			{"a variable on an egress", `  - {kind: egress, name: "{service}-keys", port: 443, variable: ENV_A_ISSUER}`, "the egress need has no field variable"},
+			{"a value on a topic", `  - {kind: topic, name: "{service}-events", value: "{settings.issuer}"}`, "the topic need has no field value"},
+			{"a variable the component does not state", strings.Replace(need, "variable: ENV_A_ISSUER", "variable: ENV_A_OTHER", 1), "not an environment variable of the component"},
+			{"a secret variable", strings.Replace(need, "variable: ENV_A_ISSUER", "variable: ENV_A_TOKEN", 1), "is secret"},
+			{"a fixed value", strings.Replace(need, `value: "{settings.issuer}"`, `value: "https://sso.example.com"`, 1), "not one {settings.<key>}"},
+			{"a secret setting", strings.Replace(need, "{settings.issuer}", "{settings.key}", 1), "not one {settings.<key>}"},
+			{"a setting that is not text", strings.Replace(need, "{settings.issuer}", "{settings.count}", 1), "not one {settings.<key>}"},
+			{"a setting the component has not", strings.Replace(need, "{settings.issuer}", "{settings.gone}", 1), "not one {settings.<key>}"},
+		} {
+			_, err := ParseComponentFromBytes([]byte(strings.Replace(component, need, c.need, 1)), "env-a/component.yaml")
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "env-a") {
+				t.Errorf("%s: got %v, want a refusal that names the component and says %q", c.name, err, c.want)
+			}
 		}
 	})
 }
