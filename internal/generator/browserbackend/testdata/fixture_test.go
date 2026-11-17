@@ -343,6 +343,10 @@ func setup(t *testing.T) *fixture {
 		w.Header().Set("X-Private", "private")
 		w.Header().Set("ETag", `"record-version"`)
 		w.Header().Set("Content-Type", "application/json")
+		// The response headers of the STEGO API contract: an idempotent replay and the revocation of a write.
+		w.Header().Set("Idempotent-Replayed", "true")
+		w.Header().Set("Authz-Revocation", "pending")
+		w.Header().Set("Authz-Revocation-Location", "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10")
 		w.WriteHeader(status)
 		io.WriteString(w, `{"id":"record-1","name":"one"}`)
 	}))
