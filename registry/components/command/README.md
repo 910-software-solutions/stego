@@ -34,3 +34,29 @@ registers the route of each command. A command with a gRPC method is also
 served over gRPC by the grpc-application component (ST-SUP-RC07-OC19): its
 gRPC handler takes the same request message, and the idempotency key comes
 from the idempotency-key request metadata.
+
+A command whose resource type is the resource type of the tenant
+provisioning, such as service, names no resource_member. Run decides its
+permission on the service-level resource <resource type>:<service name> in
+the tenant of the request, as a CRUD create of an entity with no parent is
+decided (ST-SUP-RC32-OC15). Use it to create the first rows of a service with
+no rest-api, such as an rpc-service:
+
+```yaml
+commands:
+  - name: place-order
+    writes: [Order]
+    resource_type: service
+    permission: place_order
+    route: POST /orders
+    fill: place-order
+```
+
+The schema declares the permission on that resource type, such as
+`permission place_order = placer`. Grant it on the tenant-qualified ID of the
+service-level resource. The provision and the retire permission are decided
+with no tenant, so checking refuses them for such a command. Its handle offers
+only Create<Entity> and Get<Entity> for each entity that it writes; it has no locked
+read, update or delete, and no relation helper. The generator refuses such a
+command when an entity that it writes has a parent. Each reference of a new
+row is still decided on the referenced row.

@@ -2,8 +2,10 @@ definition user {}
 
 definition service {
 	relation operator: user
+	relation placer: user
 	permission provision = operator
 	permission retire = operator
+	permission place_order = placer
 }
 
 definition order {

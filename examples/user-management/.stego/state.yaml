@@ -15,7 +15,7 @@ last_applied:
                 mode: 420
             authz/schema.zed:
                 exists: true
-                sha256: 87e9c0b65aca9a22c4e7386893b21b0c86f0d2f1f2f7f7988bf1ba8b5546559f
+                sha256: 4185ebd235edc2b5326b9e701f7ceb06e7183089c48b339fbecdc25a96e601c8
                 mode: 420
             go.mod:
                 exists: true
@@ -29,26 +29,26 @@ last_applied:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: b81dbcbf58b42951cebb015cca8553dc32a76fee01677676ae197a22fb442536
+        sha256: f623d542659365fd1ec7a00933c126ed40cbd6a7643186027758ca34d5505d7c
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117100104-19b0939f3901
+        module_version: v0.0.0-20261117100537-59e295bcf293
         vcs: git
-        revision: 19b0939f390124d5063d7840b55832d3e61043f2
+        revision: 59e295bcf293492650fc29e5ff51480ae50c0547
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 1463163dd7daeaf80c6bdeac485f79fddeac80702812d7df47de70ba5ff87bd8
+    registry_content_sha256: bd8c7fabc4a37546697187f693ac762cab45bd3af926da9db9779fd3239cccc6
     components:
         audit-log:
             version: 1.1.1
             sha: 666192671fc660e36cdc49a35f10b5cfbd800673d3140cc3fb9caeeefd1a3dac
         command:
-            version: 1.2.0
-            sha: 46b10e13b9553225350bdafdba8e7889bd0d2ea40efef6d3112cf91e336a41f9
+            version: 1.3.0
+            sha: 5f21497de0a7abcf5c7ffc8cd81e52b3185bfc388bc4e5c64ed518d73e5e54c2
         domain-probe:
             version: 1.0.1
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
@@ -142,22 +142,21 @@ last_applied:
         internal/api/all_users_handler.go: d1ef5853a1e9b9cd35607eda0f7fac1a17ba35b3c1e2f8640ca3a92873617498
         internal/api/cors.go: 5b7863e6f7fa7f104ffbc0f97418542b07bc428766642a1856de26eac9e1fc2c
         internal/api/data/entities.go: 63255775f57b77931da7cd741ad91200c3dd7a7d376cc9f14f21184cdb9a5cee
-        internal/api/data/links.go: 92680df2e0cb956c0174060a07b161d63f810d91bea7ddfd37875d0360020240
         internal/api/data/views.go: 01dfbc46db937a9df1e217fc53befc30593453c08319ed964724c37c4df3fc59
         internal/api/discovery.go: f5dc2a3505da0dc3b98bab336e01b9c22ae67d0a04911d5e964d71b58eeb4edc
         internal/api/errors.go: 8746d7f2437f9d6409c35b3ce25a67f3b71f5888ad3cdfe721b55663674f2ec7
         internal/api/openapi.json: 8b7fca8bd9817f4edc6fb039efce9ef59b050dd09244b3426f15c00bd3545598
         internal/api/org_activity_handler.go: 0eafa7c74ad193cfb87081a7a3819c50ec5a51c76554b9ff98530bd83ead0bd8
-        internal/api/org_settings_handler.go: fed8f9a62cd8aba81c3636a0675533e7f064e3d71a8f688f7776342c18805f77
-        internal/api/org_users_handler.go: a92e38fd3f50fe0773d013fdb7d5576391cc0e4ca6955aa65a4417158b9df864
+        internal/api/org_settings_handler.go: 1ed4cafd0b4c43dcac18852ce414de45f2389c1fa2485009147b81eae560c41f
+        internal/api/org_users_handler.go: 98aade8019111ab979593de33f00f35c0d27f0fb641c9d48d824d8cea8df21ed
         internal/api/organizations_handler.go: 7795161675479569835a820d9e396cc5c1589efa47641cac2f6569a8349f452a
         internal/api/router.go: d6124ed4af38af0415a23e5bfcc77ada26e18fe0cea5cf71dee839d28ff93fa6
         internal/api/runtime.go: 40b314935d34a80db8ec210860f3bea629f94b069e19547d0c377d63c4050f4b
         internal/api/user_activity_handler.go: 879317fda7698a24710044d6422617cd0cc6d71ddc0a0cbad2134533952060d4
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: 7fa2142f0f392775f4e230cef051034f050d33723732be342d1ae8eed40364fc
-        internal/authz/authz.go: 5455408e2aa38c878ccb43b032314fd8f6474725935b089b6b88afe38ef31dc8
-        internal/authz/schema.zed: 5dc471ea0e3cee6c2a66ebe4280a044fa6108f5de24eb11c47a668d5c55e61d9
+        internal/authz/authz.go: bcd5166c619d644f6d24f237c57824396616b093550cfa20a58090eb3bde5bfd
+        internal/authz/schema.zed: b92eda055de3d7b9a0cfe4fa015c3ab5ab12a1849f6178ee8aeaac5a56f729b2
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
         internal/stegoruntime/runtime.go: 01ec750e2c0ee39de91901153e5e2b4ae6323dff0a6bcbe82bba791fad97d257
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
@@ -170,7 +169,7 @@ last_applied:
         internal/tenancy/migrations/roles.sql: 131dcb112a94f82ead145bcb5797c5915ad94a230564e2181883d19944450fc9
         internal/tenancy/migrations/row_security.sql: 6813d74ed06f5df636433d5335339bcb4338f05de418002cd7ef94b60f44b6d9
         internal/tenancy/row_security.go: b49ceb1b85177e84037254ebc7872f9c1d048f24a27b02babc9937603a2360e1
-        main.go: e806bc8effb0a068d8db4da415fc2a822c650a51e496e8f3de7887b876937b51
+        main.go: 6e44636a1d5216120d2f8914db6d2e54236d9036f63a8a2967b2a0657ec2997b
         probes/observations.json: 3219f8292bdb4a47a2882aa87528a231132ea9219db88c094ea0051559fad046
         probes/probes.go: 7b1f0c4ba4b67cf9ba9890be0743d793cc9603cfbf4e43b1193cc2e8b1fe8bf9
         slots/after_create.go: 03242bcad46578176c9ac819f42390080ebebb94f72c480316f09740289ad80f
@@ -210,8 +209,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 39ff5f332d087b14f996119ddc3bd0d47164783c3b01e0115715a704e2afbbf6
-        architecture/index.html: 278bebebcda5bd5c2b5ba4238ecd2c414b679fcc4a5b81fa5718e48a267e42c7
+        architecture/architecture.json: 71031cade54de7e681b1079d2e7000ec53426c610ff8af554dad1fc928432d63
+        architecture/index.html: 5a1fe2626287b3f9382db37547aab24b3c3a48cb201c24a8a741ce8458178339
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
         deploy/base/migration-job.yaml: 289f913b022acfd203adefc6f98fb131e9c924d79397225ed1e23b46a01271db
