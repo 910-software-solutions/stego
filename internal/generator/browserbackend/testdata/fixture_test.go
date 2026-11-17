@@ -326,6 +326,10 @@ type fixture struct {
 	requests      []http.Header
 	paths         []string
 	status        int
+	// second is the upstream of the declared API second, when the generated configuration declares apis
+	// (ST-SUP-RC02-OC58); secondPaths are the paths that it got.
+	second      *httptest.Server
+	secondPaths []string
 }
 
 func setup(t *testing.T) *fixture {
@@ -355,7 +359,23 @@ func setup(t *testing.T) *fixture {
 	if _, err := rand.Read(key); err != nil {
 		t.Fatal(err)
 	}
-	f.options = options{Origin: origin, Upstream: f.upstream.URL, UpstreamCA: trust(t, f.upstream), Issuer: f.oidc.server.URL, IssuerCA: trust(t, f.oidc.server), ClientID: clientID, SecretFile: privateFile(t, "secret", []byte(secret)), KeyFile: privateFile(t, "key", []byte(base64.StdEncoding.EncodeToString(key)))}
+	upstreams := ""
+	if strings.Contains(generatedConfiguration, `"APIs":[{`) {
+		f.second = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			f.mu.Lock()
+			f.secondPaths = append(f.secondPaths, r.URL.RequestURI())
+			f.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("location") != "" {
+				w.Header().Set("Location", r.URL.Query().Get("location"))
+			}
+			w.WriteHeader(200)
+			io.WriteString(w, `{"api":"second"}`)
+		}))
+		t.Cleanup(f.second.Close)
+		upstreams = "second=" + f.second.URL
+	}
+	f.options = options{Origin: origin, Upstream: f.upstream.URL, Upstreams: upstreams, UpstreamCA: trust(t, f.upstream), Issuer: f.oidc.server.URL, IssuerCA: trust(t, f.oidc.server), ClientID: clientID, SecretFile: privateFile(t, "secret", []byte(secret)), KeyFile: privateFile(t, "key", []byte(base64.StdEncoding.EncodeToString(key)))}
 	f.backend = f.start(t)
 	return f
 }

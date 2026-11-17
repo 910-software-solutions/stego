@@ -29,9 +29,9 @@ const LoginCookie="__Host-Http-stego_login"
 const CSRFHeader="X-CSRF-Token"
 
 type asset struct{Source,Path,Hash string}
-type configuration struct{DynamicStyles bool;RuntimeConfigOffset int;Prefix,RolesClaim,LogoutScope,TelemetryService,OAuthScope string;Routes []string;Assets []asset;ScriptHashes []string}
-type options struct{Origin,Upstream,UpstreamCA,Issuer,IssuerCA,ClientID,SecretFile,KeyFile string}
-type Backend struct{ {{if .LocalApplication}}sockets socketSet;{{end}}telemetryMu sync.Mutex;telemetryLimits map[string]telemetryBucket;store *sessionStore;provider *oauthProvider;upstream *client.Client;origin *url.URL;config configuration;logoutTarget,logoutOrigin string;routes []*regexp.Regexp;close sync.Once;permits chan struct{}}
+type configuration struct{DynamicStyles bool;RuntimeConfigOffset int;Prefix,RolesClaim,LogoutScope,TelemetryService,OAuthScope string;Routes []string;APIs []struct{Name,Prefix string};Assets []asset;ScriptHashes []string}
+type options struct{Origin,Upstream,Upstreams,UpstreamCA,Issuer,IssuerCA,ClientID,SecretFile,KeyFile string}
+type Backend struct{ {{if .LocalApplication}}sockets socketSet;{{end}}telemetryMu sync.Mutex;telemetryLimits map[string]telemetryBucket;store *sessionStore;provider *oauthProvider;upstream *client.Client;apis []apiRoute;origin *url.URL;config configuration;logoutTarget,logoutOrigin string;routes []*regexp.Regexp;close sync.Once;permits chan struct{}}
 
 // NewBrowserBackendWithTelemetry binds startup to the process telemetry runtime.
 // Generated assembly closes the backend before it closes that runtime.
@@ -47,7 +47,7 @@ func NewBrowserBackend(ctx context.Context,db *sql.DB)(*Backend,error){
   if os.Getenv("STEGO_HTTP_TLS_CERT")==""||os.Getenv("STEGO_HTTP_TLS_KEY")==""{return errors.New("browser backend requires HTTPS")}
   return nil
  });err!=nil{return nil,err}
- o:=options{Origin:os.Getenv("STEGO_BROWSER_ORIGIN"),Upstream:os.Getenv("STEGO_BROWSER_API_URL"),UpstreamCA:os.Getenv("STEGO_BROWSER_API_CA_FILE"),Issuer:os.Getenv("STEGO_BROWSER_ISSUER"),IssuerCA:os.Getenv("STEGO_BROWSER_ISSUER_CA_FILE"),ClientID:os.Getenv("STEGO_BROWSER_CLIENT_ID"),SecretFile:os.Getenv("STEGO_BROWSER_CLIENT_SECRET_FILE"),KeyFile:os.Getenv("STEGO_BROWSER_SESSION_KEY_FILE")}
+ o:=options{Origin:os.Getenv("STEGO_BROWSER_ORIGIN"),Upstream:os.Getenv("STEGO_BROWSER_API_URL"),Upstreams:os.Getenv("STEGO_BROWSER_API_URLS"),UpstreamCA:os.Getenv("STEGO_BROWSER_API_CA_FILE"),Issuer:os.Getenv("STEGO_BROWSER_ISSUER"),IssuerCA:os.Getenv("STEGO_BROWSER_ISSUER_CA_FILE"),ClientID:os.Getenv("STEGO_BROWSER_CLIENT_ID"),SecretFile:os.Getenv("STEGO_BROWSER_CLIENT_SECRET_FILE"),KeyFile:os.Getenv("STEGO_BROWSER_SESSION_KEY_FILE")}
  return newBackend(ctx,db,o)
 }
 // The outcome contains no error text. A panic retains its normal behavior and
@@ -65,7 +65,7 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
   if ctx==nil||db==nil{return errors.New("browser startup requires a context and database")}
   var err error
   origin,err=httpsURL(o.Origin);if err!=nil||origin.Path!=""||origin.RawQuery!=""||origin.ForceQuery{return errors.New("browser backend requires an HTTPS origin")}
-  {{if .LocalApplication}}if o.Upstream!=""||o.UpstreamCA!="" {return errors.New("local application address is compiler-owned")}{{else}}upstreamURL,err:=httpsURL(o.Upstream);if err!=nil||upstreamURL.Path!=""||upstreamURL.RawQuery!=""||upstreamURL.ForceQuery||cookieHost(upstreamURL)==cookieHost(origin){return errors.New("browser API requires a separate HTTPS cookie host")}{{end}}
+  {{if .LocalApplication}}if o.Upstream!=""||o.Upstreams!=""||o.UpstreamCA!="" {return errors.New("local application address is compiler-owned")}{{else}}upstreamURL,err:=httpsURL(o.Upstream);if err!=nil||upstreamURL.Path!=""||upstreamURL.RawQuery!=""||upstreamURL.ForceQuery||cookieHost(upstreamURL)==cookieHost(origin){return errors.New("browser API requires a separate HTTPS cookie host")}{{end}}
   issuer,err:=httpsURL(o.Issuer);if err!=nil||cookieHost(issuer)==cookieHost(origin){return errors.New("browser issuer requires a separate HTTPS cookie host")}
   return nil
  });if err!=nil{return nil,err}
@@ -83,17 +83,19 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
  // The store has copied these keys. Clear them before network discovery.
  for _,key:=range keys{clear(key)}
  var upstream *client.Client
+ var apis []apiRoute
  err=startupStep(ctx,telemetry.StartupBrowserUpstream,func(context.Context)error{
-  {{if .LocalApplication}}upstream=client.NewLocalApplication();return nil{{else}}var err error;upstream,err=client.New(client.Options{BaseURL:o.Upstream,CAFile:o.UpstreamCA});return err{{end}}
+  {{if .LocalApplication}}upstream=client.NewLocalApplication();return nil{{else}}var err error;upstream,err=client.New(client.Options{BaseURL:o.Upstream,CAFile:o.UpstreamCA});if err!=nil{return err}
+  apis,err=declaredAPIs(o,origin);if err!=nil{upstream.Close()};return err{{end}}
  });if err!=nil{return nil,err}
  var provider *oauthProvider
  err=startupStep(ctx,telemetry.StartupBrowserDiscovery,func(step context.Context)error{
   var err error;provider,err=discover(step,o);return err
- });if err!=nil{upstream.Close();return nil,err}
+ });if err!=nil{upstream.Close();closeAPIs(apis);return nil,err}
  err=startupStep(ctx,telemetry.StartupBrowserAuthorization,func(context.Context)error{
   authorization,_:=httpsURL(provider.metadata.Authorization);if cookieHost(authorization)==cookieHost(origin){return errors.New("browser authorization requires a separate HTTPS cookie host")};return nil
- });if err!=nil{provider.close();upstream.Close();return nil,err}
- b:=&Backend{store:store,provider:provider,upstream:upstream,origin:origin,permits:make(chan struct{},client.MaxConcurrentRequests)}
+ });if err!=nil{provider.close();upstream.Close();closeAPIs(apis);return nil,err}
+ b:=&Backend{store:store,provider:provider,upstream:upstream,apis:apis,origin:origin,permits:make(chan struct{},client.MaxConcurrentRequests)}
  err=startupStep(ctx,telemetry.StartupBrowserRoutes,func(context.Context)error{
   if json.Unmarshal([]byte(generatedConfiguration),&b.config)!=nil{return errors.New("invalid generated browser configuration")}
   if b.config.LogoutScope=="identity_provider"{var err error;b.logoutTarget,b.logoutOrigin,err=provider.logoutTarget(origin);if err!=nil{return err}}
@@ -102,7 +104,43 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
  });if err!=nil{b.Close();return nil,err}
  return b,nil
 }
-func(b *Backend)Close(){b.close.Do(func(){ {{if .LocalApplication}}b.sockets.close();b.sockets.wg.Wait();{{end}}b.provider.close();b.upstream.Close()})}
+func(b *Backend)Close(){b.close.Do(func(){ {{if .LocalApplication}}b.sockets.close();b.sockets.wg.Wait();{{end}}b.provider.close();b.upstream.Close();closeAPIs(b.apis)})}
+// apiRoute is one declared API of the setting apis: its prefix and the bounded client of its one fixed origin, which
+// STEGO_BROWSER_API_URLS gives at start and which never changes after (ST-SUP-RC02-OC58).
+type apiRoute struct{name,prefix string;upstream *client.Client}
+// declaredAPIs reads STEGO_BROWSER_API_URLS, a comma-separated list of name=origin, once at start. It refuses a
+// name that the declaration does not give, a name given two times or not given, and an address that is not an
+// HTTPS origin on a cookie host other than the console's. Each API gets a bounded client of its own.
+func declaredAPIs(o options,origin *url.URL)([]apiRoute,error){
+ var declared configuration
+ if json.Unmarshal([]byte(generatedConfiguration),&declared)!=nil{return nil,errors.New("invalid generated browser configuration")}
+ if len(declared.APIs)==0{if o.Upstreams!=""{return nil,errors.New("STEGO_BROWSER_API_URLS is given, and the declaration has no apis")};return nil,nil}
+ given:=map[string]string{}
+ for _,item:=range strings.Split(o.Upstreams,","){
+  name,address,ok:=strings.Cut(strings.TrimSpace(item),"=")
+  if !ok||name==""{return nil,errors.New("STEGO_BROWSER_API_URLS requires a list of name=origin")}
+  if _,again:=given[name];again{return nil,errors.New("STEGO_BROWSER_API_URLS gives the API "+name+" two times")}
+  given[name]=address
+ }
+ var routes []apiRoute
+ for _,api:=range declared.APIs{
+  address,ok:=given[api.Name];if !ok{closeAPIs(routes);return nil,errors.New("STEGO_BROWSER_API_URLS gives no origin for the API "+api.Name)}
+  delete(given,api.Name)
+  target,err:=httpsURL(address);if err!=nil||target.Path!=""||target.RawQuery!=""||target.ForceQuery||cookieHost(target)==cookieHost(origin){closeAPIs(routes);return nil,errors.New("browser API "+api.Name+" requires a separate HTTPS cookie host")}
+  c,err:=client.New(client.Options{BaseURL:address,CAFile:o.UpstreamCA});if err!=nil{closeAPIs(routes);return nil,err}
+  routes=append(routes,apiRoute{name:api.Name,prefix:api.Prefix,upstream:c})
+ }
+ for name:=range given{closeAPIs(routes);return nil,errors.New("STEGO_BROWSER_API_URLS names the API "+name+", which the declaration does not give")}
+ return routes,nil
+}
+func closeAPIs(routes []apiRoute){for _,r:=range routes{r.upstream.Close()}}
+// apiPrefix gives the prefix and the client of the API whose prefix the path is under, at a whole segment: the
+// declared prefixes do not overlap, so at most one matches. It gives no client for a path under no API prefix.
+func(b *Backend)apiPrefix(p string)(string,*client.Client){
+ if p==b.config.Prefix||strings.HasPrefix(p,b.config.Prefix+"/"){return b.config.Prefix,b.upstream}
+ for _,r:=range b.apis{if p==r.prefix||strings.HasPrefix(p,r.prefix+"/"){return r.prefix,r.upstream}}
+ return "",nil
+}
 func(b *Backend)Run(ctx context.Context)error{ {{if .LocalApplication}}defer func(){b.sockets.close();b.sockets.wg.Wait()}();{{end}}
  ticker:=time.NewTicker(time.Minute);defer ticker.Stop()
  for {select{case <-ctx.Done():return nil;case <-ticker.C:
@@ -125,10 +163,10 @@ func(b *Backend)ServeHTTP(w http.ResponseWriter,r *http.Request){
  {{end}}select{case b.permits<-struct{}{}:defer func(){<-b.permits}();default:failure(w,503);return}
  original:=r;defer func(){original.Pattern=r.Pattern}()
  ctx,cancel:=context.WithTimeout(r.Context(),20*time.Second);defer cancel();r=r.WithContext(ctx)
- if r.TLS==nil||r.Host!=b.origin.Host||r.URL.RawPath!=""||len(r.URL.Path)>4096||len(r.URL.RawQuery)>8192||strings.ContainsAny(r.URL.Path,"\\\x00\r\n"){failure(w,400);return}
+ if r.TLS==nil||r.Host!=b.origin.Host||r.URL.RawPath!=""||len(r.URL.Path)>4096||len(r.URL.RawQuery)>8192||strings.ContainsAny(r.URL.Path,"\\\x00\r\n")||strings.Contains(r.URL.Path,"//")||strings.Contains(r.URL.Path+"/","/./")||strings.Contains(r.URL.Path+"/","/../"){failure(w,400);return}
  if len(r.Header.Values("Sec-Fetch-Site"))>1{failure(w,400);return}
  if site:=r.Header.Get("Sec-Fetch-Site");site=="cross-site"||site=="same-site"{
-  publicNavigation:=(r.Method=="GET"||r.Method=="HEAD")&&!strings.HasPrefix(r.URL.Path,"/auth/")&&r.URL.Path!=b.config.Prefix&&!strings.HasPrefix(r.URL.Path,b.config.Prefix+"/")
+  publicNavigation:=(r.Method=="GET"||r.Method=="HEAD")&&!strings.HasPrefix(r.URL.Path,"/auth/")&&func()bool{prefix,_:=b.apiPrefix(r.URL.Path);return prefix==""}()
   if r.URL.Path!="/auth/callback"&&!(r.Method=="GET"&&r.URL.Path=="/auth/logout")&&!publicNavigation{failure(w,403);return}
  }
  if len(r.Header.Values("Origin"))!=0&&!b.sameOrigin(r){failure(w,403);return}
@@ -139,7 +177,7 @@ func(b *Backend)ServeHTTP(w http.ResponseWriter,r *http.Request){
  case "/auth/logout":r.Pattern="/auth/logout";if r.URL.RawQuery!=""{failure(w,400);return};if r.Method=="GET"{b.confirmLogout(w,r);return};if r.Method!="POST"{w.Header().Set("Allow","GET, POST");failure(w,405);return};b.logout(w,r);return
  }
  if strings.HasPrefix(r.URL.Path,"/telemetry/"){r.Pattern="/telemetry/v1/{signal}";b.telemetry(w,r);return}
- if r.URL.Path==b.config.Prefix||strings.HasPrefix(r.URL.Path,b.config.Prefix+"/"){r.Pattern=b.config.Prefix+"/{resource}";b.proxy(w,r);return}
+ if prefix,_:=b.apiPrefix(r.URL.Path);prefix!=""{r.Pattern=prefix+"/{resource}";b.proxy(w,r);return}
  {{if not .EmbeddedAssets}}
  if r.Method!="GET"&&r.Method!="HEAD"{failure(w,405);return}
  if b.browserPath(r.URL.Path) {for i,route:=range b.routes{if route.MatchString(r.URL.Path){r.Pattern=b.config.Routes[i];break}};b.proxy(w,r);return}
