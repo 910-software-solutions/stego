@@ -198,7 +198,12 @@ func runInit(args []string) error {
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
-	result, err := compiler.Initialize(compiler.InitOptions{ProjectDir: projectDir, Archetype: *archetype, Empty: *empty, Stderr: os.Stderr})
+	// The placeholders of the example content take the module path that generation then uses.
+	module, _, err := compiler.ProjectModuleSettings(projectDir, os.Getenv("STEGO_MODULE"), os.Getenv("STEGO_GO_VERSION"))
+	if err != nil {
+		return err
+	}
+	result, err := compiler.Initialize(compiler.InitOptions{ProjectDir: projectDir, Archetype: *archetype, Empty: *empty, Module: module, Stderr: os.Stderr})
 	if err != nil {
 		return err
 	}

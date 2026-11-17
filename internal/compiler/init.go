@@ -21,7 +21,10 @@ type InitOptions struct {
 	ProjectDir string
 	Archetype  string
 	// Empty asks for a scaffold with no example content (ST-DECL-UC01-R05).
-	Empty  bool
+	Empty bool
+	// Module is the module path that the placeholders of the example content take: the one generation then uses
+	// (ProjectModuleSettings). With no value, init takes the module of the project's go.mod or the default.
+	Module string
 	Stderr io.Writer
 }
 
@@ -102,9 +105,9 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 			exampleFiles = append(exampleFiles, file)
 		}
 	}
-	module := ""
-	if len(example) > 0 {
-		if module, _, err = ProjectModuleSettings(project, os.Getenv("STEGO_MODULE"), os.Getenv("STEGO_GO_VERSION")); err != nil {
+	module := opts.Module
+	if len(example) > 0 && module == "" {
+		if module, _, err = ProjectModuleSettings(project, "", ""); err != nil {
 			return nil, err
 		}
 	}
@@ -114,13 +117,13 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 	}
 	var owed []string
 	if len(example) == 0 {
-		components, err := ActiveComponents(reg, opts.Archetype)
-		if err != nil {
-			return nil, err
-		}
-		schemas := make(map[string]map[string]types.ConfigField, len(components))
-		for component, item := range components {
-			schemas[component] = item.Config
+		// The components the archetype names, and its default auth component, as the registry holds them; checking
+		// resolves the ports of the set later.
+		schemas := map[string]map[string]types.ConfigField{}
+		for _, component := range append(append([]string(nil), arch.Components...), arch.DefaultAuth) {
+			if item := reg.Component(component); item != nil {
+				schemas[component] = item.Config
+			}
 		}
 		owed = declaration.AuthorSuppliedSettings(schemas)
 	}
