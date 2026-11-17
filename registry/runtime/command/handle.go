@@ -269,6 +269,10 @@ type Reference[T any] struct {
 	// within; both entities read it through their EntitySpec.Within. Key is the name of the composite foreign key
 	// that holds the same rule in the database (ST-SUP-RP10-LC37, ST-SUP-RC01-OC46).
 	Field, Within, Key string
+	// Check is the name of the CHECK that holds the within field set while the reference is set, for a within field
+	// that may be NULL (ST-SUP-RC01-OC46), or empty. A write that it refuses (SQLSTATE 23514) is ErrInvalid naming the
+	// reference, as a write that Key refuses is.
+	Check string
 }
 
 // Referrer is the composite foreign key of a reference of another entity to this one that is held within a field
@@ -1142,12 +1146,22 @@ func (r *Repository[T]) checkWithin(value T, ref reference, p rowRef) error {
 
 // failWrite is fail for the row statement of a create or an update of the entity: a foreign key violation (SQLSTATE
 // 23503) of the composite key of a reference held within a field, from a race or from a write of the referenced
-// row, is ErrInvalid naming the reference, never an internal error and never a run again (ST-SUP-RP10-LC37). The
+// row, and a violation (SQLSTATE 23514) of the CHECK of its within field, is ErrInvalid naming the reference, never an
+// internal error and never a run again (ST-SUP-RP10-LC37). The
 // key of a reference of this entity names the reference; the key of a reference of another entity to this one
 // names the field of this entity that it is held within.
 func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) error {
 	s, e := r.st, r.entity
 	var pg *pgconn.PgError
+	// A CHECK of the within field (SQLSTATE 23514) refuses a set reference with no within field, as from a worker
+	// that writes the row outside the collection of the scope (ST-SUP-RC01-OC46).
+	if sqlState(err) == "23514" && errors.As(err, &pg) && pg.ConstraintName != "" {
+		for _, ref := range e.spec.Parent {
+			if ref.Within != "" && ref.Check == pg.ConstraintName {
+				return s.breakWith(&invalidError{field: ref.Field, reason: reasonWithin(ref.Within)})
+			}
+		}
+	}
 	if sqlState(err) == "23503" && errors.As(err, &pg) && pg.ConstraintName != "" {
 		for _, ref := range e.spec.Parent {
 			if ref.Key == pg.ConstraintName {

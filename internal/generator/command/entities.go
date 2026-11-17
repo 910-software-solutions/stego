@@ -466,7 +466,10 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 			}
 			if r.within != "" {
 				// The runtime compares the within field of the row and of the referenced row (ST-SUP-RP10-LC37).
-				w.f(", Field: %q, Within: %q, Key: %q", r.field.decl.Name, r.within, postgresadapter.WithinKeyName(e.decl.Name, r.field.decl.ColumnName()))
+				// A CHECK of an optional within field refuses a set reference with no within field; its
+				// violation answers 400 as the key's does (ST-SUP-RC01-OC46).
+				w.f(", Field: %q, Within: %q, Key: %q, Check: %q", r.field.decl.Name, r.within, postgresadapter.WithinKeyName(e.decl.Name, r.field.decl.ColumnName()),
+					postgresadapter.WithinCheckName(e.decl.Name, r.field.decl.ColumnName()))
 			}
 			w.f("},\n")
 		}

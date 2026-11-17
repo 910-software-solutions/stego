@@ -863,7 +863,7 @@ func TestWithinEntities(t *testing.T) {
 			return w.String()
 		}
 		ticket, sprint, project := render("Ticket"), render("Sprint"), render("Project")
-		for _, want := range []string{`Field: "sprint_id", Within: "project_id", Key: "tickets_sprint_id_within_fkey"`, `Within: map[string]func(v Ticket) string{`,
+		for _, want := range []string{`Field: "sprint_id", Within: "project_id", Key: "tickets_sprint_id_within_fkey", Check: "tickets_sprint_id_wcheck"`, `Within: map[string]func(v Ticket) string{`,
 			`"project_id": func(v Ticket) string { return v.ProjectID },`} {
 			if !strings.Contains(ticket, want) {
 				t.Errorf("the entity Ticket does not declare %s:\n%s", want, ticket)

@@ -876,6 +876,9 @@ composite key (ST-SUP-RC01-OC46), so a race, a worker that gives no parent and
 a move of the referenced row are refused too: a move of a sprint to another
 project while a ticket of the first project refers to it gives 400 `invalid`
 with the field `project_id`.
+When the field that the reference is held within is optional, the database
+also holds a CHECK: a row that sets the reference and leaves that field empty
+gives 400 `invalid` with the field of the reference.
 
 ### A failed statement
 
