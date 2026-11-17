@@ -1404,18 +1404,25 @@ func TestArchitectureContext(t *testing.T) {
 		if !slices.Contains(actors, "actor:token-issuer.auth token issuer https://id.example/realm <service.yaml overrides.auth.issuer>") {
 			t.Fatalf("the declared issuer does not name the actor:\n%s", strings.Join(actors, "\n"))
 		}
-		// The model shows the scheme, host and path of the issuer, and no user info, query or fragment; a value that
-		// is not an https URL with a host, or whose path holds '@', is not shown.
+		// The model shows the scheme, host and path of the issuer, and no query or fragment; a value that is not an
+		// https URL with a host, or that holds '@' at any position, is not shown. The last four values put a '?', a
+		// '#' or a '/' in the user info, which the parse would read as a part of the host or the path.
 		for issuer, want := range map[string]string{
-			"https://user:secret@id.example/realm?token=t0#f": "https://id.example/realm",
-			"https://id.example/realm?":                       "https://id.example/realm",
-			"https://id.example/realm#":                       "https://id.example/realm",
-			"user:secret@id.example/realm":                    "Token issuer of auth",
-			"id.example/realm":                                "Token issuer of auth",
-			"https://u:123/secret@id.example/realm":           "Token issuer of auth",
-			"https://id.example/realm%40secret":               "Token issuer of auth",
-			"http://id.example/realm":                         "Token issuer of auth",
-			"HTTPS://id.example/realm":                        "https://id.example/realm",
+			"https://id.example/realm?token=t0#f":   "https://id.example/realm",
+			"https://id.example/realm?":             "https://id.example/realm",
+			"https://id.example/realm#":             "https://id.example/realm",
+			"https://user:secret@id.example/realm":  "Token issuer of auth",
+			"user:secret@id.example/realm":          "Token issuer of auth",
+			"id.example/realm":                      "Token issuer of auth",
+			"https://u:123/secret@id.example/realm": "Token issuer of auth",
+			"https://id.example/realm%40secret":     "Token issuer of auth",
+			"https://id.example/realm?by=a@b":       "Token issuer of auth",
+			"http://id.example/realm":               "Token issuer of auth",
+			"HTTPS://id.example/realm":              "https://id.example/realm",
+			"https://tok?en@id.example/realm":       "Token issuer of auth",
+			"https://tok#en@id.example/realm":       "Token issuer of auth",
+			"https://u:12#secret@id.example/realm":  "Token issuer of auth",
+			"https://u:1/x?y@id.example/realm":      "Token issuer of auth",
 		} {
 			in.Service.Overrides["auth"] = map[string]any{"issuer": issuer}
 			model, _ = deriveFixture(t, in)
