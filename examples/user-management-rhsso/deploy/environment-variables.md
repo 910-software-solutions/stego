@@ -62,7 +62,7 @@ shows its name only: give its value through a secret of the platform.
 | `STEGO_KAFKA_PASSWORD_FILE` | path | no | none | no | - | `/etc/stego/kafka/password` | The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it. |
 | `STEGO_KAFKA_SASL_MECHANISM` | string | no | none | no | SCRAM-SHA-512, OAUTHBEARER | `SCRAM-SHA-512` | The SASL mechanism. When it has no value, the worker uses no SASL and needs a client certificate. |
 | `STEGO_KAFKA_TOKEN_FILE` | path | no | none | no | - | `/etc/stego/kafka/token` | The file of the OAUTHBEARER token. The mechanism OAUTHBEARER needs it. |
-| `STEGO_KAFKA_TOPIC` | string | one of `kafka-topic` | none | no | - | `orders.changes` | The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place: the topic of the topic need. The service needs one, as with none each message goes to the topic of its event type. |
+| `STEGO_KAFKA_TOPIC` | string | one of `kafka-topic` | none | no | - | `orders.changes` | The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place. Give one of the two, with the topic of the topic need: stego env check refuses another topic. |
 | `STEGO_KAFKA_TOPIC_FILE` | path | one of `kafka-topic` | none | no | - | `/etc/stego/kafka/topic` | The file that holds the topic of every message. Give it or STEGO_KAFKA_TOPIC, not the two. |
 | `STEGO_KAFKA_USERNAME` | string | no | none | no | - | `orders-worker` | The SCRAM user name. Give it or STEGO_KAFKA_USERNAME_FILE when the mechanism is SCRAM-SHA-512. |
 | `STEGO_KAFKA_USERNAME_FILE` | path | no | none | no | - | `/etc/stego/kafka/username` | The file that holds the SCRAM user name. Give it or STEGO_KAFKA_USERNAME, not the two. |
