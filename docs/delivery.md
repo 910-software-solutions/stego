@@ -53,6 +53,41 @@ platform supplies those values.
    `kube-system` and `argocd`. STEGO refuses the project `default`.
 4. Choose the revision of the environment files. A full commit pins them. A protected branch follows them.
 
+## Probes and modes
+
+The Deployment of the base runs the modes that `STEGO_MODE` selects: api, worker and controller, all three by
+default. Its probes are:
+
+- liveness: `/livez`. It answers 200 while the process runs. It reads no database and no broker, so an outage of a
+  dependency does not restart the pod.
+- readiness: `/readyz`. It tells whether the pod can take requests of the API. It does not read the worker and
+  controller modes.
+
+The readiness of the worker and controller modes is `/readyz/modes`. It answers 503 and names the cause when a
+worker stopped, such as `worker: not ready: the component inbox-order-changes stopped` or
+`the component inbox-order-changes fails: broker:UNKNOWN_TOPIC_OR_PARTITION`, and 200 when each mode that the
+process runs is ready. A process that runs neither mode answers 200 there.
+
+Do not make `/readyz/modes` the readiness probe of a pod that runs the api mode. When Kafka or the audit sink is
+down, the worker mode of each replica is not ready at the same time. Kubernetes then removes every replica from
+the endpoints of the Service, and an outage of a dependency that only the worker uses stops the API too.
+
+To see a stopped worker in Kubernetes, run the worker and controller modes in a Deployment of their own, with an
+overlay. Set `STEGO_MODE` to `api` on the Deployment of the base, and add a second Deployment, which no Service
+selects, with `STEGO_MODE` set to `worker,controller` and this readiness probe, on the port of `/readyz` in the
+base:
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /readyz/modes
+    port: 8080
+```
+
+No traffic goes to that Deployment, so its readiness removes nothing from a Service. It shows a stopped worker in
+`kubectl get pods` and in the `Available` condition, and a new release whose worker cannot start does not
+complete its rollout. Keep the liveness probe on `/livez`: a broker outage must not restart the worker.
+
 ## Secrets and configuration
 
 The base names each Secret, each ConfigMap and each key. It never holds a value. The platform makes the Secrets

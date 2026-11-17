@@ -518,6 +518,7 @@ func compositionFacts(input ReconcilerInput, svcDecl *types.ServiceDeclaration, 
 		names = append(names, name)
 	}
 	facts.CollectionsUnserved = components != nil && !servesCollections(components)
+	facts.ComponentsUnresolved = components == nil
 	facts.RuntimeData = runtimeDataPath(len(svcDecl.Entities) == 0 && len(svcDecl.Commands) == 0 && len(svcDecl.Queries) == 0, names)
 	for name := range components {
 		config, _ := svcDecl.Overrides[name].(map[string]any)
