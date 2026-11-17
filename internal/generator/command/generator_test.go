@@ -694,3 +694,51 @@ func TestContractRuntimeImports(t *testing.T) {
 		}
 	})
 }
+
+func TestWithinEntities(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC37-T04 The generated entities declare each reference held within a field, the readers of the field and the keys of the references to them", func(t *testing.T) {
+		entities := []types.Entity{
+			{Name: "Project", EntityAuthorization: types.EntityAuthorization{ResourceType: "project", Permissions: map[types.Operation]string{types.OpRead: "view"}},
+				Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}}},
+			{Name: "Sprint", EntityAuthorization: types.EntityAuthorization{ResourceType: "sprint", Permissions: map[types.Operation]string{types.OpRead: "view"},
+				References: map[string]types.Reference{"project_id": {Relation: "project", Permission: "edit"}}},
+				Fields: []types.Field{{Name: "project_id", Type: types.FieldTypeRef, To: "Project"}}},
+			{Name: "Ticket", EntityAuthorization: types.EntityAuthorization{ResourceType: "ticket", Permissions: map[types.Operation]string{types.OpRead: "view"},
+				References: map[string]types.Reference{"project_id": {Relation: "project", Permission: "edit"}, "sprint_id": {Relation: "sprint", Permission: "edit", Within: "project_id"}}},
+				Fields: []types.Field{{Name: "project_id", Type: types.FieldTypeRef, To: "Project"}, {Name: "sprint_id", Type: types.FieldTypeRef, To: "Sprint", Optional: true}}},
+		}
+		byName := map[string]types.Entity{}
+		for _, e := range entities {
+			byName[e.Name] = e
+		}
+		render := func(name string) string {
+			t.Helper()
+			p, err := planEntity(byName[name], byName, "tenant_id", Relations{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := &writer{}
+			renderEntity(w, p, "tenant_id")
+			return w.String()
+		}
+		ticket, sprint, project := render("Ticket"), render("Sprint"), render("Project")
+		for _, want := range []string{`Field: "sprint_id", Within: "project_id", Key: "tickets_sprint_id_within_fkey"`, `Within: map[string]func(v Ticket) string{`,
+			`"project_id": func(v Ticket) string { return v.ProjectID },`} {
+			if !strings.Contains(ticket, want) {
+				t.Errorf("the entity Ticket does not declare %s:\n%s", want, ticket)
+			}
+		}
+		if strings.Count(ticket, "Within: \"") != 1 {
+			t.Errorf("the entity Ticket holds more than its one reference held within a field:\n%s", ticket)
+		}
+		for _, want := range []string{`"project_id": func(v Sprint) string { return v.ProjectID },`,
+			`{Key: "tickets_sprint_id_within_fkey", Field: "Ticket.sprint_id", Within: "project_id"},`, "before.ProjectID != after.ProjectID"} {
+			if !strings.Contains(sprint, want) {
+				t.Errorf("the entity Sprint does not declare %s:\n%s", want, sprint)
+			}
+		}
+		if strings.Contains(project, "Within") || strings.Contains(project, "Referrers") {
+			t.Errorf("the entity Project declares a within that no reference holds:\n%s", project)
+		}
+	})
+}

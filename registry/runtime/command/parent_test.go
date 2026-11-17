@@ -2,11 +2,15 @@ package command
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 )
@@ -282,4 +286,311 @@ func orderTuple(t *testing.T, id, relation, customerID string) authz.Tuple {
 		t.Fatal(err)
 	}
 	return authz.Tuple{Resource: r, Relation: relation, Subject: authz.Subject{Type: "customer", ID: subject}}
+}
+
+// The entities of the within test: a project, a sprint of a project, and a ticket of a project whose optional
+// sprint is held within project_id (ST-DECL-INV93, ST-SUP-RP10-LC37).
+type (
+	wProject struct{ ID, Name string }
+	wSprint  struct{ ID, ProjectID string }
+	wTicket  struct{ ID, ProjectID, SprintID string }
+)
+
+// withinKey is the composite key of the sprint of a ticket, as the postgres-adapter names it (ST-SUP-RC01-OC46).
+const withinKey = "wtickets_sprint_id_within_fkey"
+
+
+// withinEntities makes the tables and the entities of the within test. The tables hold the composite key of the
+// sprint of a ticket, as the postgres-adapter emits it, so a write past the runtime check meets the key.
+func withinEntities(e *env) (*Entity[wProject], *Entity[wSprint], *Entity[wTicket]) {
+	t := e.t
+	t.Helper()
+	e.exec(`CREATE TABLE wprojects (tenant_id text NOT NULL, id text NOT NULL, name text NOT NULL,
+  version bigint NOT NULL DEFAULT 1, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id))`,
+		`CREATE TABLE wsprints (tenant_id text NOT NULL, id text NOT NULL, project_id text NOT NULL,
+  version bigint NOT NULL DEFAULT 1, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, project_id) REFERENCES wprojects (tenant_id, id))`,
+		`CREATE UNIQUE INDEX wsprints_project_id_id_key ON wsprints (tenant_id, project_id, id)`,
+		`CREATE TABLE wtickets (tenant_id text NOT NULL, id text NOT NULL, project_id text NOT NULL, sprint_id text,
+  version bigint NOT NULL DEFAULT 1, authz_token text NOT NULL DEFAULT '', PRIMARY KEY (tenant_id, id),
+  FOREIGN KEY (tenant_id, project_id) REFERENCES wprojects (tenant_id, id),
+  CONSTRAINT `+withinKey+` FOREIGN KEY (tenant_id, project_id, sprint_id) REFERENCES wsprints (tenant_id, project_id, id))`)
+	for _, table := range []string{"wprojects", "wsprints", "wtickets"} {
+		e.exec("ALTER TABLE "+table+" ENABLE ROW LEVEL SECURITY", "ALTER TABLE "+table+" FORCE ROW LEVEL SECURITY",
+			"CREATE POLICY "+table+"_tenant ON "+table+" USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
+			"GRANT SELECT, INSERT, UPDATE, DELETE ON "+table+" TO "+e.roles[0])
+	}
+	projects, err := NewEntity(spec("WProject", "project", "wprojects", []string{"name"},
+		func(s Scanner) (wProject, Meta, error) {
+			var v wProject
+			var m Meta
+			err := s.Scan(&v.ID, &v.Name, &m.Version, &m.Token)
+			m.ID = v.ID
+			return v, m, err
+		},
+		func(v wProject) []any { return []any{v.ID, v.Name} },
+		func(v wProject) map[string]any { return map[string]any{"id": v.ID, "name": v.Name} }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sprintSpec := spec("WSprint", "sprint", "wsprints", []string{"project_id"},
+		func(s Scanner) (wSprint, Meta, error) {
+			var v wSprint
+			var m Meta
+			err := s.Scan(&v.ID, &v.ProjectID, &m.Version, &m.Token)
+			m.ID = v.ID
+			return v, m, err
+		},
+		func(v wSprint) []any { return []any{v.ID, v.ProjectID} },
+		func(v wSprint) map[string]any { return map[string]any{"id": v.ID, "project_id": v.ProjectID} })
+	sprintSpec.Parent = []Reference[wSprint]{{Entity: "WProject", ResourceType: "project", ID: func(v wSprint) string { return v.ProjectID },
+		Permission: "edit", Relation: "project"}}
+	sprintSpec.Within = map[string]func(wSprint) string{"project_id": func(v wSprint) string { return v.ProjectID }}
+	sprintSpec.Referrers = []Referrer{{Key: withinKey, Field: "WTicket.sprint_id", Within: "project_id"}}
+	sprints, err := NewEntity(sprintSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticketSpec := spec("WTicket", "ticket", "wtickets", []string{"project_id", "sprint_id"},
+		func(s Scanner) (wTicket, Meta, error) {
+			var v wTicket
+			var m Meta
+			var sprint sql.NullString
+			err := s.Scan(&v.ID, &v.ProjectID, &sprint, &m.Version, &m.Token)
+			v.SprintID, m.ID = sprint.String, v.ID
+			return v, m, err
+		},
+		func(v wTicket) []any {
+			var sprint any
+			if v.SprintID != "" {
+				sprint = v.SprintID
+			}
+			return []any{v.ID, v.ProjectID, sprint}
+		},
+		func(v wTicket) map[string]any {
+			return map[string]any{"id": v.ID, "project_id": v.ProjectID, "sprint_id": v.SprintID}
+		})
+	ticketSpec.Parent = []Reference[wTicket]{
+		{Entity: "WProject", ResourceType: "project", ID: func(v wTicket) string { return v.ProjectID }, Permission: "edit", Relation: "project"},
+		{Entity: "WSprint", ResourceType: "sprint", ID: func(v wTicket) string { return v.SprintID }, Permission: "edit", Relation: "sprint",
+			Field: "sprint_id", Within: "project_id", Key: withinKey},
+	}
+	ticketSpec.Within = map[string]func(wTicket) string{"project_id": func(v wTicket) string { return v.ProjectID }}
+	tickets, err := NewEntity(ticketSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return projects, sprints, tickets
+}
+
+func TestWithin(t *testing.T) {
+	// setup gives the environment with the projects core and web, the sprint s1 of core and s2 of web, and the
+	// ticket t1 of core in s1, with every decision allowed, and a run of one fill in a command that writes all three.
+	setup := func(t *testing.T) (*env, *Entity[wProject], *Entity[wSprint], *Entity[wTicket], func(string, func(context.Context, *Handle[testProbe]) error) error) {
+		e := newEnv(t)
+		projects, sprints, tickets := withinEntities(e)
+		e.exec(`INSERT INTO wprojects (tenant_id, id, name) VALUES ('t1', 'core', 'Core'), ('t1', 'web', 'Web')`,
+			`INSERT INTO wsprints (tenant_id, id, project_id) VALUES ('t1', 's1', 'core'), ('t1', 's2', 'web')`,
+			`INSERT INTO wtickets (tenant_id, id, project_id, sprint_id) VALUES ('t1', 't1', 'core', 's1')`)
+		var allow []string
+		for _, r := range [][2]string{{"project", "core"}, {"project", "web"}, {"sprint", "s1"}, {"sprint", "s2"}, {"ticket", "t1"}, {"ticket", "t2"}, {"ticket", "t3"}} {
+			allow = append(allow, relation(t, "user:u-7", "view", "t1", r[0], r[1]), relation(t, "user:u-7", "edit", "t1", r[0], r[1]),
+				relation(t, "user:u-7", "plan", "t1", r[0], r[1]))
+		}
+		e.decision.setRelations(append(allow, relation(t, "user:u-7", "plan", "t1", "service", "tracker"))...)
+		plan := e.command("plan", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource = "plan", &Resource{Type: "service", Service: "tracker"}
+		}, projects, sprints, tickets)
+		run := func(key string, fill func(context.Context, *Handle[testProbe]) error) error {
+			_, err := e.run(plan, e.request("t1", u7(t), key, `{}`), fillOf(fill))
+			return err
+		}
+		return e, projects, sprints, tickets, run
+	}
+	// refusedOn checks that err is ErrInvalid that OutcomeOf answers with 400 invalid naming field.
+	refusedOn := func(t *testing.T, err error, field string) {
+		t.Helper()
+		o := OutcomeOf(err)
+		if !errors.Is(err, ErrInvalid) || o.Status != http.StatusBadRequest || o.Code != ErrorCodeInvalid || o.Field != field {
+			t.Fatalf("the write gave %v (%+v), want ErrInvalid, 400 invalid naming %s", err, o, field)
+		}
+		if strings.Contains(o.Reason, "core") || strings.Contains(o.Reason, "web") || strings.Contains(o.Reason, "s1") {
+			t.Fatalf("the reason %q names a value", o.Reason)
+		}
+	}
+
+	t.Run("ST-SUP-RP10-LC37-T01 A create compares the field of a reference held within it with the loaded referenced row before the statement", func(t *testing.T) {
+		e, projects, sprints, tickets, run := setup(t)
+		create := func(id, project, sprint string) func(context.Context, *Handle[testProbe]) error {
+			return func(ctx context.Context, h *Handle[testProbe]) error {
+				p, err := repo(t, h, projects).Get(ctx, project)
+				if err != nil {
+					return err
+				}
+				parents := []Ref{p}
+				if sprint != "" {
+					s, err := repo(t, h, sprints).Get(ctx, sprint)
+					if err != nil {
+						return err
+					}
+					parents = append(parents, s)
+				}
+				_, err = repo(t, h, tickets).Create(ctx, wTicket{ID: id, ProjectID: project, SprintID: sprint}, parents...)
+				return err
+			}
+		}
+		// A ticket of web in the sprint of core is refused before the statement, and nothing is written.
+		if err := run("k-lc37-t01-a", create("t2", "web", "s1")); err != nil {
+			refusedOn(t, err, "sprint_id")
+		} else {
+			t.Fatal("a ticket of web in the sprint of core was written")
+		}
+		if e.count(`SELECT count(*) FROM wtickets WHERE id = 't2'`) != 0 || e.keyRows("k-lc37-t01-a") != 0 {
+			t.Fatal("the refused create left a row or a key row")
+		}
+		// A ticket in a sprint of its own project and a ticket with no sprint are written.
+		if err := run("k-lc37-t01-b", create("t2", "web", "s2")); err != nil {
+			t.Fatalf("a ticket of web in the sprint of web: %v", err)
+		}
+		if err := run("k-lc37-t01-c", create("t3", "core", "")); err != nil {
+			t.Fatalf("a ticket of core with no sprint: %v", err)
+		}
+		if e.count(`SELECT count(*) FROM wtickets WHERE id IN ('t2', 't3')`) != 2 {
+			t.Fatal("the creates did not commit")
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC37-T02 An update that moves the reference or the field is compared, and needs the referenced row", func(t *testing.T) {
+		e, projects, sprints, tickets, run := setup(t)
+		// A move of the sprint of t1 to the sprint of web is refused.
+		if err := run("k-lc37-t02-a", func(ctx context.Context, h *Handle[testProbe]) error {
+			from, err := repo(t, h, tickets).GetForUpdate(ctx, "t1")
+			if err != nil {
+				return err
+			}
+			s2, err := repo(t, h, sprints).Get(ctx, "s2")
+			if err != nil {
+				return err
+			}
+			v := from.Value()
+			v.SprintID = "s2"
+			_, err = repo(t, h, tickets).Update(ctx, from, v, s2)
+			return err
+		}); err == nil {
+			t.Fatal("the move of t1 into the sprint of web was written")
+		} else {
+			refusedOn(t, err, "sprint_id")
+		}
+		// A move of t1 to web that keeps the sprint of core is refused too: the sprint stays, and its row is compared.
+		if err := run("k-lc37-t02-b", func(ctx context.Context, h *Handle[testProbe]) error {
+			from, err := repo(t, h, tickets).GetForUpdate(ctx, "t1")
+			if err != nil {
+				return err
+			}
+			web, err := repo(t, h, projects).Get(ctx, "web")
+			if err != nil {
+				return err
+			}
+			s1, err := repo(t, h, sprints).Get(ctx, "s1")
+			if err != nil {
+				return err
+			}
+			v := from.Value()
+			v.ProjectID = "web"
+			_, err = repo(t, h, tickets).Update(ctx, from, v, web, s1)
+			return err
+		}); err == nil {
+			t.Fatal("the move of t1 to web in the sprint of core was written")
+		} else {
+			refusedOn(t, err, "sprint_id")
+		}
+		// The same move without the row of the sprint is a fault of the fill: the runtime cannot compare it.
+		if err := run("k-lc37-t02-c", func(ctx context.Context, h *Handle[testProbe]) error {
+			from, err := repo(t, h, tickets).GetForUpdate(ctx, "t1")
+			if err != nil {
+				return err
+			}
+			web, err := repo(t, h, projects).Get(ctx, "web")
+			if err != nil {
+				return err
+			}
+			v := from.Value()
+			v.ProjectID = "web"
+			_, err = repo(t, h, tickets).Update(ctx, from, v, web)
+			return err
+		}); !errors.Is(err, ErrInternal) {
+			t.Fatalf("the move of the field without the row of the held reference gave %v, want an internal error", err)
+		}
+		// A move of both to web is written.
+		if err := run("k-lc37-t02-d", func(ctx context.Context, h *Handle[testProbe]) error {
+			from, err := repo(t, h, tickets).GetForUpdate(ctx, "t1")
+			if err != nil {
+				return err
+			}
+			web, err := repo(t, h, projects).Get(ctx, "web")
+			if err != nil {
+				return err
+			}
+			s2, err := repo(t, h, sprints).Get(ctx, "s2")
+			if err != nil {
+				return err
+			}
+			v := from.Value()
+			v.ProjectID, v.SprintID = "web", "s2"
+			_, err = repo(t, h, tickets).Update(ctx, from, v, web, s2)
+			return err
+		}); err != nil {
+			t.Fatalf("the move of t1 with its sprint to web: %v", err)
+		}
+		if e.count(`SELECT count(*) FROM wtickets WHERE id = 't1' AND project_id = 'web' AND sprint_id = 's2'`) != 1 {
+			t.Fatal("the move did not commit")
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC37-T03 A violation of the composite key gives ErrInvalid naming the reference, never internal and never a run again", func(t *testing.T) {
+		e, projects, sprints, tickets, run := setup(t)
+		// The move of the sprint s1 of core to web, while the ticket t1 of core refers to it, meets the key of the
+		// tickets: the refusal names the field of the sprint that the reference is held within.
+		calls := 0
+		if err := run("k-lc37-t03-a", func(ctx context.Context, h *Handle[testProbe]) error {
+			calls++
+			from, err := repo(t, h, sprints).GetForUpdate(ctx, "s1")
+			if err != nil {
+				return err
+			}
+			web, err := repo(t, h, projects).Get(ctx, "web")
+			if err != nil {
+				return err
+			}
+			v := from.Value()
+			v.ProjectID = "web"
+			_, err = repo(t, h, sprints).Update(ctx, from, v, web)
+			return err
+		}); err == nil {
+			t.Fatal("the move of a sprint with a ticket to another project was written")
+		} else {
+			refusedOn(t, err, "project_id")
+		}
+		if calls != 1 {
+			t.Fatalf("the fill ran %d times, want once", calls)
+		}
+		if e.count(`SELECT count(*) FROM wsprints WHERE id = 's1' AND project_id = 'core'`) != 1 {
+			t.Fatal("the refused move changed the sprint")
+		}
+		// A row statement of a ticket that the key refuses, as from a race or a worker that gave no parent, names the
+		// reference; a violation of another key stays internal.
+		cases := []struct {
+			name, key string
+			field     string
+		}{{"the key of the reference", withinKey, "sprint_id"}, {"another key", "wtickets_project_id_fkey", ""}}
+		for _, c := range cases {
+			if err := run("k-lc37-t03-"+c.key, func(ctx context.Context, h *Handle[testProbe]) error {
+				return repo(t, h, tickets).failWrite(ctx, "create WTicket", &pgconn.PgError{Code: "23503", ConstraintName: c.key})
+			}); c.field != "" {
+				refusedOn(t, err, c.field)
+			} else if !errors.Is(err, ErrInternal) || errors.Is(err, ErrInvalid) {
+				t.Fatalf("%s gave %v, want an internal error", c.name, err)
+			}
+		}
+	})
 }
