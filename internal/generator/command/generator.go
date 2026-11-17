@@ -13,6 +13,7 @@ import (
 	"go/format"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -174,6 +175,16 @@ type command struct {
 	// service is the service name of the service-level resource of a command whose resource type is the resource
 	// type of the tenant provisioning, and empty for every other command (ST-SUP-RC32-OC15).
 	service string
+	// lists are the declared lists of the command, which the contract emits from the entity of the release
+	// (ST-SUP-RC32-OC16).
+	lists []*commandList
+}
+
+// commandList is one declared list of a command with its generated plan.
+type commandList struct {
+	decl   types.WorkerList
+	goName string // the exported name in the contract, such as PlaceOrderOfOrder
+	plan   ListPlan
 }
 
 // relationHelper is the pair of typed helpers of one relation that a command declares in relationships_written: the
@@ -422,7 +433,38 @@ func (m *model) planCommand(c gen.Command, byName map[string]types.Entity, plann
 		return nil, err
 	}
 	cmd.retry, cmd.lock = retry, lock
+	if err := m.planLists(cmd, byName); err != nil {
+		return nil, err
+	}
 	return cmd, nil
+}
+
+// planLists builds the plan of each declared list of the command from the entity of the release (ST-SUP-RC32-OC16),
+// and refuses a list that checking refuses (ST-DECL-INV94) and a list of a command on the service-level resource,
+// whose handle offers no list (ST-SUP-RC32-OC15), naming the command and the list.
+func (m *model) planLists(cmd *command, byName map[string]types.Entity) error {
+	seen := map[string]bool{}
+	for _, list := range cmd.decl.Lists {
+		if cmd.service != "" {
+			return fmt.Errorf("command: the command %s on the service-level resource declares the list %s; its handle offers no list (ST-SUP-RC32-OC15)", cmd.decl.Name, list.Name)
+		}
+		if !operationName.MatchString(list.Name) || seen[list.Name] {
+			return fmt.Errorf("command: the command %s declares the list %q, whose name is not a lower-case name or is given twice", cmd.decl.Name, list.Name)
+		}
+		seen[list.Name] = true
+		if !slices.Contains(cmd.decl.Writes, list.Entity) {
+			return fmt.Errorf("command: the list %s of the command %s reads %s, which the command does not write (ST-DECL-INV94)", list.Name, cmd.decl.Name, list.Entity)
+		}
+		if _, ok := authzschema.LockAtMost(byName[list.Entity]); list.Lock && !ok {
+			return fmt.Errorf("command: the list %s of the command %s locks rows of %s, which declares no Lock at most (ST-DECL-INV81)", list.Name, cmd.decl.Name, list.Entity)
+		}
+		plan, err := ListStatements(list, m.ctx.Entities, m.tenantKey)
+		if err != nil {
+			return fmt.Errorf("command: the command %s: %w", cmd.decl.Name, err)
+		}
+		cmd.lists = append(cmd.lists, &commandList{decl: list, goName: cmd.goName + mixedCase(list.Name), plan: plan})
+	}
+	return nil
 }
 
 // commandRoutePath is the form of a command route's path: segments of letters, digits and the URL characters
@@ -589,6 +631,11 @@ func (m *model) takeNames() error {
 		}
 		for _, h := range c.helpers {
 			if err := take("the relation "+h.resourceType+"#"+h.relation+" of "+c.decl.Name, h.relate, h.unrelate); err != nil {
+				return err
+			}
+		}
+		for _, l := range c.lists {
+			if err := take("the list "+l.decl.Name+" of "+c.decl.Name, l.goName, l.goName+"With"); err != nil {
 				return err
 			}
 		}

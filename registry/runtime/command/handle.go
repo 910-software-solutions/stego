@@ -674,7 +674,8 @@ func (l *List[T]) root() *List[T] {
 // function of a declared list with parameters calls it with typed Go values, such as the ID of a request or a field
 // of a message (ST-SUP-RP10-LC38). The handle binds each one as a SQL parameter, never as text, and refuses, as an
 // internal error, a binding whose count does not fit or whose value is not a bool, a string, an int32, an int64, a
-// float32, a float64 or a time.Time.
+// float32, a float64 or a time.Time, or a pointer to one, which is the Go value of an optional field and binds NULL
+// when it is nil.
 func (l *List[T]) With(params ...any) *List[T] {
 	if l == nil {
 		return nil
@@ -693,7 +694,8 @@ func (l *List[T]) With(params ...any) *List[T] {
 	}
 	for i, p := range params {
 		switch p.(type) {
-		case bool, string, int32, int64, float32, float64, time.Time:
+		case bool, string, int32, int64, float32, float64, time.Time,
+			*bool, *string, *int32, *int64, *float32, *float64, *time.Time:
 		default:
 			bound.bad = fmt.Sprintf("its parameter %d is not a bool, a string, an int32, an int64, a float32, a float64 or a time", i+1)
 			return bound

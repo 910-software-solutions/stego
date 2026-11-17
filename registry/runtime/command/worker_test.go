@@ -1634,6 +1634,11 @@ func TestCommandLists(t *testing.T) {
 		if got, _, err := list(cmd, e.admins.With("org2")); got != "u3" || err != nil {
 			t.Fatalf("the list bound to org2 gave %q, %v; want u3", got, err)
 		}
+		// A pointer is the Go value of an optional field: it binds its value.
+		org := "org2"
+		if got, _, err := list(cmd, e.admins.With(&org)); got != "u3" || err != nil {
+			t.Fatalf("the list bound to a pointer to org2 gave %q, %v; want u3", got, err)
+		}
 		// A parameter is a SQL parameter, never text: a value with SQL in it matches no row.
 		if got, _, err := list(cmd, e.admins.With("org1' OR 'x' = 'x")); got != "" || err != nil {
 			t.Fatalf("a parameter with SQL text gave %q, %v; want no row", got, err)

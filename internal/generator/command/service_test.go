@@ -166,13 +166,13 @@ func runCheck(t *testing.T, p *project, run *checkRun, endpoint, key, id string)
 		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
 	}
 	run.once.Do(func() {
-		cmd := exec.Command(pinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^TestCommand$", "./check")
+		cmd := exec.Command(pinnedGo(), "test", "-count=1", "-timeout=300s", "-v", "-run", "^(TestCommand|TestCommandLists)$", "./check")
 		cmd.Dir = p.dir
 		cmd.Env = append(os.Environ(), "GOWORK=off", "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local", "STEGO_TEST_SPICEDB="+endpoint, "STEGO_TEST_SPICEDB_KEY="+key)
 		output, err := cmd.CombinedOutput()
 		run.output, run.err = string(output), err
 	})
-	if !ownPass(run.output, "TestCommand", id) {
+	if !ownPass(run.output, "TestCommand", id) && !ownPass(run.output, "TestCommandLists", id) {
 		t.Fatalf("the check %s of the generated service did not run and pass (go test: %v):\n%s", id, run.err, run.output)
 	}
 }
@@ -199,6 +199,9 @@ func TestCommandService(t *testing.T) {
 	t.Run("ST-SUP-RC32-OC09-T01 A command fill's error text reaches no response, audit row or completion log", func(t *testing.T) { runCheck(t, p, run, endpoint, key, "ST-SUP-RC32-OC09-T01") })
 	t.Run("ST-SUP-RC32-OC10-T01 A command that loses a conflict gets 409 conflict, an audit row, and runs again on a retry with the same key", func(t *testing.T) { runCheck(t, p, run, endpoint, key, "ST-SUP-RC32-OC10-T01") })
 	t.Run("ST-SUP-RC32-OC11-T01 HTTP and gRPC take one request message", func(t *testing.T) { runCheck(t, p, run, endpoint, key, "ST-SUP-RC32-OC11-T01") })
+	t.Run("ST-SUP-RC32-OC16-T02 A command fill reads its generated list with a parameter, also after an added column", func(t *testing.T) {
+		runCheck(t, p, run, endpoint, key, "ST-SUP-RC32-OC16-T02")
+	})
 }
 
 // ownPass tells whether output, the text of go test -v, holds the pass line of the subtest of id itself, directly

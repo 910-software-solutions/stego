@@ -1061,6 +1061,55 @@ func TestCommand(t *testing.T) {
 	})
 }
 
+func TestCommandLists(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC16-T02 A command fill reads its generated list with a parameter, also after an added column", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-7", "tA", time.Now().Add(time.Hour))
+		order, other := e.order(a), e.order(a)
+		// The fill reserves, then lists the reservations of the order of the request through the generated list
+		// of-order, and answers their number as the reservation ID.
+		e.behave(t, func(ctx context.Context, request *commands.ReserveAndChargeRequest, h *commands.ReserveAndChargeHandle) (*commands.ReserveAndChargeResponse, error) {
+			if _, err := reservecharge.ReserveAndCharge(ctx, request, h); err != nil {
+				return nil, err
+			}
+			reservations, err := commands.ReservationRepository(h)
+			if err != nil {
+				return nil, err
+			}
+			rows, err := reservations.List(ctx, commands.ReserveAndChargeOfOrderWith(request.OrderId), 100)
+			if err != nil {
+				return nil, err
+			}
+			for _, r := range rows {
+				if r.Value().OrderID != request.OrderId {
+					return nil, errors.New("the list gave a reservation of another order")
+				}
+			}
+			return &commands.ReserveAndChargeResponse{ReservationId: fmt.Sprint(len(rows)), ChargeId: "listed"}, nil
+		})
+		listed := func(key, orderID string) string {
+			got := e.post(a.token, key, orderID, body)
+			if got.status != http.StatusCreated {
+				t.Fatalf("the answer is %d %s, want 201", got.status, got.body)
+			}
+			return string(got.body)
+		}
+		if got := listed("oc16-t02-a", order); !strings.Contains(got, `"reservationId":"1"`) {
+			t.Fatalf("the first run listed %s, want one reservation", got)
+		}
+		if got := listed("oc16-t02-b", other); !strings.Contains(got, `"reservationId":"1"`) {
+			t.Fatalf("the run of another order listed %s, want its one reservation", got)
+		}
+		// The expand step of a schema change adds a column while this release still runs.
+		_, err := e.admin.ExecContext(e.ctx, `ALTER TABLE reservations ADD COLUMN note text`)
+		must(t, err)
+		t.Cleanup(func() { _, _ = e.admin.ExecContext(context.Background(), `ALTER TABLE reservations DROP COLUMN IF EXISTS note`) })
+		if got := listed("oc16-t02-c", order); !strings.Contains(got, `"reservationId":"2"`) {
+			t.Fatalf("the run after the added column listed %s, want two reservations", got)
+		}
+	})
+}
+
 // auditRowsOK counts the ok audit rows of reserve-and-charge of the caller's writes under the order.
 func (e *env) auditRowsOK(c caller, orderID string) int {
 	return e.count(`SELECT count(*) FROM audit_event a WHERE tenant_id = $1 AND action = 'reserve-and-charge' AND actor_id = $2 AND outcome = 'ok' AND resource_id IN (SELECT id::text FROM reservations WHERE order_id = $3 UNION SELECT id::text FROM charges WHERE order_id = $3)`,

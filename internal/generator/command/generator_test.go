@@ -125,6 +125,12 @@ commands:
         status: 409
         code: reservation.short_stock
     retry_on_conflict: "1"
+    lists:
+      - name: of-order
+        entity: Reservation
+        filter:
+          - {field: order_id, op: equals, param: order_id}
+          - {field: qty, op: greater_than, value: 0}
 observations:
   - name: reservations_made
     kind: counter
@@ -268,6 +274,74 @@ func TestContract(t *testing.T) {
 		ctx.Destinations = ctx.Destinations[:1]
 		if _, _, err := new(Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "notify") {
 			t.Fatalf("an effect for a destination that no component declares gave %v", err)
+		}
+	})
+
+	t.Run("ST-SUP-RC32-OC16-T01 The contract holds each declared list of a command with its With function, and the CommandSpec declares it", func(t *testing.T) {
+		ctx := commandContext(t, declaration(t), commandSlot)
+		files := generated(t, ctx)
+		contract := strings.Join(strings.Fields(string(files["commands/commands.go"])), " ")
+		handlers := strings.Join(strings.Fields(string(files["commands/handlers/handlers.go"])), " ")
+		for _, want := range []string{
+			`var ReserveAndChargeOfOrder = command.Must(command.NewList(ReservationEntity, command.ListSpec{Name: "of-order",`,
+			`Read: "SELECT \"id\"::text, \"order_id\", \"sku\", \"qty\", \"version\", ''::text FROM public.\"reservations\" WHERE \"tenant_id\" = $1 AND \"order_id\" = $3 AND \"qty\" > $4 ORDER BY \"id\" LIMIT $2",`,
+			`Values: command.DeclaredValues(command.ListValue{Param: "order_id"}, command.ListValue{Constant: int32(0)})}))`,
+			`func ReserveAndChargeOfOrderWith(orderID string) *command.List[Reservation] { return ReserveAndChargeOfOrder.With(orderID) }`,
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("the contract does not hold %s:\n%s", want, contract)
+			}
+		}
+		if !strings.Contains(handlers, `Lists: []command.AnyList{commands.ReserveAndChargeOfOrder},`) {
+			t.Errorf("the CommandSpec of reserve-and-charge does not declare its list:\n%s", handlers)
+		}
+		// The release that adds a field and renames another builds the list from its own entity.
+		svc := declaration(t)
+		for i := range svc.Entities {
+			if svc.Entities[i].Name == "Reservation" {
+				svc.Entities[i].Fields = append(svc.Entities[i].Fields, types.Field{Name: "due_at", Type: types.FieldTypeTimestamp})
+			}
+		}
+		svc.Commands[0].Lists[0].Filter = append(svc.Commands[0].Lists[0].Filter, types.ListTerm{Field: "due_at", Op: types.ListLessThan, Param: "due_before"})
+		next := strings.Join(strings.Fields(string(generated(t, commandContext(t, svc, commandSlot))["commands/commands.go"])), " ")
+		for _, want := range []string{`\"qty\", \"due_at\", \"version\"`, `AND \"due_at\" < $5 ORDER BY`,
+			`func ReserveAndChargeOfOrderWith(orderID string, dueBefore time.Time) *command.List[Reservation]`} {
+			if !strings.Contains(next, want) {
+				t.Errorf("the release with due_at does not hold %s:\n%s", want, next)
+			}
+		}
+		for _, c := range []struct {
+			name  string
+			edit  func(*types.ServiceDeclaration)
+			wants []string
+		}{
+			{"an entity that the command does not write", func(s *types.ServiceDeclaration) { s.Commands[0].Lists[0].Entity = "Customer" }, []string{"of-order", "reserve-and-charge", "does not write"}},
+			{"a field that the entity does not declare", func(s *types.ServiceDeclaration) { s.Commands[0].Lists[0].Filter[0].Field = "colour" }, []string{"of-order", "colour"}},
+			{"a lock with no Lock at most", func(s *types.ServiceDeclaration) { s.Commands[0].Lists[0].Lock = true }, []string{"of-order", "Lock at most"}},
+			{"a parameter twice", func(s *types.ServiceDeclaration) {
+				s.Commands[0].Lists[0].Filter[1] = types.ListTerm{Field: "qty", Op: types.ListGreaterThan, Param: "order_id"}
+			}, []string{"of-order", "order_id"}},
+			{"a list name twice", func(s *types.ServiceDeclaration) { s.Commands[0].Lists = append(s.Commands[0].Lists, s.Commands[0].Lists[0]) }, []string{"of-order", "twice"}},
+		} {
+			svc := declaration(t)
+			c.edit(svc)
+			_, _, err := new(Generator).Generate(commandContext(t, svc, commandSlot))
+			if err == nil {
+				t.Errorf("%s: the generator accepted the list", c.name)
+				continue
+			}
+			for _, want := range c.wants {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: the refusal %q does not name %q", c.name, err, want)
+				}
+			}
+		}
+		// A command on the service-level resource has no list (ST-SUP-RC32-OC15).
+		_, _, err := new(Generator).Generate(placeContext(t, func(s *types.ServiceDeclaration) {
+			s.Commands[0].Lists = []types.WorkerList{{Name: "orders", Entity: "Order", Filter: []types.ListTerm{{Field: "sku", Op: types.ListIsSet}}}}
+		}))
+		if err == nil || !strings.Contains(err.Error(), "service-level resource declares the list orders") {
+			t.Errorf("a list of a command on the service-level resource gave %v", err)
 		}
 	})
 

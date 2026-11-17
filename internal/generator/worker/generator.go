@@ -151,10 +151,9 @@ type worker struct {
 
 // workerList is one declared list of a worker with its generated statements and values.
 type workerList struct {
-	decl       types.WorkerList
-	goName     string // the exported name in the contract, such as StaleScanOpenTickets
-	read, lock string
-	values     []string // the Go source of each command.ListValue
+	decl   types.WorkerList
+	goName string // the exported name in the contract, such as StaleScanOpenTickets
+	plan   command.ListPlan
 }
 
 // plan checks the context and builds the model. It refuses, naming the worker, each declaration that the generated
@@ -341,11 +340,11 @@ func (m *model) planLists(p *worker) error {
 		if _, ok := declaration.LockAtMost(byName[list.Entity]); list.Lock && !ok {
 			return fmt.Errorf("worker: the list %s of the worker %s locks rows of %s, which declares no Lock at most (ST-DECL-INV81)", list.Name, p.decl.Name, list.Entity)
 		}
-		read, lock, values, err := command.ListStatements(list, m.ctx.Entities, m.ctx.Tenancy.Key)
+		plan, err := command.ListStatements(list, m.ctx.Entities, m.ctx.Tenancy.Key)
 		if err != nil {
 			return fmt.Errorf("worker: the worker %s: %w", p.decl.Name, err)
 		}
-		p.lists = append(p.lists, &workerList{decl: list, goName: p.goName + mixedCase(list.Name), read: read, lock: lock, values: values})
+		p.lists = append(p.lists, &workerList{decl: list, goName: p.goName + mixedCase(list.Name), plan: plan})
 	}
 	return nil
 }
@@ -423,10 +422,12 @@ func (m *model) checkNames() error {
 	}
 	for _, w := range m.workers {
 		for _, l := range w.lists {
-			if other, ok := taken[l.goName]; ok {
-				return fmt.Errorf("worker: %s and the list %s of the worker %s both need the Go name %s", other, l.decl.Name, w.decl.Name, l.goName)
+			for _, n := range []string{l.goName, l.goName + "With"} {
+				if other, ok := taken[n]; ok {
+					return fmt.Errorf("worker: %s and the list %s of the worker %s both need the Go name %s", other, l.decl.Name, w.decl.Name, n)
+				}
+				taken[n] = "the list " + l.decl.Name + " of the worker " + w.decl.Name
 			}
-			taken[l.goName] = "the list " + l.decl.Name + " of the worker " + w.decl.Name
 		}
 	}
 	return nil
@@ -466,6 +467,21 @@ func (m *model) has(every bool) bool {
 	return false
 }
 
+// timeParams tells whether a declared list takes a parameter of a timestamp field, whose With function takes a
+// time.Time.
+func (m *model) timeParams() bool {
+	for _, wk := range m.workers {
+		for _, l := range wk.lists {
+			for _, p := range l.plan.Params {
+				if p.GoType == "time.Time" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // writer is a source buffer.
 type writer struct{ bytes.Buffer }
 
@@ -483,7 +499,7 @@ func renderContract(m *model) []byte {
 	if m.has(false) {
 		w.f("\t\"encoding/json\"\n")
 	}
-	if m.has(true) {
+	if m.has(true) || m.timeParams() {
 		w.f("\t\"time\"\n")
 	}
 	w.f("\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
@@ -504,12 +520,7 @@ func renderContract(m *model) []byte {
 	}
 	for _, wk := range m.workers {
 		for _, l := range wk.lists {
-			w.f("// %s is the list %s of the worker %s over %s, which its fill reads with List or ListForUpdate. The\n// generator builds its statements from the entity of this release, so a fill gives no SQL text (ST-SUP-RC35-OC15,\n// ST-SUP-RP10-LC38).\n", l.goName, l.decl.Name, wk.decl.Name, l.decl.Entity)
-			w.f("var %s = command.Must(command.NewList(%sEntity, command.ListSpec{Name: %q,\n\tRead: %q,\n", l.goName, l.decl.Entity, l.decl.Name, l.read)
-			if l.lock != "" {
-				w.f("\tLock: %q,\n", l.lock)
-			}
-			w.f("\tValues: command.DeclaredValues(%s)}))\n\n", strings.Join(l.values, ", "))
+			command.RenderList(&w.Buffer, l.goName, l.decl.Name, "the worker "+wk.decl.Name, l.decl.Entity, l.plan)
 		}
 	}
 	w.f("// Refused marks err as a declared refusal of a consuming worker's fill: the message is then parked, since a\n// delivery again gives the same refusal (ST-SUP-RP10-LC26).\nfunc Refused(err error) error { return command.Refused(err) }\n")
