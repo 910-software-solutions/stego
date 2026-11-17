@@ -629,8 +629,31 @@ func applyPlanned(replaceHandEdits, savedPlan bool) (started bool, err error) {
 			return true, err
 		}
 	}
+	if err := codelessFills(input); err != nil {
+		return true, err
+	}
 	fmt.Println("\nApply complete!")
 	return true, nil
+}
+
+// codelessFills names each fill of a command, query or worker that holds no Go code yet, once apply has written the
+// contract that the fill is written against (ST-EXT-UC01-R01, ST-GEN-UC04). Such a fill does not stop generation, so
+// a command, query or worker that a later change declares gets its contract, but the service does not build without
+// it, so apply fails.
+func codelessFills(input compiler.ReconcilerInput) error {
+	check, err := compiler.ResolveFillCheck(input)
+	if err != nil {
+		return err
+	}
+	faults := fill.CodelessFills(check)
+	if len(faults) == 0 {
+		return nil
+	}
+	lines := make([]string, len(faults))
+	for i, fault := range faults {
+		lines[i] = "  [" + fault.Rule + "] " + fault.Path + ": " + fault.Message
+	}
+	return fmt.Errorf("apply wrote the generated code, but the service does not build until these fills hold their code:\n%s", strings.Join(lines, "\n"))
 }
 
 // runValidate implements `stego validate`.

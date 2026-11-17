@@ -125,9 +125,11 @@ const (
 type ruleFault struct{ rule, path, text string }
 
 // ruleTarget is one fill that the declaration names, with where it names it and the packages its slot admits.
+// capability tells that it is the fill of a command, a query or a worker.
 type ruleTarget struct {
 	fill, path string
 	contracts  []string
+	capability bool
 }
 
 // declaredFillFaults holds every fill that the declaration names, at every slot, to the fill rules (ST-EXT-UC01-R03,
@@ -142,7 +144,8 @@ func declaredFillFaults(check compiler.FillCheck) ([]compiler.FillFault, error) 
 			return
 		}
 		seen[fill] = true
-		targets = append(targets, ruleTarget{fill: fill, path: path, contracts: slotContracts(check, fill, implements)})
+		capability := implements == commandSlot || implements == querySlot || implements == workerSlot
+		targets = append(targets, ruleTarget{fill: fill, path: path, contracts: slotContracts(check, fill, implements), capability: capability})
 	}
 	for _, f := range check.CommandFills {
 		add(f.Fill, f.Path, commandSlot)
@@ -171,6 +174,12 @@ func declaredFillFaults(check compiler.FillCheck) ([]compiler.FillFault, error) 
 	}
 	var faults []compiler.FillFault
 	for _, target := range targets {
+		dir := filepath.Join(check.ProjectDir, "fills", target.fill)
+		if target.capability && !holdsGoCode(dir) {
+			// Nothing of the fill is built yet, so the fill rules hold nothing. Generation then writes the
+			// contract that the fill is written against, and apply names the fill to write (CodelessFills).
+			continue
+		}
 		found, err := fillFaults(check, filepath.Join(check.ProjectDir, "fills", target.fill), target.fill, target.contracts, packages)
 		if err != nil {
 			return nil, err
@@ -219,6 +228,47 @@ func fillFaults(check compiler.FillCheck, dir, fill string, contracts []string, 
 		}
 	}
 	return faults, nil
+}
+
+// holdsGoCode tells whether the fill folder dir holds a Go file that is not a test file, at any depth and whatever its
+// name. A folder that holds only fill.yaml, test files and test data builds nothing into the service yet.
+func holdsGoCode(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || found {
+			return err
+		}
+		if !entry.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
+// CodelessFills gives the fills of the commands, queries and workers of the declaration whose fill folder exists and
+// holds no Go code yet, each with where the declaration names it, in the order of the declaration. Apply writes their
+// contracts and then names them, since the service does not build without them (ST-EXT-UC01-R01, ST-GEN-UC04).
+func CodelessFills(check compiler.FillCheck) []compiler.FillFault {
+	var faults []compiler.FillFault
+	add := func(fill, path, slot string) {
+		dir := filepath.Join(check.ProjectDir, "fills", fill)
+		if _, err := os.Stat(dir); err != nil || holdsGoCode(dir) {
+			return
+		}
+		faults = append(faults, compiler.FillFault{Rule: ruleFiles, Path: path, Found: fill,
+			Message: fmt.Sprintf("fill %q holds no Go code yet; write the fill of the slot %s in fills/%s against its contract, which apply has written (stego fill create writes a new fill that compiles)", fill, slot, fill)})
+	}
+	for _, f := range check.CommandFills {
+		add(f.Fill, f.Path, commandSlot)
+	}
+	for _, f := range check.QueryFills {
+		add(f.Fill, f.Path, querySlot)
+	}
+	for _, f := range check.WorkerFills {
+		add(f.Fill, f.Path, workerSlot)
+	}
+	return faults
 }
 
 // listFills runs go list -e -deps -json on the packages of the fills, without test files, in the service's module,

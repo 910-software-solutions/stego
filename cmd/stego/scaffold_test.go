@@ -357,3 +357,60 @@ func TestCapabilityFillScaffold(t *testing.T) {
 		}
 	})
 }
+
+func TestCapabilityAddedLater(t *testing.T) {
+	t.Run("ST-EXT-UC01-R01-T04 A command and a worker declared after the first build get their contracts in a later apply", func(t *testing.T) {
+		binary := walkthroughFirstBuild(t)
+		// A second command, declared after go.mod exists, with its fill from fill create before the apply that writes
+		// its contract.
+		declaration, err := os.ReadFile("service.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		withCommand := strings.Replace(string(declaration), "\nqueries:", walkthroughFixture(t, "grant-clerk.yaml")+"\nqueries:", 1)
+		writeProjectFile(t, "service.yaml", withCommand)
+		mustRun(t, runFillCreate, "grant-clerk", "--slot", "command.command")
+		mustRun(t, runApply)
+		mustRun(t, runDependencies)
+		goInProject(t, "build", "-o", binary, "./out")
+		// A worker with an every trigger whose fill folder holds only its manifest: apply writes the worker's
+		// contract and then names the fill, which the service needs to build.
+		schema, err := os.ReadFile("authz/schema.zed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeProjectFile(t, "authz/schema.zed", strings.Replace(string(schema), "\trelation worker_fulfill_orders: service_account\n",
+			"\trelation worker_fulfill_orders: service_account\n\trelation worker_low_stock_scan: service_account\n", 1))
+		writeProjectFile(t, "service.yaml", strings.Replace(withCommand, "    fill: fulfill-orders\n",
+			"    fill: fulfill-orders\n  - name: low-stock-scan\n    trigger: every 1m\n    writes: [StockItem]\n    resource_type: stock_item\n    permission: edit\n    fill: low-stock-scan\n", 1))
+		writeProjectFile(t, "fills/low-stock-scan/fill.yaml", "kind: fill\nname: low-stock-scan\nimplements: worker.worker\n")
+		mustRun(t, runValidate)
+		printed, err := capture(t, runApply)
+		if err == nil || !strings.Contains(err.Error(), `fill "low-stock-scan" holds no Go code yet`) || !strings.Contains(err.Error(), "workers[1].fill") {
+			t.Fatalf("apply did not name the fill with no code: %v\n%s", err, printed)
+		}
+		contract, err := os.ReadFile("out/workers/workers.go")
+		if err != nil || !strings.Contains(string(contract), "type LowStockScanFill func(ctx context.Context, tick time.Time, h *LowStockScanHandle) error") {
+			t.Fatalf("apply did not write the contract of low-stock-scan: %v", err)
+		}
+		writeProjectFile(t, "fills/low-stock-scan/fill.go", `package low_stock_scan
+
+import (
+	"context"
+	"time"
+
+	workers "example.com/inventory/out/workers"
+)
+
+func New() workers.LowStockScanFill {
+	return func(ctx context.Context, tick time.Time, h *workers.LowStockScanHandle) error { return nil }
+}
+`)
+		if printed := mustRun(t, runApply); !strings.Contains(printed, "No changes") {
+			t.Fatalf("apply after the fill was written changed files:\n%s", printed)
+		}
+		mustRun(t, runDependencies)
+		goInProject(t, "build", "-o", binary, "./out")
+		goInProject(t, "test", "./fills/...")
+	})
+}
