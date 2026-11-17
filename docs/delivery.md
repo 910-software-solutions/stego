@@ -347,4 +347,7 @@ so in the plan.
   the contents only, and never pushes or signs. The `release` job runs only on a push to the repository's default
   branch or on a tag, and it pushes and signs the image.
 - `konflux` (`.tekton/<service>-push.yaml`): one PipelineRun on a push to the branch `main`. The branch is fixed
-  for now. A repository whose default branch is not `main` gets no Konflux run on push.
+  for now. A repository whose default branch is not `main` gets no Konflux run on push. The PipelineRun gives the
+  build of the standard pipeline the offline `Containerfile` (`dockerfile`), the hermetic mode (`hermetic: "true"`)
+  and the Go module prefetch of the project folder (`prefetch-input`), so the build reads only the prefetched
+  modules with the network off.
