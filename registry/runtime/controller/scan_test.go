@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -420,22 +421,26 @@ func TestScanProgress(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RP02-LC17-T03 Each page read is bounded by the operation timeout", func(t *testing.T) {
-		options := scanOptions()
-		options.PageTimeout = 30 * time.Millisecond
-		var page context.Context
-		started := time.Now()
-		_, err := ScanFrom(context.Background(), "", func(ctx context.Context, _ string, _ int) (CursorPage[int], error) {
-			page = ctx
-			<-ctx.Done()
-			return CursorPage[int]{}, ctx.Err()
-		}, func(int) error { return nil }, options)
-		elapsed := time.Since(started)
-		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(page.Err(), context.DeadlineExceeded) {
-			t.Fatal("the page read was not cancelled by its deadline", err)
-		}
-		if elapsed < options.PageTimeout || elapsed > options.PageTimeout+500*time.Millisecond {
-			t.Fatal("the page read did not end at its timeout", elapsed)
-		}
+		// The bubble of synctest gives the scan a clock that moves only when every goroutine of the test waits, so
+		// the page deadline fires at exactly its timeout and the elapsed time reads with no wall-clock margin.
+		synctest.Test(t, func(t *testing.T) {
+			options := scanOptions()
+			options.PageTimeout = 30 * time.Millisecond
+			var page context.Context
+			started := time.Now()
+			_, err := ScanFrom(context.Background(), "", func(ctx context.Context, _ string, _ int) (CursorPage[int], error) {
+				page = ctx
+				<-ctx.Done()
+				return CursorPage[int]{}, ctx.Err()
+			}, func(int) error { return nil }, options)
+			elapsed := time.Since(started)
+			if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(page.Err(), context.DeadlineExceeded) {
+				t.Fatal("the page read was not cancelled by its deadline", err)
+			}
+			if elapsed != options.PageTimeout {
+				t.Fatal("the page read did not end at its timeout", elapsed)
+			}
+		})
 	})
 
 	t.Run("ST-SUP-RP02-LC17-T04 A scan from the beginning returns the contract error when its page budget cannot cover the source", func(t *testing.T) {
@@ -467,21 +472,17 @@ func TestScanProgress(t *testing.T) {
 			}
 			return count
 		}
-		settle := func() int {
-			for range 20 {
-				if own() == 0 {
-					return 0
-				}
-				time.Sleep(time.Millisecond)
+		// The scan runs in a synctest bubble: synctest.Wait returns when every goroutine that the scan started has
+		// ended or waits, so a goroutine that the scan leaves is counted with no poll and no sleep.
+		synctest.Test(t, func(t *testing.T) {
+			_, err := ScanFrom(context.Background(), "", numbered(5), func(int) error { return nil }, scanOptions())
+			if err != nil {
+				t.Fatal(err)
 			}
-			return own()
-		}
-		_, err := ScanFrom(context.Background(), "", numbered(5), func(int) error { return nil }, scanOptions())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if after := settle(); after != 0 {
-			t.Fatalf("the scan left %d goroutines", after)
-		}
+			synctest.Wait()
+			if after := own(); after != 0 {
+				t.Fatalf("the scan left %d goroutines", after)
+			}
+		})
 	})
 }
