@@ -45,14 +45,39 @@ func operationFaults(rule string, op operationAuthz, schema *AuthzSchema) []Vali
 }
 
 // validateCommandAuthorization checks that each command names a resource type and a permission that the schema
-// holds and a resource member of its request (ST-DECL-INV40).
-func validateCommandAuthorization(commands []types.Command, schema *AuthzSchema) []ValidationError {
+// holds and a resource member of its request (ST-DECL-INV40). A command whose resource type is the resource type of
+// the tenant provisioning is decided on the service-level resource in the tenant of the request (ST-SUP-RC32-OC15):
+// it names no resource member, and not the provision or the retire permission, which are decided on that resource
+// with no tenant and so are platform-wide (ST-SUP-Q127).
+func validateCommandAuthorization(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
 	var faults []ValidationError
-	for i, command := range commands {
+	var provisioning *types.TenantProvisioning
+	if service.Tenancy != nil && service.Tenancy.Provisioning != nil && service.Tenancy.Provisioning.ResourceType != "" {
+		provisioning = service.Tenancy.Provisioning
+	}
+	for i, command := range service.Commands {
 		faults = append(faults, operationFaults("command-authorization", operationAuthz{"command", command.Name, commandPath(i), command.ResourceType, command.Permission}, schema)...)
-		if command.ResourceMember == "" {
+		serviceLevel := provisioning != nil && command.ResourceType == provisioning.ResourceType
+		switch {
+		case serviceLevel && command.ResourceMember != "":
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".resource_member", Found: command.ResourceMember,
+				Message: fmt.Sprintf("command %q names the resource member %q, but its resource type %s is the resource type of the tenant provisioning, so it is decided on the service-level resource %s:%s in the tenant of the request (ST-SUP-RC32-OC15); remove resource_member", command.Name, command.ResourceMember, command.ResourceType, command.ResourceType, service.Name)})
+		case !serviceLevel && command.ResourceMember == "":
 			faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".resource_member", Found: command.Name,
-				Message: fmt.Sprintf("command %q names no resource member; name the member of its request that holds the ID of the resource the permission is decided on", command.Name)})
+				Message: fmt.Sprintf("command %q names no resource member; name the member of its request that holds the ID of the resource the permission is decided on, or, for a command that creates rows with no parent, name the resource type of the tenant provisioning and no resource member", command.Name)})
+		}
+		if !serviceLevel {
+			continue
+		}
+		faults = append(faults, serviceLevelWrites(service, i, command)...)
+		if command.Permission == "" {
+			continue
+		}
+		for _, platform := range []struct{ name, permission string }{{"provision", provisioning.Provision}, {"retire", provisioning.Retire}} {
+			if platform.permission != "" && command.Permission == platform.permission {
+				faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".permission", Found: command.Permission,
+					Message: fmt.Sprintf("command %q names the permission %q, which tenancy.provisioning.%s also names: a %s is decided on the service-level resource %s:%s with no tenant, but the command is decided on that resource in the tenant of the request (ST-SUP-RC32-OC15), so it needs a permission of its own; declare another permission on %s for the command", command.Name, command.Permission, platform.name, platform.name, command.ResourceType, service.Name, command.ResourceType)})
+			}
 		}
 	}
 	return faults
@@ -187,7 +212,7 @@ func workerPermissions(service *types.ServiceDeclaration, worker types.Worker) [
 
 // operationsAuthorization runs the authorization checks of the commands, queries and workers.
 func operationsAuthorization(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
-	faults := validateCommandAuthorization(service.Commands, schema)
+	faults := validateCommandAuthorization(service, schema)
 	if schema != nil {
 		faults = append(faults, validateCommandRelations(service, schema)...)
 	}
@@ -228,4 +253,44 @@ func RuntimeRelations(e types.Entity) map[string]string {
 		}
 	}
 	return relations
+}
+
+// serviceLevelWrites refuses what a command on the service-level resource cannot do, as the generator does
+// (ST-SUP-RC32-OC15): its handle offers only the create and the read, so it writes no relation of its own, and it
+// creates only rows with no parent, so it writes no entity that takes its authorization from a referenced row and no
+// entity that a scoped collection puts under a parent.
+func serviceLevelWrites(service *types.ServiceDeclaration, i int, command types.Command) []ValidationError {
+	var faults []ValidationError
+	if len(command.RelationshipsWritten) > 0 {
+		faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".relationships_written", Found: command.RelationshipsWritten[0],
+			Message: fmt.Sprintf("command %q is decided on the service-level resource, and its handle offers only the create and the read, so it writes no relation of its own (ST-SUP-RC32-OC15); remove relationships_written", command.Name)})
+	}
+	for wi, name := range command.Writes {
+		_, entity := entityIndex(service.Entities, name)
+		if entity == nil {
+			continue
+		}
+		parent := ""
+		if entity.ResourceType == "" {
+			for _, field := range entity.Fields {
+				if field.Type != types.FieldTypeRef {
+					continue
+				}
+				if _, to := entityIndex(service.Entities, field.To); to != nil && to.ResourceType != "" {
+					parent = "it has no resource type and takes its authorization from the " + to.Name + " that its field " + field.Name + " names"
+					break
+				}
+			}
+		}
+		for _, collection := range service.Collections {
+			if parent == "" && collection.Entity == name && len(collection.Scope) > 0 {
+				parent = "the collection " + collection.Name + " puts it under a parent"
+			}
+		}
+		if parent != "" {
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: fmt.Sprintf("%s.writes[%d]", commandPath(i), wi), Found: name,
+				Message: fmt.Sprintf("command %q is decided on the service-level resource and writes %s, but %s; such a command creates only rows with no parent (ST-SUP-RC32-OC15)", command.Name, name, parent)})
+		}
+	}
+	return faults
 }

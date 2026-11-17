@@ -31,6 +31,7 @@
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/revocation_wiring/project/fills/unshare-document/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_grpc/project/fills/add-note/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_grpc/project/fills/get-order-summary/fill.go"}
+{"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_grpc/project/fills/place-order/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_grpc/project/fills/watch-orders/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/after/fills/order-created/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/project/fills/add-note/fill.go"}

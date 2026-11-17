@@ -170,6 +170,10 @@ type command struct {
 	effectNames map[string][]string
 	retry       int
 	lock        string // a Go duration expression, or empty for the default
+
+	// service is the service name of the service-level resource of a command whose resource type is the resource
+	// type of the tenant provisioning, and empty for every other command (ST-SUP-RC32-OC15).
+	service string
 }
 
 // relationHelper is the pair of typed helpers of one relation that a command declares in relationships_written: the
@@ -464,11 +468,17 @@ func (m *model) planRoute(cmd *command) error {
 // command names, and the request field that the resource member names (ST-SUP-RC32-OC06, ST-SUP-RP10-LC31).
 func (m *model) planPermission(cmd *command, byName map[string]types.Entity) error {
 	decl := cmd.decl
-	if decl.Permission == "" || decl.ResourceType == "" || decl.ResourceMember == "" {
-		return fmt.Errorf("command: the command %s needs its permission, its resource type and its resource member, which the authorization of the service makes required", decl.Name)
+	if decl.Permission == "" || decl.ResourceType == "" {
+		return fmt.Errorf("command: the command %s needs its permission and its resource type, which the authorization of the service makes required", decl.Name)
 	}
 	if !identifier.MatchString(decl.Permission) || !identifier.MatchString(decl.ResourceType) {
 		return fmt.Errorf("command: the command %s has the permission %q on %q, which are not names of the schema", decl.Name, decl.Permission, decl.ResourceType)
+	}
+	if p := m.ctx.Tenancy.Provisioning; p != nil && p.ResourceType != "" && decl.ResourceType == p.ResourceType {
+		return m.planServiceLevel(cmd, *p)
+	}
+	if decl.ResourceMember == "" {
+		return fmt.Errorf("command: the command %s needs its resource member, which the authorization of the service makes required", decl.Name)
 	}
 	var owner *types.Entity
 	names := make([]string, 0, len(byName))
@@ -504,6 +514,46 @@ func (m *model) planPermission(cmd *command, byName map[string]types.Entity) err
 	return nil
 }
 
+// planServiceLevel checks a command whose resource type is the resource type of the tenant provisioning
+// (ST-SUP-RC32-OC15): it names no resource member, and Run decides its permission on the service-level resource
+// <resource type>:<service name> in the tenant of the request, with no row to read, as a CRUD create of an entity
+// with no parent is decided (ST-SUP-RC29-OC01). Its handle offers each written entity only the create and the read,
+// so it is refused when an entity that it writes has a parent, whose permission the decision does not cover, and
+// when it writes a relation, which Relate decides on a row with the command's permission of another resource type.
+// A permission of Provision or Retire is decided with no tenant, so it is refused here (ST-SUP-Q127).
+func (m *model) planServiceLevel(cmd *command, p types.TenantProvisioning) error {
+	decl := cmd.decl
+	if decl.ResourceMember != "" {
+		return fmt.Errorf("command: the command %s names the resource member %s, but its resource type %s is the resource type of the tenant provisioning, so it is decided on the service-level resource and names no resource member (ST-SUP-RC32-OC15)", decl.Name, decl.ResourceMember, decl.ResourceType)
+	}
+	if decl.Permission == p.Provision || decl.Permission == p.Retire {
+		return fmt.Errorf("command: the command %s names the permission %s, which the tenant provisioning names for Provision or Retire, which are decided with no tenant; declare a permission of its own (ST-SUP-RC32-OC15)", decl.Name, decl.Permission)
+	}
+	if len(decl.RelationshipsWritten) > 0 {
+		return fmt.Errorf("command: the command %s is decided on the service-level resource and writes the relation %s; its handle offers only the create, so it writes no relation of its own (ST-SUP-RC32-OC15)", decl.Name, decl.RelationshipsWritten[0])
+	}
+	for _, e := range cmd.writes {
+		if e.resourceType == "" && len(e.references) > 0 {
+			return fmt.Errorf("command: the command %s is decided on the service-level resource and writes %s, which has no resource type and takes its authorization from a parent; such a command creates only rows with no parent (ST-SUP-RC32-OC15)", decl.Name, e.decl.Name)
+		}
+		for _, c := range m.ctx.Collections {
+			if c.Entity == e.decl.Name && len(c.Scope) > 0 {
+				return fmt.Errorf("command: the command %s is decided on the service-level resource and writes %s, which the collection %s puts under a parent; such a command creates only rows with no parent (ST-SUP-RC32-OC15)", decl.Name, e.decl.Name, c.Name)
+			}
+		}
+	}
+	if !serviceName.MatchString(m.ctx.ServiceName) {
+		return fmt.Errorf("command: the service name %q of the command %s is not a plain name for the service-level resource", m.ctx.ServiceName, decl.Name)
+	}
+	cmd.resource = &resource{resourceType: decl.ResourceType}
+	cmd.service = m.ctx.ServiceName
+	return nil
+}
+
+// serviceName is the form of a service name, the ID of the service-level resource: lower-case letters, digits and
+// hyphens.
+var serviceName = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
 // takeNames refuses two exported names of the contract package that are the same.
 func (m *model) takeNames() error {
 	take := func(owner string, names ...string) error {
@@ -529,7 +579,7 @@ func (m *model) takeNames() error {
 		}
 	}
 	for _, c := range m.commands {
-		if err := take("the command "+c.decl.Name, c.goName+"Handle", c.goName+"Fill"); err != nil {
+		if err := take("the command "+c.decl.Name, c.goName+"Handle", "New"+c.goName+"Handle", c.goName+"Fill"); err != nil {
 			return err
 		}
 		for _, r := range c.refusals {
