@@ -270,6 +270,8 @@ func WriteDeployment(service, release string, requirements []byte, probes *Probe
 	if err != nil {
 		return DeploymentFiles{}, err
 	}
+	modules, moduleNotes := ModuleFolders(source.Replacements, source.OutputDir, source.Fills)
+	source.Modules = modules
 	containerfile, err := WriteContainerfile(service, source)
 	if err != nil {
 		return DeploymentFiles{}, err
@@ -283,6 +285,7 @@ func WriteDeployment(service, release string, requirements []byte, probes *Probe
 		base.Files[ApplicationSetFile] = application.File
 	}
 	notes := []string{fmt.Sprintf(ImageNote, ImagePlaceholder(service))}
+	notes = append(notes, moduleNotes...)
 	if note != "" {
 		notes = append(notes, note)
 	}
