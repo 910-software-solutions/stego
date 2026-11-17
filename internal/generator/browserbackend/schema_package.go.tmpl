@@ -55,30 +55,23 @@ func Stage(err error) string {
  return "database.access"
 }
 
-// Migrate is the mode migrate of the service (ST-SUP-RC02-OC56): it reads the runtime login from the connection of
-// DATABASE_URL, opens the owner connection of STEGO_MIGRATION_DATABASE_URL, which only this mode reads, takes the
-// role of the database owner when the login is a member of it, runs Bootstrap for the runtime login, and then runs
-// Verify as that login. It returns nil only when both pass.
+// Migrate is the mode migrate of the service (ST-SUP-RC02-OC56): it reads the name of the runtime login from
+// STEGO_RUNTIME_DATABASE_ROLE and opens the owner connection of STEGO_MIGRATION_DATABASE_URL, which only this mode
+// reads, so the Job holds no credential of the runtime login. When the migration login is not the database owner, it
+// takes the owner role, so it must be a member of it. Then it runs Bootstrap for the runtime login, which checks the
+// owner, the login, the table, the columns, the constraints, the indexes and the grants of that login in the same
+// transaction. It returns nil only when Bootstrap passes; the start runs Verify as the runtime login.
 func Migrate(ctx context.Context) error {
  if ctx == nil {
   return ErrSchema
  }
- runtimeURL, err := setting("DATABASE_URL", os.Getenv("DATABASE_URL"), os.Getenv("DATABASE_URL_FILE"))
- if err != nil {
-  return err
+ login := os.Getenv("STEGO_RUNTIME_DATABASE_ROLE")
+ if !roleName.MatchString(login) {
+  return &settingFault{name: "STEGO_RUNTIME_DATABASE_ROLE"}
  }
  ownerURL, err := setting("STEGO_MIGRATION_DATABASE_URL", os.Getenv("STEGO_MIGRATION_DATABASE_URL"), os.Getenv("STEGO_MIGRATION_DATABASE_URL_FILE"))
  if err != nil {
   return err
- }
- runtimeDB, err := storage.OpenDatabase(runtimeURL)
- if err != nil {
-  return errors.New("browser session schema: the runtime connection did not open")
- }
- defer runtimeDB.Close()
- var login string
- if err := runtimeDB.QueryRowContext(ctx, "SELECT current_user").Scan(&login); err != nil {
-  return errors.New("browser session schema: the runtime login could not be read")
  }
  ownerDB, err := storage.OpenDatabase(ownerURL)
  if err != nil {
@@ -99,10 +92,7 @@ func Migrate(ctx context.Context) error {
    return fault("owner", sessions)
   }
  }
- if err := Bootstrap(ctx, conn, login); err != nil {
-  return err
- }
- return Verify(ctx, runtimeDB)
+ return Bootstrap(ctx, conn, login)
 }
 
 func quote(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }

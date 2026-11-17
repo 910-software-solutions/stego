@@ -61,22 +61,15 @@ architecture:
     browser-session-http: inbound
 
 environment:
-  # The mode migrate reads the runtime login and the owner connection (ST-SUP-RC02-OC56); postgres-adapter states the
-  # same variables with the same facts.
-  - name: DATABASE_URL
+  # The mode migrate reads the name of the runtime login and the owner connection (ST-SUP-RC02-OC56); postgres-adapter
+  # states the owner connection with the same facts.
+  - name: STEGO_RUNTIME_DATABASE_ROLE
     type: string
     required: false
-    description: "The PostgreSQL connection string of the runtime role, or DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
-    secret: true
-    one_of: database-url
-    secret_source: {name: "{service}-database", key: url}
-  - name: DATABASE_URL_FILE
-    type: path
-    required: false
-    description: "The file that holds the PostgreSQL connection string of the runtime role. Give it or DATABASE_URL, not the two."
+    description: "The name of the runtime login, to which the migration job grants the session table. The job does not start when it has no value or when the value is not a lower-case role name."
     secret: false
-    one_of: database-url
-    example: "/etc/stego/database/url"
+    read_by_mode: migrate
+    example: "portal_runtime"
   - name: STEGO_MIGRATION_DATABASE_URL
     type: string
     required: false

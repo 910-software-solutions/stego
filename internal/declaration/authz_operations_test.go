@@ -91,6 +91,17 @@ func TestCommandAuthorization(t *testing.T) {
 	t.Run("ST-DECL-INV40-T A command on the service-level resource with the retire permission is refused", func(t *testing.T) {
 		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: retire"), "command-authorization", "approve", "tenancy.provisioning.retire", "permission of its own")
 	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource that writes a relation is refused", func(t *testing.T) {
+		expectNamed(t, serviceLevel(t, "resource_type: service", "permission: record", "relationships_written: [document#viewer]"), "command-authorization", "approve", "relationships_written", "only the create")
+	})
+	t.Run("ST-DECL-INV40-T A command on the service-level resource that writes an entity with a parent is refused", func(t *testing.T) {
+		service, schema := td03Files(t)
+		service = change(t, service, "collections:\n", "  - name: Line\n    fields:\n      - {name: todo_id, type: ref, to: Todo}\ncollections:\n")
+		schema = change(t, schema, "permission retire = operator", "permission retire = operator\n\tpermission record = operator")
+		decl := readTD03(t, service+"commands:\n"+command("approve", "writes: [Line]", "fill: reserve-and-charge", "route: POST /lines", "resource_type: service", "permission: record"))
+		faults := CheckAuthorization(decl, fstest.MapFS{"authz/schema.zed": {Data: []byte(schema)}})
+		expectNamed(t, faults, "command-authorization", "approve", "writes[0]", "Line", "no parent")
+	})
 	t.Run("ST-DECL-INV40-T A command on service with no tenant provisioning names a resource member", func(t *testing.T) {
 		service, schema := td03Files(t)
 		service = change(t, service, "  provisioning: {resource_type: service, provision: provision, retire: retire}\n", "")

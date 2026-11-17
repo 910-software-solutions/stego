@@ -66,7 +66,11 @@ func validateCommandAuthorization(service *types.ServiceDeclaration, schema *Aut
 			faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".resource_member", Found: command.Name,
 				Message: fmt.Sprintf("command %q names no resource member; name the member of its request that holds the ID of the resource the permission is decided on, or, for a command that creates rows with no parent, name the resource type of the tenant provisioning and no resource member", command.Name)})
 		}
-		if !serviceLevel || command.Permission == "" {
+		if !serviceLevel {
+			continue
+		}
+		faults = append(faults, serviceLevelWrites(service, i, command)...)
+		if command.Permission == "" {
 			continue
 		}
 		for _, platform := range []struct{ name, permission string }{{"provision", provisioning.Provision}, {"retire", provisioning.Retire}} {
@@ -249,4 +253,44 @@ func RuntimeRelations(e types.Entity) map[string]string {
 		}
 	}
 	return relations
+}
+
+// serviceLevelWrites refuses what a command on the service-level resource cannot do, as the generator does
+// (ST-SUP-RC32-OC15): its handle offers only the create and the read, so it writes no relation of its own, and it
+// creates only rows with no parent, so it writes no entity that takes its authorization from a referenced row and no
+// entity that a scoped collection puts under a parent.
+func serviceLevelWrites(service *types.ServiceDeclaration, i int, command types.Command) []ValidationError {
+	var faults []ValidationError
+	if len(command.RelationshipsWritten) > 0 {
+		faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: commandPath(i) + ".relationships_written", Found: command.RelationshipsWritten[0],
+			Message: fmt.Sprintf("command %q is decided on the service-level resource, and its handle offers only the create and the read, so it writes no relation of its own (ST-SUP-RC32-OC15); remove relationships_written", command.Name)})
+	}
+	for wi, name := range command.Writes {
+		_, entity := entityIndex(service.Entities, name)
+		if entity == nil {
+			continue
+		}
+		parent := ""
+		if entity.ResourceType == "" {
+			for _, field := range entity.Fields {
+				if field.Type != types.FieldTypeRef {
+					continue
+				}
+				if _, to := entityIndex(service.Entities, field.To); to != nil && to.ResourceType != "" {
+					parent = "it has no resource type and takes its authorization from the " + to.Name + " that its field " + field.Name + " names"
+					break
+				}
+			}
+		}
+		for _, collection := range service.Collections {
+			if parent == "" && collection.Entity == name && len(collection.Scope) > 0 {
+				parent = "the collection " + collection.Name + " puts it under a parent"
+			}
+		}
+		if parent != "" {
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "command-authorization", Path: fmt.Sprintf("%s.writes[%d]", commandPath(i), wi), Found: name,
+				Message: fmt.Sprintf("command %q is decided on the service-level resource and writes %s, but %s; such a command creates only rows with no parent (ST-SUP-RC32-OC15)", command.Name, name, parent)})
+		}
+	}
+	return faults
 }

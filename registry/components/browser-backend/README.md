@@ -20,11 +20,15 @@ The compiler captures the declared asset files and checks their sizes.
 Run the service binary with the one argument `migrate` before service startup
 (version 4.6.0). The Kubernetes base writes this migration Job with the Secret
 `<service>-database-owner`, as for a rest-crud service. The mode migrate reads
-the runtime login from the connection of `DATABASE_URL`. It opens the owner
-connection of `STEGO_MIGRATION_DATABASE_URL`, which only this mode reads. When
-that login is not the database owner, it takes the owner role, so the login
-must be a member of it. Then it runs `browser/schema.Bootstrap` for the runtime
-login and `browser/schema.Verify` as that login. It exits 0 only when both pass.
+the name of the runtime login from `STEGO_RUNTIME_DATABASE_ROLE` (from the
+ConfigMap) and opens the owner connection of `STEGO_MIGRATION_DATABASE_URL`.
+Only this mode reads the two, and the Job holds no credential of the runtime
+login. When the migration login is not the database owner, it takes the owner
+role, so the login must be a member of it. Then it runs
+`browser/schema.Bootstrap` for the runtime login, which checks the owner, the
+login, the table, the columns, the constraints, the indexes and the grants of
+that login. It exits 0 only when Bootstrap passes. The start of the service runs
+`browser/schema.Verify` as the runtime login.
 You write no Go code or SQL to make the session table.
 
 The database administrator makes these before the first migration job: a

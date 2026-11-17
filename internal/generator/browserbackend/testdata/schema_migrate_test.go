@@ -2,7 +2,9 @@ package browser
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -20,31 +22,52 @@ func classOf(err error) (string, string) {
 }
 
 func TestBrowserSchemaMigrate(t *testing.T) {
-	t.Run("ST-SUP-RC02-OC56-T01 The mode migrate runs Bootstrap as the owner and Verify as the runtime login", func(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC56-T01 The mode migrate runs Bootstrap as the owner for the named runtime login, with no runtime credential", func(t *testing.T) {
 		db := database(t)
 		raw, _ := schemaFixtures.Load(db)
 		fixture := raw.(schemaFixture)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
+		// The Job has no connection string of the runtime login (ST-DLV-INV13): only its name.
 		t.Setenv("STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK", "1")
+		t.Setenv("DATABASE_URL", "")
 		t.Setenv("DATABASE_URL_FILE", "")
 		t.Setenv("STEGO_MIGRATION_DATABASE_URL_FILE", "")
-		// With no owner setting, the job refuses at the stage of the setting and makes nothing.
-		t.Setenv("DATABASE_URL", fixture.runtimeURL)
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL", fixture.adminURL)
+		for _, role := range []string{"", "bad;role", "Upper"} {
+			t.Setenv("STEGO_RUNTIME_DATABASE_ROLE", role)
+			if err := schema.Migrate(ctx); err == nil || schema.Stage(err) != "service.start.setting.browser-backend.STEGO_RUNTIME_DATABASE_ROLE" {
+				t.Fatalf("the job with the role name %q gave the stage %q, want the stage of STEGO_RUNTIME_DATABASE_ROLE", role, schema.Stage(err))
+			}
+		}
+		t.Setenv("STEGO_RUNTIME_DATABASE_ROLE", fixture.user)
 		t.Setenv("STEGO_MIGRATION_DATABASE_URL", "")
 		err := schema.Migrate(ctx)
 		if err == nil || schema.Stage(err) != "service.start.setting.browser-backend.STEGO_MIGRATION_DATABASE_URL" {
 			t.Fatalf("the job with no owner setting gave the stage %q, want the stage of STEGO_MIGRATION_DATABASE_URL", schema.Stage(err))
 		}
-		if strings.Contains(err.Error(), fixture.runtimeURL) {
-			t.Fatal("the refusal holds the connection string")
-		}
 		if schema.Verify(ctx, db) == nil {
 			t.Fatal("the refused job made the schema")
 		}
-		// The administrator login takes the role of the database owner; the job makes the schema and checks it as
-		// the runtime login, and a second run changes nothing.
-		t.Setenv("STEGO_MIGRATION_DATABASE_URL", fixture.adminURL)
+		// A plain migration login that is a member of the owner role takes that role with SET ROLE; the job makes
+		// the schema, a second run changes nothing, and the runtime login then passes Verify and writes a row.
+		admin, err := sql.Open("pgx", fixture.adminURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer admin.Close()
+		migrator := strings.TrimSuffix(fixture.user, "_login") + "_migrator"
+		owner := strings.TrimSuffix(fixture.user, "_login") + "_owner"
+		if _, err := admin.ExecContext(ctx, "CREATE ROLE "+migrator+" LOGIN PASSWORD 'migrator-pw' IN ROLE "+owner); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = admin.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+migrator) })
+		member, err := url.Parse(fixture.adminURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		member.User = url.UserPassword(migrator, "migrator-pw")
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL", member.String())
 		for run := 1; run <= 2; run++ {
 			if err := schema.Migrate(ctx); err != nil {
 				t.Fatalf("run %d of the job: %v (stage %s)", run, err, schema.Stage(err))
@@ -56,11 +79,11 @@ func TestBrowserSchemaMigrate(t *testing.T) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO public.stego_browser_sessions(id_hash,payload,state,expires_at) VALUES(decode(repeat('00',32),'hex'),decode(repeat('00',28),'hex'),'login',CURRENT_TIMESTAMP)`); err != nil {
 			t.Fatal("the runtime login cannot write a session after the job", err)
 		}
-		// A runtime connection that does not open is database.access, not a schema fault.
-		t.Setenv("DATABASE_URL", "postgres://nobody:private-password@127.0.0.1:1/none?sslmode=disable")
+		// An owner connection that does not open is database.access, with no password in the error.
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL", "postgres://nobody:private-password@127.0.0.1:1/none?sslmode=disable")
 		err = schema.Migrate(ctx)
 		if err == nil || schema.Stage(err) != "database.access" || strings.Contains(err.Error(), "private-password") {
-			t.Fatalf("the job with a runtime connection that does not open gave %v at the stage %q, want database.access with no value", err, schema.Stage(err))
+			t.Fatalf("the job with an owner connection that does not open gave %v at the stage %q, want database.access with no value", err, schema.Stage(err))
 		}
 	})
 }

@@ -66,12 +66,14 @@ commands:
   # place-order creates an Order with no parent: its resource type is the resource type of the tenant provisioning,
   # so it names no resource member and is decided on the service-level resource of the tenant (ST-SUP-RC32-OC15).
   - name: place-order
-    writes: [Order]
+    writes: [Order, Note]
     resource_type: service
     permission: place_order
     route: POST /orders
     method: shop.v1.Shop/PlaceOrder
     fill: place-order
+    refusals:
+      - {name: no_order, status: 404, code: order.not_found}
 queries:
   - name: get-order-summary
     reads: [Order]

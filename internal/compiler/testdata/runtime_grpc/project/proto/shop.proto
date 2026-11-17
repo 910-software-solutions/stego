@@ -18,6 +18,9 @@ message PlaceOrderRequest {
   string sku = 1;
   int32 qty = 2;
   string email = 3;
+  // note_on names an order to which the command adds a note with the text note.
+  string note_on = 4;
+  string note = 5;
 }
 
 // PlaceOrderResponse is the response of place-order.

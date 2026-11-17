@@ -542,6 +542,14 @@ func TestGRPC(t *testing.T) {
 	must(t, err)
 	s.relate("service", qualified, "placer", placer)
 	s.relate("service", "grpc-shop", "placer", platform)
+	// stranger, a caller of another tenant, holds placer on the service-level resource of the tenant of owner, which
+	// grants nothing in its own tenant. placer may view theirs and not edit it.
+	stranger := s.as("u-"+uuid.NewString()[:8], "t-"+uuid.NewString()[:8])
+	s.provisioned(stranger)
+	s.relate("service", qualified, "placer", stranger)
+	theirsID, err := authz.ResourceID(owner.tenant, theirs)
+	must(t, err)
+	s.relate("order", theirsID, "viewer", placer)
 
 	t.Run("ST-SUP-RC27-OC11-T01 A gRPC call of a tenant that is not provisioned is refused before any handler", func(t *testing.T) {
 		s.t = t
@@ -747,6 +755,33 @@ func TestGRPC(t *testing.T) {
 		must(t, err)
 		if summary.GetSku() != "p1" || summary.GetQty() != 3 {
 			t.Fatalf("the query gave %v, want the placed order with the sku p1 and the qty 3", summary)
+		}
+		// The grant is on the ID of one tenant: a caller of another tenant with it places no order.
+		s.granted("service", qualified, "place_order", stranger)
+		ctx, cancel = s.rpc(&stranger, "k-"+uuid.NewString(), "")
+		_, err = s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: "px", Qty: 1, Email: "px@example.com"})
+		cancel()
+		wantCode(t, err, codes.NotFound, "the command of a caller of another tenant with the grant of the tenant of owner")
+		// The handle reads with Get, decided by the read permission, and a create decides its reference: a note on
+		// an order that placer may not view, and one on an order that placer may view and not edit, are refused and
+		// leave no row; a note on the order that placer owns is written.
+		s.granted("order", theirsID, "view", placer)
+		s.granted("order", resourceID, "edit", placer)
+		for _, refused := range []struct{ sku, on, what string }{{"p3", mine, "an order that placer may not view"}, {"p4", theirs, "an order that placer may view and not edit"}} {
+			ctx, cancel = s.rpc(&placer, "k-"+uuid.NewString(), "")
+			_, err = s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: refused.sku, Qty: 1, Email: "n@example.com", NoteOn: refused.on, Note: "refused"})
+			cancel()
+			wantCode(t, err, codes.NotFound, "the command with a note on "+refused.what)
+		}
+		ctx, cancel = s.rpc(&placer, "k-"+uuid.NewString(), "")
+		_, err = s.shop.PlaceOrder(ctx, &commands.PlaceOrderRequest{Sku: "p5", Qty: 1, Email: "n@example.com", NoteOn: placed.GetOrderId(), Note: "on my order"})
+		cancel()
+		must(t, err)
+		if n := count(t, s.admin, `SELECT (SELECT count(*) FROM orders WHERE sku IN ('px', 'p3', 'p4')) + (SELECT count(*) FROM notes WHERE text = 'refused')`); n != 0 {
+			t.Fatalf("the refused commands left %d rows", n)
+		}
+		if n := count(t, s.admin, `SELECT count(*) FROM notes WHERE order_id = $1 AND text = 'on my order' AND tenant_id = $2`, placed.GetOrderId(), placer.tenant.ID()); n != 1 {
+			t.Fatalf("the notes table holds %d notes on the placed order, want 1", n)
 		}
 	})
 }

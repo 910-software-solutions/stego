@@ -319,8 +319,7 @@ func TestOneOfGroups(t *testing.T) {
 			"postgres-adapter/relay-database-url":     {"STEGO_RELAY_DATABASE_URL", "STEGO_RELAY_DATABASE_URL_FILE"},
 			"kafka-producer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
 			"kafka-producer/kafka-topic":              {"STEGO_KAFKA_TOPIC", "STEGO_KAFKA_TOPIC_FILE"},
-			// The mode migrate of browser-backend reads the same pairs as postgres-adapter (ST-SUP-RC02-OC56).
-			"browser-backend/database-url":           {"DATABASE_URL", "DATABASE_URL_FILE"},
+			// The mode migrate of browser-backend reads the same owner connection as postgres-adapter (ST-SUP-RC02-OC56).
 			"browser-backend/migration-database-url": {"STEGO_MIGRATION_DATABASE_URL", "STEGO_MIGRATION_DATABASE_URL_FILE"},
 		}
 		got := map[string][]string{}
