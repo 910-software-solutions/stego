@@ -387,6 +387,10 @@ const (
 
 var migrations []Migration
 
+// registered makes registerGenerated run once, at the first read of the migrations, so the generated migrations
+// are registered by a call in a fixed order and not by package initialization (ST-GEN-INV14).
+var registered sync.Once
+
 // Digest computes the ledger digest of a migration body. The body is the
 // SQL text of a SQL migration and the generated source text of a function
 // migration.
@@ -634,10 +638,11 @@ func ApplyMigration(ctx context.Context, db Database, name, body string) error {
 	})
 }
 
-// orderedMigrations returns the registered migrations sorted by name.
-// Registration order follows package initialization; the apply order is
+// orderedMigrations returns the registered migrations sorted by name,
+// after it registers the generated migrations once. The apply order is
 // the name order, so names must sort in dependency order.
 func orderedMigrations() []Migration {
+	registered.Do(registerGenerated)
 	ordered := make([]Migration, len(migrations))
 	copy(ordered, migrations)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Name < ordered[j].Name })
@@ -1340,6 +1345,7 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 	fmt.Fprintf(&buf, "\t\"math/rand/v2\"\n")
 	fmt.Fprintf(&buf, "\t\"sort\"\n")
 	fmt.Fprintf(&buf, "\t\"strings\"\n")
+	fmt.Fprintf(&buf, "\t\"sync\"\n")
 	fmt.Fprintf(&buf, "\t\"time\"\n")
 	fmt.Fprintf(&buf, "\n\truntimetenant %q\n", runtimeTenantImport)
 	if rowSecurity != "" {
@@ -1364,7 +1370,10 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 			return gen.File{}, err
 		}
 	}
-	fmt.Fprintf(&buf, "func init() {\n")
+	// The generated migrations are registered by a function that orderedMigrations calls once, never by func init,
+	// so nothing in the service registers code at package initialization (ST-GEN-INV14).
+	fmt.Fprintf(&buf, "// registerGenerated registers the generated migrations in their fixed order.\n")
+	fmt.Fprintf(&buf, "func registerGenerated() {\n")
 	fmt.Fprintf(&buf, "\tRegisterSQL(\"001_initial\", %s)\n", tablesConstant)
 	if rowSecurity != "" {
 		// The row-level security of the tenancy component comes after every table it covers (ST-SUP-RC27-OC03).
