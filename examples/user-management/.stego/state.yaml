@@ -19,29 +19,29 @@ last_applied:
                 mode: 420
             go.mod:
                 exists: true
-                sha256: a37ee91dab1a049f11d506dfca9f9cbe680e4841feeb55fecb915aa764f1f726
+                sha256: 1e521a88780342271f41ef6bc44f8db58c2bfec843592d1a2983c1043c98c7d9
                 mode: 420
             go.sum:
                 exists: true
-                sha256: 2a01ab8a7bfcd6f168aaff42345f612a04002bdce8f8d0537c4583720fe8dfce
+                sha256: 3cb884069efc8e9e0492a6604d63f575bfd66dd57a8b7cc9334715b8b65377a3
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: 43cc1481f334b1d0c288a157a53b83aa00af7dc3b1b6058c4733becab72186ef
+        sha256: 4b3642fec3eac884e5cef903c1f17245309e09c600d6a678df1fd8e0fa36629d
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117154646-46d93e46e57b
+        module_version: v0.0.0-20261117161824-a13dd3814548
         vcs: git
-        revision: 46d93e46e57b982cc7c4b30d12b7fd18b85976ba
+        revision: a13dd3814548879dcd4be62e4005a1d4eab200ae
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 3d5875136c32bfb4707b117303ca7849eba9e8c7de4c60d1cf6b956ed6c05c4c
+    registry_content_sha256: 8f6743b3cbfee0263c4abf4197781cd7924a1cbc43884e6c76d43840b4b9636f
     components:
         audit-log:
             version: 1.1.1
@@ -57,7 +57,7 @@ last_applied:
             sha: 9336c79178caf803db7222bedd34244d99241ea4bbb3cf5298fd7e87029aad1d
         jwt-auth:
             version: 2.5.0
-            sha: 43cd2321d6a753d18cb9613c93dd4ade3a0174ac802204acc4b6297c46f34d21
+            sha: cd1c207908711b6cbdf9a4285fb6c3bdfa4f4e12adbf013ad1a5622f8d77db79
         kafka-producer:
             version: 3.0.0
             sha: c231fae44d60a39f75076018d24bca0b1255fd080e6dfe400fa6ca1cb96b0203
@@ -68,8 +68,8 @@ last_applied:
             version: 2.1.0
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
-            version: 6.9.0
-            sha: d4170f9707251942c3ec8818646933afe6daa4a0f7ff4efd442b07706feb3e7f
+            version: 6.10.0
+            sha: e78a310d424b6506afcaca9105986327294890679b8701ee3c2d000934b75dbf
         query:
             version: 1.2.0
             sha: 97a74b61e2d5cad28b48b8b8c5cc1549d020705af5f3aa3730ab266d9ce997cf
@@ -210,28 +210,28 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: de0b243ea21ce208b7cde7888d28d75a7f4a6971fc6badfe3a06d6ebbcff98aa
-        architecture/index.html: e567fdfeb0ecb77615586a29a072fa157943ef1ef99425e95f4d139ef433f208
+        architecture/architecture.json: 9a7104dc148dccb1fcd0cceeb6d295242f05bbee5859caa058f5d4ad976ad9a4
+        architecture/index.html: c2e555b6fe4f2f9a1864a827a790c78c4417eb521f0fd2321e894d90906a9abf
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
-        deploy/base/migration-job.yaml: 07515cb7ee7b592d96f1ff22c45252b75d6d5a8bfc1151edf86349c3f6089b43
+        deploy/base/migration-job.yaml: bcfb537afa25d4bfeeead43a0878e5934325a1f871f04eef212210c4608dc5f5
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
         deploy/components/fs-group/deployment-fs-group.yaml: 9a4f92991ebab2ead72ab1a3129ebf94f44fa63249b337e6e6ce8fa11944d667
-        deploy/components/fs-group/job-fs-group.yaml: be3b72b820f2aa415cbe15f2251f692eebcf46b44a6450eacad48e426610b7d4
+        deploy/components/fs-group/job-fs-group.yaml: 58babe0b20791052b77302296508ec00d5df35e53852fa2d32104ab1b7a6908f
         deploy/components/fs-group/kustomization.yaml: cee4fb45b3d3f632d93206e074ba891e51f4151c76e88aed741a0ce7de942867
         deploy/components/secret-files/kustomization.yaml: 75234bcae3c80c007034ebfded036239d9129181bafb0e6b96aa525b3e85f443
         deploy/components/secret-files/mount-files.yaml: 388ccb04b69ad2bd7346d7579269a9b1c2e8bc27ba30b94ec5c767112c95cb32
-        deploy/components/secret-files/mount-job-files.yaml: 744dd33cb5e0a36ad5e4ad923e2e54b759289a1e530b3407c556c34a66306d18
+        deploy/components/secret-files/mount-job-files.yaml: 942b4d97c4f9c4a834624b0435abeb41780d89657335b0303204b1f3f6f0d2d4
         deploy/components/secret-files/remove-env.yaml: a243baeae3309873606fb81e1556b5f922fc23b6c504191261e2cea7dfdc4ab6
-        deploy/components/secret-files/remove-job-env.yaml: fe46856a37bdb0514bf7e9477efa0f9f1785634fe4e430c1132d6a615c61b86a
-        deploy/environment-variables.md: 30a250076e72b219c676cff1de6f5006343ad42ce4cfb1dc4e9676676bf53ca5
-        deploy/platform-requirements.yaml: e8c2909bb60041c8e8a6102310df813d154025557d6bbda4b62758cf770da8f7
+        deploy/components/secret-files/remove-job-env.yaml: eeba2f8a13f08301e117495031cf6dd0ee4650548c7ebfed2f14fdd0a106b8e1
+        deploy/environment-variables.md: ea185e07ab1e339b1865bf3dddd591a93950d11298e53c7758b4c3008f390ccb
+        deploy/platform-requirements.yaml: 66a49e8a7987dddfe1b8c96e68445fd4d5fb10e0b9542c0fbc1a81cbdd6ee3e3
     archetype:
         name: rest-crud
-        version: 3.155.0
+        version: 3.157.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
-            version: v0.127.0
-            sum: h1:Na1W2/F5ngZMtgWbt5zmHfkSSKt3ca7kgvXwQ4uMgQ4=
+            version: v0.129.0
+            sum: h1:XJc0AncyyCSiRYKh3NY1QCUDD6H/z+9BwPFQWl+lcCA=
         imports_runtime: true
