@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -220,6 +221,10 @@ func (w *Worker) Register(d Destination) error {
 	if _, ok := w.destinations[d.Name]; ok {
 		return fmt.Errorf("outbox: %s is registered already", d.Name)
 	}
+	// Each destination has a claim slot of its own, and the slots stay within MaxBatchSize (ST-SUP-RP01-LC34).
+	if len(w.destinations) >= MaxBatchSize {
+		return fmt.Errorf("outbox: the worker holds at most %d destinations", MaxBatchSize)
+	}
 	w.destinations[d.Name] = d
 	return nil
 }
@@ -257,7 +262,8 @@ func (w *Worker) Stats() WorkerStats {
 	}
 }
 
-// Run claims and steps messages with at most Concurrency at one time (ST-SUP-RP01-LC05) until StopClaiming or the
+// Run claims and steps messages in the slots of each registered destination (ST-SUP-RP01-LC34), with at most
+// Concurrency at one time or one for each destination when there are more (ST-SUP-RP01-LC05), until StopClaiming or the
 // end of ctx. Claims run on a claim context that StopClaiming ends; handlers and lookups run on a separate work
 // context that only the end of ctx or the drain bound of Finish ends, so StopClaiming lets every claimed message
 // finish its step (ST-SUP-RP09-LC06). Run waits for every step that started, and a step that completed is still
@@ -273,6 +279,13 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 	w.started.Store(true)
 	defer close(w.finished)
+	slots := w.slots()
+	// Each slot in flight holds one connection for its tenant transaction, and the purge timer and the gauge one
+	// more.
+	if limit := w.queue.db.Stats().MaxOpenConnections; limit > 0 && limit < len(slots)+2 {
+		return fmt.Errorf("outbox: the pool holds at most %d connections; the %d slots of the destinations need %d",
+			limit, len(slots), len(slots)+2)
+	}
 	claimCtx, stopClaims := context.WithCancel(ctx)
 	defer stopClaims()
 	workCtx, stopWork := context.WithCancel(ctx)
@@ -297,11 +310,13 @@ func (w *Worker) Run(ctx context.Context) error {
 		defer workers.Done()
 		w.purgeTimer(claimCtx)
 	}()
-	for i := 0; i < w.config.Concurrency; i++ {
+	// Each registered destination claims and delivers in slots of its own, a bulkhead: a destination whose attempts
+	// are slow, refused or at their deadline holds only its own slots (ST-SUP-RP01-LC34).
+	for _, slot := range slots {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			w.runOne(claimCtx, workCtx)
+			w.runOne(claimCtx, workCtx, slot)
 		}()
 	}
 	workers.Wait()
@@ -335,10 +350,34 @@ func (w *Worker) Finish(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (w *Worker) runOne(claimCtx, workCtx context.Context) {
+// slots gives the destination of each claim slot of Run (ST-SUP-RP01-LC34): Concurrency slots, or one for each
+// registered destination when there are more destinations, shared out in the order of the names, so each
+// destination has at least one slot of its own and the slots of all destinations stay within the checked limit
+// MaxBatchSize that Register keeps (ST-SUP-RP01-LC05). A message of a destination with no registration is never
+// claimed, so it stays queued (ST-SUP-RP01-LC03).
+func (w *Worker) slots() []string {
+	w.mu.Lock()
+	names := make([]string, 0, len(w.destinations))
+	for name := range w.destinations {
+		names = append(names, name)
+	}
+	w.mu.Unlock()
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	total := max(w.config.Concurrency, len(names))
+	slots := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		slots = append(slots, names[i%len(names)])
+	}
+	return slots
+}
+
+func (w *Worker) runOne(claimCtx, workCtx context.Context, destination string) {
 	var databaseAttempts int64
 	for w.claiming(claimCtx) {
-		n, err := w.cycle(claimCtx, workCtx)
+		n, err := w.cycleOf(claimCtx, workCtx, destination)
 		if err != nil {
 			if claimCtx.Err() != nil {
 				return
@@ -372,7 +411,8 @@ func (w *Worker) claiming(claimCtx context.Context) bool {
 	}
 }
 
-// purgeTimer purges done messages every PurgeEvery until ctx ends (ST-SUP-RP01-LC24).
+// purgeTimer moves the expired leases of every destination to outcome unknown and purges done messages every
+// PurgeEvery until ctx ends (ST-SUP-RP01-LC24).
 func (w *Worker) purgeTimer(ctx context.Context) {
 	ticker := time.NewTicker(w.config.PurgeEvery)
 	defer ticker.Stop()
@@ -381,6 +421,12 @@ func (w *Worker) purgeTimer(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// The expired leases of every destination, also of one that this worker does not register, move to
+			// outcome unknown, so a message of a destination that a release dropped does not stay dispatching
+			// (security review of PR #411, L1).
+			if _, err := w.queue.expireLeases(ctx); err != nil && ctx.Err() == nil {
+				w.databaseFailures.Add(1)
+			}
 			if _, _, err := w.purgeTick(ctx); err != nil && ctx.Err() == nil {
 				w.databaseFailures.Add(1)
 			}
@@ -411,7 +457,12 @@ func (w *Worker) purgeTick(ctx context.Context) (int64, int, error) {
 // cycle claims at most one message on claimCtx and takes its next step on workCtx. It claims only when this worker
 // can deliver, so a waiting batch never spends its lease before its step starts.
 func (w *Worker) cycle(claimCtx, workCtx context.Context) (int, error) {
-	deliveries, err := w.queue.Claim(claimCtx, 1, w.config.LeaseDuration)
+	return w.cycleOf(claimCtx, workCtx, "")
+}
+
+// cycleOf is cycle for the messages of destination only, or for every destination when it is empty.
+func (w *Worker) cycleOf(claimCtx, workCtx context.Context, destination string) (int, error) {
+	deliveries, err := w.queue.claim(claimCtx, destination, 1, w.config.LeaseDuration)
 	if err != nil {
 		return 0, err
 	}

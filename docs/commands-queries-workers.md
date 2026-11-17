@@ -152,6 +152,11 @@ workers:
     resource_type: stock_item
     permission: scan
     fill: low-stock-scan
+    lists:
+      - name: low-items
+        entity: StockItem
+        filter:
+          - {field: quantity, op: less_than, value: 10}
 
 observations:
   - name: low_stock
@@ -573,6 +578,11 @@ workers:
     resource_type: stock_item
     permission: scan
     fill: low-stock-scan
+    lists:
+      - name: low-items
+        entity: StockItem
+        filter:
+          - {field: quantity, op: less_than, value: 10}
 ```
 
 | Key | What it is |
@@ -586,6 +596,7 @@ workers:
 | `effects` | The messages that the fill can stage, as for a command. Optional. |
 | `single` | For an `every` worker: when true, one instance of the service runs the worker at a time, under a lease. The default is true. |
 | `lease_ttl` | The time that the lease holds, from `15s` to `5m`. The default is `15s`. |
+| `lists` | The lists of rows that the fill reads. See [The lists of a worker](#the-lists-of-a-worker). Optional. |
 
 The component `worker` is at the stage alpha. Accept it in the declaration
 with a date before its sunset (2027-04-30) and a reason:
@@ -682,6 +693,98 @@ func New() workers.LowStockScanFill {
 	}
 }
 ```
+
+### The lists of a worker
+
+A worker fill reads a set of rows through a declared list (ST-DECL-INV94).
+`low-stock-scan` reads the stock items with fewer than 10 units:
+
+<!-- excerpt -->
+```yaml
+    lists:
+      - name: low-items
+        entity: StockItem
+        filter:
+          - {field: quantity, op: less_than, value: 10}
+```
+
+| Key | What it is |
+|---|---|
+| `name` | The name of the list, unique in its worker. |
+| `entity` | An entity that the worker writes. |
+| `filter` | One to eight terms. Each term has a `field` of the entity and an `op`. |
+| `op` | `equals`, `not_equals`, `less_than`, `less_than_or_equals`, `greater_than`, `greater_than_or_equals` or `is_set`. |
+| `value` | A constant of the field type. `is_set` takes no value. |
+| `now` | `true` in place of `value`: the time of the run. This is the time of the tick of an `every` worker, and the start of the run of a consuming worker. Use it only on a timestamp field. |
+| `lock` | Optional. When true, `ListForUpdate` locks the rows. The entity must declare `lock_at_most`, a whole number from 1 to 1000. |
+
+`stego apply` writes one typed list for each declared list in `out/workers`.
+Its name is the worker name and the list name in mixed case, such as
+`LowStockScanLowItems`. The generator builds the statements of the list from
+the entity of the release: the columns of the entity, the tenant, and the
+filter as bound values. When a schema change adds a field, the next release
+writes the list again with the new column, and the release before it still
+reads its own columns.
+
+The fill reads the list through the repository of the entity:
+
+```go
+items, err := workers.StockItemRepository(h)
+if err != nil {
+	return err
+}
+low, err := items.List(ctx, workers.LowStockScanLowItems, 100)
+```
+
+A declared list takes no filter values from the fill.
+
+### A failed run of a consuming worker
+
+Each attempt of a consuming worker that does not commit writes one log line
+`command.consumer.run_failed` at the level warn. The line gives the worker, the
+destination, the event ID of the message, the attempt number, the outcome and
+the cause class. It never gives the error text or a value of the message. The
+attempt is also sent as `worker.run.failed` with the worker, the outcome and
+the cause class.
+
+When the fill fails with the same outcome and cause class in 5 attempts in a
+row, the runtime parks the message as poison (failure code `poison`) and
+raises the alert of a parked message. Only the errors that the fill causes are
+counted: an error of the fill, a row that is not there, an invalid value, a
+refused resource, a unique violation and a panic. A provider that cannot decide
+now, a conflict, a failed database statement, a timeout and a lost connection
+are not counted, and they start the count again. A parked message stays in the
+outbox, and a person can send it again or discard it.
+
+### Release notes for runtime v0.125.0
+
+- A worker fill gives no SQL text. Before v0.125.0, a worker fill gave its
+  own SQL text in `command.ListSpec` and made its list with `command.NewList`.
+  That SQL named the columns of the entity, so each added column broke it.
+  Now the handle of a worker takes only the lists that its declaration
+  declares (ST-SUP-RP10-LC38). The fill still compiles, but each run that
+  uses its own list rolls back with this error:
+
+  ```text
+  command: internal error: the worker low-stock-scan reads the list low of
+  StockItem, which its declaration does not declare: since runtime v0.125.0 a
+  worker fill gives no SQL text, so declare the list under lists: of the
+  worker and use the generated list of the worker contract (ST-SUP-RP10-LC38)
+  ```
+
+  To move a fill, write the `WHERE` terms of its `Read` statement as `filter`
+  terms under `lists:` of the worker, and add `lock: true` when the fill used
+  `Lock`. Run `stego apply`. Then remove the `command.ListSpec` and the
+  `command.NewList` call from the fill, use the generated list, and remove the
+  filter values from the `List` and `ListForUpdate` calls.
+- The outbox worker gives each destination claim slots of its own, so a slow
+  or refused destination does not delay another destination. It runs
+  `Concurrency` slots, or one slot for each destination when there are more
+  destinations. Each slot holds one database connection, so
+  `outbox.Worker.Run` refuses a pool that holds fewer connections than the
+  slots plus 2. The worker mode of a generated service sets its pool to this
+  size. A program that builds its own outbox worker must give its pool at least
+  that many connections.
 
 ## Declare an observation
 

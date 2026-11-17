@@ -371,6 +371,12 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 			return nil, err
 		}
 	}
+	// Each registered destination has a claim slot of its own, so a service with more destinations than Concurrency
+	// runs one slot for each, and each slot holds one connection (ST-SUP-RP01-LC34).
+	if slots := max(config.Concurrency, len(w.worker.Registrations())); w.workerDB.Stats().MaxOpenConnections < slots+2 &&
+		w.workerDB.Stats().MaxOpenConnections > 0 {
+		w.workerDB.SetMaxOpenConns(slots + 2)
+	}
 	set := []modes.Component{{Name: OutboxWorkerName, Run: w.worker.Run}}
 	if p.Tickers != nil {
 		if svc.workers == nil || p.TenantSchema == "" {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -1056,4 +1057,208 @@ func (g *reachGraph) run() map[string]bool {
 		}
 	}
 	return reach
+}
+
+// ScopedAccessWarnings gives one warning for each permission that a read, an update, a patch or a delete of a scoped
+// collection decides on its row, when the permission does not need the read permission of the parent through the
+// relation of the scope reference: an arrow such as organization->view, or an intersection with one. The handler of
+// a scoped collection decides only on the deepest resource of the path (ST-SUP-RC20-OC24, ST-SUP-Q156), so such a
+// permission opens the row through the scoped routes to a grant on the row alone; an earlier STEGO also decided the
+// read of each ancestor. The warning names the entity, the permission and the parent, and gives the intersection
+// that keeps the earlier access (security review of PR #409, M1). A schema that does not compile gives none: the
+// checks of the schema refuse it.
+func ScopedAccessWarnings(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
+	if service == nil || schema == nil {
+		return nil
+	}
+	index := map[string]int{}
+	for i, e := range service.Entities {
+		index[e.Name] = i
+	}
+	var warnings []ValidationError
+	seen := map[string]bool{}
+	for _, c := range service.Collections {
+		scope := c.ScopeField()
+		ei, ok := index[c.Entity]
+		pi, parentOK := index[c.ParentEntity()]
+		if scope == "" || !ok || !parentOK {
+			continue
+		}
+		e, p := service.Entities[ei], service.Entities[pi]
+		relation := e.References[scope].Relation
+		read := p.Permissions[types.OpRead]
+		if e.ResourceType == "" || p.ResourceType == "" || relation == "" || read == "" || read == types.PermissionPublic {
+			continue
+		}
+		for _, op := range []types.Operation{types.OpRead, types.OpUpdate, types.OpPatch, types.OpDelete} {
+			permission := e.Permissions[op]
+			if !slices.Contains(c.Operations, op) || permission == "" || permission == types.PermissionPublic || seen[e.Name+"#"+permission] {
+				continue
+			}
+			seen[e.Name+"#"+permission] = true
+			rewrite, isPermission := schema.PermissionRewrite(e.ResourceType, permission)
+			g := scopeGuard{schema: schema, resourceType: e.ResourceType, relation: relation, parentType: p.ResourceType, read: read}
+			if isPermission && g.guarded(rewrite, 0) {
+				continue
+			}
+			expression := permission
+			if isPermission {
+				expression = rewriteText(rewrite)
+			}
+			warnings = append(warnings, ValidationError{Category: "authorization", Rule: "scoped-access", Path: fmt.Sprintf("entities[%d].permissions.%s", ei, op), Found: e.ResourceType + "#" + permission,
+				Message: fmt.Sprintf("the permission %s of %s (the %s of collections.%s) does not need the read %s of its parent %s through the relation %s. The routes of collections.%s decide only on the %s (ST-SUP-Q156), so a grant on a %s alone opens it there, also to a caller that may not read the %s; an earlier STEGO also decided the read of the %s. Write it as an intersection, which keeps the access of an earlier STEGO: permission %s = (%s) & %s->%s",
+					permission, e.ResourceType, op, c.Name, read, p.Name, relation, c.Name, e.Name, e.ResourceType, p.Name, p.Name, permission, expression, relation, read)})
+		}
+	}
+	return warnings
+}
+
+// scopeGuard decides whether a permission of resourceType needs the permission read of its parent of parentType
+// through the relation relation.
+type scopeGuard struct {
+	schema                                   *AuthzSchema
+	resourceType, relation, parentType, read string
+}
+
+// maxGuardDepth bounds the walk through the permissions of the schema; a deeper permission counts as not guarded.
+const maxGuardDepth = 16
+
+// guarded tells whether each way of the expression to grant the permission needs the read of the parent: every
+// branch of a union, one branch of an intersection, and the base of an exclusion.
+func (g scopeGuard) guarded(rewrite *core.UsersetRewrite, depth int) bool {
+	if rewrite == nil || depth > maxGuardDepth {
+		return false
+	}
+	switch {
+	case rewrite.GetUnion() != nil:
+		children := rewrite.GetUnion().GetChild()
+		for _, child := range children {
+			if !g.child(child, depth) {
+				return false
+			}
+		}
+		return len(children) > 0
+	case rewrite.GetIntersection() != nil:
+		for _, child := range rewrite.GetIntersection().GetChild() {
+			if g.child(child, depth) {
+				return true
+			}
+		}
+		return false
+	case rewrite.GetExclusion() != nil:
+		children := rewrite.GetExclusion().GetChild()
+		return len(children) > 0 && g.child(children[0], depth)
+	}
+	return false
+}
+
+// child tells whether one branch needs the read of the parent: an arrow through the relation to a permission of the
+// parent that needs its read, another permission of the type that is guarded, or a nested expression that is.
+func (g scopeGuard) child(child *core.SetOperation_Child, depth int) bool {
+	switch {
+	case child.GetTupleToUserset() != nil:
+		arrow := child.GetTupleToUserset()
+		return arrow.GetTupleset().GetRelation() == g.relation && g.schema.implies(g.parentType, arrow.GetComputedUserset().GetRelation(), g.read, depth+1)
+	case child.GetComputedUserset() != nil:
+		rewrite, ok := g.schema.PermissionRewrite(g.resourceType, child.GetComputedUserset().GetRelation())
+		return ok && g.guarded(rewrite, depth+1)
+	case child.GetUsersetRewrite() != nil:
+		return g.guarded(child.GetUsersetRewrite(), depth+1)
+	}
+	return false
+}
+
+// implies tells whether each way to hold the permission name of the type also gives the permission read: the same
+// name, a name that read takes in a union, or an expression whose every branch read gives too. It is a check of
+// the shape of the schema, and it says no when it cannot tell.
+func (s *AuthzSchema) implies(typeName, name, read string, depth int) bool {
+	if name == read {
+		return true
+	}
+	if depth > maxGuardDepth {
+		return false
+	}
+	readRewrite, ok := s.PermissionRewrite(typeName, read)
+	if !ok || readRewrite.GetUnion() == nil {
+		return false
+	}
+	readChildren := readRewrite.GetUnion().GetChild()
+	for _, child := range readChildren {
+		if child.GetComputedUserset() != nil && child.GetComputedUserset().GetRelation() == name {
+			return true
+		}
+	}
+	rewrite, ok := s.PermissionRewrite(typeName, name)
+	if !ok || rewrite.GetUnion() == nil {
+		return false
+	}
+	for _, child := range rewrite.GetUnion().GetChild() {
+		if !s.readGives(typeName, child, readChildren, depth+1) {
+			return false
+		}
+	}
+	return true
+}
+
+// readGives tells whether the union readChildren of a read gives the branch child: a relation or a permission that it
+// names too, or an arrow of the same relation to a permission that the arrow of the read implies.
+func (s *AuthzSchema) readGives(typeName string, child *core.SetOperation_Child, readChildren []*core.SetOperation_Child, depth int) bool {
+	switch {
+	case child.GetComputedUserset() != nil:
+		name := child.GetComputedUserset().GetRelation()
+		for _, r := range readChildren {
+			if r.GetComputedUserset() != nil && r.GetComputedUserset().GetRelation() == name {
+				return true
+			}
+		}
+	case child.GetTupleToUserset() != nil:
+		arrow := child.GetTupleToUserset()
+		subjects, ok := s.RelationSubjects(typeName, arrow.GetTupleset().GetRelation())
+		if !ok || len(subjects) != 1 {
+			return false
+		}
+		for _, r := range readChildren {
+			if other := r.GetTupleToUserset(); other != nil && other.GetTupleset().GetRelation() == arrow.GetTupleset().GetRelation() &&
+				s.implies(subjects[0].Type, arrow.GetComputedUserset().GetRelation(), other.GetComputedUserset().GetRelation(), depth+1) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rewriteText gives the expression of a permission as the schema writes it, such as owner + organization->edit.
+func rewriteText(rewrite *core.UsersetRewrite) string {
+	var operator string
+	var operation *core.SetOperation
+	switch {
+	case rewrite.GetUnion() != nil:
+		operator, operation = " + ", rewrite.GetUnion()
+	case rewrite.GetIntersection() != nil:
+		operator, operation = " & ", rewrite.GetIntersection()
+	case rewrite.GetExclusion() != nil:
+		operator, operation = " - ", rewrite.GetExclusion()
+	default:
+		return ""
+	}
+	var parts []string
+	for _, child := range operation.GetChild() {
+		switch {
+		case child.GetComputedUserset() != nil:
+			parts = append(parts, child.GetComputedUserset().GetRelation())
+		case child.GetTupleToUserset() != nil:
+			parts = append(parts, child.GetTupleToUserset().GetTupleset().GetRelation()+"->"+child.GetTupleToUserset().GetComputedUserset().GetRelation())
+		case child.GetFunctionedTupleToUserset() != nil:
+			arrow, function := child.GetFunctionedTupleToUserset(), "any"
+			if arrow.GetFunction() == core.FunctionedTupleToUserset_FUNCTION_ALL {
+				function = "all"
+			}
+			parts = append(parts, arrow.GetTupleset().GetRelation()+"."+function+"("+arrow.GetComputedUserset().GetRelation()+")")
+		case child.GetUsersetRewrite() != nil:
+			parts = append(parts, "("+rewriteText(child.GetUsersetRewrite())+")")
+		case child.GetXNil() != nil:
+			parts = append(parts, "nil")
+		}
+	}
+	return strings.Join(parts, operator)
 }

@@ -51,6 +51,7 @@ var grpcCheckIDs = []string{
 	"ST-SUP-RC27-OC11-T01 A gRPC call of a tenant that is not provisioned is refused before any handler",
 	"ST-SUP-RC07-OC19-T01 A gRPC call runs its command or query fill with the same handling as HTTP",
 	"ST-SUP-RC33-OC08-T01 A stream query gets a gRPC stream and no HTTP route",
+	"ST-SUP-RC32-OC15-T03 A command on the service-level resource creates a row with no parent over gRPC and HTTP",
 }
 
 // TestRuntimeGRPC generates the gRPC test service with stego apply, reads its routes and its gRPC registration, builds
@@ -68,6 +69,15 @@ func TestRuntimeGRPC(t *testing.T) {
 		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
 	}
 	p := newGRPCProject(t, stegoBinary(t))
+	t.Run("ST-DECL-INV92-T stego validate refuses a collection of the rpc-service, which no component serves", func(t *testing.T) {
+		declared := p.read("service.yaml")
+		p.write("service.yaml", declared+"collections:\n  orders:\n    entity: Order\n    operations: [create, read, list]\n")
+		defer p.write("service.yaml", declared)
+		output, err := p.stegoRun("validate")
+		if err == nil || !strings.Contains(output, "collection-served") || !strings.Contains(output, `collection "orders"`) || !strings.Contains(output, "rpc-service") {
+			t.Fatalf("stego validate with a collection of the rpc-service gave %v:\n%s", err, output)
+		}
+	})
 	p.stego("apply")
 	t.Run("ST-SUP-RC33-OC08-T01 The stream query is marked from the proto file and gets no HTTP route", func(t *testing.T) {
 		main, server, serve := p.read("out/main.go"), p.read("out/grpcapi/server.go"), p.read("out/queries/serve/serve.go")

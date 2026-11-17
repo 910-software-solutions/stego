@@ -227,8 +227,8 @@ func (e *env) queueShape(t *testing.T) {
 	}
 	if got := e.value(`SELECT string_agg(p.proname, ',' ORDER BY p.proname) FROM pg_proc p
 		JOIN pg_namespace n ON n.oid = p.pronamespace JOIN pg_roles r ON r.oid = p.proowner
-		WHERE n.nspname = 'stego_outbox' AND r.rolname = $1 AND p.prosecdef`, e.relayRole); got != "blocked,claim,move,oldest,purge_done,purge_parked,release,resolve" {
-		t.Fatalf("the relay functions of stego_outbox are %s, want the eight functions of the runtime migration", got)
+		WHERE n.nspname = 'stego_outbox' AND r.rolname = $1 AND p.prosecdef`, e.relayRole); got != "blocked,claim,claim_destination,expire_leases,move,oldest,purge_done,purge_parked,release,resolve" {
+		t.Fatalf("the relay functions of stego_outbox are %s, want the ten functions of the runtime migration", got)
 	}
 }
 

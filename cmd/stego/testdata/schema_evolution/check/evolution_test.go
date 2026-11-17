@@ -674,6 +674,7 @@ func TestEvolution(t *testing.T) {
 		}
 		id, _ := created.object(t)["id"].(string)
 		d.relate(owner, "member", id, "owner")
+		d.relateParent(owner, "member", id, "organization", "organization", org)
 		read := d.send(v2api, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, "").object(t)
 		if read["email"] != "r04@acme.test" || read["contact_email"] != nil {
 			t.Fatalf("the read through v2 is %v, want email and no contact_email", read)
@@ -763,6 +764,7 @@ func TestEvolution(t *testing.T) {
 		}
 		id, _ := created.object(t)["id"].(string)
 		d.relate(owner, "member", id, "owner")
+		d.relateParent(owner, "member", id, "organization", "organization", org)
 		if read := d.send(v2api, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, "").object(t); read["locale"] != "en" {
 			t.Errorf("v2 reads the user of v1 as %v, want the locale en", read)
 		}
@@ -780,6 +782,9 @@ func TestEvolution(t *testing.T) {
 			}
 			id, _ := r.object(t)["id"].(string)
 			d.relate(owner, "member", id, "owner")
+			// The view and the edit of a member need the view of its organization too (ST-SUP-Q156), through the
+			// relationship that the outbox relay writes; the harness runs no relay, so it writes it by hand.
+			d.relateParent(owner, "member", id, "organization", "organization", org)
 			return id
 		}
 		update := func(a *api, id, email string) {
@@ -1158,6 +1163,9 @@ func TestContract(t *testing.T) {
 		}
 		id, _ := created.object(t)["id"].(string)
 		d.relate(owner, "member", id, "owner")
+		// The view and the edit of a member need the view of its organization too (ST-SUP-Q156); the harness runs
+		// no relay.
+		d.relateParent(owner, "member", id, "organization", "organization", org)
 		if read := d.send(v3api, owner, http.MethodGet, "/organizations/"+org+"/users/"+id, ""); read.status != http.StatusOK || read.object(t)["email"] != "r02@acme.test" {
 			t.Fatalf("a read through v3 answered %d %s", read.status, read.body)
 		}
@@ -1208,6 +1216,7 @@ func TestContract(t *testing.T) {
 			}
 			id, _ := r.object(t)["id"].(string)
 			d.relate(owner, "member", id, "owner")
+			d.relateParent(owner, "member", id, "organization", "organization", org)
 			return id
 		}
 		read := func(a *api, id string) any {

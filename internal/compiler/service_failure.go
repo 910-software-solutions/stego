@@ -36,10 +36,28 @@ func (e *stegoServiceFailure) Unwrap() error { return e.cause }
 // stegoReportFailure writes one fixed record before process exit. The stage
 // comes from generated code. The cause is never formatted or serialized.
 // A blocked output can retain one worker until the process exits.
+// stegoFaultName tells whether a fault class or object has the form of a name of the generated code,
+// ^[a-z][a-z0-9_.]{0,127}$; the record drops any other text.
+func stegoFaultName(value string) bool {
+ if len(value) == 0 || len(value) > 128 || value[0] < 'a' || value[0] > 'z' { return false }
+ for i := 1; i < len(value); i++ {
+  c := value[i]
+  if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '_' || c == '.') { return false }
+ }
+ return true
+}
+
 func stegoReportFailure(output io.Writer, err error) {
  stage := "service.run"
  var tasks, abortedTasks, modes []string
  if failure, ok := err.(*stegoServiceFailure); ok { stage = failure.stage; tasks = failure.tasks; abortedTasks = failure.abortedTasks; modes = failure.modes }
+ // A refused schema check names its fault class and the generated object, two fixed names of the generated code
+ // and never the text of the cause (ST-SUP-RC02-OC57).
+ var fault, object string
+ var classified interface{ FaultClass() string; FaultObject() string }
+ if errors.As(err, &classified) && stegoFaultName(classified.FaultClass()) && stegoFaultName(classified.FaultObject()) {
+  fault, object = classified.FaultClass(), classified.FaultObject()
+ }
  record := struct {
   Timestamp string ` + "`json:\"timestamp\"`" + `
   Severity string ` + "`json:\"severity\"`" + `
@@ -49,7 +67,9 @@ func stegoReportFailure(output io.Writer, err error) {
   Tasks []string ` + "`json:\"tasks,omitempty\"`" + `
   AbortedTasks []string ` + "`json:\"aborted_tasks,omitempty\"`" + `
   Modes []string ` + "`json:\"modes,omitempty\"`" + `
- }{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes}
+  Fault string ` + "`json:\"fault,omitempty\"`" + `
+  Object string ` + "`json:\"object,omitempty\"`" + `
+ }{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object}
  done := make(chan struct{})
  go func() {
   defer close(done)

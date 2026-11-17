@@ -43,8 +43,12 @@ definition organization {
 definition member {
 	relation organization: organization
 	relation owner: user
-	permission view = owner + organization->view
-	permission edit = owner + organization->edit
+	// The routes of a member name its organization, and decide only on the member (ST-SUP-RC20-OC24). A member is
+	// seen only through its organization, and its owner may change it only while the owner may view the
+	// organization, as with an earlier STEGO (ST-SUP-Q156). The view is (owner + organization->view) &
+	// organization->view written short.
+	permission view = organization->view
+	permission edit = (owner + organization->edit) & organization->view
 }
 
 definition org_setting {

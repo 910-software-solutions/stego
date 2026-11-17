@@ -21,6 +21,9 @@ type Facts struct {
 	// RuntimeData is true for a service on the runtime data path, whose outbox relay and audit sink run in the worker
 	// mode and whose audit jobs run in the controller mode (ST-DECL-INV89).
 	RuntimeData bool
+	// CollectionsUnserved is true when the active component set is known and has no component that serves
+	// collections (ST-DECL-INV92).
+	CollectionsUnserved bool
 }
 
 // The slots that the fills of commands, queries and workers implement. Each capability component (ST-SUP-RC32,
@@ -51,10 +54,12 @@ func ValidateComposition(service *types.ServiceDeclaration, facts Facts) []Valid
 	faults = append(faults, validateWorkerNames(service)...)
 	faults = append(faults, validateWorkerTrigger(service.Workers, facts)...)
 	faults = append(faults, validateWorkerWrites(service.Workers, service.Entities)...)
+	faults = append(faults, validateWorkerLists(service.Workers, service.Entities)...)
 	faults = append(faults, validateWorkerFill(service.Workers, facts)...)
 	faults = append(faults, validateWorkerEffects(service, facts)...)
 	faults = append(faults, validateWorkerMode(service)...)
 	faults = append(faults, validateNeededModes(service, facts)...)
+	faults = append(faults, validateCollectionsServed(service, facts)...)
 	faults = append(faults, validateWorkerLease(service.Workers)...)
 	faults = append(faults, validateWorkerCycles(service.Workers)...)
 	faults = append(faults, validateWorkerCount(service.Workers)...)

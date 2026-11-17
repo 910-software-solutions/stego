@@ -5,15 +5,137 @@ import (
  "context"
  "database/sql"
  "errors"
+ "io"
+ "os"
+ "path/filepath"
  "regexp"
+ "strings"
+ "syscall"
  "time"
+
+ storage {{printf "%q" .Storage}}
 )
 
 const SQL = {{printf "%q" .SchemaSQL}}
 var ErrSchema = errors.New("browser session schema or permissions differ")
+
+// Fault is a refusal of the schema check (ST-SUP-RC02-OC57): its class, one of owner, login, table, column,
+// constraint, index and grant, and the name of the generated object. It holds no configuration value, secret,
+// password or database error text. errors.Is(fault, ErrSchema) is true.
+type Fault struct{ class, object string }
+
+func (f *Fault) Error() string { return "browser session schema: " + f.class + " " + f.object }
+func (f *Fault) Is(target error) bool { return target == ErrSchema }
+
+// FaultClass and FaultObject give the class and the generated object, which the failure record names.
+func (f *Fault) FaultClass() string { return f.class }
+func (f *Fault) FaultObject() string { return f.object }
+
+func fault(class, object string) error { return &Fault{class: class, object: object} }
+
+const sessions = "public.stego_browser_sessions"
+
+// settingFault is a refused setting of the migration job; it names the variable and no value.
+type settingFault struct{ name string }
+
+func (f *settingFault) Error() string { return "browser session schema: invalid setting " + f.name }
+
+// Stage gives the stage of a failure of Verify, Bootstrap or Migrate: database.schema for a schema fault,
+// service.start.setting.browser-backend.<variable> for a refused setting of the migration job, and database.access
+// for a connection that did not open or a login that could not be read (ST-SUP-RC02-OC57).
+func Stage(err error) string {
+ var f *Fault
+ if errors.As(err, &f) {
+  return "database.schema"
+ }
+ var s *settingFault
+ if errors.As(err, &s) {
+  return "service.start.setting.browser-backend." + s.name
+ }
+ return "database.access"
+}
+
+// Migrate is the mode migrate of the service (ST-SUP-RC02-OC56): it reads the name of the runtime login from
+// STEGO_RUNTIME_DATABASE_ROLE and opens the owner connection of STEGO_MIGRATION_DATABASE_URL, which only this mode
+// reads, so the Job holds no credential of the runtime login. When the migration login is not the database owner, it
+// takes the owner role, so it must be a member of it. Then it runs Bootstrap for the runtime login, which checks the
+// owner, the login, the table, the columns, the constraints, the indexes and the grants of that login in the same
+// transaction. It returns nil only when Bootstrap passes; the start runs Verify as the runtime login.
+func Migrate(ctx context.Context) error {
+ if ctx == nil {
+  return ErrSchema
+ }
+ login := os.Getenv("STEGO_RUNTIME_DATABASE_ROLE")
+ if !roleName.MatchString(login) {
+  return &settingFault{name: "STEGO_RUNTIME_DATABASE_ROLE"}
+ }
+ ownerURL, err := setting("STEGO_MIGRATION_DATABASE_URL", os.Getenv("STEGO_MIGRATION_DATABASE_URL"), os.Getenv("STEGO_MIGRATION_DATABASE_URL_FILE"))
+ if err != nil {
+  return err
+ }
+ ownerDB, err := storage.OpenDatabase(ownerURL)
+ if err != nil {
+  return errors.New("browser session schema: the owner connection did not open")
+ }
+ defer ownerDB.Close()
+ conn, err := ownerDB.Conn(ctx)
+ if err != nil {
+  return errors.New("browser session schema: the owner connection did not open")
+ }
+ defer conn.Close()
+ var owner, current string
+ if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.pg_get_userbyid(datdba), current_user FROM pg_catalog.pg_database WHERE datname=current_database()").Scan(&owner, &current); err != nil {
+  return errors.New("browser session schema: the owner login could not be read")
+ }
+ if owner != current {
+  if _, err := conn.ExecContext(ctx, "SET ROLE "+quote(owner)); err != nil {
+   return fault("owner", sessions)
+  }
+ }
+ return Bootstrap(ctx, conn, login)
+}
+
+func quote(name string) string { return `"` + strings.ReplaceAll(name, `"`, `""`) + `"` }
+
+// setting gives the connection string of the variable name: its value, or the content of the file that the variable
+// name_FILE names, not the two, with the checks of the database setting of the service.
+func setting(name, value, fileName string) (string, error) {
+ if (value == "") == (fileName == "") {
+  return "", &settingFault{name: name}
+ }
+ if fileName == "" {
+  if len(value) > 65536 {
+   return "", &settingFault{name: name}
+  }
+  return value, nil
+ }
+ invalid := &settingFault{name: name + "_FILE"}
+ if len(fileName) > 4096 || !filepath.IsAbs(fileName) {
+  return "", invalid
+ }
+ file, err := os.OpenFile(fileName, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+ if err != nil {
+  return "", invalid
+ }
+ defer file.Close()
+ info, err := file.Stat()
+ if err != nil || !info.Mode().IsRegular() || info.Size() > 65536 || info.Mode().Perm()&0137 != 0 {
+  return "", invalid
+ }
+ data, err := io.ReadAll(io.LimitReader(file, 65537))
+ if err != nil || len(data) > 65536 {
+  return "", invalid
+ }
+ value = strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")
+ if value == "" || strings.ContainsAny(value, "\x00\r\n") {
+  return "", invalid
+ }
+ return value, nil
+}
 var roleName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
-// Bootstrap installs the schema in an empty public namespace. The connection
+// Bootstrap installs the schema in an empty public namespace. A refusal is a Fault
+// with its class, or ErrSchema for a connection or a call that failed. The connection
 // must use the database owner role. Supply the separate runtime login name.
 // Existing schemas must match exactly. A mismatch stops the operation.
 // The caller supplies a verified connection and serializes database deletion.
@@ -34,9 +156,11 @@ func Bootstrap(ctx context.Context, conn *sql.Conn, runtimeRole string) (failure
   err=tx.QueryRowContext(ctx,`SELECT NOT EXISTS(SELECT 1 FROM pg_catalog.pg_class WHERE relnamespace='public'::regnamespace)
    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_proc WHERE pronamespace='public'::regnamespace)
    AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type WHERE typnamespace='public'::regnamespace)`).Scan(&empty)
-  if err!=nil || !empty{return ErrSchema}
-  if _,err=tx.ExecContext(ctx,SQL);err!=nil{return ErrSchema}
-  if _,err=tx.ExecContext(ctx,`GRANT SELECT,INSERT,UPDATE,DELETE ON public.stego_browser_sessions TO "`+runtimeRole+`"`);err!=nil{return ErrSchema}
+  if err!=nil{return ErrSchema}
+  // A public namespace that holds other objects gets no session table.
+  if !empty{return fault("table",sessions)}
+  if _,err=tx.ExecContext(ctx,SQL);err!=nil{return fault("table",sessions)}
+  if _,err=tx.ExecContext(ctx,`GRANT SELECT,INSERT,UPDATE,DELETE ON public.stego_browser_sessions TO "`+runtimeRole+`"`);err!=nil{return fault("grant",sessions)}
  }
  if err=structure(ctx,tx,runtimeRole);err!=nil{return err}
  if tx.Commit()!=nil{return ErrSchema}
@@ -62,14 +186,15 @@ func Verify(ctx context.Context, db *sql.DB) (failure error) {
 }
 
 func identity(ctx context.Context,tx *sql.Tx,runtimeRole string,ownerConnection bool)error{
- var safe bool
- err:=tx.QueryRowContext(ctx,`SELECT current_setting('server_version_num')::int BETWEEN 160000 AND 189999 AND
-  CASE WHEN $2 THEN current_user=o.rolname ELSE current_user=u.rolname END
-  AND o.oid<>u.oid AND NOT o.rolcanlogin AND u.rolcanlogin
+ var version,owner,login,grant bool
+ err:=tx.QueryRowContext(ctx,`SELECT current_setting('server_version_num')::int BETWEEN 160000 AND 189999,
+  (NOT $2 OR current_user=o.rolname) AND NOT o.rolcanlogin
   AND NOT (o.rolsuper OR o.rolcreatedb OR o.rolcreaterole OR o.rolreplication OR o.rolbypassrls OR o.rolinherit)
+  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=o.oid),
+  ($2 OR current_user=u.rolname) AND o.oid<>u.oid AND u.rolcanlogin
   AND NOT (u.rolsuper OR u.rolcreatedb OR u.rolcreaterole OR u.rolreplication OR u.rolbypassrls OR u.rolinherit)
-  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members WHERE member IN (o.oid,u.oid))
-  AND pg_catalog.has_database_privilege(u.oid,d.oid,'CONNECT')
+  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=u.oid),
+  pg_catalog.has_database_privilege(u.oid,d.oid,'CONNECT')
   AND NOT pg_catalog.has_database_privilege(u.oid,d.oid,'CREATE')
   AND NOT pg_catalog.has_database_privilege(u.oid,d.oid,'TEMPORARY')
   AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(d.datacl,pg_catalog.acldefault('d',d.datdba))) a
@@ -81,15 +206,31 @@ func identity(ctx context.Context,tx *sql.Tx,runtimeRole string,ownerConnection 
    WHERE a.grantee NOT IN(n.nspowner,o.oid,u.oid) OR a.grantee=u.oid AND (a.is_grantable OR a.privilege_type<>'USAGE'))
  FROM pg_catalog.pg_database d JOIN pg_catalog.pg_roles o ON o.oid=d.datdba
  CROSS JOIN pg_catalog.pg_roles u CROSS JOIN pg_catalog.pg_namespace n
- WHERE d.datname=current_database() AND u.rolname=$1 AND n.nspname='public'`,runtimeRole,ownerConnection).Scan(&safe)
- if err!=nil || !safe{return ErrSchema}
+ WHERE d.datname=current_database() AND u.rolname=$1 AND n.nspname='public'`,runtimeRole,ownerConnection).Scan(&version,&owner,&login,&grant)
+ switch {
+ case errors.Is(err,sql.ErrNoRows):
+  return fault("login",sessions)
+ case err!=nil:
+  return ErrSchema
+ case !version:
+  return fault("table",sessions)
+ case !owner:
+  return fault("owner",sessions)
+ case !login:
+  return fault("login",sessions)
+ case !grant:
+  return fault("grant",sessions)
+ }
  return nil
 }
 
 func structure(ctx context.Context,tx *sql.Tx,runtimeRole string)error{
+ var exists bool
+ if err:=tx.QueryRowContext(ctx,"SELECT pg_catalog.to_regclass('public.stego_browser_sessions') IS NOT NULL").Scan(&exists);err!=nil{return ErrSchema}
+ if !exists{return fault("table",sessions)}
  // Keep the relation stable while all catalog checks use the same connection.
- if _,err:=tx.ExecContext(ctx,"LOCK TABLE public.stego_browser_sessions IN ACCESS SHARE MODE");err!=nil{return ErrSchema}
- var safe bool
+ if _,err:=tx.ExecContext(ctx,"LOCK TABLE public.stego_browser_sessions IN ACCESS SHARE MODE");err!=nil{return fault("grant",sessions)}
+ var safe,granted bool
  err:=tx.QueryRowContext(ctx,`SELECT c.relkind='r' AND c.relpersistence='p' AND c.relowner=d.datdba
   AND NOT (c.relrowsecurity OR c.relforcerowsecurity OR c.relispartition OR c.relhasrules OR c.relhastriggers)
   AND c.relam=(SELECT oid FROM pg_catalog.pg_am WHERE amname='heap')
@@ -97,7 +238,8 @@ func structure(ctx context.Context,tx *sql.Tx,runtimeRole string)error{
   AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_trigger WHERE tgrelid=c.oid)
   AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_rewrite WHERE ev_class=c.oid)
   AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_policy WHERE polrelid=c.oid)
-  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid WHERE a.attrelid=c.oid AND a.attnum>0 AND (a.attacl IS NOT NULL OR a.attcollation<>t.typcollation))
+  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid=a.atttypid WHERE a.attrelid=c.oid AND a.attnum>0 AND a.attcollation<>t.typcollation),
+  NOT EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND a.attacl IS NOT NULL)
   AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) a
    WHERE a.grantee NOT IN(c.relowner,u.oid) OR a.grantee=u.oid AND (a.is_grantable OR a.privilege_type NOT IN('SELECT','INSERT','UPDATE','DELETE')))
   AND pg_catalog.has_table_privilege(u.oid,c.oid,'SELECT')
@@ -105,13 +247,22 @@ func structure(ctx context.Context,tx *sql.Tx,runtimeRole string)error{
   AND pg_catalog.has_table_privilege(u.oid,c.oid,'UPDATE')
   AND pg_catalog.has_table_privilege(u.oid,c.oid,'DELETE')
  FROM pg_catalog.pg_class c CROSS JOIN pg_catalog.pg_database d CROSS JOIN pg_catalog.pg_roles u
- WHERE c.oid='public.stego_browser_sessions'::regclass AND d.datname=current_database() AND u.rolname=$1`,runtimeRole).Scan(&safe)
- if err!=nil || !safe{return ErrSchema}
+ WHERE c.oid='public.stego_browser_sessions'::regclass AND d.datname=current_database() AND u.rolname=$1`,runtimeRole).Scan(&safe,&granted)
+ switch {
+ case errors.Is(err,sql.ErrNoRows):
+  return fault("login",sessions)
+ case err!=nil:
+  return ErrSchema
+ case !safe:
+  return fault("table",sessions)
+ case !granted:
+  return fault("grant",sessions)
+ }
  rows,err:=tx.QueryContext(ctx,`SELECT a.attname,a.atttypid::regtype::text,a.attnotnull,a.attidentity,a.attgenerated,
   a.atttypmod,a.attisdropped,COALESCE(pg_catalog.pg_get_expr(x.adbin,x.adrelid),'')
  FROM pg_catalog.pg_attribute a LEFT JOIN pg_catalog.pg_attrdef x ON x.adrelid=a.attrelid AND x.adnum=a.attnum
  WHERE a.attrelid='public.stego_browser_sessions'::regclass AND a.attnum>0 ORDER BY a.attnum LIMIT 6`)
- if err!=nil{return ErrSchema}
+ if err!=nil{return fault("column",sessions)}
  columns:=[]struct{name,kind,defaultValue string}{
   {"id_hash","bytea",""},{"payload","bytea",""},{"state","text",""},
   {"expires_at","timestamp with time zone",""},{"changed_at","timestamp with time zone","CURRENT_TIMESTAMP"},
@@ -121,17 +272,19 @@ func structure(ctx context.Context,tx *sql.Tx,runtimeRole string)error{
   var name,kind,identity,generated,defaultValue string
   var notnull,dropped bool;var typmod int
   if err=rows.Scan(&name,&kind,&notnull,&identity,&generated,&typmod,&dropped,&defaultValue);err!=nil{rows.Close();return ErrSchema}
-  if count>=len(columns){rows.Close();return ErrSchema}
+  if count>=len(columns){rows.Close();return fault("column",sessions)}
   expected:=columns[count];count++
-  if name!=expected.name||kind!=expected.kind||defaultValue!=expected.defaultValue||!notnull||dropped||identity!=""||generated!=""||typmod!=-1{rows.Close();return ErrSchema}
+  if name!=expected.name||kind!=expected.kind||defaultValue!=expected.defaultValue||!notnull||dropped||identity!=""||generated!=""||typmod!=-1{rows.Close();return fault("column",sessions+"."+expected.name)}
  }
  err=rows.Err();rows.Close()
- if err!=nil||count!=len(columns){return ErrSchema}
- expected:=map[string]bool{
-  "PRIMARY KEY (id_hash)":true,
-  "CHECK ((octet_length(id_hash) = 32))":true,
-  "CHECK (((octet_length(payload) >= 28) AND (octet_length(payload) <= 65536)))":true,
-  "CHECK ((state = ANY (ARRAY['login'::text, 'active'::text, 'refreshing'::text])))":true,
+ if err!=nil{return ErrSchema}
+ if count!=len(columns){return fault("column",sessions+"."+columns[count].name)}
+ // Each generated constraint with its definition, by its name.
+ expected:=map[string]string{
+  "PRIMARY KEY (id_hash)":"stego_browser_sessions_pkey",
+  "CHECK ((octet_length(id_hash) = 32))":"stego_browser_sessions_id_hash_check",
+  "CHECK (((octet_length(payload) >= 28) AND (octet_length(payload) <= 65536)))":"stego_browser_sessions_payload_check",
+  "CHECK ((state = ANY (ARRAY['login'::text, 'active'::text, 'refreshing'::text])))":"stego_browser_sessions_state_check",
  }
  var version int
  if tx.QueryRowContext(ctx,"SELECT current_setting('server_version_num')::int").Scan(&version)!=nil{return ErrSchema}
@@ -139,7 +292,8 @@ func structure(ctx context.Context,tx *sql.Tx,runtimeRole string)error{
  enforcement:="true"
  if version>=180000{
   enforcement="conenforced"
-  if tx.QueryRowContext(ctx,`SELECT NOT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint WHERE conrelid='public.stego_browser_sessions'::regclass AND (NOT conenforced OR NOT convalidated))`).Scan(&safe)!=nil || !safe{return ErrSchema}
+  if tx.QueryRowContext(ctx,`SELECT NOT EXISTS(SELECT 1 FROM pg_catalog.pg_constraint WHERE conrelid='public.stego_browser_sessions'::regclass AND (NOT conenforced OR NOT convalidated))`).Scan(&safe)!=nil{return ErrSchema}
+  if !safe{return fault("constraint",sessions)}
  }
  rows,err=tx.QueryContext(ctx,`SELECT pg_catalog.pg_get_constraintdef(oid),convalidated,condeferrable,condeferred,conislocal,coninhcount,connoinherit,`+enforcement+`
  FROM pg_catalog.pg_constraint WHERE conrelid='public.stego_browser_sessions'::regclass AND contype<>'n' LIMIT 10`)
@@ -147,11 +301,14 @@ func structure(ctx context.Context,tx *sql.Tx,runtimeRole string)error{
  for rows.Next(){
   var definition string;var valid,deferrable,deferred,local,noinherit,enforced bool;var inherited int
   if err=rows.Scan(&definition,&valid,&deferrable,&deferred,&local,&inherited,&noinherit,&enforced);err!=nil{rows.Close();return ErrSchema}
-  if !expected[definition]||!valid||deferrable||deferred||!local||inherited!=0||(noinherit&&definition!="PRIMARY KEY (id_hash)")||!enforced{rows.Close();return ErrSchema}
+  name,known:=expected[definition]
+  if !known{rows.Close();return fault("constraint",sessions)}
+  if !valid||deferrable||deferred||!local||inherited!=0||(noinherit&&definition!="PRIMARY KEY (id_hash)")||!enforced{rows.Close();return fault("constraint",name)}
   delete(expected,definition)
  }
  err=rows.Err();rows.Close()
- if err!=nil||len(expected)!=0{return ErrSchema}
+ if err!=nil{return ErrSchema}
+ for _,name:=range expected{return fault("constraint",name)}
  err=tx.QueryRowContext(ctx,`SELECT count(*)=2 AND COALESCE(bool_and(
   i.indisvalid AND i.indisready AND i.indislive AND i.indimmediate
   AND i.indnatts=1 AND i.indnkeyatts=1 AND i.indexprs IS NULL AND i.indpred IS NULL
@@ -163,6 +320,7 @@ func structure(ctx context.Context,tx *sql.Tx,runtimeRole string)error{
     AND i.indclass::text=(SELECT oid::text FROM pg_catalog.pg_opclass WHERE opcname='timestamptz_ops' AND opcnamespace='pg_catalog'::regnamespace AND opcmethod=c.relam)))) ,false)
  FROM pg_catalog.pg_index i JOIN pg_catalog.pg_class c ON c.oid=i.indexrelid
  WHERE i.indrelid='public.stego_browser_sessions'::regclass`).Scan(&safe)
- if err!=nil||!safe{return ErrSchema}
+ if err!=nil{return ErrSchema}
+ if !safe{return fault("index","stego_browser_sessions_expiry")}
  return nil
 }

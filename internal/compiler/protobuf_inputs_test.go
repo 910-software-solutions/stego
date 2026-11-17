@@ -24,7 +24,7 @@ func TestResponseMappingPreparedInputsGateOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	declaration := string(service) + `
+	declaration := withoutCollections(t, string(service)) + `
 overrides:
   stub-api:
     processes:

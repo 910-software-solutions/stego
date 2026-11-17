@@ -657,9 +657,12 @@ func accessHead(w formWriter, c ArchCheck, group string, perms map[string]*ArchP
 	w.raw("</th>")
 }
 
-// ancestorText gives what the check of one ancestor decides: its permission, public, or none.
+// ancestorText gives what the check of one ancestor decides: exists and linked for an ancestor that is not decided,
+// else its permission, public, or none.
 func ancestorText(a ArchAncestor) string {
 	switch {
+	case !a.Decided:
+		return ancestorLinked
 	case a.Permission != "":
 		return a.ResourceType + "#" + a.Permission
 	case a.Public:
@@ -682,9 +685,9 @@ func ancestorsShort(c ArchCheck, perms map[string]*ArchPermission) string {
 	return strings.Join(parts, ", ")
 }
 
-// ancestorsText says in words what the handler of a nested operation checks first (ST-SUP-RC20-OC24).
+// ancestorsText says in words what the handler of a nested operation checks on the ancestors (ST-SUP-RC20-OC24).
 func ancestorsText(c ArchCheck, perms map[string]*ArchPermission) string {
-	return "first reads each ancestor in the path, the top one first, and answers 404 when one is missing, denied or of another parent: " + ancestorsShort(c, perms)
+	return "checks that each ancestor in the path, the top one first, exists and is of the ancestor above it, decides a permission only on the parent of a list, a create or an upsert, and answers 404 when one is missing, denied or of another parent: " + ancestorsShort(c, perms)
 }
 
 // incompleteMark marks the read of an ancestor whose grant paths a limit cut short.
@@ -795,9 +798,9 @@ func checkNamesPermission(c ArchCheck) bool {
 }
 
 // ancestorNamesPermission says whether the read of an ancestor states a permission, as checkNamesPermission does for
-// a check.
+// a check. Only a decided ancestor states one (ST-SUP-RC20-OC24).
 func ancestorNamesPermission(a ArchAncestor) bool {
-	return !a.Public && (a.Permission != "" || a.Grants != "")
+	return a.Decided && !a.Public && (a.Permission != "" || a.Grants != "")
 }
 
 // incompleteWhy says why the grant paths of the permission of a check are incomplete.
@@ -889,7 +892,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		keys = append(keys, g.glyph+" "+g.meaning)
 	}
 	keys = append(keys, mayHoldGlyph+" in a cell: may hold: a limit cut the grant paths of the permission short, or the model holds none of them, so this role may hold it by a path that the model does not name")
-	keys = append(keys, "⤒ under a head: the ancestors in the path that the operation reads first; in a cell: this role alone does not grant the read of an ancestor, so the caller also needs that read")
+	keys = append(keys, "⤒ under a head: the ancestors in the path; each must exist and be of the ancestor above it, and a permission is shown only where the handler decides it; in a cell: this role alone does not grant that read, so the caller also needs it")
 	w.key(keys...)
 	perms := map[string]*ArchPermission{}
 	for i := range m.Access.Permissions {
@@ -1010,7 +1013,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 		w.raw("</tbody></table></div>")
 	}
 	w.h3("What each operation checks")
-	w.head("Operation", "Resource type", "Permission", "Ancestors read first, the top one first", "Source")
+	w.head("Operation", "Resource type", "Permission", "Ancestors in the path, the top one first", "Source")
 	for _, c := range checks {
 		perm := c.Permission
 		if c.Public {
@@ -1037,7 +1040,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 }
 
 // matrixTD writes one cell of the access matrix, which names its check and its role. A cell whose role holds the
-// operation, but not the read of each ancestor in its path, has the mark ⤒ too.
+// operation, but not the read of the decided parent in its path, has the mark ⤒ too.
 func matrixTD(w formWriter, c ArchCheck, role string, perms map[string]*ArchPermission) {
 	cell := attr("data-check", c.ID) + attr("data-role", role)
 	var missing []string

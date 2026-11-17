@@ -83,7 +83,7 @@ collections:
     concurrency: optimistic    # only update if generation is newer
 ```
 
-**Scoped collections** generate nested routing. The `scope` field maps entity fields to parent entities. The compiler derives the URL path and generates parent existence verification at each level:
+**Scoped collections** generate nested routing. The `scope` field maps entity fields to parent entities. The compiler derives the URL path and generates the parent chain check at each level (ST-SUP-RC20-OC24): the handler decides a permission only on the deepest resource that the path names (the row for read, update, patch and delete; the parent for list, create and upsert), and checks each ancestor above it for existence in the tenant and for its link to the ancestor above it, with no permission decision. A missing, wrong or denied path gives the same 404. A rule that an ancestor must also allow access is written in the SpiceDB schema as an intersection, such as `permission view = viewer & parent->view`:
 ```yaml
 collections:
   clusters:

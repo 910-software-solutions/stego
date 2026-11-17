@@ -23,4 +23,37 @@ type Worker struct {
 	Single *bool `yaml:"single,omitempty"`
 	// LeaseTTL is how long the lease of a single worker holds, such as 15s. Empty is 15s.
 	LeaseTTL string `yaml:"lease_ttl,omitempty"`
+	// Lists are the declared lists that the fill reads through: the generator emits their statements from the entity
+	// of the release, so a fill gives no SQL text (ST-DECL-INV94, ST-SUP-RC35-OC15).
+	Lists []WorkerList `yaml:"lists,omitempty"`
+}
+
+// WorkerList is one declared list of a worker (ST-DECL-INV94): its name, unique in the worker, an entity that the
+// worker writes, a filter of one to eight terms over the entity's declared fields, and whether the list locks its
+// rows, which needs the Lock at most of the entity (ST-DECL-INV81).
+type WorkerList struct {
+	Name   string     `yaml:"name"`
+	Entity string     `yaml:"entity"`
+	Filter []ListTerm `yaml:"filter"`
+	Lock   bool       `yaml:"lock,omitempty"`
+}
+
+// The operators of a list term (ST-DECL-INV94).
+const (
+	ListEquals              = "equals"
+	ListNotEquals           = "not_equals"
+	ListLessThan            = "less_than"
+	ListLessThanOrEquals    = "less_than_or_equals"
+	ListGreaterThan         = "greater_than"
+	ListGreaterThanOrEquals = "greater_than_or_equals"
+	ListIsSet               = "is_set"
+)
+
+// ListTerm is one term of a list filter: a declared field of the entity, an operator, and a value that is a constant
+// of the field type, or Now for the time of the run. The operator is_set takes no value.
+type ListTerm struct {
+	Field string `yaml:"field"`
+	Op    string `yaml:"op"`
+	Value any    `yaml:"value,omitempty"`
+	Now   bool   `yaml:"now,omitempty"`
 }

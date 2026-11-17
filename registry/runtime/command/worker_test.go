@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
@@ -286,7 +289,8 @@ func TestWorkers(t *testing.T) {
 	}
 
 	t.Run("ST-SUP-RP10-LC17-T01 A worker handle reads only allowed rows and writes only allowed resources", func(t *testing.T) {
-		w := e.worker("sync-partner-orders", "sync", nil, e.orders, e.underOrder, e.typedRes)
+		w := e.worker("sync-partner-orders", "sync", func(s *WorkerSpec[testProbe]) { s.Lists = []AnyList{allOrders} },
+			e.orders, e.underOrder, e.typedRes)
 		var o2 Loaded[order]
 		var listed []string
 		var writeCalls []evaluation
@@ -686,6 +690,9 @@ func TestConsumers(t *testing.T) {
 	// The tenant list of the consumers: every tenant is active but the ones a subtest retires.
 	retired := &retiredTenants{}
 	e.rt.cfg.Tenants = retired
+	// The log of the consumer attempts that do not commit (ST-SUP-RC35-OC06), set before the outbox worker starts.
+	consumerLogs := &logRecorder{}
+	e.rt.logger = sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(consumerLogs))).Logger("test")
 	e.consumer(w, func(c *outbox.WorkerConfig) { c.MaxAttempts = 3 }, func(ctx context.Context, m map[string]string, _ string, h *Handle[testProbe]) error {
 		calls.Add(1)
 		if fill, ok := cases.Load(m["case"]); ok {
@@ -986,6 +993,9 @@ func TestConsumers(t *testing.T) {
 			_, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: "r-dup", OrderID: "o-3", SKU: "s"})
 			return err
 		})
+		// The held clock gives the message one attempt until the test moves it: a unique violation in each attempt
+		// would park it as poison after PoisonAttempts (ST-SUP-RC35-OC06).
+		defer clock.hold()()
 		m := e.stage("t1", "o-3", map[string]string{"case": "unique"})
 		// The message ends done also when a check fails, so it does not run in the later subtests.
 		defer func() {
@@ -1006,6 +1016,297 @@ func TestConsumers(t *testing.T) {
 		// started, so the attempts are at least the runs.
 		if n := runs.Load(); n < 1 || int64(attempts) < n || conflicts != 0 {
 			t.Fatalf("after the unique violation: %d runs, %d attempts and %d conflicts, want an attempt for each run and no conflict", n, attempts, conflicts)
+		}
+	})
+
+	// awaitRow waits until the row of the message id holds what done tells, with no deadline: only the timeout of go
+	// test bounds it. It gives the row.
+	type row struct {
+		state, code         string
+		attempts, conflicts int
+	}
+	awaitRow := func(t *testing.T, id uuid.UUID, done func(r row) bool) row {
+		t.Helper()
+		for {
+			var r row
+			if err := e.admin.QueryRowContext(e.ctx, `SELECT state, failure_code, attempts, conflicts FROM stego_outbox.messages
+ WHERE id = $1`, id).Scan(&r.state, &r.code, &r.attempts, &r.conflicts); err != nil {
+				t.Fatal(err)
+			}
+			if done(r) {
+				return r
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	t.Run("ST-SUP-RC35-OC06-T05 A fill error that ends 5 attempts in a row parks the message as poison, and each attempt is reported and logged", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p1', 'new')`)
+		// The held clock gives the message one attempt each time the test moves it on.
+		defer clock.hold()()
+		// The fill reads a row that is not there, which is the same error in each attempt, but panics in the third
+		// attempt, which starts the count again.
+		var runs atomic.Int64
+		cases.Store("poison", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			if runs.Add(1) == 3 {
+				panic("the fill fails")
+			}
+			_, err := repo(t, h, e.orders).Get(ctx, "o-missing")
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-p1", map[string]string{"case": "poison"})
+		codes := []string{"fill.rolled_back.not_found.1", "fill.rolled_back.not_found.2", "fill.panicked.panic.1",
+			"fill.rolled_back.not_found.1", "fill.rolled_back.not_found.2", "fill.rolled_back.not_found.3",
+			"fill.rolled_back.not_found.4", PoisonCode}
+		for i, code := range codes {
+			r := awaitRow(t, m, func(r row) bool { return r.attempts == i+1 && r.state != "dispatching" })
+			want := "pending"
+			if code == PoisonCode {
+				want = "parked"
+			}
+			if r.state != want || r.code != code {
+				t.Fatalf("after attempt %d the message is %s with %q, want %s with %q", i+1, r.state, r.code, want, code)
+			}
+			if i < len(codes)-1 {
+				clock.add(time.Second)
+			}
+		}
+		// The parked message stays in the outbox, so a person can send it again (ST-SUP-RP01-LC13).
+		if n := e.count(`SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND parked_from = 'dispatching' AND must_land`, m); n != 1 ||
+			runs.Load() != 8 || e.keyRows(m.String()) != 0 {
+			t.Fatalf("the poison message: kept %d, %d runs, %d key rows", n, runs.Load(), e.keyRows(m.String()))
+		}
+		wantCauses := []string{"rolled_back/not_found", "rolled_back/not_found", "panicked/panic", "rolled_back/not_found",
+			"rolled_back/not_found", "rolled_back/not_found", "rolled_back/not_found", "rolled_back/not_found"}
+		if got := e.consumed.causeList(from); strings.Join(got, ",") != strings.Join(wantCauses, ",") {
+			t.Fatalf("worker.run.failed sent %v, want %v", got, wantCauses)
+		}
+		var lines []string
+		for _, record := range consumerLogs.all() {
+			attributes := map[string]string{}
+			record.WalkAttributes(func(kv attribute.KeyValue) bool {
+				attributes[string(kv.Key)] = kv.Value.Emit()
+				return true
+			})
+			if attributes["event_id"] != m.String() {
+				continue
+			}
+			if record.EventName() != ConsumerFailedEvent || record.Severity() != otellog.SeverityWarn || len(attributes) != 6 ||
+				attributes["worker"] != "apply-partner-replies" || attributes["destination"] != "partner-replies" ||
+				record.Body().AsString() != "a consuming worker's run did not commit: apply-partner-replies "+attributes["outcome"]+" "+attributes["cause"] {
+				t.Fatalf("the log line is %s %v %q with %v", record.EventName(), record.Severity(), record.Body().AsString(), attributes)
+			}
+			lines = append(lines, attributes["attempt"]+" "+attributes["outcome"]+"/"+attributes["cause"])
+		}
+		wantLines := []string{"1 rolled_back/not_found", "2 rolled_back/not_found", "3 panicked/panic", "4 rolled_back/not_found",
+			"5 rolled_back/not_found", "6 rolled_back/not_found", "7 rolled_back/not_found", "8 rolled_back/not_found"}
+		if strings.Join(lines, ",") != strings.Join(wantLines, ",") {
+			t.Fatalf("the warn log holds %v, want %v", lines, wantLines)
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T07 A statement that the database fails never parks the message, and starts the count again", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p4', 'new')`)
+		defer clock.hold()()
+		// Runs 1 and 2 read an order that is not there; runs 3 to 9 read the charge c1 while its column card_last4
+		// is renamed, so the statement fails with SQLSTATE 42703 (undefined column); run 10 reads the missing order
+		// again.
+		var runs atomic.Int64
+		cases.Store("statement", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			if n := runs.Add(1); n >= 3 && n <= 9 {
+				_, err := repo(t, h, e.chargeE).Get(ctx, "c1")
+				return err
+			}
+			_, err := repo(t, h, e.orders).Get(ctx, "o-missing")
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-p4", map[string]string{"case": "statement"})
+		defer func() {
+			cases.Store("statement", func(context.Context, map[string]string, *Handle[testProbe]) error { return nil })
+			clock.add(time.Hour)
+			awaitRow(t, m, func(r row) bool { return r.state == "done" })
+		}()
+		for i := 1; i <= 10; i++ {
+			switch i {
+			case 3:
+				e.exec(`ALTER TABLE charges RENAME COLUMN card_last4 TO card_last4_gone`)
+			case 10:
+				e.exec(`ALTER TABLE charges RENAME COLUMN card_last4_gone TO card_last4`)
+			}
+			want := "delivery-refused"
+			switch i {
+			case 1, 10:
+				want = "fill.rolled_back.not_found.1"
+			case 2:
+				want = "fill.rolled_back.not_found.2"
+			}
+			r := awaitRow(t, m, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+			if r.state != "pending" || r.code != want {
+				t.Fatalf("after attempt %d the message is %s with %q, want pending with %q", i, r.state, r.code, want)
+			}
+			if i < 10 {
+				clock.add(time.Second)
+			}
+		}
+		got := e.consumed.causeList(from)
+		if len(got) != 10 || got[0] != "rolled_back/not_found" || got[9] != "rolled_back/not_found" {
+			t.Fatalf("worker.run.failed sent %v", got)
+		}
+		for _, c := range got[2:9] {
+			if c != "rolled_back/statement" {
+				t.Fatalf("a failed statement sent %s, want rolled_back/statement", c)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T09 A write that breaks a foreign key in 5 attempts parks the message as poison", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p6', 'new')`)
+		// The reservation of each run names an order that is not there, so its insert fails with SQLSTATE 23503 in
+		// each attempt: the values of the row cause it, not the database.
+		e.exec(`ALTER TABLE reservations ADD CONSTRAINT reservations_order_fk FOREIGN KEY (tenant_id, order_id)
+ REFERENCES orders (tenant_id, id) NOT VALID`)
+		defer e.exec(`ALTER TABLE reservations DROP CONSTRAINT reservations_order_fk`)
+		defer clock.hold()()
+		cases.Store("data", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			_, err := repo(t, h, e.reservationE).Create(ctx, reservation{ID: "r-fk", OrderID: "o-none", SKU: "s"})
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-p6", map[string]string{"case": "data"})
+		for i := 1; i <= PoisonAttempts; i++ {
+			want, state := fmt.Sprintf("fill.rolled_back.data.%d", i), "pending"
+			if i == PoisonAttempts {
+				want, state = PoisonCode, "parked"
+			}
+			r := awaitRow(t, m, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+			if r.state != state || r.code != want {
+				t.Fatalf("after attempt %d the message is %s with %q, want %s with %q", i, r.state, r.code, state, want)
+			}
+			if i < PoisonAttempts {
+				clock.add(time.Second)
+			}
+		}
+		if got := e.consumed.causeList(from); len(got) != PoisonAttempts || got[0] != "rolled_back/data" || got[PoisonAttempts-1] != "rolled_back/data" {
+			t.Fatalf("worker.run.failed sent %v, want %d of rolled_back/data", got, PoisonAttempts)
+		}
+		if n := e.count(`SELECT count(*) FROM reservations WHERE id = 'r-fk'`); n != 0 {
+			t.Fatal("the refused insert left its row")
+		}
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T08 A conflict between two fill errors starts the count again", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p5', 'new')`)
+		defer clock.hold()()
+		// Runs 1 and 2 read an order that is not there; run 3 meets a conflict, which counts no attempt; run 4 reads
+		// the missing order, and its move sets the conflict count to zero; run 5 succeeds.
+		var runs atomic.Int64
+		cases.Store("restart", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			switch runs.Add(1) {
+			case 3:
+				r := repo(t, h, e.orders)
+				o, err := r.Get(ctx, "o-p5")
+				if err != nil {
+					return err
+				}
+				e.exec(`UPDATE orders SET version = version + 1 WHERE tenant_id = 't1' AND id = 'o-p5'`)
+				v := o.Value()
+				v.Status = "conflicted"
+				_, err = r.Update(ctx, o, v)
+				return err
+			case 5:
+				return nil
+			}
+			_, err := repo(t, h, e.orders).Get(ctx, "o-missing")
+			return err
+		})
+		m := e.stage("t1", "o-p5", map[string]string{"case": "restart"})
+		steps := []struct {
+			code                string
+			attempts, conflicts int
+		}{{"fill.rolled_back.not_found.1", 1, 0}, {"fill.rolled_back.not_found.2", 2, 0}, {"delivery-conflict", 2, 1},
+			{"fill.rolled_back.not_found.1", 3, 0}}
+		for i, step := range steps {
+			r := awaitRow(t, m, func(r row) bool {
+				return r.attempts == step.attempts && r.conflicts == step.conflicts && r.state != "dispatching"
+			})
+			if r.state != "pending" || r.code != step.code {
+				t.Fatalf("after run %d the message is %s with %q, want pending with %q", i+1, r.state, r.code, step.code)
+			}
+			clock.add(time.Minute)
+		}
+		awaitRow(t, m, func(r row) bool { return r.state == "done" })
+	})
+
+	t.Run("ST-SUP-RC35-OC06-T06 A provider that cannot decide now and a conflict stay transient past 5 attempts, and each is reported", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p2', 'new'), ('t1', 'o-p3', 'new')`)
+		defer clock.hold()()
+		// The provider runs out of time on each decision of the worker's service account.
+		e.decision.setFail(func(subject string) error {
+			if subject == "service_account:apply-partner-replies" {
+				return fmt.Errorf("the provider call: %w", context.DeadlineExceeded)
+			}
+			return nil
+		})
+		defer e.decision.setFail(nil)
+		cases.Store("undecided", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			_, err := repo(t, h, e.orders).Get(ctx, "o-p2")
+			return err
+		})
+		from := len(e.consumed.causeList(0))
+		undecided := e.stage("t1", "o-p2", map[string]string{"case": "undecided"})
+		for i := 1; i <= PoisonAttempts+2; i++ {
+			r := awaitRow(t, undecided, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+			if r.state != "pending" || r.code != "delivery-refused" {
+				t.Fatalf("after attempt %d the undecided message is %s with %q, want pending with delivery-refused", i, r.state, r.code)
+			}
+			clock.add(time.Second)
+		}
+		e.decision.setFail(nil)
+		awaitRow(t, undecided, func(r row) bool { return r.state == "done" })
+		for _, got := range e.consumed.causeList(from) {
+			if got != "undecided/undecided" {
+				t.Fatalf("an undecided run sent %s", got)
+			}
+		}
+		// A conflict in each attempt: the fill reads the order, another transaction moves its version, and the
+		// update conflicts. The first 20 conflicts in a row count no attempt (ST-SUP-RP01-LC18).
+		var conflict atomic.Bool
+		conflict.Store(true)
+		cases.Store("conflict", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			r := repo(t, h, e.orders)
+			o, err := r.Get(ctx, "o-p3")
+			if err != nil {
+				return err
+			}
+			if conflict.Load() {
+				e.exec(`UPDATE orders SET version = version + 1 WHERE tenant_id = 't1' AND id = 'o-p3'`)
+			}
+			v := o.Value()
+			v.Status = "conflicted"
+			_, err = r.Update(ctx, o, v)
+			return err
+		})
+		from = len(e.consumed.causeList(0))
+		conflicted := e.stage("t1", "o-p3", map[string]string{"case": "conflict"})
+		for i := 1; i <= PoisonAttempts+2; i++ {
+			r := awaitRow(t, conflicted, func(r row) bool { return r.conflicts == i && r.state != "dispatching" })
+			if r.state != "pending" || r.code != "delivery-conflict" || r.attempts != 0 {
+				t.Fatalf("after conflict %d the message is %s with %q after %d attempts", i, r.state, r.code, r.attempts)
+			}
+			clock.add(time.Minute)
+		}
+		conflict.Store(false)
+		awaitRow(t, conflicted, func(r row) bool { return r.state == "done" })
+		got := e.consumed.causeList(from)
+		if len(got) < PoisonAttempts+2 {
+			t.Fatalf("the conflicts sent %v", got)
+		}
+		for _, outcome := range got {
+			if outcome != "conflict/conflict" {
+				t.Fatalf("a conflict sent %s", outcome)
+			}
 		}
 	})
 
@@ -1086,6 +1387,203 @@ func TestConsumers(t *testing.T) {
 		after, _, _ := e.consumed.snapshot()
 		if got := after[len(before):]; len(got) != 1 || got[0] != probe.WorkerNotGranted {
 			t.Fatalf("the consumer sent the outcomes %v, want one not_granted", got)
+		}
+	})
+}
+
+// userV2 is a row of users in the release that adds the column seen_at.
+type userV2 struct {
+	ID, OrgID, Email string
+	Admin            bool
+	Rank             int64
+	SeenAt           time.Time
+}
+
+// generatedUserList gives the list statements of users with the filter org_id = $3 AND rank >= $4 and the columns
+// given, as the worker generator builds them from the entity of a release (ST-SUP-RC35-OC15): the column list of the
+// entity's Scan, the tenant as $1, the limit or the key array as $2, the filter from $3, and ORDER BY the key.
+func generatedUserList(columns, extra string) ListSpec {
+	from := `SELECT ` + columns + ` FROM public."users" WHERE "tenant_id" = $1`
+	filter := ` AND "org_id" = $3 AND "rank" >= $4` + extra
+	return ListSpec{Name: "ranked",
+		Read:   from + filter + ` ORDER BY "id" LIMIT $2`,
+		Lock:   from + ` AND "id" = ANY($2::text[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`,
+		Values: DeclaredValues(ListValue{Constant: "org1"}, ListValue{Constant: int64(1)})}
+}
+
+func TestWorkerLists(t *testing.T) {
+	e := newEnv(t)
+	e.seedOrg("t1", "org1", 3)
+	e.seedUser("t1", "u1", "org1", true, 2, 1)
+	e.seedUser("t1", "u2", "org1", false, 1, 1)
+	e.seedUser("t1", "u3", "org1", false, 0, 1)
+	v1, err := NewList(e.users, generatedUserList(`"id"::text, "org_id", "email", "admin", "rank", "version", "authz_token"`, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(rows []Loaded[user]) string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.ID())
+		}
+		return strings.Join(out, ",")
+	}
+	run := func(w *Worker[testProbe], fill func(ctx context.Context, h *Handle[testProbe]) error) error {
+		return RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(fill))
+	}
+	withLists := func(lists ...AnyList) func(*WorkerSpec[testProbe]) {
+		return func(s *WorkerSpec[testProbe]) { s.Lists = lists }
+	}
+
+	t.Run("ST-SUP-RP10-LC38-T01 A generated list reads and locks before and after an added column", func(t *testing.T) {
+		w := e.worker("rank-scan", "sync", withLists(v1), e.users)
+		read := func() (string, string) {
+			var listed, locked string
+			if err := run(w, func(ctx context.Context, h *Handle[testProbe]) error {
+				r := repo(t, h, e.users)
+				rows, err := r.List(ctx, v1, 10)
+				if err != nil {
+					return err
+				}
+				listed = ids(rows)
+				rows, err = r.ListForUpdate(ctx, v1, nil)
+				locked = ids(rows)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return listed, locked
+		}
+		if listed, locked := read(); listed != "u1,u2" || locked != "u1,u2" {
+			t.Fatalf("before the change the list gave %q and locked %q, want u1,u2", listed, locked)
+		}
+		// The expand step of a schema change adds a column while the release before it still runs.
+		e.exec(`ALTER TABLE users ADD COLUMN seen_at timestamptz NOT NULL DEFAULT '2026-01-01T00:00:00Z'`,
+			`UPDATE users SET seen_at = '2030-01-01T00:00:00Z' WHERE id = 'u2'`)
+		if listed, locked := read(); listed != "u1,u2" || locked != "u1,u2" {
+			t.Fatalf("after the added column the list of the release before gave %q and locked %q, want u1,u2", listed, locked)
+		}
+
+		// The release that adds the field generates its Scan and its list from the same entity, with the new column
+		// and a term on the time of the run.
+		v2Spec := spec("User", "user", "users", []string{"org_id", "email", "admin", "rank", "seen_at"},
+			func(s Scanner) (userV2, Meta, error) {
+				var v userV2
+				var m Meta
+				err := s.Scan(&v.ID, &v.OrgID, &v.Email, &v.Admin, &v.Rank, &v.SeenAt, &m.Version, &m.Token)
+				m.ID = v.ID
+				return v, m, err
+			},
+			func(v userV2) []any { return []any{v.ID, v.OrgID, v.Email, v.Admin, v.Rank, v.SeenAt} },
+			func(v userV2) map[string]any { return map[string]any{"id": v.ID} })
+		v2Spec.LockAtMost = 3
+		users2, err := NewEntity(v2Spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v2Statements := generatedUserList(`"id"::text, "org_id", "email", "admin", "rank", "seen_at", "version", "authz_token"`, ` AND "seen_at" < $5`)
+		v2Statements.Values = DeclaredValues(append(v2Statements.Values.all(), ListValue{RunTime: true})...)
+		v2, err := NewList(users2, v2Statements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w2 := e.worker("rank-scan", "sync", withLists(v2), users2)
+		var seen []string
+		if err := run(w2, func(ctx context.Context, h *Handle[testProbe]) error {
+			rows, err := repo(t, h, users2).ListForUpdate(ctx, v2, nil)
+			for _, r := range rows {
+				seen = append(seen, r.ID()+"@"+r.Value().SeenAt.UTC().Format("2006"))
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// The tick of the run is in 2026, so u2, seen in 2030, is not before the time of the run.
+		if strings.Join(seen, ",") != "u1@2026" {
+			t.Fatalf("the release with the new column listed %v, want u1 with its seen_at", seen)
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC38-T02 A worker handle refuses a list that its declaration does not declare", func(t *testing.T) {
+		own, err := NewList(e.users, ListSpec{Name: "own",
+			Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users WHERE tenant_id = $1 ORDER BY id LIMIT $2`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := e.worker("rank-scan", "sync", withLists(v1), e.users)
+		var first, after error
+		err = run(w, func(ctx context.Context, h *Handle[testProbe]) error {
+			r := repo(t, h, e.users)
+			_, first = r.List(ctx, own, 10)
+			_, after = r.List(ctx, v1, 10)
+			return first
+		})
+		if !errors.Is(first, ErrInternal) || !strings.Contains(first.Error(), "rank-scan reads the list own of User, which its declaration does not declare") ||
+			!strings.Contains(first.Error(), "lists: of the worker") || !errors.Is(after, ErrInternal) || !errors.Is(err, ErrInternal) {
+			t.Fatalf("the fill's own list gave %v, then %v, and the run %v; want the internal error that names the declared lists", first, after, err)
+		}
+		// A consumer's handle refuses it the same way.
+		r := &Repository[user]{st: &state{mode: modeConsumer, action: "apply-replies"}, entity: e.users}
+		if _, err := r.listArgs(own, nil); !errors.Is(err, ErrInternal) || !strings.Contains(err.Error(), "apply-replies reads the list own") {
+			t.Fatalf("a consumer handle gave %v for an undeclared list", err)
+		}
+		// A command handle still takes a list that NewList makes, such as the generated upsert key of a collection.
+		c := &Repository[user]{st: &state{mode: modeCommand}, entity: e.users}
+		if args, err := c.listArgs(own, []any{"x"}); err != nil || len(args) != 1 {
+			t.Fatalf("a command handle gave %v, %v for its list", args, err)
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC38-T03 A declared list takes no filter values from the fill, and the run binds the time of the run", func(t *testing.T) {
+		w := e.worker("rank-scan", "sync", withLists(v1), e.users)
+		var given error
+		if err := run(w, func(ctx context.Context, h *Handle[testProbe]) error {
+			_, given = repo(t, h, e.users).List(ctx, v1, 10, "org2", int64(0))
+			return nil
+		}); !errors.Is(err, ErrInternal) || !errors.Is(given, ErrInternal) || !strings.Contains(given.Error(), "declares its filter values") {
+			t.Fatalf("filter values from the fill gave %v and the run %v, want an internal error", given, err)
+		}
+		// A declared list whose filter has no value, such as is_set terms only, takes no filter value either
+		// (security review of PR #411, L3).
+		isSet, err := NewList(e.users, ListSpec{Name: "set", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND org_id IS NOT NULL ORDER BY id LIMIT $2`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		given = nil
+		if err := run(e.worker("rank-scan", "sync", withLists(isSet), e.users), func(ctx context.Context, h *Handle[testProbe]) error {
+			_, given = repo(t, h, e.users).List(ctx, isSet, 10, "org2")
+			return nil
+		}); !errors.Is(err, ErrInternal) || !errors.Is(given, ErrInternal) || !strings.Contains(given.Error(), "declares its filter values") {
+			t.Fatalf("filter values from the fill for an is_set list gave %v and the run %v, want an internal error", given, err)
+		}
+		timed, err := NewList(e.users, ListSpec{Name: "timed", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND $3::timestamptz = $4::timestamptz ORDER BY id LIMIT $2`, Values: DeclaredValues(ListValue{RunTime: true}, ListValue{Constant: tick})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		other := tick.Add(time.Minute)
+		count := func(due time.Time) int {
+			w := e.worker("rank-scan", "sync", withLists(timed), e.users)
+			n := -1
+			if err := RunWorker(e.ctx, e.rt, w, due, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+				rows, err := repo(t, h, e.users).List(ctx, timed, 10)
+				n = len(rows)
+				return err
+			})); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		if at, next := count(tick), count(other); at != 3 || next != 0 {
+			t.Fatalf("the run of the tick listed %d rows and the run of the next tick %d; want 3 and 0", at, next)
+		}
+		if _, err := NewList(e.users, ListSpec{Name: "both", Read: v1.spec.Read, Values: DeclaredValues(ListValue{Constant: 1, RunTime: true})}); err == nil {
+			t.Fatal("NewList took a value that is a constant and the time of the run")
+		}
+		if _, err := NewWorker(WorkerSpec[testProbe]{Name: "rank-scan", Permission: "sync", Interval: time.Minute, Writes: []Declared{e.orders},
+			Probe: newTestProbe, Lists: []AnyList{v1}}); err == nil || !strings.Contains(err.Error(), "does not write") {
+			t.Fatalf("NewWorker took a list of an entity that the worker does not write: %v", err)
 		}
 	})
 }

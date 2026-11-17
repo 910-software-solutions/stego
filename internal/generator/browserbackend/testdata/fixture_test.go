@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -36,6 +37,9 @@ const apiPrefix = "/api/records/v1"
 type schemaFixture struct {
 	owner *sql.DB
 	user  string
+	// runtimeURL is the connection string of the runtime login, and adminURL the one of the fixture's administrator
+	// in the test database, who may take the role of the database owner: the two settings of the mode migrate.
+	runtimeURL, adminURL string
 }
 
 var schemaFixtures sync.Map
@@ -110,12 +114,16 @@ func database(t *testing.T) *sql.DB {
 	if _, err := ownerDB.ExecContext(ctx, "REVOKE ALL ON SCHEMA public FROM PUBLIC; GRANT USAGE ON SCHEMA public TO "+user); err != nil {
 		t.Fatal(err)
 	}
+	urlOf := func(user, password string) string {
+		return (&url.URL{Scheme: "postgres", User: url.UserPassword(user, password), Host: net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port)), Path: "/" + name, RawQuery: "sslmode=disable"}).String()
+	}
+	adminURL := urlOf(cfg.User, cfg.Password)
 	cfg.User, cfg.Password = user, password
 	cfg.RuntimeParams["search_path"] = "pg_catalog"
 	db = stdlib.OpenDB(*cfg)
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(2)
-	schemaFixtures.Store(db, schemaFixture{owner: ownerDB, user: user})
+	schemaFixtures.Store(db, schemaFixture{owner: ownerDB, user: user, runtimeURL: urlOf(user, password), adminURL: adminURL})
 	return db
 }
 func migrate(t *testing.T, db *sql.DB) {

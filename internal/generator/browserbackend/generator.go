@@ -367,9 +367,9 @@ func (g *Generator) generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	}
 	configuration, _ := json.Marshal(s)
 	data := struct {
-		Package, Client, Config, UnicodeValidation, Telemetry, Schema, SchemaSQL string
-		LocalApplication, EmbeddedAssets                                         bool
-	}{path.Base(ctx.OutputNamespace), root + "/client", string(configuration), gen.UnicodeEscapeValidation, path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["otel-tracing"]), root + "/schema", "", g.LocalApplicationPort != 0, len(s.Assets) != 0}
+		Package, Client, Config, UnicodeValidation, Telemetry, Schema, SchemaSQL, Storage string
+		LocalApplication, EmbeddedAssets                                                  bool
+	}{path.Base(ctx.OutputNamespace), root + "/client", string(configuration), gen.UnicodeEscapeValidation, path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["otel-tracing"]), root + "/schema", "", path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["postgres-adapter"]), g.LocalApplicationPort != 0, len(s.Assets) != 0}
 	schemaSQL, err := sources.ReadFile("schema.sql.tmpl")
 	if err != nil {
 		return nil, nil, err
@@ -435,6 +435,13 @@ func (g *Generator) generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		{Schema: "public", Name: "stego_browser_sessions", Kind: "table", Privileges: []string{"SELECT", "INSERT", "UPDATE", "DELETE"}},
 	}
 	wiring.VerifyDatabaseAccess = true
+	// The mode migrate runs Bootstrap as the owner and Verify as the runtime login (ST-SUP-RC02-OC56), and the start
+	// runs Verify before the access check, so a refused schema names database.schema and its fault class
+	// (ST-SUP-RC02-OC57).
+	schemaNamespace := path.Join(ctx.OutputNamespace, "schema")
+	wiring.Imports = append(wiring.Imports, schemaNamespace)
+	wiring.MigrationJob = &gen.MigrationJobSpec{Namespace: schemaNamespace, Function: "Migrate", Stage: "Stage"}
+	wiring.SchemaCheck = &gen.SchemaCheckSpec{Namespace: schemaNamespace, Function: "Verify", Stage: "Stage"}
 	return files, wiring, nil
 }
 

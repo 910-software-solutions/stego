@@ -484,6 +484,14 @@ func runPlan(args []string) error {
 
 	fmt.Print(compiler.FormatPlan(plan))
 	printNewSchemaSteps(os.Stdout, gate, plan)
+	// A permission of a scoped collection that does not need the read of its parent opens the row to a grant on it
+	// alone (ST-SUP-Q156): plan warns as stego validate does.
+	if warnings := compiler.ScopedAccessWarnings(input); len(warnings) > 0 {
+		fmt.Printf("\n%d warning(s):\n\n", len(warnings))
+		for _, warning := range warnings {
+			fmt.Println("  " + warning.Prose())
+		}
+	}
 	fmt.Println("\nSaved the plan in .stego/plan.yaml; stego apply --saved-plan carries it out.")
 	return nil
 }

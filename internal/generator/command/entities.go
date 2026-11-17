@@ -339,6 +339,10 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	if e.pii {
 		w.f("\tPII: true,\n")
 	}
+	if bound, ok := authzschema.LockAtMost(e.decl); ok {
+		// The most rows that one locked list of the entity locks (ST-DECL-EN02, ST-SUP-RP10-LC27).
+		w.f("\tLockAtMost: %d,\n", bound)
+	}
 	w.f("\tSelect: %q,\n\tSelectForUpdate: %q,\n\tSelectForDelete: %q,\n", selectRow, forUpdate, forDelete)
 	w.f("\tInsert: %q,\n\tUpdate: %q,\n\tDelete: %q,\n", insert, update, remove)
 	// Scan reads the columns of the statements.

@@ -57,7 +57,7 @@ func testHTTPResponseMappingsGateOutput(t *testing.T, lists, prepared, enums, nu
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, servicePath, string(service)+`
+	writeFile(t, servicePath, withoutCollections(t, string(service))+`
 overrides:
   stub-api:
     factory_package: domain
@@ -218,4 +218,16 @@ components:
 	if err != nil || string(retained) != "retained output" {
 		t.Fatal("response validation changed existing output", err)
 	}
+}
+
+// withoutCollections gives the fixture declaration with its collections, the last part of it, removed: an
+// application component serves no collection, and checking refuses a collection that no component serves
+// (ST-DECL-INV92).
+func withoutCollections(t *testing.T, service string) string {
+	t.Helper()
+	at := strings.Index(service, "\ncollections:\n")
+	if at < 0 {
+		t.Fatal("the fixture declaration declares no collections")
+	}
+	return service[:at+1]
 }

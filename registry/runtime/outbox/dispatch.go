@@ -103,6 +103,36 @@ func PermanentRefusal(err error) error { return &markedError{mark: markPermanent
 // (ST-SUP-RP01-LC18).
 func Conflict(err error) error { return &markedError{mark: markConflict, err: err} }
 
+// WithFailureCode gives err the failure code code: when the attempt ends in pending or parked as a refusal or as not
+// sent, the queue keeps code for the message in place of the code of its mark, such as poison in place of
+// delivery-refused-permanent, and the next claim of the message's destination gives it back as
+// Delivery.FailureCode (ST-SUP-RC35-OC06). A code that is not a short label of letters, digits, '.', '_' and '-' is
+// not kept. The code must never hold an error text or a value of the message (ST-SUP-RP01-LC06).
+func WithFailureCode(err error, code string) error { return &codedError{err: err, code: code} }
+
+type codedError struct {
+	err  error
+	code string
+}
+
+func (e *codedError) Error() string {
+	if e.err == nil {
+		return "outbox: coded error"
+	}
+	return e.err.Error()
+}
+
+func (e *codedError) Unwrap() error { return e.err }
+
+// codeOf gives the failure code that WithFailureCode gave err, when it is a label.
+func codeOf(err error) (string, bool) {
+	var coded *codedError
+	if errors.As(err, &coded) && labelPattern.MatchString(coded.code) {
+		return coded.code, true
+	}
+	return "", false
+}
+
 // IsConflict reports whether err is marked as a conflict.
 func IsConflict(err error) bool { return markOf(err) == markConflict }
 
@@ -153,14 +183,22 @@ func classify(err error, expired bool) outcome {
 	case err == nil:
 		return outcome{to: Done}
 	case m == markNotSent:
-		return outcome{to: Pending, failureCode: "delivery-not-sent"}
+		return outcome{to: Pending, failureCode: coded(err, "delivery-not-sent")}
 	case m == markTransientRefusal:
-		return outcome{to: Pending, failureCode: "delivery-refused"}
+		return outcome{to: Pending, failureCode: coded(err, "delivery-refused")}
 	case m == markPermanentRefusal:
-		return outcome{to: Parked, failureCode: "delivery-refused-permanent"}
+		return outcome{to: Parked, failureCode: coded(err, "delivery-refused-permanent")}
 	default:
 		return outcome{to: OutcomeUnknown, failureCode: "delivery-failed"}
 	}
+}
+
+// coded gives the failure code that the handler gave err with WithFailureCode, or fallback.
+func coded(err error, fallback string) string {
+	if code, ok := codeOf(err); ok {
+		return code
+	}
+	return fallback
 }
 
 // errHandlerPanic stands for a handler or lookup that panicked. It keeps no part of the panic value, which can hold
