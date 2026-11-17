@@ -318,6 +318,7 @@ func TestOneOfGroups(t *testing.T) {
 			"postgres-adapter/worker-database-url":    {"STEGO_WORKER_DATABASE_URL", "STEGO_WORKER_DATABASE_URL_FILE"},
 			"postgres-adapter/relay-database-url":     {"STEGO_RELAY_DATABASE_URL", "STEGO_RELAY_DATABASE_URL_FILE"},
 			"kafka-producer/kafka-brokers":            {"STEGO_KAFKA_BROKERS", "STEGO_KAFKA_BROKERS_FILE"},
+			"kafka-producer/kafka-topic":              {"STEGO_KAFKA_TOPIC", "STEGO_KAFKA_TOPIC_FILE"},
 		}
 		got := map[string][]string{}
 		for _, component := range shipped.Components() {
