@@ -23,7 +23,7 @@ type Fill struct {
 	Kind       string        `yaml:"kind"`
 	Name       string        `yaml:"name"`
 	Implements string        `yaml:"implements"`
-	Collection string        `yaml:"collection"`
+	Collection string        `yaml:"collection,omitempty"`
 	Evidence   *FillEvidence `yaml:"evidence,omitempty"`
 	SignOff    *FillSignOff  `yaml:"sign_off,omitempty"`
 }

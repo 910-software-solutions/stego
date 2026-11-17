@@ -343,6 +343,10 @@ func TestCapabilityFillScaffold(t *testing.T) {
 		if err != nil || manifest.Implements != "worker.worker" || manifest.Name != "fulfill-orders" || manifest.Kind != "fill" {
 			t.Fatalf("the manifest of fulfill-orders is %+v, %v; want the fill fulfill-orders of the slot worker.worker", manifest, err)
 		}
+		// The fill of a worker serves no collection, so its manifest holds no collection key (walkthrough 7, B12).
+		if strings.Contains(string(data), "collection") {
+			t.Fatalf("the manifest of fulfill-orders holds a collection key:\n%s", data)
+		}
 		// A fill that the declaration does not name, and a fill that exists, are refused, and nothing is written.
 		before := projectTree(t)
 		if _, err := capture(t, runFillCreate, "restock", "--slot", "worker.worker"); err == nil || !strings.Contains(err.Error(), "no worker of the declaration names the fill") {
