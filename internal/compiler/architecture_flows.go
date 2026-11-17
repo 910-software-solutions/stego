@@ -442,7 +442,10 @@ func (d *deriver) plannedReads() error {
 		view        bool
 	}
 	var uses []use
-	if d.handler != nil && len(svc.Collections) > 0 {
+	// A planned entity matters only when it has a resource type, so the derivation refuses a handler other than
+	// rest-api, whose planned entities it does not know, only for a service with an entity of a resource type.
+	typed := slices.ContainsFunc(svc.Entities, func(e types.Entity) bool { return e.ResourceType != "" })
+	if d.handler != nil && len(svc.Collections) > 0 && (d.handler.Name == restAPIComponent || typed) {
 		if d.handler.Name != restAPIComponent {
 			return &ArchitectureRefusal{fmt.Errorf("the component %s serves the collections, and the derivation knows the data path of the component %s alone; it cannot state which entities %s plans and reads, so it builds no model",
 				d.handler.Name, restAPIComponent, d.handler.Name)}
