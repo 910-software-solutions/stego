@@ -439,7 +439,9 @@ func TestWithin(t *testing.T) {
 				return err
 			}
 		}
-		// A ticket of web in the sprint of core is refused before the statement, and nothing is written.
+		// The runtime check alone: with no composite key, a ticket of web in the sprint of core is still refused before
+		// the statement, and nothing is written.
+		e.exec("ALTER TABLE wtickets DROP CONSTRAINT " + withinKey)
 		if err := run("k-lc37-t01-a", create("t2", "web", "s1")); err != nil {
 			refusedOn(t, err, "sprint_id")
 		} else {
