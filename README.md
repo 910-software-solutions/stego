@@ -236,6 +236,13 @@ definition todo {
 }
 ```
 
+A denied operation answers 404, the same answer as a missing row, also when the
+caller may read the row. For example, a viewer who reads a todo with 200 gets 404
+on its delete. So an answer never tells a caller that a row it may not change
+exists. The owner decided this rule for each operation on 2026-11-11
+(ST-SUP-RC29-OC02, ST-SUP-RP11-LC06). A command or a query refusal that the
+declaration names keeps its own status, such as 403.
+
 Generate and build:
 
 ```bash
