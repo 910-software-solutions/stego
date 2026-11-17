@@ -69,6 +69,9 @@ type Plan struct {
 	// lists and that is missing or no longer matches its recorded hash
 	// (ST-GEN-SP01). Apply refuses such a plan unless ReplaceHandEdits is set.
 	HandEdited []string
+	// Restored lists, in path order, each generated file that the record tracks and that is missing: it holds no
+	// hand edit, so the run writes it again with no flag, and the plan names it as restored (ST-GEN-Q46).
+	Restored []string
 
 	// ReplaceHandEdits states that the author lets this apply replace the
 	// hand-edited files (stego apply --replace-hand-edits).
@@ -1342,7 +1345,7 @@ func computePlan(
 	var planned []PlannedFile
 	newFileHashes := make(map[string]string)
 	var newProjectHashes map[string]string
-	var handEdited []string
+	var handEdited, restored []string
 
 	for _, f := range generatedFiles {
 		content := f.Bytes()
@@ -1431,11 +1434,21 @@ func computePlan(
 				return nil, err
 			}
 		}
-		if !snapshot.Exists || snapshot.Hash != recorded {
+		// A missing generated file holds no hand edit, so the run writes it again with no flag; only a file that
+		// is there with other bytes is a hand edit (ST-GEN-Q46, ST-GEN-CLI01).
+		_, generated := newFileHashes[path]
+		if _, project := newProjectHashes[path]; project {
+			generated = true
+		}
+		switch {
+		case !snapshot.Exists && generated:
+			restored = append(restored, path)
+		case snapshot.Exists && snapshot.Hash != recorded:
 			handEdited = append(handEdited, path)
 		}
 	}
 	sort.Strings(handEdited)
+	sort.Strings(restored)
 
 	sort.Slice(planned, func(i, j int) bool {
 		return planned[i].Path < planned[j].Path
@@ -1497,6 +1510,7 @@ func computePlan(
 	}
 	return &Plan{
 		HandEdited:   handEdited,
+		Restored:     restored,
 		StateChanged: string(oldStateData) != string(newStateData),
 		snapshots:    snapshots, projectDir: projectPath, outDir: outputPath,
 		Files:          planned,
@@ -1653,7 +1667,11 @@ func FormatPlan(plan *Plan) string {
 		switch f.Action {
 		case ActionGenerate:
 			generateCount++
-			fmt.Fprintf(&sb, "  generate: %s\n", f.Path)
+			if slices.Contains(plan.Restored, f.Path) {
+				fmt.Fprintf(&sb, "  restore:  %s (missing; written again)\n", f.Path)
+			} else {
+				fmt.Fprintf(&sb, "  generate: %s\n", f.Path)
+			}
 		case ActionUpdate:
 			updateCount++
 			fmt.Fprintf(&sb, "  update:   %s\n", f.Path)
