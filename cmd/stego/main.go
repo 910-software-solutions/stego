@@ -185,6 +185,7 @@ func runInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	archetype := fs.String("archetype", "", "archetype name (required)")
 	empty := fs.Bool("empty", false, "write no example content, and name each setting the author must supply")
+	moduleFlag := fs.String("module", "", "module path of the service, for the go.mod that init writes when the folder holds none (default: STEGO_MODULE, then github.com/example/service)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -200,12 +201,13 @@ func runInit(args []string) error {
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
 	}
-	// The placeholders of the example content take the module path that generation then uses.
-	module, _, err := compiler.ProjectModuleSettings(projectDir, os.Getenv("STEGO_MODULE"), os.Getenv("STEGO_GO_VERSION"))
-	if err != nil {
-		return err
+	// The module comes from --module, then STEGO_MODULE, then the project's go.mod or the default. Init writes it in
+	// a new go.mod, and each later command reads it from there (walkthrough-7 B12, decision A).
+	module := *moduleFlag
+	if module == "" {
+		module = os.Getenv("STEGO_MODULE")
 	}
-	result, err := compiler.Initialize(compiler.InitOptions{ProjectDir: projectDir, Archetype: *archetype, Empty: *empty, Module: module, Stderr: os.Stderr})
+	result, err := compiler.Initialize(compiler.InitOptions{ProjectDir: projectDir, Archetype: *archetype, Empty: *empty, Module: module, GoVersion: os.Getenv("STEGO_GO_VERSION"), Stderr: os.Stderr})
 	if err != nil {
 		return err
 	}

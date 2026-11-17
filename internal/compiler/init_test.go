@@ -76,7 +76,7 @@ func TestInitializeComposedRegistry(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(result.Created) != 2 || result.Created[0] != ".stego/.gitignore" || result.Created[1] != "service.yaml" {
+			if len(result.Created) != 3 || result.Created[0] != ".stego/.gitignore" || result.Created[1] != "go.mod" || result.Created[2] != "service.yaml" {
 				t.Fatalf("unexpected created files: %v", result.Created)
 			}
 			assertInitService(t, project, archetype)
@@ -101,7 +101,7 @@ func TestInitializeDefaultRegistry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Created) != 4 {
+	if len(result.Created) != 5 {
 		t.Fatalf("unexpected created files: %v", result.Created)
 	}
 	assertInitService(t, project, "example")
@@ -340,7 +340,7 @@ func TestInitializeRemovesPartlyWrittenFile(t *testing.T) {
 			}
 			return found
 		}
-		for _, failing := range []string{".stego/config.yaml", localStateIgnorePath, "service.yaml"} {
+		for _, failing := range []string{".stego/config.yaml", localStateIgnorePath, "go.mod", "service.yaml"} {
 			for _, held := range []bool{false, true} {
 				t.Run(failing+fmt.Sprintf("/ignore-file-held-%t", held), func(t *testing.T) {
 					project := serviceFolder(t)

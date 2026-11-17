@@ -156,8 +156,11 @@ Before plan, apply and build accept it, list your key in `SIGNERS`, run
 [rpc-service guide](registry/archetypes/rpc-service/README.md) goes on from
 the scaffold to the first tenant, its first administrator and the first row.
 The service takes the name of the
-project folder, and the fill imports the module path of `STEGO_MODULE` (or
-`github.com/example/service`): give the same value to each later command. Use
+project folder. When the folder holds no `go.mod`, `stego init` writes one with
+the module path of its module flag, or of `STEGO_MODULE`, or
+`github.com/example/service`, and the Go version only. Each later command reads
+the module path from `go.mod`, and refuses a `STEGO_MODULE` that differs from
+it. A `go.mod` that the folder already holds stays as written. Use
 `stego init --archetype <name> --empty` for a scaffold with no example
 content. It then names each setting that you must give before `stego validate`
 accepts the declaration.
