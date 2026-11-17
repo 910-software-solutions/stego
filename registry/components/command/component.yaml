@@ -2,7 +2,7 @@
 # relation that a command declares in relationships_written (ST-SUP-RC32-OC13).
 kind: component
 name: command
-version: 1.1.0
+version: 1.2.0
 stage: ga
 output_namespace: commands
 

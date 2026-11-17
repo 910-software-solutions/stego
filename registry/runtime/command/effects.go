@@ -2,12 +2,14 @@ package command
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -21,7 +23,8 @@ import (
 // its messages must land and whether it is idempotent, as the destination is registered on the outbox worker, and
 // whether a worker consumes it, so each message stores the staging principal and stager (ST-SUP-RP10-LC16). Effects
 // are the effect names that the declaration states for the destination: a command's Stage refuses every other name
-// (ST-SUP-RP10-LC07), and a worker that states none may stage any name.
+// (ST-SUP-RP10-LC07), and a worker that states none may stage any name, but on the destination kafka, which needs
+// its names (ST-SUP-RP10-LC36).
 type Destination struct {
 	Name       string
 	MustLand   bool
@@ -52,10 +55,147 @@ func checkDestinations(owner string, destinations []Destination) (map[string]Des
 				return nil, fmt.Errorf("command: %s declares an empty or a repeated effect name for the destination %s", owner, d.Name)
 			}
 		}
+		// The Kafka destination carries the change events, which only the handle stages: an open list of names would
+		// let a worker's fill stage any name there, also one of an entity that the declaration does not write
+		// (ST-SUP-RP10-LC36).
+		if d.Name == ChangeEventDestination && len(d.Effects) == 0 {
+			return nil, fmt.Errorf("command: %s declares the destination %s with no effect names; it states each name that the fill stages there", owner, d.Name)
+		}
 		d.Effects = slices.Clone(d.Effects)
 		byName[d.Name] = d
 	}
 	return byName, nil
+}
+
+// ChangeEventDestination is the outbox destination of the change events that the handle stages for its writes: the
+// Kafka destination of the outbox, kafkaoutbox.DestinationName (ST-SUP-RC20-OC40, ST-SUP-RP10-LC36).
+const ChangeEventDestination = "kafka"
+
+// The actions of a change event: created for a create, updated for an update and deleted for a delete
+// (ST-SUP-RC20-OC40).
+const (
+	ActionCreated = "created"
+	ActionUpdated = "updated"
+	ActionDeleted = "deleted"
+)
+
+// ChangeEvents are the names of the change events of one entity that a command or a worker declares it writes, as
+// the generator names them for a collection write of the same entity, such as user-management.org-setting.created
+// (ST-SUP-RC20-OC40, ST-SUP-RC32-OC14, ST-SUP-RC35-OC14). With them, each create, update and delete of the entity
+// through the handle stages its change event (ST-SUP-RP10-LC36).
+type ChangeEvents struct {
+	// Entity is the name of the entity, as its EntitySpec gives it.
+	Entity string
+	// Created, Updated and Deleted are the event names of the three actions.
+	Created, Updated, Deleted string
+}
+
+// name gives the event name of action.
+func (c ChangeEvents) name(action string) string {
+	switch action {
+	case ActionCreated:
+		return c.Created
+	case ActionUpdated:
+		return c.Updated
+	}
+	return c.Deleted
+}
+
+// checkChangeEvents checks the change events of a command or a worker and maps them by entity name. A declaration
+// gives none, or the events of each entity that it writes: so a service with change events stages them for every
+// write (ST-SUP-RP10-LC36). It refuses an entity that the declaration does not write, an entity given twice, and an
+// event name that is empty, given twice, not an outbox kind, or an effect name of a declared destination, which the
+// fill could then stage itself.
+func checkChangeEvents(owner string, writes []Declared, destinations map[string]Destination, events []ChangeEvents) (map[string]ChangeEvents, error) {
+	if len(events) == 0 {
+		return nil, nil
+	}
+	written := map[string]bool{}
+	for _, e := range writes {
+		written[e.entityName()] = true
+	}
+	byEntity := make(map[string]ChangeEvents, len(events))
+	names := map[string]bool{}
+	for _, c := range events {
+		if !written[c.Entity] {
+			return nil, fmt.Errorf("command: %s gives the change events of %q, which it does not declare it writes", owner, c.Entity)
+		}
+		if _, ok := byEntity[c.Entity]; ok {
+			return nil, fmt.Errorf("command: %s gives the change events of %s twice", owner, c.Entity)
+		}
+		for _, name := range []string{c.Created, c.Updated, c.Deleted} {
+			probe := outbox.Message{ID: uuid.Max, Destination: ChangeEventDestination, ResourceKey: c.Entity, Kind: name,
+				Payload: json.RawMessage(`{}`)}
+			if name == "" || names[name] || outbox.ValidateMessage(probe) != nil {
+				return nil, fmt.Errorf("command: %s gives a change event name of %s that is empty, repeated or not an outbox kind: %q", owner, c.Entity, name)
+			}
+			names[name] = true
+		}
+		byEntity[c.Entity] = c
+	}
+	for entity := range written {
+		if _, ok := byEntity[entity]; !ok {
+			return nil, fmt.Errorf("command: %s gives change events, but none of the entity %s, which it writes", owner, entity)
+		}
+	}
+	for _, d := range destinations {
+		for _, effect := range d.Effects {
+			if names[effect] {
+				return nil, fmt.Errorf("command: %s declares the change event %s as an effect of the destination %s; only the handle stages a change event", owner, effect, d.Name)
+			}
+		}
+	}
+	return byEntity, nil
+}
+
+// changeEventPayload is the payload of a change event: the entity name, the action and the row ID, and no field
+// value, so no pii or secret field leaves the service in an event (ST-SUP-RC20-OC40).
+func changeEventPayload(entity, action, id string) json.RawMessage {
+	payload, err := json.Marshal(struct {
+		Entity string `json:"entity"`
+		Action string `json:"action"`
+		ID     string `json:"id"`
+	}{entity, action, id})
+	if err != nil {
+		panic(err)
+	}
+	return payload
+}
+
+// stageChange stages, right after a write of the handle, the change event of the written row: the entity entity
+// with the resource type resourceType and the ID id, and the action (ST-SUP-RP10-LC36). It is the message that a
+// collection write stages for the same row: the same event name, payload, destination and resource key, and so the
+// same Kafka message key, so the events of one row keep the order of their commits whichever path wrote it. The
+// message joins the staged messages of the attempt in the order of the calls, so it commits or rolls back with its
+// write. A declaration with no change events stages none.
+func (s *state) stageChange(entity, resourceType, id, action string) error {
+	c, ok := s.changeEvents[entity]
+	if !ok {
+		return nil
+	}
+	name := c.name(action)
+	r := rowRef{entity: entity, resourceType: resourceType, id: id}
+	inbound := s.inbound(id)
+	// The first event of one name for one row has the key of a collection write; each later one in the same call,
+	// such as a second update of the row, takes its count too, so no two messages of a call share a key.
+	unique := lengthPrefixed("change", name, r.resourceKey())
+	if n := s.changes[unique]; n > 0 {
+		inbound = lengthPrefixed(inbound, strconv.Itoa(n))
+	}
+	s.changes[unique]++
+	key := idempotency.Derive(s.tenant.ID(), s.principal.Subject().String(), inbound, ChangeEventDestination, name)
+	messageID, err := uuid.NewV7()
+	if err != nil {
+		return s.breakWith(internalf("the change event of %s has no message ID", entity))
+	}
+	message := outbox.Message{ID: messageID, Destination: ChangeEventDestination, ResourceKey: r.resourceKey(), Kind: name,
+		Payload: changeEventPayload(entity, action, id), OutgoingKey: key, Idempotent: true}
+	if err := outbox.ValidateMessage(message); err != nil {
+		return s.breakWith(internalf("the change event of %s is not a valid outbox message", entity))
+	}
+	s.staged = append(s.staged, message)
+	s.stagedK[lengthPrefixed("key", key)] = true
+	return nil
 }
 
 // Effects is the handle's effect stager (ST-SUP-RP10-LC07): each effect becomes an outbox message of the bound
@@ -81,6 +221,10 @@ func (f *Effects) Stage(ctx context.Context, destination, effect string, entity 
 	defer s.leave()
 	if reservedDestinations[destination] {
 		return fmt.Errorf("command: no effect goes to the destination %s: it is written only by the runtime", destination)
+	}
+	// A change event is staged by the write of its row, never by the fill (ST-SUP-RP10-LC36).
+	if s.changeEventName(effect) {
+		return s.breakWith(internalf("%s stages the change event %s itself; only a write of the handle stages it", s.action, effect))
 	}
 	d, ok := s.destinations[destination]
 	if !ok {
@@ -145,7 +289,7 @@ func (f *Effects) Stage(ctx context.Context, destination, effect string, entity 
 	if s.stagedK[unique] || s.stagedK[lengthPrefixed("key", key)] {
 		return fmt.Errorf("command: the effect %s is staged already for this %s in this call", effect, r.entity)
 	}
-	if len(s.staged) >= outbox.MaxBatchSize {
+	if s.effects >= outbox.MaxBatchSize {
 		return fmt.Errorf("command: a call stages at most %d effects", outbox.MaxBatchSize)
 	}
 	id, err := uuid.NewV7()
@@ -165,14 +309,26 @@ func (f *Effects) Stage(ctx context.Context, destination, effect string, entity 
 		return err
 	}
 	s.staged = append(s.staged, message)
+	s.effects++
 	s.stagedK[unique] = true
 	s.stagedK[lengthPrefixed("key", key)] = true
 	return nil
 }
 
-// enqueue writes the staged messages of the attempt into the bound transaction's outbox in one batch, after the fill
-// returned and before the audit record (ST-SUP-RP10-LC07). A conflict of the enqueue is a conflict of the call
-// (ST-SUP-RP10-LC25).
+// changeEventName tells whether name is the name of a change event of the declaration.
+func (s *state) changeEventName(name string) bool {
+	for _, c := range s.changeEvents {
+		if name == c.Created || name == c.Updated || name == c.Deleted {
+			return true
+		}
+	}
+	return false
+}
+
+// enqueue writes the staged messages of the attempt into the bound transaction's outbox, in the order of the calls,
+// after the fill returned and before the audit record (ST-SUP-RP10-LC07, ST-SUP-RP10-LC36): in one batch, or, when
+// the change events of many writes make more than one batch holds, in batches of outbox.MaxBatchSize in that order.
+// A conflict of the enqueue is a conflict of the call (ST-SUP-RP10-LC25).
 func (s *state) enqueue(ctx context.Context) error {
 	if len(s.staged) == 0 {
 		return nil
@@ -181,10 +337,29 @@ func (s *state) enqueue(ctx context.Context) error {
 		return s.fail(ctx, "outbox enqueue", err)
 	}
 	s.rt.stepped("enqueue", s.tx)
-	if err := s.rt.cfg.Outbox.Enqueue(ctx, s.tx, s.staged...); err != nil {
-		return s.fail(ctx, "outbox enqueue", err)
+	for batch := range slices.Chunk(s.batchOrder(), outbox.MaxBatchSize) {
+		if err := s.rt.cfg.Outbox.Enqueue(ctx, s.tx, batch...); err != nil {
+			return s.fail(ctx, "outbox enqueue", err)
+		}
 	}
 	return nil
+}
+
+// batchOrder gives the staged messages in the order that enqueue writes them. Messages that fit one batch keep the
+// order of the calls. More messages are sorted, stably, by the advisory lock of their key (outbox.LockKey): each
+// batch takes its locks in the one order of all transactions, so two transactions whose keys cross never wait on
+// each other in a cycle, and the messages of one key keep the order of the calls, which is the order that the
+// outbox delivers (ST-SUP-RP01-LC03, ST-SUP-RP10-LC36).
+func (s *state) batchOrder() []outbox.Message {
+	if len(s.staged) <= outbox.MaxBatchSize {
+		return s.staged
+	}
+	sorted := slices.Clone(s.staged)
+	tenantID := s.tenant.ID()
+	slices.SortStableFunc(sorted, func(a, b outbox.Message) int {
+		return cmp.Compare(outbox.LockKey(tenantID, a.Destination, a.ResourceKey), outbox.LockKey(tenantID, b.Destination, b.ResourceKey))
+	})
+	return sorted
 }
 
 // lengthPrefixed joins parts, each prefixed by its length in bytes as a 4-byte big-endian unsigned integer.
