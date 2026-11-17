@@ -111,16 +111,31 @@ func TestCLIContainerAllowsHyphens(t *testing.T) {
 }
 
 func TestOutputDirectoryMustBeAGoImportPath(t *testing.T) {
-	input := snapshotTestInput(t)
-	input.OutDir = filepath.Join(input.ProjectDir, "bad directory")
-	input.Generators["stub-api"] = rejectedInputGenerator{t}
-	result, err := Validate(input)
-	if err != nil || !result.HasErrors() || !strings.Contains(FormatValidation(result), "Go import namespace") {
-		t.Fatal("invalid output directory passed", result, err)
-	}
-	if plan, err := Reconcile(input); plan != nil || err == nil {
-		t.Fatal("invalid output directory reached rendering", plan, err)
-	}
+	t.Run("ST-DECL-INV17-T The output folder and each factory package are import paths outside the output", func(t *testing.T) {
+		input := snapshotTestInput(t)
+		input.OutDir = filepath.Join(input.ProjectDir, "bad directory")
+		input.Generators["stub-api"] = rejectedInputGenerator{t}
+		result, err := Validate(input)
+		if err != nil || !result.HasErrors() || !strings.Contains(FormatValidation(result), "Go import namespace") {
+			t.Fatal("invalid output directory passed", result, err)
+		}
+		if plan, err := Reconcile(input); plan != nil || err == nil {
+			t.Fatal("invalid output directory reached rendering", plan, err)
+		}
+		// The factory package of the cli-application component must be an import path outside the output folder.
+		for _, factory := range []string{"out/factory", "out", "bad factory"} {
+			input := applicationPreflightInput(t, new(cliapplication.Generator), factory)
+			if result, err := Validate(input); err != nil || !result.HasErrors() {
+				t.Fatal("a factory package that is not an import path outside the output passed", factory, result, err)
+			}
+			if plan, err := Reconcile(input); plan != nil || err == nil {
+				t.Fatal("a factory package that is not an import path outside the output reached rendering", factory, plan, err)
+			}
+		}
+		if result, err := Validate(applicationPreflightInput(t, new(cliapplication.Generator), "domain-code/factory")); err != nil || result.HasErrors() {
+			t.Fatal("a factory package outside the output was refused", result, err)
+		}
+	})
 }
 
 func TestApplicationFactoriesRequireGoImportPaths(t *testing.T) {
