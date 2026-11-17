@@ -43,7 +43,7 @@ func TestLoginProxyRestartLogout(t *testing.T) {
 		// after a write sends Authz-Revocation-After and may send Prefer.
 		allowed := map[string]string{
 			"Accept": "application/json", "Content-Type": "application/json", "If-Match": `"record-version"`, "If-None-Match": `"other-version"`,
-			"Idempotency-Key": "place-order-1", "Authz-Revocation-After": "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10", "Prefer": "wait=5",
+			"Idempotency-Key": "place-order-1", "Authz-Revocation-After": "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10", "Prefer": "wait=4",
 		}
 		for name, value := range allowed {
 			headers.Set(name, value)
@@ -54,7 +54,7 @@ func TestLoginProxyRestartLogout(t *testing.T) {
 		require(t, w.Code == 201 && w.Body.String() == `{"id":"record-1","name":"one"}`, "API contract changed")
 		require(t, w.Header().Get("ETag") == `"record-version"` && w.Header().Get("Set-Cookie") == "" && w.Header().Get("X-Private") == "", "unsafe response headers")
 		require(t, w.Header().Get("Idempotent-Replayed") == "true" && w.Header().Get("Authz-Revocation") == "pending" &&
-			w.Header().Get("Authz-Revocation-Location") == "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10", "the response headers of the API contract did not reach the browser")
+			w.Header().Get("Authz-Revocation-Location") == "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10" && w.Header().Get("Preference-Applied") == "wait=4", "the response headers of the API contract did not reach the browser")
 		f.mu.Lock()
 		sent := f.requests[0]
 		f.mu.Unlock()
