@@ -898,10 +898,13 @@ func schemaDigest(files []gen.File, runtime *registry.RuntimePin) string {
 	return hex.EncodeToString(sum.Sum(nil))
 }
 
-// isSchemaFile tells whether a generated file states the schema: a migration of a folder named migrations, or the
-// schema manifest, which also names the last migration of the release.
+// isSchemaFile tells whether a generated file states the schema: a migration of a folder named migrations, the
+// schema manifest, which also names the last migration of the release, or the session table SQL or a file of the
+// schema package of a browser-service (browser/schema.sql, browser/schema), whose mode migrate makes and checks it. Without the last, the
+// migration Job of a browser-service took the digest of no file in every release (walkthrough 7, B6).
 func isSchemaFile(name string) bool {
-	return slices.Contains(strings.Split(path.Dir(name), "/"), "migrations") || path.Base(name) == "schema_manifest.go"
+	return slices.Contains(strings.Split(path.Dir(name), "/"), "migrations") || path.Base(name) == "schema_manifest.go" ||
+		name == "browser/schema.sql" || path.Dir(name) == "browser/schema"
 }
 
 // ReferenceFile is the path, in the project folder, of the environment variable reference that apply writes: the
