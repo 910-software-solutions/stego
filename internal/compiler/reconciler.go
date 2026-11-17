@@ -521,9 +521,25 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		if component := reg.Component(registry.PipelineComponent); component != nil {
 			pipelines = component.Pipelines
 		}
-		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, schemaDigest(allFiles, runtime))
+		var moduleFile []byte
+		for _, file := range allFiles {
+			if file.Path == "go.mod" {
+				moduleFile = file.Content
+			}
+		}
+		modules, outside, err := localModuleFolders(moduleFile, filepath.ToSlash(outDirName), resolved.HoldsFills)
+		if err != nil {
+			return nil, fmt.Errorf("reading the local module replacements of go.mod: %w", err)
+		}
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, modules, schemaDigest(allFiles, runtime))
 		if err != nil {
 			return nil, err
+		}
+		for _, replacement := range outside {
+			if !slices.ContainsFunc(files, func(file gen.File) bool { return file.Path == ContainerFile }) {
+				break
+			}
+			written = append(written, fmt.Sprintf("the Containerfile does not copy the local module %s that go.mod replaces a module with: it is out of the project folder, so the image build cannot read it", replacement))
 		}
 		allFiles = append(allFiles, files...)
 		notes = written
@@ -739,6 +755,9 @@ type DeploymentInput struct {
 	// Containerfile copies both (ST-DLV-INV07).
 	OutputDir  string
 	HoldsFills bool
+	// LocalModules are the folders of the project that go.mod replaces a module with, which the offline
+	// Containerfile copies too (localModuleFolders).
+	LocalModules []string
 	// Release is the digest of the schema of the release, in hex (schemaDigest), which names the migration Job of
 	// the base (ST-DLV-UC07-R06).
 	Release string
@@ -754,7 +773,7 @@ type DeploymentFiles struct {
 // component of the active set serves, in the order of the active set (ST-DLV-INV08). It refuses a file out of the
 // paths of the base.
 func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, names []string, generators map[string]gen.Generator,
-	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool, release string) ([]gen.File, []string, error) {
+	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool, modules []string, release string) ([]gen.File, []string, error) {
 	var probes *gen.Probes
 	for _, name := range names {
 		declarer, ok := generators[name].(gen.ProbeDeclarer)
@@ -771,7 +790,7 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 		probes = &served
 	}
 	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery, Pipelines: pipelines,
-		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills, Release: release})
+		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills, LocalModules: modules, Release: release})
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
 	}

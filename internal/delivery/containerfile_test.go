@@ -7,13 +7,21 @@ import (
 
 func TestLoadContainerfile(t *testing.T) {
 	t.Run("ST-DLV-UC03-R04-T04 The Containerfile reads back only as the exact text that apply writes, and a file with more text, another image, a directive or a heredoc is refused", func(t *testing.T) {
-		for _, source := range []ContainerSource{{OutputDir: "out"}, {OutputDir: "out", Fills: true}, {OutputDir: "gen/service"}} {
+		for _, source := range []ContainerSource{{OutputDir: "out"}, {OutputDir: "out", Fills: true}, {OutputDir: "gen/service"},
+			{OutputDir: "out", Modules: []string{"lib", "third_party/tools"}}, {OutputDir: "out", Fills: true, Modules: []string{"lib"}}} {
 			data, err := WriteContainerfile("orders", source)
 			if err != nil {
 				t.Fatalf("the Containerfile of %+v is not written: %v", source, err)
 			}
 			if _, err := LoadContainerfile(data); err != nil {
 				t.Errorf("the Containerfile of %+v does not read back: %v", source, err)
+			}
+		}
+		// A local module folder that is not a relative path of plain names, or that is in a copied folder or holds
+		// one, is refused.
+		for _, module := range []string{"../far", "/abs", "lib dir", "out", "out/vendored", "fills/x", "lib/../out"} {
+			if _, err := WriteContainerfile("orders", ContainerSource{OutputDir: "out", Fills: true, Modules: []string{module}}); err == nil {
+				t.Errorf("WriteContainerfile accepts the local module folder %q", module)
 			}
 		}
 		data, err := WriteContainerfile("orders", ContainerSource{OutputDir: "out", Fills: true})

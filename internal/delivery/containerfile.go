@@ -54,10 +54,12 @@ const containerHeader = "# The offline Containerfile of the service. stego apply
 	"# emptyDir at /tmp, as the Kubernetes base sets them.\n"
 
 // ContainerSource is what the build stage copies from the project folder: the folder of the generated output, the
-// entry point of the build, and whether the fills folder holds a fill, which the generated code then imports.
+// entry point of the build, whether the fills folder holds a fill, which the generated code then imports, and the
+// folders of the project that go.mod replaces a module with, which the build reads as stego build does.
 type ContainerSource struct {
 	OutputDir string
 	Fills     bool
+	Modules   []string
 }
 
 // sourceFolder is a folder of the project that the Containerfile names: a relative path of plain names, so that no
@@ -65,10 +67,10 @@ type ContainerSource struct {
 var sourceFolder = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`)
 
 // WriteContainerfile writes the offline Containerfile of the service (ST-DLV-CMD03): a build stage on the pinned Go
-// image that copies the module files and the source folders, checks the Go version and the prefetched modules, and
-// builds with the settings and the arguments of the application build and no module download; then a scratch
-// stage with the executable, the CA certificates and a numeric user that is not root. It reads the file back with
-// LoadContainerfile before it gives it (ST-DLV-INV07).
+// image that copies the module files and the source folders, with each local module folder that go.mod replaces a
+// module with, checks the Go version and the prefetched modules, and builds with the settings and the arguments of
+// the application build and no module download; then a scratch stage with the executable, the CA certificates and
+// a numeric user that is not root. It reads the file back with LoadContainerfile before it gives it (ST-DLV-INV07).
 func WriteContainerfile(service string, source ContainerSource) ([]byte, error) {
 	if !serviceLabel.MatchString(service) {
 		return nil, fmt.Errorf("the service name %q is not a DNS label", service)
@@ -92,6 +94,17 @@ func renderContainerfile(source ContainerSource) ([]byte, error) {
 	folders := []string{source.OutputDir}
 	if source.Fills {
 		folders = append(folders, "fills")
+	}
+	for _, module := range source.Modules {
+		if !sourceFolder.MatchString(module) || slices.Contains(strings.Split(module, "/"), "..") {
+			return nil, fmt.Errorf("the local module folder %q that go.mod replaces a module with is not a relative path of plain names", module)
+		}
+		for _, folder := range folders {
+			if module == folder || strings.HasPrefix(module, folder+"/") || strings.HasPrefix(folder, module+"/") {
+				return nil, fmt.Errorf("the local module folder %q is in the folder %s or holds it; the Containerfile copies each folder once", module, folder)
+			}
+		}
+		folders = append(folders, module)
 	}
 	var out strings.Builder
 	out.WriteString(containerHeader)
@@ -238,16 +251,17 @@ func LoadContainerfile(data []byte) (Containerfile, error) {
 	if entrypoint != fmt.Sprintf("[%q]", ImageExecutable) || !path.IsAbs(ImageExecutable) {
 		return Containerfile{}, fmt.Errorf("the final stage does not start %s in exec form", ImageExecutable)
 	}
-	// The source folders are the output folder and, when the build stage copies it, the fills folder.
-	var source ContainerSource
-	switch {
-	case len(folders) == 1:
-		source.OutputDir = folders[0]
-	case len(folders) == 2 && folders[1] == "fills":
-		source.OutputDir, source.Fills = folders[0], true
-	default:
-		return Containerfile{}, fmt.Errorf("the build stage copies the folders %v, not the output folder and the fills folder", folders)
+	// The source folders are the output folder, then the fills folder when the build stage copies it, then the local
+	// module folders.
+	if len(folders) == 0 {
+		return Containerfile{}, fmt.Errorf("the build stage copies no output folder")
 	}
+	source := ContainerSource{OutputDir: folders[0]}
+	rest := folders[1:]
+	if len(rest) > 0 && rest[0] == "fills" {
+		source.Fills, rest = true, rest[1:]
+	}
+	source.Modules = rest
 	want, err := renderContainerfile(source)
 	if err != nil {
 		return Containerfile{}, err

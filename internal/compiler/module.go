@@ -6,6 +6,9 @@ import (
 	"go/version"
 	"io"
 	"os"
+	"path"
+	"slices"
+	"strings"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/parser"
@@ -200,4 +203,46 @@ func ProjectModuleSettings(projectDir, name, goVersion string) (string, string, 
 	}
 
 	return name, goVersion, nil
+}
+
+// localModuleFolders gives the folders of the project that go.mod replaces a module with (a replace directive with
+// no version), in slash form and path order, so that the offline Containerfile copies them as the source snapshot of
+// stego build holds them (ST-DLV-INV07). Go reads the replace directives of the main module only. The project folder
+// itself, and a folder in the output folder or in a copied fills folder, are left out, because the Containerfile
+// copies them anyway. A replacement out of the project folder is given apart: no build of the project can read it,
+// and stego build refuses it.
+func localModuleFolders(data []byte, outDirName string, holdsFills bool) (inside, outside []string, err error) {
+	if data == nil {
+		return nil, nil, nil
+	}
+	file, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	copied := []string{path.Clean(outDirName)}
+	if holdsFills {
+		copied = append(copied, "fills")
+	}
+	for _, replace := range file.Replace {
+		if replace.New.Version != "" {
+			continue
+		}
+		given := replace.New.Path
+		folder := path.Clean(given)
+		if path.IsAbs(given) || strings.ContainsAny(given, "\\:") || folder == ".." || strings.HasPrefix(folder, "../") {
+			if !slices.Contains(outside, given) {
+				outside = append(outside, given)
+			}
+			continue
+		}
+		if folder == "." || slices.ContainsFunc(copied, func(c string) bool { return folder == c || strings.HasPrefix(folder, c+"/") }) {
+			continue
+		}
+		if !slices.Contains(inside, folder) {
+			inside = append(inside, folder)
+		}
+	}
+	slices.Sort(inside)
+	slices.Sort(outside)
+	return inside, outside, nil
 }

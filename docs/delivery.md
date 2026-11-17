@@ -24,6 +24,9 @@ platform supplies those values.
   read-only root file system and the `/tmp` emptyDir of the base. For a local build, mount a writable copy of the
   module cache folder of `stego build download` at that path, for example
   `buildah build --network=none -v "$PWD/modules-copy:/cachi2/output/deps/gomod/pkg/mod" -f Containerfile .`.
+  The build stage copies `go.mod`, `go.sum`, the output folder, the `fills` folder when it holds a fill, and each
+  folder of the project that a `replace` directive of `go.mod` names with no version (a local module). A local
+  module out of the project folder is not copied, and the plan says so: move it into the project folder.
   `stego apply` reads the file back and accepts only the exact text that it writes, so do not edit it.
 - `deploy/argocd/applicationset.yaml`, when the declaration has `delivery.argocd`: an Argo CD ApplicationSet. Its git
   files generator reads the platform's environment files. Each Application has one source: the overlay at the

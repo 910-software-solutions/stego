@@ -674,3 +674,39 @@ func TestDeliveryStanzaChecks(t *testing.T) {
 		}
 	})
 }
+
+func TestContainerfileLocalModules(t *testing.T) {
+	t.Run("ST-DLV-UC03-R04-T05 Apply copies each local module folder that go.mod replaces a module with into the build stage, and names a replacement out of the project", func(t *testing.T) {
+		dir, env, _ := appliedBase(t)
+		module, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Two folders of the project, one of them twice and one in the output folder, and one folder out of it.
+		replaces := "\nreplace example.com/lib => ./lib\n\nreplace example.com/tools/v2 => ./third_party/tools\n\n" +
+			"replace example.com/again => ./lib/\n\nreplace example.com/inside => ./out/vendored\n\nreplace example.com/far => ../far\n"
+		if err := os.WriteFile(filepath.Join(dir, "go.mod"), append(module, replaces...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		printed := mustRunInProject(t, dir, env, "apply")
+		data, err := os.ReadFile(filepath.Join(dir, delivery.ContainerFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := delivery.LoadContainerfile(data); err != nil {
+			t.Fatalf("the Containerfile with the local module folders does not read back: %v", err)
+		}
+		want := "COPY go.mod go.sum ./\nCOPY out/ ./out/\nCOPY lib/ ./lib/\nCOPY third_party/tools/ ./third_party/tools/\nRUN "
+		if !strings.Contains(string(data), want) {
+			t.Errorf("the build stage does not copy the output folder and then each local module folder once, in path order:\n%s", data)
+		}
+		for _, folder := range []string{"out/vendored", "far"} {
+			if strings.Contains(string(data), "COPY "+folder) || strings.Contains(string(data), "COPY ../") {
+				t.Errorf("the build stage copies %s:\n%s", folder, data)
+			}
+		}
+		if !strings.Contains(printed, "the Containerfile does not copy the local module ../far that go.mod replaces a module with: it is out of the project folder") {
+			t.Errorf("the plan does not name the local module out of the project folder:\n%s", printed)
+		}
+	})
+}
