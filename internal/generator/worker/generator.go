@@ -144,6 +144,17 @@ type worker struct {
 	// stagers maps each command or worker that stages for the consumed destination to its own declared permission
 	// (ST-SUP-RP10-LC17).
 	stagers map[string]string
+	// lists are the declared lists of the worker, which the contract emits from the entity of the release
+	// (ST-SUP-RC35-OC15).
+	lists []*workerList
+}
+
+// workerList is one declared list of a worker with its generated statements and values.
+type workerList struct {
+	decl       types.WorkerList
+	goName     string // the exported name in the contract, such as StaleScanOpenTickets
+	read, lock string
+	values     []string // the Go source of each command.ListValue
 }
 
 // plan checks the context and builds the model. It refuses, naming the worker, each declaration that the generated
@@ -305,7 +316,38 @@ func (m *model) planWorker(w gen.Worker, declared map[string]bool) (*worker, err
 		}
 		p.effectNames[effect.Destination] = append(p.effectNames[effect.Destination], effect.Name)
 	}
+	if err := m.planLists(p); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// planLists builds the statements of each declared list of the worker from the entity of the release
+// (ST-SUP-RC35-OC15), and refuses a list that checking refuses (ST-DECL-INV94), naming the worker and the list.
+func (m *model) planLists(p *worker) error {
+	byName := map[string]types.Entity{}
+	for _, e := range m.ctx.Entities {
+		byName[e.Name] = e
+	}
+	seen := map[string]bool{}
+	for _, list := range p.decl.Lists {
+		if !workerName.MatchString(list.Name) || seen[list.Name] {
+			return fmt.Errorf("worker: the worker %s declares the list %q, whose name is not a lower-case name or is given twice", p.decl.Name, list.Name)
+		}
+		seen[list.Name] = true
+		if !slices.Contains(p.decl.Writes, list.Entity) {
+			return fmt.Errorf("worker: the list %s of the worker %s reads %s, which the worker does not write (ST-DECL-INV94)", list.Name, p.decl.Name, list.Entity)
+		}
+		if _, ok := declaration.LockAtMost(byName[list.Entity]); list.Lock && !ok {
+			return fmt.Errorf("worker: the list %s of the worker %s locks rows of %s, which declares no Lock at most (ST-DECL-INV81)", list.Name, p.decl.Name, list.Entity)
+		}
+		read, lock, values, err := command.ListStatements(list, m.ctx.Entities, m.ctx.Tenancy.Key)
+		if err != nil {
+			return fmt.Errorf("worker: the worker %s: %w", p.decl.Name, err)
+		}
+		p.lists = append(p.lists, &workerList{decl: list, goName: p.goName + mixedCase(list.Name), read: read, lock: lock, values: values})
+	}
+	return nil
 }
 
 // planStagers finds, for each consuming worker, each command and worker that stages for its destination with its
@@ -379,6 +421,14 @@ func (m *model) checkNames() error {
 			taken[n] = "the worker " + w.decl.Name
 		}
 	}
+	for _, w := range m.workers {
+		for _, l := range w.lists {
+			if other, ok := taken[l.goName]; ok {
+				return fmt.Errorf("worker: %s and the list %s of the worker %s both need the Go name %s", other, l.decl.Name, w.decl.Name, l.goName)
+			}
+			taken[l.goName] = "the list " + l.decl.Name + " of the worker " + w.decl.Name
+		}
+	}
 	return nil
 }
 
@@ -450,6 +500,16 @@ func renderContract(m *model) []byte {
 		} else {
 			w.f("// %sFill is the worker slot of %s, which consumes %s: the fill gets the message as JSON, its effect name\n// and one command handle, once for each message, in the transaction of the message's tenant.\n", wk.goName, wk.decl.Name, wk.consumes)
 			w.f("type %sFill func(ctx context.Context, message json.RawMessage, effect string, h *%sHandle) error\n\n", wk.goName, wk.goName)
+		}
+	}
+	for _, wk := range m.workers {
+		for _, l := range wk.lists {
+			w.f("// %s is the list %s of the worker %s over %s, which its fill reads with List or ListForUpdate. The\n// generator builds its statements from the entity of this release, so a fill gives no SQL text (ST-SUP-RC35-OC15,\n// ST-SUP-RP10-LC38).\n", l.goName, l.decl.Name, wk.decl.Name, l.decl.Entity)
+			w.f("var %s = command.Must(command.NewList(%sEntity, command.ListSpec{Name: %q,\n\tRead: %q,\n", l.goName, l.decl.Entity, l.decl.Name, l.read)
+			if l.lock != "" {
+				w.f("\tLock: %q,\n", l.lock)
+			}
+			w.f("\tValues: []command.ListValue{%s}}))\n\n", strings.Join(l.values, ", "))
 		}
 	}
 	w.f("// Refused marks err as a declared refusal of a consuming worker's fill: the message is then parked, since a\n// delivery again gives the same refusal (ST-SUP-RP10-LC26).\nfunc Refused(err error) error { return command.Refused(err) }\n")
@@ -599,6 +659,17 @@ func renderWorker(w *writer, m *model, wk *worker) {
 	// With kafka-producer, the handle stages the change event of each write in RunWorker and RunConsumer
 	// (ST-SUP-RC35-OC14).
 	w.f("%s", command.ChangeEventsSpec(m.ctx, wk.decl.Writes))
+	if len(wk.lists) > 0 {
+		// The handle takes only the declared lists (ST-SUP-RP10-LC38).
+		w.f("\tLists: []command.AnyList{")
+		for i, l := range wk.lists {
+			if i > 0 {
+				w.f(", ")
+			}
+			w.f("%s.%s", m.pkg, l.goName)
+		}
+		w.f("},\n")
+	}
 	if len(wk.effects) > 0 {
 		w.f("\tDestinations: []command.Destination{")
 		for i, d := range wk.effects {

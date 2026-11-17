@@ -1122,6 +1122,57 @@ func TestWorker(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC15-T02 A worker fill reads and locks through its generated list, also after an added column", func(t *testing.T) {
+		prefix, ids := e.tenants(t, 1)
+		// A synced order and a done order of the tenant, which the list unsynced leaves out.
+		e.exec(`INSERT INTO orders (tenant_id, id, status, synced) VALUES ($1, $2, 'new', true), ($1, $3, 'done', false)`, ids[0],
+			"1b6f3f5e-0b7c-4b4e-9a53-3f2c1f0e2d11", "2b6f3f5e-0b7c-4b4e-9a53-3f2c1f0e2d11")
+		// The fill sends what it read and locked, or the error of the list, so a failed run ends the check.
+		listed := make(chan string, 4)
+		setBody(prefix, func(ctx context.Context, id string, h *workers.SyncPartnerOrdersHandle) (err error) {
+			var got []string
+			defer func() {
+				if err != nil {
+					got = []string{"error: " + err.Error()}
+				}
+				listed <- strings.Join(got, ",")
+			}()
+			orders, err := workers.OrderRepository(h)
+			if err != nil {
+				return err
+			}
+			read, err := orders.List(ctx, workers.SyncPartnerOrdersUnsynced, 10)
+			if err != nil {
+				return err
+			}
+			locked, err := orders.ListForUpdate(ctx, workers.SyncPartnerOrdersUnsynced, nil)
+			if err != nil {
+				return err
+			}
+			for _, rows := range [][]workers.LoadedOrder{read, locked} {
+				for _, row := range rows {
+					got = append(got, row.ID()+":"+row.Value().Status)
+				}
+			}
+			return nil
+		})
+		in := start(t, e, newClock(), "")
+		want := order + ":new," + order + ":new"
+		in.tick()
+		next(t)
+		if got := <-listed; got != want {
+			t.Fatalf("the list read and locked %q, want the one unsynced order %q", got, want)
+		}
+		// The expand step of a schema change adds a column while this release runs: its list names its columns, so
+		// it reads and locks as before.
+		e.exec(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS estimate bigint NOT NULL DEFAULT 0`)
+		in.tick()
+		next(t)
+		if got := <-listed; got != want {
+			t.Fatalf("after the added column the list read and locked %q, want %q", got, want)
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC08-T01 A panic in one worker run does not stop the service or the next run", func(t *testing.T) {
 		prefix, ids := e.tenants(t, 2)
 		var panicking atomic.Bool

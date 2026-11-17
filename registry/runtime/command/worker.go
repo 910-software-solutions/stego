@@ -54,6 +54,10 @@ type WorkerSpec[P any] struct {
 	// gives when the service has the kafka-producer component, or none: each create, update and delete of the
 	// handle in RunWorker and RunConsumer then stages its change event (ST-SUP-RC35-OC14, ST-SUP-RP10-LC36).
 	ChangeEvents []ChangeEvents
+	// Lists are the lists of the worker's declaration, which the generator emits in the worker contract from the
+	// entity of the release (ST-SUP-RC35-OC15). The worker's handle takes only these lists, so its fill gives no SQL
+	// text (ST-SUP-RP10-LC38). Each is a list of an entity in Writes.
+	Lists []AnyList
 }
 
 // Worker is one checked worker declaration.
@@ -65,6 +69,7 @@ type Worker[P any] struct {
 	bound        []authz.Relation
 	own          map[authz.Relation]bool
 	changeEvents map[string]ChangeEvents
+	lists        map[AnyList]bool
 }
 
 // NewWorker checks the declaration of one worker.
@@ -91,9 +96,13 @@ func NewWorker[P any](spec WorkerSpec[P]) (*Worker[P], error) {
 	if err != nil {
 		return nil, err
 	}
+	lists, err := checkLists(spec.Name, spec.Lists, writes)
+	if err != nil {
+		return nil, err
+	}
 	bound, own := boundRelations(spec.Relations, spec.Writes)
 	return &Worker[P]{spec: spec, principal: principal, writes: writes, destinations: destinations, bound: bound, own: own,
-		changeEvents: changeEvents}, nil
+		changeEvents: changeEvents, lists: lists}, nil
 }
 
 // TickFill is the fill of a worker with an every trigger: it gets the scheduled tick time and the handle.
@@ -165,6 +174,8 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 	}()
 	s := newState(ctx, rt, tx, t, w.principal, modeWorker, w.spec.Name, w.writes, w.destinations)
 	s.changeEvents = w.changeEvents
+	// A list value RunTime takes the due tick time (ST-SUP-RC35-OC15).
+	s.lists, s.runTime = w.lists, due
 	s.request = Request{RequestID: uuid.NewString()}
 	s.permission = w.spec.Permission
 	s.lockTimeout = DefaultLockTimeout
@@ -347,6 +358,8 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	}
 	s := newState(ctx, rt, tx, d.Tenant, w.principal, modeConsumer, w.spec.Name, w.writes, w.destinations)
 	s.changeEvents = w.changeEvents
+	// A list value RunTime takes the time at the start of the run on the runtime's clock (ST-SUP-RC35-OC15).
+	s.lists, s.runTime = w.lists, rt.clock().Now()
 	s.request = Request{RequestID: uuid.NewString(), Key: d.ID.String()}
 	s.permission = w.spec.Permission
 	s.stagingPermission = stagerPermission

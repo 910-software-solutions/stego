@@ -131,6 +131,10 @@ type Entity struct {
 	Conditions       map[string][]string `yaml:"conditions,omitempty"`
 	CleanupTargets   map[string]string   `yaml:"cleanup_targets,omitempty"`
 	CleanupOwners    []string            `yaml:"cleanup_owners,omitempty"`
+	// LockAtMost is the most rows that one locked list of the entity may lock, 1 to 1,000, or nil when the entity
+	// declares none (ST-DECL-EN02, ST-DECL-INV81). It is read as a number, so checking refuses a value that is not
+	// whole, such as 2.5, which YAML would cut to 2 for an int.
+	LockAtMost *float64 `yaml:"lock_at_most,omitempty" json:"LockAtMost,omitempty"`
 	// Tenant is owned, shared or system (ST-DECL-EN02). Omitted means owned.
 	Tenant string `yaml:"tenant,omitempty" json:"Tenant,omitempty"`
 	// Kind is data or ledger (ST-DECL-EN02). Omitted means data. A ledger entity selects the ledger component

@@ -289,7 +289,8 @@ func TestWorkers(t *testing.T) {
 	}
 
 	t.Run("ST-SUP-RP10-LC17-T01 A worker handle reads only allowed rows and writes only allowed resources", func(t *testing.T) {
-		w := e.worker("sync-partner-orders", "sync", nil, e.orders, e.underOrder, e.typedRes)
+		w := e.worker("sync-partner-orders", "sync", func(s *WorkerSpec[testProbe]) { s.Lists = []AnyList{allOrders} },
+			e.orders, e.underOrder, e.typedRes)
 		var o2 Loaded[order]
 		var listed []string
 		var writeCalls []evaluation
@@ -1253,6 +1254,189 @@ func TestConsumers(t *testing.T) {
 		after, _, _ := e.consumed.snapshot()
 		if got := after[len(before):]; len(got) != 1 || got[0] != probe.WorkerNotGranted {
 			t.Fatalf("the consumer sent the outcomes %v, want one not_granted", got)
+		}
+	})
+}
+
+// userV2 is a row of users in the release that adds the column seen_at.
+type userV2 struct {
+	ID, OrgID, Email string
+	Admin            bool
+	Rank             int64
+	SeenAt           time.Time
+}
+
+// generatedUserList gives the list statements of users with the filter org_id = $3 AND rank >= $4 and the columns
+// given, as the worker generator builds them from the entity of a release (ST-SUP-RC35-OC15): the column list of the
+// entity's Scan, the tenant as $1, the limit or the key array as $2, the filter from $3, and ORDER BY the key.
+func generatedUserList(columns, extra string) ListSpec {
+	from := `SELECT ` + columns + ` FROM public."users" WHERE "tenant_id" = $1`
+	filter := ` AND "org_id" = $3 AND "rank" >= $4` + extra
+	return ListSpec{Name: "ranked",
+		Read:   from + filter + ` ORDER BY "id" LIMIT $2`,
+		Lock:   from + ` AND "id" = ANY($2::text[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`,
+		Values: []ListValue{{Constant: "org1"}, {Constant: int64(1)}}}
+}
+
+func TestWorkerLists(t *testing.T) {
+	e := newEnv(t)
+	e.seedOrg("t1", "org1", 3)
+	e.seedUser("t1", "u1", "org1", true, 2, 1)
+	e.seedUser("t1", "u2", "org1", false, 1, 1)
+	e.seedUser("t1", "u3", "org1", false, 0, 1)
+	v1, err := NewList(e.users, generatedUserList(`"id"::text, "org_id", "email", "admin", "rank", "version", "authz_token"`, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(rows []Loaded[user]) string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.ID())
+		}
+		return strings.Join(out, ",")
+	}
+	run := func(w *Worker[testProbe], fill func(ctx context.Context, h *Handle[testProbe]) error) error {
+		return RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(fill))
+	}
+	withLists := func(lists ...AnyList) func(*WorkerSpec[testProbe]) {
+		return func(s *WorkerSpec[testProbe]) { s.Lists = lists }
+	}
+
+	t.Run("ST-SUP-RP10-LC38-T01 A generated list reads and locks before and after an added column", func(t *testing.T) {
+		w := e.worker("rank-scan", "sync", withLists(v1), e.users)
+		read := func() (string, string) {
+			var listed, locked string
+			if err := run(w, func(ctx context.Context, h *Handle[testProbe]) error {
+				r := repo(t, h, e.users)
+				rows, err := r.List(ctx, v1, 10)
+				if err != nil {
+					return err
+				}
+				listed = ids(rows)
+				rows, err = r.ListForUpdate(ctx, v1, nil)
+				locked = ids(rows)
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			return listed, locked
+		}
+		if listed, locked := read(); listed != "u1,u2" || locked != "u1,u2" {
+			t.Fatalf("before the change the list gave %q and locked %q, want u1,u2", listed, locked)
+		}
+		// The expand step of a schema change adds a column while the release before it still runs.
+		e.exec(`ALTER TABLE users ADD COLUMN seen_at timestamptz NOT NULL DEFAULT '2026-01-01T00:00:00Z'`,
+			`UPDATE users SET seen_at = '2030-01-01T00:00:00Z' WHERE id = 'u2'`)
+		if listed, locked := read(); listed != "u1,u2" || locked != "u1,u2" {
+			t.Fatalf("after the added column the list of the release before gave %q and locked %q, want u1,u2", listed, locked)
+		}
+
+		// The release that adds the field generates its Scan and its list from the same entity, with the new column
+		// and a term on the time of the run.
+		v2Spec := spec("User", "user", "users", []string{"org_id", "email", "admin", "rank", "seen_at"},
+			func(s Scanner) (userV2, Meta, error) {
+				var v userV2
+				var m Meta
+				err := s.Scan(&v.ID, &v.OrgID, &v.Email, &v.Admin, &v.Rank, &v.SeenAt, &m.Version, &m.Token)
+				m.ID = v.ID
+				return v, m, err
+			},
+			func(v userV2) []any { return []any{v.ID, v.OrgID, v.Email, v.Admin, v.Rank, v.SeenAt} },
+			func(v userV2) map[string]any { return map[string]any{"id": v.ID} })
+		v2Spec.LockAtMost = 3
+		users2, err := NewEntity(v2Spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v2Statements := generatedUserList(`"id"::text, "org_id", "email", "admin", "rank", "seen_at", "version", "authz_token"`, ` AND "seen_at" < $5`)
+		v2Statements.Values = append(v2Statements.Values, ListValue{RunTime: true})
+		v2, err := NewList(users2, v2Statements)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w2 := e.worker("rank-scan", "sync", withLists(v2), users2)
+		var seen []string
+		if err := run(w2, func(ctx context.Context, h *Handle[testProbe]) error {
+			rows, err := repo(t, h, users2).ListForUpdate(ctx, v2, nil)
+			for _, r := range rows {
+				seen = append(seen, r.ID()+"@"+r.Value().SeenAt.UTC().Format("2006"))
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// The tick of the run is in 2026, so u2, seen in 2030, is not before the time of the run.
+		if strings.Join(seen, ",") != "u1@2026" {
+			t.Fatalf("the release with the new column listed %v, want u1 with its seen_at", seen)
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC38-T02 A worker handle refuses a list that its declaration does not declare", func(t *testing.T) {
+		own, err := NewList(e.users, ListSpec{Name: "own",
+			Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users WHERE tenant_id = $1 ORDER BY id LIMIT $2`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := e.worker("rank-scan", "sync", withLists(v1), e.users)
+		var first, after error
+		err = run(w, func(ctx context.Context, h *Handle[testProbe]) error {
+			r := repo(t, h, e.users)
+			_, first = r.List(ctx, own, 10)
+			_, after = r.List(ctx, v1, 10)
+			return first
+		})
+		if !errors.Is(first, ErrInternal) || !strings.Contains(first.Error(), "rank-scan reads the list own of User, which its declaration does not declare") ||
+			!strings.Contains(first.Error(), "lists: of the worker") || !errors.Is(after, ErrInternal) || !errors.Is(err, ErrInternal) {
+			t.Fatalf("the fill's own list gave %v, then %v, and the run %v; want the internal error that names the declared lists", first, after, err)
+		}
+		// A consumer's handle refuses it the same way.
+		r := &Repository[user]{st: &state{mode: modeConsumer, action: "apply-replies"}, entity: e.users}
+		if _, err := r.listArgs(own, nil); !errors.Is(err, ErrInternal) || !strings.Contains(err.Error(), "apply-replies reads the list own") {
+			t.Fatalf("a consumer handle gave %v for an undeclared list", err)
+		}
+		// A command handle still takes a list that NewList makes, such as the generated upsert key of a collection.
+		c := &Repository[user]{st: &state{mode: modeCommand}, entity: e.users}
+		if args, err := c.listArgs(own, []any{"x"}); err != nil || len(args) != 1 {
+			t.Fatalf("a command handle gave %v, %v for its list", args, err)
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC38-T03 A declared list takes no filter values from the fill, and the run binds the time of the run", func(t *testing.T) {
+		w := e.worker("rank-scan", "sync", withLists(v1), e.users)
+		var given error
+		if err := run(w, func(ctx context.Context, h *Handle[testProbe]) error {
+			_, given = repo(t, h, e.users).List(ctx, v1, 10, "org2", int64(0))
+			return nil
+		}); !errors.Is(err, ErrInternal) || !errors.Is(given, ErrInternal) || !strings.Contains(given.Error(), "declares its filter values") {
+			t.Fatalf("filter values from the fill gave %v and the run %v, want an internal error", given, err)
+		}
+		timed, err := NewList(e.users, ListSpec{Name: "timed", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND $3::timestamptz = $4::timestamptz ORDER BY id LIMIT $2`, Values: []ListValue{{RunTime: true}, {Constant: tick}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		other := tick.Add(time.Minute)
+		count := func(due time.Time) int {
+			w := e.worker("rank-scan", "sync", withLists(timed), e.users)
+			n := -1
+			if err := RunWorker(e.ctx, e.rt, w, due, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+				rows, err := repo(t, h, e.users).List(ctx, timed, 10)
+				n = len(rows)
+				return err
+			})); err != nil {
+				t.Fatal(err)
+			}
+			return n
+		}
+		if at, next := count(tick), count(other); at != 3 || next != 0 {
+			t.Fatalf("the run of the tick listed %d rows and the run of the next tick %d; want 3 and 0", at, next)
+		}
+		if _, err := NewList(e.users, ListSpec{Name: "both", Read: v1.spec.Read, Values: []ListValue{{Constant: 1, RunTime: true}}}); err == nil {
+			t.Fatal("NewList took a value that is a constant and the time of the run")
+		}
+		if _, err := NewWorker(WorkerSpec[testProbe]{Name: "rank-scan", Permission: "sync", Interval: time.Minute, Writes: []Declared{e.orders},
+			Probe: newTestProbe, Lists: []AnyList{v1}}); err == nil || !strings.Contains(err.Error(), "does not write") {
+			t.Fatalf("NewWorker took a list of an entity that the worker does not write: %v", err)
 		}
 	})
 }

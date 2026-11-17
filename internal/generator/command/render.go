@@ -410,3 +410,102 @@ func KeyListRead(name string, entities []types.Entity, tenantKey string, keys []
 	}
 	return fmt.Sprintf("SELECT %s FROM public.%s WHERE %s ORDER BY \"id\" LIMIT $2", e.columns(), quote(e.table), strings.Join(where, " AND ")), nil
 }
+
+// listOperators are the SQL operators of the list term operators (ST-DECL-INV94).
+var listOperators = map[string]string{types.ListEquals: "=", types.ListNotEquals: "<>", types.ListLessThan: "<",
+	types.ListLessThanOrEquals: "<=", types.ListGreaterThan: ">", types.ListGreaterThanOrEquals: ">="}
+
+// ListStatements gives the Read and Lock statements of the declared list of a worker over the entity of the release
+// (ST-SUP-RC35-OC15), and the Go source of its command.ListValue values in the order of their parameters. Both
+// statements return the column list of the entity's generated Scan and take the tenant as $1. Read takes the most
+// rows as $2; Lock takes the IDs to lock as the text array $2, applies the filter again, and locks FOR NO KEY UPDATE.
+// Each term with a value binds it as a parameter from $3: a constant, or the time of the run for now; is_set binds
+// none. Both order by the key, so a schema step that adds a column changes the list with the release and no fill
+// gives SQL text. Lock is empty for a list that does not lock.
+func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey string) (read, lock string, values []string, err error) {
+	byName := map[string]types.Entity{}
+	for _, e := range entities {
+		byName[e.Name] = e
+	}
+	decl, ok := byName[list.Entity]
+	if !ok {
+		return "", "", nil, fmt.Errorf("command: the list %s reads the entity %s, which is not declared", list.Name, list.Entity)
+	}
+	e, err := planEntity(decl, byName, tenantKey, Relations{})
+	if err != nil {
+		return "", "", nil, fmt.Errorf("command: the entity %s: %w", list.Entity, err)
+	}
+	if len(list.Filter) == 0 {
+		return "", "", nil, fmt.Errorf("command: the list %s has no filter term", list.Name)
+	}
+	var terms []string
+	for _, term := range list.Filter {
+		var field *entityField
+		for _, f := range e.fields {
+			if f.decl.Name == term.Field {
+				field = f
+			}
+		}
+		if field == nil {
+			return "", "", nil, fmt.Errorf("command: the list %s names the field %s, which %s does not declare", list.Name, term.Field, list.Entity)
+		}
+		column := quote(field.decl.ColumnName())
+		if term.Op == types.ListIsSet {
+			terms = append(terms, column+" IS NOT NULL")
+			continue
+		}
+		op, ok := listOperators[term.Op]
+		if !ok {
+			return "", "", nil, fmt.Errorf("command: the list %s has the operator %q", list.Name, term.Op)
+		}
+		value, err := listValue(field.decl, term)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("command: the list %s, the term on %s: %w", list.Name, term.Field, err)
+		}
+		values = append(values, value)
+		terms = append(terms, fmt.Sprintf("%s %s $%d", column, op, len(values)+2))
+	}
+	from := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s = $1", e.columns(), quote(e.table), quote(tenantKey))
+	filter := " AND " + strings.Join(terms, " AND ")
+	read = from + filter + ` ORDER BY "id" LIMIT $2`
+	if list.Lock {
+		lock = from + ` AND "id" = ANY($2::text[]::uuid[])` + filter + ` ORDER BY "id" FOR NO KEY UPDATE`
+	}
+	return read, lock, values, nil
+}
+
+// listValue gives the Go source of the command.ListValue of one term: the time of the run for now, or the constant
+// as a value of the Go type of the field. A timestamp constant is RFC 3339 text, which PostgreSQL reads as the
+// column's type.
+func listValue(field types.Field, term types.ListTerm) (string, error) {
+	if term.Now {
+		if field.Type != types.FieldTypeTimestamp {
+			return "", fmt.Errorf("now fits only a timestamp field")
+		}
+		return "{RunTime: true}", nil
+	}
+	switch v := term.Value.(type) {
+	case string:
+		if field.Type == types.FieldTypeString || field.Type == types.FieldTypeEnum || field.Type == types.FieldTypeRef || field.Type == types.FieldTypeTimestamp {
+			return fmt.Sprintf("{Constant: %q}", v), nil
+		}
+	case bool:
+		if field.Type == types.FieldTypeBool {
+			return fmt.Sprintf("{Constant: %t}", v), nil
+		}
+	case int:
+		switch field.Type {
+		case types.FieldTypeInt32:
+			return fmt.Sprintf("{Constant: int32(%d)}", v), nil
+		case types.FieldTypeInt64:
+			return fmt.Sprintf("{Constant: int64(%d)}", v), nil
+		case types.FieldTypeFloat, types.FieldTypeDouble:
+			return fmt.Sprintf("{Constant: float64(%d)}", v), nil
+		}
+	case float64:
+		if field.Type == types.FieldTypeFloat || field.Type == types.FieldTypeDouble {
+			return fmt.Sprintf("{Constant: float64(%v)}", v), nil
+		}
+	}
+	return "", fmt.Errorf("the value %v is not a constant of the field type %s", term.Value, field.Type)
+}

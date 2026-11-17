@@ -3,6 +3,7 @@ package declaration
 import (
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/jsell-rh/stego/internal/types"
@@ -105,6 +106,36 @@ func validateEntityTenants(entities []types.Entity) []ValidationError {
 		})
 	}
 	return faults
+}
+
+// validateLockAtMost enforces ST-DECL-INV81: the Lock at most of an entity, when it declares one, is a whole number
+// from 1 to 1,000.
+func validateLockAtMost(entities []types.Entity) []ValidationError {
+	var faults []ValidationError
+	for i, entity := range entities {
+		if _, ok := LockAtMost(entity); ok || entity.LockAtMost == nil {
+			continue
+		}
+		found := strconv.FormatFloat(*entity.LockAtMost, 'f', -1, 64)
+		faults = append(faults, ValidationError{
+			Category: "field-type", Rule: "entity-lock-at-most", Path: entityPath(i) + ".lock_at_most", Found: found,
+			Message: fmt.Sprintf("entity %q has the Lock at most %s; give a whole number from 1 to 1000", entity.Name, found),
+		})
+	}
+	return faults
+}
+
+// LockAtMost gives the Lock at most of the entity and true when it declares a whole number from 1 to 1,000
+// (ST-DECL-INV81), and false otherwise.
+func LockAtMost(entity types.Entity) (int, bool) {
+	if entity.LockAtMost == nil {
+		return 0, false
+	}
+	v := *entity.LockAtMost
+	if v < 1 || v > 1000 || v != float64(int(v)) {
+		return 0, false
+	}
+	return int(v), true
 }
 
 // validateTenantlessPaths enforces ST-DECL-INV20: a controller declares tenants each, a collection does not read
