@@ -358,3 +358,57 @@ func TestOneOfGroups(t *testing.T) {
 		}
 	})
 }
+
+func TestNeedVariable(t *testing.T) {
+	t.Run("ST-SUP-UC01-R09-T04 The registry refuses a need variable or value on the wrong kind, of a variable that the component does not state or that is secret, or that is not one text setting", func(t *testing.T) {
+		component := `kind: component
+name: env-a
+version: 1.0.0
+stage: ga
+config:
+  issuer: {type: string}
+  key: {type: string, secret: true}
+  count: {type: integer}
+requires: []
+provides: []
+slots: []
+architecture: {layer: handler, flow: "Serves the test.", ports: {}}
+environment:
+  - name: ENV_A_ISSUER
+    type: url
+    required: false
+    description: "The issuer of the tokens."
+    secret: false
+  - name: ENV_A_TOKEN
+    type: string
+    required: false
+    description: "The token of the test."
+    secret: true
+needs:
+  - {kind: identity issuer, name: "{service}-issuer", variable: ENV_A_ISSUER, value: "{settings.issuer}"}
+`
+		parsed, err := ParseComponentFromBytes([]byte(component), "env-a/component.yaml")
+		if err != nil {
+			t.Fatalf("an issuer need with a variable and a value is refused: %v", err)
+		}
+		if need := parsed.Needs[0]; need.Variable != "ENV_A_ISSUER" || need.Value != "{settings.issuer}" {
+			t.Fatalf("the need holds the variable %q and the value %q", need.Variable, need.Value)
+		}
+		const need = `  - {kind: identity issuer, name: "{service}-issuer", variable: ENV_A_ISSUER, value: "{settings.issuer}"}`
+		for _, c := range []struct{ name, need, want string }{
+			{"a variable on an egress", `  - {kind: egress, name: "{service}-keys", port: 443, variable: ENV_A_ISSUER}`, "the egress need has no field variable"},
+			{"a value on a topic", `  - {kind: topic, name: "{service}-events", value: "{settings.issuer}"}`, "the topic need has no field value"},
+			{"a variable the component does not state", strings.Replace(need, "variable: ENV_A_ISSUER", "variable: ENV_A_OTHER", 1), "not an environment variable of the component"},
+			{"a secret variable", strings.Replace(need, "variable: ENV_A_ISSUER", "variable: ENV_A_TOKEN", 1), "is secret"},
+			{"a fixed value", strings.Replace(need, `value: "{settings.issuer}"`, `value: "https://sso.example.com"`, 1), "not one {settings.<key>}"},
+			{"a secret setting", strings.Replace(need, "{settings.issuer}", "{settings.key}", 1), "not one {settings.<key>}"},
+			{"a setting that is not text", strings.Replace(need, "{settings.issuer}", "{settings.count}", 1), "not one {settings.<key>}"},
+			{"a setting the component has not", strings.Replace(need, "{settings.issuer}", "{settings.gone}", 1), "not one {settings.<key>}"},
+		} {
+			_, err := ParseComponentFromBytes([]byte(strings.Replace(component, need, c.need, 1)), "env-a/component.yaml")
+			if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "env-a") {
+				t.Errorf("%s: got %v, want a refusal that names the component and says %q", c.name, err, c.want)
+			}
+		}
+	})
+}

@@ -69,6 +69,12 @@ A port is a number from 1 to 65535. The verbs are `get`, `list`, `watch`, `creat
   from the environment file, so a value of it under `configuration` or `secrets` is not a second value of the group:
   the check prints a notice that tells you to remove it. The same applies to `STEGO_WORKER_DATABASE_URL`,
   `STEGO_RELAY_DATABASE_URL` and `STEGO_MIGRATION_DATABASE_URL`.
+- A topic or an identity issuer requirement can name the `variable` that carries its value, such as
+  `STEGO_KAFKA_TOPIC` for the topic of `kafka-producer`. When the file gives that variable under `configuration`,
+  its value must be equal to the value of the need entry, such as `topics.<name>.topic`. Another value is the wrong
+  type. The `*_FILE` form of the variable is not compared, because the check reads no file.
+- An identity issuer requirement holds the `value` that the declaration fixes, such as the `issuer` setting of
+  `oidc-auth`. The `issuer` of its entry must be equal to that value. Another issuer is the wrong type.
 - An entry that no requirement and no listed variable names is listed as unused. It does not fail the check.
 
 `deploy/environment-variables.md` lists each environment variable with its type, its default, its allowed values and

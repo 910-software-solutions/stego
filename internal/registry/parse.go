@@ -181,6 +181,9 @@ func checkNeeds(component *Component) error {
 		if need.Engine != "" && (len(need.Engine) > maxNeedWord || !needWord.MatchString(need.Engine)) {
 			return fault("engine", "the engine %q is not an engine name of at most %d letters, digits, '-' or '_'", need.Engine, maxNeedWord)
 		}
+		if err := checkNeedVariable(component, need); err != nil {
+			return err
+		}
 		if need.Port != 0 && (need.Port < 1 || need.Port > 65535) {
 			return fault("port", "the port %d is not a port number from 1 to 65535", need.Port)
 		}
@@ -200,6 +203,46 @@ func checkNeeds(component *Component) error {
 		}
 		if need.Level != "" && !slices.Contains([]string{"privileged", "baseline", "restricted"}, need.Level) {
 			return fault("level", "the level %q is not one of privileged, baseline, restricted", need.Level)
+		}
+	}
+	return nil
+}
+
+// checkNeedVariable holds the variable and the value of a need (ST-SUP-EN09 field Platform needs, ST-DLV-Q26 (A)):
+// only a topic or an identity issuer names a variable, which is a variable of the component that is not secret; only
+// an identity issuer holds a value, which is one {settings.<key>} of a text setting of the component that is not
+// secret.
+func checkNeedVariable(component *Component, need Need) error {
+	fault := func(field, format string, args ...any) error {
+		return &NeedError{Component: component.Name, Need: need.Name, Field: field, Reason: fmt.Sprintf(format, args...)}
+	}
+	if need.Variable != "" {
+		if need.Kind != "topic" && need.Kind != "identity issuer" {
+			return fault("variable", "the %s need has no field variable; only a topic or an identity issuer names the variable that carries its value", need.Kind)
+		}
+		var found *EnvironmentVariable
+		if component.Environment != nil {
+			for i, variable := range *component.Environment {
+				if variable.Name == need.Variable {
+					found = &(*component.Environment)[i]
+				}
+			}
+		}
+		if found == nil {
+			return fault("variable", "the variable %s is not an environment variable of the component", need.Variable)
+		}
+		if found.IsSecret() {
+			return fault("variable", "the variable %s is secret; the value of a %s is not secret", need.Variable, need.Kind)
+		}
+	}
+	if need.Value != "" {
+		if need.Kind != "identity issuer" {
+			return fault("value", "the %s need has no field value; only an identity issuer holds the issuer that the declaration fixes", need.Kind)
+		}
+		key, isSetting := settingOf(need.Value)
+		setting, declared := component.Config[key]
+		if !isSetting || !declared || setting.Secret || setting.Type != "string" {
+			return fault("value", "the value %q is not one {settings.<key>} of a text setting of the component that is not secret", need.Value)
 		}
 	}
 	return nil

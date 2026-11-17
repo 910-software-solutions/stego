@@ -186,6 +186,11 @@ type Need struct {
 	ResourceNames []string `yaml:"resource_names,omitempty"`
 	// Level is the pod security level: privileged, baseline or restricted.
 	Level string `yaml:"level,omitempty"`
+	// Variable is the environment variable of the component whose value is the value of a topic or an identity
+	// issuer need, and Value is one {settings.<key>} that gives the issuer that the declaration fixes (ST-SUP-EN09
+	// field Platform needs, ST-DLV-Q26 (A)).
+	Variable string `yaml:"variable,omitempty"`
+	Value    string `yaml:"value,omitempty"`
 }
 
 // Mixin adds components and slots to an archetype. A mixin with AliasOf is a deprecated alias: binding it binds

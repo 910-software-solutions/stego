@@ -54,7 +54,7 @@ environment:
   - name: STEGO_KAFKA_TOPIC
     type: string
     required: false
-    description: "The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place: the topic of the topic need. The service needs one, as with none each message goes to the topic of its event type."
+    description: "The topic of every message, or STEGO_KAFKA_TOPIC_FILE in its place. Give one of the two, with the topic of the topic need: stego env check refuses another topic."
     secret: false
     one_of: kafka-topic
     example: "orders.changes"
@@ -124,5 +124,5 @@ environment:
 # The platform needs (ST-SUP-EN09): the topic of the change events and the network path to the brokers on their TLS
 # port.
 needs:
-  - {kind: topic, name: "{service}-events"}
+  - {kind: topic, name: "{service}-events", variable: STEGO_KAFKA_TOPIC}
   - {kind: egress, name: "{service}-kafka", port: 9093}
