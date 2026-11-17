@@ -862,7 +862,7 @@ func accessForm(w formWriter, m *ArchitectureModel) {
 	for _, g := range grantGlyphs {
 		keys = append(keys, g.glyph+" "+g.meaning)
 	}
-	keys = append(keys, mayHoldGlyph+" in a cell: may hold: a limit cut the grant paths of the permission short, so this role may hold it by a path that the model does not name")
+	keys = append(keys, mayHoldGlyph+" in a cell: may hold: a limit cut the grant paths of the permission short, or the model holds none of them, so this role may hold it by a path that the model does not name")
 	keys = append(keys, "⤒ under a head: the ancestors in the path that the operation reads first; in a cell: this role alone does not grant the read of an ancestor, so the caller also needs that read")
 	w.key(keys...)
 	perms := map[string]*ArchPermission{}

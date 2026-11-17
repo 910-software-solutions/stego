@@ -1087,6 +1087,11 @@ func TestArchitectureView(t *testing.T) {
 			!strings.Contains(textOf(heads[0]), "⚠ incomplete: the model holds no grant path of it") {
 			t.Error("the head of docs.read does not say that its grants are incomplete")
 		}
+		if len(p.all(func(n *html.Node) bool {
+			return n.Data == "li" && strings.HasPrefix(textOf(n), mayHoldGlyph+" in a cell: may hold: ") && strings.Contains(textOf(n), "or the model holds none of them")
+		})) == 0 {
+			t.Error("the key does not say that a cell may hold a permission that the model holds no grant path of")
+		}
 		cells := p.all(func(n *html.Node) bool { return n.Data == "td" && attrOf(n, "data-check") == check })
 		if len(cells) != len(model.Access.Roles) {
 			t.Fatalf("docs.read has %d cells for %d roles", len(cells), len(model.Access.Roles))
