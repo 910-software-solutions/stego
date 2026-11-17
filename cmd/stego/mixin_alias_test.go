@@ -3,6 +3,7 @@ package main
 import (
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -229,3 +230,70 @@ func TestEventPublisherIsADeprecatedAlias(t *testing.T) {
 
 // declarationVersion is the line of the generated code that holds the digest of the declaration's text.
 var declarationVersion = regexp.MustCompile(`DeclarationVersion = "[0-9a-f]{64}"`)
+
+func TestScopedAccessWarning(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC24-T14 stego validate and stego plan warn about each permission of a scoped collection that does not need the read of its parent", func(t *testing.T) {
+		top, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		root := strings.TrimSpace(string(top))
+		env := []string{"STEGO_REGISTRY=" + filepath.Join(root, "registry"), "GOWORK=off", "GOTOOLCHAIN=local",
+			"PATH=" + filepath.Dir(pinnedGo(t)) + string(os.PathListSeparator) + os.Getenv("PATH")}
+		project := copyFolder(t, filepath.Join(root, "examples", "user-management"))
+		// warnings gives the lines of the warning scoped-access in the output of the command.
+		warnings := func(args ...string) []string {
+			t.Helper()
+			run := stegoIn(t, project, env, args...)
+			if run.code != 0 {
+				t.Fatalf("stego %s: exit %d\n%s%s", strings.Join(args, " "), run.code, run.stdout, run.stderr)
+			}
+			var lines []string
+			for _, line := range strings.Split(run.stdout, "\n") {
+				if strings.Contains(line, "[scoped-access]") {
+					lines = append(lines, strings.TrimSpace(line))
+				}
+			}
+			return lines
+		}
+		// The shipped schema states the intersections, so it gives no warning.
+		for _, command := range []string{"validate", "plan"} {
+			if got := warnings(command); len(got) != 0 {
+				t.Errorf("stego %s of the example gave the warnings %v, want none", command, got)
+			}
+		}
+		// The schema of an earlier example: an owner of a member reaches it without a view of its organization.
+		path := filepath.Join(project, "authz", "schema.zed")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := strings.NewReplacer("permission view = organization->view", "permission view = owner + organization->view",
+			"permission edit = (owner + organization->edit) & organization->view", "permission edit = owner + organization->edit").Replace(string(data))
+		if old == string(data) {
+			t.Fatal("the example schema has no intersection of member to remove")
+		}
+		if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		for _, command := range []string{"validate", "plan"} {
+			got := warnings(command)
+			want := map[string]string{
+				"entities[1].permissions.read":   "permission view = (owner + organization->view) & organization->view",
+				"entities[1].permissions.update": "permission edit = (owner + organization->edit) & organization->view",
+			}
+			if len(got) != len(want) {
+				t.Errorf("stego %s gave the warnings %v, want one for the view and one for the edit of member", command, got)
+			}
+			for at, form := range want {
+				found := false
+				for _, line := range got {
+					found = found || (strings.Contains(line, "] "+at+":") && strings.Contains(line, "member") && strings.Contains(line, "Organization") && strings.Contains(line, form))
+				}
+				if !found {
+					t.Errorf("stego %s gave no warning at %s that names member and Organization with %q: %v", command, at, form, got)
+				}
+			}
+		}
+	})
+}
