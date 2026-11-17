@@ -584,7 +584,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	var requirements []byte
 	if input.WriteRequirements != nil {
-		files, err := requirementsFiles(input.WriteRequirements, svcDecl, componentNames, components, input.Generators, resolved.Contexts)
+		files, err := requirementsFiles(input.WriteRequirements, svcDecl, componentNames, components, input.Generators, resolved.Contexts, runtimePackages(allFiles, pin))
 		if err != nil {
 			return nil, err
 		}
@@ -960,7 +960,7 @@ type ComponentNeeds struct {
 // generated code or a fill. A component whose generator gives variables from its declaration entries, such as
 // runtime-configuration, gives them through gen.VariableDeclarer.
 func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclaration, names []string, components map[string]*registry.Component,
-	generators map[string]gen.Generator, contexts map[string]gen.Context) ([]gen.File, error) {
+	generators map[string]gen.Generator, contexts map[string]gen.Context, imported map[string]bool) ([]gen.File, error) {
 	needs := make([]ComponentNeeds, 0, len(names))
 	for _, name := range names {
 		component := components[name]
@@ -973,7 +973,7 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		if err := checkSettingDefaults(component, settings); err != nil {
 			return nil, err
 		}
-		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: declaredModeVariables(component.Variables(), svcDecl.Modes), Settings: settings}
+		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: readVariables(declaredModeVariables(component.Variables(), svcDecl.Modes), imported), Settings: settings}
 		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
 			declared, err := declarer.DeclaredVariables(contexts[name])
 			if err != nil {
@@ -988,6 +988,15 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		return nil, fmt.Errorf("writing the platform requirements %s: %w", RequirementsFile, err)
 	}
 	return []gen.File{{Path: RequirementsFile, Content: data.Requirements}, {Path: ReferenceFile, Content: data.Reference}}, nil
+}
+
+// readVariables gives the variables that the generated service reads: each one whose Read with names no package, or
+// a package of the runtime library that the generated code imports (ST-SUP-Q161, ST-DLV-UC01-R06). A browser-service
+// that imports no package of the runtime is not asked for the connection strings that only the runtime reads.
+func readVariables(variables []registry.EnvironmentVariable, imported map[string]bool) []registry.EnvironmentVariable {
+	return slices.DeleteFunc(slices.Clone(variables), func(variable registry.EnvironmentVariable) bool {
+		return variable.ReadWith != "" && !imported[variable.ReadWith]
+	})
 }
 
 // checkSettingDefaults holds each default of a variable that is {settings.<key>} to the variable's type and allowed

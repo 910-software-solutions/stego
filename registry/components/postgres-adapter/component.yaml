@@ -1,6 +1,6 @@
 kind: component
 name: postgres-adapter
-version: 6.7.1
+version: 6.8.0
 stage: ga
 output_namespace: internal/storage
 
@@ -81,6 +81,7 @@ environment:
     description: "The PostgreSQL connection string of the worker role, or STEGO_WORKER_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
     secret: true
     one_of: worker-database-url
+    read_with: service
     secret_source: {name: "{service}-database", key: worker-url}
   - name: STEGO_WORKER_DATABASE_URL_FILE
     type: path
@@ -88,6 +89,7 @@ environment:
     description: "The file that holds the PostgreSQL connection string of the worker role. Give it or STEGO_WORKER_DATABASE_URL, not the two."
     secret: false
     one_of: worker-database-url
+    read_with: service
     example: "/etc/stego/database/worker-url"
   - name: STEGO_RELAY_DATABASE_URL
     type: string
@@ -95,6 +97,7 @@ environment:
     description: "The PostgreSQL connection string of the relay role, or STEGO_RELAY_DATABASE_URL_FILE in its place, not the two. The process does not start when the two have no value."
     secret: true
     one_of: relay-database-url
+    read_with: service
     secret_source: {name: "{service}-database-relay", key: url}
   - name: STEGO_RELAY_DATABASE_URL_FILE
     type: path
@@ -102,6 +105,7 @@ environment:
     description: "The file that holds the PostgreSQL connection string of the relay role. Give it or STEGO_RELAY_DATABASE_URL, not the two."
     secret: false
     one_of: relay-database-url
+    read_with: service
     example: "/etc/stego/database/relay-url"
   - name: STEGO_DATABASE_MAX_OPEN_CONNECTIONS
     type: integer
