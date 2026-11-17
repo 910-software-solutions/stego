@@ -112,6 +112,15 @@ func TestGRPCMethods(t *testing.T) {
 		svc.Queries = nil
 		refused(t, check(t, svc, map[string]*registry.Component{}), "orders.v1.OrderService/ReserveAndCharge", "needs the grpc-application component")
 	})
+	t.Run("ST-DECL-INV73-T A gRPC method that is unknown, of the wrong kind or named twice is refused: a method of a component set that did not resolve gives no method fault", func(t *testing.T) {
+		// The active component set is not known when its ports do not resolve (W8-B2): the port fault names the
+		// cause, and the check does not say that grpc-application is missing.
+		for _, f := range declaration.ValidateComposition(declared(), declaration.Facts{ComponentsUnresolved: true}) {
+			if f.Rule == "command-method" || f.Rule == "query-method" {
+				t.Fatalf("the check of an unresolved component set gave the method fault %+v", f)
+			}
+		}
+	})
 }
 
 func TestGRPCMethodsServed(t *testing.T) {

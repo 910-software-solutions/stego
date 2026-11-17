@@ -326,6 +326,11 @@ type fixture struct {
 	requests      []http.Header
 	paths         []string
 	status        int
+	// hold, when set, keeps each read with Authz-Revocation-After at the API, as a pending revocation does, until it
+	// is closed; held gets one value for each read that it keeps. revocationLocation, when set, is the
+	// Authz-Revocation-Location that the API answers.
+	hold, held         chan struct{}
+	revocationLocation string
 }
 
 func setup(t *testing.T) *fixture {
@@ -338,11 +343,24 @@ func setup(t *testing.T) *fixture {
 		f.requests = append(f.requests, r.Header.Clone())
 		f.paths = append(f.paths, r.URL.RequestURI())
 		status := f.status
+		hold, held, revocationLocation := f.hold, f.held, f.revocationLocation
 		f.mu.Unlock()
+		if hold != nil && r.Header.Get("Authz-Revocation-After") != "" {
+			held <- struct{}{}
+			<-hold
+		}
+		if revocationLocation == "" {
+			revocationLocation = "/authz/revocations/0b8a9f1e-3c55-4c1e-9d55-6c3a0f6f7a10"
+		}
 		w.Header().Set("Set-Cookie", "upstream=secret")
 		w.Header().Set("X-Private", "private")
 		w.Header().Set("ETag", `"record-version"`)
 		w.Header().Set("Content-Type", "application/json")
+		// The response headers of the STEGO API contract: an idempotent replay and the revocation of a write.
+		w.Header().Set("Idempotent-Replayed", "true")
+		w.Header().Set("Authz-Revocation", "pending")
+		w.Header().Set("Authz-Revocation-Location", revocationLocation)
+		w.Header().Set("Preference-Applied", "wait=4")
 		w.WriteHeader(status)
 		io.WriteString(w, `{"id":"record-1","name":"one"}`)
 	}))

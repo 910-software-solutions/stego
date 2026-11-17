@@ -133,6 +133,33 @@ in. It does not include OAuth tokens. Mutations require the exact Origin and
 `X-CSRF-Token` headers. The API prefix forwards the user's server-held access
 token to the configured API. It does not accept bearer tokens from the browser.
 
+The API prefix sends to the API only the browser request headers of this
+list. It sends each one only when the browser gives it one time, and refuses
+a request with two values of one with 400. It sends no other browser header,
+such as `Cookie`, `Origin`, `X-CSRF-Token` or `traceparent`.
+
+| Request header | Why the API needs it |
+|---|---|
+| `Accept`, `Content-Type` | The media type of the request and of the answer. |
+| `If-Match`, `If-None-Match` | The version checks of a write and of a read. |
+| `Idempotency-Key` | Each STEGO command requires it. Send one new key for each command, and the same key when you send the command again. |
+| `Authz-Revocation-After` | A read after your own write waits for the revocation that the write gave in `Authz-Revocation-Location`. Give that value as it is. |
+| `Prefer` | `wait=<seconds>` sets the longest wait of that read. The API prefix sends only this one preference, and drops each other preference. |
+
+A read with `Authz-Revocation-After` waits at most 4 seconds, one second less
+than the request timeout of the API prefix: the API prefix sends `wait=4`
+when the browser gives no wait or a longer one. At most 4 such reads run at
+one time for the whole service, so that they never take the capacity of the
+other requests. The next one gets 503 with `Retry-After: 1`.
+
+The API prefix returns to the browser only the API response headers
+`Content-Type`, `ETag`, `Retry-After`, `Idempotent-Replayed`,
+`Authz-Revocation` and `Preference-Applied`, a `Location` under the API
+prefix, and an `Authz-Revocation-Location` only in the form
+`/authz/revocations/<uuid>`. That value is not a path under the API prefix:
+give it back in `Authz-Revocation-After`. It returns no `Set-Cookie` header of
+the API.
+
 The component does not supply domain pages, API authorization rules, identity
 provider administration, ingress certificates, or production database setup.
 See the runtime contract (a retired record, in git history) for limits and

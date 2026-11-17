@@ -409,10 +409,8 @@ func (g *Generator) generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		}
 		files = append(files, gen.File{Path: path.Join(ctx.OutputNamespace, name), Content: content})
 	}
-	client, err := httpclient.Render(path.Join(ctx.OutputNamespace, "client"), path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["otel-tracing"]), httpclient.FollowLinks)
-	if g.LocalApplicationPort != 0 {
-		client, err = httpclient.RenderLocalApplication(path.Join(ctx.OutputNamespace, "client"), path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["otel-tracing"]), g.LocalApplicationPort, httpclient.FollowLinks)
-	}
+	// The client of the API proxy sends the Idempotency-Key of a command (W8-B3).
+	client, err := httpclient.RenderProxy(path.Join(ctx.OutputNamespace, "client"), path.Join(ctx.ModuleName, ctx.OutDirName, ctx.PeerNamespaces["otel-tracing"]), g.LocalApplicationPort, httpclient.FollowLinks)
 	if err != nil {
 		return nil, nil, err
 	}
