@@ -196,12 +196,22 @@ func TestPipelineApply(t *testing.T) {
 		if _, err := delivery.LoadPipeline(delivery.Konflux, data); err != nil {
 			t.Fatalf("the written PipelineRun does not read back: %v", err)
 		}
-		for _, edit := range [][2]string{{`value: "true"`, `value: "false"`}, {"value: Containerfile", "value: Dockerfile"}} {
+		for _, edit := range [][2]string{
+			{`value: "true"`, `value: "false"`},
+			{"value: Containerfile", "value: Dockerfile"},
+			{`{"type": "gomod", "path": "."}`, `{"type": "gomod", "path": "other"}`},
+			{"value: docker-build", "value: other-build"},
+			// A second hermetic parameter after the first, which a reader that takes the last value would read.
+			{"    - name: hermetic\n      value: \"true\"\n", "    - name: hermetic\n      value: \"true\"\n    - name: hermetic\n      value: \"false\"\n"},
+		} {
 			if !bytes.Contains(data, []byte(edit[0])) {
 				t.Fatalf("the PipelineRun holds no %s:\n%s", edit[0], data)
 			}
-			if _, err := delivery.LoadPipeline(delivery.Konflux, bytes.Replace(data, []byte(edit[0]), []byte(edit[1]), 1)); err == nil {
+			_, err := delivery.LoadPipeline(delivery.Konflux, bytes.Replace(data, []byte(edit[0]), []byte(edit[1]), 1))
+			if err == nil {
 				t.Errorf("a PipelineRun with %s instead of %s reads back", edit[1], edit[0])
+			} else if strings.Contains(err.Error(), "yaml:") {
+				t.Errorf("the edit %q is not valid YAML, so it proves no check: %v", edit[1], err)
 			}
 		}
 	})

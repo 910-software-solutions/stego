@@ -192,6 +192,18 @@ type pipelineRun struct {
 	} `yaml:"spec"`
 }
 
+// duplicateParam tells whether a parameter list gives one name more than once.
+func duplicateParam(params []tektonParam) bool {
+	seen := map[string]bool{}
+	for _, param := range params {
+		if seen[param.Name] {
+			return true
+		}
+		seen[param.Name] = true
+	}
+	return false
+}
+
 // paramValue gives the value of the named parameter.
 func paramValue(params []tektonParam, name string) string {
 	for _, param := range params {
@@ -233,6 +245,12 @@ func LoadPipeline(provider string, data []byte) (Pipeline, error) {
 		var run pipelineRun
 		if err := decodeStrict(data, MaxRequirementsBytes, &run); err != nil {
 			return Pipeline{}, err
+		}
+		// Each parameter is given once, so that a second entry of a name cannot change what Tekton reads, and the
+		// bundle resolver gives the docker-build pipeline (security review of #401, L4).
+		if duplicateParam(run.Spec.PipelineRef.Params) || duplicateParam(run.Spec.Params) ||
+			paramValue(run.Spec.PipelineRef.Params, "name") != "docker-build" || paramValue(run.Spec.PipelineRef.Params, "kind") != "pipeline" {
+			return Pipeline{}, fmt.Errorf("the PipelineRun does not give each parameter once and resolve the docker-build pipeline of the bundle")
 		}
 		bundle, checks := paramValue(run.Spec.PipelineRef.Params, "bundle"), paramValue(run.Spec.Params, "stego-checks")
 		if run.APIVersion != "tekton.dev/v1" || run.Kind != "PipelineRun" || run.Spec.PipelineRef.Resolver != "bundles" || !digestPin.MatchString(bundle) || !digestPin.MatchString(checks) ||
