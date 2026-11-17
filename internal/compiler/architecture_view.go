@@ -462,12 +462,20 @@ func flowForm(w formWriter, m *ArchitectureModel) {
 	for _, c := range m.Components {
 		layer[c.ID] = c.Layer
 	}
-	if len(m.Actions) > 0 {
-		var names []string
-		for _, a := range m.Actions {
+	actions := map[string]ArchAction{}
+	flowOf := map[string]bool{}
+	for _, f := range m.Flows {
+		flowOf[f.Operation] = true
+	}
+	var names []string
+	for _, a := range m.Actions {
+		actions[a.ID] = a
+		if !flowOf[a.ID] {
 			names = append(names, a.Name+" ("+a.Kind+")")
 		}
-		w.tag("p", " class=\"question\" id=\"form-no-flow-actions\"", "The model has a request flow only for each operation of a collection. These commands, queries and workers have no flow here; the access matrix shows what each one checks: "+strings.Join(names, ", ")+".")
+	}
+	if len(names) > 0 {
+		w.tag("p", " class=\"question\" id=\"form-no-flow-actions\"", "The model has a request flow for each operation of a collection and for each declared command, query and worker. These actions of the platform have no flow here; the access matrix shows what each one checks: "+strings.Join(names, ", ")+".")
 	}
 	for _, f := range m.Flows {
 		o := ops[f.Operation]
@@ -475,6 +483,8 @@ func flowForm(w formWriter, m *ArchitectureModel) {
 		title := shortID(f.Operation)
 		if o.Method != "" {
 			title = o.Method + " " + o.Path + " (" + title + ")"
+		} else if a, isAction := actions[f.Operation]; isAction {
+			title = a.Kind + " " + a.Name
 		}
 		w.h3(title)
 		w.raw("<ol class=\"flowlist\">")

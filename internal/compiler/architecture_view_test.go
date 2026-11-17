@@ -132,18 +132,26 @@ func TestArchitectureView(t *testing.T) {
 			}
 		}
 		flows := within(page.byID("form-flows"), func(n *html.Node) bool { return attrOf(n, "class") == "flow" })
-		if len(flows) != len(m.Operations) {
-			t.Fatalf("the view has %d request flows for %d operations", len(flows), len(m.Operations))
+		if len(flows) != len(m.Flows) {
+			t.Fatalf("the view has %d request flows for %d flows of the model", len(flows), len(m.Flows))
 		}
-		for i, o := range m.Operations {
-			if attrOf(flows[i], "data-id") != o.Flow {
-				t.Errorf("flow %d is %s, not the flow %s of %s", i, attrOf(flows[i], "data-id"), o.Flow, o.ID)
+		for i, f := range m.Flows {
+			if attrOf(flows[i], "data-id") != f.ID {
+				t.Errorf("flow %d is %s, not the flow %s", i, attrOf(flows[i], "data-id"), f.ID)
 			}
 		}
+		for _, o := range m.Operations {
+			if !slices.ContainsFunc(m.Flows, func(f ArchFlow) bool { return f.ID == o.Flow }) {
+				t.Errorf("the operation %s has no flow %s", o.ID, o.Flow)
+			}
+		}
+		// Each command, query and worker has a flow (ST-GEN-UC08-R18), or the view says that it has none.
 		note := page.byID("form-no-flow-actions")
 		for _, a := range m.Actions {
-			if note == nil || !strings.Contains(textOf(note), a.Name) {
-				t.Errorf("the request flows do not say that %s has no flow", a.ID)
+			hasFlow := slices.ContainsFunc(m.Flows, func(f ArchFlow) bool { return f.Operation == a.ID })
+			noted := note != nil && strings.Contains(textOf(note), a.Name+" ("+a.Kind+")")
+			if hasFlow == noted {
+				t.Errorf("the action %s has a flow %v, and the note names it %v", a.ID, hasFlow, noted)
 			}
 		}
 		if len(m.Actions) == 0 {

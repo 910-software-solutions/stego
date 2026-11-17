@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/jsell-rh/stego/internal/buildidentity"
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/command"
@@ -78,10 +79,23 @@ func archFixture(t *testing.T) ArchitectureInput {
 		registry.SlotDefinition{Name: "after_create", Phase: "after_store", Operations: []string{"create"}},
 		registry.SlotDefinition{Name: "validate", Phase: "before_store", Operations: []string{"create", "update"}})
 	api.Config = map[string]types.ConfigField{"expose": {Type: "list"}}
+	// rest-api serves the collection operations, and the capability components serve the commands, queries and
+	// workers, so a test can add a query or a worker (ST-GEN-Q44 (A), ST-GEN-Q45 (b)).
+	api.Architecture.Serves = []string{"collection operations"}
+	capability := func(name, kind string) *registry.Component {
+		c := archComponent(name, "handler", []string{"storage-adapter"}, nil)
+		c.Architecture.Serves = []string{kind}
+		return c
+	}
+	store := archComponent("store", "repository", nil, []string{"storage-adapter"})
+	store.Architecture.Store = "DocsDB"
 	components := map[string]*registry.Component{
 		"rest-api": api,
 		"auth":     archComponent("auth", "authentication", nil, []string{"auth-provider"}),
-		"store":    archComponent("store", "repository", nil, []string{"storage-adapter"}),
+		"store":    store,
+		"command":  capability("command", "commands"),
+		"query":    capability("query", "queries"),
+		"worker":   capability("worker", "workers"),
 		"outbox":   archComponent("outbox", "repository", nil, []string{"durable-outbox"}),
 		"events":   archComponent("events", "outside call", []string{"durable-outbox"}, []string{"event-publisher"}),
 	}
@@ -105,7 +119,7 @@ func archFixture(t *testing.T) ArchitectureInput {
 	wiring := &gen.Wiring{Constructors: []string{"api.NewDocsHandler(store)"}, ConstructorCollections: map[int]string{0: "docs"},
 		Routes: []string{`mux.HandleFunc("POST /v1/docs", docsHandler.Create)`, `mux.HandleFunc("GET /v1/docs/{id}", docsHandler.Read)`}}
 	return ArchitectureInput{Service: service, Archetype: &registry.Archetype{Name: "arch", Version: "2.0.0", Bindings: map[string]string{"auth-provider": "auth"}},
-		Components: components, Names: []string{"rest-api", "auth", "store", "outbox", "events"}, Wirings: []ComponentWiring{{Name: "rest-api", Wiring: wiring}}, Schema: schema}
+		Components: components, Names: []string{"rest-api", "auth", "store", "outbox", "events", "command", "query", "worker"}, Wirings: []ComponentWiring{{Name: "rest-api", Wiring: wiring}}, Schema: schema}
 }
 
 // nestedFixtureSchema is the schema of archFixture with a shelf, whose keeper may view it.
@@ -255,7 +269,7 @@ func TestArchitectureDeterminism(t *testing.T) {
 			// The maps of the declaration and of the registry parts are given anew, so they iterate in another
 			// order; the registry parts are also given as new values.
 			reordered := map[string]*registry.Component{}
-			for _, name := range []string{"events", "outbox", "store", "auth", "rest-api"} {
+			for _, name := range []string{"worker", "events", "query", "outbox", "store", "command", "auth", "rest-api"} {
 				reordered[name] = in.Components[name]
 			}
 			in.Components = reordered
@@ -541,7 +555,7 @@ func TestArchitectureAccessMatrix(t *testing.T) {
 }
 
 func TestArchitectureRefusals(t *testing.T) {
-	t.Run("ST-GEN-UC08-R05-T02 The derivation refuses a component with no layer, flow part or port side, and a slot with no phase, naming it and the statement", func(t *testing.T) {
+	t.Run("ST-GEN-UC08-R05-T02 The derivation refuses a component with no layer, flow part or port side, a slot with no phase, a kind of operation with no or two serving components, a serving component with no repository and a repository with no store, naming it and the statement", func(t *testing.T) {
 		for _, tc := range []struct {
 			name   string
 			change func(ArchitectureInput)
@@ -555,6 +569,29 @@ func TestArchitectureRefusals(t *testing.T) {
 			{"no mixin slot phase", func(in ArchitectureInput) {
 				in.Mixins[0].AddsSlots[0].Phase = ""
 			}, []string{"mixin extra", "slots[on_change].phase"}},
+			// The kinds of operation and the store (ST-GEN-Q44 (A)).
+			{"no component that serves the command", func(in ArchitectureInput) {
+				in.Components["command"].Architecture.Serves = nil
+			}, []string{"the service has commands", "architecture.serves"}},
+			// Only command, query and worker serve their kinds: the derivation knows no other request path
+			// (security review of #404, M1).
+			{"another component that serves the commands", func(in ArchitectureInput) {
+				in.Components["command"].Architecture.Serves = nil
+				in.Components["rest-api"].Architecture.Serves = []string{"collection operations", "commands"}
+			}, []string{"the component rest-api states in architecture.serves that the commands start at it", "the component command alone"}},
+			{"another component that serves the workers", func(in ArchitectureInput) {
+				in.Components["worker"].Architecture.Serves = nil
+				in.Components["auth"].Architecture.Layer = "handler"
+				in.Components["auth"].Architecture.Serves = []string{"workers"}
+			}, []string{"the component auth states in architecture.serves that the workers start at it"}},
+			{"two components that serve the collections", func(in ArchitectureInput) {
+				in.Components["auth"].Architecture.Layer = "handler"
+				in.Components["auth"].Architecture.Serves = []string{"collection operations"}
+			}, []string{"the components rest-api and auth", "collection operations", "one component serves each kind"}},
+			{"a repository with no store", func(in ArchitectureInput) { in.Components["store"].Architecture.Store = "" }, []string{"component store", "architecture.store"}},
+			{"a serving component bound to no repository", func(in ArchitectureInput) {
+				in.Components["store"].Architecture.Layer, in.Components["store"].Architecture.Store = "handler", ""
+			}, []string{"the component rest-api serves the collection operations", "bound to no component of the repository layer"}},
 		} {
 			in := archFixture(t)
 			in.Mixins = []*registry.Mixin{{Kind: "mixin", Name: "extra", Version: "1.0.0", AddsSlots: []registry.SlotDefinition{{Name: "on_change", Phase: "after_store", Operations: []string{"create"}}}}}
@@ -888,15 +925,11 @@ func TestArchitectureViewRefusals(t *testing.T) {
 		in.Names[slices.Index(in.Names, "rest-api")] = "other-api"
 		in.Wirings[0].Name = "other-api"
 		refused("another component", in, "the component other-api serves the collections", "the component rest-api alone")
-		// With no component that serves the collections, no generator plans their entities, so the derivation does
-		// not refuse a list that the query runtime would refuse.
+		// With no component that serves the collections, the derivation refuses to guess where their flows start
+		// (ST-GEN-UC08-R05, ST-GEN-Q44 (A)).
 		in = archFixture(t)
-		in.Components["rest-api"].Config = nil
-		in.Service.Entities[0].Permissions = maps.Clone(in.Service.Entities[0].Permissions)
-		delete(in.Service.Entities[0].Permissions, types.OpList)
-		if _, err := WriteArchitecture(in); err != nil {
-			t.Errorf("with no component that serves the collections, the derivation refuses: %v", err)
-		}
+		in.Components["rest-api"].Architecture.Serves = []string{"commands", "queries", "workers"}
+		refused("no component that serves the collections", in, "the service has collection operations", "architecture.serves")
 	})
 }
 
@@ -922,11 +955,13 @@ func TestArchitectureEmptyAspects(t *testing.T) {
 		if model.Aspects.DataModel != (ArchAspect{State: "empty", Reason: reasonNoEntity}) || model.Aspects.RequestFlows != (ArchAspect{State: "empty", Reason: reasonNoOperation}) {
 			t.Fatalf("with no entity and no operation the aspects are %+v %+v", model.Aspects.DataModel, model.Aspects.RequestFlows)
 		}
+		// A service whose collections no component serves is refused (ST-GEN-UC08-R05), so its flows are never an
+		// empty aspect.
 		in = archFixture(t)
-		in.Components["rest-api"].Config = nil
-		model, _ = deriveFixture(t, in)
-		if model.Aspects.RequestFlows != (ArchAspect{State: "empty", Reason: reasonNoServer}) {
-			t.Fatalf("with no component that serves the collections the request flows are %+v", model.Aspects.RequestFlows)
+		in.Components["rest-api"].Architecture.Serves = nil
+		var refusal *ArchitectureRefusal
+		if _, err := DeriveArchitecture(in); !errors.As(err, &refusal) || !strings.Contains(err.Error(), "collection operations") {
+			t.Fatalf("with no component that serves the collections the derivation gives %v, want a refusal", err)
 		}
 	})
 }
@@ -942,7 +977,7 @@ func TestArchitectureValidation(t *testing.T) {
 			{"a bad side", `"side": "inbound"`, `"side": "left"`, "side"},
 			{"no phase", `"phase": "before_store",`, ``, "phase"},
 			{"an empty aspect with no reason", `"reason": "No component of the active set states a platform need or an environment variable."`, `"x": 1`, "platform_edges"},
-			{"an extra field", `"schema_version": 1,`, `"schema_version": 1, "notes": "hand-written",`, "notes"},
+			{"an extra field", `"schema_version": 2,`, `"schema_version": 2, "notes": "hand-written",`, "notes"},
 			{"a dangling ID", `"offered_by": "component:rest-api"`, `"offered_by": "component:gone"`, "component:gone"},
 			{"a step out of order", `"n": 2,`, `"n": 3,`, "numbered"},
 		} {
@@ -1123,6 +1158,63 @@ func TestReadArchitecture(t *testing.T) {
 		// A cause can quote a value of the model, and the message goes to a terminal (security review of #338).
 		if message := (&ArchitectureReadError{File: ArchitectureFile, Cause: "the value \x1b[2J\u202e is not valid"}).Error(); strings.ContainsAny(message, "\x1b\u202e") || !strings.Contains(message, `\u001b[2J\u202e`) {
 			t.Fatalf("the refusal prints the characters of the model as they are: %q", message)
+		}
+	})
+	t.Run("ST-GEN-UC08-R17-T01 A reader refuses a model of another schema version before the schema, naming both versions and the remedy", func(t *testing.T) {
+		// Each version pins the digest of its schema, so a change of the schema that keeps the version fails here.
+		// When this fails, raise ArchitectureSchemaVersion and the $id and schema_version of the schema, and add
+		// the digest of the new version.
+		schemaDigests := map[int]string{2: "22b8267f9bb511066c6f9d3c1edd5f1d3c4631427f0d874acb27ad80c214da21"}
+		if got := HashBytes(ArchitectureSchema); got != schemaDigests[ArchitectureSchemaVersion] {
+			t.Fatalf("the architecture schema has the digest %s, not the digest of version %d: a change of the schema must raise its version", got, ArchitectureSchemaVersion)
+		}
+		_, data := deriveFixture(t, archFixture(t))
+		current := fmt.Sprintf(`"schema_version": %d,`, ArchitectureSchemaVersion)
+		if !bytes.Contains(data, []byte(current)) || !bytes.Contains(ArchitectureSchema, []byte(`"$id": "`+ArchitectureSchemaID+`"`)) {
+			t.Fatalf("the derived model or the schema does not state version %d", ArchitectureSchemaVersion)
+		}
+		project := t.TempDir()
+		write := func(model []byte, build *buildidentity.Record) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Join(project, "architecture"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(project, ArchitectureFile), model, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			state := &State{FormatVersion: StateFormatVersion, LastApplied: &AppliedState{CompilerBuild: build, ProjectFiles: map[string]string{ArchitectureFile: HashBytes(model)}}}
+			if err := SaveState(filepath.Join(project, ".stego", "state.yaml"), state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		older := bytes.Replace(data, []byte(current), []byte(`"schema_version": 1,`), 1)
+		write(older, nil)
+		_, err := ReadArchitecture(project)
+		if err == nil || !strings.Contains(err.Error(), ArchitectureFile) || !strings.Contains(err.Error(), "version 1") || !strings.Contains(err.Error(), "run stego apply") {
+			t.Fatalf("an older model is not refused with its version and the step to take: %v", err)
+		}
+		if strings.Contains(err.Error(), "does not match the schema") {
+			t.Errorf("the refusal of an older model lists schema faults in place of the version: %v", err)
+		}
+		newer := bytes.Replace(data, []byte(current), []byte(fmt.Sprintf(`"schema_version": %d,`, ArchitectureSchemaVersion+1)), 1)
+		build := func(version string) *buildidentity.Record {
+			return &buildidentity.Record{GoVersion: "go1.26.11", GOOS: "linux", GOARCH: "amd64", ModuleVersion: version, VCS: "unknown", Revision: "unknown", SourceState: "unknown"}
+		}
+		write(newer, build("v9.9.9"))
+		_, err = ReadArchitecture(project)
+		if err == nil || !strings.Contains(err.Error(), "newer") || !strings.Contains(err.Error(), "the record names STEGO v9.9.9") {
+			t.Fatalf("a newer model is not refused with the STEGO that the record names: %v", err)
+		}
+		write(newer, build("unknown"))
+		if _, err = ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), "use the STEGO that wrote the model") || strings.Contains(err.Error(), "record names") {
+			t.Fatalf("a newer model with no known STEGO version: %v", err)
+		}
+		// A version that is not a whole number goes to the schema, which refuses it.
+		for _, odd := range []string{`"schema_version": "2",`, `"schema_version": 2.5,`, `"schema_version": -1,`} {
+			write(bytes.Replace(data, []byte(current), []byte(odd), 1), nil)
+			if _, err := ReadArchitecture(project); err == nil || !strings.Contains(err.Error(), "schema") {
+				t.Errorf("a model with %s is accepted: %v", odd, err)
+			}
 		}
 	})
 }
@@ -1426,7 +1518,7 @@ func TestArchitectureContext(t *testing.T) {
 			"actor:authorization.spicedb authorization service spicedb <service.yaml authorization.provider>",
 			"actor:caller caller Caller <service.yaml collections>",
 			"actor:outside.events outside system System that events calls <registry component events 1.0.0, field architecture.layer>",
-			"actor:store.store store Store of store <registry component store 1.0.0, field architecture.layer>",
+			"actor:store.store store DocsDB <registry component store 1.0.0, field architecture.store>",
 		}
 		if !slices.Equal(actors, want) {
 			t.Fatalf("the actors are\n%s\nwant\n%s", strings.Join(actors, "\n"), strings.Join(want, "\n"))
@@ -1435,7 +1527,7 @@ func TestArchitectureContext(t *testing.T) {
 			"actor:caller calls 3 operations container:docs through component:rest-api sync <service.yaml collections>",
 			"container:docs asks for permission decisions actor:authorization.spicedb through  sync <service.yaml authorization.provider>",
 			"container:docs sends change messages, later actor:outside.events through component:events async <registry component events 1.0.0, field architecture.layer>",
-			"container:docs keeps rows actor:store.store through component:store sync <registry component store 1.0.0, field architecture.layer>",
+			"container:docs keeps rows actor:store.store through component:store sync <registry component store 1.0.0, field architecture.store>",
 		}
 		if !slices.Equal(relations, wantRelations) {
 			t.Fatalf("the relations are\n%s\nwant\n%s", strings.Join(relations, "\n"), strings.Join(wantRelations, "\n"))
@@ -1536,6 +1628,108 @@ func TestArchitectureContext(t *testing.T) {
 		loose := bytes.Replace(data, []byte(`"to": "container:docs"`), []byte(`"to": "component:rest-api"`), 1)
 		if err := ValidateArchitecture(loose); err == nil || !strings.Contains(err.Error(), "joins only containers and actors") {
 			t.Fatalf("a relation to a component is valid: %v", err)
+		}
+	})
+}
+
+func TestArchitectureActionFlows(t *testing.T) {
+	t.Run("ST-GEN-UC08-R18-T01 Each command, query and worker has a request flow from the component that serves its kind through its fill, the repository and the store to its events and effects", func(t *testing.T) {
+		in := archFixture(t)
+		in.Service.Commands[0].Writes = []string{"Doc"}
+		in.Service.Commands[0].Effects = []types.Effect{{Destination: "mail", Name: "notify"}}
+		in.Service.Overrides["events"] = map[string]any{"destinations": []any{map[string]any{"name": "mail", "must_land": true, "idempotent": true}}}
+		in.Service.Queries = []types.Query{{Name: "recent", Reads: []string{"Doc"}, ResourceType: "doc", Permission: "read", Fill: types.FillNames{"reader"}}}
+		in.Service.Workers = []types.Worker{{Name: "sweeper", Trigger: "every 1m", Writes: []string{"Doc"}, ResourceType: "doc", Permission: "write", Fill: types.FillNames{"sweep"}}}
+		model, data := deriveFixture(t, in)
+		// The text form of the view titles each action flow by its kind and its name, and says of no declared
+		// action that it has no flow.
+		view, err := RenderArchitectureView(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := parseView(t, view)
+		form := textOf(page.byID("form-flows"))
+		for _, title := range []string{"command archive", "query recent", "worker sweeper", "The fill sweep carries out the worker."} {
+			if !strings.Contains(form, title) {
+				t.Errorf("the text form of the flows does not hold %q", title)
+			}
+		}
+		if note := page.byID("form-no-flow-actions"); note != nil {
+			t.Errorf("the view says that an action has no flow: %s", textOf(note))
+		}
+		kinds := map[string]string{}
+		for _, f := range model.Flows {
+			var parts []string
+			for _, s := range f.Steps {
+				parts = append(parts, s.Kind+" "+s.Element)
+			}
+			kinds[f.ID] = strings.Join(parts, ", ")
+		}
+		for id, want := range map[string]string{
+			"flow:command.archive": "operation command:archive, authenticate component:auth, authorize check:command:archive, handle component:command, fill fill:archiver, repository component:store, store component:store, outbox component:outbox, event component:events, outside call component:events",
+			"flow:query.recent":    "operation query:recent, authenticate component:auth, authorize check:query:recent, handle component:query, fill fill:reader, repository component:store, store component:store",
+			"flow:worker.sweeper":  "operation worker:sweeper, authorize check:worker:sweeper, handle component:worker, fill fill:sweep, repository component:store, store component:store, outbox component:outbox, event component:events",
+		} {
+			if kinds[id] != want {
+				t.Errorf("the flow %s is\n%s\nwant\n%s", id, kinds[id], want)
+			}
+		}
+		for _, f := range model.Flows {
+			if f.ID != "flow:worker.sweeper" {
+				continue
+			}
+			if f.Steps[0].Text != "The worker sweeper runs: every 1m." || f.Steps[0].Source.Declaration != "workers[0]" || f.Steps[3].Text != "The fill sweep carries out the worker." {
+				t.Errorf("the worker flow does not state its trigger and its fill with their sources: %+v", f.Steps)
+			}
+		}
+		// The fill step is in the slot layer, between the handler and the repository.
+		for _, f := range model.Flows {
+			for _, s := range f.Steps {
+				if s.Kind == "fill" && s.Layer != "slot" {
+					t.Errorf("the fill step of %s is in the layer %s", f.ID, s.Layer)
+				}
+			}
+		}
+	})
+}
+
+func TestArchitectureUnknownHandler(t *testing.T) {
+	t.Run("ST-GEN-UC08-R05-T03 For a collection handler other than rest-api the flows state no authentication step, and the registry refuses serves outside the handler layer", func(t *testing.T) {
+		// A service with no resource type may have its collections served by another handler (plannedReads); the
+		// derivation does not know how it authenticates, so it states no step for it (security review of #404, L1).
+		in := archFixture(t)
+		in.Service.Authorization = nil
+		in.Service.Entities[0].ResourceType, in.Service.Entities[0].Permissions, in.Service.Entities[0].PublicReasons = "", nil, nil
+		in.Service.Commands = nil
+		api := in.Components["rest-api"]
+		delete(in.Components, "rest-api")
+		api.Name = "other-api"
+		in.Components["other-api"] = api
+		in.Names[slices.Index(in.Names, "rest-api")] = "other-api"
+		in.Wirings[0].Name = "other-api"
+		model, _ := deriveFixture(t, in)
+		if len(model.Flows) == 0 {
+			t.Fatal("the model holds no flow")
+		}
+		for _, f := range model.Flows {
+			for _, s := range f.Steps {
+				if s.Kind == "authenticate" {
+					t.Errorf("the flow %s of the handler other-api states the authentication step %s", f.ID, s.Element)
+				}
+			}
+		}
+		// The same service with rest-api states the authentication of its bound provider.
+		in = archFixture(t)
+		model, _ = deriveFixture(t, in)
+		if !slices.ContainsFunc(model.Flows[0].Steps, func(s ArchStep) bool { return s.Kind == "authenticate" }) {
+			t.Error("the flows of rest-api state no authentication step")
+		}
+		// serves outside the handler layer is refused (security review of #404, L2).
+		in = archFixture(t)
+		in.Components["store"].Architecture.Serves = []string{"queries"}
+		var refusal *ArchitectureRefusal
+		if _, err := WriteArchitecture(in); !errors.As(err, &refusal) || !strings.Contains(err.Error(), "only a component of the handler layer serves") {
+			t.Errorf("serves on a repository is not refused: %v", err)
 		}
 	})
 }

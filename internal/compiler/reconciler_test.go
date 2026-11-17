@@ -97,6 +97,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
@@ -116,8 +117,9 @@ slots: []
 			yaml: `kind: component
 environment: []
 architecture:
-  layer: handler
+  layer: repository
   flow: Serves the test.
+  store: TestStore
   ports:
     storage-adapter: inbound
 name: stub-store
@@ -1445,6 +1447,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     auth-provider: outbound
@@ -1598,6 +1601,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     auth-provider: outbound
@@ -2262,6 +2266,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
@@ -2366,6 +2371,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
@@ -2490,6 +2496,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     http-server: inbound
 name: stub-api
@@ -2580,6 +2587,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     http-server: inbound
 name: stub-api
@@ -2677,6 +2685,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
@@ -2696,8 +2705,9 @@ slots: []
 			yaml: `kind: component
 environment: []
 architecture:
-  layer: handler
+  layer: repository
   flow: Serves the test.
+  store: TestStore
   ports:
     storage-adapter: inbound
 name: stub-store
@@ -2835,6 +2845,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
@@ -2854,8 +2865,9 @@ slots: []
 			yaml: `kind: component
 environment: []
 architecture:
-  layer: handler
+  layer: repository
   flow: Serves the test.
+  store: TestStore
   ports:
     storage-adapter: inbound
 name: stub-store
@@ -2986,6 +2998,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
@@ -3005,8 +3018,9 @@ slots: []
 			yaml: `kind: component
 environment: []
 architecture:
-  layer: handler
+  layer: repository
   flow: Serves the test.
+  store: TestStore
   ports:
     storage-adapter: inbound
 name: stub-store
@@ -3128,6 +3142,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
@@ -3147,8 +3162,9 @@ slots: []
 			yaml: `kind: component
 environment: []
 architecture:
-  layer: handler
+  layer: repository
   flow: Serves the test.
+  store: TestStore
   ports:
     storage-adapter: inbound
 name: stub-store

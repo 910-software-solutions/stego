@@ -71,10 +71,10 @@ func (d *deriver) context() {
 		return a.ID
 	}
 	// The caller: the declaration states the collection operations, and a flow enters by each.
-	if len(m.Flows) > 0 && d.handler != nil {
+	if len(m.Operations) > 0 && d.handler != nil {
 		source := ArchSource{Declaration: "collections"}
 		id := actor(ArchActor{ID: "actor:caller", Kind: actorCaller, Name: "Caller", Source: source})
-		relate(id, service, "calls "+plural(len(m.Flows), "operation"), componentID(d.handler.Name), "sync", source)
+		relate(id, service, "calls "+plural(len(m.Operations), "operation"), componentID(d.handler.Name), "sync", source)
 	}
 	// The issuer of the tokens of each authentication component whose part takes an issuer: the declaration names
 	// it in overrides.<component>.issuer, or the registry part states that the component checks the tokens of one.
@@ -159,8 +159,8 @@ func (d *deriver) context() {
 			if c == nil || c.Architecture.Layer != "repository" || stated[componentID(c.Name)] {
 				continue
 			}
-			source := componentSource(c, "architecture.layer")
-			a := actor(ArchActor{ID: "actor:store." + c.Name, Kind: actorStore, Name: "Store of " + c.Name, StatedBy: componentID(c.Name), Source: source})
+			source := componentSource(c, "architecture.store")
+			a := actor(ArchActor{ID: "actor:store." + c.Name, Kind: actorStore, Name: c.Architecture.Store, StatedBy: componentID(c.Name), Source: source})
 			relate(service, a, "keeps rows", componentID(c.Name), "sync", source)
 		}
 	}
@@ -185,7 +185,7 @@ func flowStepLayer(components map[string]string, s ArchStep) string {
 		return "edge"
 	case "authorize":
 		return "authentication"
-	case "slot":
+	case "slot", "fill":
 		return "slot"
 	case "store":
 		return "store"

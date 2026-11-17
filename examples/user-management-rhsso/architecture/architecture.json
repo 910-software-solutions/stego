@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "record": {
     "path": ".stego/state.yaml"
   },
@@ -391,6 +391,11 @@
           "port": "port:commands",
           "direction": "provides",
           "side": "inbound"
+        },
+        {
+          "port": "port:storage-adapter",
+          "direction": "requires",
+          "side": "outbound"
         }
       ],
       "offers": [],
@@ -578,6 +583,11 @@
           "port": "port:queries",
           "direction": "provides",
           "side": "inbound"
+        },
+        {
+          "port": "port:storage-adapter",
+          "direction": "requires",
+          "side": "outbound"
         }
       ],
       "offers": [],
@@ -1033,6 +1043,8 @@
         "component:postgres-adapter"
       ],
       "required_by": [
+        "component:command",
+        "component:query",
         "component:rest-api"
       ],
       "source": {
@@ -1079,6 +1091,20 @@
   ],
   "bindings": [
     {
+      "id": "binding:command.storage-adapter",
+      "port": "port:storage-adapter",
+      "provider": "component:postgres-adapter",
+      "consumer": "component:command",
+      "source": {
+        "registry": {
+          "part": "archetype",
+          "name": "rest-crud",
+          "version": "3.151.0",
+          "field": "bindings.storage-adapter"
+        }
+      }
+    },
+    {
       "id": "binding:kafka-producer.durable-outbox",
       "port": "port:durable-outbox",
       "provider": "component:outbox",
@@ -1089,6 +1115,20 @@
           "name": "rest-crud",
           "version": "3.154.0",
           "field": "bindings.durable-outbox"
+        }
+      }
+    },
+    {
+      "id": "binding:query.storage-adapter",
+      "port": "port:storage-adapter",
+      "provider": "component:postgres-adapter",
+      "consumer": "component:query",
+      "source": {
+        "registry": {
+          "part": "archetype",
+          "name": "rest-crud",
+          "version": "3.151.0",
+          "field": "bindings.storage-adapter"
         }
       }
     },
@@ -1754,7 +1794,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -1762,7 +1802,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         }
@@ -1898,7 +1938,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -1906,7 +1946,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         }
@@ -2042,7 +2082,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -2050,7 +2090,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         },
@@ -2241,7 +2281,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -2249,7 +2289,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         },
@@ -2451,7 +2491,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -2459,7 +2499,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         },
@@ -2648,7 +2688,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -2656,7 +2696,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         }
@@ -2792,7 +2832,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -2800,7 +2840,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         },
@@ -3002,7 +3042,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -3010,7 +3050,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         }
@@ -3154,7 +3194,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -3162,7 +3202,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         },
@@ -3364,7 +3404,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -3372,7 +3412,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         },
@@ -3563,7 +3603,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -3571,7 +3611,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         },
@@ -3749,7 +3789,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -3757,7 +3797,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         }
@@ -3893,7 +3933,7 @@
           "n": 8,
           "kind": "store",
           "element": "component:postgres-adapter",
-          "text": "The store of postgres-adapter keeps the rows.",
+          "text": "PostgreSQL keeps the rows.",
           "mode": "sync",
           "layer": "store",
           "source": {
@@ -3901,7 +3941,7 @@
               "part": "component",
               "name": "postgres-adapter",
               "version": "6.7.1",
-              "field": "architecture"
+              "field": "architecture.store"
             }
           }
         }
