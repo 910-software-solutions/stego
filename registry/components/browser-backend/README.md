@@ -42,15 +42,19 @@ comma-separated list of `name=origin`, such as
 - The backend reads the list once at start. It does not start when the list
   does not give each declared name one time, gives a name that the
   declaration does not give, or gives an address that is not an HTTPS origin
-  on another host than the console.
+  on another host than the console, or that is the origin of the issuer.
 - A request goes to the one origin of the API whose prefix its path is
   under. No header, query or path part of a request can choose another host.
   A path with an encoded slash gets 400. The router of the service sends a
   path with a `.` or `..` segment, or an empty segment, to its clean form
   with 307 before the backend reads it, so such a path reaches no API; the
   backend refuses it with 400 when it gets one.
-- A `Location` of an answer must be under the prefix of the same API.
-- Each API has a bounded client of its own. The same access token goes to
+- A `Location` of an answer must be under the prefix of the same API, with no
+  `.` or `..` segment, plain or encoded, and no other encoded character.
+- Each API has a bounded client of its own, and its own share of the 16
+  requests and of the 4 waiting reads that the backend runs at one time, at
+  least one of each. When an API uses all of its share, its next request gets
+  503 with `Retry-After: 1`, and the other APIs keep their shares. The same access token goes to
   each API, so the identity provider must give a token whose `aud` holds the
   audience of each API.
 - A local application cannot declare `apis`.
@@ -189,8 +193,9 @@ such as `Cookie`, `Origin`, `X-CSRF-Token` or `traceparent`.
 A read with `Authz-Revocation-After` waits at most 4 seconds, one second less
 than the request timeout of the API prefix: the API prefix sends `wait=4`
 when the browser gives no wait or a longer one. At most 4 such reads run at
-one time for the whole service, so that they never take the capacity of the
-other requests. The next one gets 503 with `Retry-After: 1`.
+one time for the whole service, shared among the APIs, so that they never
+take the capacity of the other requests. The next one gets 503 with
+`Retry-After: 1`.
 
 The API prefix returns to the browser only the API response headers
 `Content-Type`, `ETag`, `Retry-After`, `Idempotent-Replayed`,

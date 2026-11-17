@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -47,8 +48,24 @@ func TestDeclaredAPIs(t *testing.T) {
 		// A Location must be under the prefix of the same API.
 		w = send(f.backend, "GET", secondPrefix+"/things?location="+secondPrefix+"/things/1", "", []*http.Cookie{active}, nil)
 		require(t, w.Code == 200 && w.Header().Get("Location") == secondPrefix+"/things/1", "a Location under the same prefix was not returned")
-		w = send(f.backend, "GET", secondPrefix+"/things?location="+apiPrefix+"/records/1", "", []*http.Cookie{active}, nil)
-		require(t, w.Code == 502 && w.Header().Get("Location") == "", "a Location under another prefix was returned")
+		for _, location := range []string{apiPrefix + "/records/1", secondPrefix + "/../../records/v1/records/1", secondPrefix + "/%2e%2e/%2e%2e/records/v1/records/1", secondPrefix + "/./things"} {
+			w = send(f.backend, "GET", secondPrefix+"/things?location="+url.QueryEscape(location), "", []*http.Cookie{active}, nil)
+			require(t, w.Code == 502 && w.Header().Get("Location") == "", "a Location that leaves the prefix of its API was returned: "+location)
+		}
+
+		// Each API has its own pool of permits: with every permit of the API of api_prefix taken, that API answers
+		// 503 and the API second still answers.
+		for range cap(f.backend.main.permits) {
+			f.backend.main.permits <- struct{}{}
+		}
+		w = send(f.backend, "GET", apiPrefix+"/records/record-1", "", []*http.Cookie{active}, nil)
+		require(t, w.Code == 503, "an API with no permit left was served")
+		w = send(f.backend, "GET", secondPrefix+"/things", "", []*http.Cookie{active}, nil)
+		require(t, w.Code == 200, "a busy API took the permits of another API")
+		for range cap(f.backend.main.permits) {
+			<-f.backend.main.permits
+		}
+		require(t, cap(f.backend.main.permits)+cap(f.backend.apis[0].permits) <= cap(f.backend.permits), "the pools of the APIs are more than the bound of the backend")
 
 		// Start refuses a missing, an unknown or a repeated name, and an address that is not an HTTPS origin.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -60,6 +77,7 @@ func TestDeclaredAPIs(t *testing.T) {
 			"second=" + strings.Replace(f.second.URL, "https://", "http://", 1),
 			"second=" + f.second.URL + "/path",
 			"other=" + f.second.URL,
+			"second=" + f.oidc.server.URL,
 		} {
 			o := f.options
 			o.Upstreams = upstreams
