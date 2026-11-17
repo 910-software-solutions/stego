@@ -235,13 +235,21 @@ func (e *env) inbox(t *testing.T, topic, group string, retention time.Duration) 
 	in, err := New(Config{Subscription: sub, Queue: e.queue, DB: e.worker, Retention: retention,
 		Settings: Settings{Connection: kafkaoutbox.Settings{Brokers: []string{e.broker.Plain.Addr()}, InsecureLoopback: true},
 			Topic: topic, Group: group},
-		Tenants: func(ctx context.Context, id string) (tenant.Tenant, tenant.Listing, error) {
-			return tenant.Lookup(ctx, e.runtime, "public", id)
-		}, Logs: testLogs{t: t}, Options: debugOptions()})
+		Tenants: e.lookup(t), Logs: testLogs{t: t}, Options: debugOptions()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return in
+}
+
+// lookup gives the Lookup of the tenant list of the runtime role.
+func (e *env) lookup(t *testing.T) Lookup {
+	t.Helper()
+	l, err := TenantList(e.runtime, "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
 }
 
 // run runs in until the committed offsets of group cover want records of the topic, then stops it.
@@ -507,8 +515,8 @@ func TestSubscription(t *testing.T) {
 			t.Fatal(err)
 		}
 		settings := Settings{Connection: kafkaoutbox.Settings{Brokers: []string{"127.0.0.1:9092"}, InsecureLoopback: true}, Topic: "t", Group: "g"}
-		lookup := func(context.Context, string) (tenant.Tenant, tenant.Listing, error) {
-			return tenant.Tenant{}, tenant.NotListed, nil
+		lookup := func(context.Context, string) (tenant.Tenant, Listing, error) {
+			return tenant.Tenant{}, NotListed, nil
 		}
 		for _, s := range []Subscription{
 			{Service: "a", Name: "b", Source: "orders", Worker: "w", Events: nil},
@@ -534,4 +542,36 @@ func debugOptions() []kgo.Opt {
 		return nil
 	}
 	return []kgo.Opt{kgo.WithLogger(kgo.BasicLogger(os.Stderr, kgo.LogLevelInfo, nil))}
+}
+
+func TestTenantList(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC35-T04 The lookup builds the tenant from the entry of the list and tells active, retired and not listed", func(t *testing.T) {
+		e := newEnv(t)
+		e.provision(t, "t-active", false)
+		e.provision(t, "t-retired", true)
+		ctx := context.Background()
+		lookup := e.lookup(t)
+		for _, c := range []struct {
+			id, tenant string
+			want       Listing
+		}{
+			{"t-active", "t-active", Active}, {"t-retired", "t-retired", Retired}, {"t-unknown", "", NotListed},
+			{"bad\x1fid", "", NotListed}, {"", "", NotListed}, {strings.Repeat("a", 256), "", NotListed},
+		} {
+			got, listing, err := lookup(ctx, c.id)
+			if err != nil || listing != c.want || got.ID() != c.tenant {
+				t.Fatalf("the lookup of %q gave %q, %v, %v; want %q and %v", c.id, got.ID(), listing, err, c.tenant, c.want)
+			}
+		}
+		if _, err := TenantList(nil, "public"); err == nil {
+			t.Fatal("TenantList took no database")
+		}
+		quoted, err := TenantList(e.runtime, `no"such`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := quoted(ctx, "t-active"); err == nil {
+			t.Fatal("the lookup in a schema that does not exist gave no error")
+		}
+	})
 }

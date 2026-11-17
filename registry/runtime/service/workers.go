@@ -137,7 +137,7 @@ type InboxEnv struct {
 	// Queue is the outbox queue on the pool of the worker role, DB, on which the inbox writes.
 	Queue *outbox.Queue
 	DB    *sql.DB
-	// Tenants looks a tenant ID up in the tenant list, on the pool of the runtime role (ST-SUP-RP04-LC11).
+	// Tenants looks a tenant ID up in the tenant list, on the pool of the runtime role (ST-SUP-RP01-LC35).
 	Tenants kafkainbox.Lookup
 	// Retention is the done retention of the outbox worker, which the topic's retention must not exceed.
 	Retention time.Duration
@@ -398,12 +398,12 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		if p.TenantSchema == "" {
 			return nil, errors.New("service: the Kafka inbox needs the schema of the tenant list")
 		}
-		pool, schema := svc.pool, p.TenantSchema
+		lookup, err := kafkainbox.TenantList(svc.pool, p.TenantSchema)
+		if err != nil {
+			return nil, err
+		}
 		if inbox, err = p.Inbox(InboxEnv{Queue: queue, DB: w.workerDB, Retention: w.worker.Retention(),
-			Logs: svc.telemetry.LoggerProvider(), Meter: svc.telemetry.MeterProvider(),
-			Tenants: func(ctx context.Context, id string) (tenant.Tenant, tenant.Listing, error) {
-				return tenant.Lookup(ctx, pool, schema, id)
-			}}); err != nil {
+			Logs: svc.telemetry.LoggerProvider(), Meter: svc.telemetry.MeterProvider(), Tenants: lookup}); err != nil {
 			return nil, inboxSetting(err)
 		}
 		// The refused records are purged on the timer of the outbox (ST-SUP-RP01-LC37).

@@ -107,8 +107,57 @@ func (s Subscription) check() error {
 	return nil
 }
 
-// Lookup reads the entry of a tenant ID in the tenant list, as tenant.Lookup does.
-type Lookup func(ctx context.Context, id string) (tenant.Tenant, tenant.Listing, error)
+// Listing is the state of one tenant ID in the tenant list: not listed, listed and active, or listed and retired.
+type Listing int
+
+const (
+	// NotListed is a tenant ID that the tenant list does not hold, or that is not a valid tenant ID.
+	NotListed Listing = iota
+	// Active is a tenant that the tenant list holds with no retire time.
+	Active
+	// Retired is a tenant that the tenant list holds with a retire time.
+	Retired
+)
+
+// Lookup reads the entry of a tenant ID in the tenant list.
+type Lookup func(ctx context.Context, id string) (tenant.Tenant, Listing, error)
+
+// TenantList gives the Lookup of the tenant list stego_tenants of schema on db, the pool of the runtime role
+// (ST-SUP-RP01-LC35). The ID of a record header is only the key of the read: the tenant is built from the tenant
+// column of the entry that the statement read, through the row reader of the tenant runtime (tenant.ScanRows,
+// ST-SUP-RP04-LC01), so a header is never a source of a tenant. An ID that is not a valid tenant ID is not listed,
+// and the statement is not sent; a failed read is an error.
+func TenantList(db *sql.DB, schema string) (Lookup, error) {
+	if db == nil || schema == "" || strings.ContainsRune(schema, 0) {
+		return nil, errors.New("kafkainbox: the tenant list needs a database and a schema")
+	}
+	query := `SELECT tenant_id, retired_at IS NULL FROM "` + strings.ReplaceAll(schema, `"`, `""`) + `".stego_tenants WHERE tenant_id = $1`
+	return func(ctx context.Context, id string) (tenant.Tenant, Listing, error) {
+		if tenant.ValidID(id) != nil {
+			return tenant.Tenant{}, NotListed, nil
+		}
+		rows, err := db.QueryContext(ctx, query, id)
+		if err != nil {
+			return tenant.Tenant{}, NotListed, fmt.Errorf("kafkainbox: read the entry of the tenant list: %w", err)
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			if err := rows.Err(); err != nil {
+				return tenant.Tenant{}, NotListed, fmt.Errorf("kafkainbox: read the entry of the tenant list: %w", err)
+			}
+			return tenant.Tenant{}, NotListed, nil
+		}
+		var active bool
+		t, err := tenant.ScanRows(rows, &active)
+		if err != nil {
+			return tenant.Tenant{}, NotListed, err
+		}
+		if !active {
+			return t, Retired, nil
+		}
+		return t, Active, nil
+	}, nil
+}
 
 // Config is what the inbox needs.
 type Config struct {
@@ -406,9 +455,9 @@ func (in *Inbox) take(ctx context.Context, record *kgo.Record) error {
 		return fmt.Errorf("%w: %w", errDatabase, err)
 	}
 	switch listing {
-	case tenant.NotListed:
+	case NotListed:
 		return in.refuse(ctx, record, checked, ReasonUnknownTenant)
-	case tenant.Retired:
+	case Retired:
 		return in.refuse(ctx, record, checked, ReasonRetiredTenant)
 	}
 	message := outbox.Message{ID: MessageID(in.sub.Name, t.ID(), checked.eventID), Destination: in.sub.Name,
