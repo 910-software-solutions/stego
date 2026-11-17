@@ -239,6 +239,18 @@ the parent's collection and the scope parameter before it. To use another
 path, give the collection `path_prefix`, for example `path_prefix:
 /stock-items`, which comes after the base path.
 
+A route of a scoped collection names each ancestor of the row, such as
+`/workspaces/{workspace_id}/projects/{project_id}/tickets/{id}`. The handler
+decides a permission only on the deepest resource that the route names: the
+row for a read, an update, a patch and a delete, and the parent for a list, a
+create and an upsert. For each ancestor above it, the handler checks only that
+the row exists in the tenant and is of the ancestor above it in the path. A
+missing, wrong or denied path gives the same 404. Thus a project that is shared
+with a user is open to that user through these routes, also when the user may
+not view the workspace. When a row must also need the permission of its parent,
+write that rule in the schema as an intersection, for example
+`permission view = viewer & parent->view`.
+
 Put the SpiceDB schema at `authz/schema.zed`:
 
 ```zed
