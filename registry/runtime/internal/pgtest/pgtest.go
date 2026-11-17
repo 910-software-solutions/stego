@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,10 +64,44 @@ var (
 	mu        sync.Mutex
 	tool      string
 	container string
+	// reaped are the containers of other images that Reap took, which remove removes too.
+	reaped []reapedContainer
 )
 
-// Main runs the tests of m, removes the container that a test started, if any, and gives the exit code for
-// os.Exit. It also removes the container when the process gets SIGINT. It does not watch SIGTERM, which tests of
+// reapedContainer is one container that Reap took: the path of its tool and its name.
+type reapedContainer struct{ path, name string }
+
+// reaperScript waits while the test binary ($1) runs, then removes the container $3 with the tool $2. It polls
+// with kill -0, which sends no signal.
+const reaperScript = `while kill -0 "$1" 2>/dev/null; do sleep 1; done; "$2" rm --force "$3" >/dev/null 2>&1`
+
+// Reap makes sure that the container name, which the test binary started with the tool path, is removed when the
+// binary ends on any path: remove, which Main calls when the tests end and on SIGINT, removes it, and a reaper
+// process that watches the binary removes it when the binary is killed or stops at its -test.timeout. It is for a
+// container whose image has no time limit of its own, as the SpiceDB image, which holds no timeout program; such
+// containers leaked for days before (followups, 2026-11-17). A reaper that cannot start is reported on standard
+// error, and Main still removes the container.
+func Reap(path, name string) {
+	mu.Lock()
+	reaped = append(reaped, reapedContainer{path: path, name: name})
+	mu.Unlock()
+	if err := reap(os.Getpid(), path, name); err != nil {
+		fmt.Fprintf(os.Stderr, "pgtest: start the reaper of the container %s: %v\n", name, err)
+	}
+}
+
+// reap starts the reaper process that removes the container name with the tool path once the process pid ends.
+func reap(pid int, path, name string) error {
+	reaper := exec.Command("sh", "-c", reaperScript, "reaper", strconv.Itoa(pid), path, name)
+	if err := reaper.Start(); err != nil {
+		return err
+	}
+	go func() { _ = reaper.Wait() }()
+	return nil
+}
+
+// Main runs the tests of m, removes the container that a test started, if any, and each container that Reap took,
+// and gives the exit code for os.Exit. It also removes them when the process gets SIGINT. It does not watch SIGTERM, which tests of
 // a shutdown send to their own process; the time limit of the container covers a process that is killed.
 //
 //	func TestMain(m *testing.M) { os.Exit(pgtest.Main(m)) }
@@ -246,7 +281,16 @@ func remove() {
 	mu.Lock()
 	path, id := tool, container
 	container = ""
+	others := reaped
+	reaped = nil
 	mu.Unlock()
+	for _, other := range others {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		if _, err := command(ctx, other.path, "rm", "--force", other.name); err != nil {
+			fmt.Fprintf(os.Stderr, "pgtest: remove the container %s: %v\n", other.name, err)
+		}
+		cancel()
+	}
 	if id == "" {
 		return
 	}

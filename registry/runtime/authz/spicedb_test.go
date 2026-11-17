@@ -158,6 +158,8 @@ func startContainerOn(network string, args ...string) (string, string, error) {
 	if err := run.Run(); err != nil {
 		return "", "", fmt.Errorf("start the SpiceDB container: %v: %s", err, stderr.String())
 	}
+	// The SpiceDB image has no time limit: the reaper removes the container also when the test binary is killed.
+	pgtest.Reap("docker", name)
 	out, err := exec.Command("docker", "port", name, "50051/tcp").Output()
 	if err != nil {
 		return name, "", fmt.Errorf("read the port of the SpiceDB container: %v", err)
@@ -246,6 +248,7 @@ func startPostgresSpiceDB(t *testing.T, schema string) *spiceEnv {
 			s.err = fmt.Errorf("start the PostgreSQL container of SpiceDB: %v: %s", err, out)
 			return
 		}
+		pgtest.Reap("docker", database)
 		uri := "postgres://postgres:spicedb@" + database + ":5432/postgres?sslmode=disable"
 		deadline := time.Now().Add(2 * time.Minute)
 		for {
