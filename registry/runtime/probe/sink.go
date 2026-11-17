@@ -140,12 +140,19 @@ func (q *queue) drain(ctx context.Context) bool {
 	}
 }
 
+// deadlineFunc gives a context that ends at a limit d after its parent, as context.WithTimeout does.
+type deadlineFunc func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
+
 // Runtime is the probe runtime of one service process: the OTLP sink through the telemetry runtime when it has a
 // collector endpoint, and the console sink on standard output. Only the process environment at start chooses the
 // sinks and the console format (ST-SUP-RP12-LC17).
 type Runtime struct {
 	core      *core
 	telemetry *otel.Runtime
+	// deadline gives the shared shutdown limit of Close. It is nil, which is context.WithTimeout on the real clock,
+	// but in a test of the package that ends the limit itself (ST-SUP-RP12-LC12). It is a pointer, so Runtime stays
+	// comparable, as the API of v0.121.0 has it (ST-STD-RUNTIME-R03).
+	deadline  *deadlineFunc
 	otlp      *otlpSink
 	console   *consoleSink
 	closeOnce sync.Once
@@ -244,7 +251,11 @@ func SpanNames() []string { return []string{CallSpanName} }
 func (r *Runtime) Close(ctx context.Context) error {
 	r.closeOnce.Do(func() {
 		r.core.closed.Store(true)
-		ctx, cancel := context.WithTimeout(ctx, otel.ShutdownTimeout)
+		bound := context.WithTimeout
+		if r.deadline != nil {
+			bound = *r.deadline
+		}
+		ctx, cancel := bound(ctx, otel.ShutdownTimeout)
 		defer cancel()
 		var group sync.WaitGroup
 		var drained atomic.Bool

@@ -153,23 +153,37 @@ func forward(t *testing.T, target string) string {
 	return l.Addr().String()
 }
 
-// stored counts the records of the topic events of the broker at address.
+// stored counts the records of the topic events of the broker at address: the end offset of its one partition,
+// which one ListOffsets request reads when the deliveries before it are acknowledged. It reads no fetches in a time
+// window, so the count does not depend on the time that the broker takes to answer.
 func stored(t *testing.T, address string) int {
 	t.Helper()
-	client, err := kgo.NewClient(kgo.SeedBrokers(address), kgo.ConsumeTopics(fakeTopic),
-		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()), kgo.FetchMaxWait(100*time.Millisecond))
+	client, err := kgo.NewClient(kgo.SeedBrokers(address))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	n := 0
-	end := time.Now().Add(time.Second)
-	for time.Now().Before(end) {
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		n += len(client.PollFetches(ctx).Records())
-		cancel()
+	partition := kmsg.NewListOffsetsRequestTopicPartition()
+	partition.Partition = 0
+	partition.Timestamp = -1 // the end offset
+	topic := kmsg.NewListOffsetsRequestTopic()
+	topic.Topic = fakeTopic
+	topic.Partitions = []kmsg.ListOffsetsRequestTopicPartition{partition}
+	request := kmsg.NewPtrListOffsetsRequest()
+	request.ReplicaID = -1
+	request.Topics = []kmsg.ListOffsetsRequestTopic{topic}
+	response, err := request.RequestWith(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return n
+	if len(response.Topics) != 1 || len(response.Topics[0].Partitions) != 1 {
+		t.Fatalf("the end offset of %s has no answer for its one partition: %+v", fakeTopic, response.Topics)
+	}
+	answer := response.Topics[0].Partitions[0]
+	if err := kerr.ErrorForCode(answer.ErrorCode); err != nil {
+		t.Fatal(err)
+	}
+	return int(answer.Offset)
 }
 
 // otherAddress gives an IPv4 address of this host that is not a loopback address.

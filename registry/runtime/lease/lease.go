@@ -198,9 +198,13 @@ type Held struct {
 
 	// mu guards the token and the bound of the lease. No lock is held across a round trip to the database, so a
 	// write under the lease can read them while a renew waits for the row.
-	mu      sync.RWMutex
-	token   int64
-	next    int64 // the token a renew that runs can give, or 0
+	mu    sync.RWMutex
+	token int64
+	next  int64 // the token a renew that runs can give, or 0
+	// unsure is the token that a failed renew can have given: the renew statement failed in the database or on
+	// the way back, so its UPDATE can have committed on the server with no answer to the client. It is 0 when
+	// every renew answered.
+	unsure  int64
 	expires time.Time
 
 	// renewing lets one renew run at a time.
@@ -290,6 +294,9 @@ func (h *Held) Renew(ctx context.Context) error {
 		err = fmt.Errorf("lease %s: %w: the row no longer names this holder with token %d in an unexpired lease", h.client.name, ErrLost, want-1)
 	case err != nil:
 		err = fmt.Errorf("lease %s: %w: %w", h.client.name, ErrLost, err)
+		h.mu.Lock()
+		h.unsure = want
+		h.mu.Unlock()
 	case token != want:
 		err = fmt.Errorf("lease %s: %w: the renew gave token %d, not %d", h.client.name, ErrLost, token, want)
 	}
@@ -308,12 +315,29 @@ func (h *Held) Renew(ctx context.Context) error {
 }
 
 // Release stops the holder, waits for the writes under the lease that run, and makes the lease expire, so another
-// holder can take it at once.
+// holder can take it at once. When a renew failed with no answer from the database, its UPDATE can have committed
+// on the server and given the row the next token, which the holder does not know. Release then also makes the
+// lease expire with that token, when the row does not hold the token the holder knows (review of PR #389, L1).
+// Each release statement changes the row only while it names this holder with that token, so a lease that another
+// holder took stays as it is.
 func (h *Held) Release(ctx context.Context) error {
 	h.halt(fmt.Errorf("lease %s: released", h.client.name))
 	h.act.Lock()
 	defer h.act.Unlock()
-	if _, err := h.client.db.ExecContext(ctx, releaseStatement, h.client.name, h.client.holder, h.Token()); err != nil {
+	h.mu.RLock()
+	token, unsure := h.token, h.unsure
+	h.mu.RUnlock()
+	result, err := h.client.db.ExecContext(ctx, releaseStatement, h.client.name, h.client.holder, token)
+	if err != nil {
+		return fmt.Errorf("lease %s: release: %w", h.client.name, err)
+	}
+	if unsure == 0 {
+		return nil
+	}
+	if n, err := result.RowsAffected(); err == nil && n != 0 {
+		return nil
+	}
+	if _, err := h.client.db.ExecContext(ctx, releaseStatement, h.client.name, h.client.holder, unsure); err != nil {
 		return fmt.Errorf("lease %s: release: %w", h.client.name, err)
 	}
 	return nil
@@ -464,9 +488,16 @@ func (c *Client) hold(ctx context.Context, h *Held, work func(ctx context.Contex
 				// first, so the next holder does not wait for the lease to expire (review of PR #387, L2). The
 				// release changes the row only while it names this holder with its own token, so a lease that
 				// another holder took stays as it is.
+				//
+				// The renew error is joined too, unless it is only the end of ctx: a renew that found the lease
+				// taken or expired (ErrLost) at the same time as the end of ctx stays ErrLost for the caller
+				// (review of PR #389, L2).
 				if ctx.Err() != nil {
 					release()
-					return errors.Join(ctx.Err(), workErr)
+					if errors.Is(err, ctx.Err()) {
+						return errors.Join(ctx.Err(), workErr)
+					}
+					return errors.Join(ctx.Err(), err, workErr)
 				}
 				return err
 			}

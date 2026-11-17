@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/oteldeadline"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
@@ -108,8 +109,19 @@ func TestProbeSinks(t *testing.T) {
 		release := stdout.hold()
 		emitCalls(r, event, 500)
 		stdout.waitEntered(t)
-		time.AfterFunc(100*time.Millisecond, release)
-		if err := r.Close(context.Background()); err != nil {
+		// The limit of Close tells the test that Close started its drain, so the test lets standard output go only
+		// while Close waits for it (review of PR #391, L4). The limit has no end here: the drain completes.
+		started := make(chan struct{})
+		var open deadlineFunc = func(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+			close(started)
+			return context.WithCancel(parent)
+		}
+		r.deadline = &open
+		drained := make(chan error, 1)
+		go func() { drained <- r.Close(context.Background()) }()
+		<-started
+		release()
+		if err := <-drained; err != nil {
 			t.Fatal(err)
 		}
 		if got := len(stdout.all()); got != 500 {
@@ -119,19 +131,58 @@ func TestProbeSinks(t *testing.T) {
 		c := startCollector(t)
 		c.hold.Store(true)
 		stdout = &lines{}
-		r = newProbe(t, newTelemetry(t), "json", stdout)
+		telemetry := newTelemetry(t)
+		r = newProbe(t, telemetry, "json", stdout)
+		// The limit of Close and the shutdown bound of the telemetry runtime are deadline functions that the test
+		// ends itself, so the test reads which limit each one takes and from which context, with no wall-clock
+		// bound. The limit of Close marks its context, so the test sees that the telemetry runtime shuts down
+		// inside it.
+		type limit struct {
+			d      time.Duration
+			shared bool
+		}
+		type sharedLimit struct{}
+		limits := make(chan limit, 2)
+		var end context.CancelFunc
+		var bound deadlineFunc = func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.WithValue(parent, sharedLimit{}, true))
+			end = cancel
+			limits <- limit{d: d}
+			return ctx, cancel
+		}
+		r.deadline = &bound
+		if !oteldeadline.Set(telemetry, func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+			limits <- limit{d: d, shared: parent.Value(sharedLimit{}) != nil}
+			return context.WithCancel(parent)
+		}) {
+			t.Fatal("the telemetry runtime took no shutdown bound")
+		}
 		release = stdout.hold()
 		defer release()
 		emitCalls(r, event, 10)
 		stdout.waitEntered(t)
-		begin := time.Now()
-		err := r.Close(context.Background())
-		elapsed := time.Since(begin)
-		if err == nil {
+		closed := make(chan error, 1)
+		go func() { closed <- r.Close(context.Background()) }()
+		if got := <-limits; got.d != otel.ShutdownTimeout {
+			t.Fatalf("Close takes the limit %v, want the one shared limit of %v", got.d, otel.ShutdownTimeout)
+		}
+		select {
+		case err := <-closed:
+			t.Fatalf("Close returned %v before its limit ended, with standard output and the collector held", err)
+		default:
+		}
+		end()
+		if err := <-closed; err == nil {
 			t.Fatal("Close reported a full drain with standard output and the collector held")
 		}
-		if elapsed > otel.ShutdownTimeout+time.Second {
-			t.Fatalf("Close took %v, more than the one shared limit of %v", elapsed, otel.ShutdownTimeout)
+		// The telemetry runtime shut down before Close returned, so its bound is in the channel now.
+		select {
+		case got := <-limits:
+			if !got.shared || got.d != otel.ShutdownTimeout {
+				t.Fatalf("the telemetry runtime shuts down with the bound %v inside the limit of Close %v, want %v inside it", got.d, got.shared, otel.ShutdownTimeout)
+			}
+		default:
+			t.Fatal("the telemetry runtime did not shut down with its bound inside Close")
 		}
 		before := r.Delivery().ProbeDropped
 		call := r.Bind(context.Background(), "t1", "user:u-7", command)

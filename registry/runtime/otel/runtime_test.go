@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -65,7 +66,12 @@ type collector struct {
 	cancelled chan struct{}
 	mu        sync.Mutex
 	batches   []int
+	// refuse makes the collector refuse each export at once with an error, so an export fails with no wait.
+	refuse atomic.Bool
 }
+
+// refused is the answer of a collector that refuses the export.
+var refused = status.Error(grpccodes.Unavailable, "the collector refuses the export")
 
 // wait holds one export when the collector holds, until release or until the caller gives up.
 func (c *collector) wait(ctx context.Context) error {
@@ -89,6 +95,9 @@ func signal(to chan struct{}) {
 }
 
 func (c *collector) Export(ctx context.Context, request *tracecollector.ExportTraceServiceRequest) (*tracecollector.ExportTraceServiceResponse, error) {
+	if c.refuse.Load() {
+		return nil, refused
+	}
 	if c.holding.Load() {
 		signal(c.arrived)
 	}
@@ -136,6 +145,9 @@ type logSink struct {
 }
 
 func (s *logSink) Export(ctx context.Context, request *logcollector.ExportLogsServiceRequest) (*logcollector.ExportLogsServiceResponse, error) {
+	if s.c.refuse.Load() {
+		return nil, refused
+	}
 	if err := s.c.wait(ctx); err != nil {
 		return nil, err
 	}
@@ -153,6 +165,9 @@ type metricSink struct {
 }
 
 func (s *metricSink) Export(ctx context.Context, request *metriccollector.ExportMetricsServiceRequest) (*metriccollector.ExportMetricsServiceResponse, error) {
+	if s.c.refuse.Load() {
+		return nil, refused
+	}
 	if err := s.c.wait(ctx); err != nil {
 		return nil, err
 	}
@@ -324,7 +339,7 @@ func TestWithoutCollector(t *testing.T) {
 }
 
 // silentCollector accepts connections and never answers.
-func silentCollector(t testing.TB) {
+func silentCollector(t testing.TB) <-chan struct{} {
 	t.Helper()
 	clearEnvironment(t)
 	file, _ := trustFile(t)
@@ -334,6 +349,7 @@ func silentCollector(t testing.TB) {
 	}
 	var mu sync.Mutex
 	var held []net.Conn
+	accepted := make(chan struct{}, 1)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -343,6 +359,7 @@ func silentCollector(t testing.TB) {
 			mu.Lock()
 			held = append(held, conn)
 			mu.Unlock()
+			signal(accepted)
 		}
 	}()
 	t.Cleanup(func() {
@@ -356,21 +373,42 @@ func silentCollector(t testing.TB) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://"+listener.Addr().String())
 	t.Setenv("OTEL_EXPORTER_OTLP_CERTIFICATE", file)
 	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "1")
+	return accepted
+}
+
+// created is the result of New.
+type created struct {
+	r   *Runtime
+	err error
 }
 
 func TestExportConnection(t *testing.T) {
 	t.Run("ST-SUP-RP03-LC02-T01 The runtime starts while the collector never answers", func(t *testing.T) {
-		silentCollector(t)
+		accepted := silentCollector(t)
 		global := otel.GetTracerProvider()
-		started := time.Now()
-		r, err := New("records")
+		// New must return before it opens a connection to the collector. A collector that never answers holds each
+		// connection, so a startup that waits for it opens one and then waits: the test sees the connection and
+		// fails, and does not wait for New on the wall clock.
+		result := make(chan created, 1)
+		go func() {
+			r, err := New("records")
+			result <- created{r, err}
+		}()
+		var got created
+		select {
+		case got = <-result:
+		case <-accepted:
+			select {
+			case got = <-result:
+			default:
+				t.Fatal("startup connected to the collector and waited for it")
+			}
+		}
+		r, err := got.r, got.err
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer r.Close()
-		if time.Since(started) > 500*time.Millisecond {
-			t.Fatal("startup waited for the collector")
-		}
 		r.Handler(&countingHandler{}).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/records", nil))
 		if r.ExportFailures() != 0 || r.MetricExportFailures() != 0 || r.LogExportFailures() != 0 {
 			t.Fatal("an export completed before creation returned")
@@ -397,26 +435,78 @@ func TestExportConnection(t *testing.T) {
 	})
 }
 
+// holdSpans and holdLogs are exporters that never answer: each export waits until its context ends.
+type holdSpans struct{}
+
+func (holdSpans) ExportSpans(ctx context.Context, _ []sdktrace.ReadOnlySpan) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (holdSpans) Shutdown(context.Context) error { return nil }
+
+type holdLogs struct{}
+
+func (holdLogs) Export(ctx context.Context, _ []sdklog.Record) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+func (holdLogs) Shutdown(context.Context) error   { return nil }
+func (holdLogs) ForceFlush(context.Context) error { return nil }
+
+// blockedRuntime is a runtime with the runtime's own trace queue and log queue (ST-SUP-RP03-LC03), whose exporters
+// never answer. A test calls it in a synctest bubble, where the export bound runs on the clock of the bubble.
+func blockedRuntime(t testing.TB) *Runtime {
+	t.Helper()
+	r := &Runtime{service: "records", instance: "00000000-0000-4000-8000-000000000000", deadline: context.WithTimeout}
+	r.resource = serviceResource(r.service, r.instance)
+	r.spans = newSpanQueue(&safeSpanExporter{SpanExporter: holdSpans{}, failures: &r.traceFailures}, context.WithTimeout)
+	r.startTraces(1, r.spans)
+	if err := r.startSignals(nil, logQueue(holdLogs{}, &r.logFailures)); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// unblocked runs calls on its own goroutine in a synctest bubble and fails the test when the calls still wait once
+// every goroutine of the bubble waits: the exports never answer, so nothing can free a place in a queue. The caller
+// closes the runtime only after unblocked returns: a call that waits can hold the lock of the queue that the close
+// takes, so the bubble ends with its goroutines blocked and the test fails, and does not hang.
+func unblocked(t *testing.T, calls func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		calls()
+	}()
+	synctest.Wait()
+	select {
+	case <-done:
+	default:
+		t.Fatal("a call waited for an export that does not answer")
+	}
+}
+
 func TestQueuesDoNotBlock(t *testing.T) {
 	t.Run("ST-SUP-RP03-LC03-T01 A full queue does not block the request", func(t *testing.T) {
-		startCollector(t, true)
-		r, err := New("records")
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer r.Close()
-		handler := r.Handler(&countingHandler{})
-		started := time.Now()
-		for i := 0; i < QueueSize*3; i++ {
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, httptest.NewRequest("GET", "/records", nil))
-			if w.Code != http.StatusNoContent {
+		synctest.Test(t, func(t *testing.T) {
+			r := blockedRuntime(t)
+			handler := r.Handler(&countingHandler{})
+			failed := false
+			unblocked(t, func() {
+				for i := 0; i < QueueSize*3; i++ {
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, httptest.NewRequest("GET", "/records", nil))
+					failed = failed || w.Code != http.StatusNoContent
+				}
+			})
+			r.Close()
+			if failed {
 				t.Fatal("the collector failure reached the request")
 			}
-		}
-		if time.Since(started) > time.Second {
-			t.Fatal("export back pressure delayed the requests")
-		}
+			if r.DroppedSpans() == 0 {
+				t.Fatal("the full trace queue dropped no span")
+			}
+		})
 	})
 }
 
@@ -461,7 +551,7 @@ func TestHTTPSpan(t *testing.T) {
 				server.Config.ErrorLog = log.New(io.Discard, "", 0)
 				server.Start()
 				defer server.Close()
-				client := &http.Client{Timeout: 2 * time.Second}
+				client := &http.Client{}
 				defer client.CloseIdleConnections()
 				response, err := client.Get(server.URL)
 				if err != nil {
@@ -471,11 +561,7 @@ func TestHTTPSpan(t *testing.T) {
 				if response.StatusCode != tc.want {
 					t.Fatalf("wire status: got %d, want %d", response.StatusCode, tc.want)
 				}
-				select {
-				case <-done:
-				case <-time.After(time.Second):
-					t.Fatal("the handler did not finish")
-				}
+				<-done
 				if got, _ := spanAttribute(h.lastSpan(t), "http.response.status_code"); got != strconv.Itoa(tc.want) {
 					t.Fatalf("span status: got %s, want %d", got, tc.want)
 				}
@@ -513,7 +599,9 @@ func TestHTTPSpan(t *testing.T) {
 			if strings.Contains(string(raw), "private-record-id") {
 				t.Fatal("the span used the request path instead of the route pattern")
 			}
-		case <-time.After(time.Second):
+		default:
+			// Close returns after the trace queue sent what it held, and the collector keeps each request before it
+			// answers, so the span is there with no wait.
 			t.Fatal("the span was not exported")
 		}
 	})
@@ -970,17 +1058,6 @@ func (e *heldExporter) ExportSpans(ctx context.Context, _ []sdktrace.ReadOnlySpa
 	return ctx.Err()
 }
 func (e *heldExporter) Shutdown(context.Context) error { return nil }
-
-func waitFor(t testing.TB, limit time.Duration, done func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(limit)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatal("the condition did not hold in time")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
 
 // countingExporter counts the spans it exports.
 type countingExporter struct{ spans atomic.Int64 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -499,91 +500,128 @@ func TestQueueAdmission(t *testing.T) {
 		return q
 	}
 
+	// The admission tests run in a synctest bubble: synctest.Wait returns when every goroutine of the test waits, so
+	// a test knows that the scan waits at admission with no poll, and a call that blocks fails the test when the
+	// bubble ends, not at a wall-clock limit.
 	t.Run("ST-SUP-RP02-LC11-T01 The scan cursor advances only after the item is admitted", func(t *testing.T) {
-		q := busy(t, 2)
-		ctx, cancel := context.WithCancel(context.Background())
-		var waiting atomic.Int32
-		go func() {
-			for q.waiting.Load() == 0 || q.metrics().Queued+q.metrics().Active < 2 {
-				time.Sleep(time.Millisecond)
+		synctest.Test(t, func(t *testing.T) {
+			q := busy(t, 2)
+			ctx, cancel := context.WithCancel(context.Background())
+			type scanned struct {
+				progress ScanProgress
+				err      error
 			}
-			waiting.Store(1)
+			done := make(chan scanned, 1)
+			go func() {
+				progress, err := ScanFrom(ctx, "", page("first", "second"), func(key string) error { return q.addWait(ctx, key) }, scanOptions())
+				done <- scanned{progress, err}
+			}()
+			synctest.Wait()
+			waiting, metrics := q.waiting.Load(), q.metrics()
 			cancel()
-		}()
-		progress, err := ScanFrom(ctx, "", page("first", "second"), func(key string) error { return q.addWait(ctx, key) }, scanOptions())
-		if !errors.Is(err, context.Canceled) || waiting.Load() != 1 {
-			t.Fatal("the scan did not wait at admission", err)
-		}
-		if progress.After != "first" {
-			t.Fatalf("the stored cursor is %q, not the first item", progress.After)
-		}
+			got := <-done
+			if waiting != 1 || metrics.Queued+metrics.Active != 2 || !errors.Is(got.err, context.Canceled) {
+				t.Fatal("the scan did not wait at admission", waiting, metrics, got.err)
+			}
+			if got.progress.After != "first" {
+				t.Fatalf("the stored cursor is %q, not the first item", got.progress.After)
+			}
+		})
 	})
 
 	t.Run("ST-SUP-RP02-LC11-T02 The page request context ends before the scan waits for admission", func(t *testing.T) {
-		q := busy(t, 1)
-		var pageContext context.Context
-		source := func(ctx context.Context, after string, limit int) (CursorPage[string], error) {
-			pageContext = ctx
-			return page("next")(ctx, after, limit)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		ended := false
-		_, err := ScanFrom(ctx, "", source, func(key string) error {
-			ended = pageContext.Err() != nil
-			return q.addWait(ctx, key)
-		}, scanOptions())
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatal("the full queue did not hold the scan", err)
-		}
-		if !ended {
-			t.Fatal("the page context was still open when the scan waited for admission")
-		}
+		synctest.Test(t, func(t *testing.T) {
+			q := busy(t, 1)
+			var pageContext context.Context
+			source := func(ctx context.Context, after string, limit int) (CursorPage[string], error) {
+				pageContext = ctx
+				return page("next")(ctx, after, limit)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ended := make(chan bool, 1)
+			done := make(chan error, 1)
+			go func() {
+				_, err := ScanFrom(ctx, "", source, func(key string) error {
+					ended <- pageContext.Err() != nil
+					return q.addWait(ctx, key)
+				}, scanOptions())
+				done <- err
+			}()
+			synctest.Wait()
+			if q.waiting.Load() != 1 {
+				t.Fatal("the full queue did not hold the scan at admission")
+			}
+			cancel()
+			if err := <-done; !errors.Is(err, context.Canceled) {
+				t.Fatal("the scan did not return the end of its context", err)
+			}
+			if !<-ended {
+				t.Fatal("the page context was still open when the scan waited for admission")
+			}
+		})
 	})
 
 	t.Run("ST-SUP-RP02-LC11-T03 Admission stops on cancellation", func(t *testing.T) {
-		q := busy(t, 1)
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		go func() {
-			_, err := ScanFrom(ctx, "", page("next"), func(key string) error { return q.addWait(ctx, key) }, scanOptions())
-			done <- err
-		}()
-		for q.waiting.Load() == 0 {
-			time.Sleep(time.Millisecond)
-		}
-		cancel()
-		select {
-		case err := <-done:
-			if !errors.Is(err, context.Canceled) {
-				t.Fatal("the scan did not return the cancellation", err)
+		synctest.Test(t, func(t *testing.T) {
+			q := busy(t, 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() {
+				_, err := ScanFrom(ctx, "", page("next"), func(key string) error { return q.addWait(ctx, key) }, scanOptions())
+				done <- err
+			}()
+			synctest.Wait()
+			if q.waiting.Load() != 1 {
+				t.Fatal("the scan did not wait at admission")
 			}
-		case <-time.After(time.Second):
-			t.Fatal("the scan did not stop within one second")
-		}
-		q.finish("active", false, time.Millisecond, time.Second)
-		if len(q.entries) != 0 {
-			t.Fatal("an item was admitted after the cancellation", q.entries)
-		}
+			cancel()
+			synctest.Wait()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatal("the scan did not return the cancellation", err)
+				}
+			default:
+				t.Fatal("the scan did not stop on the cancellation")
+			}
+			q.finish("active", false, time.Millisecond, time.Second)
+			if len(q.entries) != 0 {
+				t.Fatal("an item was admitted after the cancellation", q.entries)
+			}
+		})
 	})
 
 	t.Run("ST-SUP-RP02-LC11-T04 Adding a key does not block the caller", func(t *testing.T) {
-		q := newKeyQueue[string](2)
-		q.setReady(true)
-		sink := &KeySink[string]{queue: q}
-		for _, key := range []string{"one", "two"} {
-			if err := sink.Add(key); err != nil {
-				t.Fatal(err)
+		synctest.Test(t, func(t *testing.T) {
+			q := newKeyQueue[string](2)
+			q.setReady(true)
+			sink := &KeySink[string]{queue: q}
+			for _, key := range []string{"one", "two"} {
+				if err := sink.Add(key); err != nil {
+					t.Fatal(err)
+				}
 			}
-		}
-		var err error
-		within(t, 100*time.Millisecond, func() { err = sink.Add("three") })
-		if !errors.Is(err, ErrOverflow) {
-			t.Fatal("a full queue did not report backpressure", err)
-		}
-		within(t, 100*time.Millisecond, func() { err = sink.Add("one") })
-		if err != nil || len(q.entries) != 2 || q.entries["one"] == nil || q.entries["two"] == nil {
-			t.Fatal("a key was lost", err, q.entries)
-		}
+			// add calls Add on its own goroutine and gives its error, or fails the test when Add still waits once
+			// every goroutine of the bubble waits: with no worker, nothing frees a place in the queue.
+			add := func(key string) error {
+				done := make(chan error, 1)
+				go func() { done <- sink.Add(key) }()
+				synctest.Wait()
+				select {
+				case err := <-done:
+					return err
+				default:
+					t.Fatalf("Add(%q) blocks the caller on a full queue", key)
+					return nil
+				}
+			}
+			if err := add("three"); !errors.Is(err, ErrOverflow) {
+				t.Fatal("a full queue did not report backpressure", err)
+			}
+			if err := add("one"); err != nil || len(q.entries) != 2 || q.entries["one"] == nil || q.entries["two"] == nil {
+				t.Fatal("a key was lost", err, q.entries)
+			}
+		})
 	})
 }

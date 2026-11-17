@@ -40,6 +40,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/oteldeadline"
 	"github.com/jsell-rh/stego/registry/runtime/internal/spanevent"
 )
 
@@ -105,6 +106,19 @@ type Runtime struct {
 // clock. A test gives a clock that it moves itself, so it proves the export and shutdown bounds of
 // ST-SUP-RP03-LC10 with no wall-clock limit.
 type deadline func(parent context.Context, d time.Duration) (context.Context, context.CancelFunc)
+
+// init gives the internal package oteldeadline the setter of the shutdown bound, so a test of another package of the
+// runtime module can end the shutdown limit itself; the code that a service generates cannot reach it.
+func init() {
+	oteldeadline.Register(func(runtime any, bound oteldeadline.Deadline) bool {
+		r, ok := runtime.(*Runtime)
+		if !ok || r == nil {
+			return false
+		}
+		r.deadline = deadline(bound)
+		return true
+	})
+}
 
 // settings are the telemetry settings of the process environment, checked (ST-SUP-RP03-LC09).
 type settings struct {
@@ -173,7 +187,7 @@ func newRuntime(service string, bound deadline, operations ...string) (*Runtime,
 			r.Close()
 			return nil, errors.New("cannot create the log exporter")
 		}
-		processor = sdklog.NewBatchProcessor(&safeLogExporter{Exporter: exporter, failures: &r.logFailures}, sdklog.WithMaxQueueSize(QueueSize), sdklog.WithExportMaxBatchSize(BatchSize), sdklog.WithExportInterval(batchDelay), sdklog.WithExportTimeout(ExportTimeout))
+		processor = logQueue(exporter, &r.logFailures)
 	}
 	if err := r.startSignals(reader, processor); err != nil {
 		r.Close()
@@ -209,6 +223,13 @@ func dial(values settings) (*grpc.ClientConn, error) {
 		return nil, errors.New("cannot create the telemetry export connection")
 	}
 	return connection, nil
+}
+
+// logQueue is the bounded log queue of ST-SUP-RP03-LC03 over the log exporter: it holds QueueSize records, drops
+// rather than blocks, sends batches of at most BatchSize, bounds each export by ExportTimeout and counts each failed
+// export in failures.
+func logQueue(exporter sdklog.Exporter, failures *atomic.Uint64) sdklog.Processor {
+	return sdklog.NewBatchProcessor(&safeLogExporter{Exporter: exporter, failures: failures}, sdklog.WithMaxQueueSize(QueueSize), sdklog.WithExportMaxBatchSize(BatchSize), sdklog.WithExportInterval(batchDelay), sdklog.WithExportTimeout(ExportTimeout))
 }
 
 // startTraces starts the private tracer provider with the local ratio sampler and the span processor. The

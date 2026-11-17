@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -271,28 +272,36 @@ func probe(e Event, u Untrusted) bool {
 			return json.RawMessage(b.String())
 		}
 		huge := build(16383)
-		start := time.Now()
 		e := sampleEvent("t1", "update")
 		err := e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": huge}, map[string]any{"doc": huge})
 		if err == nil || !strings.Contains(err.Error(), "doc") || strings.Contains(err.Error(), "1111") {
 			t.Errorf("SetStates with numbers of 16383 fraction digits gave %v, want a refusal that names doc and not the value", err)
 		}
-		// The refusal comes after the JSON text is decoded, which takes about 100 ms under the race detector on CI;
-		// the former count of digits took 3.7 s here. The bound is loose so that the race run does not flake.
-		if d := time.Since(start); d > time.Second {
-			t.Errorf("SetStates with 63 numbers of 16383 fraction digits took %v, want under 1 s", d)
-		}
+		// The refusal comes after the JSON text is decoded, and its work grows with the digits as the text does.
+		capped(t, "the refusal of 63 numbers of 16383 fraction digits", 2*len(huge), 4, func() {
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": huge}, map[string]any{"doc": huge})
+		})
+		linear(t, "the refusal of 63 numbers of 16383 fraction digits", 4096, 16383, func(n int) {
+			raw := build(n)
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": raw}, map[string]any{"doc": raw})
+		})
 		// The longest accepted number keeps its exact value, and 63 of them in before and after stay cheap.
 		long := build(1097)
-		start = time.Now()
 		e = sampleEvent("t1", "update")
 		if err := e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": long}, map[string]any{"doc": long}); err != nil {
 			t.Fatalf("SetStates with numbers of 1099 characters: %v", err)
 		}
-		// The bound is loose for a run under the race detector; the old count of digits took seconds here.
-		if d := time.Since(start); d > time.Second {
-			t.Errorf("SetStates with 63 numbers of 1099 characters took %v, want under 1 s", d)
-		}
+		capped(t, "the canonical forms of 63 numbers of 1099 characters", 2*len(long), 64, func() {
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": long}, map[string]any{"doc": long})
+		})
+		linear(t, "the canonical forms of 63 numbers of 1099 characters", 275, 1097, func(n int) {
+			raw := build(n)
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": raw}, map[string]any{"doc": raw})
+		})
 		if want := "0." + strings.Repeat("1", 1096) + "3"; !bytes.Contains(e.After.JSON(), []byte(want)) {
 			t.Errorf("the after state does not hold the exact number")
 		}
@@ -317,37 +326,47 @@ func probe(e Event, u Untrusted) bool {
 			return json.RawMessage(b.String())
 		}
 		deep := nested(9000, "1")
-		start := time.Now()
 		e := sampleEvent("t1", "update")
 		err := e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": deep}, map[string]any{"doc": nested(9000, "2")})
 		if err == nil || !strings.Contains(err.Error(), "doc") || !strings.Contains(err.Error(), "64") || strings.Contains(err.Error(), "kkk") {
 			t.Errorf("SetStates with a value of depth 9000 gave %v, want a refusal that names doc and the bound and no value", err)
 		}
-		if d := time.Since(start); d > time.Second {
-			t.Errorf("SetStates with a value of depth 9000 took %v, want under 1 s", d)
-		}
+		capped(t, "the refusal of a value of depth 9000", 2*len(deep), 8, func() {
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": deep}, map[string]any{"doc": deep})
+		})
+		linear(t, "the refusal of a value of depth 9000", 2250, 9000, func(n int) {
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": nested(n, "1")}, map[string]any{"doc": nested(n, "2")})
+		})
 		e = sampleEvent("t1", "create")
 		if err := e.SetStates(Settings{Level: LevelChange}, Fields{}, nil, map[string]any{"doc": nested(65, "1")}); err == nil {
 			t.Errorf("SetStates accepts a value of depth 65")
 		}
 		// At the bound, a large leaf that changes in one member keeps the work linear: the patch compares members,
 		// not the encoding of each level.
-		leaf := func(last string) string {
-			items := make([]string, 0, 30000)
-			for i := range 30000 {
+		leafOf := func(count int, last string) string {
+			items := make([]string, 0, count)
+			for i := range count {
 				items = append(items, strconv.Itoa(i))
 			}
 			items[len(items)-1] = last
 			return "[" + strings.Join(items, ",") + "]"
 		}
-		start = time.Now()
+		leaf := func(last string) string { return leafOf(30000, last) }
 		e = sampleEvent("t1", "update")
 		if err := e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": nested(63, leaf("1"))}, map[string]any{"doc": nested(63, leaf("2"))}); err != nil {
 			t.Fatalf("SetStates with a value of depth 64: %v", err)
 		}
-		if d := time.Since(start); d > time.Second {
-			t.Errorf("an update of a value of depth 64 took %v, want under 1 s", d)
-		}
+		before, after := nested(63, leaf("1")), nested(63, leaf("2"))
+		capped(t, "an update of a value of depth 64", len(before)+len(after), 192, func() {
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": before}, map[string]any{"doc": after})
+		})
+		linear(t, "an update of a value of depth 64", 7500, 30000, func(n int) {
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, map[string]any{"doc": nested(63, leafOf(n, "1"))}, map[string]any{"doc": nested(63, leafOf(n, "2"))})
+		})
 		p, err := ParsePatch(e.Patch.JSON())
 		if err != nil {
 			t.Fatal(err)
@@ -364,12 +383,16 @@ func probe(e Event, u Untrusted) bool {
 			}
 			return v
 		}
-		start = time.Now()
 		var ops Patch
 		diffValue("", tree(5000, json.Number("1")), tree(5000, json.Number("2")), &ops)
-		if d := time.Since(start); d > time.Second || len(ops) != 1 || ops[0].Op != "replace" {
-			t.Errorf("the compare of two values of depth 5000 took %v and gave %d operations, want one replace in under 1 s", d, len(ops))
+		if len(ops) != 1 || ops[0].Op != "replace" {
+			t.Errorf("the compare of two values of depth 5000 gave %d operations, want one replace", len(ops))
 		}
+		linear(t, "the compare of two values of depth 5000", 1250, 5000, func(n int) {
+			a, b := tree(n, json.Number("1")), tree(n, json.Number("2"))
+			var ops Patch
+			diffValue("", a, b, &ops)
+		})
 	})
 
 	t.Run("ST-SUP-RP05-LC04-T09 A number whose canonical form is long is refused, also when its text is short", func(t *testing.T) {
@@ -380,19 +403,26 @@ func probe(e Event, u Untrusted) bool {
 			t.Errorf("a number of 801 mantissa digits and the exponent -400 gave %v, want a refusal that names the field", err)
 		}
 		// A JSON array of 1 MiB of 1e-400 would give about 60 MB of canonical text: it is refused before any is made.
-		items := make([]string, 0, 150000)
-		for range 150000 {
-			items = append(items, "1e-400")
+		many := func(count int) json.RawMessage {
+			items := make([]string, 0, count)
+			for range count {
+				items = append(items, "1e-400")
+			}
+			return json.RawMessage("[" + strings.Join(items, ",") + "]")
 		}
-		raw := json.RawMessage("[" + strings.Join(items, ",") + "]")
-		start := time.Now()
+		raw := many(150000)
 		e := sampleEvent("t1", "create")
 		err := e.SetStates(Settings{Level: LevelChange}, Fields{}, nil, map[string]any{"doc": raw})
 		if err == nil || !strings.Contains(err.Error(), "doc") || strings.Contains(err.Error(), "1e-400") {
 			t.Errorf("SetStates with 150000 numbers 1e-400 gave %v, want a refusal that names doc and no value", err)
 		}
-		if d := time.Since(start); d > time.Second {
-			t.Errorf("the refusal took %v, want under 1 s", d)
+		// The refusal comes before any canonical form is made: its work is that of the decode of the text, at most
+		// a small multiple of the text, and not that of 60 MB of canonical text.
+		if n := allocated(func() {
+			e := sampleEvent("t1", "create")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{}, nil, map[string]any{"doc": raw})
+		}); n > 40*uint64(len(raw)) {
+			t.Errorf("the refusal allocated %d bytes for a text of %d, want at most 40 times the text", n, len(raw))
 		}
 		// A few such numbers are kept.
 		e = sampleEvent("t1", "create")
@@ -463,26 +493,23 @@ func probe(e Event, u Untrusted) bool {
 			}
 			return json.RawMessage("[" + strings.Join(items, ",") + "]")
 		}
-		// The time grows with the count as the input does: five times the values take well under 25 times the time,
-		// which a cost of the pii values times the operations would take. The ratio holds under the race detector.
-		run := func(n int) time.Duration {
+		// The work grows with the count as the input does: five times the values take well under 25 times the work,
+		// which a cost of the pii values times the operations would take.
+		b, a := build(50_000, "a@example.com", 1), build(50_000, "b@example.com", 2)
+		capped(t, "an update of 50000 changed pii values", len(b)+len(a), 384, func() {
+			e := sampleEvent("t1", "update")
+			_ = e.SetStates(Settings{Level: LevelChange}, Fields{"m.e": PII}, map[string]any{"m": b}, map[string]any{"m": a})
+		})
+		linear(t, "an update of changed pii values", 10_000, 50_000, func(n int) {
 			b, a := build(n, "a@example.com", 1), build(n, "b@example.com", 2)
-			start := time.Now()
 			e := sampleEvent("t1", "update")
 			if err := e.SetStates(Settings{Level: LevelChange}, Fields{"m.e": PII}, map[string]any{"m": b}, map[string]any{"m": a}); err != nil {
 				t.Fatal(err)
 			}
-			d := time.Since(start)
 			if bytes.Contains(e.Patch.JSON(), []byte("example.com")) {
 				t.Error("the patch holds a pii value")
 			}
-			return d
-		}
-		run(1000) // warm up
-		small, large := run(10_000), run(50_000)
-		if large > 10*small+50*time.Millisecond || large > 10*time.Second {
-			t.Errorf("50000 changed pii values took %v and 10000 took %v, want linear growth", large, small)
-		}
+		})
 		// Each pii value that changed is marked once, under its own pointer.
 		e := sampleEvent("t1", "update")
 		if err := e.SetStates(Settings{Level: LevelChange}, Fields{"m.e": PII}, map[string]any{"m": build(3, "a@example.com", 1)}, map[string]any{"m": build(3, "b@example.com", 1)}); err != nil {
@@ -852,4 +879,79 @@ func untrustedDecisions(t *testing.T, file string, src []byte) []string {
 	return slices.CompactFunc(out, func(a, b string) bool {
 		return strings.SplitN(a, ": ", 2)[0] == strings.SplitN(b, ": ", 2)[0]
 	})
+}
+
+// allocated runs f and gives the bytes that it allocated on the heap. The count does not depend on the speed of
+// the runner or on its load, so a cost bound on it does not flake; the tests of the package do not run in parallel.
+func allocated(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// threadCPU runs f on one locked thread and gives the CPU time that the thread used, in nanoseconds from the first
+// field of /proc/thread-self/schedstat of Linux, or false where the system has no such file; the cost tests then
+// compare only the allocations (review of PR #391, L2). Other processes and other goroutines do not change it, as
+// they change the wall clock.
+func threadCPU(f func()) (time.Duration, bool) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	read := func() (time.Duration, bool) {
+		raw, err := os.ReadFile("/proc/thread-self/schedstat")
+		if err != nil {
+			return 0, false
+		}
+		fields := strings.Fields(string(raw))
+		if len(fields) == 0 {
+			return 0, false
+		}
+		ns, err := strconv.ParseInt(fields[0], 10, 64)
+		return time.Duration(ns), err == nil
+	}
+	before, ok := read()
+	f()
+	after, ok2 := read()
+	if !ok || !ok2 {
+		return 0, false
+	}
+	return after - before, true
+}
+
+// linear fails the test when the work of run grows faster than its input. The bytes that run(large) allocates may
+// be at most twice those of run(small) times large/small; this count does not depend on the runner. The CPU time of
+// the thread of run(large) may be at most three times that of run(small) times large/small, a ratio of two runs on
+// one thread and not a bound on the wall clock, so the load of the runner does not change it; it catches work that
+// is quadratic and allocates nothing. Work that is linear in the input stays near the ratio of the sizes, and work
+// that is quadratic in it comes to the square of the ratio.
+func linear(t *testing.T, what string, small, large int, run func(n int)) {
+	t.Helper()
+	run(small) // The first run makes the memory that the package keeps, such as the pools of encoding/json.
+	low, high := allocated(func() { run(small) }), allocated(func() { run(large) })
+	scale := float64(large) / float64(small)
+	if low == 0 || float64(high) > 2*scale*float64(low) {
+		t.Errorf("%s allocated %d bytes at size %d and %d at size %d, want growth linear in the size", what, high, large, low, small)
+	}
+	cpuLow, ok := threadCPU(func() { run(small) })
+	cpuHigh, _ := threadCPU(func() { run(large) })
+	if !ok {
+		t.Logf("%s: no CPU time of one thread on this system; only the allocations are compared", what)
+		return
+	}
+	// A run shorter than the tick of the CPU count reads as 0; it takes the length of one tick.
+	cpuLow = max(cpuLow, time.Millisecond)
+	if float64(cpuHigh) > 3*scale*float64(cpuLow) {
+		t.Errorf("%s used %v of CPU at size %d and %v at size %d, want growth linear in the size", what, cpuHigh, large, cpuLow, small)
+	}
+}
+
+// capped fails the test when f allocates more than perByte bytes on the heap for each byte of its input of size
+// input. The caps hold over the measured counts with room of at least two times, also under the race detector, so
+// they bound the work itself where linear bounds only its growth (review of PR #391, L1).
+func capped(t *testing.T, what string, input int, perByte uint64, f func()) {
+	t.Helper()
+	if n := allocated(f); n > perByte*uint64(input) {
+		t.Errorf("%s allocated %d bytes for an input of %d, want at most %d times the input", what, n, input, perByte)
+	}
 }
