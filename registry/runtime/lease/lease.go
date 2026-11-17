@@ -232,6 +232,10 @@ func (h *Held) Expires() time.Time {
 	return h.expires
 }
 
+// Left is the time that the lease has left on the process clock of its client: the time to Expires. It is 0 or
+// less when the lease can have expired.
+func (h *Held) Left() time.Duration { return h.Expires().Sub(h.client.clock.Now()) }
+
 // TTL is the lease duration.
 func (h *Held) TTL() time.Duration { return h.client.ttl }
 
@@ -330,7 +334,7 @@ func (h *Held) Fence(ctx context.Context, tx *sql.Tx) (int64, error) {
 	}
 	// The timeout is the time left in whole milliseconds, rounded down, so it is never longer than the lease has
 	// left; a lease with less than one millisecond left takes no lock, as a timeout of 0 turns the bound off.
-	left := h.Expires().Sub(h.client.clock.Now()).Milliseconds()
+	left := h.Left().Milliseconds()
 	if left < 1 {
 		return 0, fmt.Errorf("lease %s: fence: the lease has no time left on the process clock", h.client.name)
 	}
@@ -355,8 +359,7 @@ func (h *Held) Fence(ctx context.Context, tx *sql.Tx) (int64, error) {
 
 // deadline is the context of a write under the lease: it ends when the lease can expire on the process clock.
 func (h *Held) deadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	left := h.Expires().Sub(h.client.clock.Now())
-	return context.WithTimeout(ctx, left)
+	return context.WithTimeout(ctx, h.Left())
 }
 
 // WithToken runs write in one transaction that holds the lease row (Fence), with the holder's token for the write

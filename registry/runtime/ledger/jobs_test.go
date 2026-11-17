@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/modes"
@@ -38,6 +40,139 @@ func (f *fixture) holderFor(ttl time.Duration) *holder {
 		f.t.Fatal(err)
 	}
 	return &holder{client: c}
+}
+
+// holderWith is a replica whose lease has the settings.
+func (f *fixture) holderWith(settings lease.Settings) *holder {
+	f.t.Helper()
+	c, err := lease.New(f.runtime, leaseName, fmt.Sprintf("replica-%d", holderSeq.Add(1)), settings)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return &holder{client: c}
+}
+
+// handClock is a lease clock that moves only when the test adds time to it. No timer of it fires.
+type handClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *handClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *handClock) After(time.Duration) <-chan time.Time { return nil }
+
+func (c *handClock) add(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+}
+
+// jobTrace reads the statements of a job's pool: the timeouts that the job sets, with the time left on the context
+// of that statement, and the snapshot statement, which it announces on snapshot.
+type jobTrace struct {
+	mu       sync.Mutex
+	sent     int
+	set      jobTimeouts
+	snapshot chan struct{}
+	once     sync.Once
+}
+
+type jobTimeouts struct {
+	lock, statement string
+	bounded         bool
+	left            time.Duration
+}
+
+func newJobTrace() *jobTrace { return &jobTrace{snapshot: make(chan struct{})} }
+
+func (j *jobTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.sent++
+	switch {
+	case strings.Contains(data.SQL, "set_config('lock_timeout'") && len(data.Args) == 2:
+		j.set.lock, _ = data.Args[0].(string)
+		j.set.statement, _ = data.Args[1].(string)
+		var deadline time.Time
+		if deadline, j.set.bounded = ctx.Deadline(); j.set.bounded {
+			j.set.left = time.Until(deadline)
+		}
+	case strings.Contains(data.SQL, "ledger_snapshot"):
+		j.once.Do(func() { close(j.snapshot) })
+	}
+	return ctx
+}
+
+func (j *jobTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (j *jobTrace) statements() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.sent
+}
+
+func (j *jobTrace) timeouts() jobTimeouts {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.set
+}
+
+// statsSession is one session of the test database that reads the statistics, and ends with the test.
+func (f *fixture) statsSession() *sql.Conn {
+	f.t.Helper()
+	conn, err := f.open(ownerRole, nil).Conn(f.ctx)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// endSessions closes the pools and ends every session of the test database but stats, and returns when the server
+// has ended each one. A session flushes its statistics as it ends, before it leaves the process array that
+// pg_terminate_backend waits on, so the counts of each session are in the statistics when endSessions returns. The
+// wait is that of the server; the test sets no time limit of its own on it.
+func (f *fixture) endSessions(stats *sql.Conn, pools ...*sql.DB) {
+	f.t.Helper()
+	var own int
+	if err := stats.QueryRowContext(f.ctx, "SELECT pg_backend_pid()").Scan(&own); err != nil {
+		f.t.Fatal(err)
+	}
+	// The sessions are read while their pools are open, so each one is listed, also one that ends at once.
+	var pids []int
+	rows, err := f.admin.QueryContext(f.ctx, `SELECT pid FROM pg_stat_activity WHERE datname = $1 AND pid <> $2 AND backend_type = 'client backend'`, f.db, own)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for rows.Next() {
+		var pid int
+		if err := rows.Scan(&pid); err != nil {
+			f.t.Fatal(err)
+		}
+		pids = append(pids, pid)
+	}
+	if err := rows.Err(); err != nil {
+		f.t.Fatal(err)
+	}
+	for _, db := range pools {
+		db.Close()
+	}
+	// A session that has already left gives false and a warning; one that does not end within the ten minutes of
+	// the server's wait stays in the process array, and the count below fails the test.
+	for _, pid := range pids {
+		if _, err := f.admin.ExecContext(f.ctx, "SELECT pg_terminate_backend($1, 600000)", pid); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	var left int
+	if err := f.admin.QueryRowContext(f.ctx, "SELECT count(*) FROM pg_stat_activity WHERE pid = ANY($1)", pids).Scan(&left); err != nil || left != 0 {
+		f.t.Fatalf("%d sessions of the test database did not end (%v)", left, err)
+	}
 }
 
 // take acquires the lease, or fails the test.
@@ -397,50 +532,24 @@ func TestJobs(t *testing.T) {
  AND through_xid = (SELECT through_xid FROM balance_snapshots WHERE account_id = 'dr' ORDER BY through_xid OFFSET 24 LIMIT 1)
  RETURNING through_xid::text`).Scan(&through)
 		})
-		// The statistics of the entries table count the rows that each scan reads. The pools are closed, so every
-		// backend has flushed its counts, and the check runs on a pool of its own, which is closed after it.
-		for _, db := range []*sql.DB{f.runtime, f.traced, f.owner} {
-			db.Close()
-		}
-		stats := f.open(ownerRole, nil)
+		// The statistics of the entries table count the rows that each scan reads. A session adds its counts to them
+		// when it ends, so before each read the test ends every other session of its database (endSessions), and the
+		// check runs on a pool of its own, whose sessions end after it.
+		stats := f.statsSession()
+		f.endSessions(stats, f.runtime, f.traced, f.owner)
 		entriesRead := func() int64 {
-			// Each other session of the test's database has ended and flushed its counts.
-			for i := 0; ; i++ {
-				var others int
-				if err := stats.QueryRowContext(f.ctx, `SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()
- AND backend_type = 'client backend'`).Scan(&others); err != nil {
-					t.Fatal(err)
-				}
-				if others == 0 {
-					break
-				}
-				if i == 300 {
-					t.Fatalf("%d other sessions of the test database do not end", others)
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-			var last int64 = -1
-			for range 100 {
-				var n int64
-				if err := stats.QueryRowContext(f.ctx, `SELECT coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0)
+			var n int64
+			if err := stats.QueryRowContext(f.ctx, `SELECT coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0)
  FROM pg_stat_user_tables WHERE relname = 'entries'`).Scan(&n); err != nil {
-					t.Fatal(err)
-				}
-				if n == last {
-					return n
-				}
-				last = n
-				time.Sleep(200 * time.Millisecond)
+				t.Fatal(err)
 			}
-			t.Fatal("the statistics of entries do not settle")
-			return 0
+			return n
 		}
 		before := entriesRead()
 		checkDB := f.open(runtimeRole, nil)
 		j2 := f.jobsOn(h, checkDB)
 		err := f.settled(j2).Check(f.ctx)
-		checkDB.Close()
-		time.Sleep(300 * time.Millisecond)
+		f.endSessions(stats, checkDB)
 		read := entriesRead() - before
 		if err == nil || strings.Count(err.Error(), "the snapshot through_xid") != 1 ||
 			!strings.Contains(err.Error(), "the snapshot through_xid "+through+" of the account dr") {
@@ -477,16 +586,14 @@ func TestJobs(t *testing.T) {
 		if n, err := f.settled(j2).Snapshot(f.ctx); err != nil || n != 2 {
 			t.Fatalf("the late Snapshot: %d, %v", n, err)
 		}
-		f.runtime.Close()
-		f.owner.Close()
+		f.endSessions(stats, f.runtime, f.owner, f.traced)
 		before = entriesRead()
 		checkDB = f.open(runtimeRole, nil)
 		j2.cfg.DB = checkDB
 		if err := f.settled(j2).Check(f.ctx); err != nil {
 			t.Fatalf("the incremental Check: %v", err)
 		}
-		checkDB.Close()
-		time.Sleep(300 * time.Millisecond)
+		f.endSessions(stats, checkDB)
 		if read := entriesRead() - before; read < 20 || read > 40 {
 			t.Fatalf("the incremental Check read %d entry rows for 20 new entries", read)
 		}
@@ -495,21 +602,31 @@ func TestJobs(t *testing.T) {
 	t.Run("ST-SUP-RP08-LC08-T08 A job ends before the lease deadline", func(t *testing.T) {
 		f := newFixture(t)
 		f.post(f.runtime, "fund", dr("hot", 100), cr("limited", 100))
-		// The other session's long transaction holds the account's row lock. The job ends before the lease deadline
-		// whether it starts with the whole budget or near the end of the lease, and a renew does not wait for it.
+		// The lease runs on a hand clock. Its renew slack is 1 s, so the budget of a job is 500 ms, half of it. The
+		// lease row lasts one hour on the database clock, so no wall time of a slow run expires it.
+		const ttl, renewEvery = time.Hour, time.Hour - time.Second
+		// The other session's long transaction holds the account's row lock. The job sets a statement timeout of its
+		// budget and a lock timeout of at most a quarter of it, whether it starts with the whole budget or near the
+		// end of the lease, and a renew waits for it only until the server ends it.
 		for _, c := range []struct {
-			name  string
-			late  time.Duration
-			lock  time.Duration
-			codes []string
+			name      string
+			late      time.Duration // the time on the hand clock from the acquire to the job
+			lock      time.Duration // the configured lock timeout of the job
+			statement string        // the statement timeout that the job sets
+			lockWait  string        // the lock timeout that the job sets
 		}{
-			{"whole budget", 0, 0, []string{"55P03"}},
-			{"long lock timeout", 0, time.Minute, []string{"55P03"}},
-			{"near the lease end", 1500 * time.Millisecond, time.Minute, []string{"55P03", ""}},
+			{"whole budget", 0, 0, "500ms", "125ms"},
+			{"long lock timeout", 0, time.Minute, "500ms", "125ms"},
+			{"short lock timeout", 0, 50 * time.Millisecond, "500ms", "50ms"},
+			{"near the lease end", ttl - 400*time.Millisecond, time.Minute, "400ms", "100ms"},
+			{"no time left", ttl - 10*time.Millisecond, time.Minute, "", ""},
 		} {
-			h := f.holderFor(2 * time.Second)
+			clock := &handClock{now: time.Now()}
+			h := f.holderWith(lease.Settings{TTL: ttl, Renew: renewEvery, Clock: clock})
 			held := h.take(t)
-			j, err := NewJobs(JobsConfig{Ledgers: []*Ledger{f.usd}, Lease: h.of, DB: f.runtime, LockTimeout: c.lock,
+			clock.add(c.late)
+			trace := newJobTrace()
+			j, err := NewJobs(JobsConfig{Ledgers: []*Ledger{f.usd}, Lease: h.of, DB: f.openWith(runtimeRole, trace), LockTimeout: c.lock,
 				Tenants: func(context.Context) ([]tenant.Tenant, error) { return []tenant.Tenant{f.tn(acme)}, nil }})
 			if err != nil {
 				t.Fatal(err)
@@ -521,45 +638,40 @@ func TestJobs(t *testing.T) {
 			if _, err := locker.ExecContext(f.ctx, "SELECT 1 FROM accounts WHERE id = 'limited' FOR UPDATE"); err != nil {
 				t.Fatal(err)
 			}
-			type renew struct {
-				wait time.Duration
-				err  error
-			}
-			renewed := make(chan renew, 1)
-			started := make(chan struct{})
-			go func() {
-				<-started
-				start := time.Now()
-				err := held.Renew(f.ctx)
-				renewed <- renew{time.Since(start), err}
-			}()
-			time.Sleep(c.late)
 			done := make(chan error, 1)
 			go func() {
 				_, err := f.settled(j).Snapshot(f.ctx)
 				done <- err
 			}()
-			if c.late == 0 {
-				f.waitForLockWait(t)
-			}
-			close(started)
-			err = <-done
-			ended := time.Now()
-			r := <-renewed
-			_ = locker.Rollback()
-			if !slices.Contains(c.codes, sqlState(err)) || err == nil {
-				t.Fatalf("%s: Snapshot under a held account lock: %v; want SQLSTATE %v", c.name, err, c.codes)
-			}
-			if sqlState(err) == "" && !errors.Is(err, ErrDeadline) {
-				t.Fatalf("%s: %v; want the lock timeout or ErrDeadline", c.name, err)
-			}
-			if !ended.Before(held.Expires()) {
-				t.Fatalf("%s: Snapshot ended at %v, after the lease deadline %v", c.name, ended, held.Expires())
-			}
-			// The renew waits at most for the lock timeout of the job, a quarter of its budget of half the renew
-			// slack: 125 ms for this lease.
-			if r.err != nil || r.wait > 400*time.Millisecond {
-				t.Fatalf("%s: the renew waited %v for the job: %v", c.name, r.wait, r.err)
+			if c.statement == "" {
+				err := <-done
+				_ = locker.Rollback()
+				if !errors.Is(err, ErrDeadline) || trace.statements() != 0 {
+					t.Fatalf("%s: Snapshot with 10 ms left: %v after %d statements; want ErrDeadline and no statement", c.name, err, trace.statements())
+				}
+			} else {
+				// The job sends its snapshot statement only after Fence: its transaction holds the lease row FOR
+				// SHARE, so the renew waits on the row until the server ends the job's transaction.
+				<-trace.snapshot
+				renewErr := held.Renew(f.ctx)
+				err := <-done
+				_ = locker.Rollback()
+				if renewErr != nil {
+					t.Fatalf("%s: the renew after the job: %v", c.name, renewErr)
+				}
+				// The lock timeout of the server ends the wait; on a slow run the context of the job, which ends at
+				// the same budget, can end it first.
+				if code := sqlState(err); code != "55P03" && code != "57014" && !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("%s: Snapshot under a held account lock: %v; want the lock timeout or the end of its budget", c.name, err)
+				}
+				timeouts := trace.timeouts()
+				if timeouts.lock != c.lockWait || timeouts.statement != c.statement {
+					t.Fatalf("%s: the job set lock_timeout %q and statement_timeout %q; want %q and %q", c.name, timeouts.lock, timeouts.statement, c.lockWait, c.statement)
+				}
+				// The context of the job ends at its budget: its time left is never more than the budget.
+				if want, _ := time.ParseDuration(c.statement); !timeouts.bounded || timeouts.left > want {
+					t.Fatalf("%s: the context of the job has a deadline %v, %v left; want at most %v", c.name, timeouts.bounded, timeouts.left, want)
+				}
 			}
 			if err := held.Release(f.ctx); err != nil {
 				t.Fatal(err)
