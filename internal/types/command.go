@@ -39,6 +39,9 @@ type Command struct {
 	RetryOnConflict string `yaml:"retry_on_conflict,omitempty"`
 	// LockTimeout is how long a statement waits for a row lock, as a duration such as 500ms. Empty is 2s.
 	LockTimeout string `yaml:"lock_timeout,omitempty"`
+	// Lists are the declared lists that the fill reads through: the generator emits their statements from the entity
+	// of the release, so a fill gives no SQL text (ST-DECL-INV94, ST-SUP-RC32-OC16).
+	Lists []WorkerList `yaml:"lists,omitempty"`
 }
 
 // Effect is one effect that a command or a worker may stage: the outbox destination and the effect name, which is

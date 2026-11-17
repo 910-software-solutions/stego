@@ -764,10 +764,25 @@ func (l *CauseLog) Allow(cause string) (bool, int) {
 		l.held[cause]++
 		return false, 0
 	}
+	if _, ok := l.last[cause]; !ok && len(l.last) >= MaxCauses {
+		// The log keeps at most MaxCauses causes: a new cause evicts the cause with the oldest line, so a stream of
+		// new causes cannot grow the maps (security review of PR #416, L2).
+		oldest, first := "", true
+		for c, t := range l.last {
+			if first || t.Before(l.last[oldest]) {
+				oldest, first = c, false
+			}
+		}
+		delete(l.last, oldest)
+		delete(l.held, oldest)
+	}
 	held := l.held[cause]
 	l.last[cause], l.held[cause] = now, 0
 	return true, held
 }
+
+// MaxCauses is the most causes that one CauseLog keeps.
+const MaxCauses = 1024
 
 // RetryAfter gives the Retry-After value of a 503 answer to a decision that the provider could not make now: a whole
 // number of seconds from 1 to 3, at random, so the clients of an outage do not retry in step (L3).

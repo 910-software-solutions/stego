@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -329,7 +330,7 @@ func TestCommandPermissionOnRows(t *testing.T) {
 		req.Resource = "o5"
 		var listed []string
 		if _, err := e.run(withUsers, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
-			rows, err := repo(t, h, e.users).ListForUpdate(ctx, e.admins, nil, "org1")
+			rows, err := repo(t, h, e.users).ListForUpdate(ctx, e.admins.With("org1"), nil)
 			for _, u := range rows {
 				listed = append(listed, u.Value().ID)
 			}
@@ -485,6 +486,89 @@ func TestCommandPermissionOnRows(t *testing.T) {
 		return e, step, get
 	}
 
+	t.Run("ST-SUP-RP10-LC38-T05 A list of a child entity reads only the rows of its decided parent", func(t *testing.T) {
+		e, _, get := children(t)
+		e.exec(`INSERT INTO reservations (tenant_id, id, order_id, sku) VALUES ('t1', 'r5b', 'o5', 's')`)
+		cols := "id, order_id, sku, version, authz_token"
+		ofParent, err := NewList(e.underOrder, ListSpec{Name: "of-parent",
+			Read:   "SELECT " + cols + " FROM reservations WHERE tenant_id = $1 AND order_id = $3 ORDER BY id LIMIT $2",
+			Values: DeclaredValues(ListValue{Parent: "Order"})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		free, err := NewList(e.underOrder, ListSpec{Name: "free",
+			Read:   "SELECT " + cols + " FROM reservations WHERE tenant_id = $1 AND order_id = $3 ORDER BY id LIMIT $2",
+			Values: DeclaredValues(ListValue{Param: "order_id"})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := e.command("cancel", func(s *CommandSpec[testProbe]) {
+			s.Permission, s.Resource, s.Lists = "cancel", orderResource(), []AnyList{ofParent, free}
+		}, e.orders, e.underOrder, e.reservationE)
+		n := 0
+		list := func(fill func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error)) (string, error) {
+			n++
+			var rows []Loaded[reservation]
+			req := e.request("t1", u7(t), fmt.Sprintf("k-lc38-t05-%d", n), `{}`)
+			req.Resource = "o5"
+			_, err := e.run(cmd, req, func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+				var err error
+				rows, err = fill(ctx, h)
+				return ok, err
+			})
+			var ids []string
+			for _, r := range rows {
+				ids = append(ids, r.ID())
+			}
+			return strings.Join(ids, ","), err
+		}
+		// The caller may cancel o5: the list of o5 gives its rows.
+		if got, err := list(func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error) {
+			return repo(t, h, e.underOrder).List(ctx, ofParent.With(get(ctx, h, "o5")), 10)
+		}); got != "r5,r5b" || err != nil {
+			t.Fatalf("the list of o5 gave %q, %v; want r5,r5b", got, err)
+		}
+		// The caller may view o6 but not cancel it: the list of o6 is not found, and gives no row.
+		if got, err := list(func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error) {
+			return repo(t, h, e.underOrder).List(ctx, ofParent.With(get(ctx, h, "o6")), 10)
+		}); got != "" || !errors.Is(err, ErrNotFound) {
+			t.Fatalf("the list of o6, which the caller may not cancel, gave %q, %v; want not found", got, err)
+		}
+		// A free order ID gives no list of a child, and a row of another entity is no parent.
+		for name, fill := range map[string]func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error){
+			"a free order ID": func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error) {
+				return repo(t, h, e.underOrder).List(ctx, free.With("o6"), 10)
+			},
+			"a reservation as the parent": func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error) {
+				r, err := repo(t, h, e.reservationE).Get(ctx, "r6")
+				if err != nil {
+					return nil, err
+				}
+				return repo(t, h, e.underOrder).List(ctx, ofParent.With(r), 10)
+			},
+		} {
+			if got, err := list(fill); got != "" || !errors.Is(err, ErrInternal) {
+				t.Fatalf("%s gave %q, %v; want an internal error", name, got, err)
+			}
+		}
+		// A parent row of another handle is no parent of this handle.
+		var other Loaded[order]
+		if _, err := list(func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error) {
+			other = get(ctx, h, "o5")
+			return nil, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := list(func(ctx context.Context, h *Handle[testProbe]) ([]Loaded[reservation], error) {
+			return repo(t, h, e.underOrder).List(ctx, ofParent.With(other), 10)
+		}); got != "" || !errors.Is(err, ErrInternal) {
+			t.Fatalf("a parent row of another handle gave %q, %v; want an internal error", got, err)
+		}
+		if _, err := NewList(e.reservationE, ListSpec{Name: "x", Read: free.spec.Read, Values: DeclaredValues(ListValue{Parent: "Order"})}); err == nil {
+			t.Fatal("NewList took a parent value of an entity that is not a child")
+		}
+	})
+
 	t.Run("ST-SUP-RP10-LC05-T07 An update of a child row decides on its parent", func(t *testing.T) {
 		e, step, get := children(t)
 		for name, c := range map[string]struct {
@@ -500,11 +584,11 @@ func TestCommandPermissionOnRows(t *testing.T) {
 				return err
 			}, ErrNotFound},
 			"a locked list under o6": {func(ctx context.Context, h *Handle[testProbe]) error {
-				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder, get(ctx, h, "o6"), "o6")
+				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder.With("o6"), get(ctx, h, "o6"))
 				return err
 			}, ErrNotFound},
 			"a locked list whose rows name another parent": {func(ctx context.Context, h *Handle[testProbe]) error {
-				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder, get(ctx, h, "o5"), "o6")
+				_, err := repo(t, h, e.underOrder).ListForUpdate(ctx, e.ofOrder.With("o6"), get(ctx, h, "o5"))
 				return err
 			}, ErrInternal},
 			"an update under o6": {func(ctx context.Context, h *Handle[testProbe]) error {
@@ -531,7 +615,7 @@ func TestCommandPermissionOnRows(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if _, err := r.ListForUpdate(ctx, e.ofOrder, o5, "o5"); err != nil {
+			if _, err := r.ListForUpdate(ctx, e.ofOrder.With("o5"), o5); err != nil {
 				return err
 			}
 			_, err = r.Update(ctx, v, reservation{ID: "r5", OrderID: "o5", SKU: "changed"}, o5)

@@ -1053,8 +1053,8 @@ var afterCall = regexp.MustCompile(`(?m)^(\t*)if _, slotErr := h\.(\w+)\.Evaluat
 
 // runtimeHandlerWriter writes one handler file.
 type runtimeHandlerWriter struct {
-	// upsertRead is the Read statement of the lookup of an upsert by its natural key.
-	upsertRead string
+	// upsertList is the generated list of the lookup of an upsert by its natural key.
+	upsertList command.ListPlan
 	bytes.Buffer
 	c          *runtimeCollection
 	ctx        gen.Context
@@ -1070,11 +1070,22 @@ func (w *runtimeHandlerWriter) f(format string, args ...any) { fmt.Fprintf(&w.Bu
 func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slotsImportPath string, keys *idempotencyHeader) ([]byte, error) {
 	w := &runtimeHandlerWriter{c: c, ctx: ctx, keys: keys, envelope: ctx.Conventions.ResponseFormat == "envelope"}
 	if c.ops[types.OpUpsert] {
-		read, err := command.KeyListRead(c.entity.Name, ctx.Entities, ctx.Tenancy.Key, c.decl.UpsertLookup())
+		// The lookup of an upsert is a list of the upsert command over the entity of the release, with each field of
+		// the lookup as a parameter that the handler binds from the decoded body (ST-SUP-RC20-OC13,
+		// ST-SUP-RP10-LC38).
+		list := types.WorkerList{Name: "upsert-key", Entity: c.entity.Name}
+		for _, key := range c.decl.UpsertLookup() {
+			list.Filter = append(list.Filter, types.ListTerm{Field: key, Op: types.ListEquals, Param: key})
+		}
+		plan, err := command.ListStatements(list, ctx.Entities, ctx.Tenancy.Key)
 		if err != nil {
 			return nil, err
 		}
-		w.upsertRead = read
+		if plan.Child {
+			// The handle lists a child entity only under its decided parent row (ST-SUP-RP10-LC38).
+			return nil, fmt.Errorf("rest-api: collection %s: an upsert of the child entity %s, which has no resource type, is not supported; give the entity a resource type", c.decl.Name, c.entity.Name)
+		}
+		w.upsertList = plan
 	}
 	if len(c.slots) > 0 {
 		w.slotsAlias = "slots"
@@ -1234,6 +1245,10 @@ func (w *runtimeHandlerWriter) declarations() {
 				names[i] = strings.TrimSuffix(strings.TrimPrefix(name, "data."), "Entity")
 			}
 			w.f("%s", command.ChangeEventsSpec(w.ctx, names))
+			if op == types.OpUpsert {
+				// The handle takes only the declared lists: the lookup of the upsert (ST-SUP-RP10-LC38).
+				w.f("\tLists: []command.AnyList{%sUpsertKey},\n", c.camel)
+			}
 			var destinations []string
 			if effects := w.afterEffects(op); len(effects) > 0 {
 				destinations = append(destinations, fmt.Sprintf("{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{%s}}", quoteAll(effects)))
@@ -1258,7 +1273,7 @@ func (w *runtimeHandlerWriter) declarations() {
 		}
 	}
 	if c.ops[types.OpUpsert] {
-		w.f("// %sUpsertKey finds the row of an upsert by %s: its natural key, with its scope and implicit fields\n// (ST-SUP-RC20-OC13).\nvar %sUpsertKey = command.Must(command.NewList(data.%sEntity, command.ListSpec{Name: \"upsert-key\", Read: %q}))\n\n", c.camel, strings.Join(c.decl.UpsertLookup(), ", "), c.camel, e.Name, w.upsertRead)
+		w.f("// %sUpsertKey finds the row of an upsert by %s: its natural key, with its scope and implicit fields\n// (ST-SUP-RC20-OC13). It is a list of the upsert command over the entity of this release, whose parameters the\n// handler binds (ST-SUP-RP10-LC38).\nvar %sUpsertKey = command.Must(command.NewList(data.%sEntity, command.ListSpec{Name: \"upsert-key\", Read: %q,\n\tValues: command.DeclaredValues(%s)}))\n\n", c.camel, strings.Join(c.decl.UpsertLookup(), ", "), c.camel, e.Name, w.upsertList.Read, strings.Join(w.upsertList.Values, ", "))
 	}
 	if c.ops[types.OpList] {
 		w.f("// %sSearchFields are the fields that a list search may name, with the kind of their values: the declared\n// fields that are not pii, secret or implicit, of a text, number or bool type (ST-SUP-RP11-LC20).\nvar %sSearchFields = map[string]query.FieldKind{", c.camel, c.camel)
@@ -2146,7 +2161,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	for _, key := range c.decl.UpsertLookup() {
 		keys = append(keys, c.lower+"."+toPascalCase(key))
 	}
-	w.f("\t\tfound, err := repo.List(ctx, %sUpsertKey, 1, %s)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", c.camel, strings.Join(keys, ", "))
+	w.f("\t\tfound, err := repo.List(ctx, %sUpsertKey.With(%s), 1)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", c.camel, strings.Join(keys, ", "))
 	w.f("\t\tif len(found) == 0 {\n")
 	if optimistic {
 		// An If-Match names a stored row, and there is none. The insert would be decided on edit of each required

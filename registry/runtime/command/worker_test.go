@@ -1,11 +1,13 @@
 package command
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
+	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -1504,7 +1507,7 @@ func TestWorkerLists(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RP10-LC38-T02 A worker handle refuses a list that its declaration does not declare", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC38-T02 A worker, consumer or command handle refuses a list that its declaration does not declare", func(t *testing.T) {
 		own, err := NewList(e.users, ListSpec{Name: "own",
 			Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users WHERE tenant_id = $1 ORDER BY id LIMIT $2`})
 		if err != nil {
@@ -1524,13 +1527,29 @@ func TestWorkerLists(t *testing.T) {
 		}
 		// A consumer's handle refuses it the same way.
 		r := &Repository[user]{st: &state{mode: modeConsumer, action: "apply-replies"}, entity: e.users}
-		if _, err := r.listArgs(own, nil); !errors.Is(err, ErrInternal) || !strings.Contains(err.Error(), "apply-replies reads the list own") {
+		if _, _, _, err := r.listArgs(e.ctx, own, nil); !errors.Is(err, ErrInternal) || !strings.Contains(err.Error(), "apply-replies reads the list own") {
 			t.Fatalf("a consumer handle gave %v for an undeclared list", err)
 		}
-		// A command handle still takes a list that NewList makes, such as the generated upsert key of a collection.
-		c := &Repository[user]{st: &state{mode: modeCommand}, entity: e.users}
-		if args, err := c.listArgs(own, []any{"x"}); err != nil || len(args) != 1 {
-			t.Fatalf("a command handle gave %v, %v for its list", args, err)
+		// A command handle refuses it the same way, and tells the fill to declare it under lists: of the command
+		// (walkthrough 7, B1). The log names the refusal, so the 500 internal of the call is diagnosable.
+		var logs bytes.Buffer
+		previous, held := slog.Default(), statementLog
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		statementLog = authz.NewCauseLog(func() time.Time { return tick })
+		defer func() { slog.SetDefault(previous); statementLog = held }()
+		cmd := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{v1} }, e.users)
+		var read error
+		_, err = e.run(cmd, e.request("t1", u7(t), "k-lc38-t02", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			_, read = repo(t, h, e.users).List(ctx, own, 10)
+			return read
+		}))
+		if !errors.Is(read, ErrInternal) || !errors.Is(err, ErrInternal) ||
+			!strings.Contains(read.Error(), "the command rank-users reads the list own of User, which its declaration does not declare") ||
+			!strings.Contains(read.Error(), "lists: of the command") {
+			t.Fatalf("a command handle gave %v and the run %v for an undeclared list", read, err)
+		}
+		if !strings.Contains(logs.String(), `msg="command: the call has an internal error" action=rank-users cause=internal reason="the command rank-users reads the list own of User, which its declaration does not declare`) {
+			t.Fatalf("the log does not name the refused list:\n%s", logs.String())
 		}
 	})
 
@@ -1584,6 +1603,156 @@ func TestWorkerLists(t *testing.T) {
 		if _, err := NewWorker(WorkerSpec[testProbe]{Name: "rank-scan", Permission: "sync", Interval: time.Minute, Writes: []Declared{e.orders},
 			Probe: newTestProbe, Lists: []AnyList{v1}}); err == nil || !strings.Contains(err.Error(), "does not write") {
 			t.Fatalf("NewWorker took a list of an entity that the worker does not write: %v", err)
+		}
+	})
+}
+
+func TestCommandLists(t *testing.T) {
+	e := newEnv(t)
+	e.seedOrg("t1", "org1", 3)
+	e.seedUser("t1", "u1", "org1", true, 2, 1)
+	e.seedUser("t1", "u2", "org1", true, 1, 1)
+	e.seedOrg("t1", "org2", 3)
+	e.seedUser("t1", "u3", "org2", true, 0, 1)
+	cmd := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{e.admins} }, e.users)
+	ids := func(rows []Loaded[user]) string {
+		var out []string
+		for _, r := range rows {
+			out = append(out, r.ID())
+		}
+		return strings.Join(out, ",")
+	}
+	// list runs the fill of one command with the list given and gives the rows, the error of List and of the run.
+	n := 0
+	list := func(c *Command[testProbe], l *List[user], args ...any) (string, error, error) {
+		n++
+		var rows []Loaded[user]
+		var listed error
+		_, err := e.run(c, e.request("t1", u7(t), fmt.Sprintf("k-lc38-t04-%d", n), `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			rows, listed = repo(t, h, e.users).List(ctx, l, 10, args...)
+			return listed
+		}))
+		return ids(rows), listed, err
+	}
+
+	t.Run("ST-SUP-RP10-LC38-T04 A declared list binds its parameters as SQL parameters, and refuses a list that is not bound", func(t *testing.T) {
+		if got, listed, err := list(cmd, e.admins.With("org1")); got != "u1,u2" || listed != nil || err != nil {
+			t.Fatalf("the list bound to org1 gave %q, %v, %v; want u1,u2", got, listed, err)
+		}
+		if got, _, err := list(cmd, e.admins.With("org2")); got != "u3" || err != nil {
+			t.Fatalf("the list bound to org2 gave %q, %v; want u3", got, err)
+		}
+		// A nil pointer binds NULL, which equals no row (security review of PR #416, L5).
+		var none *string
+		if got, listed, err := list(cmd, e.admins.With(none)); got != "" || listed != nil || err != nil {
+			t.Fatalf("the list bound to a nil pointer gave %q, %v, %v; want no row", got, listed, err)
+		}
+		// A key parameter that the key check of the entity refuses gives an empty list and runs no statement, so the
+		// cast of the statement never fails (security review of PR #416, L1).
+		keyed, err := NewList(e.users, ListSpec{Name: "keyed", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND org_id = $3::uuid::text ORDER BY id LIMIT $2`, Values: DeclaredValues(ListValue{Param: "org_id", Key: true})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		withKey := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{keyed} }, e.users)
+		if got, listed, err := list(withKey, keyed.With("")); got != "" || listed != nil || err != nil {
+			t.Fatalf("a key that the key check refuses gave %q, %v, %v; want an empty list", got, listed, err)
+		}
+		if _, listed, err := list(withKey, keyed.With("not-a-uuid")); !errors.Is(listed, ErrInternal) || !errors.Is(err, ErrInternal) {
+			t.Fatalf("a key that the key check takes ran the statement and gave %v, %v; want the failed cast", listed, err)
+		}
+		// A pointer is the Go value of an optional field: it binds its value.
+		org := "org2"
+		if got, _, err := list(cmd, e.admins.With(&org)); got != "u3" || err != nil {
+			t.Fatalf("the list bound to a pointer to org2 gave %q, %v; want u3", got, err)
+		}
+		// A parameter is a SQL parameter, never text: a value with SQL in it matches no row.
+		if got, _, err := list(cmd, e.admins.With("org1' OR 'x' = 'x")); got != "" || err != nil {
+			t.Fatalf("a parameter with SQL text gave %q, %v; want no row", got, err)
+		}
+		for name, c := range map[string]struct {
+			list *List[user]
+			args []any
+			want string
+		}{
+			"not bound":           {e.admins, nil, "takes 1 parameters"},
+			"two values":          {e.admins.With("org1", "org2"), nil, "it takes 1 parameters and got 2"},
+			"an int":              {e.admins.With(7), nil, "its parameter 1 is not a bool"},
+			"a slice":             {e.admins.With([]string{"org1"}), nil, "its parameter 1 is not a bool"},
+			"a pointer to an int": {e.admins.With(new(int)), nil, "its parameter 1 is not a bool"},
+			"fill filter value":   {e.admins.With("org1"), []any{"org2"}, "declares its filter values, so the fill gives none"},
+		} {
+			got, listed, err := list(cmd, c.list, c.args...)
+			if got != "" || !errors.Is(listed, ErrInternal) || !errors.Is(err, ErrInternal) || !strings.Contains(listed.Error(), c.want) {
+				t.Fatalf("%s: the list gave %q, %v and the run %v; want the internal error %q", name, got, listed, err, c.want)
+			}
+		}
+		// A command binds the time of the run as the start of its attempt.
+		timed, err := NewList(e.users, ListSpec{Name: "timed", Read: `SELECT id, org_id, email, admin, rank, version, authz_token FROM users
+ WHERE tenant_id = $1 AND org_id = $4 AND $3::timestamptz IS NOT NULL ORDER BY id LIMIT $2`,
+			Values: DeclaredValues(ListValue{RunTime: true}, ListValue{Param: "org_id"})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		withTime := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{timed} }, e.users)
+		if got, listed, err := list(withTime, timed.With("org2")); got != "u3" || listed != nil || err != nil {
+			t.Fatalf("a command list with the time of the run gave %q, %v, %v; want u3", got, listed, err)
+		}
+		for name, values := range map[string]*ListValues{
+			"a constant and a parameter":          DeclaredValues(ListValue{Constant: "org1", Param: "org_id"}),
+			"the time of the run and a parameter": DeclaredValues(ListValue{RunTime: true, Param: "seen"}),
+			"a parameter twice":                   DeclaredValues(ListValue{Param: "org_id"}, ListValue{Param: "org_id"}),
+		} {
+			if _, err := NewList(e.users, ListSpec{Name: "bad", Read: e.admins.spec.Read, Values: values}); err == nil {
+				t.Fatalf("NewList took %s", name)
+			}
+		}
+		for name, lists := range map[string][]AnyList{
+			"a bound list":                    {e.admins.With("org1")},
+			"a nil list":                      {(*List[user])(nil)},
+			"a list of an entity not written": {e.ofOrder},
+		} {
+			if _, err := NewCommand(CommandSpec[testProbe]{Name: "rank-users", Writes: []Declared{e.users}, Probe: newTestProbe, Lists: lists}); err == nil {
+				t.Fatalf("NewCommand took %s", name)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP10-LC39-T01 A failed statement is logged with its cause class and SQLSTATE class, and no value", func(t *testing.T) {
+		var logs bytes.Buffer
+		previous, held := slog.Default(), statementLog
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		statementLog = authz.NewCauseLog(func() time.Time { return tick })
+		t.Cleanup(func() { slog.SetDefault(previous); statementLog = held })
+		const secret = "org-secret-7"
+		all := `"id"::text, "org_id", "email", "admin", "rank", "version", "authz_token"`
+		for _, c := range []struct {
+			action, read, cause, class string
+		}{
+			// The list of the release before a rename names a column that the release after it dropped.
+			{"read-gone", `SELECT ` + all + `, "gone" FROM users WHERE tenant_id = $1 AND org_id = $3 ORDER BY id LIMIT $2`, "schema", "42"},
+			// The list of walkthrough 7, B1: the row has one column fewer than the generated Scan reads.
+			{"read-short", `SELECT "id"::text, "org_id", "email", "admin", "rank", "version" FROM users WHERE tenant_id = $1 AND $3::text <> '' ORDER BY id LIMIT $2`, "scan", "none"},
+			// A parameter that the column type cannot take fails on the value.
+			{"read-cast", `SELECT ` + all + ` FROM users WHERE tenant_id = $1 AND rank = $3::int ORDER BY id LIMIT $2`, "data", "22"},
+		} {
+			l, err := NewList(e.users, ListSpec{Name: "of-org", Read: c.read, Values: DeclaredValues(ListValue{Param: "org_id"})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			failing := e.command(c.action, func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{l} }, e.users)
+			for range 2 {
+				if _, listed, err := list(failing, l.With(secret)); !errors.Is(listed, ErrInternal) || OutcomeOf(err).Status != 500 {
+					t.Fatalf("%s gave %v and the run %v; want 500 internal", c.action, listed, err)
+				}
+			}
+			want := fmt.Sprintf(`msg="command: a statement failed" action=%s step="read the list of-org" cause=%s sqlstate_class=%s held_back=0`, c.action, c.cause, c.class)
+			if got := strings.Count(logs.String(), want); got != 1 {
+				t.Fatalf("the log holds %d lines %q, want 1 (the second failure is held back):\n%s", got, want, logs.String())
+			}
+		}
+		if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), "SELECT") {
+			t.Fatalf("the log holds a value or a statement:\n%s", logs.String())
 		}
 	})
 }
