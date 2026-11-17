@@ -50,7 +50,7 @@ var (
 		"database_config.go":     {"postgres-adapter"},
 		"http_tls.go":            {"health-check"},
 		"assembler.go":           {"health-check"},
-		"runtime_wiring.go.tmpl": {"command"},
+		"runtime_wiring.go.tmpl": {"command", "kafka-producer"},
 	}
 	compilerOwn = map[string][]string{"apply_hook.go": {"STEGO_TEST_APPLY_LOG", "STEGO_TEST_STOP_APPLY"}, "init.go": {"STEGO_REGISTRY"}}
 	// runtimeOwners are the runtime packages whose settings a component declares, by their path in the runtime
