@@ -51,8 +51,8 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 			t.Skip("database fixture is not configured")
 		}
 		blocks := readmeBlocks(t, "sql")
-		if len(blocks) != 2 {
-			t.Fatalf("the README holds %d SQL blocks, want 2: one for the server and one for the database", len(blocks))
+		if len(blocks) != 3 {
+			t.Fatalf("the README holds %d SQL blocks, want 3: one for the server, one that revokes CONNECT on the databases of the server, and one for the database", len(blocks))
 		}
 		// The README gives no secret in its SQL: psql sets each one with \password, which sends only its hash.
 		psql := readmeBlocks(t, "psql")
@@ -87,7 +87,7 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 			cleanup := stdlib.OpenDB(*cfg)
 			defer cleanup.Close()
 			// The README revokes the CONNECT of PUBLIC on the default database of the server, which other tests share.
-			for _, query := range []string{"GRANT CONNECT ON DATABASE postgres TO PUBLIC", "DROP DATABASE IF EXISTS " + service + " WITH (FORCE)", "DROP ROLE IF EXISTS " + service + "_migrator", "DROP ROLE IF EXISTS " + service + "_runtime", "DROP ROLE IF EXISTS " + service + "_owner"} {
+			for _, query := range []string{"GRANT CONNECT ON DATABASE postgres TO PUBLIC", "GRANT CONNECT ON DATABASE template1 TO PUBLIC", "DROP DATABASE IF EXISTS " + service + " WITH (FORCE)", "DROP ROLE IF EXISTS " + service + "_migrator", "DROP ROLE IF EXISTS " + service + "_runtime", "DROP ROLE IF EXISTS " + service + "_owner"} {
 				if _, err := cleanup.ExecContext(context.Background(), query); err != nil {
 					t.Error(err)
 				}
@@ -104,6 +104,14 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 		run(admin, blocks[0])
 		// \password <role> of psql runs ALTER ROLE with the hash of the secret it reads; the test gives the secret.
 		for _, line := range psql[0] {
+			// The README first shows that the server keeps secrets as SCRAM.
+			if line == "SHOW password_encryption" {
+				var encryption string
+				if err := admin.QueryRowContext(ctx, line).Scan(&encryption); err != nil || encryption != "scram-sha-256" {
+					t.Fatalf("SHOW password_encryption gives %q, %v; the README asks for scram-sha-256", encryption, err)
+				}
+				continue
+			}
 			role, ok := strings.CutPrefix(fill.Replace(line), `\password `)
 			password, known := passwords[role]
 			if !ok || !known {
@@ -117,11 +125,13 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 		if len(passwords) != 0 {
 			t.Fatalf("the README psql block sets no secret for %v", passwords)
 		}
+		// The server-wide block, which comes after the warning about the other logins of the server.
+		run(admin, blocks[1])
 		inDatabase := cfg.Copy()
 		inDatabase.Database = service
 		adminInDatabase := stdlib.OpenDB(*inDatabase)
 		defer adminInDatabase.Close()
-		run(adminInDatabase, blocks[1])
+		run(adminInDatabase, blocks[2])
 
 		login := func(user, password string) string {
 			return (&url.URL{Scheme: "postgres", User: url.UserPassword(user, password), Host: net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port)), Path: "/" + service, RawQuery: "sslmode=disable"}).String()
@@ -150,13 +160,16 @@ func TestReadmeDatabaseSetup(t *testing.T) {
 			fault, object := classOf(err)
 			t.Fatalf("the runtime login of the README setup does not pass Verify: %v (fault %s, object %s)", err, fault, object)
 		}
-		// The runtime login cannot connect to the default database of the server.
-		elsewhere := runtimeConfig.Copy()
-		elsewhere.Database = "postgres"
-		other := stdlib.OpenDB(*elsewhere)
-		defer other.Close()
-		if err := other.PingContext(ctx); err == nil || !strings.Contains(err.Error(), "permission denied for database") {
-			t.Errorf("the runtime login of the README setup connects to the database postgres: %v", err)
+		// The runtime login cannot connect to the databases postgres and template1 of the server.
+		for _, database := range []string{"postgres", "template1"} {
+			elsewhere := runtimeConfig.Copy()
+			elsewhere.Database = database
+			other := stdlib.OpenDB(*elsewhere)
+			err := other.PingContext(ctx)
+			other.Close()
+			if err == nil || !strings.Contains(err.Error(), "permission denied for database") {
+				t.Errorf("the runtime login of the README setup connects to the database %s: %v", database, err)
+			}
 		}
 	})
 }

@@ -49,21 +49,34 @@ CREATE ROLE <service>_migrator LOGIN IN ROLE <service>_owner;
 CREATE DATABASE <service> OWNER <service>_owner;
 REVOKE ALL ON DATABASE <service> FROM PUBLIC;
 GRANT CONNECT ON DATABASE <service> TO <service>_runtime;
-REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
 ```
 
-The last line stops the runtime login, and each other login, from a connection
-to the default database `postgres`, which PostgreSQL opens to PUBLIC. If other
-logins of the server connect to `postgres`, grant CONNECT to each of them
-before you run it.
-
-Then give each login a new secret in `psql`. The `\password` command asks for
-the secret and sends only its SCRAM hash, so the secret is not in the SQL, the
-shell history or the server log:
+Then give each login a new secret in `psql`. First make sure that the server
+keeps secrets as SCRAM: `SHOW password_encryption` must give `scram-sha-256`.
+If it gives `md5`, do not go on; run `SET password_encryption =
+'scram-sha-256';` in the session first. The `\password` command asks for the
+secret and sends only its SCRAM verifier. The secret is then not in the SQL or
+the shell history, and the server log can hold only its SCRAM verifier:
 
 ```psql
+SHOW password_encryption;
 \password <service>_runtime
 \password <service>_migrator
+```
+
+PostgreSQL gives CONNECT on the databases `postgres` and `template1` to PUBLIC.
+The block below revokes it, so that the runtime login cannot open them. It
+changes the server for each login: before you run it, grant CONNECT on these
+databases to each other login that uses them, such as a monitoring login or
+the `auth_query` login of PgBouncer. A database of another application where
+PUBLIC still has CONNECT stays open to the runtime login. The real limit is a
+`pg_hba.conf` rule such as `host <service> <service>_runtime <cidr>
+scram-sha-256`, with no other line that matches the role.
+
+```sql
+-- As a database administrator, after the grants to the other logins:
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
 ```
 
 ```sql
