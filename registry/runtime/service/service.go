@@ -269,7 +269,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
-		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion}
+		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType}
 	var gate *tenant.Gate
 	if p.Provisioning != nil {
 		if p.Workers.TenantSchema == "" {

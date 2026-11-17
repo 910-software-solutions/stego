@@ -419,7 +419,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		}
 		key, err := idempotency.KeyFrom(r.Header, true)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, idempotency.ProblemMissing, "")
+			writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxTenantBody))
@@ -469,7 +469,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 			return
 		}
 		if result.Problem != "" {
-			writeProblem(w, result.Response.Status, result.Problem, "")
+			writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
 			return
 		}
 		for name, values := range result.Response.Header {

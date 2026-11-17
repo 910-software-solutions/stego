@@ -95,6 +95,10 @@ type Config struct {
 	Logger otellog.LoggerProvider
 	// Service, ServiceVersion and DeclarationVersion name the service in its audit rows.
 	Service, ServiceVersion, DeclarationVersion string
+	// ProblemBase is the declared problem base of the service, error_type_base, such as
+	// https://errors.example.com/orders/: the problem types of the idempotency key, such as idempotency-key-missing,
+	// sit under it (ST-SUP-RC30-OC02). Empty writes the bare problem name.
+	ProblemBase string
 	// SchemaSteps are the IDs of the schema changes of this release whose last step is expand and that have a sync
 	// trigger: each transaction that writes sets the writer marker stego.schema_step to them with SET LOCAL, so the
 	// sync trigger of each copies the new column into the old one (ST-SUP-RC01-OC23, decision on finding F3,
@@ -927,4 +931,13 @@ func (rt *Runtime) markStep(ctx context.Context, tx *sql.Tx) error {
 	}
 	_, err := tx.ExecContext(ctx, markStepStatement, rt.schemaStep)
 	return err
+}
+
+// problemType gives the problem type URI of the problem name under the problem base of the service
+// (ST-SUP-RC30-OC02), the bare name with no base, and "" for no name.
+func (rt *Runtime) problemType(name string) string {
+	if name == "" || rt == nil || rt.cfg.ProblemBase == "" {
+		return name
+	}
+	return rt.cfg.ProblemBase + name
 }
