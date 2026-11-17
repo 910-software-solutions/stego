@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"go/version"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/jsell-rh/stego/internal/declaration"
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/capability"
 	commandgen "github.com/jsell-rh/stego/internal/generator/command"
 	querygen "github.com/jsell-rh/stego/internal/generator/query"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
@@ -561,6 +564,15 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 				Contract: "components/" + name + "/slots/" + sd.Name + ".proto",
 			})
 		}
+		// The command, query and worker components declare no registry slot: the Go contract of each command,
+		// query and worker is generated from the declaration. Their slot is named after the component, and its
+		// contract is the Go contract package that generation writes for the component (decision on ST-EXT-Q30).
+		if capabilityComponents[name] {
+			check.Slots = append(check.Slots, FillSlot{
+				Ref:      types.SlotRef{Component: name, Slot: name},
+				Contract: "components/" + name + "/component.yaml",
+			})
+		}
 	}
 	mixins, _ := boundMixins(reg, svcDecl.Mixins)
 	for _, mixinName := range mixins {
@@ -659,7 +671,138 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 			}
 		}
 	}
+	check.Bindings = append(check.Bindings, capabilityBindings(svcDecl)...)
+	check.CapabilityContract = capabilityContracts(input, components)
 	return check
+}
+
+// capabilityComponents are the components whose slot, named after the component, the fill of each command, query
+// or worker implements (ST-SUP-RC32-OC01, ST-SUP-RC33-OC01, ST-SUP-RC35-OC01).
+var capabilityComponents = map[string]bool{commandComponent: true, queryComponent: true, workerComponent: true}
+
+// capabilityNamespaces are the output namespaces of the command, query and worker components, the folders under out
+// that hold the contract package of their fills. The plan refuses a registry whose component names another
+// (capabilityContracts), so stego build can find the contract of the source revision with no registry
+// (RevisionFillCheck).
+var capabilityNamespaces = map[string]string{commandComponent: "commands", queryComponent: "queries", workerComponent: "workers"}
+
+// RevisionFillCheck gives the fill check of the fills of the commands, queries and workers of a declaration as the
+// project folder holds them, with no registry: their bindings, the import path of each contract package under out,
+// and their contracts as the generated Go files of out/commands, out/queries and out/workers. stego build compares
+// the contract digest of each such fill's evidence with it (ST-GEN-INV10, decision on ST-EXT-Q30).
+func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclaration) FillCheck {
+	contract := func(component string) string {
+		return generatedImportPath(module, "out", capabilityNamespaces[component])
+	}
+	check := FillCheck{ProjectDir: projectDir, Module: module, Bindings: capabilityBindings(svcDecl),
+		QueryContract: contract(queryComponent), WorkerContract: contract(workerComponent)}
+	for _, binding := range check.Bindings {
+		if binding.Slot == commandComponent {
+			check.CommandFills = append(check.CommandFills, CommandFill{Fill: binding.Fill, Command: strings.TrimPrefix(binding.Owner, "command "),
+				Path: binding.Path, Contract: contract(commandComponent)})
+		}
+	}
+	check.CapabilityContract = func(component string) (map[string][]byte, error) {
+		namespace, ok := capabilityNamespaces[component]
+		if !ok {
+			return nil, fmt.Errorf("%s is not the component of a command, query or worker", component)
+		}
+		folder := path.Join("out", namespace)
+		entries, err := os.ReadDir(filepath.Join(projectDir, filepath.FromSlash(folder)))
+		if err != nil {
+			return nil, fmt.Errorf("the contract package %s cannot be read: %w", folder, err)
+		}
+		files := map[string][]byte{}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(projectDir, filepath.FromSlash(folder), name))
+			if err != nil {
+				return nil, err
+			}
+			files[path.Join(folder, name)] = data
+		}
+		if len(files) == 0 {
+			return nil, fmt.Errorf("the contract package %s holds no Go file", folder)
+		}
+		return files, nil
+	}
+	return check
+}
+
+// capabilityBindings gives the binding of the fill of each command, query and worker of the declaration that names
+// one fill, in the order of the declaration: its slot, no collection and its owner (decision on ST-EXT-Q30).
+func capabilityBindings(svcDecl *types.ServiceDeclaration) []FillBinding {
+	one := func(fills types.FillNames) string {
+		if len(fills) == 1 && fills[0] != "" && !strings.ContainsAny(fills[0], `/\.`) {
+			return fills[0]
+		}
+		return ""
+	}
+	var bindings []FillBinding
+	for i, c := range svcDecl.Commands {
+		if name := one(c.Fill); name != "" {
+			bindings = append(bindings, FillBinding{Fill: name, Slot: commandComponent, Path: fmt.Sprintf("commands[%d].fill", i), Owner: "command " + c.Name, GoName: capability.MixedCase(c.Name)})
+		}
+	}
+	for i, q := range svcDecl.Queries {
+		if name := one(q.Fill); name != "" {
+			bindings = append(bindings, FillBinding{Fill: name, Slot: queryComponent, Path: fmt.Sprintf("queries[%d].fill", i), Owner: "query " + q.Name, GoName: capability.MixedCase(q.Name)})
+		}
+	}
+	for i, w := range svcDecl.Workers {
+		if name := one(w.Fill); name != "" {
+			bindings = append(bindings, FillBinding{Fill: name, Slot: workerComponent, Path: fmt.Sprintf("workers[%d].fill", i), Owner: "worker " + w.Name, GoName: capability.MixedCase(w.Name)})
+		}
+	}
+	return bindings
+}
+
+// capabilityContracts gives the function of FillCheck.CapabilityContract for the declaration: it makes the plan once,
+// as apply makes it, with no fill check, and gives the generated Go files, not test files, of the contract package of
+// the component, which the fill of each of its commands, queries or workers imports, by their paths in the project.
+func capabilityContracts(input ReconcilerInput, components map[string]*registry.Component) func(component string) (map[string][]byte, error) {
+	var once sync.Once
+	var plan *Plan
+	var planErr error
+	return func(component string) (map[string][]byte, error) {
+		c := components[component]
+		if c == nil || c.OutputNamespace == "" {
+			return nil, fmt.Errorf("the component %s is not active, so the contract is not generated", component)
+		}
+		if c.OutputNamespace != capabilityNamespaces[component] {
+			return nil, fmt.Errorf("the component %s writes its contract into out/%s, not out/%s, which stego build reads", component, c.OutputNamespace, capabilityNamespaces[component])
+		}
+		once.Do(func() {
+			planned := input
+			planned.QualifyFills = nil
+			planned.CheckOnly = false
+			plan, planErr = Reconcile(planned)
+		})
+		if planErr != nil {
+			return nil, fmt.Errorf("the contract cannot be generated: %w", planErr)
+		}
+		relative := "out"
+		if input.OutDir != "" {
+			if r, err := outputRelative(input.ProjectDir, input.OutDir); err == nil {
+				relative = r
+			}
+		}
+		folder := filepath.ToSlash(filepath.Join(relative, filepath.FromSlash(c.OutputNamespace)))
+		files := map[string][]byte{}
+		for _, file := range plan.GeneratedFiles {
+			name := filepath.ToSlash(projectFilePath(relative, file.Path))
+			if path.Dir(name) == folder && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+				files[name] = file.Bytes()
+			}
+		}
+		if len(files) == 0 {
+			return nil, fmt.Errorf("the plan writes no Go file into %s, the contract package of %s", folder, component)
+		}
+		return files, nil
+	}
 }
 
 // validateLanguage checks that the service declaration's language matches the

@@ -148,8 +148,11 @@ stego init --archetype rest-crud
 The scaffold of each archetype passes `stego validate` and builds as
 written. An archetype that cannot be empty writes its example content from the
 registry: `rpc-service` writes a proto file with one method, one query on it
-with its fill, and the settings that the query needs; `browser-service` writes
-an API prefix, one route and an index page. The service takes the name of the
+with its fill and the fill's test, and the settings that the query needs;
+`browser-service` writes an API prefix, one route and an index page. The fill
+of the query carries no signature: before validate, plan and apply accept it,
+list your key in `SIGNERS`, run `stego test`, then
+`stego fill sign get-greeting`. The service takes the name of the
 project folder, and the fill imports the module path of `STEGO_MODULE` (or
 `github.com/example/service`): give the same value to each later command. Use
 `stego init --archetype <name> --empty` for a scaffold with no example
@@ -382,21 +385,51 @@ slot types and include a constructor and an interface check. STEGO does not
 replace existing fill files.
 
 The fill of a command, a query or a worker implements the slot
-`command.command`, `query.query` or `worker.worker`. Declare the command, query
-or worker with its `fill` first. Then `stego fill create` writes its fill, also
-before the apply that writes its contract:
+`command.command`, `query.query` or `worker.worker`. Its `fill.yaml` names no
+collection: the command, query or worker that names the fill is its binding.
+Declare the command, query or worker with its `fill` first. Then
+`stego fill create` writes its fill, also before the apply that writes its
+contract. This fill ships in the service with write access to your data, so it
+must be qualified, as a slot fill is, before plan and apply accept it:
 
 ```bash
 stego fill create place-order --slot command.command   # New() gives the fill
 stego fill create open-orders --slot query.query       # the function Fill
 stego fill create fulfill-orders --slot worker.worker  # New(), for the trigger
+stego test          # test the fills against the contracts that apply writes
+stego fill sign place-order      # sign each fill with your own key
+stego fill sign open-orders
+stego fill sign fulfill-orders
 stego apply         # write the contracts in out/commands, out/queries, out/workers
 stego deps          # resolve the modules, then check the fills again
 go build ./out
 ```
 
+`stego test` tests these fills against the generated code that apply plans to
+write, so you can qualify a fill before the apply that writes its contract.
+The project's files do not change. The contract digest of such a fill covers
+the part of the generated package (`out/commands`, `out/queries` or
+`out/workers`) that the fill compiles against: the declarations of its own
+command, query or worker, and the declarations that the fill uses, such as the
+repository of an entity. A change to that part makes the fill stale. A new or
+changed command, query or worker does not make the other fills stale, unless it
+changes a declaration that they use. A fill folder that holds
+only `fill.yaml` does not stop apply: apply writes the contract, then names the
+fill to write. Then write the fill, and run `stego test`, `stego fill sign`
+and `stego apply`: `stego deps` and `stego build` refuse a fill that is not
+qualified, as plan and apply do, and `stego build` also refuses a fill signed
+against an older contract than the revision holds. `stego test` passes only
+`-v`, `-race`, `-count` (1 or more), `-timeout` and `-failfast` to `go test`,
+reads no Go environment file, and records evidence only when at least one
+test of the fill ran and passed.
+
 Each unfinished fill returns `ErrNotImplemented`, and its test expects that
 error. Change the test when you write the fill.
+
+**Upgrade:** before this release, STEGO did not qualify the fills of commands,
+queries and workers. Now plan and apply refuse each such fill that has no
+current signed evidence, and name it. For each fill that they name, run
+`stego test`, then `stego fill sign <name>`.
 
 A fill must be qualified before a binding can use it. `stego test` runs the
 fill tests and, when they pass, records the evidence in the fill's `fill.yaml`:

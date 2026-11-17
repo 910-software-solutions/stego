@@ -136,11 +136,78 @@ func (p *project) read(name string) string {
 
 // run runs the stego binary in the project with its registry copy, and gives its output and its error.
 func (p *project) run(args ...string) (string, error) {
+	if len(args) > 0 && (args[0] == "plan" || args[0] == "apply") {
+		p.qualifyFills()
+	}
+	return p.exec(nil, args...)
+}
+
+// exec runs the stego binary in the project with the environment entries extra.
+func (p *project) exec(extra []string, args ...string) (string, error) {
 	cmd := exec.Command(p.stego, args...)
 	cmd.Dir = p.dir
-	cmd.Env = goEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+shopModule)
+	cmd.Env = append(goEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+shopModule), extra...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+// qualifyFills qualifies each fill of the project, as plan and apply require (ST-GEN-INV10): it gives a fill that
+// holds Go code and no test file a test file that only builds it, lists a key in SIGNERS that the test makes for this
+// project only, never a real signing key, runs stego test and signs each fill with that key.
+func (p *project) qualifyFills() {
+	t := p.t
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(p.dir, "fills"))
+	if err != nil {
+		return
+	}
+	keyDir := p.dir + "-signing"
+	key := filepath.Join(keyDir, "test-key")
+	if _, err := os.Stat(key); err != nil {
+		if err := os.MkdirAll(keyDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		command(t, keyDir, os.Environ(), "ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "oidc-test", "-f", key)
+		p.write(filepath.Join(keyDir, "gitconfig"), "[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = "+key+"\n")
+		fields := strings.Fields(p.read(key + ".pub"))
+		signers := filepath.Join(p.dir, "SIGNERS")
+		existing, _ := os.ReadFile(signers)
+		p.write(signers, string(existing)+"oidc-test@example.com "+fields[0]+" "+fields[1]+"\n")
+	}
+	for _, entry := range entries {
+		folder := filepath.Join(p.dir, "fills", entry.Name())
+		files, err := os.ReadDir(folder)
+		if !entry.IsDir() || err != nil {
+			continue
+		}
+		pkg, tested := "", false
+		for _, file := range files {
+			if strings.HasSuffix(file.Name(), "_test.go") {
+				tested = true
+			} else if match := regexp.MustCompile(`(?m)^package (\w+)`).FindStringSubmatch(p.readIf(filepath.Join(folder, file.Name()))); strings.HasSuffix(file.Name(), ".go") && pkg == "" && match != nil {
+				pkg = match[1]
+			}
+		}
+		if pkg != "" && !tested {
+			p.write(filepath.Join(folder, "qualify_test.go"), "package "+pkg+"\n\nimport \"testing\"\n\n// TestBuilds holds that the fill builds.\nfunc TestBuilds(t *testing.T) {}\n")
+		}
+	}
+	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK=", "GOFLAGS=-modcacherw"}
+	_, _ = p.exec(signing, "test")
+	for _, entry := range entries {
+		if entry.IsDir() {
+			_, _ = p.exec(signing, "fill", "sign", entry.Name())
+		}
+	}
+}
+
+// readIf gives the text of a file, or "" when it cannot be read.
+func (p *project) readIf(name string) string {
+	data, err := os.ReadFile(name)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // generated gives the text of every generated Go file of the service, by its path under out.

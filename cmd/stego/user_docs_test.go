@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -127,6 +129,31 @@ func createDocFills(t *testing.T, project, doc string, environment []string, dec
 	}
 }
 
+// qualifyDocFills qualifies the fills that fill create wrote for a doc's declaration, as its author does
+// (ST-GEN-INV10): stego test, then stego fill sign with listed-ssh of ST-EXT-TD02, a key that the test run makes,
+// never a real one.
+func qualifyDocFills(t *testing.T, project string, environment []string, where string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(project, "fills"))
+	if err != nil || len(entries) == 0 {
+		return
+	}
+	keys := testFillKeys(t)
+	putFile(t, project, "SIGNERS", keys.signers)
+	signing := append(append(slices.Clone(environment), keys.goEnv...), "GOFLAGS=-modcacherw",
+		"HOME="+keys.homes["listed-ssh"], "XDG_CONFIG_HOME="+filepath.Join(keys.homes["listed-ssh"], ".config"))
+	commands := [][]string{{"test"}}
+	for _, entry := range entries {
+		commands = append(commands, []string{"fill", "sign", entry.Name()})
+	}
+	for _, command := range commands {
+		if run := stegoIn(t, project, signing, command...); run.code != 0 {
+			t.Errorf("%s: stego %v exits %d:\n%s%s", where, command, run.code, run.stdout, run.stderr)
+			return
+		}
+	}
+}
+
 // userDocs reads the user doc inventory (ST-ASR-TOOL05): one path from the repository's root per line, a line that
 // starts with # being a comment.
 func userDocs(t *testing.T) []string {
@@ -180,6 +207,7 @@ func TestUserDocDeclarations(t *testing.T) {
 				}
 				environment := []string{"STEGO_REGISTRY=" + registry}
 				createDocFills(t, project, doc, environment, decl, i+1)
+				qualifyDocFills(t, project, environment, fmt.Sprintf("%s, YAML block %d", doc, i+1))
 				run := stegoIn(t, project, environment, "validate")
 				if run.code != 0 {
 					t.Errorf("%s, YAML block %d: stego validate exits %d:\n%s%s", doc, i+1, run.code, run.stdout, run.stderr)

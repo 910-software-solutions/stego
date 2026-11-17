@@ -1,6 +1,7 @@
 package fill
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,7 @@ func builtInCheck() compiler.FillCheck {
 func TestFillManifestReader(t *testing.T) {
 	t.Run("ST-EXT-INV01-T A fill manifest that does not name exactly one known slot and one declared collection is refused, naming the field", func(t *testing.T) {
 		check := builtInCheck()
+		check.Slots = append(check.Slots, compiler.FillSlot{Ref: types.SlotRef{Component: "command", Slot: "command"}, Contract: "components/command/component.yaml"})
 		manifests := []struct {
 			name, body, field, value string
 		}{
@@ -91,6 +93,10 @@ func TestFillManifestReader(t *testing.T) {
 			{"fifth-fill", "implements: no-such-component.before_create\ncollection: org-users\n", "implements", "no-such-component.before_create"},
 			{"sixth-fill", "implements: rest-api.before_create\ncollection: org-groups\n", "collection", "org-groups"},
 			{"seventh-fill", "implements: rest-api.before_create\n", "collection", ""},
+			// A fill of the command slot names no collection: its binding is the command that names it (decision
+			// on ST-EXT-Q30).
+			{"command-fill", "implements: command.command\n", "", ""},
+			{"collection-command-fill", "implements: command.command\ncollection: org-users\n", "collection", "org-users"},
 		}
 		root := t.TempDir()
 		for _, m := range manifests {
@@ -103,6 +109,12 @@ func TestFillManifestReader(t *testing.T) {
 				t.Fatal(err)
 			}
 			f, err := ReadManifest(path, check)
+			if m.name == "command-fill" {
+				if err != nil || f == nil || f.Implements != "command.command" || f.Collection != "" {
+					t.Fatalf("%s: refused or misread: %+v, %v", m.name, f, err)
+				}
+				continue
+			}
 			if m.field == "" {
 				if err != nil || f == nil || f.Implements != "rest-api.before_create" || f.Collection != "org-users" {
 					t.Fatalf("%s: refused or misread: %+v, %v", m.name, f, err)
@@ -139,6 +151,29 @@ func TestFitsBinding(t *testing.T) {
 		} {
 			if FitsBinding(f, binding, "org-users") {
 				t.Errorf("%s for %s fits the binding of rest-api.before_create for org-users", f.Implements, f.Collection)
+			}
+		}
+	})
+}
+
+func TestReadTestReport(t *testing.T) {
+	t.Run("ST-EXT-UC02-R01-T04 A go test report in which no test passed, or a test failed, records no evidence", func(t *testing.T) {
+		event := func(action, test, output string) string {
+			return fmt.Sprintf("{\"Action\":%q,\"Test\":%q,\"Output\":%q}\n", action, test, output)
+		}
+		for name, c := range map[string]struct {
+			report string
+			pass   bool
+		}{
+			"one test passed":      {event("run", "TestA", "") + event("pass", "TestA", "") + event("output", "", "ok  \tx\n") + event("pass", "", ""), true},
+			"no test to run":       {event("output", "", "ok  \tx\t[no tests to run]\n") + event("pass", "", ""), false},
+			"a test failed":        {event("pass", "TestA", "") + event("fail", "TestB", "") + event("fail", "", ""), false},
+			"a report not in JSON": {"FAIL x [build failed]\n", false},
+		} {
+			var printed strings.Builder
+			err := ReadTestReport(strings.NewReader(c.report), &printed)
+			if (err == nil) != c.pass {
+				t.Errorf("%s: got %v, want pass %v", name, err, c.pass)
 			}
 		}
 	})

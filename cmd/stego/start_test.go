@@ -385,7 +385,7 @@ func keysOf(values map[string]any) []string {
 // exampleArchetypes are the archetypes of the fixture registry whose scaffold holds example content, with the files
 // of that content beside the declaration.
 var exampleArchetypes = map[string][]string{
-	"rpc-service":     {"authz/schema.zed", "fills/get-greeting/fill.go", "fills/get-greeting/fill.yaml", "proto/service.proto"},
+	"rpc-service":     {"authz/schema.zed", "fills/get-greeting/fill.go", "fills/get-greeting/fill.yaml", "fills/get-greeting/fill_test.go", "proto/service.proto"},
 	"browser-service": {"ui/index.html"},
 }
 
@@ -450,6 +450,10 @@ func TestArchetypeScaffolds(t *testing.T) {
 		for _, archetype := range declaredArchetypes(t) {
 			project, _ := initialized(t, archetype)
 			before := treeOf(t, project)
+			if signExampleFill(t, project, archetype, moduleOf(archetype), "validate") {
+				// The signature changes only the manifest of the example fill.
+				before = treeOf(t, project)
+			}
 			if run := stegoIn(t, project, moduleOf(archetype), "validate"); run.code != 0 {
 				t.Errorf("%s: stego validate refused the scaffold: %s%s", archetype, run.stdout, run.stderr)
 			}
@@ -463,6 +467,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 		for _, archetype := range declaredArchetypes(t) {
 			project, _ := initialized(t, archetype)
 			environment := moduleOf(archetype)
+			signExampleFill(t, project, archetype, environment, "plan")
 			for _, command := range [][]string{{"validate"}, {"apply"}, {"deps"}, {"apply"}, {"drift"}} {
 				if run := stegoIn(t, project, environment, command...); run.code != 0 {
 					t.Fatalf("%s: stego %v: exit %d: %s%s", archetype, command, run.code, run.stdout, run.stderr)
@@ -709,8 +714,36 @@ func TestArchetypeScaffolds(t *testing.T) {
 		if err != nil || !strings.Contains(string(declaration), "name: "+name+"\n") || strings.Contains(string(declaration), "{{") {
 			t.Errorf("the declaration does not hold the service name in place of its placeholders: %v\n%s", err, declaration)
 		}
+		signExampleFill(t, project, "rpc-service", nil, "validate")
 		if check := stegoIn(t, project, nil, "validate"); check.code != 0 {
 			t.Errorf("stego validate refused the scaffold: %s%s", check.stdout, check.stderr)
 		}
 	})
+}
+
+// signExampleFill qualifies the example fill get-greeting of a scaffold that holds it, as the service author does
+// (ST-GEN-INV10, decision on ST-EXT-Q30). First the command check refuses the unsigned fill, and its only fault names
+// the fill and what to run. Then stego test runs, and the fill is signed with listed-ssh of ST-EXT-TD02, a key that the
+// test run makes, never a real one. It tells whether the scaffold holds the fill.
+func signExampleFill(t *testing.T, project, archetype string, environment []string, check string) bool {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(project, "fills", "get-greeting")); err != nil {
+		return false
+	}
+	run := stegoIn(t, project, environment, check)
+	output := run.stdout + run.stderr
+	if run.code == 0 || !strings.Contains(output, `fill "get-greeting" is untested`) || !strings.Contains(output, "run stego test, then stego fill sign get-greeting") ||
+		strings.Contains(output, "2 error(s)") {
+		t.Fatalf("%s: stego %s of the unsigned example fill: exit %d, want one fault that names get-greeting and what to run: %s", archetype, check, run.code, output)
+	}
+	keys := testFillKeys(t)
+	putFile(t, project, "SIGNERS", keys.signers)
+	signing := append(append(slices.Clone(environment), keys.goEnv...), "GOFLAGS=-modcacherw",
+		"HOME="+keys.homes["listed-ssh"], "XDG_CONFIG_HOME="+filepath.Join(keys.homes["listed-ssh"], ".config"))
+	for _, command := range [][]string{{"test"}, {"fill", "sign", "get-greeting"}} {
+		if run := stegoIn(t, project, signing, command...); run.code != 0 {
+			t.Fatalf("%s: stego %v: exit %d: %s%s", archetype, command, run.code, run.stdout, run.stderr)
+		}
+	}
+	return true
 }
