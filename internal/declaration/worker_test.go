@@ -381,12 +381,12 @@ func TestLockAtMost(t *testing.T) {
 }
 
 func TestChildLists(t *testing.T) {
-	// Order has a resource type; Line is a child of Order; Pair is a child of Order and Store; Note has no
-	// authorization of its rows (security review of PR #416, M1).
+	// Order has a resource type; Line is a child of Order that also refers to Note; Pair is a child of Order and
+	// Store; Note has no authorization of its rows (security review of PR #416, M1).
 	entities := []types.Entity{
 		{Name: "Order", EntityAuthorization: types.EntityAuthorization{ResourceType: "order"}, Fields: []types.Field{{Name: "status", Type: types.FieldTypeString}, {Name: "store_id", Type: types.FieldTypeRef, To: "Store"}}},
 		{Name: "Store", EntityAuthorization: types.EntityAuthorization{ResourceType: "store"}, Fields: []types.Field{{Name: "city", Type: types.FieldTypeString}}},
-		{Name: "Line", Fields: []types.Field{{Name: "order_id", Type: types.FieldTypeRef, To: "Order"}, {Name: "sku", Type: types.FieldTypeString}}},
+		{Name: "Line", Fields: []types.Field{{Name: "order_id", Type: types.FieldTypeRef, To: "Order"}, {Name: "sku", Type: types.FieldTypeString}, {Name: "note_id", Type: types.FieldTypeRef, To: "Note"}}},
 		{Name: "Pair", Fields: []types.Field{{Name: "order_id", Type: types.FieldTypeRef, To: "Order"}, {Name: "store_id", Type: types.FieldTypeRef, To: "Store"}}},
 		{Name: "Note", Fields: []types.Field{{Name: "body", Type: types.FieldTypeString}}},
 	}
@@ -416,6 +416,8 @@ func TestChildLists(t *testing.T) {
 		"a parent term with a parameter":                {list("Line", types.ListTerm{Field: "order_id", Op: types.ListEquals, Parent: true, Param: "order_id"}), "only the operator equals"},
 		"a parent term on a field that is no reference": {list("Line", types.ListTerm{Field: "sku", Op: types.ListEquals, Parent: true}), "needs a reference field"},
 		"a child of two parents":                        {list("Pair", parent), "more than one entity"},
+		"a parent term on a reference to an entity with no resource type": {list("Line", types.ListTerm{Field: "note_id", Op: types.ListEquals, Parent: true}),
+			"needs a reference to an entity with a resource type, and Note has none"},
 	} {
 		t.Run("ST-DECL-INV94-T "+name+" is refused", func(t *testing.T) {
 			wantFault(t, validateLists("command", "place-order", "commands[0]", writes, c.lists, entities), `command "place-order"`, `list "rows"`, c.want)
