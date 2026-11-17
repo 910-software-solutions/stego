@@ -44,6 +44,47 @@ func TestFillGate(t *testing.T) {
 		expectRefused(t, p, "unlisted-fill", "SIGNERS does not list its key")
 	})
 
+	t.Run("ST-EXT-UC02-R02-T07 Validate warns of a fill with no evidence or no sign-off and names the fix, and plan, apply and deps refuse it", func(t *testing.T) {
+		for _, c := range []struct{ fill, standing string }{{"untested-fill", "untested"}, {"unsigned-fill", "unsigned"}} {
+			p := newFillProject(t)
+			p.bind(t, slotBinding{c.fill, "before_create", "org-users"})
+			before := p.tree(t, "out", ".stego")
+			stdout, stderr, err := p.stego(t, "no-key", "validate")
+			if err != nil || !strings.Contains(stdout, "1 warning(s)") || !strings.Contains(stdout, fmt.Sprintf("fill %q is %s", c.fill, c.standing)) ||
+				!strings.Contains(stdout, "stego fill sign "+c.fill) || !strings.Contains(stdout, "plan, apply and build refuse the fill until then") {
+				t.Fatalf("validate of %s: %v, want exit 0 and one warning that names the fill and the fix:\n%s\n%s", c.fill, err, stdout, stderr)
+			}
+			stdout, stderr, err = p.stego(t, "no-key", "validate", "--json")
+			var document struct {
+				Accepted bool `json:"accepted"`
+				Warnings []struct {
+					Rule  string `json:"rule"`
+					Found string `json:"found"`
+				} `json:"warnings"`
+			}
+			if err != nil || json.Unmarshal([]byte(stdout), &document) != nil || !document.Accepted || len(document.Warnings) != 1 ||
+				document.Warnings[0].Rule != "fill-qualified" || document.Warnings[0].Found != c.fill {
+				t.Fatalf("validate --json of %s: %v, want accepted with one fill-qualified warning:\n%s\n%s", c.fill, err, stdout, stderr)
+			}
+			expectRefused(t, p, fmt.Sprintf("fill %q is %s", c.fill, c.standing))
+			if stdout, stderr, err := p.stego(t, "no-key", "deps"); err == nil {
+				t.Fatalf("deps accepted %s:\n%s\n%s", c.fill, stdout, stderr)
+			}
+			if fmt.Sprint(before) != fmt.Sprint(p.tree(t, "out", ".stego")) {
+				t.Fatal("validate or deps changed the out folder or the record")
+			}
+		}
+		// A stale fill, a key that SIGNERS does not list and a fill with no test file need more than stego test and
+		// stego fill sign, so validate still refuses each.
+		for _, c := range []struct{ fill, text string }{{"stale-fill", "is stale"}, {"unlisted-fill", "SIGNERS does not list its key"}, {"no-tests-fill", "it has no test file"}} {
+			p := newFillProject(t)
+			p.bind(t, slotBinding{c.fill, "before_create", "org-users"})
+			if stdout, stderr, err := p.stego(t, "no-key", "validate"); err == nil || !strings.Contains(stdout+stderr, c.text) {
+				t.Fatalf("validate accepted %s or does not name %q: %v\n%s\n%s", c.fill, c.text, err, stdout, stderr)
+			}
+		}
+	})
+
 	t.Run("ST-EXT-UC02-R03-T01 A sign-off copied into another fill with the same code does not qualify that fill", func(t *testing.T) {
 		p := newFillProject(t)
 		for _, file := range []string{"fill.yaml", "policy.go", "policy_test.go"} {

@@ -695,6 +695,9 @@ func runValidate(args []string) error {
 	if err != nil {
 		return err
 	}
+	// A fill with no evidence or no sign-off is a warning of validate that names stego test and stego fill sign;
+	// plan, apply, build and deps refuse it (ST-DECL-UC01-R01, ST-GEN-INV10).
+	input.WarnUnproved = true
 
 	result, err := compiler.Validate(input)
 	if err != nil {

@@ -898,7 +898,10 @@ the slot `worker.worker`.
    ```
 
    Plan and apply refuse a fill of a command, query or worker that is not
-   qualified, and name it and what to run. A fill folder that holds only
+   qualified, and name it and what to run. `stego validate` gives only a
+   warning for a fill that has no evidence or no sign-off, such as
+   `fill "place-order" is untested ...; run stego test, then stego fill sign
+   place-order; plan, apply and build refuse the fill until then`. A fill folder that holds only
    `fill.yaml` does not stop apply: apply writes the contract, then names the
    fill to write.
 

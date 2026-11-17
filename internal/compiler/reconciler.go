@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -181,6 +182,12 @@ type ReconcilerInput struct {
 	// CheckOnly marks a plan that stego validate makes only to read the pins it uses. Such a plan is never
 	// written, so Reconcile does not refuse it for a part of the declaration that no component can generate yet.
 	CheckOnly bool
+
+	// WarnUnproved makes checking report the fault of an unproved fill (FillFault.Unproved) as a warning that names
+	// stego test and stego fill sign, not as a fault. Only stego validate sets it, and Reconcile refuses it on a plan
+	// that is not CheckOnly, so no plan that is written, and no binary, holds a fill with no evidence or no sign-off
+	// (ST-DECL-UC01-R01, ST-GEN-INV10).
+	WarnUnproved bool
 }
 
 // boundMixins gives the mixins that a declaration binds, with each alias replaced by the mixins it names, each once
@@ -251,6 +258,10 @@ type FillFault struct {
 	Path    string
 	Found   string
 	Message string
+	// Unproved marks the fault of a fill that fits its binding and has its test file, and that has no evidence or
+	// no sign-off only: stego test, then stego fill sign, qualify it. stego validate reports such a fault as a
+	// warning (ReconcilerInput.WarnUnproved); plan, apply, build and deps refuse it (ST-GEN-INV10).
+	Unproved bool
 }
 
 // FillContracts reads a slot contract and the files it imports from the
@@ -386,6 +397,9 @@ type FillSlotReader func(path string) (slot string, err error)
 // archetype, running all component generators, and assembling shared files.
 // The plan can then be inspected (plan) or applied (Apply).
 func Reconcile(input ReconcilerInput) (*Plan, error) {
+	if input.WarnUnproved && !input.CheckOnly {
+		return nil, errors.New("a plan that is written cannot take a fill with no evidence or no sign-off: run stego test, then stego fill sign")
+	}
 	if err := checkPendingProject(input.ProjectDir); err != nil {
 		return nil, err
 	}

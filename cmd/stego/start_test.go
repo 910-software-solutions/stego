@@ -467,7 +467,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 		for _, archetype := range declaredArchetypes(t) {
 			project, _ := initialized(t, archetype)
 			environment := moduleOf(archetype)
-			signExampleFill(t, project, archetype, environment, "plan")
+			signExampleFill(t, project, archetype, environment, "plan", "apply", "validate")
 			for _, command := range [][]string{{"validate"}, {"apply"}, {"deps"}, {"apply"}, {"drift"}} {
 				if run := stegoIn(t, project, environment, command...); run.code != 0 {
 					t.Fatalf("%s: stego %v: exit %d: %s%s", archetype, command, run.code, run.stdout, run.stderr)
@@ -722,19 +722,28 @@ func TestArchetypeScaffolds(t *testing.T) {
 }
 
 // signExampleFill qualifies the example fill get-greeting of a scaffold that holds it, as the service author does
-// (ST-GEN-INV10, decision on ST-EXT-Q30). First the command check refuses the unsigned fill, and its only fault names
-// the fill and what to run. Then stego test runs, and the fill is signed with listed-ssh of ST-EXT-TD02, a key that the
-// test run makes, never a real one. It tells whether the scaffold holds the fill.
-func signExampleFill(t *testing.T, project, archetype string, environment []string, check string) bool {
+// (ST-GEN-INV10, decision on ST-EXT-Q30). First the check runs on the unsigned fill: stego validate accepts the
+// scaffold with one warning that names the fill and what to run, and each other command refuses it with one fault
+// that names the fill and what to run (ST-DECL-UC01-R01). Then stego test runs, and the fill is signed with listed-ssh
+// of ST-EXT-TD02, a key that the test run makes, never a real one. It tells whether the scaffold holds the fill.
+func signExampleFill(t *testing.T, project, archetype string, environment []string, checks ...string) bool {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(project, "fills", "get-greeting")); err != nil {
 		return false
 	}
-	run := stegoIn(t, project, environment, check)
-	output := run.stdout + run.stderr
-	if run.code == 0 || !strings.Contains(output, `fill "get-greeting" is untested`) || !strings.Contains(output, "run stego test, then stego fill sign get-greeting") ||
-		strings.Contains(output, "2 error(s)") {
-		t.Fatalf("%s: stego %s of the unsigned example fill: exit %d, want one fault that names get-greeting and what to run: %s", archetype, check, run.code, output)
+	for _, check := range checks {
+		run := stegoIn(t, project, environment, check)
+		output := run.stdout + run.stderr
+		names := strings.Contains(output, `fill "get-greeting" is untested`) && strings.Contains(output, "run stego test, then stego fill sign get-greeting")
+		if check == "validate" {
+			if run.code != 0 || !names || !strings.Contains(output, "1 warning(s)") || strings.Contains(output, "error(s)") {
+				t.Fatalf("%s: stego validate of the unsigned example fill: exit %d, want exit 0 and one warning that names get-greeting and what to run: %s", archetype, run.code, output)
+			}
+			continue
+		}
+		if run.code == 0 || !names || strings.Contains(output, "2 error(s)") {
+			t.Fatalf("%s: stego %s of the unsigned example fill: exit %d, want one fault that names get-greeting and what to run: %s", archetype, check, run.code, output)
+		}
 	}
 	keys := testFillKeys(t)
 	putFile(t, project, "SIGNERS", keys.signers)

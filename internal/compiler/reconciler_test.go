@@ -3295,3 +3295,16 @@ func TestUserManagementRetireGuard(t *testing.T) {
 		}
 	})
 }
+
+func TestWarnUnprovedOnlyChecks(t *testing.T) {
+	t.Run("ST-EXT-UC02-R02-T08 A plan that is not check-only refuses the warning of an unproved fill", func(t *testing.T) {
+		project := t.TempDir()
+		_, err := Reconcile(ReconcilerInput{ProjectDir: project, OutDir: filepath.Join(project, "out"), WarnUnproved: true})
+		if err == nil || !strings.Contains(err.Error(), "run stego test, then stego fill sign") {
+			t.Fatalf("Reconcile with WarnUnproved and no CheckOnly: %v, want a refusal that names stego test and stego fill sign", err)
+		}
+		if entries, err := os.ReadDir(project); err != nil || len(entries) != 0 {
+			t.Fatalf("the refused plan wrote into the project: %v %v", entries, err)
+		}
+	})
+}
