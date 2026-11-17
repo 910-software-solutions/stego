@@ -63,6 +63,10 @@ func PipelineFile(provider, service string) string {
 	return GitHubActionsFile
 }
 
+// konfluxPrefetch is the prefetch-input of the Konflux build: the Go modules of the go.mod and go.sum at the root of
+// the project folder, which the prefetch puts where the Containerfile reads them (PrefetchedModules).
+const konfluxPrefetch = `{"type": "gomod", "path": "."}`
+
 // IsPinned tells if a pipeline reference names a full 40-character commit or a sha256 digest (ST-DLV-SP02).
 func IsPinned(reference string) bool {
 	return commitPin.MatchString(reference) || digestPin.MatchString(reference)
@@ -118,6 +122,11 @@ func WritePipeline(service, provider string, pins PipelinePins) (Pipeline, error
 					map[string]any{"name": "service", "value": service},
 					map[string]any{"name": "stego-checks", "value": pins.Checks},
 					map[string]any{"name": "trusted-signer", "value": pins.Signer},
+					// The build of the standard pipeline reads the offline Containerfile, prefetches the Go modules
+					// of go.sum, and builds with the network off (ST-DLV-UC03-R04).
+					map[string]any{"name": "dockerfile", "value": ContainerFile},
+					map[string]any{"name": "hermetic", "value": "true"},
+					map[string]any{"name": "prefetch-input", "value": konfluxPrefetch},
 				},
 			},
 		}
@@ -230,6 +239,9 @@ func LoadPipeline(provider string, data []byte) (Pipeline, error) {
 			!signerText.MatchString(paramValue(run.Spec.Params, "trusted-signer")) ||
 			run.Metadata.Annotations["pipelinesascode.tekton.dev/on-event"] != "[push]" || run.Metadata.Annotations["pipelinesascode.tekton.dev/on-target-branch"] == "" {
 			return Pipeline{}, fmt.Errorf("the PipelineRun does not only reference a bundle by digest with the STEGO checks by digest")
+		}
+		if paramValue(run.Spec.Params, "dockerfile") != ContainerFile || paramValue(run.Spec.Params, "hermetic") != "true" || paramValue(run.Spec.Params, "prefetch-input") != konfluxPrefetch {
+			return Pipeline{}, fmt.Errorf("the PipelineRun does not build the offline %s, hermetic, from the prefetched Go modules", ContainerFile)
 		}
 		return Pipeline{Provider: provider, Pins: PipelinePins{Pipeline: bundle, Checks: checks, Signer: paramValue(run.Spec.Params, "trusted-signer")}, File: data}, nil
 	}

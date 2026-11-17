@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -182,6 +183,26 @@ func TestPipelineApply(t *testing.T) {
 		}
 		if values["bundle"] != fixtureBundle || values["stego-checks"] != fixtureChecksBundle || values["trusted-signer"] != fixtureChainsKeyName {
 			t.Errorf("the parameters are %v, want the bundle, the checks bundle and the Chains key of the registry", values)
+		}
+		// The build reads the offline Containerfile, with the network off, from the prefetched Go modules
+		// (ST-DLV-UC03-R04).
+		if values["dockerfile"] != delivery.ContainerFile || values["hermetic"] != "true" || values["prefetch-input"] != `{"type": "gomod", "path": "."}` {
+			t.Errorf("the parameters are %v, want dockerfile %s, hermetic true and the gomod prefetch of the project folder", values, delivery.ContainerFile)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := delivery.LoadPipeline(delivery.Konflux, data); err != nil {
+			t.Fatalf("the written PipelineRun does not read back: %v", err)
+		}
+		for _, edit := range [][2]string{{`value: "true"`, `value: "false"`}, {"value: Containerfile", "value: Dockerfile"}} {
+			if !bytes.Contains(data, []byte(edit[0])) {
+				t.Fatalf("the PipelineRun holds no %s:\n%s", edit[0], data)
+			}
+			if _, err := delivery.LoadPipeline(delivery.Konflux, bytes.Replace(data, []byte(edit[0]), []byte(edit[1]), 1)); err == nil {
+				t.Errorf("a PipelineRun with %s instead of %s reads back", edit[1], edit[0])
+			}
 		}
 	})
 
