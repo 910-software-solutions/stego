@@ -710,3 +710,32 @@ func TestContainerfileLocalModules(t *testing.T) {
 		}
 	})
 }
+
+func TestDeployFolderLink(t *testing.T) {
+	t.Run("ST-DLV-UC01-R05-T05 Apply refuses a deploy folder that is a symbolic link and writes nothing through it", func(t *testing.T) {
+		registry := requirementsRegistry(t)
+		env := requirementsEnv(registry)
+		for _, link := range []string{"deploy", delivery.BaseFolder} {
+			dir := requirementsProject(t)
+			outside := t.TempDir()
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, link)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(dir, link)); err != nil {
+				t.Fatal(err)
+			}
+			_, stderr, err := runInProject(t, dir, env, "apply")
+			if err == nil {
+				t.Errorf("%s: apply accepted a folder that is a symbolic link", link)
+			} else if !strings.Contains(stderr, "symbolic link") {
+				t.Errorf("%s: the refusal does not name the symbolic link:\n%s", link, stderr)
+			}
+			if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+				t.Errorf("%s: apply wrote through the link: %v, %v", link, entries, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, ".stego", "state.yaml")); !os.IsNotExist(err) {
+				t.Errorf("%s: the refused apply wrote the record: %v", link, err)
+			}
+		}
+	})
+}
