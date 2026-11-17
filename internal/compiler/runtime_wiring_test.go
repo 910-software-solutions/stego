@@ -231,7 +231,7 @@ func (p *wiringProject) qualifyFills() {
 			p.write(filepath.Join("fills", entry.Name(), "qualify_test.go"), "package "+pkg+"\n\nimport \"testing\"\n\n// TestBuilds holds that the fill builds.\nfunc TestBuilds(t *testing.T) {}\n")
 		}
 	}
-	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK="}
+	signing := []string{"GIT_CONFIG_GLOBAL=" + filepath.Join(keyDir, "gitconfig"), "GIT_CONFIG_NOSYSTEM=1", "SSH_AUTH_SOCK=", "GOFLAGS=-modcacherw"}
 	_, _ = p.stegoExec(signing, "test")
 	for _, name := range names {
 		_, _ = p.stegoExec(signing, "fill", "sign", name)
@@ -313,7 +313,7 @@ func (p *wiringProject) applyWithAfterSlot() {
 	signed := func(args ...string) string {
 		cmd := exec.Command(p.binary, args...)
 		cmd.Dir = p.dir
-		cmd.Env = wiringGoEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule, "GOFLAGS=-mod=mod",
+		cmd.Env = wiringGoEnv("STEGO_REGISTRY="+filepath.Join(p.dir, "registry"), "STEGO_MODULE="+wiringModule, "GOFLAGS=-mod=mod -modcacherw",
 			"HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"))
 		output, _ := cmd.CombinedOutput()
 		return string(output)
