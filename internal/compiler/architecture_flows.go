@@ -239,7 +239,10 @@ func (d *deriver) access() error {
 			if check.Public {
 				check.Reason = e.PublicReasons[op]
 			}
-			ancestors, err := d.ancestorChecks(subject, chain, entities)
+			// The parent of a list, a create or an upsert is the deepest resource that the request names, and is
+			// decided; every other ancestor is checked for existence and its link only (ST-SUP-RC20-OC24).
+			decideParent := op == types.OpList || op == types.OpCreate || op == types.OpUpsert
+			ancestors, err := d.ancestorChecks(subject, chain, entities, decideParent)
 			if err != nil {
 				return err
 			}
@@ -263,7 +266,7 @@ func (d *deriver) access() error {
 	}
 	permissions := map[string]bool{}
 	roles := map[string]ArchRole{}
-	// The permission of each check, and the read permission of each ancestor that a check reads, get their grant
+	// The permission of each check, and the read permission of each ancestor that a check decides, get their grant
 	// paths.
 	expand := func(grants, resourceType, name string) {
 		if grants == "" || permissions[grants] {
@@ -301,14 +304,13 @@ func (d *deriver) access() error {
 		if check.Permission == "" {
 			text = "Decides no permission on the row itself."
 		}
-		var reads []string
 		for _, a := range check.Ancestors {
-			if a.Permission != "" {
-				reads = append(reads, fmt.Sprintf("%s#%s on %s", a.ResourceType, a.Permission, shortID(a.Entity)))
+			if a.Decided && a.Permission != "" {
+				text += fmt.Sprintf(" First it decides the read permission %s#%s on the parent %s.", a.ResourceType, a.Permission, shortID(a.Entity))
 			}
 		}
-		if len(reads) > 0 {
-			text += " First it decides the read permission of each ancestor in the path, the top one first: " + strings.Join(reads, ", ") + "."
+		if len(check.Ancestors) > 0 {
+			text += " " + ancestorRule
 		}
 		m.AuthzPoints = append(m.AuthzPoints, ArchPoint{ID: "authz:" + check.Subject, Element: check.Subject, Text: text, Source: check.Source})
 	}
@@ -321,12 +323,27 @@ func ancestorFactName(n int, a ArchAncestor) string {
 	return fmt.Sprintf("checks ancestor %d %s", n, shortID(a.Entity))
 }
 
-// ancestorFact gives the fact of the ancestor check at place n: the permission it decides, public, or unstated when
-// no authorization is bound. The derivation refuses an ancestor that the declaration does not state, so no fact says
-// that an ancestor checks no permission.
+// linkedReason is the reason of an ancestor that the handler does not decide.
+const linkedReason = "The handler checks that the row exists in the tenant and is of the ancestor above it, and decides no permission on it: it is above the deepest resource that the request names."
+
+// ancestorRule says what the handler checks on the ancestors in the path (ST-SUP-RC20-OC24, ST-SUP-Q156).
+const ancestorRule = "It checks that each ancestor in the path exists in the tenant and is of the ancestor above it, and decides no permission on an ancestor above the deepest resource that the request names (ST-SUP-RC20-OC24)."
+
+// ancestorLinked is what the view shows of an ancestor that the handler checks for existence and its link only, and
+// ancestorLinkedFact the value of its fact, a plain name that the fact list shows as it is.
+const (
+	ancestorLinked     = "exists and linked"
+	ancestorLinkedFact = "exists-and-linked"
+)
+
+// ancestorFact gives the fact of the ancestor check at place n: exists and linked for an ancestor that is not decided,
+// else the permission it decides, public, or unstated when no authorization is bound. The derivation refuses an
+// ancestor that the declaration does not state, so no fact says that an ancestor checks no permission.
 func ancestorFact(subject string, n int, a ArchAncestor) ArchFact {
 	name := ancestorFactName(n, a)
 	switch {
+	case !a.Decided:
+		return fact("access", subject, name, ancestorLinkedFact, "stated", a.Source)
 	case a.Permission != "":
 		return fact("access", subject, name, a.ResourceType+"#"+a.Permission, "stated", a.Source)
 	case a.Public:
@@ -335,24 +352,25 @@ func ancestorFact(subject string, n int, a ArchAncestor) ArchFact {
 	return fact("access", subject, name, nil, "unstated", a.Source)
 }
 
-// hasCheckedAncestor says whether a check reads an ancestor with a permission.
+// hasCheckedAncestor says whether a check decides a permission on an ancestor: only the decided parent of a list, a
+// create or an upsert has one.
 func hasCheckedAncestor(check ArchCheck) bool {
 	for _, a := range check.Ancestors {
-		if a.Permission != "" {
+		if a.Decided && a.Permission != "" {
 			return true
 		}
 	}
 	return false
 }
 
-// ancestorChecks gives the checks of the parent chain of an operation, the top ancestor first, as the handler reads
-// them (ST-SUP-RC20-OC24): each ancestor with the read permission of its entity, or no permission when no
-// authorization is bound. It refuses an ancestor whose entity has a resource type and a public read or no read
-// permission: the generators refuse that declaration (the command runtime plans each entity of the path with a read
+// ancestorChecks gives the checks of the parent chain of an operation, the top ancestor first (ST-SUP-RC20-OC24):
+// with decideParent, the parent with the read permission of its entity, or no permission when no authorization is
+// bound; each other ancestor with its existence and its link only, and no permission (ST-SUP-Q156). It refuses an
+// ancestor whose entity has a resource type and a public read or no read permission: the generators refuse that declaration (the command runtime plans each entity of the path with a read
 // permission), so the model states no check that no handler makes (security review of PR #374, L3). It refuses an
 // ancestor whose entity has no resource type too: the rest-api generator refuses it, and the declaration check
 // refuses it for the entity of a collection (security review of PR #383).
-func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entities map[string]int) ([]ArchAncestor, error) {
+func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entities map[string]int, decideParent bool) ([]ArchAncestor, error) {
 	svc := d.in.Service
 	var out []ArchAncestor
 	for n := len(chain) - 1; n >= 0; n-- {
@@ -363,16 +381,19 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 			a.Link = "field:" + level.Entity + "." + level.Link
 		}
 		i, known := entities[level.Entity]
+		a.Decided = decideParent && n == 0
 		switch {
 		case !known:
 			// The declaration check refuses a scope that names no entity, and no generator builds it, so the model
 			// never says that such an ancestor checks no permission (security review of PR #384, L3).
-			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and the declaration states no entity %s; the handler decides the read permission of each ancestor in the path (ST-SUP-RC20-OC24), so declare the entity %s",
+			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and the declaration states no entity %s; the generators plan each ancestor entity in the path with a read permission (ST-SUP-RC20-OC24), so declare the entity %s",
 				level.By, level.Entity, shortID(subject), level.Entity, level.Entity)}
-		case svc.Authorization == nil:
+		case svc.Authorization == nil && a.Decided:
 			a.Reason, a.Source = "No authorization is bound, so no permission is checked.", ArchSource{Rule: "ST-DECL-UC06-R01"}
+		case svc.Authorization == nil:
+			a.Reason, a.Source = linkedReason, ArchSource{Rule: "ST-SUP-RC20-OC24"}
 		case svc.Entities[i].ResourceType == "":
-			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and entities[%d] has no resource type; the handler decides the read permission of each ancestor in the path (ST-SUP-RC20-OC24), so declare entities[%d].resource_type and entities[%d].permissions.read",
+			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and entities[%d] has no resource type; the generators plan each ancestor entity in the path with a read permission (ST-SUP-RC20-OC24), so declare entities[%d].resource_type and entities[%d].permissions.read",
 				level.By, level.Entity, shortID(subject), i, i, i)}
 		case svc.Entities[i].Permissions[types.OpRead] == types.PermissionPublic || svc.Entities[i].Permissions[types.OpRead] == "":
 			e := svc.Entities[i]
@@ -380,8 +401,10 @@ func (d *deriver) ancestorChecks(subject string, chain []types.ScopeLevel, entit
 			if e.Permissions[types.OpRead] == types.PermissionPublic {
 				read = "the read permission public"
 			}
-			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and entities[%d] has the resource type %s and %s; the handler decides the read permission of each ancestor in the path (ST-SUP-RC20-OC24), so declare entities[%d].permissions.read as a permission of %s",
+			return nil, &ArchitectureRefusal{fmt.Errorf("collections.%s.scope puts the entity %s in the path of %s as an ancestor, and entities[%d] has the resource type %s and %s; the generators plan each ancestor entity in the path with a read permission (ST-SUP-RC20-OC24), so declare entities[%d].permissions.read as a permission of %s",
 				level.By, e.Name, shortID(subject), i, e.ResourceType, read, i, e.ResourceType)}
+		case !a.Decided:
+			a.Reason, a.Source = linkedReason, ArchSource{Rule: "ST-SUP-RC20-OC24"}
 		default:
 			e := svc.Entities[i]
 			a.ResourceType, a.Permission = e.ResourceType, e.Permissions[types.OpRead]
@@ -718,7 +741,7 @@ func (d *deriver) compliance() {
 			value, state = c.ResourceType+"#"+c.Permission, "stated"
 		}
 		put("access", fact("access", c.Subject, "checks", value, state, c.Source))
-		// Each ancestor in the path of the operation, which the handler reads first (ST-SUP-RC20-OC24).
+		// Each ancestor in the path of the operation, which the handler checks (ST-SUP-RC20-OC24).
 		for n, a := range c.Ancestors {
 			put("access", ancestorFact(c.Subject, n+1, a))
 		}

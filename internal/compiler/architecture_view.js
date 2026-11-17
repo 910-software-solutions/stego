@@ -530,8 +530,9 @@ function cellDetails(d, id){
   [["Operation", nameOf(c.subject)], ["Checks", c.public ? "public" : c.resource_type+"#"+c.permission], ["Decided", point ? point.text : ""], ["Source", srcText(c.source)]].forEach(function(r){ if (!r[1]) return; dl.appendChild(h("dt", {text:r[0]})); dl.appendChild(h("dd", {text:r[1]})); });
   d.appendChild(dl);
   if (c.ancestors && c.ancestors.length){
-    // The parent chain check (ST-SUP-RC20-OC24): the handler reads each ancestor first, the top one first.
-    d.appendChild(h("strong", {text:"Ancestors read first, the top one first"}));
+    // The parent chain check (ST-SUP-RC20-OC24): each ancestor must exist and be of the ancestor above it; only the
+    // parent of a list, a create or an upsert is decided (ST-SUP-Q156).
+    d.appendChild(h("strong", {text:"Ancestors in the path, the top one first"}));
     var al = h("ol", {id:"cellAncestors"}), cut = [], gone = [];
     c.ancestors.forEach(function(a){
       // The grants of the ancestor read are looked up among the permissions alone, as for the check (security review of
@@ -539,12 +540,12 @@ function cellDetails(d, id){
       var q = a.grants ? PERM[a.grants] : undefined, held = !!(q && Array.isArray(q.paths) && q.paths.some(function(g){ return (g.role || "") === role; }));
       // An ancestor read that states a permission whose grants the model does not hold may be held by any role, so the
       // cell never shows it as a definite no (security review of PR #390, L1).
-      var names = !a.public && !!(a.permission || a.grants), unknown = names && !q;
+      var names = a.decided === true && !a.public && !!(a.permission || a.grants), unknown = names && !q;
       // A limit cut the grant paths of the ancestor read short: more roles may hold it than the paths name, so the cell
       // never shows that set as complete (security review of PR #374, L2). A permission that does not say it is
       // complete counts as cut short, as in the Go view (security review of PR #383, L3).
-      var partial = !!(q && q.complete !== true) || unknown;
-      var what = a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public"+(a.reason ? ": "+a.reason : "") : "no permission: "+(a.reason || ""));
+      var partial = names && (!!(q && q.complete !== true) || unknown);
+      var what = a.decided !== true ? "exists and linked"+(a.reason ? ": "+a.reason : "") : a.permission ? a.resource_type+"#"+a.permission : (a.public ? "public"+(a.reason ? ": "+a.reason : "") : "no permission: "+(a.reason || ""));
       var who = !names || !role ? "" : (held ? "; this role grants it" : (unknown ? "; the model holds no grant path of it, so this role may hold it" : (partial ? "; no path that the model names gives it to this role alone, but a limit cut its paths short, so this role may hold it" : "; this role alone does not grant it, so the caller also needs it")));
       var by = a.scope_source ? srcText(a.scope_source) : "";
       if (unknown) gone.push(nameOf(a.entity)+" ("+what+")");
@@ -554,7 +555,7 @@ function cellDetails(d, id){
     d.appendChild(al);
     if (cut.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellAncestorIncomplete", text:"⚠ Incomplete: a limit was reached in the grant paths of the ancestor read "+cut.join(", ")+", so it may grant more roles than its paths name."}));
     if (gone.length) d.appendChild(h("p", {"class":"incomplete", role:"note", id:"cellAncestorUnknown", text:"⚠ Incomplete: the model holds no grant path of the ancestor read "+gone.join(", ")+", so it may grant roles that the model does not name."}));
-    d.appendChild(h("p", {"class":"k", text:"A missing, denied or wrong ancestor answers 404, before the row is read or written."}));
+    d.appendChild(h("p", {"class":"k", text:"Each ancestor must exist in the tenant and be of the ancestor above it. A missing, denied or wrong ancestor answers 404, and the row is not written."}));
   }
   var own = (p && Array.isArray(p.paths) ? p.paths : []).filter(function(g){ return (g.role || "") === role; });
   if (!c.public && !p){
