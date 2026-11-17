@@ -226,6 +226,11 @@ definition tenant {
 	relation worker_fulfill_orders: service_account
 	relation worker_low_stock_scan: service_account
 }
+
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
 ```
 
 The messages of the commands are at `proto/inventory.proto`:
@@ -871,8 +876,10 @@ same authentication as the other routes:
   `resolve-parked-message` is written in the same transaction.
 
 The caller needs the permission `resolve` on `outbox_destination:<destination>`
-in its tenant. Declare the type in the authorization schema, for example:
+in its tenant. Declare the type in the authorization schema, as the schema of
+this page does:
 
+<!-- excerpt -->
 ```zed
 definition outbox_destination {
 	relation operator: user
@@ -948,7 +955,7 @@ SQLSTATE class in each 10 seconds, with the number of lines that it held back.
   ST-SUP-RP14-LC10): `service.ParkedRoutes`, `Service.RegisterParked`,
   `outbox.Resolver`, `outbox.Queue.Parked`, `outbox.ErrRefusedOutcome`,
   `authz.Runtime.StateHook`, `query.KeyCursor` and `query.Cursor.Key`.
-- `command.ListValue` has the new field `ValidKey`, and `command.Reference`
+- `command.ListValue` has the new field `KeyOf` (`command.KeyUUID`), and `command.Reference`
   the new field `Check`. Generated code sets them; code that does not set them
   needs no change.
 - The Kafka inbox reads the retention and the cleanup policy of its topic
