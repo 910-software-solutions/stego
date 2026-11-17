@@ -16,7 +16,7 @@ func schemaChangePath(i int) string { return fmt.Sprintf("schema_changes[%d]", i
 func schemaStepPath(i int) string   { return fmt.Sprintf("schema_history[%d]", i) }
 
 // schemaChangeKinds are the kinds of schema change, in the order the specification gives them.
-var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique", "relax"}
+var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique", "relax", "within"}
 
 // backfillKinds are the kinds of schema change whose expand step starts a backfill, which runs only in controller
 // mode.
@@ -39,7 +39,7 @@ const (
 // for add and drop, which may change a whole entity. A relax names its field and gives the field before the change
 // as its Definition (decision on finding F12, owner, 2026-11-13).
 var schemaValues = map[string]map[string]schemaValue{
-	"field":              {"add": valueOptional, "rename": valueRequired, "retype": valueRequired, "require": valueRequired, "drop": valueOptional, "unique": valueRequired, "relax": valueRequired},
+	"field":              {"add": valueOptional, "rename": valueRequired, "retype": valueRequired, "require": valueRequired, "drop": valueOptional, "unique": valueRequired, "relax": valueRequired, "within": valueRequired},
 	"from":               {"rename": valueRequired, "retype": valueRequired},
 	"conversion":         {"retype": valueRequired},
 	"inverse_conversion": {"retype": valueRequired},
@@ -229,7 +229,7 @@ func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) s
 	shape.step = schemaStepPath(at)
 	var later []types.SchemaChange
 	for _, other := range service.SchemaChanges {
-		if position, ok := first[other.ID]; ok && other.Entity == change.Entity && position > at && other.Kind != "unique" {
+		if position, ok := first[other.ID]; ok && other.Entity == change.Entity && position > at && other.Kind != "unique" && other.Kind != "within" {
 			later = append(later, other)
 		}
 	}
@@ -374,6 +374,14 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 			if hasField {
 				fault(".field", "the entity still declares the field that the change drops; remove the field")
 			}
+		case "within":
+			// The reference of a within holds its key within a field (ST-DECL-INV58, ST-DECL-Q42).
+			switch field, _ := findField(entity, change.Field); {
+			case !hasField || field.Type != types.FieldTypeRef:
+				fault(".field", "the entity does not declare the reference whose key a within adds")
+			case entity.References[change.Field].WithinField() == "":
+				fault(".field", "the reference declares no within or within: none; a within change adds the key of a reference that declares within a field")
+			}
 		case "unique":
 			found := false
 			for _, invariant := range service.Invariants {
@@ -404,7 +412,7 @@ func openSchemaChanges(service *types.ServiceDeclaration) []types.SchemaChange {
 	phases := schemaPhases(service.SchemaHistory)
 	var open []types.SchemaChange
 	for _, change := range service.SchemaChanges {
-		if change.Kind == "relax" {
+		if change.Kind == "relax" || change.Kind == "within" {
 			continue
 		}
 		if steps := phases[change.ID]; len(steps) > 0 && steps[len(steps)-1] == "expand" {
@@ -449,6 +457,8 @@ func validateSchemaSteps(service *types.ServiceDeclaration) []ValidationError {
 			fault("a change of kind add has an expand step only")
 		case len(steps) == 2 && change.Kind == "relax":
 			fault("a change of kind relax has an expand step only, which finishes it in place")
+		case len(steps) == 2 && change.Kind == "within":
+			fault("a change of kind within has an expand step only, which adds and validates the key")
 		}
 	}
 	return faults

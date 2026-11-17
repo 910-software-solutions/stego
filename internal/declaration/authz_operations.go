@@ -218,6 +218,7 @@ func operationsAuthorization(service *types.ServiceDeclaration, schema *AuthzSch
 	}
 	faults = append(faults, validateQueryAuthorization(service.Queries, schema)...)
 	faults = append(faults, validateReferences(service.Entities, schema)...)
+	faults = append(faults, validateWithin(service.Entities, service.Collections)...)
 	return append(faults, validateWorkerAuthorization(service, schema)...)
 }
 

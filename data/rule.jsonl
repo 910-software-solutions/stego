@@ -106,6 +106,7 @@
 {"id":"ST-DECL-INV89-RL","title":"declaration.validateNeededModes","invariant_id":"ST-DECL-INV89","file":"internal/declaration/modes.go"}
 {"id":"ST-DECL-INV90-RL","title":"declaration.ValidateAuthorSupplied","invariant_id":"ST-DECL-INV90","file":"internal/declaration/author_supplied.go"}
 {"id":"ST-DECL-INV92-RL","title":"declaration.validateCollectionsServed","invariant_id":"ST-DECL-INV92","file":"internal/declaration/collection_served.go"}
+{"id":"ST-DECL-INV93-RL","title":"declaration.validateWithin","invariant_id":"ST-DECL-INV93","file":"internal/declaration/references.go"}
 {"id":"ST-DECL-INV94-RL","title":"declaration.validateWorkerLists","invariant_id":"ST-DECL-INV94","file":"internal/declaration/worker.go"}
 {"id":"ST-DECL-INV95-RL","title":"declaration.checkAdminRelation","invariant_id":"ST-DECL-INV95","file":"internal/declaration/provisioning.go"}
 {"id":"ST-DIS-INV06-RL","title":"lifecycle.oneSuccessor","invariant_id":"ST-DIS-INV06","file":"internal/lifecycle/rules.go"}
