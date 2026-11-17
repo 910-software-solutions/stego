@@ -113,6 +113,86 @@ func TestNoBypassFlag(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ST-DECL-INV24-T A bypass setting that states a default in the schema, also in a list in a list, is refused at the default's path", func(t *testing.T) {
+		const config = `
+skip_authz: {type: bool, optional: true, bypass: true, default: true}
+cache_ttl: {type: string, optional: true, default: 30s}
+groups:
+  type: list
+  optional: true
+  items:
+    type: list
+    items:
+      name: {type: string}
+      unchecked: {type: bool, optional: true, bypass: true, default: true}
+`
+		var withDefaults map[string]types.ConfigField
+		if err := yaml.Unmarshal([]byte(config), &withDefaults); err != nil {
+			t.Fatal(err)
+		}
+		faults := ValidateBypassDefaults(map[string]map[string]types.ConfigField{"spicedb-authz": withDefaults}, nil)
+		want := []string{"components.spicedb-authz.config.groups.items.items.unchecked.default", "components.spicedb-authz.config.skip_authz.default"}
+		if len(faults) != len(want) {
+			t.Fatalf("want the no-bypass faults %v, got %+v", want, faults)
+		}
+		for i, fault := range faults {
+			if fault.Rule != "no-bypass" || fault.Path != want[i] || fault.Found != "" || !strings.Contains(fault.Message, "spicedb-authz") || strings.Contains(fault.Message, "true") {
+				t.Errorf("fault %d: want a no-bypass fault at %s that names the component and holds no value, got %+v", i, want[i], fault)
+			}
+		}
+	})
+	t.Run("ST-DECL-INV24-T The default of a list that gives a bypass setting of its items a value is refused at the value's path", func(t *testing.T) {
+		const config = `
+rules:
+  type: list
+  optional: true
+  default: [{name: a}, {name: b, unchecked: true}]
+  items:
+    name: {type: string}
+    unchecked: {type: bool, optional: true, bypass: true}
+groups:
+  type: list
+  optional: true
+  default: [[{name: a, unchecked: true}]]
+  items:
+    type: list
+    items:
+      name: {type: string}
+      unchecked: {type: bool, optional: true, bypass: true}
+names:
+  type: list
+  optional: true
+  default: [{name: a}]
+  items:
+    name: {type: string}
+    unchecked: {type: bool, optional: true, bypass: true}
+`
+		var listDefaults map[string]types.ConfigField
+		if err := yaml.Unmarshal([]byte(config), &listDefaults); err != nil {
+			t.Fatal(err)
+		}
+		faults := ValidateBypassDefaults(map[string]map[string]types.ConfigField{"spicedb-authz": listDefaults}, nil)
+		want := []string{"components.spicedb-authz.config.groups.default[0][0].unchecked", "components.spicedb-authz.config.rules.default[1].unchecked"}
+		if len(faults) != len(want) {
+			t.Fatalf("want the no-bypass faults %v, got %+v", want, faults)
+		}
+		for i, fault := range faults {
+			if fault.Rule != "no-bypass" || fault.Path != want[i] || fault.Found != "" || strings.Contains(fault.Message, "true") {
+				t.Errorf("fault %d: want a no-bypass fault at %s with no value, got %+v", i, want[i], fault)
+			}
+		}
+	})
+	t.Run("ST-DECL-INV24-T An environment variable whose default is a bypass setting is refused, and one whose default is another setting is accepted", func(t *testing.T) {
+		defaults := map[string]map[string]string{"spicedb-authz": {"SKIP_AUTHZ": "skip_authz", "CACHE_TTL": "cache_ttl"}}
+		faults := ValidateBypassDefaults(schemas, defaults)
+		if len(faults) != 1 || faults[0].Rule != "no-bypass" || faults[0].Path != "components.spicedb-authz.environment.SKIP_AUTHZ.default" ||
+			!strings.Contains(faults[0].Message, "skip_authz") {
+			t.Fatalf("want one no-bypass fault at components.spicedb-authz.environment.SKIP_AUTHZ.default, got %+v", faults)
+		}
+		if faults := ValidateBypassDefaults(schemas, nil); len(faults) != 0 {
+			t.Errorf("a schema whose bypass settings state no default gives faults: %+v", faults)
+		}
+	})
 	binding := func(systemType string) string {
 		declared := service + "slots:\n  - collection: todos\n    slot: before_create\n    gate: [policy]\n    runs_as: system\n"
 		if systemType != "" {
