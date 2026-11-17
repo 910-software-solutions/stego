@@ -301,8 +301,20 @@ timeout, at most 10 times:
   statement holds the lock of a busy table that the dropped table refers to
   and the lock of the dropped table at one time.
 
-The statement that drops the column or the table checks the running releases
-again in its transaction. A run that stops part way recovers on the next run,
+Each statement first takes the lock of the table and then checks the running
+releases again in its transaction. So when a process of the release before
+reports itself during the step, the step stops and leaves the table with all
+its keys.
+
+A drop cannot be undone: the contract step deletes the values of the column or
+the rows of the table, and no step gives them back. Take a backup before you
+release it. The step counts a process of the release before as stopped when
+its last report is older than three of its report intervals: 30 s with the
+default interval of 10 s, and at most 180 s. A process that is still alive but
+cannot write its report for that time, for example during a database failover
+or on a paused node, does not stop the step. So stop and remove every pod of the
+release before (its Deployment or ReplicaSet) before you run the migration job
+of the contract step. A run that stops part way recovers on the next run,
 and the ledger row comes last. The release of the expand step keeps running
 before, during and after the contract step.
 

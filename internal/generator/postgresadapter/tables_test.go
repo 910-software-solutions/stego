@@ -539,6 +539,9 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC44-T03 The contract of a drop refuses while the release before reports itself, and then drops the column and the table", func(t *testing.T) {
 		onDrop(t, "ST-SUP-RC01-OC44-T03")
 	})
+	t.Run("ST-SUP-RC01-OC44-T04 A release before that reports itself while the contract of an entity drop waits for its lock leaves the table with its keys", func(t *testing.T) {
+		onDrop(t, "ST-SUP-RC01-OC44-T04")
+	})
 	t.Run("ST-SUP-RC01-OC47-T02 A database that the three releases migrated in turn and a new one get the same schema", func(t *testing.T) {
 		onDrop(t, "ST-SUP-RC01-OC47-T02")
 	})

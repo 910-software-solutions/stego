@@ -130,6 +130,8 @@ func TestDropSteps(t *testing.T) {
 		for _, want := range []string{
 			`{SQL: "DROP TABLE IF EXISTS public.\"pins\"", When: "", Long: false, Guard: true},`,
 			`{SQL: "ALTER TABLE public.\"boards\" DROP COLUMN IF EXISTS \"legacy\"", When: "", Long: false, Guard: true},`,
+			`{SQL: "ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_board_id_fkey\"", When: "", Long: false, Guard: true},`,
+			`{SQL: "ALTER TABLE IF EXISTS public.\"pins\" DROP CONSTRAINT IF EXISTS \"pins_tenant_id_fkey\"", When: "", Long: false, Guard: true},`,
 			`}, Drop: true})`,
 		} {
 			if !strings.Contains(migrate, want) {
@@ -149,6 +151,8 @@ func TestDropSteps(t *testing.T) {
 				[]types.Field{{Name: "label", Type: types.FieldTypeString}}, "is of a reference"},
 			{"a required unique field", types.SchemaChange{ID: "pin-label-drop", Kind: "drop", Entity: "Pin", Field: "label", Definition: "string, unique, after board_id"},
 				[]types.Field{{Name: "board_id", Type: types.FieldTypeRef, To: "Board"}}, "unique field"},
+			{"the column created_time that STEGO adds itself", types.SchemaChange{ID: "pin-time-drop", Kind: "drop", Entity: "Pin", Field: "created_time", Definition: "timestamp, after label"},
+				[]types.Field{{Name: "board_id", Type: types.FieldTypeRef, To: "Board"}, {Name: "label", Type: types.FieldTypeString}}, "adds to each table itself"},
 			{"a timestamp with no fill value", types.SchemaChange{ID: "pin-label-drop", Kind: "drop", Entity: "Pin", Field: "label", Definition: "timestamp, after board_id"},
 				[]types.Field{{Name: "board_id", Type: types.FieldTypeRef, To: "Board"}}, "has no zero value"},
 		} {

@@ -193,6 +193,48 @@ func TestDropSteps(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC01-OC44-T04 A release before that reports itself while the contract of an entity drop waits for its lock leaves the table with its keys", func(t *testing.T) {
+		own, db, reader := base(t)
+		expand(t, own, db)
+		// A session holds a lock on pins, so the first statement of the contract of pin-drop waits for it after the
+		// check of the step passed; while it waits, a process of the release before reports itself.
+		hold, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hold.Exec(`LOCK TABLE public."pins" IN ACCESS SHARE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- release(t, own, func(ctx context.Context, conn *sql.Conn) error { return dropc.Migrate(ctx, conn) }) }()
+		for waiting := 0; waiting == 0; {
+			if err := db.QueryRow(`SELECT count(*) FROM pg_catalog.pg_locks WHERE relation = 'public.pins'::regclass AND NOT granted`).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := reader.Exec("SELECT stego_schema.release_beat($1, '100_tenancy_row_security', 'v1', 10000)", strings.Repeat("d", 32)); err != nil {
+			t.Fatal(err)
+		}
+		if err := hold.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		var refused interface{ Refusal() string }
+		if err := <-done; !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), "pin-drop") || !strings.Contains(refused.Refusal(), "the old table") {
+			t.Fatalf("the contract ends with %v, want a refusal of pin-drop that names the old table", err)
+		}
+		var keys, ledger int
+		if err := db.QueryRow(`SELECT (SELECT count(*) FROM pg_catalog.pg_constraint WHERE conrelid = 'public.pins'::regclass AND contype = 'f'),
+  (SELECT count(*) FROM stego_schema.migrations WHERE version = 'step_0006_pin-drop_contract')`).Scan(&keys, &ledger); err != nil {
+			t.Fatal(err)
+		}
+		if keys != 1 || ledger != 0 {
+			t.Errorf("after the refused contract pins has %d foreign keys and the ledger %d rows of the step; want the key pins_board_id_fkey and no row", keys, ledger)
+		}
+		if code := write(t, db, "tenant-a", `INSERT INTO public."pins" ("id", "board_id", "label") VALUES ($1, $2, 'v1')`, uuid.Must(uuid.NewV7()).String(), uuid.Must(uuid.NewV7()).String()); code != "23503" {
+			t.Errorf("a pin of the release before with no board gives %q after the refused contract, want 23503 from its kept key", code)
+		}
+	})
+
 	t.Run("ST-SUP-RC01-OC47-T02 A database that the three releases migrated in turn and a new one get the same schema", func(t *testing.T) {
 		own, db, _ := base(t)
 		expand(t, own, db)

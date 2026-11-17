@@ -505,6 +505,12 @@ func TestSchemaChangeDrop(t *testing.T) {
 			wantFault(t, schemaFaults(t, withTag(dropped, []string{c.change}, "tag-drop expand"), "schema-change-kind"), c.names)
 		})
 	}
+	for _, name := range []string{"id", "created_time", "updated_time", "version", "authz_token"} {
+		t.Run("ST-DECL-INV58-T A drop of the column "+name+" that STEGO adds itself is refused", func(t *testing.T) {
+			change := "{id: legacy-drop, kind: drop, entity: Todo, field: " + name + ", definition: \"string, first\"}"
+			wantFault(t, schemaFaults(t, todoFields([]string{"{name: title, type: string, min_length: 1, max_length: 255}", "{name: done, type: bool, default: false}"}, "", []string{change}, "legacy-drop expand"), "schema-change-entity"), "adds to each table itself")
+		})
+	}
 	with := func(change string) string {
 		return todoFields([]string{"{name: title, type: string, min_length: 1, max_length: 255}", "{name: done, type: bool, default: false}"}, "",
 			[]string{change}, "legacy-drop expand")
@@ -527,6 +533,8 @@ func TestSchemaChangeDrop(t *testing.T) {
 		{"an item twice", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, optional, optional, first\"}", "optional twice"},
 		{"pii and secret both", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, pii, secret, first\"}", "sensitivity twice"},
 		{"values of a string", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, values a b, first\"}", "only for an enum"},
+		{"a double with the fill value NaN", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, fill_value: .nan, definition: \"double, first\"}", "fill value NaN does not suit"},
+		{"a double with the fill value Inf", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, fill_value: .inf, definition: \"double, first\"}", "fill value +Inf does not suit"},
 	} {
 		t.Run("ST-DECL-INV62-T A drop of "+c.name+" is refused", func(t *testing.T) {
 			wantFault(t, schemaFaults(t, with(c.change), "schema-change-value"), c.names)

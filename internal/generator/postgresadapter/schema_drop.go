@@ -38,6 +38,9 @@ func withDropped(models, earlier []tableModel, change types.SchemaChange) ([]tab
 		}
 		return append(slices.Clone(models), old), nil
 	}
+	if fixedColumn(old, change.Field) {
+		return nil, fmt.Errorf("the drop of %s.%s names a column that STEGO adds to each table itself; a drop removes only a declared field", change.Entity, change.Field)
+	}
 	column, ok := findColumn(old, change.Field)
 	if !ok {
 		return nil, fmt.Errorf("the drop of %s.%s finds no column %s before its expand step", change.Entity, change.Field, change.Field)
@@ -159,6 +162,9 @@ func dropExpandSQL(ctx gen.Context, position int, before, after []tableModel, ch
 			}
 		}
 	} else {
+		if fixedColumn(old, change.Field) {
+			return "", fmt.Errorf("the drop of %s.%s names a column that STEGO adds to each table itself; a drop removes only a declared field", change.Entity, change.Field)
+		}
 		k, ok := findColumn(old, change.Field)
 		kept, okKept := findColumn(next, change.Field)
 		if !ok || !okKept {
@@ -202,8 +208,9 @@ func dropExpandSQL(ctx gen.Context, position int, before, after []tableModel, ch
 // dropContractSQL gives the contract step of a drop (ST-SUP-RC01-OC47): before is the tables of the expand step, with
 // the old column or table, and after the tables after the step, without it. For a field it is one statement, DROP
 // COLUMN IF EXISTS, which drops the CHECK and the indexes of the column; for an entity it drops each foreign key of
-// the table, the tenant key of an owned table too, each in its own statement, and then DROP TABLE IF EXISTS. The
-// statement that drops the column or the table checks the running releases again in its transaction.
+// the table, the tenant key of an owned table too, each in its own statement, and then DROP TABLE IF EXISTS. Each
+// statement takes the lock of the table first and then checks the running releases again in its transaction, so a
+// refused check leaves the table with all its keys for the release before (security review of PR #423, M1).
 func dropContractSQL(ctx gen.Context, before, after []tableModel, change types.SchemaChange) (*contractStep, error) {
 	name := tableName(change.Entity)
 	old, okOld := findTable(before, name)
@@ -238,10 +245,10 @@ func dropContractSQL(ctx gen.Context, before, after []tableModel, change types.S
 		}
 	}
 	for _, fk := range old.foreign {
-		out.statements = append(out.statements, contractStatement{sql: fmt.Sprintf("ALTER TABLE IF EXISTS %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(fk.name))})
+		out.statements = append(out.statements, contractStatement{sql: fmt.Sprintf("ALTER TABLE IF EXISTS %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(fk.name)), guard: true})
 	}
 	if old.owned {
-		out.statements = append(out.statements, contractStatement{sql: fmt.Sprintf("ALTER TABLE IF EXISTS %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(TenantKeyName(name, tenantColumn(ctx))))})
+		out.statements = append(out.statements, contractStatement{sql: fmt.Sprintf("ALTER TABLE IF EXISTS %s DROP CONSTRAINT IF EXISTS %s", table, sqlIdentifier(TenantKeyName(name, tenantColumn(ctx)))), guard: true})
 	}
 	out.statements = append(out.statements, contractStatement{sql: "DROP TABLE IF EXISTS " + table, guard: true})
 	return out, nil
@@ -257,4 +264,11 @@ func normalized(table tableModel) tableModel {
 	table.search = slices.Sorted(slices.Values(table.search))
 	table.unique = slices.SortedFunc(slices.Values(table.unique), func(a, b []string) int { return slices.Compare(a, b) })
 	return table
+}
+
+// fixedColumn tells whether the column is one that STEGO adds to each table itself, which no schema change may name:
+// the key, the tenant column, the times of the row, its version and its authorization token (security review of
+// PR #423, L1).
+func fixedColumn(table tableModel, column string) bool {
+	return slices.Contains([]string{keyColumn, createdColumn, updatedColumn, versionColumn, tokenColumn}, column) || slices.Contains(table.lead, column)
 }

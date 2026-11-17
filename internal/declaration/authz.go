@@ -370,6 +370,14 @@ func droppedSchemaNames(service *types.ServiceDeclaration, schema *AuthzSchema) 
 		if a.ResourceType == "" {
 			continue
 		}
+		// The relationships of the dropped type stay at the provider, so a live entity with the same resource type
+		// would take them for a row that gets an old ID (security review of PR #423, L3).
+		for i, live := range service.Entities {
+			if live.ResourceType == a.ResourceType {
+				faults = append(faults, ValidationError{Category: "authorization", Rule: "schema-names", Path: fmt.Sprintf("entities[%d].resource_type", i), Found: a.ResourceType,
+					Message: fmt.Sprintf("the entity %s has the resource type %q of the dropped entity %s, whose relationships stay at the provider while its definition stays; give %s another resource type", live.Name, a.ResourceType, entity.Name, live.Name)})
+			}
+		}
 		fault := func(found, message string) {
 			faults = append(faults, ValidationError{Category: "authorization", Rule: "schema-names", Path: "entities." + entity.Name + ".resource_type", Found: found,
 				Message: fmt.Sprintf("the dropped entity %s %s, which the schema %s lacks; the release before the drop still writes its relationships, and the provider refuses a schema that removes them, so keep its definition in the schema", entity.Name, message, schema.Path)})

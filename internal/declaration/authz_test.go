@@ -345,4 +345,16 @@ func TestDroppedEntitySchema(t *testing.T) {
 			t.Errorf("the fault is at %s, want entities.Folder.resource_type", fault.Path)
 		}
 	})
+	t.Run("ST-SUP-RC29-OC25-T01 A live entity with the resource type of a dropped entity is refused", func(t *testing.T) {
+		faults := checkTD03(t, dropped("document"), schema)
+		found := false
+		for _, fault := range faults {
+			if fault.Path == "entities[0].resource_type" && strings.Contains(fault.Message, "of the dropped entity Folder") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no fault refuses Todo with the resource type of the dropped Folder: %+v", faults)
+		}
+	})
 }

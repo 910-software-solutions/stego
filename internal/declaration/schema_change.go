@@ -2,6 +2,7 @@ package declaration
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -336,6 +337,10 @@ func FieldAtStep(service *types.ServiceDeclaration, change types.SchemaChange) (
 	return field, found, ""
 }
 
+// fixedColumns are the columns that the database component adds to each table itself (postgresadapter tables.go):
+// the key, the times of the row, its version and its authorization token.
+var fixedColumns = map[string]bool{"id": true, "created_time": true, "updated_time": true, "version": true, "authz_token": true}
+
 // validateSchemaChangeEntity checks that the entity and the field of each schema change agree with the declaration
 // (ST-DECL-INV58), as the change's own step leaves the entity (shapeAtStep, decision on ST-DECL-Q17 (a)): for add,
 // rename, retype and require the entity declares the field, for rename it does not declare From, for retype From is
@@ -360,6 +365,15 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 		}
 		if shape.reason != "" {
 			continue
+		}
+		if change.Kind != "unique" && change.Kind != "within" {
+			// A column that STEGO adds to each table itself is no declared field, and no schema change may name it
+			// (security review of PR #423, L1).
+			for _, name := range []string{change.Field, change.From} {
+				if name != "" && (fixedColumns[name] || (service.Tenancy != nil && name == service.Tenancy.Key)) {
+					fault(".field", fmt.Sprintf("the name %s is a column that STEGO adds to each table itself (the key, the tenant column, the times, the version or the authorization token); a schema change names only a declared field", name))
+				}
+			}
 		}
 		entity, declared := shape.entity, shape.declared
 		if change.Kind == "drop" && change.Field == "" {
@@ -634,6 +648,11 @@ func valueSuits(field types.Field, value any) (bool, string) {
 		number = float64(n)
 	case float64:
 		number = n
+		// NaN and an infinity are no value of a bounded column, and a DEFAULT of them is no literal (security review
+		// of PR #423, I3).
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return false, "it is not a finite number"
+		}
 	default:
 		return true, ""
 	}
