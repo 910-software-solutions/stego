@@ -1,8 +1,10 @@
 # The offline Containerfile of the service. stego apply writes this file from the declaration. Do not edit it.
-# It builds with the network off: the build stage reads only the Go modules at /cachi2/output/deps/gomod/pkg/mod,
-# where the Go module prefetch of Konflux puts them (prefetch-input gomod, hermetic build), and go mod verify
-# holds them to go.sum. For a local build, mount a copy of the module cache folder that stego build download
-# wrote at that path, writable, because go extracts the modules from it.
+# The build stage downloads no module: with the module proxy off, it reads only the Go modules at
+# /cachi2/output/deps/gomod/pkg/mod, where the Go module prefetch of Konflux puts them (prefetch-input gomod).
+# The build holds them to go.sum (-mod=readonly), and go mod verify checks the module cache. This file does not
+# turn off the network: build it in the hermetic mode of Konflux, or locally with --network=none. For a local
+# build, mount a copy of the module cache folder that stego build download wrote at that path, writable,
+# because go extracts the modules from it.
 # The build has the settings and the arguments of stego build, with the Go SDK that it pins, so the executable is
 # the one that the build record names. The image is scratch with the executable and the CA certificates, and it
 # runs as the user 65532:65532: it writes no file, so it runs with a read-only root file system and an
