@@ -131,12 +131,12 @@ func (j *Jobs) held() *lease.Held {
 var ErrDeadline = errors.New("ledger: the job's transaction has no time left before the lease deadline")
 
 // budget is the longest one transaction of a job may last: half of the renew slack, the time from a renew being
-// due to the lease expiring, and never past the lease's own deadline. The transaction holds the lease row
-// (lease.Held.Fence), so a renew that comes due waits for it; the budget lets that renew run before the lease can
-// expire.
+// due to the lease expiring, and never past the lease's own deadline, which runs on the process clock of the lease.
+// The transaction holds the lease row (lease.Held.Fence), so a renew that comes due waits for it; the budget lets
+// that renew run before the lease can expire.
 func budget(h *lease.Held) time.Duration {
 	slack := (h.TTL() - h.RenewEvery()) / 2
-	return min(slack, time.Until(h.Expires()))
+	return min(slack, h.Left())
 }
 
 // readOnly asks inTenant for a REPEATABLE READ transaction that turns READ ONLY after the fence.

@@ -21,6 +21,7 @@ type fakeClock struct {
 	mu      sync.Mutex
 	now     time.Time
 	waiters []fakeWait
+	fired   int64 // the waits that fired
 }
 
 type fakeWait struct {
@@ -42,10 +43,18 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	ch := make(chan time.Time, 1)
 	if d <= 0 {
 		ch <- c.now
+		c.fired++
 		return ch
 	}
 	c.waiters = append(c.waiters, fakeWait{at: c.now.Add(d), ch: ch})
 	return ch
+}
+
+// fires gives the count of the waits that fired.
+func (c *fakeClock) fires() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fired
 }
 
 // advance moves the clock on by d and fires each wait that is due, the earliest first.
@@ -57,6 +66,7 @@ func (c *fakeClock) advance(d time.Duration) {
 	for _, w := range c.waiters {
 		if !w.at.After(c.now) {
 			w.ch <- c.now
+			c.fired++
 		} else {
 			keep = append(keep, w)
 		}
@@ -144,16 +154,70 @@ type tickerRun struct {
 	token  int64
 }
 
-// tickerFixture is one ticker of the worker sync-partner-orders with the interval given on the fake clock.
+// tickerFixture is one ticker of the worker sync-partner-orders with the interval given on the fake clock. The
+// steps of its scheduler and the calls of its fill come to the fixture as they happen, so a helper waits for a step
+// with no wall-clock limit, and fails, not hangs, once the ticker is at rest without it.
 type tickerFixture struct {
 	t       *testing.T
 	e       *env
 	clock   *fakeClock
 	observe *observed
 	ticker  *Ticker
-	runs    chan tickerRun
 	done    chan struct{}
 	cancel  context.CancelFunc
+
+	mu       sync.Mutex
+	changed  *sync.Cond
+	runs     []tickerRun // the calls of the fill that no helper has read yet
+	arms     int64       // the waits of the scheduler for a due time
+	armedDue time.Time   // the due time of the last of them
+	skips    int64
+	starts   int64
+	ends     int64
+	parked   int   // the calls of the fill that wait for the end of their context
+	parkedAt int64 // the waits of the clock that had fired when the last of them started to wait
+	ran      bool  // Run returned
+}
+
+// park is the body of a fill that waits for the end of its context. While it waits, the tick moves only with the
+// clock, so the fixture counts the ticker at rest while no wait of the clock fired after the fill started to wait.
+// A wait that fired then can still end the context, so the fixture waits for it.
+func (f *tickerFixture) park(ctx context.Context) error {
+	f.mu.Lock()
+	f.parked++
+	f.parkedAt = f.clock.fires()
+	f.changed.Broadcast()
+	f.mu.Unlock()
+	<-ctx.Done()
+	f.mu.Lock()
+	f.parked--
+	f.changed.Broadcast()
+	f.mu.Unlock()
+	return ctx.Err()
+}
+
+// stepped takes a step of the scheduler, on the goroutine of the ticker.
+func (f *tickerFixture) stepped(s tickStep, due time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch s {
+	case stepArmed:
+		f.arms++
+		f.armedDue = due
+	case stepSkipped:
+		f.skips++
+	case stepStarted:
+		f.starts++
+	case stepEnded:
+		f.ends++
+	}
+	f.changed.Broadcast()
+}
+
+// atRest tells, with f.mu held, whether nothing more comes from the ticker until the test moves the clock: no tick
+// runs and the scheduler waits for a due time after the time now, or Run returned.
+func (f *tickerFixture) atRest() bool {
+	return f.ran || (f.starts == f.ends && f.armedDue.After(f.clock.Now())) || (f.parked > 0 && f.clock.fires() == f.parkedAt)
 }
 
 // start starts a ticker whose fill sends each call on runs and then runs body, over the tenants given.
@@ -179,12 +243,16 @@ func startTickerOn(t *testing.T, e *env, clock *fakeClock, tickClock Clock, inte
 	list func(context.Context) ([]tenant.Tenant, error), body func(ctx context.Context, tenant string, h *Handle[testProbe]) error) *tickerFixture {
 	t.Helper()
 	w := e.worker("sync-partner-orders", "sync", func(s *WorkerSpec[testProbe]) { s.Interval = interval }, e.orders)
-	f := &tickerFixture{t: t, e: e, clock: clock, observe: &observed{}, runs: make(chan tickerRun, 64), done: make(chan struct{})}
+	f := &tickerFixture{t: t, e: e, clock: clock, observe: &observed{}, done: make(chan struct{})}
+	f.changed = sync.NewCond(&f.mu)
 	ticker, err := NewTicker(e.rt, TickerSpec[testProbe]{Worker: w, Lease: client, Observe: f.observe, Clock: tickClock,
 		Tenants: list,
 		Fill: func(ctx context.Context, due time.Time, h *Handle[testProbe]) error {
 			run := tickerRun{tenant: h.Tenant().ID(), due: due}
-			f.runs <- run
+			f.mu.Lock()
+			f.runs = append(f.runs, run)
+			f.changed.Broadcast()
+			f.mu.Unlock()
 			if body == nil {
 				return nil
 			}
@@ -194,15 +262,26 @@ func startTickerOn(t *testing.T, e *env, clock *fakeClock, tickClock Clock, inte
 		t.Fatal(err)
 	}
 	f.ticker = ticker
+	ticker.step = f.stepped
 	ctx, cancel := context.WithCancel(e.ctx)
 	f.cancel = cancel
 	go func() {
 		defer close(f.done)
 		_ = ticker.Run(ctx)
+		f.mu.Lock()
+		f.ran = true
+		f.changed.Broadcast()
+		f.mu.Unlock()
 	}()
 	t.Cleanup(func() {
 		cancel()
-		_ = ticker.Finish(context.Background())
+		// After a failure a run can still wait that nothing ends: Finish then gets an ended drain bound, so it
+		// ends each run at once.
+		bound := newDrainBound()
+		if t.Failed() {
+			bound.end()
+		}
+		_ = ticker.Finish(bound)
 		<-f.done
 	})
 	return f
@@ -211,86 +290,120 @@ func startTickerOn(t *testing.T, e *env, clock *fakeClock, tickClock Clock, inte
 // waitArms waits until the scheduler armed its wait for a due time n times in all.
 func (f *tickerFixture) waitArms(n int64) {
 	f.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for f.ticker.armed.Load() < n {
-		if time.Now().After(deadline) {
-			f.t.Fatalf("the scheduler armed %d waits, want %d", f.ticker.armed.Load(), n)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for f.arms < n {
+		if f.atRest() {
+			f.t.Fatalf("the scheduler is at rest after %d waits, want %d", f.arms, n)
 		}
-		time.Sleep(2 * time.Millisecond)
+		f.changed.Wait()
 	}
 }
 
-// waitTickDone waits until no tick runs.
+// waitTickDone waits until no tick that started runs.
 func (f *tickerFixture) waitTickDone() {
 	f.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		f.ticker.mu.Lock()
-		busy := f.ticker.busy
-		f.ticker.mu.Unlock()
-		if !busy {
-			return
-		}
-		if time.Now().After(deadline) {
-			f.t.Fatal("the tick does not end")
-		}
-		time.Sleep(2 * time.Millisecond)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for f.starts > f.ends {
+		f.changed.Wait()
 	}
 }
 
-// next gives the next call of the fill.
+// next gives the next call of the fill, and fails when the ticker is at rest with no call.
 func (f *tickerFixture) next() tickerRun {
 	f.t.Helper()
-	select {
-	case r := <-f.runs:
-		return r
-	case <-time.After(10 * time.Second):
-		f.t.Fatal("the fill was not called")
-		return tickerRun{}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for len(f.runs) == 0 {
+		if f.atRest() {
+			f.t.Fatal("the ticker is at rest and the fill was not called")
+		}
+		f.changed.Wait()
 	}
+	r := f.runs[0]
+	f.runs = f.runs[1:]
+	return r
 }
 
-// none checks that the fill is not called for a moment.
+// none checks that the fill has no call that no helper read. The caller first waits for the step after which a
+// call would have come, such as the end of the tick.
 func (f *tickerFixture) none() {
 	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.runs) > 0 {
+		f.t.Fatalf("the fill was called for %s at %v", f.runs[0].tenant, f.runs[0].due)
+	}
+}
+
+// stopped moves the clock on by d after the ticker stopped, and checks that its scheduler starts no tick and that
+// Run returns.
+func (f *tickerFixture) stopped(d time.Duration) {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	starts := f.starts
+	f.clock.advance(d)
+	for !f.ran {
+		if f.starts > starts || f.arms > 0 && f.atRest() {
+			f.t.Fatalf("the stopped ticker started %d ticks and Run returned %v", f.starts-starts, f.ran)
+		}
+		f.changed.Wait()
+	}
+	if f.starts > starts || len(f.runs) > 0 {
+		f.t.Fatalf("the stopped ticker started %d ticks and called the fill %d times", f.starts-starts, len(f.runs))
+	}
+}
+
+// failedRuns gives the failed runs that the observer holds, and fails when they are fewer than n. The caller first
+// waits for the end of the tick, which reports each failed run before it ends.
+func (f *tickerFixture) failedRuns(n int) []probe.WorkerOutcome {
+	f.t.Helper()
+	failed, _, _ := f.observe.snapshot()
+	if len(failed) < n {
+		f.t.Fatalf("%d failed runs, want %d", len(failed), n)
+	}
+	return failed
+}
+
+// waitSkipped waits until the scheduler skipped n ticks.
+func (f *tickerFixture) waitSkipped(n int64) {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for f.skips < n {
+		if f.atRest() {
+			f.t.Errorf("the scheduler is at rest after %d skipped ticks, want %d", f.skips, n)
+			return
+		}
+		f.changed.Wait()
+	}
+}
+
+// drainBound is the drain bound of Finish in a test: a context that ends as at its deadline when the test ends it.
+type drainBound struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newDrainBound() *drainBound {
+	return &drainBound{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (b *drainBound) Done() <-chan struct{} { return b.done }
+
+func (b *drainBound) Err() error {
 	select {
-	case r := <-f.runs:
-		f.t.Fatalf("the fill was called for %s at %v", r.tenant, r.due)
-	case <-time.After(300 * time.Millisecond):
+	case <-b.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
 	}
 }
 
-// waitFailed waits until the observer holds n failed runs.
-func (f *tickerFixture) waitFailed(n int) []probe.WorkerOutcome {
-	f.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		failed, _, _ := f.observe.snapshot()
-		if len(failed) >= n {
-			return failed
-		}
-		if time.Now().After(deadline) {
-			f.t.Fatalf("%d failed runs, want %d", len(failed), n)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
-// waitSkipped waits until the observer holds n skipped ticks.
-func (f *tickerFixture) waitSkipped(n int) {
-	f.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if _, skipped, _ := f.observe.snapshot(); skipped >= n {
-			return
-		}
-		if time.Now().After(deadline) {
-			f.t.Errorf("the scheduler skipped fewer than %d ticks", n)
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
+func (b *drainBound) end() { b.once.Do(func() { close(b.done) }) }
 
 // aligned is a time just after a multiple of interval since the Unix epoch.
 func aligned(interval time.Duration) time.Time {
@@ -325,6 +438,10 @@ func TestTicker(t *testing.T) {
 			}
 			return write(ctx, h, "tick-"+tenantID)
 		})
+		// A failed check ends the subtest with the run of t1 blocked; the run is let go before the cleanup of the
+		// ticker waits for it.
+		letGo := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(letGo)
 		f.waitArms(1)
 		clock.advance(interval)
 		first, second := f.next(), f.next()
@@ -349,20 +466,20 @@ func TestTicker(t *testing.T) {
 		if _, skipped, _ := f.observe.snapshot(); skipped != 1 {
 			t.Fatalf("worker.tick.skipped counted %d, want 1", skipped)
 		}
-		close(release)
+		letGo()
 		f.waitTickDone()
 	})
 
 	t.Run("ST-SUP-RC35-OC07-T02 A slow tenant ends at its own deadline and the next tenant gets its own", func(t *testing.T) {
 		e.exec(`UPDATE orders SET status = 'new'`)
 		clock := newFakeClock(aligned(time.Minute))
-		f := startTicker(t, e, clock, time.Minute, nil, []string{"t1", "t2"}, func(ctx context.Context, tenantID string, h *Handle[testProbe]) error {
+		var f *tickerFixture
+		f = startTicker(t, e, clock, time.Minute, nil, []string{"t1", "t2"}, func(ctx context.Context, tenantID string, h *Handle[testProbe]) error {
 			if err := write(ctx, h, "slow-"+tenantID); err != nil {
 				return err
 			}
 			if tenantID == "t1" {
-				<-ctx.Done()
-				return ctx.Err()
+				return f.park(ctx)
 			}
 			return nil
 		})
@@ -377,7 +494,7 @@ func TestTicker(t *testing.T) {
 			t.Fatalf("the second run was %s", second.tenant)
 		}
 		f.waitTickDone()
-		if failed := f.waitFailed(1); len(failed) != 1 || failed[0] != probe.WorkerRolledBack {
+		if failed := f.failedRuns(1); len(failed) != 1 || failed[0] != probe.WorkerRolledBack {
 			t.Fatalf("the failed runs are %v", failed)
 		}
 		if e.status("t1") == "slow-t1" || e.status("t2") != "slow-t2" {
@@ -404,7 +521,7 @@ func TestTicker(t *testing.T) {
 		f.next()
 		f.next()
 		f.waitTickDone()
-		if failed := f.waitFailed(1); failed[0] != probe.WorkerPanicked {
+		if failed := f.failedRuns(1); failed[0] != probe.WorkerPanicked {
 			t.Fatalf("the failed runs are %v", failed)
 		}
 		if e.status("t1") == "panic-t1" || e.status("t2") != "panic-t2" {
@@ -442,7 +559,7 @@ func TestTicker(t *testing.T) {
 			f.next()
 			f.waitTickDone()
 		}
-		failed := f.waitFailed(2)
+		failed := f.failedRuns(2)
 		if len(failed) != 2 || failed[0] != probe.WorkerRolledBack || failed[1] != probe.WorkerPanicked {
 			t.Fatalf("the failed runs are %v, want rolled_back and panicked", failed)
 		}
@@ -523,19 +640,16 @@ func TestTicker(t *testing.T) {
 			<-release
 			return nil
 		})
+		letGo := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(letGo)
 		f.waitArms(1)
 		clock.advance(interval)
 		f.next()
 		finished := make(chan error, 1)
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			finished <- f.ticker.Finish(ctx)
-		}()
-		for !f.ticker.isStopping() {
-			time.Sleep(2 * time.Millisecond)
-		}
-		close(release)
+		go func() { finished <- f.ticker.Finish(context.Background()) }()
+		// Finish stops the ticker first, and then waits for the run.
+		<-f.ticker.stopping
+		letGo()
 		// t1 commits; the tick then starts no run for t2, since the ticker stops.
 		if err := <-finished; err != nil {
 			t.Fatalf("Finish gave %v", err)
@@ -547,8 +661,7 @@ func TestTicker(t *testing.T) {
 		if _, _, unreached := f.observe.snapshot(); unreached != 1 {
 			t.Fatalf("worker.tenant.unreached counted %d, want 1", unreached)
 		}
-		clock.advance(interval)
-		f.none()
+		f.stopped(interval)
 
 		blocked := startTicker(t, e, newFakeClock(aligned(interval)), interval, nil, []string{"t2"}, func(ctx context.Context, tenantID string, h *Handle[testProbe]) error {
 			if err := write(ctx, h, "blocked-"+tenantID); err != nil {
@@ -560,16 +673,18 @@ func TestTicker(t *testing.T) {
 		blocked.waitArms(1)
 		blocked.clock.advance(interval)
 		blocked.next()
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		defer cancel()
-		if err := blocked.ticker.Finish(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		// The drain bound ends while Finish waits for the run, which waits for its context.
+		bound := newDrainBound()
+		go func() { finished <- blocked.ticker.Finish(bound) }()
+		<-blocked.ticker.stopping
+		bound.end()
+		if err := <-finished; !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("Finish gave %v, want the end of its bound", err)
 		}
 		if e.status("t2") == "blocked-t2" {
 			t.Fatal("the run that outlived the drain bound committed")
 		}
-		blocked.clock.advance(interval)
-		blocked.none()
+		blocked.stopped(interval)
 	})
 
 	t.Run("ST-SUP-RC35-OC12-T02 A tick that runs out of time counts the unreached tenants, and the next starts from them", func(t *testing.T) {

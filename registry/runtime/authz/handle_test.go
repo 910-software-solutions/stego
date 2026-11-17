@@ -20,6 +20,7 @@ import (
 
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
 	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
 	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
@@ -456,11 +457,11 @@ func newPGClock(t *testing.T, clock *testClock) *pgEnv {
 	return env
 }
 
-func (e *pgEnv) runtimeOf(t *testing.T, provider Decision, clock Clock) *Runtime {
+func (e *pgEnv) runtimeOf(t *testing.T, provider Decision, clock authzclock.Clock) *Runtime {
 	t.Helper()
 	// No Floor: the runtime builds the TableFloor of DB and Schema for Port.
 	rt, err := New(Config{Provider: provider, DB: e.runtime, Schema: e.schema, Outbox: e.queue,
-		Poll: 10 * time.Millisecond, Clock: clock})
+		Poll: 10 * time.Millisecond, clocks: authzclock.Clocks{Retention: clock}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1657,6 +1658,39 @@ func TestHandleWrites(t *testing.T) {
 		}
 		if after := shape(); after != before || before != "1/3/1/2" {
 			t.Errorf("floor rows, policies, triggers and relay functions are %s after two more runs and %s before, want 1/3/1/2 both: one floor row, the two revocation policies and the policy of the test table, the tuple check trigger and the two relay functions", after, before)
+		}
+	})
+}
+
+func TestPublicClocks(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC24-T05 New refuses a clock in the public configuration, and the internal hook sets it", func(t *testing.T) {
+		queue, err := outbox.New(fakeDB(t), outbox.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		base := Config{Provider: &recorder{}, DB: fakeDB(t), Schema: "public", Outbox: queue}
+		retention, wait := fixedClock{t: time.Unix(0, 0)}, systemWaitClock{}
+		withRetention, withWait := base, base
+		withRetention.Clock = retention
+		withWait.WaitClock = wait
+		for name, cfg := range map[string]Config{"Clock": withRetention, "WaitClock": withWait} {
+			if rt, err := New(cfg); err == nil || rt != nil {
+				t.Fatalf("New with Config.%s gave %v, %v; want a refusal", name, rt, err)
+			}
+		}
+		hooked := base
+		if !authzclock.Set(&hooked, authzclock.Clocks{Retention: retention, Wait: wait}) {
+			t.Fatal("the authz package registers no clock setter")
+		}
+		rt, err := New(hooked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rt.clock != authzclock.Clock(retention) || rt.waitClock != authzclock.WaitClock(wait) {
+			t.Fatalf("the runtime has the clocks %v and %v, want those of the hook", rt.clock, rt.waitClock)
+		}
+		if plain, err := New(base); err != nil || plain.clock != authzclock.Clock(systemClock{}) || plain.waitClock != authzclock.WaitClock(systemWaitClock{}) {
+			t.Fatalf("with no clock the runtime has %v and %v (%v), want the real clocks", plain.clock, plain.waitClock, err)
 		}
 	})
 }

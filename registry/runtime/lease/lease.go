@@ -232,6 +232,10 @@ func (h *Held) Expires() time.Time {
 	return h.expires
 }
 
+// Left is the time that the lease has left on the process clock of its client: the time to Expires. It is 0 or
+// less when the lease can have expired.
+func (h *Held) Left() time.Duration { return h.Expires().Sub(h.client.clock.Now()) }
+
 // TTL is the lease duration.
 func (h *Held) TTL() time.Duration { return h.client.ttl }
 
@@ -330,7 +334,7 @@ func (h *Held) Fence(ctx context.Context, tx *sql.Tx) (int64, error) {
 	}
 	// The timeout is the time left in whole milliseconds, rounded down, so it is never longer than the lease has
 	// left; a lease with less than one millisecond left takes no lock, as a timeout of 0 turns the bound off.
-	left := h.Expires().Sub(h.client.clock.Now()).Milliseconds()
+	left := h.Left().Milliseconds()
 	if left < 1 {
 		return 0, fmt.Errorf("lease %s: fence: the lease has no time left on the process clock", h.client.name)
 	}
@@ -355,8 +359,7 @@ func (h *Held) Fence(ctx context.Context, tx *sql.Tx) (int64, error) {
 
 // deadline is the context of a write under the lease: it ends when the lease can expire on the process clock.
 func (h *Held) deadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	left := h.Expires().Sub(h.client.clock.Now())
-	return context.WithTimeout(ctx, left)
+	return context.WithTimeout(ctx, h.Left())
 }
 
 // WithToken runs write in one transaction that holds the lease row (Fence), with the holder's token for the write
@@ -394,7 +397,7 @@ func (h *Held) WithToken(ctx context.Context, write func(ctx context.Context, tx
 // and renews the lease every renew interval while work runs. When a renew fails or gives another token, or a write
 // meets a higher token, it cancels work's context at once, which is within one renew interval and before the lease
 // can expire, waits for work to return, and returns the cause (ST-SUP-RP09-LC03, ST-SUP-RP09-LC04). When work
-// returns or ctx ends, it releases the lease.
+// returns or ctx ends, it releases the lease, also when ctx ends before or while a renew runs.
 func (c *Client) Hold(ctx context.Context, work func(ctx context.Context, held *Held) error) error {
 	for {
 		h, err := c.Acquire(ctx)
@@ -454,7 +457,17 @@ func (c *Client) hold(ctx context.Context, h *Held, work func(ctx context.Contex
 			cancelRenew()
 			if err != nil {
 				cancel()
-				<-done
+				workErr := <-done
+				// A renew that runs after ctx ended, or that ctx ends while it runs, fails because ctx ended. This
+				// is the case where the renew timer wins the select against ctx.Done(), or a renew is in flight at
+				// the time limit of the caller. Hold then releases the lease and returns as it does when ctx ends
+				// first, so the next holder does not wait for the lease to expire (review of PR #387, L2). The
+				// release changes the row only while it names this holder with its own token, so a lease that
+				// another holder took stays as it is.
+				if ctx.Err() != nil {
+					release()
+					return errors.Join(ctx.Err(), workErr)
+				}
 				return err
 			}
 		}

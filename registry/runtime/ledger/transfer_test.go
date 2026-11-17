@@ -139,6 +139,17 @@ GRANT SELECT, UPDATE ON leases TO ` + runtimeRole + `;`
 
 func withTimeout(d time.Duration) func(*Settings) { return func(s *Settings) { s.PendingTimeout = d } }
 
+// openWith is open with any tracer of the statements.
+func (f *fixture) openWith(role string, tracer pgx.QueryTracer) *sql.DB {
+	cfg := f.cfg.Copy()
+	cfg.Database, cfg.User, cfg.Password = f.db, role, rolePassword
+	cfg.RuntimeParams = map[string]string{"TimeZone": "UTC"}
+	cfg.Tracer = tracer
+	db := stdlib.OpenDB(*cfg)
+	f.t.Cleanup(func() { db.Close() })
+	return db
+}
+
 func (f *fixture) open(role string, trace *statementTrace) *sql.DB {
 	cfg := f.cfg.Copy()
 	cfg.Database, cfg.User, cfg.Password = f.db, role, rolePassword
