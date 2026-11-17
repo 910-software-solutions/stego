@@ -339,6 +339,14 @@ func emptyValue(node *yaml.Node) bool {
 	return false
 }
 
+// issuerFault gives why a value is not an issuer, an https URL with a host and no user, query or fragment, or "".
+func issuerFault(value string) string {
+	if u, err := url.Parse(value); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Sprintf("the issuer %s is not an https URL with a host and no user, query or fragment", value)
+	}
+	return ""
+}
+
 // typeFault gives why a field of an entry does not have the type that the environment schema states for it, or "".
 func typeFault(given map[string]*yaml.Node) string {
 	for _, name := range []string{"engine", "topic", "issuer", "host", "address", "api_group", "resource", "level"} {
@@ -352,8 +360,8 @@ func typeFault(given map[string]*yaml.Node) string {
 		}
 	}
 	if node := given["issuer"]; node != nil {
-		if u, err := url.Parse(node.Value); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return fmt.Sprintf("the issuer %s is not an https URL with a host and no user, query or fragment", node.Value)
+		if fault := issuerFault(node.Value); fault != "" {
+			return fault
 		}
 	}
 	for _, name := range []string{"host", "address"} {
@@ -480,6 +488,11 @@ func CheckEnvironment(requirements Requirements, data []byte) (EnvironmentFit, e
 		status, detail := requirementMet(requirement, env)
 		if variable, listed := variables[requirement.Name]; status == Met && requirement.Kind == Configuration && listed {
 			if fault := valueFault(variable, env.lookup(Configuration, requirement.Name).value); fault != "" {
+				status, detail = WrongType, fault
+			}
+		}
+		if status == Met {
+			if fault := needValueFault(requirement, env); fault != "" {
 				status, detail = WrongType, fault
 			}
 		}
@@ -721,6 +734,30 @@ func widerGrant(requirement Requirement, env environment) string {
 
 // podLevelOrder ranks the pod security levels from the most open to the strictest.
 var podLevelOrder = []string{"privileged", "baseline", "restricted"}
+
+// needValueFault gives why the value that the environment file gives a topic or an identity issuer differs from
+// the issuer that the requirement holds, or from the configuration value of the variable that carries it, or ""
+// (ST-DLV-UC02-R02, ST-DLV-Q26 (A)). The *_FILE form of the variable is not compared, because the check reads no
+// file.
+func needValueFault(requirement Requirement, env environment) string {
+	field := map[RequirementKind]string{Topic: "topic", IdentityIssuer: "issuer"}[requirement.Kind]
+	entry := env.lookup(requirement.Kind, requirement.Name)
+	if field == "" || entry == nil || entry.fields[field] == nil {
+		return ""
+	}
+	given := entry.fields[field].Value
+	if requirement.Value != "" && given != requirement.Value {
+		return fmt.Sprintf("the issuer is %s; the declaration fixes the issuer %s, which the service checks each token against", given, requirement.Value)
+	}
+	if requirement.Variable == "" {
+		return ""
+	}
+	if configured := env.lookup(Configuration, requirement.Variable); configured != nil && !configured.empty && !configured.blank && configured.value != given {
+		return fmt.Sprintf("the %s is %s, but the configuration value of %s, which the service reads it from, is %s; give the two the same value",
+			field, given, requirement.Variable, configured.value)
+	}
+	return ""
+}
 
 // requirementMet tells whether the environment file meets one platform requirement (ST-DLV-SP01): it supplies, under
 // the requirement's name, a value of its kind with every part its shape names. When it does not, it gives the

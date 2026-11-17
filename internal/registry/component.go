@@ -122,6 +122,11 @@ type ArchitectureRole struct {
 	Flow string `yaml:"flow"`
 	// Ports maps each port the component provides or requires to its side, inbound or outbound.
 	Ports map[string]string `yaml:"ports"`
+	// Serves are the kinds of operation whose request flows start at the component, of ServedKinds (ST-GEN-Q44 (A)).
+	Serves []string `yaml:"serves,omitempty"`
+	// Store is the name of the store that keeps the rows of a component of the repository layer, such as
+	// PostgreSQL, for a service with no component of the store layer (ST-GEN-Q44 (A)).
+	Store string `yaml:"store,omitempty"`
 }
 
 // PipelinePins are the pinned references and the one trusted signer of one CI provider: the shared pipeline, the
@@ -207,6 +212,11 @@ type Need struct {
 	ResourceNames []string `yaml:"resource_names,omitempty"`
 	// Level is the pod security level: privileged, baseline or restricted.
 	Level string `yaml:"level,omitempty"`
+	// Variable is the environment variable of the component whose value is the value of a topic or an identity
+	// issuer need, and Value is one {settings.<key>} that gives the issuer that the declaration fixes (ST-SUP-EN09
+	// field Platform needs, ST-DLV-Q26 (A)).
+	Variable string `yaml:"variable,omitempty"`
+	Value    string `yaml:"value,omitempty"`
 }
 
 // Mixin adds components and slots to an archetype. A mixin with AliasOf is a deprecated alias: binding it binds

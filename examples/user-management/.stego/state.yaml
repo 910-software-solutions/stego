@@ -34,21 +34,21 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117130113-44a58426027a
+        module_version: v0.0.0-20261117140051-6d529686ddb2
         vcs: git
-        revision: 44a58426027aeacf82d959ad240c216165d298ef
+        revision: 6d529686ddb216802b0454d656a2c27b9c28d48a
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 75d8edfde3c8f8b7d84c2582811010c14e2d3af8d76623df1ece1ae50f98d516
+    registry_content_sha256: dbe8eedb3dbcd2d7b98793f6e6a2b9bad7b0c25656a3be7052104cc0c67cf84f
     components:
         audit-log:
             version: 1.1.1
             sha: 666192671fc660e36cdc49a35f10b5cfbd800673d3140cc3fb9caeeefd1a3dac
         command:
             version: 1.3.0
-            sha: 5f21497de0a7abcf5c7ffc8cd81e52b3185bfc388bc4e5c64ed518d73e5e54c2
+            sha: 50b6515a651ff596c9ecb835f4c18a83040c0c2d44ce7fd610ae6a5cc3e610b5
         domain-probe:
             version: 1.0.1
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
@@ -57,10 +57,10 @@ last_applied:
             sha: 9336c79178caf803db7222bedd34244d99241ea4bbb3cf5298fd7e87029aad1d
         jwt-auth:
             version: 2.5.0
-            sha: 2a86d2ba707e3924781b35bb5009380f623f907f2836e71098cb9fc978f6c1d5
+            sha: 43cd2321d6a753d18cb9613c93dd4ade3a0174ac802204acc4b6297c46f34d21
         kafka-producer:
             version: 3.0.0
-            sha: 365170d429fdb47c65efa2329c01bed4d908ad4621d76e62edabefd0b1f705c7
+            sha: c231fae44d60a39f75076018d24bca0b1255fd080e6dfe400fa6ca1cb96b0203
         otel-tracing:
             version: 1.19.0
             sha: 493f1a9b4c15574a0ad10f70ca302558d5d81541676353883275d0ca4ffd80ee
@@ -69,13 +69,13 @@ last_applied:
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
             version: 6.7.1
-            sha: 6de0b7d51a01be214471a1eeec911361b8ff0447238061b43b1b66ae4316677a
+            sha: eea75527a6bfef1a1721d62c7cd3c749982425ce3aff368f13ee0d31f2372061
         query:
             version: 1.1.0
-            sha: ec99c6e40f1ec83f09e8355c76320fc81d4c30aece6712088475e4ba8d978df1
+            sha: 1a57c495468c9ca6a8ec45b977cb49d28f02e160a63a39bfd406a91624878bef
         rest-api:
             version: 4.5.0
-            sha: fe8932a7d0ed62a0eaf9247f3dff6778f2e6e72090914e1d3643c373565ea6de
+            sha: 968ef2d2c55f57b48bc60cf8911af3ce62db9fc940e62e5202957d24467c8f28
         spicedb-authz:
             version: 1.3.0
             sha: 8ac7e9cbd292eecd4a85abfae415c1dfa87ad0b701db857aeda2a5909fd884e4
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: c21faf76c7c32faf21f7238e1c10d29331cb114743aea200dbb940cbf9d30fb4
-        architecture/index.html: 03027932eda1153c7cb431e4de9c6bd2790381a53bcae4f9e240e7ca73c882d1
+        architecture/architecture.json: e5b1d715dd5f563f3ba34fa3b7be6b83a75dd1233423fdb834bfccc184d729c5
+        architecture/index.html: 34bad01e402a3e12ca855b52adf4a4579fc7dff02a51660d28602da2ced678ca
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
         deploy/base/migration-job.yaml: bcec1d7e6ca8c686bb996a5947d6360f6360b6029336b488476915d5d32276c2
@@ -225,8 +225,8 @@ last_applied:
         deploy/components/secret-files/mount-job-files.yaml: a649fa8777dff4ecc667323a9e5926bfa1077175631045a513e87996dd954d17
         deploy/components/secret-files/remove-env.yaml: a243baeae3309873606fb81e1556b5f922fc23b6c504191261e2cea7dfdc4ab6
         deploy/components/secret-files/remove-job-env.yaml: 574a901a566b3424b10e578ae855e37f2368c6384ecd5ded33b18cfd657e55de
-        deploy/environment-variables.md: 859a99e52594c281d38b2b2f949dde55133d53de65d805f0ec0a16351f1f0fc9
-        deploy/platform-requirements.yaml: a79984e1d923ee8221aa64bd773ea316adcc5f59932c0e094f739bb89d2c0197
+        deploy/environment-variables.md: 30a250076e72b219c676cff1de6f5006343ad42ce4cfb1dc4e9676676bf53ca5
+        deploy/platform-requirements.yaml: e8c2909bb60041c8e8a6102310df813d154025557d6bbda4b62758cf770da8f7
     archetype:
         name: rest-crud
         version: 3.151.0

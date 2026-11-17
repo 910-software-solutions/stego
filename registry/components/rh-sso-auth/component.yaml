@@ -128,5 +128,5 @@ environment:
     example: "/etc/stego/authn/ca.crt"
 # The platform needs (ST-SUP-EN09): the Red Hat SSO issuer of the tokens and the network path to its key set.
 needs:
-  - {kind: identity issuer, name: "{service}-issuer"}
+  - {kind: identity issuer, name: "{service}-issuer", variable: STEGO_AUTH_ISSUER, value: "{settings.issuer}"}
   - {kind: egress, name: "{service}-issuer-keys", port: 443}

@@ -74,6 +74,11 @@ type Need struct {
 	// placeholders of a need name (ST-DLV-Q14).
 	ResourceNames []string
 	Level         string
+	// Variable is the environment variable of the component whose value is the value of a topic or an identity
+	// issuer need, which may hold the placeholders of a variable name; Value is one {settings.<key>} that gives the
+	// issuer that the declaration fixes (ST-DLV-Q26 (A)).
+	Variable string
+	Value    string
 }
 
 // ComponentNeeds is one component of the service with the needs it states and its settings as the declaration and
@@ -103,6 +108,11 @@ type Requirement struct {
 	// ResourceNames limit a cluster permission to the objects with these names (ST-DLV-Q14).
 	ResourceNames []string `yaml:"resource_names,omitempty"`
 	Level         string   `yaml:"level,omitempty"`
+	// Variable is the environment variable whose value must be the value of a topic or an identity issuer need,
+	// and Value is the issuer that the declaration fixes, the same in every environment (ST-DLV-EN02 fields
+	// Variable and Value, ST-DLV-INV02).
+	Variable string `yaml:"variable,omitempty"`
+	Value    string `yaml:"value,omitempty"`
 	// Components are the components that state the need, by name.
 	Components []string `yaml:"components"`
 }
@@ -238,6 +248,18 @@ func DeriveRequirements(service string, components []ComponentNeeds) (Requiremen
 			}
 		}
 	}
+	// The variable of a topic or an identity issuer is a variable that is not secret, of a component that states
+	// the need (ST-DLV-Q26 (A)).
+	for _, requirement := range byName {
+		if requirement.Variable == "" {
+			continue
+		}
+		variable, listed := accepted(variables, requirement.Variable)
+		if !listed || variable.Secret || !slices.ContainsFunc(variable.ReadBy, func(reader string) bool { return slices.Contains(requirement.Components, reader) }) {
+			return Requirements{}, &RequirementError{Components: requirement.Components[:1], Need: requirement.Name, Field: "variable",
+				Reason: fmt.Sprintf("the variable %s is not an environment variable that is not secret of a component that states the need", requirement.Variable)}
+		}
+	}
 	// A need of a component does not have the name of a listed environment variable. Else the environment check
 	// could count a value of the variable as a value of the need: a secret variable, such as DATABASE_URL, given as a
 	// plain configuration value would meet a configuration need of its name (#378 security review L1).
@@ -301,6 +323,12 @@ func shape(r Requirement) string {
 	if r.Level != "" {
 		parts = append(parts, "level "+r.Level)
 	}
+	if r.Variable != "" {
+		parts = append(parts, "variable "+r.Variable)
+	}
+	if r.Value != "" {
+		parts = append(parts, "value "+r.Value)
+	}
 	if len(parts) == 0 {
 		return "no shape"
 	}
@@ -347,9 +375,24 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 	if resourceNames != nil {
 		slices.Sort(resourceNames)
 	}
+	var variable, value string
+	if need.Variable != "" {
+		if variable, err = fillName(strings.ToUpper(strings.ReplaceAll(service, "-", "_")), component.Settings, need.Variable); err != nil {
+			return Requirement{}, fault(name, "variable", "%s", err)
+		}
+	}
+	if need.Value != "" {
+		// The value is one setting. A setting that the declaration does not give fixes no value, so the check
+		// compares none (ST-DLV-Q26 (A)).
+		key, isSetting := strings.CutPrefix(strings.Trim(need.Value, "{}"), "settings.")
+		if !isSetting || !strings.HasPrefix(need.Value, "{") || !strings.HasSuffix(need.Value, "}") {
+			return Requirement{}, fault(name, "value", "the value %q is not one {settings.<key>}", need.Value)
+		}
+		value = component.Settings[key]
+	}
 	requirement := Requirement{Kind: kind, Name: name, Keys: slices.Sorted(slices.Values(need.Keys)), Engine: need.Engine, Port: need.Port,
 		APIGroup: need.APIGroup, Resource: need.Resource, Verbs: slices.Sorted(slices.Values(need.Verbs)), ResourceNames: resourceNames, Level: need.Level,
-		Components: []string{component.Component}}
+		Variable: variable, Value: value, Components: []string{component.Component}}
 	if field, reason := checkShape(requirement); field != "" {
 		return Requirement{}, fault(name, field, "%s", reason)
 	}
@@ -409,6 +452,20 @@ func checkShape(r Requirement) (string, string) {
 		}
 		if !given[field] && slices.Contains(shapes[r.Kind], field) {
 			return field, fmt.Sprintf("a %s need must give %s", r.Kind, field)
+		}
+	}
+	if r.Variable != "" && r.Kind != Topic && r.Kind != IdentityIssuer {
+		return "variable", fmt.Sprintf("the %s need has no field variable; only a topic or an identity issuer names the variable that carries its value", r.Kind)
+	}
+	if r.Variable != "" && (len(r.Variable) > 128 || !variableName.MatchString(r.Variable)) {
+		return "variable", fmt.Sprintf("the variable %q is not an environment variable name of capital letters, digits and '_'", r.Variable)
+	}
+	if r.Value != "" && r.Kind != IdentityIssuer {
+		return "value", fmt.Sprintf("the %s need has no field value; only an identity issuer holds the issuer that the declaration fixes", r.Kind)
+	}
+	if r.Value != "" {
+		if fault := issuerFault(r.Value); fault != "" {
+			return "value", fault
 		}
 	}
 	for i, key := range r.Keys {
@@ -601,6 +658,16 @@ func LoadRequirements(data []byte) (Requirements, error) {
 			}
 		}
 	}
+	// The variable of a topic or an identity issuer is a listed variable that is not secret, so that the check
+	// compares a value that the base gives from the configuration (ST-DLV-Q26 (A)).
+	for _, requirement := range requirements.Requirements {
+		if requirement.Variable == "" {
+			continue
+		}
+		if variable, listed := accepted(requirements.Environment, requirement.Variable); !listed || variable.Secret {
+			return Requirements{}, fmt.Errorf("platform requirements: requirement %s: field variable: %s is not an environment variable of the list that is not secret", requirement.Name, requirement.Variable)
+		}
+	}
 	// A requirement has the name of a listed variable only as the configuration need of a required variable that is
 	// not secret, which DeriveRequirements writes for it (#378 security review L1).
 	for _, variable := range requirements.Environment {
@@ -613,6 +680,16 @@ func LoadRequirements(data []byte) (Requirements, error) {
 		}
 	}
 	return requirements, nil
+}
+
+// accepted gives the listed environment variable of the name, and whether the list holds it.
+func accepted(list []AcceptedVariable, name string) (AcceptedVariable, bool) {
+	for _, variable := range list {
+		if variable.Name == name {
+			return variable, true
+		}
+	}
+	return AcceptedVariable{}, false
 }
 
 // checkRequirementsFields holds the top fields of the platform requirements to the node kinds of the format, so

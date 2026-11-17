@@ -116,6 +116,7 @@ environment: []
 architecture:
   layer: handler
   flow: Serves the test.
+  serves: [collection operations]
   ports:
     storage-adapter: outbound
     http-server: inbound
