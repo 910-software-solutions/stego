@@ -1,6 +1,7 @@
 package kafkainbox
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -716,7 +717,7 @@ func (in *Inbox) check(record *kgo.Record) (checked, string) {
 	if len(record.Value) == 0 || !json.Valid(record.Value) {
 		return c, ReasonNotJSON
 	}
-	rowID, ok := payloadOfKind(record.Value, kind)
+	rowID, entity, ok := payloadOfKind(record.Value, kind)
 	if !ok {
 		return c, ReasonKindMismatch
 	}
@@ -727,9 +728,11 @@ func (in *Inbox) check(record *kgo.Record) (checked, string) {
 	if len(resourceKey) < 1 || len(resourceKey) > 256 {
 		return c, ReasonBadResourceKey
 	}
-	// The key names the row of the payload: the resource key of a change event is <type>:<row ID> (security review
-	// of PR #418, N4).
-	if !strings.HasSuffix(resourceKey, ":"+rowID) {
+	// The key names the row of the payload: the resource key of a change event is exactly <type>:<row ID>, where the
+	// type is the resource type of the entity or, for an entity with none, the entity name (security review of PR
+	// #418, N4; of PR #421, L5).
+	keyType, keyID, found := strings.Cut(resourceKey, ":")
+	if !found || keyID != rowID || !typeOfEntity(keyType, entity) {
 		return c, ReasonKeyMismatch
 	}
 	c.resourceKey = resourceKey
@@ -738,16 +741,67 @@ func (in *Inbox) check(record *kgo.Record) (checked, string) {
 
 // payloadOfKind reports whether payload is a change event of kind <source>.<entity>.<action>: an object whose entity,
 // in lower kebab case, and action are those of the kind, with a row ID (ST-SUP-RC20-OC40; security review of PR
-// #418, L6). It gives the row ID of the payload.
-func payloadOfKind(payload []byte, kind string) (string, bool) {
-	var event struct {
-		Entity, Action, ID string
-	}
+// #418, L6). It gives the row ID and the entity of the payload. It reads the members entity, action and id by their
+// exact names, and refuses a payload that holds one of them twice or in another case, such as ID beside id, which a
+// decoder of the fill could read in place of the member that the inbox checked (security review of PR #421, L5).
+func payloadOfKind(payload []byte, kind string) (id, entity string, ok bool) {
 	parts := strings.Split(kind, ".")
-	if len(parts) != 3 || json.Unmarshal(payload, &event) != nil || event.ID == "" {
-		return "", false
+	if len(parts) != 3 {
+		return "", "", false
 	}
-	return event.ID, kebab(event.Entity) == parts[1] && event.Action == parts[2]
+	members, ok := eventMembers(payload)
+	if !ok || members["id"] == "" {
+		return "", "", false
+	}
+	return members["id"], members["entity"], kebab(members["entity"]) == parts[1] && members["action"] == parts[2]
+}
+
+// eventMembers reads the string members entity, action and id of the top-level object of payload by their exact
+// names. It refuses a payload that is not an object, and one that holds one of these members twice, in another case,
+// or with a value that is not a string.
+func eventMembers(payload []byte) (map[string]string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
+		return nil, false
+	}
+	members := map[string]string{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		name, isName := token.(string)
+		if err != nil || !isName {
+			return nil, false
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false
+		}
+		folded := strings.ToLower(name)
+		if folded != "entity" && folded != "action" && folded != "id" {
+			continue
+		}
+		if _, seen := members[folded]; seen || name != folded {
+			return nil, false
+		}
+		var text string
+		if err := json.Unmarshal(value, &text); err != nil {
+			return nil, false
+		}
+		members[folded] = text
+	}
+	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
+		return nil, false
+	}
+	return members, true
+}
+
+// resourceTypeName is the form of a declared resource type: a lower-case SQL name.
+var resourceTypeName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
+// typeOfEntity reports whether keyType can be the type of the resource key of a change event of entity: the entity
+// name, which the key holds for an entity with no resource type, or a name of the form of a resource type. The inbox
+// does not hold the resource types of the source's entities, so it binds the type to the entity by form only.
+func typeOfEntity(keyType, entity string) bool {
+	return keyType == entity || resourceTypeName.MatchString(keyType)
 }
 
 // kebab gives an entity name in lower kebab case, as the change event kind names it: a hyphen before each capital

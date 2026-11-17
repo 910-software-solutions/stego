@@ -470,6 +470,20 @@ func TestInbox(t *testing.T) {
 				ev.resourceKey = "order:z-9"
 				return ev
 			}(), ReasonKeyMismatch},
+			// The payload names its row once and in the exact case; the key is exactly <type>:<row ID> (security review
+			// of PR #421, L5).
+			{func() event {
+				ev := change("acme", "orders.order.created", "v-2")
+				ev.value = `{"entity":"Order","action":"created","id":"v-1","ID":"v-2"}`
+				return ev
+			}(), ReasonKindMismatch},
+			{func() event {
+				ev := change("acme", "orders.order.created", "v-3")
+				ev.value = `{"entity":"Order","action":"created","id":"v-4","id":"v-3"}`
+				return ev
+			}(), ReasonKindMismatch},
+			{func() event { ev := change("acme", "orders.order.created", "v-5"); ev.resourceKey = "Bad Type:v-5"; return ev }(), ReasonKeyMismatch},
+			{func() event { ev := change("acme", "orders.order.created", "v-6"); ev.resourceKey = "order:x:v-6"; return ev }(), ReasonKeyMismatch},
 		}
 		var events []event
 		for _, c := range cases {
