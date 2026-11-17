@@ -212,7 +212,10 @@ type Workers struct {
 	worker            *outbox.Worker
 	// inboxName is the component name of the Kafka inbox of a declared subscription, or empty: a stopped inbox, such
 	// as one that the retention of its topic stopped, makes the worker mode not ready (ST-SUP-RP14-LC08).
-	inboxName  string
+	inboxName string
+	// inbox tells the failure class of an inbox whose sessions fail in a row, which makes the worker mode not ready
+	// (security review of PR #418, M2).
+	inbox      interface{ Failing() string }
 	relay      *authz.Relay
 	periodic   *lease.Periodic
 	tickers    []*command.Ticker
@@ -421,7 +424,7 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 	if inbox != nil {
 		// The inbox runs in the worker mode; a start that it refuses for good, such as a topic retention longer than
 		// the done retention, stops it, and the readiness of the worker mode names it (ST-SUP-RC38-OC01).
-		w.inboxName = inbox.Name()
+		w.inboxName, w.inbox = inbox.Name(), inbox
 		set = append(set, modes.Component{Name: inbox.Name(), Run: inbox.Run})
 	}
 	if p.Tickers != nil {
@@ -671,6 +674,8 @@ func (w *Workers) Ready(ctx context.Context) error {
 				errs = append(errs, fmt.Errorf("%s: %w: the worker role's pool does not reach the database", m, modes.ErrNotReady))
 			} else if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
+			} else if reason := w.inboxFailing(); reason != "" {
+				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
 			}
 		}
 	}
@@ -761,4 +766,15 @@ func inboxSetting(err error) error {
 		return &SettingError{Component: KafkaConsumerComponent, Variable: setting.Variable, names: setting.Variable, problem: setting.Problem}
 	}
 	return err
+}
+
+// inboxFailing names the Kafka inbox and its fixed failure class while its sessions fail in a row, or gives "".
+func (w *Workers) inboxFailing() string {
+	if w.inbox == nil {
+		return ""
+	}
+	if class := w.inbox.Failing(); class != "" {
+		return "the component " + w.inboxName + " fails: " + class
+	}
+	return ""
 }

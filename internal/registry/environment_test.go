@@ -416,3 +416,26 @@ needs:
 		}
 	})
 }
+
+func TestTopicAccess(t *testing.T) {
+	t.Run("ST-SUP-RC38-OC02-T02 Each shipped topic need gives its access, and a need with a wrong access is refused", func(t *testing.T) {
+		reg, err := Load("../../registry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]string{"kafka-consumer": "read", "kafka-producer": "write"}
+		for name, c := range reg.Components() {
+			for _, need := range c.Needs {
+				if need.Kind == "topic" && need.Access != want[name] {
+					t.Errorf("component %s: the topic need %s has the access %q, want %q", name, need.Name, need.Access, want[name])
+				}
+			}
+		}
+		for _, bad := range []Need{{Kind: "topic", Name: "{service}-events", Access: "all"}, {Kind: "egress", Name: "{service}-kafka", Port: 9093, Access: "read"}} {
+			component := &Component{Name: "env-a", Needs: []Need{bad}}
+			if err := checkNeeds(component); err == nil || !strings.Contains(err.Error(), "access") {
+				t.Errorf("the need %+v gave %v, want a refusal of its access", bad, err)
+			}
+		}
+	})
+}

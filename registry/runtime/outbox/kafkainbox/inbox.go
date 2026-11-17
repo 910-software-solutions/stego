@@ -46,6 +46,12 @@ const (
 	// backoffMin and backoffMax bound the wait before the inbox opens its client again after a failure.
 	backoffMin = 500 * time.Millisecond
 	backoffMax = 30 * time.Second
+	// DefaultFailingAfter is the number of failed sessions in a row after which the inbox reports that it fails.
+	DefaultFailingAfter = 5
+	// pollWait bounds one poll, so a topic with no new record still shows that the inbox reads it.
+	pollWait = 5 * time.Second
+	// alertEvery is the shortest time between two warn events of one refusal reason.
+	alertEvery = 10 * time.Second
 )
 
 // ContentType is the content type of a change event (ST-SUP-RP01-LC30).
@@ -175,6 +181,9 @@ type Config struct {
 	// Logs and Meter give the log events and the counters of the inbox; nil gives none.
 	Logs  otellog.LoggerProvider
 	Meter metric.MeterProvider
+	// FailingAfter is the number of failed sessions in a row after which Failing gives the failure class; zero is
+	// DefaultFailingAfter.
+	FailingAfter int
 	// Options are added to the options of the client, for a test only.
 	Options []kgo.Opt
 }
@@ -192,8 +201,24 @@ type Inbox struct {
 	logger    otellog.Logger
 	records   metric.Int64Counter
 
-	mu     sync.Mutex
-	failed string
+	failingAfter int
+	// backoff gives the wait before the next session after the attempt-th failure in a row, and now the clock of
+	// the alerts; a test sets them.
+	backoff  func(attempt int) time.Duration
+	now      func() time.Time
+	accepted sync.Once
+
+	mu       sync.Mutex
+	failed   string
+	failures int
+	failing  string
+	alerts   map[string]*alertState
+}
+
+// alertState is the last warn event of one refusal reason and the refusals since it that sent none.
+type alertState struct {
+	last       time.Time
+	suppressed int64
 }
 
 // New gives the inbox of the configuration. It checks the subscription and the settings, and loads the TLS files of
@@ -231,7 +256,11 @@ func New(c Config) (*Inbox, error) {
 		kgo.FetchMaxPartitionBytes(kafkaoutbox.MaxReadBytes),
 	)
 	in := &Inbox{sub: c.Subscription, settings: c.Settings, queue: c.Queue, db: c.DB, tenants: c.Tenants,
-		retention: c.Retention, principal: principal.Subject().String(), options: append(options, c.Options...)}
+		retention: c.Retention, principal: principal.Subject().String(), options: append(options, c.Options...),
+		failingAfter: c.FailingAfter, backoff: backoff, now: time.Now, alerts: map[string]*alertState{}}
+	if in.failingAfter <= 0 {
+		in.failingAfter = DefaultFailingAfter
+	}
 	if c.Logs != nil {
 		in.logger = c.Logs.Logger(instrumentation)
 	}
@@ -241,8 +270,54 @@ func New(c Config) (*Inbox, error) {
 			metric.WithUnit("{record}")); err != nil {
 			return nil, err
 		}
+		// kafka.consumer.failing is 1 while the inbox fails, so an alert reads it (security review of PR #418, M2).
+		if _, err = c.Meter.Meter(instrumentation).Int64ObservableGauge("kafka.consumer.failing",
+			metric.WithDescription("1 while the Kafka inbox of the subscription fails each session, else 0."),
+			metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+				value := int64(0)
+				if in.Failing() != "" {
+					value = 1
+				}
+				o.Observe(value, metric.WithAttributes(attribute.String("subscription", in.sub.Name)))
+				return nil
+			})); err != nil {
+			return nil, err
+		}
 	}
 	return in, nil
+}
+
+// backoff is the wait before the next session after the attempt-th failure in a row: it doubles from backoffMin up
+// to backoffMax, with jitter.
+func backoff(attempt int) time.Duration {
+	wait := min(backoffMax, backoffMin<<min(attempt, 16))
+	return wait/2 + rand.N(wait/2+1)
+}
+
+// Failing gives the fixed failure class of the last session when FailingAfter sessions in a row failed, or empty.
+// The readiness of the worker mode names it, and kafka.consumer.failing is 1 while it is set; a session that reads
+// the topic again clears it (security review of PR #418, M2).
+func (in *Inbox) Failing() string {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.failing
+}
+
+// sessionFailed counts a failed session in a row, and sets the failure class from FailingAfter of them.
+func (in *Inbox) sessionFailed(class string) {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.failures++
+	if in.failures >= in.failingAfter {
+		in.failing = class
+	}
+}
+
+// reading clears the failures: the session read the topic.
+func (in *Inbox) reading() {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.failures, in.failing = 0, ""
 }
 
 // Name is the name of the inbox among the components of the worker mode: inbox-<subscription>.
@@ -291,16 +366,18 @@ func (in *Inbox) Run(ctx context.Context) error {
 				attribute.String("stage", RetentionStage))
 			return err
 		case err != nil:
+			class := failureClass(err)
+			in.sessionFailed(class)
 			in.emit(ctx, "kafka.consumer.failed", otellog.SeverityWarn, "the Kafka inbox failed and opens its client again",
-				attribute.String("failure", failureClass(err)))
+				attribute.String("failure", class))
+		default:
+			attempt = 0
 		}
-		attempt = min(attempt+1, 16)
-		wait := min(backoffMax, backoffMin<<attempt)
-		wait = wait/2 + rand.N(wait/2+1)
+		attempt++
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(wait):
+		case <-time.After(in.backoff(attempt)):
 		}
 	}
 	return nil
@@ -338,13 +415,16 @@ func (in *Inbox) session(ctx context.Context) error {
 		return err
 	}
 	for {
-		fetches := client.PollRecords(ctx, MaxPoll)
+		// A poll that ends at its bound with no record still shows that the inbox reads the topic.
+		pollCtx, cancelPoll := context.WithTimeout(ctx, pollWait)
+		fetches := client.PollRecords(pollCtx, MaxPoll)
+		cancelPoll()
 		if ctx.Err() != nil || fetches.IsClientClosed() {
 			return ctx.Err()
 		}
 		var fetchErr error
 		fetches.EachError(func(_ string, _ int32, err error) {
-			if fetchErr == nil && !errors.Is(err, context.Canceled) {
+			if fetchErr == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				fetchErr = err
 			}
 		})
@@ -374,6 +454,7 @@ func (in *Inbox) session(ctx context.Context) error {
 		if fetchErr != nil {
 			return fetchErr
 		}
+		in.reading()
 	}
 }
 
@@ -386,7 +467,7 @@ func (in *Inbox) checkRetention(ctx context.Context, client *kgo.Client) error {
 	resource := kmsg.NewDescribeConfigsRequestResource()
 	resource.ResourceType = kmsg.ConfigResourceTypeTopic
 	resource.ResourceName = in.settings.Topic
-	resource.ConfigNames = []string{"retention.ms"}
+	resource.ConfigNames = []string{"retention.ms", "cleanup.policy"}
 	request.Resources = append(request.Resources, resource)
 	response, err := request.RequestWith(ctx, client)
 	if err != nil {
@@ -399,22 +480,59 @@ func (in *Inbox) checkRetention(ctx context.Context, client *kgo.Client) error {
 	if err := kerr.ErrorForCode(described.ErrorCode); err != nil {
 		return err
 	}
+	ms, policy, found := int64(0), "delete", false
 	for _, config := range described.Configs {
-		if config.Name != "retention.ms" || config.Value == nil {
+		if config.Value == nil {
 			continue
 		}
-		ms, err := strconv.ParseInt(*config.Value, 10, 64)
-		if err != nil {
-			return errors.New("kafkainbox: the topic's retention.ms is not a number")
+		switch config.Name {
+		case "retention.ms":
+			if ms, err = strconv.ParseInt(*config.Value, 10, 64); err != nil {
+				return errors.New("kafkainbox: the topic's retention.ms is not a number")
+			}
+			found = true
+		case "cleanup.policy":
+			policy = *config.Value
 		}
-		return RetentionFits(ms, in.retention, in.settings.AcceptInfiniteRetention)
 	}
-	return errors.New("kafkainbox: the broker gave no retention.ms of the topic")
+	if !found {
+		return errors.New("kafkainbox: the broker gave no retention.ms of the topic")
+	}
+	if err := RetentionFits(ms, policy, in.retention, in.settings.AcceptInfiniteRetention); err != nil {
+		return err
+	}
+	if ms < 0 || compacted(policy) {
+		// The acceptance of a topic that keeps records without end is logged once (security review of PR #418, L5).
+		in.accepted.Do(func() {
+			in.emit(ctx, "kafka.consumer.retention_accepted", otellog.SeverityInfo,
+				"the Kafka inbox reads a topic that keeps records without end, as "+InfiniteRetentionSetting+"=1 accepts",
+				attribute.String("subscription", in.sub.Name))
+		})
+	}
+	return nil
+}
+
+// compacted reports whether a cleanup.policy compacts the topic: compact, alone or with delete.
+func compacted(policy string) bool {
+	for _, p := range strings.Split(policy, ",") {
+		if strings.TrimSpace(p) == "compact" {
+			return true
+		}
+	}
+	return false
 }
 
 // RetentionFits refuses with ErrRetention a topic retention of retentionMS milliseconds that is longer than the done
-// retention, or that is infinite (a negative value) when acceptInfinite is false.
-func RetentionFits(retentionMS int64, done time.Duration, acceptInfinite bool) error {
+// retention, or that is infinite (a negative value) or compacted (a cleanup.policy that holds compact, which keeps the
+// last record of each key without end) when acceptInfinite is false.
+func RetentionFits(retentionMS int64, policy string, done time.Duration, acceptInfinite bool) error {
+	if compacted(policy) {
+		if acceptInfinite {
+			return nil
+		}
+		return fmt.Errorf("%w: the topic is compacted, so it keeps the last record of each key without end; set %s=1 to accept that an offset reset beyond the done retention can apply a record twice",
+			ErrRetention, InfiniteRetentionSetting)
+	}
 	if retentionMS < 0 {
 		if acceptInfinite {
 			return nil
@@ -466,35 +584,40 @@ func (in *Inbox) take(ctx context.Context, record *kgo.Record) error {
 	if err := outbox.ValidateMessage(message); err != nil || len(record.Value) > in.queue.PayloadLimit(in.sub.Name) {
 		return in.refuse(ctx, record, checked, ReasonNotOutboxMessage)
 	}
-	written, err := in.write(ctx, t, message)
+	received, err := in.write(ctx, t, message)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errDatabase, err)
 	}
-	if written {
+	switch received {
+	case outbox.ReceivedWritten:
 		in.count(ctx, OutcomeWritten, "")
-	} else {
+	case outbox.ReceivedDuplicate:
 		in.count(ctx, OutcomeDuplicate, "")
+	default:
+		// The event ID of the tenant was used for another message: the first one stays (security review of PR
+		// #418, L2).
+		return in.refuse(ctx, record, checked, ReasonEventIDReused)
 	}
 	return nil
 }
 
 // write writes message in a transaction of the tenant t and commits it (ST-SUP-RP01-LC35).
-func (in *Inbox) write(ctx context.Context, t tenant.Tenant, message outbox.Message) (bool, error) {
+func (in *Inbox) write(ctx context.Context, t tenant.Tenant, message outbox.Message) (outbox.Received, error) {
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	tx, err := tenant.Begin(ctx, in.db, t, nil)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	written, err := in.queue.Receive(ctx, tx, message)
+	received, err := in.queue.Receive(ctx, tx, message)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if err := tenant.Commit(ctx, tx, t); err != nil {
-		return false, err
+		return 0, err
 	}
-	return written, nil
+	return received, nil
 }
 
 // checked are the parts of a record that passed their form check.
@@ -547,6 +670,9 @@ func (in *Inbox) check(record *kgo.Record) (checked, string) {
 	if len(record.Value) == 0 || !json.Valid(record.Value) {
 		return c, ReasonNotJSON
 	}
+	if !payloadOfKind(record.Value, kind) {
+		return c, ReasonKindMismatch
+	}
 	keyTenant, resourceKey, found := strings.Cut(string(record.Key), kafkaoutbox.KeySeparator)
 	if !found || keyTenant != tenantID {
 		return c, ReasonKeyMismatch
@@ -556,6 +682,36 @@ func (in *Inbox) check(record *kgo.Record) (checked, string) {
 	}
 	c.resourceKey = resourceKey
 	return c, ""
+}
+
+// payloadOfKind reports whether payload is a change event of kind <source>.<entity>.<action>: an object whose entity,
+// in lower kebab case, and action are those of the kind, with a row ID (ST-SUP-RC20-OC40; security review of PR
+// #418, L6).
+func payloadOfKind(payload []byte, kind string) bool {
+	var event struct {
+		Entity, Action, ID string
+	}
+	parts := strings.Split(kind, ".")
+	if len(parts) != 3 || json.Unmarshal(payload, &event) != nil || event.ID == "" {
+		return false
+	}
+	return kebab(event.Entity) == parts[1] && event.Action == parts[2]
+}
+
+// kebab gives an entity name in lower kebab case, as the change event kind names it: a hyphen before each capital
+// letter but the first, and each letter in lower case, such as org-setting for OrgSetting.
+func kebab(name string) string {
+	var b strings.Builder
+	for i, r := range name {
+		if 'A' <= r && r <= 'Z' {
+			if i > 0 {
+				b.WriteByte('-')
+			}
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // refuse writes the refused record, with the parts that passed their form check, raises its alert and counts it. A
@@ -569,10 +725,32 @@ func (in *Inbox) refuse(ctx context.Context, record *kgo.Record, c checked, reas
 		return fmt.Errorf("%w: %w", errDatabase, err)
 	}
 	in.count(ctx, OutcomeRefused, reason)
+	in.alert(ctx, reason, record.Partition, record.Offset)
+	return nil
+}
+
+// alert sends the warn event kafka.consumer.refused of a refused record, at most once in alertEvery for each reason,
+// with the number of refusals of the reason since the last event that sent none, so a flood of bad records does not
+// flood the log (security review of PR #418, L3). The counter kafka.consumer.records counts each refusal.
+func (in *Inbox) alert(ctx context.Context, reason string, partition int32, offset int64) {
+	now := in.now()
+	in.mu.Lock()
+	state := in.alerts[reason]
+	if state == nil {
+		state = &alertState{}
+		in.alerts[reason] = state
+	} else if now.Sub(state.last) < alertEvery {
+		state.suppressed++
+		in.mu.Unlock()
+		return
+	}
+	suppressed := state.suppressed
+	state.last, state.suppressed = now, 0
+	in.mu.Unlock()
 	in.emit(ctx, "kafka.consumer.refused", otellog.SeverityWarn, "the Kafka inbox refused a record: "+reason,
 		attribute.String("subscription", in.sub.Name), attribute.String("reason", reason),
-		attribute.Int64("partition", int64(record.Partition)), attribute.Int64("offset", record.Offset))
-	return nil
+		attribute.Int64("partition", int64(partition)), attribute.Int64("offset", offset),
+		attribute.Int64("suppressed", suppressed))
 }
 
 // count adds one record to the counter kafka.consumer.records.
@@ -595,7 +773,7 @@ func (in *Inbox) emit(ctx context.Context, name string, severity otellog.Severit
 	var record otellog.Record
 	record.SetEventName(name)
 	record.SetSeverity(severity)
-	record.SetSeverityText(map[otellog.Severity]string{otellog.SeverityWarn: "WARN", otellog.SeverityError: "ERROR"}[severity])
+	record.SetSeverityText(map[otellog.Severity]string{otellog.SeverityInfo: "INFO", otellog.SeverityWarn: "WARN", otellog.SeverityError: "ERROR"}[severity])
 	record.SetBody(attribute.StringValue(body))
 	record.AddAttributes(attributes...)
 	in.logger.Emit(ctx, record)

@@ -2871,3 +2871,25 @@ func TestInboxReadiness(t *testing.T) {
 		}
 	})
 }
+
+// failingInbox is an inbox whose sessions fail with class, or do not fail when it is empty.
+type failingInbox struct{ class string }
+
+func (f *failingInbox) Failing() string { return f.class }
+
+func TestInboxFailingReadiness(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC08-T04 An inbox that fails each session is named with its failure class by the readiness of the worker mode", func(t *testing.T) {
+		inbox := &failingInbox{class: "broker:TOPIC_AUTHORIZATION_FAILED"}
+		w := &Workers{inboxName: "inbox-order-changes", inbox: inbox}
+		if reason := w.inboxFailing(); reason != "the component inbox-order-changes fails: broker:TOPIC_AUTHORIZATION_FAILED" {
+			t.Fatalf("the reason is %q", reason)
+		}
+		inbox.class = ""
+		if reason := w.inboxFailing(); reason != "" {
+			t.Fatalf("an inbox that reads gives the reason %q", reason)
+		}
+		if reason := (&Workers{}).inboxFailing(); reason != "" {
+			t.Fatalf("a service with no inbox gives the reason %q", reason)
+		}
+	})
+}

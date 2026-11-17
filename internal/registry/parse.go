@@ -181,6 +181,12 @@ func checkNeeds(component *Component) error {
 		if need.Engine != "" && (len(need.Engine) > maxNeedWord || !needWord.MatchString(need.Engine)) {
 			return fault("engine", "the engine %q is not an engine name of at most %d letters, digits, '-' or '_'", need.Engine, maxNeedWord)
 		}
+		switch {
+		case need.Access != "" && need.Kind != "topic":
+			return fault("access", "a %s need has no field access; only a topic names the access read or write", need.Kind)
+		case need.Access != "" && need.Access != "read" && need.Access != "write":
+			return fault("access", "the access %q is not read or write", need.Access)
+		}
 		if err := checkNeedVariable(component, need); err != nil {
 			return err
 		}

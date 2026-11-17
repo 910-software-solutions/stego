@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/jsell-rh/stego/registry/runtime/internal/pgtest"
 	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
@@ -167,7 +170,7 @@ func (e *env) provision(t *testing.T, id string, retire bool) {
 }
 
 // topic creates a new topic with partitions and the retention retentionMS.
-func (e *env) topic(t *testing.T, partitions int32, retentionMS string) string {
+func (e *env) topic(t *testing.T, partitions int32, retentionMS string, configs ...[2]string) string {
 	t.Helper()
 	name := "orders-" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
 	request := kmsg.NewPtrCreateTopicsRequest()
@@ -176,6 +179,12 @@ func (e *env) topic(t *testing.T, partitions int32, retentionMS string) string {
 	config := kmsg.NewCreateTopicsRequestTopicConfig()
 	config.Name, config.Value = "retention.ms", &retentionMS
 	entry.Configs = append(entry.Configs, config)
+	for _, c := range configs {
+		extra := kmsg.NewCreateTopicsRequestTopicConfig()
+		value := c[1]
+		extra.Name, extra.Value = c[0], &value
+		entry.Configs = append(entry.Configs, extra)
+	}
 	request.Topics = append(request.Topics, entry)
 	request.TimeoutMillis = 10000
 	response, err := request.RequestWith(context.Background(), e.producer)
@@ -188,6 +197,23 @@ func (e *env) topic(t *testing.T, partitions int32, retentionMS string) string {
 		}
 	}
 	return name
+}
+
+// topicNamed creates the topic name with one partition and a retention of one day.
+func (e *env) topicNamed(t *testing.T, name string) {
+	t.Helper()
+	request := kmsg.NewPtrCreateTopicsRequest()
+	entry := kmsg.NewCreateTopicsRequestTopic()
+	retention := "86400000"
+	config := kmsg.NewCreateTopicsRequestTopicConfig()
+	config.Name, config.Value = "retention.ms", &retention
+	entry.Topic, entry.NumPartitions, entry.ReplicationFactor = name, 1, 1
+	entry.Configs = append(entry.Configs, config)
+	request.Topics = append(request.Topics, entry)
+	request.TimeoutMillis = 10000
+	if _, err := request.RequestWith(context.Background(), e.producer); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // event is one record as the Kafka destination of a source service sends it, with headers that a test can change.
@@ -341,6 +367,18 @@ func TestInbox(t *testing.T) {
 		if n := e.count(t, "SELECT count(*) FROM stego_outbox.messages WHERE destination = $1", sub.Name); n != 3 {
 			t.Fatalf("after a second read the outbox holds %d messages, want 3", n)
 		}
+		// The event ID of acme again with another payload is refused, and the first message stays (security review of
+		// PR #418, L2).
+		reused := change("acme", "orders.order.created", "o-9")
+		reused.eventID = events[0].eventID
+		e.produce(t, topic, reused)
+		e.run(t, e.inbox(t, topic, "group-c", week), topic, "group-c", 4)
+		if n := e.count(t, "SELECT count(*) FROM stego_inbox.refused WHERE topic = $1 AND reason = 'event-id-reused' AND event_id = $2", topic, reused.eventID); n != 1 {
+			t.Fatalf("the reused event ID gave %d refused rows, want 1", n)
+		}
+		if n := e.count(t, "SELECT count(*) FROM stego_outbox.messages WHERE id = $1 AND resource_key = 'order:o-1'", MessageID(sub.Name, "acme", events[0].eventID)); n != 1 {
+			t.Fatal("the first message of the reused event ID did not stay")
+		}
 		if a, b := MessageID(sub.Name, "acme", events[0].eventID), MessageID(sub.Name, "other", events[0].eventID); a == b {
 			t.Fatal("one event ID gives one message ID for two tenants")
 		}
@@ -375,6 +413,11 @@ func TestInbox(t *testing.T) {
 				return ev
 			}(), ReasonBadContentType},
 			{func() event { ev := change("ac\x01me", "orders.order.created", "t-1"); return ev }(), ReasonBadTenant},
+			{func() event {
+				ev := change("acme", "orders.order.created", "x-1")
+				ev.value = `{"entity":"Invoice","action":"created","id":"x-1"}`
+				return ev
+			}(), ReasonKindMismatch},
 			{func() event {
 				ev := change("acme", "orders.order.created", "d-1")
 				ev.extra = []kgo.RecordHeader{{Key: kafkaoutbox.HeaderTenant, Value: []byte("acme")}}
@@ -428,14 +471,32 @@ func TestInbox(t *testing.T) {
 			!strings.Contains(err.Error(), InfiniteRetentionSetting) {
 			t.Fatalf("Run on a topic of infinite retention gave %v, want ErrRetention that names %s", err, InfiniteRetentionSetting)
 		}
+		// A compacted topic keeps the last record of each key without end (security review of PR #418, M1).
+		compact := e.topic(t, 1, "86400000", [2]string{"cleanup.policy", "compact,delete"})
+		if err := e.inbox(t, compact, "group-compact", week).Run(context.Background()); !errors.Is(err, ErrRetention) ||
+			!strings.Contains(err.Error(), "compacted") {
+			t.Fatalf("Run on a compacted topic gave %v, want ErrRetention that names the compaction", err)
+		}
 		for _, c := range []struct {
 			ms     int64
+			policy string
 			accept bool
 			fits   bool
-		}{{604800000, false, true}, {604800001, false, false}, {-1, false, false}, {-1, true, true}, {1000, false, true}} {
-			if err := RetentionFits(c.ms, week, c.accept); (err == nil) != c.fits {
-				t.Fatalf("RetentionFits(%d, 7d, %t) = %v, want fits %t", c.ms, c.accept, err, c.fits)
+		}{{604800000, "delete", false, true}, {604800001, "delete", false, false}, {-1, "delete", false, false}, {-1, "delete", true, true},
+			{1000, "delete", false, true}, {1000, "compact", false, false}, {1000, "delete, compact", false, false}, {1000, "compact", true, true}} {
+			if err := RetentionFits(c.ms, c.policy, week, c.accept); (err == nil) != c.fits {
+				t.Fatalf("RetentionFits(%d, %s, 7d, %t) = %v, want fits %t", c.ms, c.policy, c.accept, err, c.fits)
 			}
+		}
+		// An accepted infinite retention is logged once, at info (security review of PR #418, L5).
+		logs := &recorder{}
+		accepting := e.inbox(t, infinite, "group-accept", week)
+		accepting.settings.AcceptInfiniteRetention = true
+		accepting.logger = logs.Logger("")
+		e.produce(t, infinite, change("acme", "orders.order.created", "a-1"))
+		e.run(t, accepting, infinite, "group-accept", 1)
+		if n := logs.count("kafka.consumer.retention_accepted"); n != 1 {
+			t.Fatalf("the accepted infinite retention gave %d info events, want 1", n)
 		}
 	})
 
@@ -572,6 +633,126 @@ func TestTenantList(t *testing.T) {
 		}
 		if _, _, err := quoted(ctx, "t-active"); err == nil {
 			t.Fatal("the lookup in a schema that does not exist gave no error")
+		}
+	})
+}
+
+// recorder is a log provider that counts the events of each name.
+type recorder struct {
+	noop.LoggerProvider
+	mu     sync.Mutex
+	events []otellog.Record
+}
+
+func (r *recorder) Logger(string, ...otellog.LoggerOption) otellog.Logger { return recordLogger{r: r} }
+
+func (r *recorder) count(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, e := range r.events {
+		if e.EventName() == name {
+			n++
+		}
+	}
+	return n
+}
+
+// suppressed gives the attribute suppressed of the last event of name, or -1.
+func (r *recorder) suppressed(name string) int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	value := int64(-1)
+	for _, e := range r.events {
+		if e.EventName() == name {
+			e.WalkAttributes(func(kv attribute.KeyValue) bool {
+				if kv.Key == "suppressed" {
+					value = kv.Value.AsInt64()
+				}
+				return true
+			})
+		}
+	}
+	return value
+}
+
+type recordLogger struct {
+	noop.Logger
+	r *recorder
+}
+
+func (l recordLogger) Emit(_ context.Context, record otellog.Record) {
+	l.r.mu.Lock()
+	l.r.events = append(l.r.events, record.Clone())
+	l.r.mu.Unlock()
+}
+
+func TestAlerts(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC36-T03 The warn event of a refusal reason comes at most once in 10 seconds, with the number it held back", func(t *testing.T) {
+		in := &Inbox{sub: sub, alerts: map[string]*alertState{}}
+		logs := &recorder{}
+		in.logger = logs.Logger("")
+		at := time.Unix(1_800_000_000, 0)
+		in.now = func() time.Time { return at }
+		for i := range 3 {
+			in.alert(context.Background(), ReasonUnknownTenant, 0, int64(i))
+		}
+		in.alert(context.Background(), ReasonBadKind, 0, 9)
+		if n := logs.count("kafka.consumer.refused"); n != 2 {
+			t.Fatalf("four refusals of two reasons in one instant gave %d events, want 2", n)
+		}
+		at = at.Add(alertEvery)
+		in.alert(context.Background(), ReasonUnknownTenant, 0, 3)
+		if n, held := logs.count("kafka.consumer.refused"), logs.suppressed("kafka.consumer.refused"); n != 3 || held != 2 {
+			t.Fatalf("after 10 s the events are %d with %d held back, want 3 with 2", n, held)
+		}
+	})
+}
+
+func TestFailing(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC36-T04 Sessions that fail in a row make the inbox report its failure class and the gauge 1, and a session that reads clears both", func(t *testing.T) {
+		e := newEnv(t)
+		reader := sdkmetric.NewManualReader()
+		meter := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+		name := "orders-" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+		in, err := New(Config{Subscription: sub, Queue: e.queue, DB: e.worker, Retention: 7 * 24 * time.Hour, Tenants: e.lookup(t),
+			Settings: Settings{Connection: kafkaoutbox.Settings{Brokers: []string{e.broker.Plain.Addr()}, InsecureLoopback: true},
+				Topic: name, Group: "group-failing"}, Meter: meter, FailingAfter: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		in.backoff = func(int) time.Duration { return 10 * time.Millisecond }
+		gauge := func() int64 {
+			var data metricdata.ResourceMetrics
+			if err := reader.Collect(context.Background(), &data); err != nil {
+				t.Fatal(err)
+			}
+			for _, scope := range data.ScopeMetrics {
+				for _, m := range scope.Metrics {
+					if g, ok := m.Data.(metricdata.Gauge[int64]); ok && m.Name == "kafka.consumer.failing" && len(g.DataPoints) == 1 {
+						return g.DataPoints[0].Value
+					}
+				}
+			}
+			return -1
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- in.Run(ctx) }()
+		defer func() { cancel(); <-done }()
+		// The topic does not exist yet: each session fails at the read of its retention.
+		for in.Failing() == "" {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if class := in.Failing(); class != "broker:UNKNOWN_TOPIC_OR_PARTITION" || gauge() != 1 {
+			t.Fatalf("the failing inbox gives the class %q and the gauge %d", class, gauge())
+		}
+		e.topicNamed(t, name)
+		for in.Failing() != "" {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if g := gauge(); g != 0 {
+			t.Fatalf("the gauge is %d after the inbox reads the topic, want 0", g)
 		}
 	})
 }

@@ -140,11 +140,11 @@ environment:
     type: boolean
     required: false
     default: "0"
-    description: "Set to 1 to let the inbox read a topic with an infinite retention. Then an offset reset to a record older than the outbox done retention can apply that record twice."
+    description: "Set to 1 to let the inbox read a topic with an infinite retention or a compacted one. Then an offset reset to a record older than the outbox done retention can apply it twice."
     secret: false
     allowed: {values: ["0", "1"]}
 # The platform needs (ST-SUP-EN09): the topic of the source service's change events, which the service reads in its
 # consumer group, and the network path to the brokers on their TLS port.
 needs:
-  - {kind: topic, name: "{service}-subscription", variable: STEGO_KAFKA_CONSUMER_TOPIC}
+  - {kind: topic, name: "{service}-subscription", variable: STEGO_KAFKA_CONSUMER_TOPIC, access: read}
   - {kind: egress, name: "{service}-kafka", port: 9093}

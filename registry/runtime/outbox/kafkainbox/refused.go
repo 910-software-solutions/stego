@@ -36,12 +36,16 @@ const (
 	ReasonBadResourceKey   = "bad-resource-key"
 	ReasonDuplicateHeader  = "duplicate-header"
 	ReasonNotOutboxMessage = "not-outbox-message"
+	// ReasonEventIDReused is a record whose event ID the inbox holds with another kind or payload: the first stays.
+	ReasonEventIDReused = "event-id-reused"
+	// ReasonKindMismatch is a record whose payload names another entity or action than its kind.
+	ReasonKindMismatch = "kind-mismatch"
 )
 
 // reasons are the fixed reasons that the table takes.
 var reasons = []string{ReasonMissingHeader, ReasonBadEventID, ReasonBadKind, ReasonForeignKind, ReasonBadContentType,
 	ReasonTooLarge, ReasonNotJSON, ReasonBadTenant, ReasonKeyMismatch, ReasonUnknownTenant, ReasonRetiredTenant,
-	ReasonBadResourceKey, ReasonDuplicateHeader, ReasonNotOutboxMessage}
+	ReasonBadResourceKey, ReasonDuplicateHeader, ReasonNotOutboxMessage, ReasonEventIDReused, ReasonKindMismatch}
 
 // roleName is a role name that the migration text takes: a lower-case SQL name of at most 63 characters.
 var roleName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)

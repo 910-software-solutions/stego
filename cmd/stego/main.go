@@ -1320,7 +1320,7 @@ func writeRequirements(service string, components []compiler.ComponentNeeds) (co
 		for _, need := range component.Needs {
 			needs = append(needs, delivery.Need{Kind: need.Kind, Name: need.Name, Keys: need.Keys, Engine: need.Engine, Port: need.Port,
 				APIGroup: need.APIGroup, Resource: need.Resource, Verbs: need.Verbs, ResourceNames: need.ResourceNames, Level: need.Level,
-				Variable: need.Variable, Value: need.Value})
+				Variable: need.Variable, Value: need.Value, Access: need.Access})
 		}
 		settings := map[string]string{}
 		for key, value := range component.Settings {

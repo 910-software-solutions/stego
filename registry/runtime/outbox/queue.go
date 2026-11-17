@@ -960,14 +960,47 @@ func (q *Queue) Enqueue(ctx context.Context, tx *sql.Tx, messages ...Message) er
 	return err
 }
 
+// Received tells what Receive did with a message.
+type Received int
+
+const (
+	// ReceivedWritten is a message that Receive wrote.
+	ReceivedWritten Received = iota + 1
+	// ReceivedDuplicate is a message whose ID the queue holds with the same kind and payload: Receive wrote nothing.
+	ReceivedDuplicate
+	// ReceivedDiffers is a message whose ID the queue holds with another kind or payload: Receive wrote nothing, and
+	// the queue keeps the first message.
+	ReceivedDiffers
+)
+
 // Receive writes one message that came from outside the service, such as a consumed Kafka record, inside the
 // caller's transaction tx, as Enqueue does, but with ON CONFLICT (id) DO NOTHING: a message whose ID the queue holds
-// already is not written again, and Receive then returns false (ST-SUP-RP01-LC35). The caller derives the ID from the
-// identity of the outside message, so a redelivery of it is a no-op while the queue keeps the first row, done or not.
-// It sends the notice of a live event source only for a message that it wrote.
-func (q *Queue) Receive(ctx context.Context, tx *sql.Tx, message Message) (bool, error) {
+// already is not written again (ST-SUP-RP01-LC35). The caller derives the ID from the identity of the outside
+// message, so a redelivery of it is a no-op while the queue keeps the first row, done or not. Receive then compares
+// the kind and the payload of the row with the message, so the caller can refuse an identity used again for another
+// message. It sends the notice of a live event source only for a message that it wrote.
+func (q *Queue) Receive(ctx context.Context, tx *sql.Tx, message Message) (Received, error) {
 	n, err := q.enqueue(ctx, tx, true, []Message{message})
-	return n == 1, err
+	if err != nil {
+		return 0, err
+	}
+	if n == 1 {
+		return ReceivedWritten, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	var same bool
+	err = tx.QueryRowContext(ctx, `SELECT payload = $2::bytea AND kind = $3 FROM stego_outbox.messages WHERE id = $1`,
+		message.ID, []byte(message.Payload), message.Kind).Scan(&same)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ReceivedDiffers, nil
+	case err != nil:
+		return 0, canceled(ctx, err)
+	case same:
+		return ReceivedDuplicate, nil
+	}
+	return ReceivedDiffers, nil
 }
 
 // enqueue writes messages in tx and gives how many it wrote. With once, a message whose ID the queue holds is left.

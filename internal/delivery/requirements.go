@@ -79,6 +79,8 @@ type Need struct {
 	// issuer that the declaration fixes (ST-DLV-Q26 (A)).
 	Variable string
 	Value    string
+	// Access is the access read or write of a topic need (security review of PR #418, M3).
+	Access string
 }
 
 // ComponentNeeds is one component of the service with the needs it states and its settings as the declaration and
@@ -113,6 +115,9 @@ type Requirement struct {
 	// Variable and Value, ST-DLV-INV02).
 	Variable string `yaml:"variable,omitempty"`
 	Value    string `yaml:"value,omitempty"`
+	// Access is the access read or write that the service needs on a topic, so the platform grants it only that
+	// access (security review of PR #418, M3).
+	Access string `yaml:"access,omitempty"`
 	// Components are the components that state the need, by name.
 	Components []string `yaml:"components"`
 }
@@ -299,6 +304,9 @@ func variableKind(variable AcceptedVariable) string {
 // shape gives the shape fields of a requirement as one text, to compare two statements of one need.
 func shape(r Requirement) string {
 	var parts []string
+	if r.Access != "" {
+		parts = append(parts, "access "+r.Access)
+	}
 	if len(r.Keys) > 0 {
 		parts = append(parts, "keys "+strings.Join(r.Keys, ", "))
 	}
@@ -392,7 +400,7 @@ func requirementOf(service string, component ComponentNeeds, need Need) (Require
 	}
 	requirement := Requirement{Kind: kind, Name: name, Keys: slices.Sorted(slices.Values(need.Keys)), Engine: need.Engine, Port: need.Port,
 		APIGroup: need.APIGroup, Resource: need.Resource, Verbs: slices.Sorted(slices.Values(need.Verbs)), ResourceNames: resourceNames, Level: need.Level,
-		Variable: variable, Value: value, Components: []string{component.Component}}
+		Variable: variable, Value: value, Access: need.Access, Components: []string{component.Component}}
 	if field, reason := checkShape(requirement); field != "" {
 		return Requirement{}, fault(name, field, "%s", reason)
 	}
@@ -459,6 +467,12 @@ func checkShape(r Requirement) (string, string) {
 	}
 	if r.Variable != "" && (len(r.Variable) > 128 || !variableName.MatchString(r.Variable)) {
 		return "variable", fmt.Sprintf("the variable %q is not an environment variable name of capital letters, digits and '_'", r.Variable)
+	}
+	if r.Access != "" && r.Kind != Topic {
+		return "access", fmt.Sprintf("the %s need has no field access; only a topic names the access read or write", r.Kind)
+	}
+	if r.Access != "" && r.Access != "read" && r.Access != "write" {
+		return "access", fmt.Sprintf("the access %q of the topic is not read or write", r.Access)
 	}
 	if r.Value != "" && r.Kind != IdentityIssuer {
 		return "value", fmt.Sprintf("the %s need has no field value; only an identity issuer holds the issuer that the declaration fixes", r.Kind)

@@ -16,7 +16,7 @@ func TestQueueReceive(t *testing.T) {
 		q := newQueue(t, db, nil)
 		ctx := context.Background()
 		m := message("order-changes", "order:o-1")
-		receive := func(tenantID string, m Message) bool {
+		receive := func(tenantID string, m Message) Received {
 			t.Helper()
 			tn := testTenant(t, tenantID)
 			tx, err := tenant.Begin(ctx, db, tn, nil)
@@ -24,22 +24,25 @@ func TestQueueReceive(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = tx.Rollback() }()
-			written, err := q.Receive(ctx, tx, m)
+			got, err := q.Receive(ctx, tx, m)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := tenant.Commit(ctx, tx, tn); err != nil {
 				t.Fatal(err)
 			}
-			return written
+			return got
 		}
-		if !receive("tenant-a", m) {
-			t.Fatal("the first Receive wrote nothing")
+		if got := receive("tenant-a", m); got != ReceivedWritten {
+			t.Fatalf("the first Receive gave %v, want written", got)
+		}
+		if got := receive("tenant-a", m); got != ReceivedDuplicate {
+			t.Fatalf("a second Receive of the same message gave %v, want duplicate", got)
 		}
 		changed := m
 		changed.Payload = []byte(`{"version":2}`)
-		if receive("tenant-a", changed) {
-			t.Fatal("a second Receive of one ID wrote a message")
+		if got := receive("tenant-a", changed); got != ReceivedDiffers {
+			t.Fatalf("a Receive of one ID with another payload gave %v, want differs", got)
 		}
 		if n := count(t, db, "SELECT count(*) FROM stego_outbox.messages WHERE id = $1", m.ID); n != 1 {
 			t.Fatalf("%d rows of the message, want 1", n)

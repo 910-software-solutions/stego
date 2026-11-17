@@ -217,6 +217,9 @@ type Need struct {
 	// field Platform needs, ST-DLV-Q26 (A)).
 	Variable string `yaml:"variable,omitempty"`
 	Value    string `yaml:"value,omitempty"`
+	// Access is the direction of a topic need: read for a component that consumes the topic, write for one that
+	// produces to it, so the platform grants the service only that access (security review of PR #418, M3).
+	Access string `yaml:"access,omitempty"`
 }
 
 // Mixin adds components and slots to an archetype. A mixin with AliasOf is a deprecated alias: binding it binds
