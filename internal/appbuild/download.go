@@ -80,7 +80,7 @@ const RuntimeModule = "github.com/jsell-rh/stego/registry/runtime"
 // zip hash fixes it. A test holds this table equal to the archetypes'
 // pins; a moved pin changes it in the same change (ST-BLD-UC02-R05).
 var runtimePins = map[string]string{
-	"v0.131.0": "h1:bTcuMb6EDba3zRtXxs3fTCRGrRsvQgcDcQnRqlM2WRg=",
+	"v0.131.0": "h1:CSX5VIPI39o3RwOH9YmJwdc37n/A+AKKqTHj+SaI/nI=",
 }
 
 // RuntimePins gives a copy of the runtime pins that this binary trusts, by
