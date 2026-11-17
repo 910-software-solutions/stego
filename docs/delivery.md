@@ -27,7 +27,9 @@ platform supplies those values.
   The build stage copies `go.mod`, `go.sum`, the output folder, the `fills` folder when it holds a fill, and each
   folder of the project that a `replace` directive of `go.mod` names with no version (a local module). A local
   module out of the project folder is not copied, and the plan says so: move it into the project folder.
-  `stego apply` reads the file back and accepts only the exact text that it writes, so do not edit it.
+  `stego apply` checks the text that it writes against the offline shape before it writes the file, and the record
+  keeps the digest of the file: `stego apply` and `stego drift` refuse a hand edit, so do not edit it. Check out the
+  file with LF line ends: a CRLF checkout changes the digest.
 - `deploy/argocd/applicationset.yaml`, when the declaration has `delivery.argocd`: an Argo CD ApplicationSet. Its git
   files generator reads the platform's environment files. Each Application has one source: the overlay at the
   `destination.overlay_path` of its environment file, in the repository of the environment files.

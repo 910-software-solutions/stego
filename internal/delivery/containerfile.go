@@ -167,7 +167,9 @@ var keywords = []string{"FROM", "WORKDIR", "COPY", "RUN", "USER", "ENTRYPOINT"}
 // root and starts the executable by its absolute path in exec form. Then it holds the file to the exact bytes that
 // WriteContainerfile makes for the source folders that the build stage copies, so that no other text passes: more
 // text in the RUN, a COPY with --from after another flag, a parser directive such as # syntax= or # escape=, or a
-// heredoc (security review of PR #367, L1).
+// heredoc (security review of PR #367, L1). WriteContainerfile calls it on the text it makes, before apply writes the
+// file. A hand edit of the file on the disk is caught by the digest that the record keeps under project_files, as
+// for each file of the base.
 func LoadContainerfile(data []byte) (Containerfile, error) {
 	var file Containerfile
 	var stages [][]Instruction
