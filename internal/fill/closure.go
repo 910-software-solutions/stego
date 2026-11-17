@@ -495,7 +495,12 @@ func runList(projectDir, modFile, mode, runtimeProxy, overlay string, patterns [
 	cmd := exec.CommandContext(ctx, GoCommand, append(args, patterns...)...)
 	cmd.Dir = projectDir
 	// The service's build settings, not the host's, so go list sees the files and imports that the build sees.
-	cmd.Env = append(os.Environ(), "GOFLAGS=-mod="+mode)
+	flags := "-mod=" + mode
+	if slices.Contains(strings.Fields(os.Getenv("GOFLAGS")), "-modcacherw") {
+		// A module cache that the caller keeps writable stays so.
+		flags += " -modcacherw"
+	}
+	cmd.Env = append(os.Environ(), "GOFLAGS="+flags)
 	for key, value := range compiler.TargetBuildSettings() {
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
