@@ -954,6 +954,14 @@ SQLSTATE class in each 10 seconds, with the number of lines that it held back.
 - The Kafka inbox reads the retention and the cleanup policy of its topic
   again each minute, refuses a topic with no cleanup policy and a record whose
   key names another row than its payload.
+- A worker can create a row that has a reference: the authorization
+  migration gives the worker role the same grants as the runtime role on the
+  revocation floor and records. A refused statement of the authorization
+  handle keeps its SQLSTATE, so a missing grant parks a consumed message
+  (cause `not_granted`) and does not retry it without end.
+- A provision of a retired tenant ID answers 409 with the code
+  `tenant.retired`; a provision of an active ID keeps `tenant.provisioned`.
+  New error `tenant.ErrRetired` and code `command.ErrorCodeRetired`.
 
 ### Release notes for runtime v0.130.0
 
