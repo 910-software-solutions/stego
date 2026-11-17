@@ -14,7 +14,6 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
 	"github.com/jsell-rh/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
@@ -26,7 +25,6 @@ var orgActivityCreateCommand = mustCommand(command.NewCommand(command.CommandSpe
 	Writes:       []command.Declared{data.ActivityEntryEntity},
 	Probe:        noProbe,
 	ChangeEvents: []command.ChangeEvents{{Entity: "ActivityEntry", Created: "user-management.activity-entry.created", Updated: "user-management.activity-entry.updated", Deleted: "user-management.activity-entry.deleted"}},
-	Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.activity-entry.created"}}},
 }))
 
 // orgActivityListQuery is the query of a list of org-activity, on the list permission of ActivityEntry (ST-SUP-RP11-LC07).

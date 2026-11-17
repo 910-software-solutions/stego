@@ -14,7 +14,6 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
 	"github.com/jsell-rh/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
@@ -27,7 +26,7 @@ var orgUsersCreateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
 	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.after_create", "org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.created"}}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.after_create", "org-users.on_entity_changed"}}},
 }))
 
 // orgUsersReadQuery is the query of a read of org-users (ST-SUP-RP11).
@@ -39,7 +38,7 @@ var orgUsersUpdateCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
 	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.updated"}}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -50,7 +49,7 @@ var orgUsersDeleteCommand = mustCommand(command.NewCommand(command.CommandSpec[s
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
 	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.deleted"}}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -64,7 +63,7 @@ var orgUsersPatchCommand = mustCommand(command.NewCommand(command.CommandSpec[st
 	Writes:       []command.Declared{data.UserEntity, data.OrganizationEntity},
 	Probe:        noProbe,
 	ChangeEvents: []command.ChangeEvents{{Entity: "User", Created: "user-management.user.created", Updated: "user-management.user.updated", Deleted: "user-management.user.deleted"}, {Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
-	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}, {Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.user.updated"}}},
+	Destinations: []command.Destination{{Name: AfterSlotsDestination, Idempotent: true, MustLand: true, Effects: []string{"org-users.on_entity_changed"}}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "member", Token: "SELECT authz_token FROM public.users WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
