@@ -314,8 +314,12 @@ func checkQuery(ctx gen.Context, decl types.Query, declared map[string]types.Ent
 		q.member, q.memberGo = decl.ResourceMember, memberGoName(decl.ResourceMember)
 	}
 	for _, p := range pathParameter.FindAllStringSubmatch(route, -1) {
-		if p[1] != q.member || q.member == "" {
-			return nil, refuse("has the path parameter %s, which is not its resource member", p[0])
+		if q.member == "" {
+			// A query with no resource member is a list of the rows that the caller may read (walkthrough 5, U12).
+			return nil, refuse("has the path parameter %s, but it names no resource member, so it is a list query, which takes no path parameter: remove %s from the route, or name the resource member of a get query of one row", p[0], p[0])
+		}
+		if p[1] != q.member {
+			return nil, refuse("has the path parameter %s, which is not its resource member %s: the one path parameter of a get query is {%s}", p[0], q.member, q.member)
 		}
 		q.inPath = true
 	}
