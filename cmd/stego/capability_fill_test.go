@@ -201,7 +201,7 @@ func TestCapabilityFillQualification(t *testing.T) {
 		}
 
 		// A fill of the query slot that names a collection is refused, naming the field.
-		p.replace(t, "fills/open-orders/fill.yaml", "collection: \"\"", "collection: warehouses")
+		p.replace(t, "fills/open-orders/fill.yaml", "implements: query.query\n", "implements: query.query\ncollection: warehouses\n")
 		expectRefused(t, p, "open-orders", "collection: a fill of the slot query.query names no collection")
 	})
 }

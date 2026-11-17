@@ -81,7 +81,7 @@ func shippedRegistryInto(dir string) error {
 // working directory.
 func generatingProject(t *testing.T, declaration string) {
 	t.Helper()
-	t.Chdir(t.TempDir())
+	t.Chdir(serviceFolder(t))
 	t.Setenv("STEGO_REGISTRY", shippedRegistry(t))
 	t.Setenv("STEGO_MODULE", "example.com/generating")
 	t.Setenv("STEGO_GO_VERSION", "1.26.11")
