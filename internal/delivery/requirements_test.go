@@ -134,3 +134,45 @@ func TestNeedNamedLikeAVariable(t *testing.T) {
 		}
 	})
 }
+
+func TestRequirementsFileNames(t *testing.T) {
+	t.Run("ST-DLV-UC01-R01-T04 The platform requirements load only with a service name that is a DNS label and components and readers that are plain names", func(t *testing.T) {
+		component := ComponentNeeds{Component: "store", Needs: []Need{{Kind: "secret", Name: "{service}-database", Keys: []string{"url"}}},
+			Variables: []Variable{{Name: "STEGO_STORE_MODE", Type: "string", Required: true, Description: "The mode."}}}
+		files, err := WriteRequirements("orders", []ComponentNeeds{component})
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(files.Requirements)
+		if _, err := LoadRequirements(files.Requirements); err != nil {
+			t.Fatalf("the written platform requirements do not load: %v", err)
+		}
+		// A reader of runtime-configuration carries its group in brackets.
+		grouped := strings.Replace(text, "read_by:\n      - store", "read_by:\n      - runtime-configuration (Worker)", 1)
+		if _, err := LoadRequirements([]byte(grouped)); err != nil {
+			t.Fatalf("the reader runtime-configuration (Worker) is refused: %v", err)
+		}
+		for name, edit := range map[string][2]string{
+			"a service name with a capital":         {"service: orders", "service: Orders"},
+			"a service name with a terminal escape": {"service: orders", `service: "orders\e[2Kmeets"`},
+			"a component with a space":              {"components:\n      - store", "components:\n      - \"store meets\""},
+			"a component with a new line":           {"components:\n      - store", "components:\n      - \"store\\nmeets\""},
+			"a reader with a terminal escape":       {"read_by:\n      - store", "read_by:\n      - \"store\\e[1A\""},
+			"a reader of 129 letters":               {"read_by:\n      - store", "read_by:\n      - " + strings.Repeat("s", 129)},
+			"a reader group with a new line":        {"read_by:\n      - store", "read_by:\n      - \"store (x\\ny)\""},
+		} {
+			changed := strings.Replace(text, edit[0], edit[1], 1)
+			if changed == text {
+				t.Fatalf("%s: the edit does not apply to the platform requirements:\n%s", name, text)
+			}
+			_, err := LoadRequirements([]byte(changed))
+			if err == nil {
+				t.Errorf("%s: LoadRequirements accepts the file", name)
+				continue
+			}
+			if !strings.Contains(err.Error(), "not a DNS label") && !strings.Contains(err.Error(), "not a name of at most 128 letters") {
+				t.Errorf("%s: the refusal does not say what the name must be: %v", name, err)
+			}
+		}
+	})
+}

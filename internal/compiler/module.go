@@ -6,6 +6,7 @@ import (
 	"go/version"
 	"io"
 	"os"
+	"slices"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/parser"
@@ -200,4 +201,26 @@ func ProjectModuleSettings(projectDir, name, goVersion string) (string, string, 
 	}
 
 	return name, goVersion, nil
+}
+
+// localModuleReplacements gives each path that go.mod replaces a module with (a replace directive with no version),
+// as go.mod gives it, once and in order, so that the offline Containerfile copies the folders of the project that
+// the source snapshot of stego build holds (ST-DLV-INV07). Go reads the replace directives of the main module only.
+// Delivering decides which of them it copies.
+func localModuleReplacements(data []byte) ([]string, error) {
+	if data == nil {
+		return nil, nil
+	}
+	file, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, replace := range file.Replace {
+		if replace.New.Version == "" && !slices.Contains(paths, replace.New.Path) {
+			paths = append(paths, replace.New.Path)
+		}
+	}
+	slices.Sort(paths)
+	return paths, nil
 }
