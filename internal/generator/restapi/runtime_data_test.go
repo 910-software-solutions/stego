@@ -652,11 +652,29 @@ func TestNestedScope(t *testing.T) {
 			"a full path that names the ancestors out of order": func(c *gen.Context) {
 				c.Collections[len(c.Collections)-1].PathPrefix = "/racks/{rack_id}/folders/{folder_id}/cards/{card_id}/marks"
 			},
+			// The link of the entity CardRack and the link of Card by its field rack have one Go name, CardRackLink
+			// (security review of PR #409, L2).
+			"two links of one Go name": func(c *gen.Context) {
+				c.Entities = append(c.Entities, types.Entity{Name: "CardRack", Fields: []types.Field{{Name: "name", Type: types.FieldTypeString}},
+					EntityAuthorization: types.EntityAuthorization{ResourceType: "cardrack", Permissions: map[types.Operation]string{types.OpCreate: "public", types.OpRead: "view", types.OpList: "view"},
+						PublicReasons: map[types.Operation]string{types.OpCreate: "a new row has no resource to decide on before it exists"}}})
+				for i := range c.Entities {
+					if c.Entities[i].Name == "Card" {
+						c.Entities[i].Fields = append(c.Entities[i].Fields, types.Field{Name: "rack", Type: types.FieldTypeRef, To: "CardRack"})
+						c.Entities[i].Permissions[types.OpUpdate] = "edit"
+					}
+				}
+				c.Collections = append(c.Collections,
+					types.Collection{Name: "card-racks", Entity: "CardRack", Operations: []types.Operation{types.OpCreate, types.OpRead}},
+					types.Collection{Name: "cardrack-cards", Entity: "Card", Scope: map[string]string{"rack": "CardRack"}, Operations: []types.Operation{types.OpRead, types.OpUpdate}})
+			},
 		} {
 			c := crudContext()
 			change(&c)
 			if files, wiring, err := new(Generator).Generate(c); err == nil || files != nil || wiring != nil {
 				t.Errorf("%s: generation gave %d files and %v, want a refusal", name, len(files), err)
+			} else if name == "two links of one Go name" && !strings.Contains(err.Error(), "CardRackLink") {
+				t.Errorf("%s: generation refused with %v, want the refusal of the link name CardRackLink", name, err)
 			}
 		}
 	})

@@ -1212,10 +1212,12 @@ func (w *runtimeHandlerWriter) declarations() {
 			// The fill reads each ancestor of the path through the handle: the parent of a create or an upsert with the
 			// read permission of its entity, which the refs hold already, and every other ancestor through its link,
 			// with no decision (ST-SUP-RC20-OC24).
+			links := map[string]bool{}
 			for i, level := range c.chain {
 				name := "data." + level.entity + "Entity"
 				if i > 0 || !decidesParent(op) {
 					name = "data." + level.linkType + "Entity"
+					links[name] = true
 				}
 				if !slices.Contains(writes, name) {
 					writes = append(writes, name)
@@ -1224,12 +1226,16 @@ func (w *runtimeHandlerWriter) declarations() {
 			// An update, a patch and a delete check the parent of the row through its link too.
 			if len(c.chain) > 0 && !decidesParent(op) {
 				writes = append(writes, "data."+c.rowLink+"Entity")
+				links["data."+c.rowLink+"Entity"] = true
 			}
 			w.f("var %s = mustCommand(command.NewCommand(command.CommandSpec[struct{}]{\n\tName: %q,\n\tWrites: []command.Declared{%s},\n\tProbe: noProbe,\n", w.commandVar(op), string(op), strings.Join(writes, ", "))
-			// The handle stages the change event of each write of a written entity (ST-SUP-RC20-OC40, ST-SUP-RP10-LC36).
-			names := make([]string, len(writes))
-			for i, name := range writes {
-				names[i] = strings.TrimSuffix(strings.TrimPrefix(name, "data."), "Entity")
+			// The handle stages the change event of each write of a written entity (ST-SUP-RC20-OC40, ST-SUP-RP10-LC36). A
+			// link is read only and no write goes through it, so it has no change event.
+			var names []string
+			for _, name := range writes {
+				if !links[name] {
+					names = append(names, strings.TrimSuffix(strings.TrimPrefix(name, "data."), "Entity"))
+				}
 			}
 			w.f("%s", command.ChangeEventsSpec(w.ctx, names))
 			var destinations []string
@@ -2391,11 +2397,20 @@ func renderChainLinks(ctx gen.Context, collections []*runtimeCollection) ([]byte
 	// and the link of the entity of each scoped collection with an update, a patch or a delete by its scope field.
 	links := map[string][2]string{}
 	for _, c := range collections {
+		var pairs [][3]string
 		for _, level := range c.chain {
-			links[level.linkType] = [2]string{level.entity, level.link}
+			pairs = append(pairs, [3]string{level.linkType, level.entity, level.link})
 		}
 		if len(c.chain) > 0 && (c.ops[types.OpUpdate] || c.ops[types.OpPatch] || c.ops[types.OpDelete]) {
-			links[c.rowLink] = [2]string{c.entity.Name, c.scope}
+			pairs = append(pairs, [3]string{c.rowLink, c.entity.Name, c.scope})
+		}
+		// Two links of one Go name, such as the link CardRackLink of the entity CardRack and the link of Card by its
+		// field rack, would make one declaration hide the other: generation refuses them.
+		for _, p := range pairs {
+			if have, ok := links[p[0]]; ok && have != [2]string{p[1], p[2]} {
+				return nil, fmt.Errorf("rest-api: the link %s of the entity %s by %q has the name of the link of the entity %s by %q; rename one of the entities or fields", p[0], p[1], p[2], have[0], have[1])
+			}
+			links[p[0]] = [2]string{p[1], p[2]}
 		}
 	}
 	if len(links) == 0 {
