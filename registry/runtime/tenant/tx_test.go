@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestTenantTransaction(t *testing.T) {
@@ -172,6 +171,12 @@ func TestTenantTransaction(t *testing.T) {
 		if err := conn.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&before); err != nil {
 			t.Fatal(err)
 		}
+		// The connection holds a session advisory lock, which goes only when its server process ends, so the test
+		// can wait for the end of that process on the lock with no poll.
+		const gone = 7340032
+		if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", gone); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := conn.ExecContext(ctx, "SELECT set_config('app.tenant', 'tenant-a', false)"); err != nil {
 			t.Fatal(err)
 		}
@@ -198,15 +203,18 @@ func TestTenantTransaction(t *testing.T) {
 		if value.String != "" {
 			t.Fatalf("the open connection %d holds app.tenant = %q outside a transaction", after, value.String)
 		}
+		// The pool holds one connection, the one of the next transaction: the pool closed the connection that came
+		// back with app.tenant set. Only then does the test wait for its server process to end, so a connection that
+		// the pool keeps fails here and does not hang the wait below.
+		if open := db.Stats().OpenConnections; open != 1 {
+			t.Fatalf("the pool holds %d connections, want 1: the connection %d is not closed", open, before)
+		}
+		if _, err := env.db.ExecContext(ctx, "SELECT pg_advisory_lock($1)", gone); err != nil {
+			t.Fatal(err)
+		}
 		var alive int
-		for i := 0; i < 50; i++ {
-			if err := env.db.QueryRowContext(ctx, "SELECT count(*) FROM pg_stat_activity WHERE pid = $1", before).Scan(&alive); err != nil {
-				t.Fatal(err)
-			}
-			if alive == 0 {
-				break
-			}
-			time.Sleep(20 * time.Millisecond)
+		if err := env.db.QueryRowContext(ctx, "SELECT count(*) FROM pg_stat_activity WHERE pid = $1", before).Scan(&alive); err != nil {
+			t.Fatal(err)
 		}
 		if alive != 0 {
 			t.Fatalf("the connection %d is still open, want it closed", before)

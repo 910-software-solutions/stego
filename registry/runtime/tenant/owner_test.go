@@ -329,6 +329,10 @@ func TestOpened(t *testing.T) {
 // serverTLS makes a CA and a server certificate for localhost and 127.0.0.1, writes the server's certificate and key
 // into the data folder of the test server with COPY TO PROGRAM, and turns TLS on with ALTER SYSTEM and a reload. It turns TLS
 // off again when the test ends. It gives the pool of the CA.
+// reloadReads bounds the reads of serverTLS that wait for the reload by their count, not by a time, so a server that
+// does not reload fails the test and does not hang it.
+const reloadReads = 100000
+
 func serverTLS(t *testing.T, admin *sql.DB) *x509.CertPool {
 	t.Helper()
 	ctx := context.Background()
@@ -382,6 +386,18 @@ func serverTLS(t *testing.T, admin *sql.DB) *x509.CertPool {
 	}
 	write("stego_test_server.crt", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER})))
 	write("stego_test_server.key", string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})))
+	// The reload is asynchronous: the postmaster reads the files and then signals each server process, so a
+	// process whose pg_conf_load_time moves past its value before the reload shows that the postmaster, which starts
+	// each new connection, runs with TLS on. The test waits for that on one session, with no sleep.
+	watch, err := admin.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = watch.Close() }()
+	var loaded time.Time
+	if err := watch.QueryRowContext(ctx, "SELECT pg_catalog.pg_conf_load_time()").Scan(&loaded); err != nil {
+		t.Fatal(err)
+	}
 	for _, statement := range []string{"ALTER SYSTEM SET ssl_cert_file = 'stego_test_server.crt'",
 		"ALTER SYSTEM SET ssl_key_file = 'stego_test_server.key'", "ALTER SYSTEM SET ssl = on", "SELECT pg_reload_conf()"} {
 		if _, err := admin.ExecContext(ctx, statement); err != nil {
@@ -394,7 +410,18 @@ func serverTLS(t *testing.T, admin *sql.DB) *x509.CertPool {
 			_, _ = admin.ExecContext(context.Background(), statement)
 		}
 	})
-	time.Sleep(200 * time.Millisecond)
+	reloaded := false
+	for range reloadReads {
+		if err := watch.QueryRowContext(ctx, "SELECT pg_catalog.pg_conf_load_time() > $1", loaded).Scan(&reloaded); err != nil {
+			t.Fatal(err)
+		}
+		if reloaded {
+			break
+		}
+	}
+	if !reloaded {
+		t.Fatalf("the server did not load its configuration again after %d reads", reloadReads)
+	}
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 	return pool
