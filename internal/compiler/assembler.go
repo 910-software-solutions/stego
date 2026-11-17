@@ -362,7 +362,7 @@ func writeMainImports(buf *bytes.Buffer, input AssemblerInput, hasRoutes, hasDB,
 
 	// Failure output also applies to services with only a fallible constructor.
 	if fallible {
-		for _, pkg := range []string{"encoding/json", "errors", "io", "os", "time"} {
+		for _, pkg := range []string{"encoding/json", "errors", "io", "os", "syscall", "time"} {
 			extraStdlib[pkg] = true
 		}
 	}
