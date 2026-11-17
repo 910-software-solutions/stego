@@ -2,14 +2,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/jsell-rh/stego/internal/appbuild"
+	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/jsell-rh/stego/internal/fill"
+	"github.com/jsell-rh/stego/internal/parser"
 )
 
 func runBuild(args []string) error {
@@ -89,6 +94,7 @@ func runBuild(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	options.CheckSource = checkBuildFills
 	if _, err := appbuild.Build(ctx, options); err != nil {
 		return err
 	}
@@ -99,4 +105,50 @@ func runBuild(args []string) error {
 		return err
 	}
 	return printEvent(event)
+}
+
+// checkBuildFills refuses a build of the service in module, a copy of the source revision, when a fill that its
+// declaration binds is not qualified as the revision holds it: it has no evidence, its files changed after its
+// evidence, or a key that SIGNERS lists did not sign that evidence. Plan and apply stop at such a fill
+// (ST-GEN-INV10), and so does the build, so that no unqualified fill reaches a binary, also one written after an
+// apply that wrote its contract (decision on ST-EXT-Q30). The check reads only the revision: no registry and no
+// network, as the build runs offline; plan and apply check each contract digest, which only apply changes.
+func checkBuildFills(module string) error {
+	// A module that is no STEGO service, or that holds no fill, builds no fill code.
+	for _, name := range []string{"service.yaml", "fills"} {
+		if _, err := os.Lstat(filepath.Join(module, name)); errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+	}
+	service, err := parser.ParseServiceDeclaration(filepath.Join(module, "service.yaml"))
+	if err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	var fills []string
+	for _, binding := range service.Slots {
+		fills = append(fills, binding.Gate...)
+		fills = append(fills, binding.Chain...)
+		fills = append(fills, binding.FanOut...)
+	}
+	for _, c := range service.Commands {
+		fills = append(fills, c.Fill...)
+	}
+	for _, q := range service.Queries {
+		fills = append(fills, q.Fill...)
+	}
+	for _, w := range service.Workers {
+		fills = append(fills, w.Fill...)
+	}
+	moduleName, _, err := compiler.ProjectModuleSettings(module, os.Getenv("STEGO_MODULE"), os.Getenv("STEGO_GO_VERSION"))
+	if err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	faults, err := fill.RevisionFaults(module, fills, compiler.RevisionFillCheck(module, moduleName, service))
+	if err != nil {
+		return err
+	}
+	if len(faults) == 0 {
+		return nil
+	}
+	return fmt.Errorf("build: the source revision binds fills that are not qualified, so nothing is built:\n  %s", strings.Join(faults, "\n  "))
 }

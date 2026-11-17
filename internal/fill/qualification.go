@@ -56,24 +56,69 @@ func IsQualified(f *Fill, fillDigest, contractDigest string, signers Signers) bo
 // FitsBinding is the predicate of ST-EXT-SP02: the fill implements the bound
 // slot of the bound component and serves the bound collection.
 func FitsBinding(f *Fill, slot types.SlotRef, collection string) bool {
-	return misfit(f, []types.SlotRef{slot}, collection) == ""
+	return misfit(f, []types.SlotRef{slot}, compiler.FillBinding{Collection: collection}) == ""
 }
 
-// misfit names why a fill does not fit a binding of one of the slots for the
-// collection, or gives "" when it fits.
-func misfit(f *Fill, slots []types.SlotRef, collection string) string {
+// misfit names why a fill does not fit a binding of one of the slots, or
+// gives "" when it fits. The binding of the fill of a command, query or
+// worker names no collection, and the fill names none (decision on
+// ST-EXT-Q30).
+func misfit(f *Fill, slots []types.SlotRef, binding compiler.FillBinding) string {
+	serves := "for the collection " + binding.Collection
+	if binding.Owner != "" {
+		serves = "for the " + binding.Owner
+	}
 	ref, err := types.ParseSlotRef(f.Implements)
 	if err != nil || !slices.Contains(slots, ref) {
 		names := make([]string, len(slots))
 		for i, slot := range slots {
 			names[i] = slot.String()
 		}
-		return fmt.Sprintf("fill %q implements %s, not the bound slot %s, for the collection %s", f.Name, f.Implements, strings.Join(names, " or "), collection)
+		bound := strings.Join(names, " or ")
+		if len(slots) == 0 {
+			bound = binding.Slot
+		}
+		return fmt.Sprintf("fill %q implements %s, not the bound slot %s, %s", f.Name, f.Implements, bound, serves)
 	}
-	if f.Collection != collection {
-		return fmt.Sprintf("fill %q serves the collection %s, not the bound collection %s, at the slot %s", f.Name, f.Collection, collection, ref)
+	if f.Collection != binding.Collection {
+		if binding.Collection == "" {
+			return fmt.Sprintf("fill %q serves the collection %s, but a fill of the slot %s names no collection, %s", f.Name, f.Collection, ref, serves)
+		}
+		return fmt.Sprintf("fill %q serves the collection %s, not the bound collection %s, at the slot %s", f.Name, f.Collection, binding.Collection, ref)
 	}
 	return ""
+}
+
+// holdsCode tells whether the fill folder exists and holds Go code, or
+// cannot be read (holdsGoCode).
+func holdsCode(dir string) bool {
+	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	return holdsGoCode(dir)
+}
+
+// capabilitySlot tells whether the slot is the slot of a command, a query or
+// a worker, whose fill names no collection (decision on ST-EXT-Q30).
+func capabilitySlot(ref types.SlotRef) bool {
+	switch ref.String() {
+	case commandSlot, querySlot, workerSlot:
+		return true
+	}
+	return false
+}
+
+// nextSteps tells what to run so that a fill of the standing becomes
+// qualified: stego test, then stego fill sign; only stego fill sign; or, for a
+// key that SIGNERS does not list, what to list or sign with.
+func nextSteps(fill string, standing Standing, reasons []string) string {
+	if standing == Unsigned && slices.Contains(reasons, "SIGNERS does not list its key") {
+		return fmt.Sprintf("list the signer's public key in the project's SIGNERS file, or run stego fill sign %s with a key that SIGNERS lists", fill)
+	}
+	if standing == Unsigned {
+		return fmt.Sprintf("run stego fill sign %s", fill)
+	}
+	return fmt.Sprintf("run stego test, then stego fill sign %s", fill)
 }
 
 // assess gives the standing of a fill and, when it is not qualified, why.
@@ -184,6 +229,84 @@ func QualificationFaults(check compiler.FillCheck) ([]compiler.FillFault, error)
 	return append(bound, faults...), nil
 }
 
+// RevisionFaults gives a fault for each of the fills, by name, in the
+// project folder dir that is not qualified as the folder holds it: its
+// manifest cannot be read, it has no test file or no evidence, its files
+// changed after its evidence, or a key that SIGNERS lists did not sign that
+// evidence. Each fault names the fill and what to run. It reads no registry
+// and no module, so stego build can run it offline on a copy of the source
+// revision. The contract digest of the evidence of a fill of a command, query
+// or worker must be the digest of the contract that the folder holds
+// (capability, from compiler.RevisionFillCheck); the contract digest of
+// another fill is taken as it is, since its contract is in the registry
+// (ST-GEN-INV10).
+func RevisionFaults(dir string, fills []string, capability compiler.FillCheck) ([]string, error) {
+	signers, err := ReadSigners(dir)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var faults []string
+	for _, name := range fills {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		folder := filepath.Join(dir, "fills", name)
+		if _, err := fillPackageFolder(name); err != nil {
+			faults = append(faults, fmt.Sprintf("fill %q: %v", name, err))
+			continue
+		}
+		f, err := ParseFill(filepath.Join(folder, ManifestFile))
+		if err != nil {
+			faults = append(faults, fmt.Sprintf("fill %q is untested: %v; %s", name, err, nextSteps(name, Untested, nil)))
+			continue
+		}
+		files, err := FileDigests(folder)
+		if err != nil {
+			faults = append(faults, fmt.Sprintf("fill %q is untested: %v; %s", name, err, nextSteps(name, Untested, nil)))
+			continue
+		}
+		current := Current{FillDigest: combine(files), Files: files}
+		for file := range files {
+			if strings.HasSuffix(file, "_test.go") {
+				current.HasTests = true
+			}
+		}
+		if f.Evidence != nil {
+			current.ContractDigest = f.Evidence.ContractDigest
+			if ref, err := types.ParseSlotRef(f.Implements); err == nil && capabilitySlot(ref) {
+				digest, err := CapabilityContractDigest(capability, name, ref)
+				if err != nil {
+					faults = append(faults, fmt.Sprintf("fill %q: its contract cannot be read: %v", name, err))
+					continue
+				}
+				if digest != f.Evidence.ContractDigest {
+					faults = append(faults, fmt.Sprintf("fill %q is stale: the fill was signed against an older contract than the revision holds; %s", name, nextSteps(name, Stale, nil)))
+					continue
+				}
+			}
+		}
+		if standing, reason := assess(f, current, signers); standing != Qualified {
+			var reasons []string
+			if reason != "" {
+				reasons = append(reasons, reason)
+			}
+			faults = append(faults, fmt.Sprintf("fill %q is %s: %s; %s", name, standing, strings.Join(reasons, "; "), nextSteps(name, standing, reasons)))
+		}
+	}
+	return faults, nil
+}
+
+// fillPackageFolder refuses a fill name that is not one folder name under
+// fills, such as a path.
+func fillPackageFolder(name string) (string, error) {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("%q is not the name of a fill folder", name)
+	}
+	return name, nil
+}
+
 // bindingFaults gives a fault for each binding of a fill that does not fit that binding or is not qualified.
 func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 	// The rule faults reach the compiler through declaredFillFaults, so the
@@ -216,7 +339,7 @@ func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 		}
 		// A manifest that cannot be read gives the untested fault, with the reason.
 		if f != nil {
-			misfits[i] = misfit(f, slotsNamed(check, binding.Slot), binding.Collection)
+			misfits[i] = misfit(f, slotsNamed(check, binding.Slot), binding)
 			misfitReasons[misfits[i]] = true
 		}
 	}
@@ -227,6 +350,16 @@ func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 			continue
 		}
 		at := fmt.Sprintf("at %s (%s.%s)", binding.Path, binding.Collection, binding.Slot)
+		if binding.Owner != "" {
+			at = fmt.Sprintf("at %s (the fill of the %s)", binding.Path, binding.Owner)
+		}
+		if binding.Owner != "" && !holdsCode(filepath.Join(check.ProjectDir, "fills", binding.Fill)) {
+			// A fill of a command, query or worker that holds no Go code yet cannot be built into the service, so
+			// it does not stop generation, which writes the contract that the fill is written against; apply then
+			// names the fill to write (CodelessFills). The check of the declaration names a fill folder that does
+			// not exist.
+			continue
+		}
 		if row.Standing != Qualified {
 			var reasons []string
 			for _, reason := range row.Reasons {
@@ -235,7 +368,7 @@ func bindingFaults(check compiler.FillCheck) ([]compiler.FillFault, error) {
 				}
 			}
 			faults = append(faults, compiler.FillFault{Rule: "fill-qualified", Path: binding.Path, Found: binding.Fill,
-				Message: fmt.Sprintf("fill %q is %s %s: %s", binding.Fill, row.Standing, at, strings.Join(reasons, "; "))})
+				Message: fmt.Sprintf("fill %q is %s %s: %s; %s", binding.Fill, row.Standing, at, strings.Join(reasons, "; "), nextSteps(binding.Fill, row.Standing, row.Reasons))})
 		}
 		if misfits[i] != "" {
 			faults = append(faults, compiler.FillFault{Rule: "fill-fits-binding", Path: binding.Path, Found: binding.Fill,
@@ -281,14 +414,18 @@ func projectQualification(check compiler.FillCheck, rules bool) ([]Qualification
 			continue
 		}
 		for _, binding := range bindings[name] {
-			if reason := misfit(f, slotsNamed(check, binding.Slot), binding.Collection); reason != "" {
+			if reason := misfit(f, slotsNamed(check, binding.Slot), binding); reason != "" {
 				row.Fits = false
 				row.Reasons = append(row.Reasons, reason)
 			}
 		}
 		current, err := CurrentState(dir, f, check)
 		if err != nil {
-			return nil, err
+			// A fill whose files or contract cannot be read is not qualified, and the fault names it.
+			row.Standing = Untested
+			row.Reasons = append(row.Reasons, fmt.Sprintf("fill %q: %v", name, err))
+			rows = append(rows, row)
+			continue
 		}
 		standing, reason := assess(f, current, signers)
 		row.Standing = standing
@@ -344,6 +481,12 @@ func CurrentState(dir string, f *Fill, check compiler.FillCheck) (Current, error
 		return Current{}, fmt.Errorf("fill %q: implements: %s is not a slot of the active component set", f.Name, f.Implements)
 	}
 	current.Contract = ref
+	if capabilitySlot(ref) {
+		if current.ContractDigest, err = CapabilityContractDigest(check, f.Name, ref); err != nil {
+			return Current{}, fmt.Errorf("fill %q: %w", f.Name, err)
+		}
+		return current, nil
+	}
 	current.ContractDigest, err = ContractDigest(check.Contracts, slot.Contract)
 	if err != nil {
 		return Current{}, err
@@ -363,8 +506,10 @@ func findSlot(check compiler.FillCheck, ref types.SlotRef) (compiler.FillSlot, b
 
 // ReadManifest reads a fill manifest and checks it against the declaration
 // and the active registry (ST-EXT-INV01): it names exactly one slot of a
-// component of the active set, and one collection of the declaration. A
-// refusal names the fill and the field.
+// component of the active set and, for a slot of a collection, one collection
+// of the declaration. A fill of the command, query or worker slot names no
+// collection, as its binding is the command, query or worker that names it
+// (decision on ST-EXT-Q30). A refusal names the fill and the field.
 func ReadManifest(path string, check compiler.FillCheck) (*Fill, error) {
 	name := filepath.Base(filepath.Dir(path))
 	if err := checkOneValue(path, name); err != nil {
@@ -386,6 +531,12 @@ func ReadManifest(path string, check compiler.FillCheck) (*Fill, error) {
 	}
 	if _, ok := findSlot(check, ref); !ok {
 		return nil, fmt.Errorf("fill %q: implements: %s is not a slot of a component of the active set", name, ref)
+	}
+	if capabilitySlot(ref) {
+		if f.Collection != "" {
+			return nil, fmt.Errorf("fill %q: collection: a fill of the slot %s names no collection, as its binding is the %s that names it; remove collection: %s", name, ref, ref.Component, f.Collection)
+		}
+		return f, nil
 	}
 	if f.Collection == "" {
 		return nil, fmt.Errorf("fill %q: collection: missing required field", name)

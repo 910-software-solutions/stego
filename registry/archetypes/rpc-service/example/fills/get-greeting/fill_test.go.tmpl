@@ -1,0 +1,13 @@
+package getgreeting
+
+import (
+	"testing"
+
+	"{{module}}/out/queries"
+)
+
+// TestFillMatchesContract holds that Fill has the type of the query contract. Add tests of what the fill reads here;
+// stego test runs them before you sign the fill with stego fill sign get-greeting.
+func TestFillMatchesContract(t *testing.T) {
+	var _ queries.GetGreetingFill = Fill
+}

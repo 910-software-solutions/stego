@@ -229,11 +229,18 @@ type FillSlot struct {
 // FillBinding is one fill that a slot binding names, with the slot and the
 // collection of the binding, and where the declaration names the fill, such
 // as slots[1].gate[0].
+//
+// The fill of a command, a query or a worker names no collection: its binding is the one command, query or worker
+// that names it (decision on ST-EXT-Q30). Such a binding has the slot command, query or worker, no collection and the
+// owner, such as command place-order, with the Go name that generation gives the command, query or worker in its
+// contract package, such as PlaceOrder.
 type FillBinding struct {
 	Fill       string
 	Slot       string
 	Collection string
 	Path       string
+	Owner      string
+	GoName     string
 }
 
 // FillFault is one fault of a bound fill at one binding: the rule it breaks,
@@ -256,6 +263,8 @@ type FillContracts interface {
 // FillCheck is what a check of the fills needs from the declaration and the
 // active registry: each active slot with its contract, each fill that a slot
 // binding names, the declared collections, and the registry's contracts.
+// Its slots and bindings hold the command, query and worker slots and the binding of the fill of each command,
+// query and worker, so that these fills are qualified as every fill is (decision on ST-EXT-Q30).
 type FillCheck struct {
 	ProjectDir  string
 	Slots       []FillSlot
@@ -288,10 +297,47 @@ type FillCheck struct {
 	// the fill rules as every fill is (ST-SUP-RC35-OC03).
 	WorkerFills    []QueryFill
 	WorkerContract string
+	// Planned maps the absolute path of each generated Go file and go.mod that apply would write or change to its
+	// planned content, so that stego test lists and tests the fill of a command, query or worker against the
+	// contract that apply writes, also before that apply (go -overlay); nil when the fills are listed against the
+	// project as it is.
+	Planned map[string][]byte
+	// CapabilityContract gives the generated Go files of the contract package of the command, query or worker
+	// component, by their paths in the project, as apply writes them: the contract that the fill of each of its
+	// commands, queries or workers imports, whose digest is the contract digest of that fill (ST-EXT-DS01). Nil when
+	// no declaration is read.
+	CapabilityContract func(component string) (map[string][]byte, error)
 	// ContractRuntime gives, by the import path of a command, query or worker slot contract, the packages of the
 	// runtime library that its generator can write into that contract, which a fill of the slot may import
 	// (ST-EXT-INV05). The generator gives them, so the fill check does not depend on a generated out/ folder.
 	ContractRuntime map[string][]string
+}
+
+// PlannedGoFiles gives each generated Go file and go.mod of the plan whose content differs from the file in the
+// project, or that the project does not hold, by its absolute path, with its planned content. A fill of a command,
+// query or worker is tested against them (FillCheck.Planned).
+func PlannedGoFiles(plan *Plan, projectDir, outDir string) (map[string][]byte, error) {
+	relative, err := outputRelative(projectDir, outDir)
+	if err != nil {
+		return nil, err
+	}
+	planned := map[string][]byte{}
+	for _, file := range plan.GeneratedFiles {
+		name := projectFilePath(relative, file.Path)
+		if !strings.HasSuffix(name, ".go") && filepath.ToSlash(name) != "go.mod" {
+			continue
+		}
+		if err := gen.ValidatePath(filepath.ToSlash(name)); err != nil {
+			return nil, err
+		}
+		data := file.Bytes()
+		path := filepath.Join(projectDir, filepath.FromSlash(name))
+		if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
+			continue
+		}
+		planned[path] = data
+	}
+	return planned, nil
 }
 
 // TargetBuildSettings are the Go settings of the platform that a generated service is built for: Linux on amd64 at

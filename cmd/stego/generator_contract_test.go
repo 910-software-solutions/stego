@@ -158,6 +158,9 @@ func TestGenerationIgnoresMapOrder(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// The test holds generation to the map order; the fixture's fills are not qualified, and the
+				// qualification of fills is proved elsewhere (ST-GEN-INV10).
+				input.QualifyFills = nil
 				plan, err := compiler.Reconcile(input)
 				if err != nil {
 					t.Fatal(err)

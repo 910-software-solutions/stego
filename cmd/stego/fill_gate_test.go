@@ -721,10 +721,8 @@ func TestFirstGenerationRecheck(t *testing.T) {
 func TestCapabilityFillFolderFailsClosed(t *testing.T) {
 	t.Run("ST-EXT-UC01-R03-T14 Validate and deps refuse a command fill whose folder is a symbolic link or cannot be read", func(t *testing.T) {
 		walkthroughProject(t)
-		for name, f := range walkthroughFills {
-			writeProjectFile(t, "fills/"+name+"/fill.yaml", "kind: fill\nname: "+name+"\nimplements: "+f.implements+"\n")
-			writeProjectFile(t, "fills/"+name+"/fill.go", f.source)
-		}
+		writeWalkthroughFills(t)
+		qualifyInProcess(t)
 		mustRun(t, runApply)
 		// The fill folder place-order is a link to a folder outside fills that holds code which imports os/exec.
 		outside := filepath.Join(t.TempDir(), "evil")

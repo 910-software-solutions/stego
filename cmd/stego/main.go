@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -675,7 +676,7 @@ func codelessFills(input compiler.ReconcilerInput) error {
 	for i, fault := range faults {
 		lines[i] = "  [" + fault.Rule + "] " + fault.Path + ": " + fault.Message
 	}
-	return fmt.Errorf("apply wrote the generated code, but the service does not build until these fills hold their code:\n%s", strings.Join(lines, "\n"))
+	return fmt.Errorf("apply wrote the generated code, but the service does not build until these fills hold their code; write each fill, then run stego test, stego fill sign and stego apply:\n%s", strings.Join(lines, "\n"))
 }
 
 // runValidate implements `stego validate`.
@@ -780,6 +781,9 @@ func runTest(args []string) error {
 		return err
 	}
 	testArgs := fs.Args()
+	if err := checkTestArgs(testArgs); err != nil {
+		return err
+	}
 	input, err := buildReconcilerInput()
 	if err != nil {
 		return err
@@ -788,17 +792,52 @@ func runTest(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The fills are tested against the generated code that apply writes, so that the fill of a command, query or
+	// worker is tested before the apply that writes its contract, which apply writes only for a qualified fill
+	// (ST-GEN-INV10, decision on ST-EXT-Q30). Go reads the planned files through -overlay; the project's files do
+	// not change.
+	planned := input
+	planned.QualifyFills = nil
+	if plan, err := compiler.Reconcile(planned); err != nil {
+		fmt.Printf("The fills are tested against the generated code as it is, because the plan cannot be made: %v\n", err)
+	} else if check.Planned, err = compiler.PlannedGoFiles(plan, input.ProjectDir, input.OutDir); err != nil {
+		return err
+	}
+	overlayArgs, testEnv, removeStage, err := fill.GoTestSetup(check)
+	if err != nil {
+		return err
+	}
+	defer removeStage()
+	if newFolders(check.Planned) {
+		// go vet reads each package from its folder, which a package that apply has not written yet lacks.
+		fmt.Println("The fills are tested without go vet, because apply has not written each package of their contracts yet.")
+		overlayArgs = append(overlayArgs, "-vet=off")
+	}
 	run := func(dir string) error {
 		relative, err := filepath.Rel(input.ProjectDir, dir)
 		if err != nil {
 			return err
 		}
-		goArgs := append([]string{"test", "./" + filepath.ToSlash(relative) + "/..."}, testArgs...)
+		goArgs := append(append([]string{"test", "-json"}, overlayArgs...), "./"+filepath.ToSlash(relative)+"/...")
+		goArgs = append(goArgs, testArgs...)
 		cmd := exec.Command("go", goArgs...)
 		cmd.Dir = input.ProjectDir
-		cmd.Stdout = os.Stdout
+		cmd.Env = append(os.Environ(), testEnv...)
 		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		// The report of go test, not only its exit status, decides: a run in which no test of the fill passed
+		// records no evidence (fill.ReadTestReport).
+		report := fill.ReadTestReport(stdout, os.Stdout)
+		if err := cmd.Wait(); err != nil {
+			return err
+		}
+		return report
 	}
 	results, err := fill.RecordEvidence(check, run, buildidentity.Current(), time.Now)
 	if err != nil {
@@ -822,6 +861,43 @@ func runTest(args []string) error {
 		return fmt.Errorf("the tests of %d fill(s) failed: %s", len(failed), strings.Join(failed, ", "))
 	}
 	return nil
+}
+
+// testFlags are the go test flags that stego test passes on: they change how the tests of a fill run and report, not
+// which tests run or which files they build, so the evidence still covers every test of the fill's files.
+var testFlags = map[string]bool{"v": false, "race": false, "count": true, "timeout": true, "failfast": false}
+
+// checkTestArgs refuses each argument of stego test that is not a flag of testFlags, such as -run, -skip, -short,
+// -tags or -overlay, which change which tests run or which files they build, and names it (decision on ST-EXT-Q30).
+func checkTestArgs(args []string) error {
+	for i := 0; i < len(args); i++ {
+		name, value, valued := strings.Cut(strings.TrimLeft(args[i], "-"), "=")
+		takesValue, known := testFlags[name]
+		if !strings.HasPrefix(args[i], "-") || !known {
+			return fmt.Errorf("stego test does not pass %q to go test: evidence must cover every test of the fill as its files are; only -v, -race, -count, -timeout and -failfast are passed", args[i])
+		}
+		if takesValue && !valued && i+1 < len(args) {
+			i++
+			value = args[i]
+		}
+		if name == "count" {
+			// A count below 1 runs no test, so go test passes with nothing tested.
+			if n, err := strconv.Atoi(value); err != nil || n < 1 {
+				return fmt.Errorf("stego test does not pass -count=%s to go test: the count must be a whole number of 1 or more, so each test runs", value)
+			}
+		}
+	}
+	return nil
+}
+
+// newFolders tells whether a planned file goes into a folder that the project does not hold yet.
+func newFolders(planned map[string][]byte) bool {
+	for name := range planned {
+		if _, err := os.Stat(filepath.Dir(name)); err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // recheckFills holds the fills to the fill rules again after the project's first generation, now that go.mod exists
@@ -1131,7 +1207,11 @@ func buildReconcilerInput() (compiler.ReconcilerInput, error) {
 	if err != nil {
 		return compiler.ReconcilerInput{}, fmt.Errorf("getting working directory: %w", err)
 	}
+	return reconcilerInputAt(projectDir)
+}
 
+// reconcilerInputAt creates a ReconcilerInput for the project in projectDir from the environment.
+func reconcilerInputAt(projectDir string) (compiler.ReconcilerInput, error) {
 	result, err := registry.ResolveRegistry(registry.ResolveOptions{ProjectDir: projectDir})
 	if err != nil {
 		return compiler.ReconcilerInput{}, err

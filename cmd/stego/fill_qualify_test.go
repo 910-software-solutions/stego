@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -183,6 +184,12 @@ type fillProject struct {
 // gives what it printed on standard output and standard error.
 func (p *fillProject) stego(t *testing.T, key string, args ...string) (string, string, error) {
 	t.Helper()
+	return p.stegoWith(t, key, nil, args...)
+}
+
+// stegoWith runs the stego binary as stego does, with the environment entries extra added last.
+func (p *fillProject) stegoWith(t *testing.T, key string, extra []string, args ...string) (string, string, error) {
+	t.Helper()
 	command := exec.Command(stegoBinary(t), args...)
 	command.Dir = p.dir
 	home, ok := p.keys.homes[key]
@@ -193,6 +200,7 @@ func (p *fillProject) stego(t *testing.T, key string, args ...string) (string, s
 	if p.registry != "" {
 		command.Env = append(command.Env, "STEGO_REGISTRY="+p.registry)
 	}
+	command.Env = append(command.Env, extra...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	err := command.Run()
@@ -300,6 +308,10 @@ func (p *fillProject) tree(t *testing.T, folders ...string) map[string]string {
 	for _, folder := range folders {
 		root := p.path(folder)
 		err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, err error) error {
+			if name == root && errors.Is(err, fs.ErrNotExist) {
+				// A folder that the project does not hold yet holds no file.
+				return nil
+			}
 			if err != nil || entry.IsDir() {
 				return err
 			}

@@ -40,6 +40,9 @@ type Options struct {
 	Work        string
 	Output      string
 	ModuleCache string
+	// CheckSource checks the module folder of a copy of the source revision before anything is built, such as that
+	// each fill that the declaration binds is qualified (ST-GEN-INV10); an error stops the build. Nil checks nothing.
+	CheckSource func(module string) error
 }
 
 type Artifact struct {
@@ -496,6 +499,9 @@ func Build(ctx context.Context, options Options) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := checkSource(ctx, o); err != nil {
+		return nil, err
+	}
 	sdk := filepath.Dir(filepath.Dir(o.Go))
 	toolchain, err := checkSDK(sdk)
 	if err != nil {
@@ -668,6 +674,40 @@ func Build(ctx context.Context, options Options) (*Record, error) {
 // saveResult writes the executable, build.json and SHA256SUMS into the new
 // result folder. A failure removes the folder, so a partial result is never
 // left as a result (ST-BLD-INV15).
+// checkSource extracts the source revision into a new private folder, as each build round does, and gives its module
+// folder to o.CheckSource; the folder goes when the check ends.
+func checkSource(ctx context.Context, o Options) error {
+	if o.CheckSource == nil {
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "stego-build-check-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	snapshot := filepath.Join(dir, "source")
+	if err := os.Mkdir(snapshot, 0o700); err != nil {
+		return err
+	}
+	env := []string{"PATH=/usr/bin:/bin", "HOME=" + dir, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "LC_ALL=C"}
+	archive, err := os.OpenFile(filepath.Join(dir, "source.tar"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	err = command(ctx, o.Source, env, archive, maxBytes+(32<<20), "/usr/bin/git", "archive", "--format=tar", o.Revision)
+	if err == nil {
+		_, err = archive.Seek(0, io.SeekStart)
+	}
+	if err == nil {
+		err = unpack(archive, snapshot)
+	}
+	if err != nil {
+		return fmt.Errorf("build: the source revision cannot be checked: %w", err)
+	}
+	return o.CheckSource(filepath.Join(snapshot, filepath.FromSlash(o.Module)))
+}
+
 func saveResult(ctx context.Context, output, firstBinary string, result *Record) (err error) {
 	if err := os.Mkdir(output, 0700); err != nil {
 		return err
