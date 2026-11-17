@@ -69,7 +69,9 @@ type service struct {
 	key   *authntest.Key
 	base  string
 	shop  shop.ShopClient
-	log   *bytes.Buffer
+	// conn is the connection of shop, on which a check calls a method that no proto file declares.
+	conn *grpc.ClientConn
+	log  *bytes.Buffer
 }
 
 func must(t testing.TB, err error) {
@@ -291,6 +293,7 @@ func start(t *testing.T) *service {
 	must(t, err)
 	t.Cleanup(func() { client.Close() })
 	s.shop = shop.NewShopClient(client)
+	s.conn = client
 	return s
 }
 
@@ -606,15 +609,17 @@ func TestGRPC(t *testing.T) {
 		if a, b := deniedGRPCRows, s.newReads(mark, deniedHTTPRead); strings.Join(a, ";") != strings.Join(b, ";") {
 			t.Fatalf("the audit rows of the denied query over gRPC are %v and over HTTP %v, want the same rows", a, b)
 		}
-		// No token is Unauthenticated, and a method that no declaration names is Unimplemented.
+		// No token is Unauthenticated. A method that no command or query names is refused by checking
+		// (ST-DECL-INV75), so the proto file of the service holds none; a call of a method that the server does not
+		// register, such as shop.v1.Shop/CancelOrder, is still Unimplemented and runs no fill.
 		ctx, cancel = s.rpc(nil, "", "")
 		_, err = s.shop.GetOrderSummary(ctx, &shop.GetOrderSummaryRequest{OrderId: mine})
 		cancel()
 		wantCode(t, err, codes.Unauthenticated, "the query with no token")
 		ctx, cancel = s.rpc(&owner, "", "")
-		_, err = s.shop.CancelOrder(ctx, &shop.GetOrderSummaryRequest{OrderId: mine})
+		err = s.conn.Invoke(ctx, "/shop.v1.Shop/CancelOrder", &shop.GetOrderSummaryRequest{OrderId: mine}, &shop.OrderSummary{})
 		cancel()
-		wantCode(t, err, codes.Unimplemented, "the method that no declaration names")
+		wantCode(t, err, codes.Unimplemented, "the method that the server does not register")
 	})
 
 	t.Run("ST-SUP-RC33-OC08-T01 A stream query gets a gRPC stream and no HTTP route", func(t *testing.T) {

@@ -12,8 +12,6 @@ service Shop {
   rpc GetOrderSummary(GetOrderSummaryRequest) returns (OrderSummary);
   // WatchOrders is the stream query watch-orders.
   rpc WatchOrders(WatchOrdersRequest) returns (stream OrderSummary);
-  // CancelOrder is a method that no command or query names.
-  rpc CancelOrder(GetOrderSummaryRequest) returns (OrderSummary);
 }
 
 // GetOrderSummaryRequest names the order of get-order-summary.

@@ -46,3 +46,14 @@ func databaseOpenExpression(input AssemblerInput, imports importResult) string {
 	}
 	return ""
 }
+
+// databaseOpenerComponent gives the name of the component that supplies the database opener, or empty when none
+// does; the stage of a refused database setting names it.
+func databaseOpenerComponent(input AssemblerInput) string {
+	for _, component := range input.Wirings {
+		if component.Wiring != nil && component.Wiring.DatabaseOpener != nil {
+			return component.Name
+		}
+	}
+	return ""
+}
