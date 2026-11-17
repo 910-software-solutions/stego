@@ -897,7 +897,7 @@ cause classes are:
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
 
-### Release notes for runtime v0.131.0
+### Release notes for runtime v0.130.0
 
 - New package `outbox/kafkainbox`: the Kafka inbox of a subscription
   (ST-SUP-RP01-LC35 to ST-SUP-RP01-LC38). New functions
