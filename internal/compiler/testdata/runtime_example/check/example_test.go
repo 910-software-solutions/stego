@@ -395,8 +395,8 @@ func TestExample(t *testing.T) {
 			t.Errorf("%d user rows of the organization and the tenant with the jsonb metadata, want 1", n)
 		}
 		s.relate(owner, "member", userID, "owner")
-		// The edit of a member needs the view of its organization too, through the relation that the relay writes
-		// after the commit (ST-SUP-RC20-OC24, ST-SUP-Q156): the patch waits for it.
+		// The view and the edit of a member need the view of its organization too, through the relation that the relay
+		// writes after the commit (ST-SUP-RC20-OC24, ST-SUP-Q156): the patch waits for it.
 		memberID, err := authz.ResourceID(owner.tenant, userID)
 		must(t, err)
 		s.awaitAllowed(owner, "member", memberID, "edit")
@@ -405,6 +405,25 @@ func TestExample(t *testing.T) {
 		}
 		if items := s.send(owner, http.MethodGet, "/users?search="+url.QueryEscape("display_name = 'Cee'"), "").items(t); len(items) != 1 {
 			t.Errorf("the search of all users gave %d users, want 1", len(items))
+		}
+		// An owner of the member who may not view its organization gets 404 for each route of the member: the routes
+		// decide only on the member (ST-SUP-Q156), and the view and the edit of member are intersections with
+		// organization->view, which keep the access of an earlier STEGO (security review of PR #409, M2).
+		memberOwner := s.as("u-member-owner", "t-acme", "member")
+		s.relate(memberOwner, "member", userID, "owner")
+		item := "/organizations/" + org + "/users/" + userID
+		for _, w := range []struct{ method, body string }{
+			{http.MethodGet, ""},
+			{http.MethodPut, `{"email":"c@acme.test","display_name":"Owned","role":"viewer"}`},
+			{http.MethodPatch, `{"display_name":"Owned"}`},
+			{http.MethodDelete, ""},
+		} {
+			if r := s.send(memberOwner, w.method, item, w.body); r.status != http.StatusNotFound {
+				t.Errorf("the %s of the member by its owner with no view of the organization answered %d %s, want 404", w.method, r.status, r.body)
+			}
+		}
+		if n := s.count(`SELECT count(*) FROM public.users WHERE id = $1::uuid AND display_name = 'Cee'`, userID); n != 1 {
+			t.Errorf("the member changed after the refused writes of its owner with no view of the organization")
 		}
 		// The upsert of org-settings creates the row of its key and then updates it.
 		first := s.send(owner, http.MethodPut, "/organizations/"+org+"/orgsettings", `{"key":"theme","value":{"dark":true},"generation":1}`)
