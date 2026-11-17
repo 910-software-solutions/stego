@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"bytes"
 	"fmt"
 	"maps"
 	"path"
@@ -41,10 +42,12 @@ var buildPaths = map[string]string{
 
 // containerHeader is the first lines of the Containerfile.
 const containerHeader = "# The offline Containerfile of the service. stego apply writes this file from the declaration. Do not edit it.\n" +
-	"# It builds with the network off: the build stage reads only the Go modules at " + PrefetchedModules + ",\n" +
-	"# where the Go module prefetch of Konflux puts them (prefetch-input gomod, hermetic build), and go mod verify\n" +
-	"# holds them to go.sum. For a local build, mount a copy of the module cache folder that stego build download\n" +
-	"# wrote at that path, writable, because go extracts the modules from it.\n" +
+	"# The build stage downloads no module: with the module proxy off, it reads only the Go modules at\n" +
+	"# " + PrefetchedModules + ", where the Go module prefetch of Konflux puts them (prefetch-input gomod).\n" +
+	"# The build holds them to go.sum (-mod=readonly), and go mod verify checks the module cache. This file does not\n" +
+	"# turn off the network: build it in the hermetic mode of Konflux, or locally with --network=none. For a local\n" +
+	"# build, mount a copy of the module cache folder that stego build download wrote at that path, writable,\n" +
+	"# because go extracts the modules from it.\n" +
 	"# The build has the settings and the arguments of stego build, with the Go SDK that it pins, so the executable is\n" +
 	"# the one that the build record names. The image is scratch with the executable and the CA certificates, and it\n" +
 	"# runs as the user " + ImageUser + ": it writes no file, so it runs with a read-only root file system and an\n" +
@@ -63,13 +66,26 @@ var sourceFolder = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][
 
 // WriteContainerfile writes the offline Containerfile of the service (ST-DLV-CMD03): a build stage on the pinned Go
 // image that copies the module files and the source folders, checks the Go version and the prefetched modules, and
-// builds with the settings and the arguments of the application build and the network off; then a scratch stage
-// with the executable, the CA certificates and a numeric user that is not root. It reads the file back with
+// builds with the settings and the arguments of the application build and no module download; then a scratch
+// stage with the executable, the CA certificates and a numeric user that is not root. It reads the file back with
 // LoadContainerfile before it gives it (ST-DLV-INV07).
 func WriteContainerfile(service string, source ContainerSource) ([]byte, error) {
 	if !serviceLabel.MatchString(service) {
 		return nil, fmt.Errorf("the service name %q is not a DNS label", service)
 	}
+	data, err := renderContainerfile(source)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := LoadContainerfile(data); err != nil {
+		return nil, fmt.Errorf("the Containerfile of %s does not read back: %w", service, err)
+	}
+	return data, nil
+}
+
+// renderContainerfile gives the bytes of the offline Containerfile for the source folders. It is the one text that
+// WriteContainerfile writes and that LoadContainerfile accepts.
+func renderContainerfile(source ContainerSource) ([]byte, error) {
 	if !sourceFolder.MatchString(source.OutputDir) || slices.Contains(strings.Split(source.OutputDir, "/"), "..") {
 		return nil, fmt.Errorf("the output folder %q is not a relative path of plain names", source.OutputDir)
 	}
@@ -96,11 +112,7 @@ func WriteContainerfile(service string, source ContainerSource) ([]byte, error) 
 		appbuild.GoVersion, strings.Join(appbuild.BuildFlags(ImageExecutable, source.OutputDir), " "))
 	fmt.Fprintf(&out, "FROM scratch\nCOPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n"+
 		"COPY --from=build --chmod=0555 %s %s\nUSER %s\nENTRYPOINT [%q]\n", ImageExecutable, ImageExecutable, ImageUser, ImageExecutable)
-	data := []byte(out.String())
-	if _, err := LoadContainerfile(data); err != nil {
-		return nil, fmt.Errorf("the Containerfile of %s does not read back: %w", service, err)
-	}
-	return data, nil
+	return []byte(out.String()), nil
 }
 
 // buildSettings gives each setting of the build stage as name=value, in name order: the fixed settings of the
@@ -137,9 +149,12 @@ var digestImage = regexp.MustCompile(`^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$`)
 var keywords = []string{"FROM", "WORKDIR", "COPY", "RUN", "USER", "ENTRYPOINT"}
 
 // LoadContainerfile reads a Containerfile back and holds it to the offline shape (ST-DLV-INV07): two stages, the
-// first on an image named by digest, which runs the application build with the module proxy off, the module
-// checks and the settings of the build record, and the last on scratch, which runs nothing, sets a numeric user
-// that is not root and starts the executable by its absolute path in exec form.
+// first on the pinned Go image, which runs the application build with the module proxy off, the module checks and
+// the settings of the build record, and the last on scratch, which runs nothing, sets a numeric user that is not
+// root and starts the executable by its absolute path in exec form. Then it holds the file to the exact bytes that
+// WriteContainerfile makes for the source folders that the build stage copies, so that no other text passes: more
+// text in the RUN, a COPY with --from after another flag, a parser directive such as # syntax= or # escape=, or a
+// heredoc (security review of PR #367, L1).
 func LoadContainerfile(data []byte) (Containerfile, error) {
 	var file Containerfile
 	var stages [][]Instruction
@@ -165,19 +180,27 @@ func LoadContainerfile(data []byte) (Containerfile, error) {
 	if !ok || alias != "build" || !digestImage.MatchString(builder) {
 		return Containerfile{}, fmt.Errorf("the build stage is not FROM an image named by its sha256 digest AS build")
 	}
+	if builder != BuilderImage {
+		return Containerfile{}, fmt.Errorf("the build stage is FROM %s, not the pinned Go image %s", builder, BuilderImage)
+	}
 	if froms[1] != "scratch" {
 		return Containerfile{}, fmt.Errorf("the final stage is FROM %s, not scratch", froms[1])
 	}
 	file.Builder, file.Build, file.Final = builder, stages[0], stages[1]
-	var runs []string
+	var runs, folders []string
 	for _, instruction := range file.Build {
 		switch instruction.Keyword {
 		case "RUN":
 			runs = append(runs, instruction.Args)
 		case "COPY":
-			if strings.HasPrefix(instruction.Args, "--from") {
+			if strings.Contains(instruction.Args, "--from") {
 				return Containerfile{}, fmt.Errorf("the build stage copies from another image: %s", instruction.Args)
 			}
+			if instruction.Args == "go.mod go.sum ./" {
+				continue
+			}
+			from, _, _ := strings.Cut(instruction.Args, " ")
+			folders = append(folders, strings.TrimSuffix(from, "/"))
 		}
 	}
 	if len(runs) != 1 {
@@ -214,6 +237,23 @@ func LoadContainerfile(data []byte) (Containerfile, error) {
 	}
 	if entrypoint != fmt.Sprintf("[%q]", ImageExecutable) || !path.IsAbs(ImageExecutable) {
 		return Containerfile{}, fmt.Errorf("the final stage does not start %s in exec form", ImageExecutable)
+	}
+	// The source folders are the output folder and, when the build stage copies it, the fills folder.
+	var source ContainerSource
+	switch {
+	case len(folders) == 1:
+		source.OutputDir = folders[0]
+	case len(folders) == 2 && folders[1] == "fills":
+		source.OutputDir, source.Fills = folders[0], true
+	default:
+		return Containerfile{}, fmt.Errorf("the build stage copies the folders %v, not the output folder and the fills folder", folders)
+	}
+	want, err := renderContainerfile(source)
+	if err != nil {
+		return Containerfile{}, err
+	}
+	if !bytes.Equal(data, want) {
+		return Containerfile{}, fmt.Errorf("the Containerfile is not the one that stego apply writes for the output folder %s; run stego apply to write it again", source.OutputDir)
 	}
 	return file, nil
 }

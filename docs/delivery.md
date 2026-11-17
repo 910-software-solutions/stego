@@ -15,13 +15,16 @@ platform supplies those values.
 - `deploy/components/fs-group/`, next to `secret-files`: a second opt-in kustomize Component that sets the pod
   `fsGroup` 65532 on the Deployment and on the migration Job, so that the process can read the files. Use it only on
   a cluster other than OpenShift. See "Secrets as files".
-- `Containerfile`: the offline Containerfile of the image that the base runs. It builds with the network off, with
-  the Go SDK, the settings and the arguments of `stego build`, from the Go modules at
-  `/cachi2/output/deps/gomod/pkg/mod`, where the Go module prefetch of Konflux puts them. The final image is
-  `scratch` with the executable `/service` and the CA certificates. It runs as the user `65532:65532`, so it starts
-  with the read-only root file system and the `/tmp` emptyDir of the base. For a local build, mount a writable copy
-  of the module cache folder of `stego build download` at that path and turn the network off, for example
+- `Containerfile`: the offline Containerfile of the image that the base runs. It builds with the Go SDK, the
+  settings and the arguments of `stego build`, with the module proxy off, from the Go modules at
+  `/cachi2/output/deps/gomod/pkg/mod`, where the Go module prefetch of Konflux puts them. The build holds the modules
+  to `go.sum` (`-mod=readonly`), and `go mod verify` checks the module cache. The file does not turn off the network
+  itself: build it in the hermetic mode of Konflux, or locally with `--network=none`. The final image is `scratch`
+  with the executable `/service` and the CA certificates. It runs as the user `65532:65532`, so it starts with the
+  read-only root file system and the `/tmp` emptyDir of the base. For a local build, mount a writable copy of the
+  module cache folder of `stego build download` at that path, for example
   `buildah build --network=none -v "$PWD/modules-copy:/cachi2/output/deps/gomod/pkg/mod" -f Containerfile .`.
+  `stego apply` reads the file back and accepts only the exact text that it writes, so do not edit it.
 - `deploy/argocd/applicationset.yaml`, when the declaration has `delivery.argocd`: an Argo CD ApplicationSet. Its git
   files generator reads the platform's environment files. Each Application has one source: the overlay at the
   `destination.overlay_path` of its environment file, in the repository of the environment files.
