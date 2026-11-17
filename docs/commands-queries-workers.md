@@ -962,6 +962,12 @@ SQLSTATE class in each 10 seconds, with the number of lines that it held back.
 - A provision of a retired tenant ID answers 409 with the code
   `tenant.retired`; a provision of an active ID keeps `tenant.provisioned`.
   New error `tenant.ErrRetired` and code `command.ErrorCodeRetired`.
+- The problem types `idempotency-key-missing`, `idempotency-key-in-progress`
+  and `idempotency-key-reused` of a command sit under the `error_type_base`
+  of the service. `command.Config` has the new field `ProblemBase`.
+- The readiness of the worker mode names the stage of a stopped Kafka inbox,
+  such as `the component inbox-order-changes stopped at the stage
+  kafka-consumer.retention`.
 
 ### Release notes for runtime v0.130.0
 
