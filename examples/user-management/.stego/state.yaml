@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117044316-017060f7e9cb
+        module_version: v0.0.0-20261117054201-f692919628d8
         vcs: git
-        revision: 017060f7e9cbc0662344538a7edb03870e336580
+        revision: f692919628d8c67917ba06e1ef8f00b7dba83e83
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
@@ -209,8 +209,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 21d46d41d569eb81b808bf089b2842c4d8675834eee94f8b37adebb3a06894f7
-        architecture/index.html: 5b1a0146ab5682fd153511e12ba73160f0172bd8f850d0a1275d2ee86b705fc7
+        architecture/architecture.json: 8e38f25607440385ffaf3eed0f5e500ef2e2a51b6df1cd835b7b36f5f5e59b37
+        architecture/index.html: 09f8cc4aa83377e2e5ef2e3187401ec7a10997a476383d7aab6fb0ea9347e07f
         deploy/base/deployment.yaml: 61051397f592de804f2fa9613af44d151d25a1984bfa0897d35e543c9a8a11c7
         deploy/base/kustomization.yaml: c6afec415e1bcc35ee04d9972d677b59da882c5eaec21efaad2383fc4ed548fb
         deploy/base/migration-job.yaml: 3d0850944517de454bdc54543f8dc5b10172049aa106ead088c8eca3b91f55b4
