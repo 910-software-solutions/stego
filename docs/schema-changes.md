@@ -73,7 +73,8 @@ base: when the service has no record either, plan and apply take it as the
 first release, with no check, and say so. When the service has a record, a
 release may have run, so plan and apply stop: commit the service folder with
 its record. `stego init` tells you to commit before the first release, also
-the example content it writes (and `stego init --empty`, which writes none). A
+the example content it writes (and `stego init --empty`, which writes none),
+and the `go.mod` that it writes with the module path of `--module`. A
 repository is new only when HEAD names no commit, it has no ref, it is not
 shallow, it has no `FETCH_HEAD`, and its object store holds no commit. A
 checkout by commit, such as `git fetch <url> <ref>` and
