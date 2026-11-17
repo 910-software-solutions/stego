@@ -14,7 +14,6 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
 	"github.com/jsell-rh/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
@@ -26,7 +25,7 @@ var organizationsCreateCommand = mustCommand(command.NewCommand(command.CommandS
 	Name:         "create",
 	Writes:       []command.Declared{data.OrganizationEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.organization.created"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
 }))
 
 // organizationsReadQuery is the query of a read of organizations (ST-SUP-RP11).
@@ -37,7 +36,7 @@ var organizationsDeleteCommand = mustCommand(command.NewCommand(command.CommandS
 	Name:         "delete",
 	Writes:       []command.Declared{data.OrganizationEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.organization.deleted"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "Organization", Created: "user-management.organization.created", Updated: "user-management.organization.updated", Deleted: "user-management.organization.deleted"}},
 	Permission:   "edit",
 	Resource:     &command.Resource{Type: "organization", Token: "SELECT authz_token FROM public.organizations WHERE tenant_id = $1 AND id = $2::uuid FOR SHARE", ValidID: command.ValidUUID},
 }))
@@ -172,9 +171,6 @@ func (h *OrganizationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return idempotency.Response{}, err
 		}
 		persisted = Organization(created.Value())
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.organization.created", created, changeEvent("Organization", "created", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
-		}
 		response, err := json.Marshal(organizationsPresented(persisted))
 		if err != nil {
 			return idempotency.Response{}, err
@@ -259,9 +255,6 @@ func (h *OrganizationsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		stored := Organization(from.Value())
 		_ = stored
 		if err := repo.Delete(ctx, from); err != nil {
-			return idempotency.Response{}, err
-		}
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.organization.deleted", from, changeEvent("Organization", "deleted", id)); err != nil {
 			return idempotency.Response{}, err
 		}
 		return idempotency.Response{Status: http.StatusNoContent}, nil

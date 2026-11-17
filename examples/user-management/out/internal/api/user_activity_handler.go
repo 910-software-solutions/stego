@@ -14,7 +14,6 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
-	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox"
 	"github.com/jsell-rh/stego/registry/runtime/query"
 
 	data "github.com/example/service/out/internal/api/data"
@@ -25,7 +24,7 @@ var userActivityCreateCommand = mustCommand(command.NewCommand(command.CommandSp
 	Name:         "create",
 	Writes:       []command.Declared{data.ActivityEntryEntity},
 	Probe:        noProbe,
-	Destinations: []command.Destination{{Name: kafkaoutbox.DestinationName, Idempotent: true, Effects: []string{"user-management.activity-entry.created"}}},
+	ChangeEvents: []command.ChangeEvents{{Entity: "ActivityEntry", Created: "user-management.activity-entry.created", Updated: "user-management.activity-entry.updated", Deleted: "user-management.activity-entry.deleted"}},
 }))
 
 // userActivityListQuery is the query of a list of user-activity, on the list permission of ActivityEntry (ST-SUP-RP11-LC07).
@@ -159,9 +158,6 @@ func (h *UserActivityHandler) Create(w http.ResponseWriter, r *http.Request) {
 			return idempotency.Response{}, err
 		}
 		persisted = userActivityFromData(created.Value())
-		if err := ch.Effects().Stage(ctx, kafkaoutbox.DestinationName, "user-management.activity-entry.created", created, changeEvent("ActivityEntry", "created", persisted.ID)); err != nil {
-			return idempotency.Response{}, err
-		}
 		response, err := json.Marshal(userActivityPresented(persisted))
 		if err != nil {
 			return idempotency.Response{}, err
