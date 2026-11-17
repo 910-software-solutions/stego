@@ -1661,6 +1661,18 @@ func TestCommandLists(t *testing.T) {
 		if _, listed, err := list(withKey, keyed.With("not-a-uuid")); !errors.Is(listed, ErrInternal) || !errors.Is(err, ErrInternal) {
 			t.Fatalf("a key that the key check takes ran the statement and gave %v, %v; want the failed cast", listed, err)
 		}
+		// The key of a reference is checked with the key check of the referenced entity, not of the listed one
+		// (security review of PR #416, sec-416b): a key that the listed entity takes and the referenced entity
+		// refuses gives an empty list and runs no statement.
+		referenced, err := NewList(e.users, ListSpec{Name: "referenced", Read: keyed.spec.Read,
+			Values: DeclaredValues(ListValue{Param: "org_id", Key: true, ValidKey: ValidUUID})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		withReferenced := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{referenced} }, e.users)
+		if got, listed, err := list(withReferenced, referenced.With("not-a-uuid")); got != "" || listed != nil || err != nil {
+			t.Fatalf("a key that the referenced entity refuses gave %q, %v, %v; want an empty list", got, listed, err)
+		}
 		// A pointer is the Go value of an optional field: it binds its value.
 		org := "org2"
 		if got, _, err := list(cmd, e.admins.With(&org)); got != "u3" || err != nil {

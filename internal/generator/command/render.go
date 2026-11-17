@@ -545,9 +545,9 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 			}
 			seen[term.Param] = true
 			if field.decl.Type == types.FieldTypeRef {
-				// A reference holds the key of a row: the handle checks it with the key check of the entity
-				// (ST-SUP-RP10-LC38).
-				value = fmt.Sprintf("command.ListValue{Param: %q, Key: true}", term.Param)
+				// A reference holds the key of a row of the referenced entity: the handle checks it with the key
+				// check of that entity, whose keys are UUIDs (ST-SUP-RP10-LC38, sec-416b).
+				value = fmt.Sprintf("command.ListValue{Param: %q, Key: true, ValidKey: command.ValidUUID}", term.Param)
 			} else {
 				value = fmt.Sprintf("command.ListValue{Param: %q}", term.Param)
 			}

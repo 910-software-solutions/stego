@@ -664,6 +664,10 @@ type ListValue struct {
 	// Key tells that the parameter holds the key of a row, such as a reference: the handle checks it with the key
 	// check of the entity and gives an empty list for a value that the check refuses (ST-SUP-RP10-LC38).
 	Key bool
+	// ValidKey is the key check of the entity whose key the parameter holds, such as the referenced entity of a
+	// reference field; the generated code gives the ValidID of that entity. Nil takes the key check of the listed
+	// entity, as code of a runtime before v0.131.0 has it (security review of PR #416, sec-416b).
+	ValidKey func(id string) bool
 	// Parent is the entity of the parent row of a list over a child entity, such as Order: the fill gives that loaded
 	// row through With, and the handle decides on it before it reads a row and binds its ID (ST-SUP-RP10-LC38).
 	Parent string
@@ -1895,7 +1899,7 @@ func (r *Repository[T]) listArgs(ctx context.Context, l *List[T], args []any) (v
 		case v.Param != "":
 			values[i] = l.binding.params[next]
 			next++
-			if v.Key && !r.validKey(values[i]) {
+			if v.Key && !r.validKey(v.ValidKey, values[i]) {
 				empty = true
 			}
 		default:
@@ -1922,9 +1926,12 @@ func (r *Repository[T]) decideListParent(ctx context.Context, l *List[T], parent
 	return s.breakWith(internalf("the list %s of %s takes a parent row of %s, which the entity does not refer to", l.spec.Name, e.spec.Name, parent))
 }
 
-// validKey checks a key parameter with the key check of the entity: a string, or a pointer to one that is set.
-func (r *Repository[T]) validKey(value any) bool {
-	valid := r.entity.spec.ValidID
+// validKey checks a key parameter with the key check of the entity whose key it holds, valid, or else the key check
+// of the listed entity: a string, or a pointer to one that is set.
+func (r *Repository[T]) validKey(valid func(string) bool, value any) bool {
+	if valid == nil {
+		valid = r.entity.spec.ValidID
+	}
 	if valid == nil {
 		return true
 	}
