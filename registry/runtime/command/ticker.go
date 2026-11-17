@@ -328,7 +328,9 @@ func (k *Ticker) runOne(ctx context.Context, due, next time.Time, t tenant.Tenan
 	if err == nil || errors.Is(err, errTenantNotActive) {
 		return
 	}
-	k.observe.RunFailed(context.WithoutCancel(ctx), workerOutcome(err))
+	// The event carries the fixed cause class of the run's error, such as internal for a list that fails
+	// (ST-SUP-RC35-OC15).
+	runFailed(context.WithoutCancel(ctx), k.observe, workerOutcome(err), causeOf(err))
 }
 
 // Stop makes the ticker start no new tick and no new tenant run (ST-SUP-RC35-OC10). A later call does nothing.

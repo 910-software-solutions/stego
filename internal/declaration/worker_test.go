@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/internal/parser"
 )
 
 // orders is ST-DECL-TD02 with the modes given (none when empty) and the owned entity Order with the fields status
@@ -272,4 +274,82 @@ func TestWorkerEffectStagingType(t *testing.T) {
 	t.Run("ST-DECL-INV70-T With authorization bound, a worker on folder that stages for a worker on document is refused", func(t *testing.T) {
 		expectOneFault(t, checkOperations(t, td03Staging(t, stager("folder"), ""), operationFacts()), "worker-effect", "sync-documents", "document-replies: reply", `"folder"`, `"document"`)
 	})
+}
+
+// listOrders is ST-DECL-TD02 with the modes api and worker and the owned entity Order with the fields status (enum
+// open, closed), synced (bool), due_at (timestamp), amount (int64), note (optional string) and body (jsonb), and
+// Lock at most 50, and the worker scan-orders with the trigger every 1m that writes Order, bound to the fill sync,
+// with the lists given.
+func listOrders(lists ...string) string {
+	service := strings.Replace(td02, "entities:\n", "entities:\n  - name: Order\n    lock_at_most: 50\n    fields:\n"+
+		"      - {name: status, type: enum, values: [open, closed]}\n      - {name: synced, type: bool}\n"+
+		"      - {name: due_at, type: timestamp, client_set: true}\n      - {name: amount, type: int64}\n"+
+		"      - {name: note, type: string, optional: true}\n      - {name: body, type: jsonb}\n", 1)
+	service += "modes: [api, worker]\nworkers:\n" + worker("scan-orders", "trigger: every 1m", "writes: [Order]", "fill: sync",
+		"lists:\n      "+strings.Join(lists, "\n      "))
+	return service
+}
+
+func TestWorkerLists(t *testing.T) {
+	accepted := []struct{ name, lists string }{
+		{"one equals term", "- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}"},
+		{"every operator", "- {name: due, entity: Order, lock: true, filter: [{field: due_at, op: less_than, now: true}, {field: amount, op: greater_than_or_equals, value: 10}, {field: amount, op: less_than_or_equals, value: 99}, {field: synced, op: not_equals, value: true}, {field: note, op: is_set}, {field: due_at, op: greater_than, value: \"2026-01-01T00:00:00Z\"}, {field: status, op: not_equals, value: closed}, {field: amount, op: less_than, value: 1000}]}"},
+		{"two lists", "- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}\n      - {name: synced-orders, entity: Order, filter: [{field: synced, op: equals, value: true}]}"},
+	}
+	for _, c := range accepted {
+		t.Run("ST-DECL-INV94-T A worker list with "+c.name+" is accepted", func(t *testing.T) {
+			wantNoFault(t, workerFaults(t, listOrders(c.lists)))
+		})
+	}
+	refused := []struct{ name, lists, names string }{
+		{"a list name used twice", "- {name: open-orders, entity: Order, filter: [{field: status, op: equals, value: open}]}\n      - {name: open-orders, entity: Order, filter: [{field: synced, op: equals, value: true}]}", "used twice"},
+		{"a list name that is not kebab case", "- {name: OpenOrders, entity: Order, filter: [{field: status, op: equals, value: open}]}", "kebab"},
+		{"an entity that the worker does not write", "- {name: open-todos, entity: Todo, filter: [{field: done, op: equals, value: false}]}", `"Todo"`},
+		{"no term", "- {name: all, entity: Order, filter: []}", "one to 8"},
+		{"nine terms", "- {name: many, entity: Order, filter: [" + strings.Repeat("{field: amount, op: greater_than, value: 1}, ", 8) + "{field: amount, op: greater_than, value: 1}]}", "9 terms"},
+		{"a field that the entity does not declare", "- {name: x, entity: Order, filter: [{field: colour, op: equals, value: red}]}", `"colour"`},
+		{"an unknown operator", "- {name: x, entity: Order, filter: [{field: amount, op: like, value: 1}]}", "operator"},
+		{"a value of another type", "- {name: x, entity: Order, filter: [{field: amount, op: equals, value: ten}]}", "field type int64"},
+		{"an enum value that is not declared", "- {name: x, entity: Order, filter: [{field: status, op: equals, value: lost}]}", "field type enum"},
+		{"now on a field that is not a timestamp", "- {name: x, entity: Order, filter: [{field: amount, op: less_than, now: true}]}", "timestamp"},
+		{"no value", "- {name: x, entity: Order, filter: [{field: amount, op: equals}]}", "needs a value"},
+		{"a value and now", "- {name: x, entity: Order, filter: [{field: due_at, op: less_than, now: true, value: \"2026-01-01T00:00:00Z\"}]}", "not both"},
+		{"is_set with a value", "- {name: x, entity: Order, filter: [{field: note, op: is_set, value: a}]}", "no value"},
+		{"an order operator on a bool", "- {name: x, entity: Order, filter: [{field: synced, op: less_than, value: true}]}", "bool"},
+		{"a jsonb field compared", "- {name: x, entity: Order, filter: [{field: body, op: equals, value: a}]}", "is_set"},
+	}
+	for _, c := range refused {
+		t.Run("ST-DECL-INV94-T A worker list with "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, workerFaults(t, listOrders(c.lists), "worker-list"), `"scan-orders"`, c.names)
+		})
+	}
+	t.Run("ST-DECL-INV94-T A locked list of an entity with no Lock at most is refused", func(t *testing.T) {
+		service := strings.Replace(listOrders("- {name: due, entity: Order, lock: true, filter: [{field: due_at, op: less_than, now: true}]}"), "    lock_at_most: 50\n", "", 1)
+		wantFault(t, workerFaults(t, service, "worker-list"), `"scan-orders"`, `"due"`, "Lock at most")
+	})
+}
+
+func TestLockAtMost(t *testing.T) {
+	entity := func(line string) string {
+		return strings.Replace(td02, "  - name: Todo\n", "  - name: Todo\n"+line, 1)
+	}
+	for _, line := range []string{"", "    lock_at_most: 1\n", "    lock_at_most: 1000\n"} {
+		t.Run("ST-DECL-INV81-T The Lock at most "+strings.TrimSpace(line)+" is accepted", func(t *testing.T) {
+			if faults := faultsOf(readDeclaration(t, entity(line))); len(faults) != 0 {
+				t.Fatalf("want no fault, got %+v", faults)
+			}
+		})
+	}
+	for _, value := range []string{"0", "1001", "-3", "2.5"} {
+		t.Run("ST-DECL-INV81-T The Lock at most "+value+" is refused", func(t *testing.T) {
+			wantFault(t, faultsOf(readDeclaration(t, entity("    lock_at_most: "+value+"\n"))), `"Todo"`, value)
+		})
+	}
+	for _, value := range []string{"many"} {
+		t.Run("ST-DECL-INV81-T The Lock at most "+value+" is refused when it is read", func(t *testing.T) {
+			if _, _, err := parser.ReadServiceDeclaration([]byte(entity("    lock_at_most: "+value+"\n")), "service.yaml"); err == nil {
+				t.Fatal("the declaration was read")
+			}
+		})
+	}
 }

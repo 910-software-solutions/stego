@@ -566,6 +566,25 @@ type decision struct {
 	calls     []evaluation
 	// after, when set, runs after each decision, outside the lock.
 	after func(e evaluation)
+	// fail, when set, gives the error of the provider for a request of the subject, or nil to decide it.
+	fail func(subject string) error
+}
+
+func (d *decision) setFail(fail func(subject string) error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.fail = fail
+}
+
+// failed gives the error that fail gives for the request, or nil.
+func (d *decision) failed(request authz.EvaluationRequest) error {
+	d.mu.Lock()
+	fail := d.fail
+	d.mu.Unlock()
+	if fail == nil {
+		return nil
+	}
+	return fail(request.Subject.String())
 }
 
 // unqualified gives a resource as type:key, from its tenant-qualified ID of ST-SUP-RP06-LC22, and its tenant. An ID
@@ -660,12 +679,18 @@ func deny(resources ...string) func(subject, action, resource string) bool {
 }
 
 func (d *decision) Evaluate(_ context.Context, request authz.EvaluationRequest) (authz.EvaluationResult, error) {
+	if err := d.failed(request); err != nil {
+		return authz.EvaluationResult{}, err
+	}
 	return d.decide(request), nil
 }
 
 func (d *decision) EvaluateBatch(_ context.Context, request authz.BatchRequest) ([]authz.EvaluationResult, error) {
 	results := make([]authz.EvaluationResult, len(request.Evaluations))
 	for i, evaluation := range request.Evaluations {
+		if err := d.failed(evaluation); err != nil {
+			return nil, err
+		}
 		results[i] = d.decide(evaluation)
 	}
 	return results, nil

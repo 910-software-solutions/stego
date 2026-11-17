@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"strings"
@@ -374,6 +375,56 @@ func TestWorkerDelivery(t *testing.T) {
 		}
 		if strings.Contains(text, "hunter2") || strings.Contains(text, "refused") {
 			t.Fatalf("the row holds the handler's error text: %s", text)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC06-T03 A failure code that the handler gives is kept only as a short label", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		w := newWorker(t, q, nil)
+		var answer atomic.Value
+		register(t, w, Destination{Name: "consumer", Idempotent: true, MustLand: true, Handler: func(context.Context, *sql.Tx, Delivery) error {
+			return answer.Load().(func() error)()
+		}})
+		ctx := context.Background()
+		for _, c := range []struct {
+			name, code, state string
+			answer            func() error
+		}{
+			{"a transient refusal with a code", "fill.rolled_back.not_found.1", "pending",
+				func() error {
+					return WithFailureCode(TransientRefusal(errors.New("x")), "fill.rolled_back.not_found.1")
+				}},
+			{"a permanent refusal with a code", "poison", "parked",
+				func() error { return WithFailureCode(PermanentRefusal(errors.New("x")), "poison") }},
+			{"a code that is not a label", "delivery-refused", "pending",
+				func() error { return WithFailureCode(TransientRefusal(errors.New("x")), "password=hunter2 refused") }},
+			{"a not sent with a code", "not-sent.1", "pending",
+				func() error { return WithFailureCode(NotSent(errors.New("x")), "not-sent.1") }},
+			{"a conflict keeps its own code", "delivery-conflict", "pending",
+				func() error { return WithFailureCode(Conflict(errors.New("x")), "fill.conflict") }},
+		} {
+			answer.Store(c.answer)
+			m := message("consumer", "key:"+c.name)
+			enqueue(t, db, q, m)
+			got, err := q.ClaimDestination(ctx, "consumer", 1, time.Minute)
+			if err != nil || len(got) != 1 {
+				t.Fatalf("%s: the claim gave %v, %v", c.name, got, err)
+			}
+			w.step(ctx, got[0])
+			if row := readRow(t, db, m.ID); row.State != State(c.state) || row.FailureCode != c.code {
+				t.Fatalf("%s: the message is %s with %q, want %s with %q", c.name, row.State, row.FailureCode, c.state, c.code)
+			}
+			clock.Advance(time.Hour)
+			if c.state == "pending" {
+				again, err := q.ClaimDestination(ctx, "consumer", 1, time.Minute)
+				if err != nil || len(again) != 1 || again[0].FailureCode != c.code {
+					t.Fatalf("%s: the next claim gave %+v, %v", c.name, again, err)
+				}
+				answer.Store(func() error { return nil })
+				w.step(ctx, again[0])
+			}
 		}
 	})
 }
@@ -1298,6 +1349,254 @@ func TestWorkerTenants(t *testing.T) {
 		}
 		if row := readRowByKey(t, db, "after-slots", "d:1"); row.State != Done || list.reads.Load() != reads {
 			t.Errorf("with no tenant list the message is %s after %d reads, want done after none", row.State, list.reads.Load()-reads)
+		}
+	})
+}
+
+func TestWorkerBulkhead(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC34-T01 A destination whose attempts block holds only its own slots, and the authz relay delivers", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, nil)
+		w := newWorker(t, q, func(c *WorkerConfig) { c.Concurrency = 4 })
+		// Each event reports one handler call: the destination and, for kafka, how many of its calls are in flight.
+		type event struct {
+			destination string
+			inFlight    int64
+		}
+		events := make(chan event, 64)
+		release := make(chan struct{})
+		var kafkaInFlight atomic.Int64
+		register(t, w, Destination{Name: "kafka", Idempotent: true, MustLand: true,
+			Handler: func(ctx context.Context, _ *sql.Tx, _ Delivery) error {
+				events <- event{destination: "kafka", inFlight: kafkaInFlight.Add(1)}
+				defer kafkaInFlight.Add(-1)
+				// The broker holds each request until the test releases it: the attempt deadline is on the hand clock,
+				// which the test does not move.
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return TransientRefusal(errors.New("the broker refused"))
+			}})
+		register(t, w, Destination{Name: "authz", Idempotent: true, MustLand: true,
+			Handler: func(context.Context, *sql.Tx, Delivery) error {
+				events <- event{destination: "authz"}
+				return nil
+			}})
+		// The kafka messages come first, each of its own key, so one pool for all destinations would claim them and
+		// fill every slot.
+		var authz []Message
+		for i := 0; i < 8; i++ {
+			enqueue(t, db, q, message("kafka", fmt.Sprintf("ticket:%d", i)))
+		}
+		if got := w.slots(); strings.Join(got, ",") != "authz,kafka,authz,kafka" {
+			t.Fatalf("the slots are %v, not two of authz and two of kafka", got)
+		}
+		cancel, result := startWorker(t, w)
+		blocked := 0
+		check := func(e event) {
+			blocked++
+			if e.inFlight > 2 || blocked > 2 {
+				t.Fatalf("kafka started attempt %d, with %d in flight, while its two slots are blocked", blocked, e.inFlight)
+			}
+		}
+		for blocked < 2 {
+			e := <-events
+			if e.destination != "kafka" {
+				t.Fatalf("a call of %s came while the queue held kafka messages only", e.destination)
+			}
+			check(e)
+		}
+		// Both slots of kafka are blocked now; the authz relay gets its tuples after that.
+		for i := 0; i < 3; i++ {
+			authz = append(authz, message("authz", fmt.Sprintf("tuple:%d", i)))
+		}
+		enqueue(t, db, q, authz...)
+		for delivered := 0; delivered < 3; {
+			if e := <-events; e.destination == "authz" {
+				delivered++
+			} else {
+				check(e)
+			}
+		}
+		// The handler returned; the move to done commits after it. The wait has no deadline: only the timeout of go
+		// test bounds it, and the kafka slots stay blocked all the time.
+		for w.Stats().Delivered < 3 {
+			time.Sleep(time.Millisecond)
+		}
+		if n := kafkaInFlight.Load(); n != 2 {
+			t.Fatalf("kafka holds %d slots, not its two", n)
+		}
+		for _, m := range authz {
+			if got := readRow(t, db, m.ID); got.State != Done || got.Attempts != 1 {
+				t.Fatalf("the authz message %s is %s after %d attempts while kafka blocks, not done after one", m.ResourceKey, got.State, got.Attempts)
+			}
+		}
+		close(release)
+		w.StopClaiming()
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+	})
+
+	t.Run("ST-SUP-RP01-LC34-T02 Each destination has a slot of its own, and the slots stay within the checked limit", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, nil)
+		w := newWorker(t, q, nil) // Concurrency 1
+		noop := func(context.Context, *sql.Tx, Delivery) error { return nil }
+		for _, name := range []string{"kafka", "authz", "audit"} {
+			register(t, w, Destination{Name: name, Handler: noop})
+		}
+		if got := w.slots(); strings.Join(got, ",") != "audit,authz,kafka" {
+			t.Fatalf("with Concurrency 1 the slots of three destinations are %v, not one each", got)
+		}
+		w.config.Concurrency = 7
+		if got := w.slots(); strings.Join(got, ",") != "audit,authz,kafka,audit,authz,kafka,audit" {
+			t.Fatalf("with Concurrency 7 the slots are %v", got)
+		}
+		full := newWorker(t, q, nil)
+		for i := 0; i < MaxBatchSize; i++ {
+			register(t, full, Destination{Name: fmt.Sprintf("d%02d", i), Handler: noop})
+		}
+		if err := full.Register(Destination{Name: "one-more", Handler: noop}); err == nil {
+			t.Fatalf("the worker registered a destination past %d", MaxBatchSize)
+		}
+		// A pool too small for a slot of each destination is refused at Run, with no claim.
+		db.SetMaxOpenConns(4)
+		t.Cleanup(func() { db.SetMaxOpenConns(12) })
+		m := message("audit", "row:1")
+		enqueue(t, db, q, m)
+		// The context has ended already, so a Run that skips the check returns the cancellation and claims nothing.
+		ended, end := context.WithCancel(context.Background())
+		end()
+		err := w.Run(ended)
+		if err == nil || !strings.Contains(err.Error(), "the 7 slots of the destinations need 9") {
+			t.Fatalf("Run on a pool of 4 connections for 7 slots gave %v", err)
+		}
+		if got := readRow(t, db, m.ID); got.State != Pending || got.Attempts != 0 {
+			t.Fatalf("the refused Run claimed the message: %s after %d attempts", got.State, got.Attempts)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC34-T04 The claim of one destination reads the index of its destination's open messages", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, nil)
+		var others []Message
+		for i := 0; i < 300; i++ {
+			others = append(others, message("kafka", fmt.Sprintf("ticket:%d", i)))
+		}
+		for i := 0; i < len(others); i += MaxBatchSize {
+			enqueue(t, db, q, others[i:min(i+MaxBatchSize, len(others))]...)
+		}
+		enqueue(t, db, q, message("authz", "tuple:1"))
+		a := admin(t, db)
+		ctx := context.Background()
+		conn, err := a.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		// The plan of the read part of claim_destination, on statistics of a backlog of another destination.
+		var plan []string
+		for _, statement := range []string{`ANALYZE stego_outbox.messages`, `SET enable_seqscan = off`} {
+			if _, err := conn.ExecContext(ctx, statement); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rows, err := conn.QueryContext(ctx, `EXPLAIN SELECT m.id FROM stego_outbox.messages AS m
+ WHERE m.destination = 'authz' AND m.state IN ('pending', 'outcome_unknown', 'reconciling') AND m.available_at <= now()
+ ORDER BY m.sequence LIMIT 1`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatal(err)
+			}
+			plan = append(plan, line)
+		}
+		rows.Close()
+		if text := strings.Join(plan, "\n"); !strings.Contains(text, "messages_destination_due") {
+			t.Fatalf("the claim of one destination does not read the index messages_destination_due:\n%s", text)
+		}
+		if got, err := q.ClaimDestination(ctx, "authz", 1, time.Minute); err != nil || len(got) != 1 || got[0].Destination != "authz" {
+			t.Fatalf("the claim of authz behind the kafka backlog gave %v, %v", got, err)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC34-T05 The lease of a destination that no worker registers expires", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		dropped := message("dropped", "row:1")
+		enqueue(t, db, q, dropped)
+		// A worker of an earlier release claimed the message and stopped; this release no longer registers its
+		// destination.
+		if got, err := q.Claim(context.Background(), 1, time.Minute); err != nil || len(got) != 1 {
+			t.Fatalf("the claim gave %v, %v", got, err)
+		}
+		clock.Advance(2 * time.Minute)
+		w := newWorker(t, q, func(c *WorkerConfig) { c.PurgeEvery = time.Second })
+		register(t, w, Destination{Name: "authz", Handler: func(context.Context, *sql.Tx, Delivery) error { return nil }})
+		_, result := startWorker(t, w)
+		// The purge timer moves the expired leases first and then purges, in the same tick. The wait has no deadline:
+		// only the timeout of go test bounds it.
+		for w.Stats().PurgeBatches == 0 {
+			time.Sleep(10 * time.Millisecond)
+		}
+		w.StopClaiming()
+		if err := <-result; err != nil {
+			t.Fatal(err)
+		}
+		if row := readRow(t, db, dropped.ID); row.State != OutcomeUnknown || row.FailureCode != "lease-expired" || row.Token.Valid {
+			t.Fatalf("the expired lease of the dropped destination is %s with %q", row.State, row.FailureCode)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC34-T03 The claim of one destination leases and moves only its own messages", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		clock := newClock()
+		q := newQueue(t, db, clock)
+		ctx := context.Background()
+		first, second, other := message("kafka", "ticket:1"), message("kafka", "ticket:1"), message("authz", "tuple:1")
+		unknown := message("retired", "row:1")
+		enqueue(t, db, q, first, second, other, unknown)
+		// The authz message is claimed and its lease expires.
+		if got, err := q.ClaimDestination(ctx, "authz", 32, time.Minute); err != nil || len(got) != 1 || got[0].ID != other.ID {
+			t.Fatalf("the claim of authz gave %v, %v", got, err)
+		}
+		clock.Advance(2 * time.Minute)
+		got, err := q.ClaimDestination(ctx, "kafka", 32, time.Minute)
+		if err != nil || len(got) != 1 || got[0].ID != first.ID || got[0].Destination != "kafka" || got[0].FailureCode != "" {
+			t.Fatalf("the claim of kafka gave %v, %v; it takes the first message of the key only", got, err)
+		}
+		if s := readRow(t, db, other.ID); s.State != Dispatching {
+			t.Fatalf("the claim of kafka moved the expired lease of authz to %s", s.State)
+		}
+		if s := readRow(t, db, unknown.ID); s.State != Pending || s.Attempts != 0 {
+			t.Fatalf("the claim of kafka took the message of another destination: %s after %d attempts", s.State, s.Attempts)
+		}
+		// A refused attempt keeps its failure code, which the next claim of the destination gives.
+		w := newWorker(t, q, nil)
+		register(t, w, Destination{Name: "kafka", Idempotent: true, MustLand: true,
+			Handler: func(context.Context, *sql.Tx, Delivery) error { return TransientRefusal(errors.New("refused")) }})
+		w.step(ctx, got[0])
+		clock.Advance(time.Hour)
+		again, err := q.ClaimDestination(ctx, "kafka", 32, time.Minute)
+		if err != nil || len(again) != 1 || again[0].ID != first.ID || again[0].FailureCode != "delivery-refused" || again[0].Attempts != 2 {
+			t.Fatalf("the claim after a refusal gave %+v, %v", again, err)
+		}
+		if _, err := q.ClaimDestination(ctx, "not a label", 1, time.Minute); err == nil {
+			t.Fatal("the claim took a destination that is not a label")
+		}
+		// The claim of authz moves its own expired lease.
+		if got, err := q.ClaimDestination(ctx, "authz", 32, time.Minute); err != nil || len(got) != 0 {
+			t.Fatalf("the claim of authz after the expiry gave %v, %v", got, err)
+		}
+		if s := readRow(t, db, other.ID); s.State != OutcomeUnknown || s.FailureCode != "lease-expired" {
+			t.Fatalf("the expired lease of authz is %s with %q", s.State, s.FailureCode)
 		}
 	})
 }

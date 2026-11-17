@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,8 +104,10 @@ func (v clockView) asked(t *testing.T, what string, want time.Duration) {
 
 // observed records the built-in worker observations of a ticker.
 type observed struct {
-	mu         sync.Mutex
-	failed     []probe.WorkerOutcome
+	mu     sync.Mutex
+	failed []probe.WorkerOutcome
+	// causes holds the outcome and the cause class of each worker.run.failed, as "outcome/cause".
+	causes     []string
 	skipped    int
 	unreached  int
 	tickFailed int
@@ -127,6 +130,23 @@ func (o *observed) RunFailed(_ context.Context, outcome probe.WorkerOutcome) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.failed = append(o.failed, outcome)
+}
+
+func (o *observed) RunFailedCause(_ context.Context, outcome probe.WorkerOutcome, cause string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.failed = append(o.failed, outcome)
+	o.causes = append(o.causes, string(outcome)+"/"+cause)
+}
+
+// causeList gives the outcome and the cause class of each worker.run.failed, from the index from.
+func (o *observed) causeList(from int) []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if from > len(o.causes) {
+		return nil
+	}
+	return append([]string(nil), o.causes[from:]...)
 }
 
 func (o *observed) TickSkipped() {
@@ -539,7 +559,7 @@ func TestTicker(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RC35-OC09-T02 Each run that does not commit is one worker.run.failed with its fixed outcome only", func(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC09-T02 Each run that does not commit is one worker.run.failed with its fixed outcome and cause class only", func(t *testing.T) {
 		clock := newFakeClock(aligned(interval))
 		var end atomic.Value
 		end.Store("nil")
@@ -549,19 +569,26 @@ func TestTicker(t *testing.T) {
 				return errors.New("secret-7")
 			case "panic":
 				panic("secret-7")
+			case "missing":
+				_, err := repo(t, h, e.orders).Get(ctx, "secret-7")
+				return err
 			}
 			return nil
 		})
-		for i, next := range []string{"nil", "error", "panic"} {
+		for i, next := range []string{"nil", "error", "panic", "missing"} {
 			end.Store(next)
 			f.waitArms(int64(i + 1))
 			clock.advance(interval)
 			f.next()
 			f.waitTickDone()
 		}
-		failed := f.failedRuns(2)
-		if len(failed) != 2 || failed[0] != probe.WorkerRolledBack || failed[1] != probe.WorkerPanicked {
-			t.Fatalf("the failed runs are %v, want rolled_back and panicked", failed)
+		failed := f.failedRuns(3)
+		if len(failed) != 3 || failed[0] != probe.WorkerRolledBack || failed[1] != probe.WorkerPanicked {
+			t.Fatalf("the failed runs are %v, want rolled_back, panicked and rolled_back", failed)
+		}
+		// The cause class is fixed and holds no text of the error (ST-SUP-RC35-OC06, ST-SUP-RC35-OC15).
+		if got := f.observe.causeList(0); strings.Join(got, ",") != "rolled_back/fill_error,panicked/panic,rolled_back/not_found" {
+			t.Fatalf("the failed runs sent %v", got)
 		}
 	})
 

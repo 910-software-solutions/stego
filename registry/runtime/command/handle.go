@@ -58,7 +58,17 @@ const (
 )
 
 // internalError is an internal error: it matches ErrInternal and holds no field value and no database text.
-type internalError struct{ text string }
+// statement is true for a statement that the database failed, such as for an undefined column, a statement timeout
+// or a lost connection, which the fill did not cause: a consumer does not count it for the poison bound
+// (ST-SUP-RC35-OC06).
+//
+// data is true for a statement that fails on the values of the row, such as for a foreign key or a check (SQLSTATE
+// classes 22 and 23): a consumer counts it for the poison bound with the cause class data.
+type internalError struct {
+	text      string
+	statement bool
+	data      bool
+}
 
 func (e *internalError) Error() string        { return "command: internal error: " + e.text }
 func (e *internalError) Is(target error) bool { return target == ErrInternal }
@@ -581,10 +591,43 @@ func (e *Entity[T]) auditType() string {
 // most rows to return, and the list's filter values follow from $3. Lock locks matching rows: $1 is the tenant, $2
 // the IDs to lock as a text array, which the statement casts to the type of the key, such as $2::uuid[], and the same filter values follow from $3; it applies the filter again, orders by
 // the primary key and locks FOR NO KEY UPDATE (ST-SUP-RP10-LC27). Both return the columns of the entity's Scan.
+//
+// The generator emits each list of a worker's declaration in the worker contract, with its statements built from the
+// entity of the release and its Values (ST-SUP-RC35-OC15), and the worker's WorkerSpec.Lists names it. Deprecated for
+// a worker fill: since runtime v0.125.0 a worker or consumer handle takes only a list that its WorkerSpec.Lists
+// declares, so a worker fill gives no SQL text (ST-SUP-RP10-LC38); declare the list under lists: of the worker. A
+// command handle still takes a list that NewList makes, such as the generated upsert key of a collection.
 type ListSpec struct {
 	Name string
 	Read string
 	Lock string
+	// Values are the declared values of the filter, for the parameters from $3 in their order: each a constant of
+	// the field type, or the time of the run. A list with Values takes no filter values from the fill: the handle
+	// binds them (ST-DECL-INV94, ST-SUP-RC35-OC15). DeclaredValues makes it; a pointer keeps ListSpec comparable.
+	Values *ListValues
+}
+
+// ListValues are the declared values of the filter of a list, in the order of their parameters.
+type ListValues struct{ values []ListValue }
+
+// DeclaredValues gives the declared values of a list filter, for ListSpec.Values.
+func DeclaredValues(values ...ListValue) *ListValues {
+	return &ListValues{values: slices.Clone(values)}
+}
+
+// all gives the values; a nil ListValues has none.
+func (v *ListValues) all() []ListValue {
+	if v == nil {
+		return nil
+	}
+	return v.values
+}
+
+// ListValue is one declared value of a list filter: Constant, or the time of the run when RunTime is true, which is
+// the due tick time of a worker run and the time at the start of a consumer run.
+type ListValue struct {
+	Constant any
+	RunTime  bool
 }
 
 // List is one checked list of an entity.
@@ -593,8 +636,20 @@ type List[T any] struct {
 	spec   ListSpec
 }
 
+// AnyList is a list of any entity, which WorkerSpec.Lists holds. Only a *List made by NewList is one.
+type AnyList interface {
+	listEntity() Declared
+	listName() string
+}
+
+func (l *List[T]) listEntity() Declared { return l.entity }
+func (l *List[T]) listName() string     { return l.spec.Name }
+
 // NewList checks one list of e. It refuses a list whose statements do not take the tenant as $1 and whose Lock does
 // not order by the key and lock FOR NO KEY UPDATE. A list with a Lock needs an entity that declares Lock at most.
+//
+// A worker or consumer handle takes only a list that the worker's generated WorkerSpec.Lists declares, so a list
+// that a worker fill makes itself is refused at its use (ST-SUP-RP10-LC38).
 func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 	if e == nil || spec.Name == "" || !strings.Contains(spec.Read, "$1") {
 		return nil, errors.New("command: a list needs its entity, a name and a Read statement that takes the tenant as $1")
@@ -609,7 +664,31 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 			return nil, fmt.Errorf("command: the list %s locks rows of %s, which declares no Lock at most", spec.Name, e.spec.Name)
 		}
 	}
+	for i, v := range spec.Values.all() {
+		if v.RunTime && v.Constant != nil {
+			return nil, fmt.Errorf("command: the value %d of the list %s is a constant and the time of the run", i+1, spec.Name)
+		}
+	}
+	if spec.Values != nil {
+		spec.Values = DeclaredValues(spec.Values.all()...)
+	}
 	return &List[T]{entity: e, spec: spec}, nil
+}
+
+// checkLists gives the lists that the worker owner declares, by list. It refuses a nil list and a list of an entity
+// that the worker does not write.
+func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[AnyList]bool, error) {
+	out := make(map[AnyList]bool, len(lists))
+	for _, l := range lists {
+		if l == nil {
+			return nil, fmt.Errorf("command: %s declares a nil list", owner)
+		}
+		if !writes[l.listEntity()] {
+			return nil, fmt.Errorf("command: %s declares the list %s of %s, which it does not write", owner, l.listName(), l.listEntity().entityName())
+		}
+		out[l] = true
+	}
+	return out, nil
 }
 
 // lockMode is the lock that a loaded value's read took.
@@ -968,6 +1047,11 @@ type state struct {
 	commandPermission string
 	writes            map[Declared]bool
 	destinations      map[string]Destination
+	// lists are the lists that a worker declares, which its handle takes only (ST-SUP-RP10-LC38); nil for a command.
+	lists map[AnyList]bool
+	// runTime is the time of the run that a list value RunTime binds: the due tick of a worker run, the start of a
+	// consumer run.
+	runTime time.Time
 	// ownRelations are the relations that the fill may write itself; the handle is bound with the relations of the
 	// references too, which only the runtime writes (ST-SUP-RP10-LC05).
 	ownRelations map[authz.Relation]bool
@@ -1033,7 +1117,13 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 	if code == notGrantedState {
 		s.notGranted = true
 	}
-	return s.breakWith(internalf("the statement %s failed with SQLSTATE %q", step, code))
+	// A data exception (class 22) or an integrity constraint violation (class 23, but for 23505, which is a
+	// conflict) comes from the values that the fill writes, so it comes again in each attempt; any other SQLSTATE,
+	// such as of a connection (08), of the resources (53), of an operator intervention or a timeout (57) or of a
+	// rolling schema change (42), and an error with no SQLSTATE, is a failed statement (decision of the orchestrator
+	// on the re-review of PR #411).
+	data := strings.HasPrefix(code, "22") || strings.HasPrefix(code, "23")
+	return s.breakWith(&internalError{text: fmt.Sprintf("the statement %s failed with SQLSTATE %q", step, code), statement: !data, data: data})
 }
 
 // notGrantedState is the SQLSTATE insufficient_privilege.
@@ -1279,6 +1369,10 @@ func (r *Repository[T]) List(ctx context.Context, l *List[T], limit int, args ..
 	if l == nil || l.entity != r.entity || limit < 1 {
 		return nil, fmt.Errorf("command: a list of %s needs its own list and a limit of at least 1", r.entity.spec.Name)
 	}
+	args, err := r.listArgs(l, args)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := r.readList(ctx, l, limit, args)
 	if err != nil {
 		return nil, err
@@ -1302,6 +1396,10 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 	s, e := r.st, r.entity
 	if l == nil || l.entity != e || l.spec.Lock == "" || e.spec.LockAtMost == 0 {
 		return nil, fmt.Errorf("command: %s has no locked list of that name: the entity declares no Lock at most", e.spec.Name)
+	}
+	args, err := r.listArgs(l, args)
+	if err != nil {
+		return nil, err
 	}
 	rows, err := r.readList(ctx, l, e.spec.LockAtMost+1, args)
 	if err != nil {
@@ -1392,6 +1490,40 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 			}
 		}
 	}
+}
+
+// listArgs gives the filter values of the list l: the args of the fill for a list with no declared Values, and the
+// declared Values otherwise, with the time of the run in place of each RunTime value. A worker or consumer handle
+// refuses, as an internal error, a list that its WorkerSpec.Lists does not declare (ST-SUP-RP10-LC38), and a list
+// with Values refuses args of the fill.
+func (r *Repository[T]) listArgs(l *List[T], args []any) ([]any, error) {
+	s := r.st
+	if (s.mode == modeWorker || s.mode == modeConsumer) && !s.lists[l] {
+		return nil, s.breakWith(internalf("the worker %s reads the list %s of %s, which its declaration does not declare: since runtime "+
+			"v0.125.0 a worker fill gives no SQL text, so declare the list under lists: of the worker and use the generated "+
+			"list of the worker contract (ST-SUP-RP10-LC38)", s.action, l.spec.Name, r.entity.spec.Name))
+	}
+	// A declared list of a worker or consumer handle takes no filter values from the fill, also when its filter has no
+	// value, such as a filter of is_set terms only (security review of PR #411, L3).
+	declared := s.mode == modeWorker || s.mode == modeConsumer || len(l.spec.Values.all()) > 0
+	if declared && len(args) > 0 {
+		return nil, s.breakWith(internalf("the list %s of %s declares its filter values, so the fill gives none", l.spec.Name, r.entity.spec.Name))
+	}
+	if len(l.spec.Values.all()) == 0 {
+		return args, nil
+	}
+	bound := l.spec.Values.all()
+	values := make([]any, len(bound))
+	for i, v := range bound {
+		values[i] = v.Constant
+		if v.RunTime {
+			if s.runTime.IsZero() {
+				return nil, s.breakWith(internalf("the list %s of %s takes the time of the run, which this call does not have", l.spec.Name, r.entity.spec.Name))
+			}
+			values[i] = s.runTime
+		}
+	}
+	return values, nil
 }
 
 // scanned is one row that a list read.

@@ -54,6 +54,7 @@ func ValidateComposition(service *types.ServiceDeclaration, facts Facts) []Valid
 	faults = append(faults, validateWorkerNames(service)...)
 	faults = append(faults, validateWorkerTrigger(service.Workers, facts)...)
 	faults = append(faults, validateWorkerWrites(service.Workers, service.Entities)...)
+	faults = append(faults, validateWorkerLists(service.Workers, service.Entities)...)
 	faults = append(faults, validateWorkerFill(service.Workers, facts)...)
 	faults = append(faults, validateWorkerEffects(service, facts)...)
 	faults = append(faults, validateWorkerMode(service)...)
