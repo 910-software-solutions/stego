@@ -1272,10 +1272,20 @@ func scanFailed(err error) error {
 // notGrantedState is the SQLSTATE insufficient_privilege.
 const notGrantedState = "42501"
 
-// breakWith records an internal error that a rerun cannot change.
+// breakWith records an internal error that a rerun cannot change. The first internal error of a call that is not a
+// failed statement, which fail logs, writes one error log line with the action and its fixed text, which names only
+// declared names, such as the list that the declaration does not declare, so a 500 internal of a fill that a release
+// broke is diagnosable (walkthrough 7, B1; ST-SUP-RP10-LC39).
 func (s *state) breakWith(err error) error {
 	if s.broken == nil {
 		s.broken = err
+		var internal *internalError
+		if errors.As(err, &internal) && !internal.statement && !internal.data {
+			if ok, held := statementLog.Allow(s.action + "/internal/" + internal.text); ok {
+				slog.Error("command: the call has an internal error", "action", s.action, "cause", "internal",
+					"reason", internal.text, "held_back", held)
+			}
+		}
 	}
 	return s.broken
 }

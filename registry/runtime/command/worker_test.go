@@ -1531,7 +1531,12 @@ func TestWorkerLists(t *testing.T) {
 			t.Fatalf("a consumer handle gave %v for an undeclared list", err)
 		}
 		// A command handle refuses it the same way, and tells the fill to declare it under lists: of the command
-		// (walkthrough 7, B1).
+		// (walkthrough 7, B1). The log names the refusal, so the 500 internal of the call is diagnosable.
+		var logs bytes.Buffer
+		previous, held := slog.Default(), statementLog
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		statementLog = authz.NewCauseLog(func() time.Time { return tick })
+		defer func() { slog.SetDefault(previous); statementLog = held }()
 		cmd := e.command("rank-users", func(s *CommandSpec[testProbe]) { s.Lists = []AnyList{v1} }, e.users)
 		var read error
 		_, err = e.run(cmd, e.request("t1", u7(t), "k-lc38-t02", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
@@ -1542,6 +1547,9 @@ func TestWorkerLists(t *testing.T) {
 			!strings.Contains(read.Error(), "the command rank-users reads the list own of User, which its declaration does not declare") ||
 			!strings.Contains(read.Error(), "lists: of the command") {
 			t.Fatalf("a command handle gave %v and the run %v for an undeclared list", read, err)
+		}
+		if !strings.Contains(logs.String(), `msg="command: the call has an internal error" action=rank-users cause=internal reason="the command rank-users reads the list own of User, which its declaration does not declare`) {
+			t.Fatalf("the log does not name the refused list:\n%s", logs.String())
 		}
 	})
 
