@@ -125,6 +125,8 @@
 {"source_id":"ST-GEN-Q36","target_id":"ST-GEN-EN04"}
 {"source_id":"ST-GEN-Q36","target_id":"ST-GEN-INV23"}
 {"source_id":"ST-GEN-Q36","target_id":"ST-GEN-UC01-R01"}
+{"source_id":"ST-GEN-Q42","target_id":"ST-GEN-INV14"}
+{"source_id":"ST-GEN-Q42","target_id":"ST-GEN-INV14-T"}
 {"source_id":"ST-SUP-Q110","target_id":"ST-SUP-RC20"}
 {"source_id":"ST-SUP-Q110","target_id":"ST-SUP-RP10-LC25"}
 {"source_id":"ST-SUP-Q118","target_id":"ST-DECL-UC06-R04"}

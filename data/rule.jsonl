@@ -122,6 +122,7 @@
 {"id":"ST-GEN-INV08-RL","title":"compiler.validateTransactionPath","invariant_id":"ST-GEN-INV08","file":"internal/compiler/transaction.go"}
 {"id":"ST-GEN-INV09-RL","title":"compiler.Reconcile","invariant_id":"ST-GEN-INV09","file":"internal/compiler/reconciler.go"}
 {"id":"ST-GEN-INV13-RL","title":"compiler.runtimeRequirement","invariant_id":"ST-GEN-INV13","file":"internal/compiler/runtime_pin.go"}
+{"id":"ST-GEN-INV14-RL","title":"compiler.generateMainGo","invariant_id":"ST-GEN-INV14","file":"internal/compiler/assembler.go"}
 {"id":"ST-GEN-INV16-RL","title":"compiler.serviceFailureSource","invariant_id":"ST-GEN-INV16","file":"internal/compiler/service_failure.go"}
 {"id":"ST-GEN-INV17-RL","title":"compiler.taskLifecycleSource","invariant_id":"ST-GEN-INV17","file":"internal/compiler/task_lifecycle.go"}
 {"id":"ST-GEN-INV18-RL","title":"compiler.taskLifecycleSource","invariant_id":"ST-GEN-INV18","file":"internal/compiler/task_lifecycle.go"}
