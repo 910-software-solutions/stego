@@ -217,6 +217,9 @@ var relayResults = map[string]string{
 	"stego_outbox.claim": "TABLE(r_tenant text, r_id uuid, r_destination text, r_resource_key text, r_kind text, r_payload bytea, " +
 		"r_outgoing_key text, r_principal text, r_origin text, r_group text, r_state text, r_attempts bigint, r_conflicts bigint, " +
 		"r_lookups bigint, r_lease_until timestamp with time zone, r_dispatched_at timestamp with time zone)",
+	"stego_outbox.claim_destination": "TABLE(r_tenant text, r_id uuid, r_destination text, r_resource_key text, r_kind text, r_payload bytea, " +
+		"r_outgoing_key text, r_principal text, r_origin text, r_group text, r_state text, r_attempts bigint, r_conflicts bigint, " +
+		"r_lookups bigint, r_lease_until timestamp with time zone, r_dispatched_at timestamp with time zone, r_failure_code text)",
 	"stego_outbox.move":         "TABLE(r_result text, r_state text, r_delay double precision, r_attempts bigint, r_conflicts bigint, r_lookups bigint)",
 	"stego_outbox.release":      "bigint",
 	"stego_outbox.purge_parked": "bigint",
@@ -230,6 +233,7 @@ var relayResults = map[string]string{
 // The relay functions, by their signature, for the grants and the checks.
 var relayFunctions = []string{
 	"stego_outbox.claim(timestamptz, integer, uuid, bigint)",
+	"stego_outbox.claim_destination(timestamptz, integer, uuid, bigint, text)",
 	"stego_outbox.move(timestamptz, uuid, uuid, text, text, bigint, timestamptz, bigint, boolean, boolean, text, bigint)",
 	"stego_outbox.release(timestamptz, uuid, uuid, bigint, text)",
 	"stego_outbox.purge_parked(timestamptz, integer, bigint, jsonb)",
@@ -470,6 +474,64 @@ BEGIN
 END
 $fn$;
 
+CREATE OR REPLACE FUNCTION stego_outbox.claim_destination(p_now timestamptz, p_limit integer, p_token uuid, p_lease_ms bigint,
+	p_destination text)
+RETURNS TABLE (r_tenant text, r_id uuid, r_destination text, r_resource_key text, r_kind text, r_payload bytea,
+	r_outgoing_key text, r_principal text, r_origin text, r_group text, r_state text, r_attempts bigint,
+	r_conflicts bigint, r_lookups bigint, r_lease_until timestamptz, r_dispatched_at timestamptz, r_failure_code text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $fn$
+BEGIN
+	IF p_limit IS NULL OR p_limit < 1 OR p_limit > 32 THEN
+		RAISE EXCEPTION 'outbox: the claim limit is 1 to 32';
+	END IF;
+	IF p_lease_ms IS NULL OR p_lease_ms < 1000 OR p_lease_ms > 300000 THEN
+		RAISE EXCEPTION 'outbox: the lease is 1 s to 5 min';
+	END IF;
+	IF p_token IS NULL THEN
+		RAISE EXCEPTION 'outbox: the claim needs a lease token';
+	END IF;
+	IF p_destination IS NULL OR p_destination !~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$' THEN
+		RAISE EXCEPTION 'outbox: the claim needs a destination name';
+	END IF;
+	-- The claim of one destination reads and leases only the messages of that destination, so a destination whose
+	-- attempts are slow or refused never delays the claim of another (ST-SUP-RP01-LC34).
+	RETURN QUERY
+	WITH now AS (SELECT COALESCE(p_now, pg_catalog.clock_timestamp()) AS t),
+	expired AS (
+		UPDATE stego_outbox.messages AS x
+		SET state = 'outcome_unknown', lease_token = NULL, lease_until = NULL, failure_code = 'lease-expired',
+			available_at = now.t, conflicts = 0
+		FROM now
+		WHERE x.id IN (SELECT e.id FROM stego_outbox.messages AS e, now
+			WHERE e.state = 'dispatching' AND e.destination = p_destination AND e.lease_until <= now.t
+			ORDER BY e.sequence LIMIT 32 FOR UPDATE OF e SKIP LOCKED)
+		RETURNING x.id
+	),
+	ready AS (
+		SELECT m.id FROM stego_outbox.messages AS m, now
+		WHERE m.destination = p_destination
+			AND m.state IN ('pending', 'outcome_unknown', 'reconciling')
+			AND m.available_at <= now.t
+			AND (m.lease_until IS NULL OR m.lease_until <= now.t)
+			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
+				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
+					AND earlier.resource_key = m.resource_key
+					AND earlier.sequence < m.sequence AND earlier.state NOT IN ('done', 'discarded'))
+		ORDER BY m.sequence LIMIT p_limit FOR UPDATE OF m SKIP LOCKED
+	)
+	UPDATE stego_outbox.messages AS m
+	SET lease_token = p_token, last_token = p_token, lease_until = now.t + p_lease_ms * interval '1 millisecond',
+		state = CASE WHEN m.state = 'pending' THEN 'dispatching' ELSE m.state END,
+		attempts = CASE WHEN m.state = 'pending' THEN m.attempts + 1 ELSE m.attempts END,
+		dispatched_at = CASE WHEN m.state = 'pending' THEN now.t ELSE m.dispatched_at END
+	FROM ready, now
+	WHERE m.id = ready.id
+	RETURNING m.tenant_id, m.id, m.destination, m.resource_key, m.kind, m.payload, m.outgoing_key, m.principal,
+		m.origin, m.group_id, m.state, m.attempts, m.conflicts, m.lookups, m.lease_until, m.dispatched_at, m.failure_code;
+END
+$fn$;
+
 CREATE OR REPLACE FUNCTION stego_outbox.move(p_now timestamptz, p_id uuid, p_token uuid, p_from text, p_to text,
 	p_delay_ms bigint, p_due timestamptz, p_attempts bigint, p_conflict boolean, p_lookup boolean, p_code text,
 	p_lease_ms bigint)
@@ -695,6 +757,7 @@ DECLARE
 BEGIN
 	FOREACH f IN ARRAY ARRAY[
 		'stego_outbox.claim(timestamptz, integer, uuid, bigint)',
+		'stego_outbox.claim_destination(timestamptz, integer, uuid, bigint, text)',
 		'stego_outbox.move(timestamptz, uuid, uuid, text, text, bigint, timestamptz, bigint, boolean, boolean, text, bigint)',
 		'stego_outbox.release(timestamptz, uuid, uuid, bigint, text)',
 		'stego_outbox.purge_parked(timestamptz, integer, bigint, jsonb)',
@@ -763,6 +826,9 @@ type Delivery struct {
 	Lookups      int64
 	LeaseUntil   time.Time
 	DispatchedAt time.Time
+	// FailureCode is the failure code of the message's last attempt that did not end done, such as
+	// delivery-refused, or empty. ClaimDestination gives it; Claim gives none.
+	FailureCode string
 	// leaseEnd is the end of the lease on the local monotonic clock: the time the claim was sent plus the lease, so
 	// it is never later than the lease the database holds.
 	leaseEnd time.Time
@@ -947,6 +1013,23 @@ func lockKey(tenantID, destination, resourceKey string) int64 {
 // (ST-SUP-RP01-LC04); the database may still hold the leases it wrote, and they expire (ST-SUP-RP01-LC04). A
 // cancellation of ctx is returned as such (ST-SUP-RP01-LC05).
 func (q *Queue) Claim(ctx context.Context, limit int, lease time.Duration) ([]Delivery, error) {
+	return q.claim(ctx, "", limit, lease)
+}
+
+// ClaimDestination leases at most limit messages of destination for lease, one for each key, through the relay
+// function claim_destination, as Claim does for every destination, but it reads, moves and leases only the
+// messages of destination: the worker claims each registered destination with a claim of its own, so a destination
+// whose attempts are slow, refused or at their deadline never delays the claim of another (ST-SUP-RP01-LC34). Each
+// delivery also gives the failure code of the message's last attempt that did not end done (FailureCode).
+func (q *Queue) ClaimDestination(ctx context.Context, destination string, limit int, lease time.Duration) ([]Delivery, error) {
+	if !labelPattern.MatchString(destination) {
+		return nil, errors.New("outbox: the claim needs a destination name")
+	}
+	return q.claim(ctx, destination, limit, lease)
+}
+
+// claim is Claim for every destination when destination is empty, and ClaimDestination otherwise.
+func (q *Queue) claim(ctx context.Context, destination string, limit int, lease time.Duration) ([]Delivery, error) {
 	if limit < 1 || limit > MaxBatchSize || lease < time.Second || lease > 5*time.Minute {
 		return nil, errors.New("outbox: the claim limit or the lease is out of its bounds")
 	}
@@ -963,8 +1046,14 @@ func (q *Queue) Claim(ctx context.Context, limit int, lease time.Duration) ([]De
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	sent := time.Now()
-	rows, err := q.db.QueryContext(ctx, `SELECT * FROM stego_outbox.claim($1::timestamptz, $2::integer, $3::uuid, $4::bigint)`, q.now(), limit, token,
-		lease.Milliseconds())
+	var rows *sql.Rows
+	if destination == "" {
+		rows, err = q.db.QueryContext(ctx, `SELECT *, ''::text FROM stego_outbox.claim($1::timestamptz, $2::integer, $3::uuid, $4::bigint)`,
+			q.now(), limit, token, lease.Milliseconds())
+	} else {
+		rows, err = q.db.QueryContext(ctx, `SELECT * FROM stego_outbox.claim_destination($1::timestamptz, $2::integer, $3::uuid, $4::bigint, $5::text)`,
+			q.now(), limit, token, lease.Milliseconds(), destination)
+	}
 	if err != nil {
 		return nil, canceled(ctx, err)
 	}
@@ -975,7 +1064,8 @@ func (q *Queue) Claim(ctx context.Context, limit int, lease time.Duration) ([]De
 		var state string
 		var dispatched sql.NullTime
 		t, err := tenant.ScanRows(rows, &d.ID, &d.Destination, &d.ResourceKey, &d.Kind, &d.Payload, &d.OutgoingKey,
-			&d.Principal, &d.Origin, &d.Group, &state, &d.Attempts, &d.Conflicts, &d.Lookups, &d.LeaseUntil, &dispatched)
+			&d.Principal, &d.Origin, &d.Group, &state, &d.Attempts, &d.Conflicts, &d.Lookups, &d.LeaseUntil, &dispatched,
+			&d.FailureCode)
 		if err != nil {
 			return nil, canceled(ctx, err)
 		}

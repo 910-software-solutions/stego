@@ -1063,7 +1063,7 @@ func TestQueueTenancy(t *testing.T) {
 			names = append(names, name)
 		}
 		rows.Close()
-		if strings.Join(names, ",") != "blocked,claim,move,oldest,purge_done,purge_parked,release,resolve" {
+		if strings.Join(names, ",") != "blocked,claim,claim_destination,move,oldest,purge_done,purge_parked,release,resolve" {
 			t.Fatalf("the relay functions are %v", names)
 		}
 		var relayCommands []string
@@ -1130,6 +1130,15 @@ func TestQueueTenancy(t *testing.T) {
 		rows.Close()
 		if len(claimed) != 1 || claimed[0] != "t1/"+m.ID.String() {
 			t.Fatalf("the claim under decoys gave %v", claimed)
+		}
+		// The claim of one destination reads the same objects under the same decoys (ST-SUP-RP01-LC34).
+		other := message("billing", "charge:2")
+		enqueueAs(t, db, q, "t2", other)
+		var tid string
+		var id uuid.UUID
+		if err := conn.QueryRowContext(ctx, `SELECT r_tenant, r_id FROM stego_outbox.claim_destination(NULL, 32, $1, 60000, 'billing')`,
+			uuid.New()).Scan(&tid, &id); err != nil || tid != "t2" || id != other.ID {
+			t.Fatalf("the claim of one destination under decoys gave %s/%v, %v", tid, id, err)
 		}
 	})
 }
