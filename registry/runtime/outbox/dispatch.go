@@ -736,13 +736,16 @@ func (w *Worker) resolve(ctx context.Context, tx *sql.Tx, request ResolveRequest
 	if w.auditor == nil {
 		return errors.New("outbox: the worker has no auditor, so it refuses every resolution")
 	}
-	// The worker resolves by the registration of the destination on it.
-	rules := func(destination string, _ resolveRow) (resolveRules, error) {
+	// The worker resolves by the stricter of the row and the registration of the destination on it, as the
+	// resolver does (security review of PR #421, L3).
+	rules := func(destination string, row resolveRow) (resolveRules, error) {
 		reg, ok := w.destinations[destination]
 		if !ok {
 			return resolveRules{}, fmt.Errorf("outbox: the destination %s is not registered on this worker", destination)
 		}
-		return resolveRules{mustLand: reg.MustLand, idempotent: reg.Idempotent, hook: reg.StateHook}, nil
+		rules, err := stricter(destination, row, Rules{Name: reg.Name, MustLand: reg.MustLand, Idempotent: reg.Idempotent}, true)
+		rules.hook = reg.StateHook
+		return rules, err
 	}
 	hookFailed := func(ctx context.Context, destination string) {
 		w.hookFailures.Add(1)

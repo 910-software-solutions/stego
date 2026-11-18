@@ -198,7 +198,14 @@ func (r *Relay) AlertBound() time.Duration { return r.bound }
 // Destination returns the registration of the relay on the outbox worker (ST-SUP-RP06-LC06, ST-SUP-RP01-LC25): the
 // destination authz, idempotent and must land, with Deliver as its handler and Hook as its state hook.
 func (r *Relay) Destination() outbox.Destination {
-	return outbox.Destination{Name: DestinationName, Idempotent: true, MustLand: true, Handler: r.Deliver, StateHook: r.Hook}
+	rules := Rules()
+	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: r.Deliver, StateHook: r.Hook}
+}
+
+// Rules returns the declared rules of the destination authz, idempotent and must land, which the resolver of a
+// process that does not deliver applies (security review of PR #421, L3).
+func Rules() outbox.Rules {
+	return outbox.Rules{Name: DestinationName, Idempotent: true, MustLand: true}
 }
 
 // Hook is the relay's state hook (ST-SUP-RP06-LC18): in tx, the transaction of the outbox in which a message of the

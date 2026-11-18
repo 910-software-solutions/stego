@@ -356,7 +356,14 @@ func tlsConfig(s Settings) (*tls.Config, error) {
 // by the event ID, not must land, so a message whose attempts are exhausted is parked as on every other destination,
 // with Deliver as its handler.
 func (d *Destination) Registration() outbox.Destination {
-	return outbox.Destination{Name: DestinationName, Idempotent: true, Handler: d.Deliver}
+	rules := Rules()
+	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: d.Deliver}
+}
+
+// Rules returns the declared rules of the destination kafka, idempotent and not must land, which the resolver of a
+// process that does not deliver applies (security review of PR #421, L3).
+func Rules() outbox.Rules {
+	return outbox.Rules{Name: DestinationName, Idempotent: true}
 }
 
 // Deliver is the outbox handler of the Kafka destination (ST-SUP-RP01-LC30, ST-SUP-RP01-LC31). It publishes the
