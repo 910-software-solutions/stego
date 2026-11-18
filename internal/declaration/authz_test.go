@@ -330,23 +330,27 @@ func withoutAuthorizationParts(t *testing.T, service string) string {
 
 func TestOutboxDestination(t *testing.T) {
 	const t01 = "ST-SUP-RC29-OC20-T01 A schema without the outbox resolve permission is refused"
-	service, schema := td03Files(t)
+	service, withDestination := td03Files(t)
+	// The schema of TD03 defines outbox_destination at its end; schema is TD03 with no such type.
+	const destination = "\n// The operators who resolve the parked messages of an outbox destination (ST-SUP-RC29-OC20).\ndefinition outbox_destination {\n\trelation operator: user\n\tpermission resolve = operator\n}\n"
+	schema := change(t, withDestination, destination, "")
 	durable := service + "mixins:\n  - durable-events\n"
-	const destination = "\ndefinition outbox_destination {\n\trelation operator: user\n\tpermission resolve = operator\n}\n"
-	t.Run(t01+": durable-events with outbox_destination and resolve is accepted", func(t *testing.T) {
-		expectAccepted(t, checkTD03(t, durable, schema+destination))
+	t.Run(t01+": outbox_destination with resolve is accepted, with no mixin and with durable-events", func(t *testing.T) {
+		expectAccepted(t, checkTD03(t, service, withDestination))
+		expectAccepted(t, checkTD03(t, durable, withDestination))
 	})
-	t.Run(t01+": no durable-events needs no outbox_destination", func(t *testing.T) {
-		expectAccepted(t, checkTD03(t, service, schema))
-	})
+	// The runtime wiring registers the parked-message routes, and the authz relay uses the outbox, also with no mixin
+	// bound (security review of PR #425, M1).
 	for _, c := range []struct {
 		name, service, schema string
 		texts                 []string
 	}{
-		{"no outbox_destination type", durable, schema, []string{"outbox_destination", "resolve", "durable-events", "authz/schema.zed"}},
-		{"the alias event-publisher and no outbox_destination type", service + "mixins:\n  - event-publisher\n", schema, []string{"outbox_destination", "resolve", "event-publisher"}},
-		{"an outbox_destination with no resolve permission", durable, schema + "\ndefinition outbox_destination {\n\trelation operator: user\n\tpermission view = operator\n}\n", []string{"outbox_destination", "resolve", "no permission"}},
-		{"a resolve that reaches user:*", durable, schema + "\ndefinition outbox_destination {\n\trelation anyone: user:*\n\tpermission resolve = anyone\n}\n", []string{"outbox_destination", "resolve", "wildcard"}},
+		{"no mixin and no outbox_destination type", service, schema, []string{"outbox_destination", "resolve", "authz/schema.zed"}},
+		{"durable-events and no outbox_destination type", durable, schema, []string{"outbox_destination", "resolve"}},
+		{"the alias event-publisher and no outbox_destination type", service + "mixins:\n  - event-publisher\n", schema, []string{"outbox_destination", "resolve"}},
+		{"an outbox_destination with no resolve permission", service, schema + "\ndefinition outbox_destination {\n\trelation operator: user\n\tpermission view = operator\n}\n", []string{"outbox_destination", "resolve", "no permission"}},
+		{"no mixin and a resolve that reaches user:*", service, schema + "\ndefinition outbox_destination {\n\trelation anyone: user:*\n\tpermission resolve = anyone\n}\n", []string{"outbox_destination", "resolve", "wildcard"}},
+		{"durable-events and a resolve that reaches user:*", durable, schema + "\ndefinition outbox_destination {\n\trelation anyone: user:*\n\tpermission resolve = anyone\n}\n", []string{"outbox_destination", "resolve", "wildcard"}},
 	} {
 		t.Run(t01+": "+c.name, func(t *testing.T) {
 			fault := expectOneFault(t, checkTD03(t, c.service, c.schema), "outbox-resolve", c.texts...)
@@ -355,6 +359,19 @@ func TestOutboxDestination(t *testing.T) {
 			}
 		})
 	}
+	// An entity of the type could take the ID of a destination such as authz (security review of PR #425, L1).
+	t.Run(t01+": an entity with the resource type outbox_destination is refused", func(t *testing.T) {
+		text := change(t, service, "    resource_type: document\n", "    resource_type: outbox_destination\n")
+		var reserved []ValidationError
+		for _, fault := range checkTD03(t, text, withDestination) {
+			if fault.Found == "outbox_destination" && strings.Contains(fault.Message, "reserved") {
+				reserved = append(reserved, fault)
+			}
+		}
+		if len(reserved) != 1 || !strings.HasSuffix(reserved[0].Path, ".resource_type") {
+			t.Fatalf("want one fault that names outbox_destination as reserved, got %+v", reserved)
+		}
+	})
 }
 
 func TestDroppedEntitySchema(t *testing.T) {
