@@ -27,9 +27,11 @@
 # Version 4.15.0 parses the query string of a list once and refuses with 400 one that does not parse, such as one with
 # a ';', a bad escape or more than 10000 parameters; cuts a refused name on a character boundary and names it once; and
 # sets X-Content-Type-Options: nosniff on each problem answer (security review of PR #442, L1 and I3).
+# Version 4.15.1 cuts a refused parameter name at 64 bytes when it has no character boundary in its first 64 bytes,
+# where it gave an empty name (security review of PR #445, I-4).
 kind: component
 name: rest-api
-version: 4.15.0
+version: 4.15.1
 stage: ga
 output_namespace: internal/api
 

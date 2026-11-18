@@ -568,7 +568,9 @@ func listQuery(r *http.Request) (url.Values, string) {
 // unreadParameters gives the detail of the 400 of a list request whose query string holds a parameter that the list
 // does not read, or "" when the list reads each one (ST-SUP-RC20-OC51). It names each such parameter once, in byte
 // order, at most 10 of them, each cut to at most its first 64 bytes on a character boundary, and quotes no value.
-// Two names that are the same after the cut are named once. For limit it says that pageSize sets the page size.
+// A name with no character boundary in those bytes, which is not valid UTF-8, is cut at 64 bytes, and strconv.Quote
+// escapes its bytes. Two names that are the same after the cut are named once. For limit it says that pageSize sets
+// the page size.
 func unreadParameters(parameters map[string][]string) string {
 	var names []string
 	limit := false
@@ -581,6 +583,9 @@ func unreadParameters(parameters map[string][]string) string {
 			cut := 64
 			for cut > 0 && !utf8.RuneStart(name[cut]) {
 				cut--
+			}
+			if cut == 0 {
+				cut = 64
 			}
 			name = name[:cut]
 		}
