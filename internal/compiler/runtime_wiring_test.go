@@ -668,7 +668,7 @@ func TestKeyRingWiring(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{`"github.com/jsell-rh/stego/registry/runtime/sealed"`, "service.ReadKeyRing()", "settings.Ring = ring",
+		for _, want := range []string{`"github.com/jsell-rh/stego/registry/runtime/sealed"`, "service.ReadKeyRing()", "settings.Ring = ring", "KeyRing: true",
 			"Seal: svcstorage.SealColumns", `SealLeases: []string{"member-email-seal"}`} {
 			if !strings.Contains(string(withRing), want) {
 				t.Errorf("the wiring of a service with a pii field and an open seal does not hold %s", want)
@@ -678,7 +678,7 @@ func TestKeyRingWiring(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, gone := range []string{"registry/runtime/sealed", "ReadKeyRing", "SealColumns", "SealLeases"} {
+		for _, gone := range []string{"registry/runtime/sealed", "ReadKeyRing", "KeyRing:", "SealColumns", "SealLeases"} {
 			if strings.Contains(string(plain), gone) {
 				t.Errorf("the wiring of a service with no secret and no pii field holds %s", gone)
 			}
