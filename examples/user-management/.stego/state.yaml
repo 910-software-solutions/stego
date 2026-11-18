@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118113236-871f3e9b92df
+        module_version: v0.0.0-20261118120504-decb20d74fa7
         vcs: git
-        revision: 871f3e9b92df0e280af4495b7103024e96bddd9a
+        revision: decb20d74fa7d41abf2d08276da19b96cdf434a8
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 642e9d7f5f905a241aa9a552e7d33b9f4bbeb08123d4902ad4e5bcdff61cc506
+    registry_content_sha256: a65b743d2b5d26d5d79b72dfb28d75908d5542ae2af045fc3852500ed0b7f95f
     components:
         audit-log:
             version: 1.2.0
@@ -170,7 +170,7 @@ last_applied:
         internal/tenancy/migrations/roles.sql: 97d9f345a8bd6feff7c0e64d64d6bac390ebb4b10a3c051e5cf9da7cf4f1c955
         internal/tenancy/migrations/row_security.sql: 6813d74ed06f5df636433d5335339bcb4338f05de418002cd7ef94b60f44b6d9
         internal/tenancy/row_security.go: 0810ecf62fc5261a835ab12ea0242a31c614d2cc54bc141209a26e7842459a7a
-        main.go: da5e8a4816a2b963653c1bd648621ceced323018e99aa477c733677d38195aaa
+        main.go: 56c5b244184d56e62c431b9790cb56b6227345c518bc7f2a66d38f11546aadcc
         probes/observations.json: 3219f8292bdb4a47a2882aa87528a231132ea9219db88c094ea0051559fad046
         probes/probes.go: 7b1f0c4ba4b67cf9ba9890be0743d793cc9603cfbf4e43b1193cc2e8b1fe8bf9
         slots/after_create.go: 03242bcad46578176c9ac819f42390080ebebb94f72c480316f09740289ad80f
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: be09cdcf3aded376470feba8a9cb3363816d96f263fa9c8ddf8a7e1069223b90
-        architecture/index.html: 0840551c5a4243353baeafa78c024daa041c857ae0526f5ca880902a52790c98
+        architecture/architecture.json: 9d3aae813ec4912ae5bd28ca1fb7c96ce2315cc48e38f5bbd7dc25acbffac97f
+        architecture/index.html: cf92514e9978d63f51508739467a74dce18a157a8013dd71f88b4f6e0fc9f950
         deploy/base/deployment.yaml: 84b1da4ab8f8ac4611450a4700e3294c4026462ecca9f734d42bf7050be781f9
         deploy/base/kustomization.yaml: 85f6e6406f5dbe762f8cc35c9e2a0f740be5e20b7d2c522ec526a50dc094e721
         deploy/base/migration-job.yaml: 25d87ffea75bea3d90f404deef75210b3641a249740a7c44b4725cfb6fade97c
@@ -233,7 +233,7 @@ last_applied:
         deploy/platform-requirements.yaml: 84069a6d64a15b13f7fa212813e1b39b9dfd6d7438e63910b1ba0911a09c8af2
     archetype:
         name: rest-crud
-        version: 3.175.0
+        version: 3.177.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.133.0
