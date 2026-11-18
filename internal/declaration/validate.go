@@ -350,6 +350,18 @@ var (
 	uuidForm = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
+// workerSuffix is the end that a service name may not have (ST-DECL-INV86): the split Kubernetes base names the
+// Deployment and the ServiceAccount of the worker and controller modes <service>-worker (ST-DLV-UC07-R07).
+const workerSuffix = "-worker"
+
+// workerSuffixReason tells why a service name may not end with workerSuffix.
+const workerSuffixReason = "the Deployment and the ServiceAccount of the worker and controller modes of a service take the name <service>-worker, so a service orders-worker beside a service orders in one namespace would share the ServiceAccount of orders and get its Role (ST-DECL-INV86)"
+
+// workerSuffixed tells if a service name ends with workerSuffix (ST-DECL-INV86).
+func workerSuffixed(name string) bool {
+	return strings.HasSuffix(name, workerSuffix)
+}
+
 // validateNameForms gives one fault for each service, collection, entity, field and slot-binding fill name outside
 // its form
 // (ST-DECL-INV86), with its path and the form.
@@ -362,6 +374,10 @@ func validateNameForms(service *types.ServiceDeclaration) []ValidationError {
 		}
 	}
 	check("service", "name", service.Name, serviceNameForm)
+	if serviceNameForm.MatchString(service.Name) && workerSuffixed(service.Name) {
+		faults = append(faults, ValidationError{Category: "service", Rule: "name-form", Path: "name", Found: service.Name, Allowed: []string{"a service name that does not end with " + workerSuffix},
+			Message: fmt.Sprintf("the service name %q ends with %s: %s", service.Name, workerSuffix, workerSuffixReason)})
+	}
 	for ei, e := range service.Entities {
 		check("entity", entityPath(ei)+".name", e.Name, entityNameForm)
 		for fi, f := range e.Fields {
