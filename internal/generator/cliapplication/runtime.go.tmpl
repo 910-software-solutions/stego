@@ -25,11 +25,12 @@ import (
 // absolute UTC RFC 3339 timestamp. It is exclusive with Flag and body files.
 type Field struct {Flag,Key,Type,RelativeFlag string;Required,Nullable bool}
 type PathParameter struct {Flag,Key string}
-type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive bool;PathParameters []PathParameter;Fields []Field;Success,EmptyResponses []int}
-// IdempotentWrites states that the service keeps the Idempotency-Key of a POST and a PATCH (the idempotency
-// component). Then the CLI sends a write again one time, with the same key, after a transport failure or a 5xx
-// answer. The CLI sends a new key with each POST and PATCH in either case.
-type Application struct {VersionCommand,IdempotentWrites bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
+// IdempotentWrites states that the service keeps the Idempotency-Key of this POST or PATCH command: its OpenAPI
+// operation carries the Idempotency-Key header parameter (the idempotency component). Then the CLI sends the write
+// again one time, with the same key, after a transport failure, an expired request or a 5xx answer. The CLI sends a
+// new key with each POST and PATCH in either case. IdempotentWritesFrom sets it from the OpenAPI document.
+type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive,IdempotentWrites bool;PathParameters []PathParameter;Fields []Field;Success,EmptyResponses []int}
+type Application struct {VersionCommand bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
 var word=regexp.MustCompile(`^[a-z][a-zA-Z0-9-]{0,63}$`)
 var pathPart=regexp.MustCompile(`^[a-zA-Z0-9._~!$&'()*+,;=:@-]+$`)
 var property=regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
@@ -62,6 +63,7 @@ func validate(app Application)error{
   for _,part:=range strings.Split(strings.TrimPrefix(c.Path,"/"),"/"){if part=="{id}"&&c.ID {continue};if strings.HasPrefix(part,"{")&&strings.HasSuffix(part,"}")&&parameters[part[1:len(part)-1]]{continue};if part=="."||part==".."||!pathPart.MatchString(part){return errors.New("invalid CLI route segment")}}
   if c.ID!=(strings.Count(c.Path,"{id}")==1){return errors.New("invalid CLI route parameter")}
   switch c.Method{case "GET","POST","PATCH","PUT","DELETE":default:return errors.New("invalid CLI method")}
+  if c.IdempotentWrites&&c.Method!="POST"&&c.Method!="PATCH"{return errors.New("invalid CLI idempotent write")}
   if len(c.Success)==0||len(c.Success)>4||len(c.Fields)>64{return errors.New("invalid CLI command limits")}
   for _,code:=range c.Success{if code<200||code>299{return errors.New("invalid CLI success code")}}
   if len(c.EmptyResponses)>len(c.Success){return errors.New("invalid empty response codes")}
@@ -154,7 +156,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  transport,err:=client.New(client.Options{BaseURL:cfg.URL,CAFile:cfg.CAFile,Timeout:15*time.Second});if err!=nil{return err};defer transport.Close()
  headers:=http.Header{"Authorization":{"Bearer "+token},"Accept":{"application/json"}}
  if payload!=nil{headers.Set("Content-Type","application/json")}
- response,retried,err:=send(ctx,app,transport,c.Method,route,headers,payload);if err!=nil{return err}
+ response,retried,err:=send(ctx,c.IdempotentWrites,transport,c.Method,route,headers,payload);if err!=nil{return err}
  success:=false;for _,code:=range c.Success{if response.StatusCode==code{success=true}}
  if !success&&retried{return fmt.Errorf("API request outcome is unknown after a second request with the same key (HTTP %d); retrieve the resource before a retry",response.StatusCode)}
  if !success{return fmt.Errorf("API request failed (HTTP %d)",response.StatusCode)}
@@ -177,23 +179,68 @@ func idempotencyKey()(string,error){
 // writeRetryWait is the wait before the second request of a write when the answer gives no Retry-After; a Retry-After
 // of 1 to 5 seconds is followed. Only the tests of this package change it.
 var writeRetryWait=time.Second
-// send sends one request. A POST or a PATCH gets a new Idempotency-Key. When the service keeps the key, a write that
-// fails in transport or gets a 5xx answer is sent again one time, after a short wait, with the same key and body, so
-// the service gives the stored answer of a write that it did (ST-SUP-RC04-OC31). retried tells that the second request
-// was sent: its answer, when it is not a success, leaves the outcome of the write unknown, as the first request can
-// still be in its transaction. No other request is sent again (ST-SUP-RC04-OC05).
-func send(ctx context.Context,app Application,transport *client.Client,method,route string,headers http.Header,payload []byte)(response client.Response,retried bool,err error){
+// send sends one request. A POST or a PATCH gets a new Idempotency-Key. When keeps states that the service keeps the
+// key of this write, a write that fails in transport, expires or gets a 5xx answer is sent again one time, after a
+// short wait, with the same key and body, so the service gives the stored answer of a write that it did
+// (ST-SUP-RC04-OC31). retried tells that the second request was sent: its answer, when it is not a success, leaves the
+// outcome of the write unknown, as the first request can still be in its transaction. No other request is sent again
+// (ST-SUP-RC04-OC05).
+func send(ctx context.Context,keeps bool,transport *client.Client,method,route string,headers http.Header,payload []byte)(response client.Response,retried bool,err error){
  if method!="POST"&&method!="PATCH"{response,err=transport.Do(ctx,method,route,headers,payload);return}
  key,err:=idempotencyKey();if err!=nil{return}
  headers=headers.Clone();headers.Set("Idempotency-Key",key)
  response,err=transport.Do(ctx,method,route,headers,payload)
- if !app.IdempotentWrites||(err==nil&&response.StatusCode<500)||ctx.Err()!=nil{return}
+ if !keeps||!uncertain(response,err)||ctx.Err()!=nil{return}
  wait:=writeRetryWait
  if err==nil{if seconds,parseErr:=strconv.Atoi(response.Header.Get("Retry-After"));parseErr==nil&&seconds>=1&&seconds<=5{wait=time.Duration(seconds)*time.Second}}
  timer:=time.NewTimer(wait);defer timer.Stop()
  select{case <-ctx.Done():return response,false,err;case <-timer.C:}
  response,err=transport.Do(ctx,method,route,headers,payload)
  return response,true,err
+}
+
+// uncertain tells whether a write can have occurred with its answer lost: a transport failure, a request that expired,
+// or a 5xx answer. A local refusal of the client (such as a header or a body over its limit), a redirect and an answer
+// body over the limit are not sent again (security review of PR 447, I-2).
+func uncertain(response client.Response,err error)bool{
+ if err!=nil{return errors.Is(err,client.ErrTransport)||errors.Is(err,client.ErrDeadline)}
+ return response.StatusCode>=500
+}
+
+// IdempotentWritesFrom gives the application with IdempotentWrites set from the OpenAPI document of its service: true
+// on each command whose operation, the method on the path, carries the Idempotency-Key header parameter, and on each
+// apply resource whose create (POST on its path) carries it and, when the resource has patch fields, whose patch
+// (PATCH on its path and /{id}) carries it too; false on each other command and resource. Paths match with any name in
+// each {} segment. The rest-api component states the parameter on each create and patch when the service has the
+// idempotency component (ST-SUP-RC30-OC01). A parameter given by $ref is not followed, so its write is not sent again.
+func IdempotentWritesFrom(app Application,document []byte)(Application,error){
+ invalid:=errors.New("invalid OpenAPI document")
+ if len(document)>client.MaxResponseBytes{return app,invalid}
+ var spec struct{Paths map[string]map[string]json.RawMessage `json:"paths"`}
+ if json.Unmarshal(document,&spec)!=nil||spec.Paths==nil{return app,invalid}
+ type parameter struct{Name string `json:"name"`;In string `json:"in"`}
+ keyed:=map[string]bool{}
+ for route,item:=range spec.Paths{
+  var shared []parameter
+  if raw,ok:=item["parameters"];ok&&json.Unmarshal(raw,&shared)!=nil{return app,invalid}
+  for method,raw:=range item{
+   if method!="post"&&method!="patch"{continue}
+   var operation struct{Parameters []parameter `json:"parameters"`}
+   if json.Unmarshal(raw,&operation)!=nil{return app,invalid}
+   for _,p:=range append(append([]parameter(nil),shared...),operation.Parameters...){if p.In=="header"&&strings.EqualFold(p.Name,"Idempotency-Key"){keyed[strings.ToUpper(method)+" "+routeShape(route)]=true}}
+  }
+ }
+ result:=app
+ result.Commands=append([]Command(nil),app.Commands...)
+ for i:=range result.Commands{c:=&result.Commands[i];c.IdempotentWrites=keyed[c.Method+" "+routeShape(c.Path)]}
+ result.Resources=append([]ApplyResource(nil),app.Resources...)
+ for i:=range result.Resources{r:=&result.Resources[i];r.IdempotentWrites=keyed["POST "+routeShape(r.Path)]&&(len(r.PatchFields)==0||keyed["PATCH "+routeShape(r.Path+"/{id}")])}
+ return result,nil
+}
+// routeShape gives a path with each {} segment as {}, so that two names of one parameter match.
+func routeShape(route string)string{
+ parts:=strings.Split(route,"/");for i,part:=range parts{if strings.HasPrefix(part,"{")&&strings.HasSuffix(part,"}"){parts[i]="{}"}}
+ return strings.Join(parts,"/")
 }
 
 func parse(args []string,confirm bool)(map[string]string,[]string,error){

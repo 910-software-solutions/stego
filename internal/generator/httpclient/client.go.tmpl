@@ -34,6 +34,12 @@ const MaxStreamBytes = 64 << 20
 // PeerCertificateSHA256 optionally requires one exact leaf certificate after
 // normal chain, hostname, purpose, and expiry checks. New copies its value.
 type Options struct { BaseURL, CAFile string; Timeout time.Duration; StreamLimit int; PeerCertificateSHA256 *[32]byte }
+// ErrTransport is the error of a request whose exchange failed in transport: no answer, or an answer that stopped
+// before its end. The service can have done the request.
+var ErrTransport=errors.New("HTTP service request failed")
+// ErrDeadline is the error of a request whose time limit ended before its answer was read whole. The service can
+// have done the request.
+var ErrDeadline=errors.New("HTTP service request expired")
 // Client sends bounded requests to one configured HTTPS origin and path prefix.
 // It does not follow redirects or use proxy settings from the environment.
 type Client struct {
@@ -120,7 +126,7 @@ func(c *Client)exchange(ctx context.Context,method,relative string,headers http.
  switch method{case http.MethodGet,http.MethodPost,http.MethodPut,http.MethodPatch,http.MethodDelete,http.MethodHead:default:return fail("invalid_request",errors.New("unsupported HTTP method"))}
  if len(body)>MaxRequestBytes{return fail("invalid_request",errors.New("HTTP request body exceeds limit"))}
  headerBytes:=0
- for name,values:=range headers{headerBytes+=len(name);switch strings.ToLower(name){case "host","connection","transfer-encoding","content-length","trailer","upgrade","proxy-authorization",{{if not .KeyHeader}}"idempotency-key",{{end}}"x-idempotency-key":return fail("invalid_request",errors.New("unsupported HTTP request header"))};for _,value:=range values{headerBytes+=len(value);if headerBytes>32768 || len(value)>16384{return fail("invalid_request",errors.New("HTTP request header exceeds limit"))}}}
+ for name,values:=range headers{headerBytes+=len(name);{{if .KeyWritesOnly}}if strings.EqualFold(name,"idempotency-key")&&method!=http.MethodPost&&method!=http.MethodPatch{return fail("invalid_request",errors.New("unsupported HTTP request header"))};{{end}}switch strings.ToLower(name){case "host","connection","transfer-encoding","content-length","trailer","upgrade","proxy-authorization",{{if not .KeyHeader}}"idempotency-key",{{end}}"x-idempotency-key":return fail("invalid_request",errors.New("unsupported HTTP request header"))};for _,value:=range values{headerBytes+=len(value);if headerBytes>32768 || len(value)>16384{return fail("invalid_request",errors.New("HTTP request header exceeds limit"))}}}
  permits:=c.permits;if consume!=nil{permits=c.streamPermits}
  select{case permits<-struct{}{}:defer func(){<-permits}();default:return fail("capacity",errors.New("HTTP client capacity exceeded"))}
  timeout:=c.timeout;if timeout==0{timeout=RequestTimeout};if consume!=nil{timeout=StreamTimeout}
@@ -132,7 +138,7 @@ func(c *Client)exchange(ctx context.Context,method,relative string,headers http.
  {{if .Tracing}}request.Header=inject(request.Header){{end}}
  client:=*c.http;client.Timeout=timeout
  response,err:=client.Do(request)
- if err!=nil{return fail("transport",errors.New("HTTP service request failed"))}
+ if err!=nil{return fail("transport",ErrTransport)}
  {{if .Tracing}}status=response.StatusCode{{end}}
  defer response.Body.Close()
  if response.StatusCode==http.StatusNotModified && method!=http.MethodGet && method!=http.MethodHead{return fail("response",errors.New("unexpected HTTP cache response"))}
@@ -154,9 +160,9 @@ func(c *Client)exchange(ctx context.Context,method,relative string,headers http.
    return Response{StatusCode:response.StatusCode,Header:response.Header.Clone()},nil
  }
  data,err:=io.ReadAll(io.LimitReader(response.Body,MaxResponseBytes+1))
- if err!=nil || len(data)>MaxResponseBytes{return fail("response",errors.New("invalid HTTP response body"))}
- if ctx.Err()!=nil{return fail("canceled",errors.New("HTTP service request canceled"))}
- if deadline,ok:=ctx.Deadline();ok && !time.Now().Before(deadline){return fail("deadline",errors.New("HTTP service request expired"))}
+ if err!=nil{if ctx.Err()==nil{return fail("response",ErrTransport)}}else if len(data)>MaxResponseBytes{return fail("response",errors.New("invalid HTTP response body"))}
+ if err:=ctx.Err();err!=nil{if errors.Is(err,context.DeadlineExceeded){return fail("deadline",ErrDeadline)};return fail("canceled",errors.New("HTTP service request canceled"))}
+ if deadline,ok:=ctx.Deadline();ok && !time.Now().Before(deadline){return fail("deadline",ErrDeadline)}
  {{if .Tracing}}kind=""{{end}}
  return Response{StatusCode:response.StatusCode,Header:response.Header.Clone(),Body:data},nil
 }

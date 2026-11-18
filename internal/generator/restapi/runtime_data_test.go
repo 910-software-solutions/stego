@@ -571,18 +571,30 @@ func TestCrudService(t *testing.T) {
 }
 
 // crudCLIFactory is the factory of the generated CLI of the test service: one immutable apply resource, Folder, whose
-// identity is its name, on the folders collection.
+// identity is its name, on the folders collection. It reads from the OpenAPI document of the service that the service
+// keeps the Idempotency-Key of a create, and refuses to start when the document does not state it.
 const crudCLIFactory = `package cliapp
 
-import command "example.com/crud/out/cli/command"
+import (
+	_ "embed"
+
+	command "example.com/crud/out/cli/command"
+)
+
+//go:embed openapi.json
+var document []byte
 
 // Commands gives the CLI of the test service, which keeps the Idempotency-Key of a write.
 func Commands() command.Application {
-	return command.Application{ConfigEnv: "CRUD_CLI_CONFIG", ConfigName: "crud", IdempotentWrites: true, Resources: []command.ApplyResource{{
+	app, err := command.IdempotentWritesFrom(command.Application{ConfigEnv: "CRUD_CLI_CONFIG", ConfigName: "crud", Resources: []command.ApplyResource{{
 		Kind: "Folder", APIVersion: "crud/v1", Path: "/api/v1/folders",
 		CreateFields:      []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}},
 		ImmutableIdentity: []string{"name"},
-	}}}
+	}}}, document)
+	if err != nil || !app.Resources[0].IdempotentWrites {
+		panic("the OpenAPI document of the service does not state the Idempotency-Key of a create of a folder")
+	}
+	return app
 }
 `
 
@@ -598,6 +610,11 @@ func (p *crudProject) addCLI() string {
 	for _, f := range files {
 		p.write("out/"+f.Path, f.Bytes())
 	}
+	document, err := os.ReadFile(filepath.Join(p.dir, "out", "api", "openapi.json"))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	p.write("cliapp/openapi.json", document)
 	p.write("cliapp/app.go", []byte(crudCLIFactory))
 	p.mustGo("mod", "tidy")
 	program := filepath.Join(p.dir, "bin", "crud-cli")
