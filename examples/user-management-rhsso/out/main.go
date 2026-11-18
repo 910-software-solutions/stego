@@ -252,6 +252,20 @@ func stegoFaultName(value string) bool {
 	return true
 }
 
+// stegoRemedyText tells whether a remedy has the form of a fixed text of the generated code: 1 to 512 bytes of
+// printable ASCII, so no line feed or other control character reaches the record; the record drops any other text.
+func stegoRemedyText(value string) bool {
+	if len(value) == 0 || len(value) > 512 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x20 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // stegoSQLState gives the SQLSTATE of a cause of the database, such as 55P03, when it has the form of one: five
 // characters of 0-9 and A-Z. Any other cause gives empty.
 func stegoSQLState(err error) string {
@@ -358,6 +372,14 @@ func stegoReportFailure(output io.Writer, err error) {
 	if errors.As(err, &classified) && stegoFaultName(classified.FaultClass()) && stegoFaultName(classified.FaultObject()) {
 		fault, object = classified.FaultClass(), classified.FaultObject()
 	}
+	// A fault that knows its remedy names it, a fixed text of the generated code such as the section of the upgrade
+	// guide that moves a database to the role layout of the release (walkthrough 11, W11-B1). It is never the text of
+	// the cause.
+	var remedy string
+	var remedied interface{ FaultRemedy() string }
+	if fault != "" && errors.As(err, &remedied) && stegoRemedyText(remedied.FaultRemedy()) {
+		remedy = remedied.FaultRemedy()
+	}
 	record := struct {
 		Timestamp    string   `json:"timestamp"`
 		Severity     string   `json:"severity"`
@@ -369,9 +391,10 @@ func stegoReportFailure(output io.Writer, err error) {
 		Modes        []string `json:"modes,omitempty"`
 		Fault        string   `json:"fault,omitempty"`
 		Object       string   `json:"object,omitempty"`
+		Remedy       string   `json:"remedy,omitempty"`
 		Cause        string   `json:"cause,omitempty"`
 		SQLState     string   `json:"sqlstate,omitempty"`
-	}{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object, stegoCauseClass(err), stegoSQLState(err)}
+	}{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object, remedy, stegoCauseClass(err), stegoSQLState(err)}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
