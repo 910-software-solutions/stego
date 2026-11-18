@@ -199,18 +199,16 @@ func TestModeDeployments(t *testing.T) {
 	})
 
 	t.Run("ST-DLV-UC07-R07-T03 A variable of the api mode is only in the Deployment of the api mode", func(t *testing.T) {
-		// The fixture of ST-DLV-TD02 with the CORS settings of rest-api stated as read by the api mode alone, as the
+		// The fixture of ST-DLV-TD02 states the CORS settings of rest-api as read by the api mode alone, as the
 		// shipped component states them.
 		requirements := string(workerRequirements(t))
 		api := []string{"CORS_ALLOWED_HEADERS", "CORS_ALLOWED_METHODS", "CORS_ALLOWED_ORIGINS"}
 		for _, name := range api {
 			at := strings.Index(requirements, "  - name: "+name+"\n")
-			end := strings.Index(requirements[at:], "    secret: false\n")
-			if at < 0 || end < 0 {
-				t.Fatalf("the fixture has no entry of %s", name)
+			end := strings.Index(requirements[at+1:], "  - name: ")
+			if at < 0 || end < 0 || !strings.Contains(requirements[at:at+1+end], "    read_by_mode: api\n") {
+				t.Fatalf("the fixture does not state %s as read by the api mode", name)
 			}
-			cut := at + end + len("    secret: false\n")
-			requirements = requirements[:cut] + "    read_by_mode: api\n" + requirements[cut:]
 		}
 		for _, modes := range [][]string{{"api", "worker", "controller"}, {"worker", "controller"}, {"api"}, nil} {
 			base, _, err := WriteBase("orders", testRelease, []byte(requirements), healthCheckProbes, modes)

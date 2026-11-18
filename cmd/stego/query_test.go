@@ -110,8 +110,8 @@ func TestQueriesFromDeclaration(t *testing.T) {
 		}
 		for _, want := range []string{
 			`fillGetNote "example.com/notes/fills/get-note"`, `fillListNotes "example.com/notes/fills/list-notes"`,
-			`mux.Handle("GET /api/notes/v1/notes/{noteId}", h.cfg.Verifier.Middleware(h.getNote))`,
-			`mux.Handle("GET /api/notes/v1/notes", h.cfg.Verifier.Middleware(h.listNotes))`,
+			`mux.Handle("GET /api/notes/v1/notes/{noteId}", h.cfg.Verifier.Middleware(h.awaitWrite(h.getNote)))`,
+			`mux.Handle("GET /api/notes/v1/notes", h.cfg.Verifier.Middleware(h.awaitWrite(h.listNotes)))`,
 			"return fillGetNote.Fill(ctx, req, h)", "Fill:   fillListNotes.Fill,",
 		} {
 			if !strings.Contains(serve, want) {
