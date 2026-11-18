@@ -405,6 +405,8 @@ func TestOutcomeTransient(t *testing.T) {
 		}
 		undecided := Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
 		internal := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+		unavailable := Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
+		notFound := Outcome{Status: http.StatusNotFound, Code: ErrorCodeNotFound, Audit: audit.OutcomeFailed}
 		for _, c := range []struct {
 			name string
 			err  error
@@ -416,6 +418,12 @@ func TestOutcomeTransient(t *testing.T) {
 			{"a SpiceDB call that ran out of time", decide(status.Error(codes.DeadlineExceeded, "deadline")), undecided},
 			{"a refusal of SpiceDB", decide(status.Error(codes.FailedPrecondition, "the relation is not in the schema")), internal},
 			{"a key that SpiceDB does not take", decide(status.Error(codes.PermissionDenied, "bad key")), internal},
+			// A not-found error that also holds a cause of a 503 answer is 503, so that the caller tries again
+			// (security review of PR 448, I2).
+			{"a not-found error with a decision that could not be made now", errors.Join(fmt.Errorf("fill: %w", ErrNotFound), ErrUndecided), undecided},
+			{"a not-found error with a SpiceDB that does not answer", errors.Join(ErrNotFound, decide(status.Error(codes.Unavailable, "connection refused"))), undecided},
+			{"a not-found error of a database that cannot serve now", errors.Join(fmt.Errorf("fill: %w", ErrNotFound), ErrUnavailable), unavailable},
+			{"a not-found error alone", fmt.Errorf("fill: %w", ErrNotFound), notFound},
 		} {
 			if got := OutcomeOf(c.err); got != c.want {
 				t.Errorf("%s: OutcomeOf gave %+v, want %+v", c.name, got, c.want)
@@ -427,6 +435,10 @@ func TestOutcomeTransient(t *testing.T) {
 			(*Runtime)(nil).writeProblem(w, status, "", "code")
 			if got := w.Header().Get("Retry-After"); !slices.Contains(want, got) || w.Code != status {
 				t.Errorf("the answer %d has Retry-After %q (status %d), want one of %q", status, got, w.Code, want)
+			}
+			// A browser does not sniff the problem as another type (security review of PR 445, I-2).
+			if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+				t.Errorf("the answer %d has X-Content-Type-Options %q, want nosniff", status, got)
 			}
 		}
 	})

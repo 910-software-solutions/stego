@@ -761,6 +761,12 @@ CREATE TABLE IF NOT EXISTS stego_schema.migrations (version text PRIMARY KEY, di
 			if logs, err := start(); err != nil {
 				t.Fatalf("New with a ledger row that the release does not give gave %v:\n%s", err, logs)
 			}
+			// A migration of the release that the ledger has no row of is not applied (security review of PR 448, I1).
+			declared.Migrations = map[string]string{"001_initial": "d", "050_orders_step": "d", "002_release": "d"}
+			if logs, err := start(); !errors.Is(err, ErrMigrationPending) || StartStage(err) != "service.start.migration" ||
+				!strings.Contains(err.Error(), "no row of the migration 050_orders_step") || !strings.Contains(logs, `"migration":"050_orders_step"`) {
+				t.Fatalf("New with a migration of the release that the ledger has no row of gave %v at the stage %q, want ErrMigrationPending at service.start.migration that names 050_orders_step:\n%s", err, StartStage(err), logs)
+			}
 			const body = "CREATE TABLE secret_body_text (id int)"
 			declared.Migrations = map[string]string{"001_initial": "e3b0c4", "002_release": "d"}
 			logs, err := start()
