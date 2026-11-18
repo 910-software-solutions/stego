@@ -323,4 +323,40 @@ func TestModeDeployments(t *testing.T) {
 			t.Error("LoadBase accepts a worker ServiceAccount in a base with no worker Deployment")
 		}
 	})
+
+	t.Run("ST-DLV-UC07-R07-T05 LoadBase holds each Deployment to its own ServiceAccount, and the RoleBinding to exactly those", func(t *testing.T) {
+		requirements := strings.Replace(string(workerRequirements(t)), "requirements:\n",
+			"requirements:\n  - kind: cluster permission\n    name: orders-maps\n    resource: configmaps\n    verbs: [get]\n    components: [kubernetes-client]\n", 1)
+		base, _, err := WriteBase("orders", testRelease, []byte(requirements), healthCheckProbes, []string{"api", "worker", "controller"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadBase(base.Files); err != nil {
+			t.Fatalf("LoadBase refuses the split base: %v", err)
+		}
+		changed := func(file, from, to string) map[string][]byte {
+			t.Helper()
+			files := maps.Clone(base.Files)
+			if !strings.Contains(string(files[file]), from) {
+				t.Fatalf("%s does not hold %q", file, from)
+			}
+			files[file] = []byte(strings.Replace(string(files[file]), from, to, 1))
+			return files
+		}
+		noWorkerAccount := changed(KustomizationFile, "  - worker-service-account.yaml\n", "")
+		delete(noWorkerAccount, WorkerServiceAccountFile)
+		for name, files := range map[string]map[string][]byte{
+			"no worker ServiceAccount":                        noWorkerAccount,
+			"a worker Deployment that runs as the service":    changed(WorkerDeploymentFile, "serviceAccountName: orders-worker", "serviceAccountName: orders"),
+			"an api Deployment that runs as default":          changed(DeploymentFile, "serviceAccountName: orders", "serviceAccountName: default"),
+			"a ServiceAccount of the service of another name": changed(ServiceAccountFile, "\n  name: orders\n", "\n  name: other\n"),
+			"a RoleBinding with no worker subject":            changed(RoleBindingFile, "  - kind: ServiceAccount\n    name: orders-worker\n", ""),
+			"a RoleBinding with another subject":              changed(RoleBindingFile, "name: orders-worker\n", "name: orders-worker\n  - kind: ServiceAccount\n    name: default\n"),
+			"a RoleBinding subject with a namespace":          changed(RoleBindingFile, "name: orders-worker\n", "name: orders-worker\n    namespace: other\n"),
+		} {
+			if _, err := LoadBase(files); err == nil {
+				t.Errorf("LoadBase accepts a base with %s", name)
+			}
+		}
+	})
 }

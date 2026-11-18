@@ -1071,12 +1071,8 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 	if worker != "" && worker != workerName(service) {
 		return nil, fmt.Errorf("%s holds the Deployment %s, not %s", WorkerDeploymentFile, worker, workerName(service))
 	}
-	// The ServiceAccount of the worker Deployment is of its name, and only a base with a worker Deployment holds it.
-	if account, held := resources[WorkerServiceAccountFile]; held {
-		metadata, _ := account["metadata"].(map[string]any)
-		if account["kind"] != "ServiceAccount" || worker == "" || metadata["name"] != workerName(service) {
-			return nil, fmt.Errorf("%s holds no ServiceAccount %s of the worker Deployment", WorkerServiceAccountFile, workerName(service))
-		}
+	if err := checkServiceAccounts(resources, service, worker); err != nil {
+		return nil, err
 	}
 	// The serving Deployment never references the Secret of the owner credential (ST-DLV-INV13).
 	for _, secret := range servingSecrets {
@@ -1096,6 +1092,58 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 		return nil, err
 	}
 	return resources, nil
+}
+
+// checkServiceAccounts holds the identities of a base (security review of PR #433, L1): the Deployment <service>
+// runs as the ServiceAccount <service>; a base with a worker Deployment holds the ServiceAccount <service>-worker
+// in WorkerServiceAccountFile, and the worker Deployment runs as it; a base with no worker Deployment holds no
+// worker ServiceAccount; and a RoleBinding binds exactly the ServiceAccounts of the Deployments, with no namespace,
+// which the overlay sets.
+func checkServiceAccounts(resources map[string]map[string]any, service, worker string) error {
+	nameOf := func(resource map[string]any) any {
+		metadata, _ := resource["metadata"].(map[string]any)
+		return metadata["name"]
+	}
+	runsAs := func(resource map[string]any) any {
+		spec, _ := resource["spec"].(map[string]any)
+		template, _ := spec["template"].(map[string]any)
+		pod, _ := template["spec"].(map[string]any)
+		return pod["serviceAccountName"]
+	}
+	if account, held := resources[ServiceAccountFile]; held && (account["kind"] != "ServiceAccount" || nameOf(account) != service) {
+		return fmt.Errorf("%s holds no ServiceAccount %s", ServiceAccountFile, service)
+	}
+	if runsAs(resources[DeploymentFile]) != service {
+		return fmt.Errorf("%s runs as the ServiceAccount %v, not %s", DeploymentFile, runsAs(resources[DeploymentFile]), service)
+	}
+	accounts := []any{service}
+	account, held := resources[WorkerServiceAccountFile]
+	switch {
+	case worker == "" && held:
+		return fmt.Errorf("%s holds a worker ServiceAccount, and the base has no worker Deployment", WorkerServiceAccountFile)
+	case worker != "" && (!held || account["kind"] != "ServiceAccount" || nameOf(account) != worker):
+		return fmt.Errorf("%s holds no ServiceAccount %s of the worker Deployment", WorkerServiceAccountFile, worker)
+	case worker != "":
+		if runsAs(resources[WorkerDeploymentFile]) != worker {
+			return fmt.Errorf("%s runs as the ServiceAccount %v, not %s", WorkerDeploymentFile, runsAs(resources[WorkerDeploymentFile]), worker)
+		}
+		accounts = append(accounts, worker)
+	}
+	if binding, held := resources[RoleBindingFile]; held {
+		subjects, _ := binding["subjects"].([]any)
+		var names []any
+		for _, subject := range subjects {
+			subject, _ := subject.(map[string]any)
+			if len(subject) != 2 || subject["kind"] != "ServiceAccount" {
+				return fmt.Errorf("%s binds a subject that is not a ServiceAccount of the base with no namespace: %v", RoleBindingFile, subject)
+			}
+			names = append(names, subject["name"])
+		}
+		if !slices.Equal(names, accounts) {
+			return fmt.Errorf("%s binds %v, not the ServiceAccounts %v of the Deployments", RoleBindingFile, names, accounts)
+		}
+	}
+	return nil
 }
 
 // keyReference is a reference to one key of a Secret or of a ConfigMap, with an optional flag that may only be true.
