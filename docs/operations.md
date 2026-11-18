@@ -158,9 +158,10 @@ time. Thus, when a credential leaked, do these steps after the rotation:
    SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE usename = '<login>' AND backend_start < '<time of the end of the rollout>';
    ```
 
-   The service opens new connections with the new password. To stop each use
-   of the login at once, run `ALTER ROLE <login> NOLOGIN` first, and `ALTER ROLE
-   <login> LOGIN` after the rotation.
+   The service opens new connections with the new password. To stop each new
+   connection of the login at once, run `ALTER ROLE <login> NOLOGIN` first, and
+   `ALTER ROLE <login> LOGIN` after the rotation. `NOLOGIN` does not close a
+   connection that is open; only the `pg_terminate_backend` above does.
 2. For Kafka, make sure that each broker sets `connections.max.reauth.ms`, such
    as 3600000. Then a session must authenticate again within that time, and a
    session of a removed credential ends. If the brokers do not set it, do a
@@ -242,7 +243,7 @@ Do these steps:
    ```sh
    (umask 077; head -c 32 /dev/urandom > cursor-key)
    kubectl create secret generic -n <namespace> <service>-query-cursor --from-file=key=cursor-key \
-     --dry-run=client -o yaml | kubectl apply -f -
+     --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -
    shred -u cursor-key
    ```
 
@@ -285,7 +286,7 @@ roles and the data of the service:
   The dump holds the data of that time, `T0`:
 
   ```sh
-  pg_dump --format=custom --file=<service>.dump <service>
+  (umask 077; pg_dump --format=custom --file=<service>.dump <service>)
   ```
 
 The custom archive holds the owner of each object, the grants, the owner of
@@ -309,8 +310,14 @@ Do these steps in this order:
    password](#rotate-a-database-password) for each login:
 
    ```sh
-   psql -v ON_ERROR_STOP=1 --file=roles.sql postgres
+   (umask 077; grep -v '^CREATE ROLE postgres;$' roles.sql > roles-new-server.sql)
+   psql -v ON_ERROR_STOP=1 --file=roles-new-server.sql postgres
    ```
+
+   `pg_dumpall` writes `CREATE ROLE` also for the role that it connects as,
+   normally `postgres`, which the new server already has. The `grep` removes
+   that line, so that the first statement does not stop the run. If you dump
+   as another role, remove its `CREATE ROLE` line in the same way.
 
    Do not run `roles.sql` on a server that still runs: the roles are there, and
    the file would change their memberships back to the time of the backup.
@@ -343,9 +350,27 @@ Do these steps in this order:
    DELETE FROM public.stego_browser_sessions;
    ```
 
-8. Start the worker Deployment only. Its relay sends the messages of step 6.
-   When none of them is pending, remove each relationship that you wrote down
-   in step 6 (see [The outbox](#the-outbox)).
+8. Deny each request to the worker pods, then start the worker Deployment
+   only. Its relay sends the messages of step 6. When none of them is pending,
+   remove each relationship that you wrote down in step 6 (see [The
+   outbox](#the-outbox)), and then remove the policy. The worker pods serve the
+   same routes as the API pods, and no Service selects them, but a client on
+   the pod network can reach them. The kubelet probes are not blocked by this
+   policy on most network plugins; check yours:
+
+   ```yaml
+   apiVersion: networking.k8s.io/v1
+   kind: NetworkPolicy
+   metadata:
+     name: <service>-worker-restore
+     namespace: <namespace>
+   spec:
+     podSelector:
+       matchLabels:
+         app.kubernetes.io/name: <service>-worker
+     policyTypes: [Ingress]
+   ```
+
 9. Start the api Deployment: scale it back, or start the sync of Argo CD again.
 10. Do the checks below for the outbox, SpiceDB and the audit sink.
 
@@ -389,7 +414,8 @@ days, so an overlap of one minute is safe.
   grant that a command removed after `T0`. In step 8, after the relay sent the
   messages and before the API starts, remove each such relationship again with
   `zed relationship delete`, and check the result with `zed permission check`.
-  The API is still stopped, so no request uses the grant in that time. STEGO
+  The API is still stopped, and the policy of step 8 denies each request to
+  the worker pods, so no request uses the grant in that time. STEGO
   has no tool that discards a pending message while the service is stopped;
   the question ST-SUP-Q181 asks for one.
 - An event of a write after `T0` is in the topic, and the consumers applied
