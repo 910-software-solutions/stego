@@ -95,6 +95,18 @@ func applySetup(t *testing.T) *applyFixture {
 			case "invalid-list":
 				fmt.Fprint(w, `{"items":null,"size":0}`)
 				return
+			case "hidden-total":
+				// The end of a list that counts a value it does not give.
+				fmt.Fprint(w, `{"items":[],"size":0,"total":1}`)
+				return
+			case "true-total":
+				fmt.Fprint(w, `{"items":[],"size":0,"total":0}`)
+				return
+			case "stalled":
+				// The list answers no page until the client gives up.
+				f.pages++
+				<-r.Context().Done()
+				return
 			}
 			var items []map[string]any
 			for _, path := range slices.Sorted(maps.Keys(f.rows)) {
@@ -464,7 +476,7 @@ func TestApplyAliasesCannotDuplicateTarget(t *testing.T) {
 
 func TestApplyRejectsMalformedListPage(t *testing.T) {
 	t.Run("ST-SUP-RC04-OC23-T05 A malformed list page causes no create", func(t *testing.T) {
-		for _, mode := range []string{"null-next", "wrong-size", "endless"} {
+		for _, mode := range []string{"null-next", "wrong-size", "endless", "hidden-total"} {
 			f := applySetup(t)
 			f.mode = mode
 			path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "example", "{}"))
@@ -474,6 +486,31 @@ func TestApplyRejectsMalformedListPage(t *testing.T) {
 			if mode == "endless" && f.pages != 32 {
 				t.Errorf("the lookup read %d pages of a list that never ends, want 32", f.pages)
 			}
+		}
+		// A total that is the number of values found is taken.
+		f := applySetup(t)
+		f.mode = "true-total"
+		path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "example", "{}"))
+		if results, _, err := runApplyTest(t, applyDefinition(), "apply", "-f", path, "-o", "json"); err != nil || f.writes != 1 || len(results) != 1 || results[0].Status != "created" {
+			t.Errorf("a list with a true total gave %v %v and %d writes, want one create", results, err, f.writes)
+		}
+	})
+	t.Run("ST-SUP-RC04-OC23-T07 An apply lookup that does not end in its time limit causes no write", func(t *testing.T) {
+		f := applySetup(t)
+		f.mode = "stalled"
+		// The time limit of a lookup is 60 s; the test makes it short, so that it does not wait for the limit of a
+		// request, 15 s.
+		previous := applyLookupTimeout
+		applyLookupTimeout = 100 * time.Millisecond
+		defer func() { applyLookupTimeout = previous }()
+		path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "example", "{}"))
+		_, _, err := runApplyTest(t, applyDefinition(), "apply", "-f", path, "-o", "json")
+		// The handler of the stalled page ends when the client goes; the lock waits for it.
+		f.mu.Lock()
+		writes, pages := f.writes, f.pages
+		f.mu.Unlock()
+		if err == nil || !strings.Contains(err.Error(), "apply lookup exceeded its time limit") || writes != 0 || pages != 1 {
+			t.Errorf("a lookup past its time limit gave %v with %d writes and %d pages, want the time limit error, no write and one page", err, writes, pages)
 		}
 	})
 }

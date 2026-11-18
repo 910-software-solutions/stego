@@ -742,6 +742,50 @@ func (e *env) as(subject, tenantID string) caller {
 }
 
 // newTenant gives a tenant ID that no other check uses.
+// cli gives the apply command of the generated CLI program of STEGO_TEST_CLI, logged in as c. The CLI calls only an
+// HTTPS URL, so the service gets a TLS listener that passes each request to its handler through serve.
+func (e *env) cli(t *testing.T, c caller, serve func(w http.ResponseWriter, r *http.Request, next http.Handler)) func(name string) ([]map[string]string, error) {
+	t.Helper()
+	program := os.Getenv("STEGO_TEST_CLI")
+	if program == "" {
+		t.Fatal("the check needs STEGO_TEST_CLI, the generated CLI program: a missing result is not a pass")
+	}
+	listener := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { serve(w, r, e.server.Config.Handler) }))
+	t.Cleanup(listener.Close)
+	dir := t.TempDir()
+	// The CLI keeps its configuration only in a folder that no other user can write.
+	must(t, os.Chmod(dir, 0o700))
+	ca, token, config := dir+"/ca.pem", dir+"/token", dir+"/config.json"
+	must(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: listener.Certificate().Raw}), 0o600))
+	must(t, os.WriteFile(token, []byte(c.token), 0o600))
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		cmd := exec.Command(program, args...)
+		cmd.Env = append(os.Environ(), "CRUD_CLI_CONFIG="+config)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		if err != nil {
+			err = fmt.Errorf("%w: %s", err, stderr.String())
+		}
+		return stdout.String(), err
+	}
+	if out, err := run("login", "--url", listener.URL, "--token-file", token, "--ca-file", ca); err != nil {
+		t.Fatalf("the CLI login failed: %v %s", err, out)
+	}
+	return func(name string) ([]map[string]string, error) {
+		t.Helper()
+		file := dir + "/" + name + ".yaml"
+		must(t, os.WriteFile(file, []byte("apiVersion: crud/v1\nkind: Folder\nmetadata: {name: label}\nspec: {name: "+name+"}\n"), 0o600))
+		out, err := run("apply", "-f", file, "-o", "json")
+		var results []map[string]string
+		if out != "" {
+			must(t, json.Unmarshal([]byte(out), &results))
+		}
+		return results, err
+	}
+}
+
 func newTenant() string { return "t-" + uuid.NewString()[:8] }
 
 // own writes the owner relation of the caller on a resource of the caller's tenant in SpiceDB.
@@ -3455,58 +3499,14 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 
 	t.Run("ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service", func(t *testing.T) {
 		e := service(t)
-		program := os.Getenv("STEGO_TEST_CLI")
-		if program == "" {
-			t.Fatal("the check needs STEGO_TEST_CLI, the generated CLI program: a missing result is not a pass")
-		}
 		a := e.as("cli-1", newTenant())
-		// The CLI calls only an HTTPS URL, so the service gets a TLS front with the same handler. The test service
-		// requires an Idempotency-Key on a create, and the CLI sends none (its HTTP client refuses the header, because
-		// it does not retry), so the front gives each POST a key of its own. A lookup is a GET, which the front does
-		// not change.
 		var gets atomic.Int32
-		front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodPost && r.Header.Get("Idempotency-Key") == "" {
-				r.Header.Set("Idempotency-Key", `"cli-`+uuid.NewString()+`"`)
-			}
+		apply := e.cli(t, a, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
 			if r.Method == http.MethodGet {
 				gets.Add(1)
 			}
-			e.server.Config.Handler.ServeHTTP(w, r)
-		}))
-		defer front.Close()
-		dir := t.TempDir()
-		// The CLI keeps its configuration only in a folder that no other user can write.
-		must(t, os.Chmod(dir, 0o700))
-		ca, token, config := dir+"/ca.pem", dir+"/token", dir+"/config.json"
-		must(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: front.Certificate().Raw}), 0o600))
-		must(t, os.WriteFile(token, []byte(a.token), 0o600))
-		cli := func(args ...string) (string, error) {
-			t.Helper()
-			cmd := exec.Command(program, args...)
-			cmd.Env = append(os.Environ(), "CRUD_CLI_CONFIG="+config)
-			var stdout, stderr strings.Builder
-			cmd.Stdout, cmd.Stderr = &stdout, &stderr
-			err := cmd.Run()
-			if err != nil {
-				err = fmt.Errorf("%w: %s", err, stderr.String())
-			}
-			return stdout.String(), err
-		}
-		if out, err := cli("login", "--url", front.URL, "--token-file", token, "--ca-file", ca); err != nil {
-			t.Fatalf("the CLI login failed: %v %s", err, out)
-		}
-		apply := func(name string) ([]map[string]string, error) {
-			t.Helper()
-			file := dir + "/" + name + ".yaml"
-			must(t, os.WriteFile(file, []byte("apiVersion: crud/v1\nkind: Folder\nmetadata: {name: label}\nspec: {name: "+name+"}\n"), 0o600))
-			out, err := cli("apply", "-f", file, "-o", "json")
-			var results []map[string]string
-			if out != "" {
-				must(t, json.Unmarshal([]byte(out), &results))
-			}
-			return results, err
-		}
+			next.ServeHTTP(w, r)
+		})
 		folders := func(name string) int {
 			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
 		}
@@ -3535,6 +3535,70 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		if n := folders("twin"); n != 2 {
 			t.Errorf("%d folders twin after the ambiguous apply, want 2", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC31-T02 The emitted CLI writes to a generated service that requires a key, and the second request of a write gets the stored answer", func(t *testing.T) {
+		e := service(t)
+		a := e.as("cli-2", newTenant())
+		// The listener of the service passes each request as it is. It keeps the key of each POST, and for the first
+		// POST of the folder lost it lets the service do the write, then closes the connection with no answer, as a
+		// network fault after the commit does.
+		var mu sync.Mutex
+		var keys []string
+		var replayed []string
+		dropped := false
+		apply := e.cli(t, a, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+			body, _ := io.ReadAll(r.Body)
+			r.Body = io.NopCloser(strings.NewReader(string(body)))
+			mu.Lock()
+			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			drop := !dropped && strings.Contains(string(body), `"lost"`)
+			dropped = dropped || drop
+			mu.Unlock()
+			if drop {
+				next.ServeHTTP(httptest.NewRecorder(), r)
+				if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					conn.Close()
+				}
+				return
+			}
+			next.ServeHTTP(w, r)
+			mu.Lock()
+			replayed = append(replayed, w.Header().Get("Idempotent-Replayed"))
+			mu.Unlock()
+		})
+		folders := func(name string) int {
+			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
+		}
+		// Each apply write has a key of its own, so the service, which requires a key on a create, does the write.
+		for _, name := range []string{"one", "two"} {
+			if results, err := apply(name); err != nil || len(results) != 1 || results[0]["status"] != "created" {
+				t.Fatalf("the apply of %s gave %v %v, want the status created", name, results, err)
+			}
+		}
+		if len(keys) != 2 || keys[0] == "" || keys[0] == keys[1] {
+			t.Errorf("the creates of one and two carried the keys %q, want two keys that differ", keys)
+		}
+		// The first answer of lost does not come back. The CLI sends the create again with the same key, and the
+		// service gives the stored answer of the write that it did, so there is one folder lost.
+		keys, replayed = nil, nil
+		results, err := apply("lost")
+		if err != nil || len(results) != 1 || results[0]["status"] != "created" || results[0]["id"] == "" {
+			t.Fatalf("the apply of lost gave %v %v, want the status created", results, err)
+		}
+		if n := folders("lost"); n != 1 {
+			t.Errorf("%d folders lost after a create that the CLI sent two times, want 1", n)
+		}
+		if len(keys) != 2 || keys[0] == "" || keys[0] != keys[1] {
+			t.Errorf("the creates of lost carried the keys %q, want one key two times", keys)
+		}
+		if len(replayed) != 1 || replayed[0] != "true" {
+			t.Errorf("the answer of the second create of lost had Idempotent-Replayed %q, want true", replayed)
 		}
 	})
 

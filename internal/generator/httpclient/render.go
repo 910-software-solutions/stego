@@ -34,14 +34,22 @@ func Render(namespace, tracing string, links LinkPolicy) (gen.File, error) {
 }
 
 // RenderProxy renders the client of an API proxy, which sends the Idempotency-Key header that the browser gives for
-// a command. The other clients refuse that header: they do not retry, so they cannot keep its promise. A proxy does
-// not retry either; the browser that gave the key retries with it. A port that is not 0 adds the client of an
-// application in the same network namespace, as RenderLocalApplication does.
+// a command. The other clients refuse that header, except the client of RenderCLI: they do not retry, so they cannot
+// keep its promise. A proxy does not retry either; the browser that gave the key retries with it. A port that is not
+// 0 adds the client of an application in the same network namespace, as RenderLocalApplication does.
 func RenderProxy(namespace, tracing string, port int, links LinkPolicy) (gen.File, error) {
 	if port != 0 && (port < 1024 || port > 65535) {
 		return gen.File{}, fmt.Errorf("local application port must be 1024 through 65535")
 	}
 	return render(namespace, tracing, port, links, true)
+}
+
+// RenderCLI renders the client of the generated CLI, which sends the Idempotency-Key header that the CLI makes for
+// each write. The CLI sends a write again only with the same key (ST-SUP-RC04-OC31), so it keeps the promise of the
+// key. The CLI reads its credential and CA files from paths that its user gives, so the client refuses a leaf
+// symbolic link.
+func RenderCLI(namespace, tracing string) (gen.File, error) {
+	return render(namespace, tracing, 0, RefuseLinks, true)
 }
 
 // RenderLocalApplication adds a client for an application in the same network
@@ -54,7 +62,8 @@ func RenderLocalApplication(namespace, tracing string, port int, links LinkPolic
 	return render(namespace, tracing, port, links, false)
 }
 
-func render(namespace, tracing string, port int, links LinkPolicy, proxy bool) (gen.File, error) {
+// keyHeader lets the client send the Idempotency-Key header.
+func render(namespace, tracing string, port int, links LinkPolicy, keyHeader bool) (gen.File, error) {
 	if err := gen.ValidatePath(namespace); err != nil {
 		return gen.File{}, err
 	}
@@ -74,8 +83,8 @@ func render(namespace, tracing string, port int, links LinkPolicy, proxy bool) (
 	var output bytes.Buffer
 	data := struct {
 		Package, Tracing, LocalAddress string
-		RefuseLinks, Proxy             bool
-	}{path.Base(namespace), tracing, fmt.Sprintf("127.0.0.1:%d", port), bool(links), proxy}
+		RefuseLinks, KeyHeader         bool
+	}{path.Base(namespace), tracing, fmt.Sprintf("127.0.0.1:%d", port), bool(links), keyHeader}
 	if err = t.Execute(&output, data); err != nil {
 		return gen.File{}, err
 	}

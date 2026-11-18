@@ -128,9 +128,9 @@ func run()error{
 		}
 		files = append(files, gen.File{Path: path.Join(ctx.OutputNamespace, item.name), Content: code})
 	}
-	// The CLI reads a credential and a CA file from a caller-supplied path, so
-	// its client refuses a leaf symbolic link.
-	client, err := httpclient.Render(path.Join(ctx.OutputNamespace, "client"), data.Tracing, httpclient.RefuseLinks)
+	// The CLI client refuses a leaf symbolic link and sends the Idempotency-Key of
+	// a write (ST-SUP-RC04-OC31).
+	client, err := httpclient.RenderCLI(path.Join(ctx.OutputNamespace, "client"), data.Tracing)
 	if err != nil {
 		return nil, nil, err
 	}

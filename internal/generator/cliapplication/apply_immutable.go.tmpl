@@ -11,6 +11,7 @@ import (
  "slices"
  "sort"
  "strings"
+ "time"
  client {{printf "%q" .Client}}
 )
 
@@ -64,9 +65,18 @@ func equalApplyValue(field Field,left,right []byte)bool{
 // applyLookupPages bounds the pages of one lookup. A list page can hold fewer values than its size, or none, and still
 // give a next cursor, so the lookup follows next until the list ends, it finds two values, or it reaches the bound.
 const applyLookupPages=32
+// applyLookupTimeout bounds the time of one lookup, all its pages together, below the 15 s of each request times
+// applyLookupPages. Only the tests of this package change it.
+var applyLookupTimeout=60*time.Second
 func applyLookup(ctx context.Context,transport *client.Client,headers http.Header,p *applyPlan)(map[string]json.RawMessage,error){
+ lookup,cancel:=context.WithTimeout(ctx,applyLookupTimeout);defer cancel()
+ get:=func(route string)(client.Response,error){
+  response,err:=transport.Do(lookup,"GET",route,headers,nil)
+  if err!=nil&&lookup.Err()!=nil&&ctx.Err()==nil{return response,errors.New("apply lookup exceeded its time limit; select metadata.id")}
+  return response,err
+ }
  if p.id!=""{
-  response,err:=transport.Do(ctx,"GET",p.resource.Path+"/"+url.PathEscape(p.id),headers,nil);if err!=nil{return nil,err}
+  response,err:=get(p.resource.Path+"/"+url.PathEscape(p.id));if err!=nil{return nil,err}
   if response.StatusCode!=200{return nil,fmt.Errorf("apply lookup failed (HTTP %d)",response.StatusCode)}
   row,err:=object(response.Body);if err!=nil{return nil,errors.New("invalid apply lookup response")}
   return applyLookupRow(p,row)
@@ -81,7 +91,7 @@ func applyLookup(ctx context.Context,transport *client.Client,headers http.Heade
  for page:=0;;page++{
   if page==applyLookupPages{return nil,errors.New("apply lookup did not end; select metadata.id")}
   query:=url.Values{"pageSize":{"2"},"search":{search}};if cursor!=""{query.Set("cursor",cursor)}
-  response,err:=transport.Do(ctx,"GET",p.resource.Path+"?"+query.Encode(),headers,nil);if err!=nil{return nil,err}
+  response,err:=get(p.resource.Path+"?"+query.Encode());if err!=nil{return nil,err}
   if response.StatusCode!=200{return nil,fmt.Errorf("apply lookup failed (HTTP %d)",response.StatusCode)}
   list,err:=object(response.Body);if err!=nil{return nil,errors.New("invalid apply list response")}
   var items []json.RawMessage
@@ -89,7 +99,9 @@ func applyLookup(ctx context.Context,transport *client.Client,headers http.Heade
   if raw,ok:=list["size"];ok{var size *int64;if json.Unmarshal(raw,&size)!=nil||size==nil||*size!=int64(len(items)){return nil,errors.New("inconsistent apply list response")}}
   found=append(found,items...)
   if len(found)>1{return nil,errors.New("apply identity is ambiguous; select metadata.id")}
-  raw,ok:=list["next"];if !ok{break}
+  // A list that gives a total, as a service that is not generated can, must give all of its values: a total larger
+  // than the values found at the end of the list tells of a value that the lookup did not see.
+  raw,ok:=list["next"];if !ok{if raw,ok:=list["total"];ok{var total *int64;if json.Unmarshal(raw,&total)!=nil||total==nil||*total<0||*total>int64(len(found)){return nil,errors.New("inconsistent apply list response")}};break}
   var next string
   if json.Unmarshal(raw,&next)!=nil||next==""||!plainText(next,4096){return nil,errors.New("invalid apply list response")}
   cursor=next
