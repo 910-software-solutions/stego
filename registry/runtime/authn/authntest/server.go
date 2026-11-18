@@ -59,6 +59,7 @@ type Server struct {
 	redirect  string
 	hang      bool
 	delay     time.Duration
+	cache     string
 	held      chan struct{}
 	arrived   chan struct{}
 }
@@ -104,7 +105,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.requests.Add(1)
 	}
 	s.mu.Lock()
-	document, status, redirect, hang, delay, held := s.document, s.status, s.redirect, s.hang, s.delay, s.held
+	document, status, redirect, hang, delay, held, cache := s.document, s.status, s.redirect, s.hang, s.delay, s.held, s.cache
 	if discovery && s.moved != "" && s.server.URL+r.URL.Path != s.moved {
 		redirect = s.moved
 	}
@@ -153,7 +154,18 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if cache != "" && !discovery {
+		w.Header().Set("Cache-Control", cache)
+	}
 	_, _ = w.Write(document)
+}
+
+// CacheControl makes the server answer each key document with the header Cache-Control of the value, or with no
+// such header for the empty value.
+func (s *Server) CacheControl(value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache = value
 }
 
 // URL is the HTTPS URL of the key document, with the address 127.0.0.1.

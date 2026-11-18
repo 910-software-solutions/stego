@@ -38,7 +38,7 @@ func (s *KeySet) discover(parent context.Context, client *http.Client, issuer st
 }
 
 func readDiscovery(ctx context.Context, client *http.Client, issuer string) (string, error) {
-	data, err := fetch(ctx, client, discoveryURL(issuer))
+	data, _, err := fetch(ctx, client, discoveryURL(issuer))
 	if err != nil || checkJSON(data) != nil {
 		return "", errDiscovery
 	}
