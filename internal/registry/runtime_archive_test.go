@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,6 +119,25 @@ func TestRuntimeArchiveOneCopy(t *testing.T) {
 		}
 		if _, err := os.Lstat(short); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("a refused zip left the file %s (%v)", short, err)
+		}
+		// The buffer of the zip has a fixed capacity, and no method other than Write puts bytes in it.
+		b := newCappedBuffer(10)
+		if _, ok := any(b).(io.ReaderFrom); ok {
+			t.Error("the capped buffer has a ReadFrom method, which could write past its capacity")
+		}
+		if _, ok := any(b).(io.StringWriter); ok {
+			t.Error("the capped buffer has a WriteString method, which could write past its capacity")
+		}
+		for _, w := range []struct {
+			size int
+			ok   bool
+		}{{6, true}, {5, false}, {4, true}, {1, false}} {
+			if n, err := b.Write(make([]byte, w.size)); (err == nil) != w.ok || (w.ok && n != w.size) || (!w.ok && !errors.Is(err, ErrRuntimeArchiveSize)) {
+				t.Errorf("a write of %d bytes gave %d %v, want accepted %t", w.size, n, err, w.ok)
+			}
+		}
+		if len(b.Bytes()) != 10 || cap(b.data) != 10 {
+			t.Errorf("the buffer holds %d bytes in a capacity of %d, want 10 in 10", len(b.Bytes()), cap(b.data))
 		}
 	})
 }
