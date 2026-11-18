@@ -124,15 +124,17 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
  for i,p:=range plans{
   if err:=ctx.Err();err!=nil{if outErr:=writeApply(destination,format,results);outErr!=nil{return outErr};return err}
   if p.method=="UNCHANGED"{results[i].Status="unchanged";continue}
-  response,requestErr:=transport.Do(ctx,p.method,p.path,headers,p.payload)
+  response,retried,requestErr:=send(ctx,app,transport,p.method,p.path,headers,p.payload)
   outcomeErr:=requestErr;results[i].Status="unknown"
   if requestErr==nil{
-   if p.method=="POST"&&len(p.resource.ImmutableIdentity)>0&&response.StatusCode==409{
+   // After a second request, the first one can still be in its transaction (409 in progress), so an answer that is
+   // not a success leaves the outcome unknown (ST-SUP-RC04-OC25).
+   if !retried&&p.method=="POST"&&len(p.resource.ImmutableIdentity)>0&&response.StatusCode==409{
     row,lookupErr:=applyLookup(ctx,transport,headers,&p)
     if lookupErr==nil&&row!=nil{var id string;if json.Unmarshal(row["id"],&id)==nil{results[i].ID=id;results[i].Status="unchanged";continue}}
    }
    success:=response.StatusCode==200||(p.method=="POST"&&response.StatusCode==201)
-   if !success{if response.StatusCode>=400&&response.StatusCode<500{results[i].Status="failed"};outcomeErr=fmt.Errorf("apply request failed (HTTP %d)",response.StatusCode)}else{
+   if !success{if !retried&&response.StatusCode>=400&&response.StatusCode<500{results[i].Status="failed"};outcomeErr=fmt.Errorf("apply request failed (HTTP %d)",response.StatusCode)}else{
     row,decodeErr:=object(response.Body);var id,name string
     valid:=decodeErr==nil&&json.Unmarshal(row["id"],&id)==nil&&identifier.MatchString(id)&&(p.id==""||p.id==id)
     if len(p.resource.ImmutableIdentity)>0{valid=valid&&immutableMatches(&p,row)==nil}else{valid=valid&&json.Unmarshal(row["name"],&name)==nil&&name==p.name}

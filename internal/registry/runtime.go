@@ -141,23 +141,35 @@ const MaxRuntimeArchive = 64 << 20
 // ErrRuntimeArchiveSize is the error of a runtime folder whose module zip is larger than its limit.
 var ErrRuntimeArchiveSize = errors.New("the module zip of the runtime folder is larger than its limit")
 
-// cappedBuffer is a buffer that refuses a write past limit bytes.
+// cappedBuffer is a buffer of a fixed capacity, which refuses a write past it. Its bytes are a named field, so it
+// has only the methods below: it has no ReadFrom or WriteString of an embedded bytes.Buffer that could write past the
+// capacity, and it never grows, as a bytes.Buffer that doubles could, to twice the limit (security review of PR #445,
+// I-3).
 type cappedBuffer struct {
-	bytes.Buffer
-	limit int
+	data []byte
+}
+
+// newCappedBuffer gives an empty buffer of the capacity limit. The memory of the capacity is taken from the system
+// only as the buffer is written.
+func newCappedBuffer(limit int) *cappedBuffer {
+	return &cappedBuffer{data: make([]byte, 0, limit)}
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
-	if len(p) > b.limit-b.Len() {
+	if len(p) > cap(b.data)-len(b.data) {
 		return 0, ErrRuntimeArchiveSize
 	}
-	return b.Buffer.Write(p)
+	b.data = append(b.data, p...)
+	return len(p), nil
 }
+
+// Bytes gives the bytes written.
+func (b *cappedBuffer) Bytes() []byte { return b.data }
 
 // writeRuntimeArchive is WriteRuntimeArchive with a zip of at most limit bytes.
 func writeRuntimeArchive(folder, modulePath, version, zipPath string, limit int) (RuntimeArchive, error) {
-	zipped := cappedBuffer{limit: limit}
-	if err := modzip.CreateFromDir(&zipped, module.Version{Path: modulePath, Version: version}, folder); err != nil {
+	zipped := newCappedBuffer(limit)
+	if err := modzip.CreateFromDir(zipped, module.Version{Path: modulePath, Version: version}, folder); err != nil {
 		return RuntimeArchive{}, fmt.Errorf("module zip of %s: %w", folder, err)
 	}
 	archive, err := runtimeArchiveOf(zipped.Bytes(), modulePath+"@"+version+"/go.mod")

@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"github.com/jsell-rh/stego/internal/gen"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,18 +55,24 @@ func testStreams(t *testing.T, options bool) {
 }
 
 func TestIdempotencyKeyClients(t *testing.T) {
-	t.Run("ST-SUP-RC02-OC07-T02 Only the client of the API proxy sends Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
-		for _, proxy := range []bool{false, true} {
-			file, err := Render("client", "", FollowLinks)
-			if proxy {
+	t.Run("ST-SUP-RC02-OC07-T02 Only the clients of the API proxy and of the CLI send Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
+		for _, kind := range []string{"other", "proxy", "cli"} {
+			var file gen.File
+			var err error
+			switch kind {
+			case "other":
+				file, err = Render("client", "", FollowLinks)
+			case "proxy":
 				file, err = RenderProxy("client", "", 0, FollowLinks)
+			case "cli":
+				file, err = RenderCLI("client", "")
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			dir := t.TempDir()
 			files := map[string][]byte{"go.mod": []byte("module example.com/key-test\ngo 1.26.11\n"), "client.go": file.Bytes(), "isolation_test.go": isolationTests,
-				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst proxyClient = %t\n", proxy))}
+				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst keyClient = %t\n", kind != "other"))}
 			for name, data := range files {
 				if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
 					t.Fatal(err)
@@ -75,7 +82,7 @@ func TestIdempotencyKeyClients(t *testing.T) {
 			cmd.Dir = dir
 			cmd.Env = append(os.Environ(), "GOWORK=off")
 			if output, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("proxy client %t: %v\n%s", proxy, err, output)
+				t.Fatalf("the %s client: %v\n%s", kind, err, output)
 			}
 		}
 	})

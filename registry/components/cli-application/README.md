@@ -39,8 +39,21 @@ be regular and bounded; a FIFO cannot block credential or body reads.
 HTTPS and certificate verification are required. A supplied CA file selects an
 explicit trust pool; omission selects system roots. The shared HTTP client does
 not follow redirects or use environment proxy settings. CLI requests have a
-15-second deadline. Mutation requests have no application retry loop. After an
-uncertain failure, callers must check resource state before they retry a write.
+15-second deadline.
+
+Each POST and PATCH request has a new `Idempotency-Key` header: a structured
+string that holds a random UUID. A service that does not use the key ignores
+it. Set `IdempotentWrites` in `command.Application` only when the service keeps
+the key (the idempotency component). Then the CLI sends a write again one time,
+with the same key and body, after a transport failure or a 5xx answer. It waits
+one second first, or follows a `Retry-After` of one to five seconds. When the
+second request gets no success, the outcome is unknown: the first request can
+still be in its transaction, as a 409 answer shows. The
+service gives the stored answer of a write that it did, so the write does not
+occur two times. The CLI does not send a GET, PUT, or DELETE again, and does
+not send a write again after any other answer. Without `IdempotentWrites`, the
+CLI sends no request again. After an uncertain failure, callers must check
+resource state before they retry a write.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and

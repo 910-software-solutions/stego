@@ -3,6 +3,7 @@ package command
 import (
  "bytes"
  "context"
+ "crypto/rand"
  "encoding/json"
  "errors"
  "fmt"
@@ -25,7 +26,10 @@ import (
 type Field struct {Flag,Key,Type,RelativeFlag string;Required,Nullable bool}
 type PathParameter struct {Flag,Key string}
 type Command struct {Name []string;Method,Path string;ID,Query,Confirm,Sensitive bool;PathParameters []PathParameter;Fields []Field;Success,EmptyResponses []int}
-type Application struct {VersionCommand bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
+// IdempotentWrites states that the service keeps the Idempotency-Key of a POST and a PATCH (the idempotency
+// component). Then the CLI sends a write again one time, with the same key, after a transport failure or a 5xx
+// answer. The CLI sends a new key with each POST and PATCH in either case.
+type Application struct {VersionCommand,IdempotentWrites bool;ConfigEnv,ConfigName,OIDCClientID,IdentityPath string;Commands []Command;Resources []ApplyResource}
 var word=regexp.MustCompile(`^[a-z][a-zA-Z0-9-]{0,63}$`)
 var pathPart=regexp.MustCompile(`^[a-zA-Z0-9._~!$&'()*+,;=:@-]+$`)
 var property=regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,63}$`)
@@ -150,8 +154,9 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  transport,err:=client.New(client.Options{BaseURL:cfg.URL,CAFile:cfg.CAFile,Timeout:15*time.Second});if err!=nil{return err};defer transport.Close()
  headers:=http.Header{"Authorization":{"Bearer "+token},"Accept":{"application/json"}}
  if payload!=nil{headers.Set("Content-Type","application/json")}
- response,err:=transport.Do(ctx,c.Method,route,headers,payload);if err!=nil{return err}
+ response,retried,err:=send(ctx,app,transport,c.Method,route,headers,payload);if err!=nil{return err}
  success:=false;for _,code:=range c.Success{if response.StatusCode==code{success=true}}
+ if !success&&retried{return fmt.Errorf("API request outcome is unknown after a second request with the same key (HTTP %d); retrieve the resource before a retry",response.StatusCode)}
  if !success{return fmt.Errorf("API request failed (HTTP %d)",response.StatusCode)}
  emptyResponse:=response.StatusCode==204||response.StatusCode==205
  for _,code:=range c.EmptyResponses{if code==response.StatusCode{emptyResponse=true}}
@@ -160,6 +165,35 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  var formatted bytes.Buffer
  if err:=json.Indent(&formatted,response.Body,"","  ");err!=nil{return errors.New("invalid API JSON response")};formatted.WriteByte('\n')
  return destination.write(formatted.Bytes())
+}
+
+// idempotencyKey gives a new Idempotency-Key: a structured string that holds a random UUID (ST-SUP-RC04-OC31). It
+// fails rather than give a key that is not random.
+func idempotencyKey()(string,error){
+ var b [16]byte;if _,err:=rand.Read(b[:]);err!=nil{return "",errors.New("cannot make an idempotency key")}
+ b[6]=b[6]&0x0f|0x40;b[8]=b[8]&0x3f|0x80
+ return fmt.Sprintf("\"%x-%x-%x-%x-%x\"",b[0:4],b[4:6],b[6:8],b[8:10],b[10:]),nil
+}
+// writeRetryWait is the wait before the second request of a write when the answer gives no Retry-After; a Retry-After
+// of 1 to 5 seconds is followed. Only the tests of this package change it.
+var writeRetryWait=time.Second
+// send sends one request. A POST or a PATCH gets a new Idempotency-Key. When the service keeps the key, a write that
+// fails in transport or gets a 5xx answer is sent again one time, after a short wait, with the same key and body, so
+// the service gives the stored answer of a write that it did (ST-SUP-RC04-OC31). retried tells that the second request
+// was sent: its answer, when it is not a success, leaves the outcome of the write unknown, as the first request can
+// still be in its transaction. No other request is sent again (ST-SUP-RC04-OC05).
+func send(ctx context.Context,app Application,transport *client.Client,method,route string,headers http.Header,payload []byte)(response client.Response,retried bool,err error){
+ if method!="POST"&&method!="PATCH"{response,err=transport.Do(ctx,method,route,headers,payload);return}
+ key,err:=idempotencyKey();if err!=nil{return}
+ headers=headers.Clone();headers.Set("Idempotency-Key",key)
+ response,err=transport.Do(ctx,method,route,headers,payload)
+ if !app.IdempotentWrites||(err==nil&&response.StatusCode<500)||ctx.Err()!=nil{return}
+ wait:=writeRetryWait
+ if err==nil{if seconds,parseErr:=strconv.Atoi(response.Header.Get("Retry-After"));parseErr==nil&&seconds>=1&&seconds<=5{wait=time.Duration(seconds)*time.Second}}
+ timer:=time.NewTimer(wait);defer timer.Stop()
+ select{case <-ctx.Done():return response,false,err;case <-timer.C:}
+ response,err=transport.Do(ctx,method,route,headers,payload)
+ return response,true,err
 }
 
 func parse(args []string,confirm bool)(map[string]string,[]string,error){

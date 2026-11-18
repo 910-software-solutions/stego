@@ -4561,6 +4561,12 @@ func TestUnreadNames(t *testing.T) {
 	if !strings.HasPrefix(detail, want) || !utf8.ValidString(detail) || strings.Contains(detail, "\\x") {
 		t.Errorf("two long names gave %q, want the one cut name %q", detail, want)
 	}
+	// A name of 70 bytes with no character boundary is cut at 64 bytes, and each byte is escaped.
+	detail = unreadParameters(map[string][]string{strings.Repeat("\x80", 70): {"1"}})
+	want = "the list does not read the query parameter \"" + strings.Repeat("\\x80", 64) + "\";"
+	if !strings.HasPrefix(detail, want) || !utf8.ValidString(detail) {
+		t.Errorf("a name with no character boundary gave %q, want the name cut at 64 bytes and escaped", detail)
+	}
 }
 
 func TestOrderField(t *testing.T) {

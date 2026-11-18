@@ -576,9 +576,9 @@ const crudCLIFactory = `package cliapp
 
 import command "example.com/crud/out/cli/command"
 
-// Commands gives the CLI of the test service.
+// Commands gives the CLI of the test service, which keeps the Idempotency-Key of a write.
 func Commands() command.Application {
-	return command.Application{ConfigEnv: "CRUD_CLI_CONFIG", ConfigName: "crud", Resources: []command.ApplyResource{{
+	return command.Application{ConfigEnv: "CRUD_CLI_CONFIG", ConfigName: "crud", IdempotentWrites: true, Resources: []command.ApplyResource{{
 		Kind: "Folder", APIVersion: "crud/v1", Path: "/api/v1/folders",
 		CreateFields:      []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}},
 		ImmutableIdentity: []string{"name"},
@@ -772,6 +772,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one",
 	"ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value",
 	"ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service",
+	"ST-SUP-RC04-OC31-T02 The emitted CLI writes to a generated service that requires a key, and the second request of a write gets the stored answer",
 	"ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not",
 	"ST-SUP-RC20-OC37-T01 A collection create runs as a command",
 	"ST-SUP-RC20-OC37-T02 A refusing before slot stops the command before any write",
