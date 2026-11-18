@@ -81,6 +81,9 @@ Deployments:
   worker mode reads (`read_by_mode: worker` in the platform requirements), such as `STEGO_WORKER_DATABASE_URL`,
   `STEGO_RELAY_DATABASE_URL`, the audit sink settings and the Kafka settings, is only in the worker Deployment.
   Thus the API pod holds no credential of the worker role, the relay role or Kafka.
+  A variable that only the api mode reads (`read_by_mode: api`), such as the CORS settings `CORS_ALLOWED_*` and
+  the gRPC settings `STEGO_GRPC_ADDR`, `STEGO_GRPC_STREAM_TIMEOUT` and `STEGO_GRPC_STREAM_IO_TIMEOUT`, is only in
+  the api Deployment. The worker Deployment and the migration Job do not get it.
 - The `args` select the modes, so neither Deployment has an entry of `STEGO_MODE`.
 - The pods of the worker Deployment have the label `app.kubernetes.io/name: <service>-worker`, so that the
   selector of `<service>`, which does not change, takes none of them.
@@ -95,6 +98,36 @@ Deployment with the readiness `/readyz`.
 Upgrade: before this release, the one Deployment `<service>` ran every mode, as `STEGO_MODE` selected. After the
 upgrade it runs the api mode only, whatever `STEGO_MODE` holds, and `<service>-worker` runs the worker and
 controller modes. Remove an overlay patch that sets `STEGO_MODE` or the readiness probe of `<service>`.
+
+### The api Deployment needs the worker Deployment
+
+The relay of the authorization tuples runs in the worker mode only. After a write commits, the relay writes its
+tuples to SpiceDB: the grants of the first administrators that Provision gives, the owner of a new row, and each
+grant and removal of a command. Until the relay writes them, SpiceDB does not know them. Thus, when the api
+Deployment runs and no pod of `<service>-worker` runs:
+
+- The api pod accepts each write, but its tuples stay in the outbox.
+- A first administrator of a new tenant gets 404 on each command that is decided on the service resource of the
+  tenant, such as a create with no parent.
+- The creator of a new row gets 404 when it reads the row.
+- A write answers `Authz-Revocation: pending`, and its status route stays `pending`. A read with
+  `Authz-Revocation-After` waits until the wait cap, then answers `Authz-Revocation: pending` with the 404.
+- `/readyz` of the api pod stays 200. This is correct: the readiness of the API does not read the worker modes, so
+  an outage of the worker does not remove the API from its Service. Thus readiness does not show this case.
+
+When the worker pod starts, the relay delivers the tuples in order, and the grants and rows become visible. No
+write is lost.
+
+Do these steps:
+
+1. Deploy the two Deployments together. The base lists both in `kustomization.yaml`, so Argo CD and
+   `kubectl apply -k` apply both.
+2. Before you provision a tenant, make sure that the worker Deployment is available:
+   `kubectl rollout status deployment/<service>-worker`.
+3. Give the worker Deployment at least one replica in each overlay. More replicas are safe: each relay claims a
+   message with a lease, so only one relay delivers it.
+4. Monitor the `Available` condition of `<service>-worker`, and alert when it is false. A write whose status stays
+   `pending` past the wait cap is also a sign that no relay runs.
 
 ## Secrets and configuration
 

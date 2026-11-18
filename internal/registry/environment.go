@@ -88,8 +88,9 @@ type EnvironmentVariable struct {
 	// variable (ST-SUP-EN14 field Secret source, ST-DLV-Q19), so that the Kubernetes base can name them.
 	SecretSource *SecretSource `yaml:"secret_source,omitempty"`
 	// ReadByMode is the one mode of the process that reads the variable, when no other mode reads it: migrate, the
-	// migration job (ST-SUP-EN14 field Read by mode, ST-DLV-Q19), or worker, the worker mode. The Deployment of the
-	// base that serves the api mode wires no such variable (ST-DLV-UC07-R07).
+	// migration job (ST-SUP-EN14 field Read by mode, ST-DLV-Q19); worker, the worker mode, which the Deployment of
+	// the api mode does not wire; or api, the api mode, which the Deployment of the worker modes and the migration Job
+	// do not wire (ST-DLV-UC07-R06, ST-DLV-UC07-R07).
 	ReadByMode string `yaml:"read_by_mode,omitempty"`
 	// OneOf is the group of variables of the component of which the process needs exactly one value, such as
 	// DATABASE_URL and DATABASE_URL_FILE (ST-SUP-EN14 field One of, ST-DLV-Q09). A group has at least two variables
@@ -102,8 +103,9 @@ type EnvironmentVariable struct {
 	ReadWith string `yaml:"read_with,omitempty"`
 }
 
-// ReadByModes are the modes that a variable may state as its one reader: the migration job, and the worker mode.
-var ReadByModes = []string{"migrate", "worker"}
+// ReadByModes are the modes that a variable may state as its one reader: the migration job, the worker mode and
+// the api mode.
+var ReadByModes = []string{"migrate", "worker", "api"}
 
 // SecretSource is one key of one secret need: the need name, which may hold the placeholders of a need name, and
 // the key.

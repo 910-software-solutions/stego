@@ -2,7 +2,7 @@
 # not hold as active with PERMISSION_DENIED and the code tenant.not_provisioned (ST-SUP-RC27-OC11).
 kind: component
 name: grpc-application
-version: 2.1.0
+version: 2.2.0
 stage: ga
 output_namespace: grpcapi
 config:
@@ -42,6 +42,7 @@ environment:
     default: "127.0.0.1:9090"
     description: "The address where the gRPC server listens. When it has no value, the server listens on 127.0.0.1:9090."
     secret: false
+    read_by_mode: api
     example: "0.0.0.0:9090"
   - name: STEGO_GRPC_STREAM_TIMEOUT
     type: duration
@@ -49,6 +50,7 @@ environment:
     default: "5m"
     description: "The longest time that a gRPC stream stays open. When it has no value, a stream stays open for 5 minutes."
     secret: false
+    read_by_mode: api
     example: "2m30s"
     allowed: {min: "1s", max: "30m"}
   - name: STEGO_GRPC_STREAM_IO_TIMEOUT
@@ -57,6 +59,7 @@ environment:
     default: "10s"
     description: "The longest time for one send or receive on a gRPC stream. When it has no value, the limit is 10 seconds."
     secret: false
+    read_by_mode: api
     example: "5s"
     allowed: {min: "1s", max: "10s"}
   - name: STEGO_GRPC_TLS_CERT
