@@ -118,6 +118,10 @@ func (h *OrgSettingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chain := [1]string{scope}
+	if detail := unreadParameters(r.URL.Query()); detail != "" {
+		handleError(w, r, BadRequest(detail))
+		return
+	}
 	limit := 100
 	if text := r.URL.Query().Get("pageSize"); text != "" {
 		n, err := strconv.Atoi(text)

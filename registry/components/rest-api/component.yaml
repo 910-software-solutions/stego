@@ -21,9 +21,12 @@
 # value with a 400 validation problem that names the field, and refuse any member of a secret such field with no
 # compare; a create stores the default of a never field; and the OpenAPI document marks such a field readOnly in the
 # entity schema and gives the update its own request schema (ST-SUP-RC20-OC44 to ST-SUP-RC20-OC47).
+# Version 4.14.0 leaves a cleared required secret out of each answer, where it gave an empty value (ST-SUP-RC20-OC48,
+# walkthrough 13, W13-B7), and a list refuses with 400 a query parameter that it does not read, such as limit, and names
+# it (ST-SUP-RC20-OC51).
 kind: component
 name: rest-api
-version: 4.13.0
+version: 4.14.0
 stage: ga
 output_namespace: internal/api
 
