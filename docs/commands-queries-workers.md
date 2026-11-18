@@ -459,10 +459,13 @@ command. Each refusal has:
 The contract has one value for each refusal, named with the command and the
 refusal: `commands.PlaceOrderShortStock` and `commands.PlaceOrderNotDraft`.
 The fill returns this value as its error. The handler then answers with the
-status and the code of the refusal. Any other error is 500 with the code
-`internal`, and the transaction is rolled back. This is also true for the
-error `command.ErrNotFound` that a read of the handle gives for a row that is
-not there or that the caller may not read: map it to a declared refusal, as
+status and the code of the refusal. From runtime v0.139.0, the error
+`command.ErrNotFound`, which a read of the handle gives for a row that is not
+there or that the caller may not read, is 404 with the code `not_found`, and
+`NotFound` over gRPC. Any other error is 500 with the code `internal`, and the
+transaction is rolled back. The log then has one line `command.fill.failed`
+with the command and a fixed cause class, and no error text. To tell the
+client which ID is wrong, map `command.ErrNotFound` to a declared refusal, as
 [the developer reference of fills](fills.md#map-an-error-of-the-handle-to-a-refusal)
 shows.
 
@@ -848,6 +851,18 @@ runtime refuses each read and write of the worker on those rows.
    Generation refuses a schema whose type `tenant` has no such permission,
    and validate gives the warning `worker-root-create` before that.
 
+   A person reads such a row only through a relation of the type `tenant`.
+   Give the type `tenant` the relation `service` of the provisioning resource
+   type, such as `relation service: service`. Then each Provision relates the
+   tenant resource to the service-level resource of the same tenant, which
+   holds the admins of the Provision, and each Retire deletes the relation
+   (ST-SUP-RC27-OC18). The schema then decides who reads the row, such as
+   `permission audit = service->admin` on the type `tenant` and
+   `permission view = tenant->audit` on the type of the row. Validate refuses
+   the relation `service` when the declaration has no tenant provisioning, or
+   when the relation admits another subject type. See [the developer
+   reference of fills](fills.md#rows-with-no-parent-and-who-reads-them).
+
 ### The fill of a worker
 
 The fill package exports `New`, as for a command. The type of the fill
@@ -1198,6 +1213,34 @@ grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Release notes for runtime v0.139.0
+
+- A fill that returns `command.ErrNotFound` answers 404 with the code
+  `not_found`, the audit outcome `failed`, and `NotFound` over gRPC
+  (ST-SUP-RP10-LC51). The answer is the same for a row that is not there and
+  for a row that the caller may not read. A fill that maps the error to a
+  declared refusal keeps its refusal. New constant `command.ErrorCodeNotFound`.
+- Each other 500 of a fill writes one error line `command.fill.failed` with
+  the command and a fixed cause class: `fill_error`, `closed`, `internal`,
+  `sealed`, `panic` or `deadline`, unless a line of a failed statement or of
+  an internal error already names the cause. The line holds no error text. It
+  writes at most one line for each command and cause class in ten seconds,
+  with `held_back`.
+- Provision relates the tenant resource to the service-level resource of the
+  tenant when the schema declares the relation `service` on the type `tenant`,
+  and Retire deletes it (ST-SUP-RC27-OC18, ST-SUP-RP10-LC52). New field
+  `command.TenantSpec.ServiceRelation`, constant
+  `command.TenantServiceRelation`, and field `service.Parts.Relations`, which
+  the generated code fills.
+- Provision and Retire store a keyed fingerprint and a sealed answer in the
+  key table when the service has a key ring, as each other command does
+  (ST-SUP-RP16-LC05).
+- The start of a service refuses a database whose migration ledger holds
+  another digest of a migration of the release, at the stage
+  `service.start.migration`, with `service.ErrMigrationChanged`
+  (ST-SUP-RP14-LC13). New field `service.Parts.Migrations`, which the
+  generated code fills from `MigrationDigests` of postgres-adapter 6.15.0.
 
 ### Release notes for runtime v0.136.0
 

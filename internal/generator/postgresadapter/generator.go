@@ -233,7 +233,7 @@ var reservedTypeNames = map[string]bool{
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
-	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
+	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "digestRefusal": true, "MigrationDigests": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
 	"SchemaRelease": true, "SchemaSteps": true, "BackfillCopies": true,
 	// Generator-internal identifiers.
 	"stegotenancy":             true,
@@ -666,6 +666,17 @@ func orderedMigrations() []Migration {
 	return ordered
 }
 
+// MigrationDigests gives the ledger digest of each migration of this release
+// by name, which the service runtime compares with the ledger at each start
+// (ST-SUP-RP14-LC13).
+func MigrationDigests() map[string]string {
+	digests := map[string]string{}
+	for _, m := range orderedMigrations() {
+		digests[m.Name] = m.Digest
+	}
+	return digests
+}
+
 // recordMigration writes the ledger row of one migration in its transaction,
 // with the compatible_with set of a schema step, as a text array literal, and
 // no set for every other migration (ST-SUP-RC01-OC27).
@@ -773,12 +784,28 @@ func checkLedger(applied, registered []Migration) error {
 			}
 			continue
 		}
-		if row.Name != registered[i].Name || row.Digest != registered[i].Digest {
+		if row.Name != registered[i].Name {
 			return ErrMigrationLedger
+		}
+		if row.Digest != registered[i].Digest {
+			return &digestRefusal{text: fmt.Sprintf("the ledger row of the migration %s holds the digest %q, and this release registers the digest %q for its body: "+
+				"the body of an applied migration never changes, so a change comes as a new schema step. Deploy the release that applied it, "+
+				"or a release that keeps its body and brings the change in a new schema step; the job changed nothing, and nothing repairs the digest (ST-SUP-RC01-OC51)",
+				row.Name, row.Digest, registered[i].Digest)}
 		}
 	}
 	return nil
 }
+
+// digestRefusal is the refusal of a ledger row whose digest is not the body
+// digest of the registered migration of the same name: its text names the
+// migration, the two digests and the remedy, and no part of a body, so the
+// migration job may log it (Refusal). It matches ErrMigrationLedger.
+type digestRefusal struct{ text string }
+
+func (r *digestRefusal) Error() string        { return r.text }
+func (r *digestRefusal) Refusal() string      { return r.text }
+func (r *digestRefusal) Is(target error) bool { return target == ErrMigrationLedger }
 
 // applyPending applies the migrations after the recorded history, one
 // transaction each, at read committed whatever the default isolation of the

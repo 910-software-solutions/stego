@@ -20,6 +20,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -716,4 +717,174 @@ type sealFails struct{ TenantCursors }
 
 func (sealFails) CursorText(*query.Query, tenant.Tenant, authz.Principal, query.Cursor) (string, error) {
 	return "", errors.New("query: the cursor was not sealed")
+}
+
+// provisioningFixture is a tenant runtime that serves Provision and Retire for an operator op-1 of the tenant ops,
+// whom the decision fake allows on the unqualified service-level resource service:orders only.
+type provisioningFixture struct {
+	e      *env
+	rt     *Runtime
+	mux    *http.ServeMux
+	verify *authn.Verifier
+	token  string
+}
+
+func newProvisioningFixture(t *testing.T, change func(*Config), spec TenantSpec) *provisioningFixture {
+	t.Helper()
+	e := newEnv(t)
+	migration, err := tenant.Migration("public", e.roles[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.exec(migration)
+	rt := e.runtime(func(c *Config) {
+		c.Entities = nil
+		if change != nil {
+			change(c)
+		}
+	})
+	mux := http.NewServeMux()
+	for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+		"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+		s := spec
+		s.Action, s.ResourceType, s.Permission, s.Schema, s.SubjectType = action, "service", string(action), "public", "user"
+		h, err := ServeTenant(rt, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.Handle(route, h)
+	}
+	signing := authntest.NewKey(t, "k1")
+	keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+		Keys: keys, TenantClaim: "tenant"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(verifier.Stop)
+	claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+	claims["tenant"] = "ops"
+	e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+	t.Cleanup(func() { e.decision.setAllow(nil) })
+	return &provisioningFixture{e: e, rt: rt, mux: mux, verify: verifier, token: authntest.Mint(t, authntest.Header("k1"), claims, signing)}
+}
+
+// send posts body to path with the idempotency key key, and gives the status and the body of the answer.
+func (f *provisioningFixture) send(path, key, body string) (int, string) {
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+f.token)
+	r.Header.Set("Idempotency-Key", `"`+key+`"`)
+	w := httptest.NewRecorder()
+	f.verify.Middleware(f.mux).ServeHTTP(w, r)
+	return w.Code, w.Body.String()
+}
+
+// tuples gives each tuple that the transactions of the tenant staged for the relay, as op type:id#relation@type:id.
+func (f *provisioningFixture) tuples(t *testing.T, tenantID string) []string {
+	t.Helper()
+	rows, err := f.e.admin.QueryContext(f.e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
+ (p->'tuple'->>'relation') || '@' || (p->'tuple'->>'subject_type') || ':' || (p->'tuple'->>'subject_id')
+ FROM (SELECT convert_from(payload, 'UTF8')::jsonb AS p, created_at, id FROM stego_outbox.messages
+ WHERE tenant_id = $1 AND destination = 'authz') m ORDER BY created_at, id`, tenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func TestProvisioningRelations(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC52-T01 A Provision with the service relation relates the tenant resource to the service-level resource of the tenant, and a Retire deletes it", func(t *testing.T) {
+		f := newProvisioningFixture(t, nil, TenantSpec{ServiceRelation: true})
+		org := mustTenant(t, "org-s")
+		tenantResource, err := authz.TenantResource(org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceResource, err := authz.NewResource(org, "service", "orders")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := tenantResource.String() + "#service@" + serviceResource.String()
+		if status, body := f.send("/stego/tenants", "k-s1", `{"tenant_id":"org-s"}`); status != http.StatusCreated {
+			t.Fatalf("the Provision answered %d %s", status, body)
+		}
+		if got := f.tuples(t, "org-s"); !slices.Contains(got, "touch "+want) {
+			t.Fatalf("the Provision staged %v, want the touch of %s", got, want)
+		}
+		if strings.Contains(want, "@service:orders") {
+			t.Fatalf("the tuple %s names the unqualified service-level resource", want)
+		}
+		// A replay of the key stages nothing again.
+		before := len(f.tuples(t, "org-s"))
+		if status, _ := f.send("/stego/tenants", "k-s1", `{"tenant_id":"org-s"}`); status != http.StatusCreated || len(f.tuples(t, "org-s")) != before {
+			t.Fatalf("the replay answered %d and staged %d tuples more", status, len(f.tuples(t, "org-s"))-before)
+		}
+		if status, body := f.send("/stego/tenants/org-s/retire", "k-s2", `{}`); status != http.StatusOK {
+			t.Fatalf("the Retire answered %d %s", status, body)
+		}
+		if got := f.tuples(t, "org-s"); !slices.Contains(got, "delete "+want) {
+			t.Fatalf("the Retire staged %v, want the delete of %s", got, want)
+		}
+
+		// A schema with no relation service of the type tenant gets no such tuple.
+		plain := newProvisioningFixture(t, nil, TenantSpec{})
+		if status, body := plain.send("/stego/tenants", "k-p1", `{"tenant_id":"org-p"}`); status != http.StatusCreated {
+			t.Fatalf("the Provision answered %d %s", status, body)
+		}
+		for _, tuple := range plain.tuples(t, "org-p") {
+			if strings.Contains(tuple, "#service@") {
+				t.Fatalf("a Provision with no service relation staged %s", tuple)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RP16-LC05-T02 A Provision and a Retire of a runtime with a key ring store a keyed fingerprint and a sealed answer, and replay it", func(t *testing.T) {
+		ring := vaultRing(t, "1 "+throwawayKey(t))
+		f := newProvisioningFixture(t, func(c *Config) { c.Ring = ring }, TenantSpec{})
+		status, first := f.send("/stego/tenants", "k-r1", `{"tenant_id":"org-k"}`)
+		if status != http.StatusCreated || !strings.Contains(first, "org-k") {
+			t.Fatalf("the Provision answered %d %s", status, first)
+		}
+		if status, body := f.send("/stego/tenants/org-k/retire", "k-r2", `{}`); status != http.StatusOK {
+			t.Fatalf("the Retire answered %d %s", status, body)
+		}
+		rows, err := f.e.admin.QueryContext(f.e.ctx, `SELECT fingerprint, response_body FROM idempotency_keys WHERE tenant_id = 'org-k'`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for rows.Next() {
+			var fingerprint string
+			var body []byte
+			if err := rows.Scan(&fingerprint, &body); err != nil {
+				t.Fatal(err)
+			}
+			n++
+			if !strings.HasPrefix(fingerprint, "s1:k1:") || !bytes.HasPrefix(body, sealed.Prefix(1)) || bytes.Contains(body, []byte("org-k")) {
+				t.Fatalf("a key row of the tenant holds the fingerprint %q and the body % x, want a keyed fingerprint and a sealed body", fingerprint, body)
+			}
+		}
+		if err := rows.Close(); err != nil || n != 2 {
+			t.Fatalf("the tenant has %d key rows (%v), want 2", n, err)
+		}
+		// A replay of the Provision gives the same answer; another body under the same key is refused.
+		if status, again := f.send("/stego/tenants", "k-r1", `{"tenant_id":"org-k"}`); status != http.StatusCreated || again != first {
+			t.Fatalf("the replay answered %d %s, want %s", status, again, first)
+		}
+		if status, body := f.send("/stego/tenants", "k-r1", `{"tenant_id":"org-k","admins":[]}`); status != http.StatusUnprocessableEntity && status != http.StatusConflict && status != http.StatusBadRequest {
+			t.Fatalf("another body under the key answered %d %s, want a refusal", status, body)
+		}
+	})
 }

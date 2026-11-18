@@ -467,6 +467,53 @@ func TestMigrationLedgerRejectsGapsAndDrift(t *testing.T) {
 			t.Fatal("a refused startup changed the ledger", got)
 		}
 	})
+	t.Run("ST-SUP-RC01-OC51-T01 A changed body of an applied migration is refused with a fault that names it", func(t *testing.T) {
+		db := schemaDB(t)
+		if err := storage.Migrate(bg, db); err != nil {
+			t.Fatal(err)
+		}
+		applied := ledgerApplied(t, db)
+		registered := storage.MigrationDigests()
+		for _, version := range applied {
+			if registered[version] != ledgerDigests(t, db)[version] {
+				t.Fatalf("MigrationDigests gives %q for %s, and the ledger holds %q", registered[version], version, ledgerDigests(t, db)[version])
+			}
+		}
+		// The ledger holds the digest of an earlier body of the first migration, as a database that a release with
+		// another body of it migrated.
+		earlier := storage.Digest("CREATE TABLE earlier_body (id int)")
+		exec(t, db, "UPDATE stego_schema.migrations SET digest=$1 WHERE version=$2", earlier, applied[0])
+		for name, check := range map[string]func() error{
+			"the ledger check of the job": func() error { return storage.CheckLedger(bg, db) },
+			"the ledger":                  func() error { return storage.Migrate(bg, db) },
+		} {
+			err := check()
+			if !errors.Is(err, storage.ErrMigrationLedger) {
+				t.Fatalf("%s gave %v, want ErrMigrationLedger", name, err)
+			}
+			var refused interface{ Refusal() string }
+			if !errors.As(err, &refused) || refused.Refusal() != err.Error() {
+				t.Fatalf("%s gave %v, which the migration job does not log as a refusal", name, err)
+			}
+			for _, want := range []string{applied[0], earlier, registered[applied[0]], "never changes", "new schema step", "nothing repairs the digest"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s: the fault does not say %q: %v", name, want, err)
+				}
+			}
+			if strings.Contains(err.Error(), "CREATE") || strings.Contains(err.Error(), "earlier_body") {
+				t.Errorf("%s: the fault holds a part of a body: %v", name, err)
+			}
+		}
+		if got := ledgerDigests(t, db)[applied[0]]; got != earlier {
+			t.Fatal("a refused run wrote the new digest into the ledger row", got)
+		}
+		// A ledger with a row of an unknown name keeps its own fault.
+		exec(t, db, "UPDATE stego_schema.migrations SET digest=$1 WHERE version=$2", registered[applied[0]], applied[0])
+		exec(t, db, "INSERT INTO stego_schema.migrations(version,digest) VALUES('zzz_foreign','x')")
+		if err := storage.CheckLedger(bg, db); !errors.Is(err, storage.ErrForeignTables) {
+			t.Fatalf("a foreign ledger row gave %v, want ErrForeignTables", err)
+		}
+	})
 }
 
 func TestApplyMigrationRecordsAndValidates(t *testing.T) {

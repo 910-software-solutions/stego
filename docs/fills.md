@@ -204,20 +204,22 @@ definition wallet_transaction {
 
 definition campaign {
 	relation tenant: tenant
-	permission view = tenant->auditor
+	permission view = tenant->audit
 }
 
 definition daily_total {
 	relation tenant: tenant
-	permission view = tenant->auditor
+	permission view = tenant->audit
 	permission record = tenant->worker_sum_balances
 }
 
 definition service_account {}
 
 definition tenant {
+	relation service: service
 	relation auditor: user
 	relation worker_sum_balances: service_account
+	permission audit = auditor + service->admin
 	permission record = worker_sum_balances
 }
 
@@ -554,7 +556,8 @@ than the resource member of the command. In the example, the `transfer` fill
 reads the target wallet with `GetForUpdate`: the caller must have `view` and
 `operate` on the target wallet too. A row that is not there and a row that the
 caller may not read give the same error, `command.ErrNotFound`, and no data of
-the row. For a worker, the error of a row that it may not read or write also
+the row. A fill that returns this error gets the answer 404 with the code
+`not_found`. For a worker, the error of a row that it may not read or write also
 matches `command.ErrRefused`, so a worker fill can tell a deny from a missing
 row.
 
@@ -570,13 +573,23 @@ Other errors of the handle:
 After `ErrConflict`, `ErrInvalid` or `ErrInternal`, each later method of the
 handle gives the same error, and the runtime commits nothing.
 
+A fill that returns any other error gets the answer 500 with the code
+`internal`. The log then has one error line `command.fill.failed` with the
+command and a fixed cause class: `fill_error` for an error of the fill
+itself, `closed`, `internal`, `sealed` for a secret value that the key ring
+does not open, `panic` or `deadline`. The line holds no error text, so put no
+value of a row in the error. A line of a failed statement or of an internal
+error that already names the cause replaces it. The log writes at most one
+line for each command and cause class in ten seconds, with `held_back`.
+
 ### Map an error of the handle to a refusal
 
-A fill that returns an error of the handle, such as `command.ErrNotFound`,
-gets the answer 500 with the code `internal`, and the transaction rolls back.
-The 500 is not the right answer for a client that gave a wrong ID. Thus test
-the error with `errors.Is`, and return a declared refusal. The fill of
-`transfer` does this for the target wallet:
+A fill that returns `command.ErrNotFound` gets the answer 404 with the code
+`not_found`, or `NotFound` over gRPC, and the transaction rolls back. The
+answer does not tell the client which row is not found. When a fill reads a
+row other than the resource member, test the error with `errors.Is`, and
+return a declared refusal that names it. The fill of `transfer` does this for
+the target wallet:
 
 ```go
 		to, err := wallets.GetForUpdate(ctx, req.ToWalletId)
@@ -689,25 +702,45 @@ func New() workers.SumBalancesFill {
 ```
 
 The runtime relates such a row only to the tenant resource. Thus a person can
-read it only through a relation of the type `tenant`, such as `auditor` in the
+read it only through a permission of the type `tenant`, such as `audit` in the
 schema of the example:
 
 <!-- excerpt -->
 ```zed
 definition daily_total {
 	relation tenant: tenant
-	permission view = tenant->auditor
+	permission view = tenant->audit
 	permission record = tenant->worker_sum_balances
 }
 ```
 
-No route and no declaration writes a relation of a person on the tenant
-resource: Provision writes the admins on the service-level resource, not on
-the tenant resource. Until the decided way is built (ST-SUP-Q183 (a): Provision relates the tenant
-resource to the service-level resource), an operator writes
-the grant in SpiceDB, on the tenant-qualified ID of the tenant resource. For
-the tenant `acme` and the user `dora` of the issuer
-`https://idp.example.test`:
+The type `tenant` of the example declares the relation `service` of the
+provisioning resource type. Then each Provision relates the tenant resource
+to the service-level resource of the same tenant, which holds the admins of
+the Provision, and each Retire deletes the relation (ST-SUP-RC27-OC18). The
+permission `audit` gives the rows to these admins and to each `auditor`:
+
+<!-- excerpt -->
+```zed
+definition tenant {
+	relation service: service
+	relation auditor: user
+	relation worker_sum_balances: service_account
+	permission audit = auditor + service->admin
+	permission record = worker_sum_balances
+}
+```
+
+Validate refuses the relation `service` when the declaration has no tenant
+provisioning, or when the relation admits another subject type than the
+provisioning resource type. A schema with no relation `service` on the type
+`tenant` gets no such relation.
+
+No route and no declaration writes the relation `auditor` of a person on the
+tenant resource. To give the rows to a person who is not an admin of the
+Provision, an operator writes the grant in SpiceDB, on the tenant-qualified ID
+of the tenant resource. For the tenant `acme` and the user `dora` of the
+issuer `https://idp.example.test`:
 
 ```bash
 b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }

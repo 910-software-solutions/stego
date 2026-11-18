@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -1319,4 +1320,66 @@ func relaxDefinition(before, after fieldShape) (string, bool) {
 		return "", false
 	}
 	return strings.Join(items, ", "), true
+}
+
+// MigrationBodyRule is the rule of a fault of a changed body of a released migration (ST-GEN-INV38).
+const MigrationBodyRule = "ST-GEN-INV38"
+
+// migrationFile is the path of a generated SQL file of a migration, in the output namespace of its component: the
+// group is the name of the file without .sql.
+var migrationFile = regexp.MustCompile(`^(?:[^/]+/)*migrations/([^/]+)\.sql$`)
+
+// tenancyRowSecurity is the name of the file of the row-level security of the tenancy component, whose migration the
+// ledger names 100_tenancy_row_security (ST-SUP-RC27-OC03).
+const tenancyRowSecurity = "row_security"
+
+// ledgeredMigration gives the ledger name of the migration whose generated SQL file is at path, and whether the file
+// is that of a ledgered migration: 001_initial or a schema step of the PostgreSQL adapter, or the row-level security
+// of the tenancy component. Each such file holds exactly the body whose digest the ledger records.
+func ledgeredMigration(path string) (string, bool) {
+	match := migrationFile.FindStringSubmatch(path)
+	if match == nil {
+		return "", false
+	}
+	name := match[1]
+	if name == tenancyRowSecurity {
+		name = "100_tenancy_row_security"
+	}
+	return name, postgresadapter.CheckLedgerName(name) == nil
+}
+
+// MigrationBodyFaults refuses a head whose generated SQL file of a ledgered migration that the record at the base
+// lists has another content digest than that record lists (ST-GEN-INV38): a database of that release applied the
+// body, and the ledger check of its migration job refuses another one (ST-SUP-RC01-OC51). head gives the SHA-256 of
+// each generated file of the head by its path in the output folder: the plan of stego plan and stego apply, or the
+// record of the head for stego compat. A migration whose file the record at the base does not list is new, and a
+// base with no record, or no head, gives no fault. Each fault names the migration, the file and the remedy.
+func MigrationBodyFaults(base BaseSource, head map[string]string) ([]BaseFault, error) {
+	if base.Record == nil || head == nil {
+		return nil, nil
+	}
+	state, err := decodeState(base.Record, ".stego/state.yaml at "+base.Ref)
+	if err != nil {
+		return nil, err
+	}
+	if state.LastApplied == nil {
+		return nil, nil
+	}
+	var faults []BaseFault
+	for _, path := range slices.Sorted(maps.Keys(state.LastApplied.Files)) {
+		name, ledgered := ledgeredMigration(path)
+		if !ledgered {
+			continue
+		}
+		want := state.LastApplied.Files[path]
+		got, generated := head[path]
+		if !generated || got == want {
+			continue
+		}
+		faults = append(faults, BaseFault{Rule: MigrationBodyRule, Message: fmt.Sprintf(
+			"the migration %s has another body at the head: its generated file %s has the digest %s, and the record at the base ref %s (commit %s) lists %s. "+
+				"A database of that release applied the body, and the body of an applied migration never changes: keep the body, and bring the change in a new schema step",
+			name, path, got, base.Ref, base.Commit, want)})
+	}
+	return faults, nil
 }
