@@ -379,6 +379,51 @@ func TestDelivery(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP01-LC31-T07 In a broker outage each attempt logs broker-unavailable, and the destination fails after attempts in a row", func(t *testing.T) {
+		topic := topicName("unavailable")
+		e.broker.CreateTopic(t, topic, 1)
+		logs := &topicRecorder{}
+		d, err := New(e.plain(topic), logs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		failing := d.Registration().Failing
+		if failing == nil {
+			t.Fatal("the registration of the destination has no Failing")
+		}
+		if err, _ := deliver(t, d, 20*time.Second); err != nil || failing() != "" {
+			t.Fatalf("a delivery before the outage gave %v and the failing class %q", err, failing())
+		}
+		e.broker.Plain.Down()
+		defer e.broker.Plain.Up()
+		for attempt := 1; attempt <= FailingAfter; attempt++ {
+			if failing() != "" {
+				t.Fatalf("after %d failed attempts the destination fails with %q, want it to fail only after %d", attempt-1, failing(), FailingAfter)
+			}
+			if err, _ := deliver(t, d, 20*time.Second); err == nil || outbox.IsPermanent(err) {
+				t.Fatalf("a delivery in the outage gave %v, want an error that is not permanent", err)
+			}
+		}
+		if failing() != FailureUnavailable {
+			t.Fatalf("after %d failed attempts the destination fails with %q, want %s", FailingAfter, failing(), FailureUnavailable)
+		}
+		got := logs.got()
+		if len(got) != FailingAfter {
+			t.Fatalf("the outage logged %v, want %d events kafka.delivery_failed", got, FailingAfter)
+		}
+		for _, event := range got {
+			if event != FailureUnavailable+"  " {
+				t.Fatalf("the outage logged %q, want the class %s and no other attribute", event, FailureUnavailable)
+			}
+		}
+		// The first delivery that the broker acknowledges clears it.
+		e.broker.Plain.Up()
+		if err, _ := deliver(t, d, 30*time.Second); err != nil || failing() != "" {
+			t.Fatalf("a delivery after the outage gave %v and the failing class %q, want none", err, failing())
+		}
+	})
+
 	t.Run("ST-SUP-RP01-LC31-T02 A send again after a lost answer carries the same event ID", func(t *testing.T) {
 		topic := topicName("resend")
 		e.broker.CreateTopic(t, topic, 1)

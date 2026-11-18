@@ -2932,6 +2932,48 @@ func TestInboxFailingReadiness(t *testing.T) {
 	})
 }
 
+func TestDestinationFailingReadiness(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC05-T06 A destination of the outbox that fails each delivery in a row is named by the readiness of the worker mode", func(t *testing.T) {
+		db, err := sql.Open("pgx", "postgres://127.0.0.1:1/none")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		queue, err := outbox.New(db, outbox.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		worker, err := outbox.NewWorker(queue, outbox.DefaultWorkerConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		class := ""
+		deliver := func(context.Context, *sql.Tx, outbox.Delivery) error { return nil }
+		for _, d := range []outbox.Destination{{Name: "kafka", Idempotent: true, Handler: deliver, Failing: func() string { return class }},
+			{Name: "audit-sink", Idempotent: true, MustLand: true, Handler: deliver}} {
+			if err := worker.Register(d); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w := &Workers{worker: worker}
+		if reason := w.destinationFailing(); reason != "" {
+			t.Fatalf("a destination that delivers gives the reason %q", reason)
+		}
+		// The Kafka destination in a broker outage (walkthrough 9).
+		class = "broker-unavailable"
+		if reason := w.destinationFailing(); reason != "the destination kafka fails: broker-unavailable" {
+			t.Fatalf("the reason is %q", reason)
+		}
+		class = ""
+		if reason := w.destinationFailing(); reason != "" {
+			t.Fatalf("a destination that delivers again gives the reason %q", reason)
+		}
+		if reason := (&Workers{}).destinationFailing(); reason != "" {
+			t.Fatalf("a process with no outbox worker gives the reason %q", reason)
+		}
+	})
+}
+
 // relateAsWorker relates one tuple through the authorization handle in a transaction of tenant t1 as the worker role
 // of the fixture, and commits it, as a consuming worker that creates a row with a reference does.
 func relateAsWorker(t *testing.T, f *fixture, endpoint, key string) {

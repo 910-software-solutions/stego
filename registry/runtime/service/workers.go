@@ -668,8 +668,8 @@ func (w *Workers) stopped(names ...string) string {
 func (w *Workers) Readiness() *modes.Readiness { return w.readiness }
 
 // Ready answers the readiness of each selected mode (ST-SUP-RP09-LC05) and names each mode that is not ready and
-// why: the worker mode is ready while the worker role's pool reaches the database and the outbox worker and the
-// relay's watch run; the controller mode while the controller lease loop and the periodic jobs run and every job is
+// why: the worker mode is ready while the worker role's pool reaches the database, the outbox worker and the
+// relay's watch run, and neither the Kafka inbox nor a destination of the outbox fails in a row; the controller mode while the controller lease loop and the periodic jobs run and every job is
 // healthy, whether or not this replica holds the lease. The reason names components and jobs, never a tenant.
 func (w *Workers) Ready(ctx context.Context) error {
 	var errs []error
@@ -689,6 +689,10 @@ func (w *Workers) Ready(ctx context.Context) error {
 			} else if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
 			} else if reason := w.inboxFailing(); reason != "" {
+				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
+			} else if reason := w.destinationFailing(); reason != "" {
+				// A destination that fails each delivery in a row, such as the Kafka destination in a broker outage,
+				// makes the worker mode not ready, as a Kafka inbox that fails does (walkthrough 9).
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
 			}
 		}
@@ -780,6 +784,15 @@ func inboxSetting(err error) error {
 		return &SettingError{Component: KafkaConsumerComponent, Variable: setting.Variable, names: setting.Variable, problem: setting.Problem}
 	}
 	return err
+}
+
+// destinationFailing names the first destination of the outbox worker that fails each delivery in a row, with its
+// fixed failure class, or gives "".
+func (w *Workers) destinationFailing() string {
+	if w.worker == nil {
+		return ""
+	}
+	return w.worker.Failing()
 }
 
 // inboxFailing names the Kafka inbox and its fixed failure class while its sessions fail in a row, or gives "".
