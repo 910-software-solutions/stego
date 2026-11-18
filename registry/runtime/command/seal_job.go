@@ -187,17 +187,11 @@ func (j *SealJob) Run(ctx context.Context) ([]SealResult, error) {
 	return results, errors.Join(failed...)
 }
 
-// inTx runs fn in one transaction of the pool that is not of a tenant: the checkpoint functions need none.
-func (j *SealJob) inTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	tx, err := j.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
+// inTx runs fn in one transaction that holds the lease row of held (lease.Held.WithToken), which commits it: the
+// checkpoint functions need no tenant, and the command runtime commits a transaction of a tenant only through
+// tenant.Commit (ST-SUP-RP10-LC30).
+func inTx(ctx context.Context, held *lease.Held, fn func(tx *sql.Tx) error) error {
+	return held.WithToken(ctx, func(ctx context.Context, tx *sql.Tx, _ int64) error { return fn(tx) })
 }
 
 // pass goes on with the pass of the change c from its checkpoint under held, and starts a new pass when there is
@@ -205,7 +199,7 @@ func (j *SealJob) inTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
 func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (SealResult, error) {
 	result := SealResult{Change: c.Change}
 	var state lease.SealState
-	if err := j.inTx(ctx, func(tx *sql.Tx) error {
+	if err := inTx(ctx, held, func(tx *sql.Tx) error {
 		var err error
 		state, err = lease.ReadSeal(ctx, tx, c.Change)
 		return err
@@ -221,7 +215,7 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 			result.Waits = true
 			return result, nil
 		}
-		err := j.inTx(ctx, func(tx *sql.Tx) error {
+		err := inTx(ctx, held, func(tx *sql.Tx) error {
 			return lease.SealCheckpoint(ctx, tx, held, c.Change, "", "", 0, 0, true)
 		})
 		if errors.Is(err, lease.ErrSealWaiting) {
@@ -271,7 +265,7 @@ func (j *SealJob) pass(ctx context.Context, held *lease.Held, c SealColumn) (Sea
 		}
 	}
 	var stale error
-	err = j.inTx(ctx, func(tx *sql.Tx) error {
+	err = inTx(ctx, held, func(tx *sql.Tx) error {
 		// The start of the pass again after ErrSealStale is committed.
 		if stale = lease.SealComplete(ctx, tx, held, c.Change); errors.Is(stale, lease.ErrSealStale) {
 			return nil
