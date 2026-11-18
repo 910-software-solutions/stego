@@ -1,3 +1,5 @@
+# Version 1.9.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field needs it
+# (walkthrough 13, W13-B8): the variable stays not required on its own (ST-SUP-RC32-OC21).
 # Version 1.8.0 gives a readable secret field the type sealed.Secret and a compare-only one sealed.Compared, which the
 # command runtime seals or hashes at each write, and registers the key ring of the secret fields for a service with one
 # (ST-SUP-RC32-OC20, ST-SUP-RC32-OC21, decision ST-DECL-Q44).
@@ -9,7 +11,7 @@
 # entity declaration its unique keys, so a unique violation names the fields of its key (ST-SUP-RC32-OC22).
 kind: component
 name: command
-version: 1.8.0
+version: 1.9.0
 stage: ga
 output_namespace: commands
 
@@ -107,7 +109,7 @@ environment:
   - name: STEGO_SECRET_KEY_RING_FILE
     type: path
     required: false
-    description: "The file of the key ring of the secret fields, one line of a key ID and a base64 key of 32 bytes for each key, of which the first seals. The api, worker and controller modes do not start without it."
+    description: "The file of the key ring of the secret fields, one key ID and base64 key of 32 bytes on each line; the first key seals. Required when the service declares a secret field."
     secret: false
     secret_source: {name: "{service}-secret-key-ring", key: key-ring}
     read_with: sealed
