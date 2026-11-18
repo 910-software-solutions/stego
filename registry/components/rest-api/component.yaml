@@ -13,7 +13,7 @@
 # document (ST-SUP-RC20-OC43).
 kind: component
 name: rest-api
-version: 4.5.0
+version: 4.6.0
 stage: ga
 output_namespace: internal/api
 
@@ -121,6 +121,7 @@ environment:
     required: false
     description: "The origins that may send cross-origin requests. When it has no value, the API sets no CORS header."
     secret: false
+    read_by_mode: api
     example: "https://app.example.com,https://admin.example.com"
   - name: CORS_ALLOWED_METHODS
     type: list
@@ -128,6 +129,7 @@ environment:
     default: "GET,POST,PATCH,PUT,DELETE,OPTIONS"
     description: "The HTTP methods that cross-origin requests may use. When it has no value, the API allows GET, POST, PATCH, PUT, DELETE and OPTIONS."
     secret: false
+    read_by_mode: api
     example: "GET,POST"
   - name: CORS_ALLOWED_HEADERS
     type: list
@@ -135,4 +137,5 @@ environment:
     default: "Content-Type,Authorization"
     description: "The request headers that cross-origin requests may send. When it has no value, the API allows Content-Type and Authorization."
     secret: false
+    read_by_mode: api
     example: "Content-Type,Authorization,X-Request-Id"

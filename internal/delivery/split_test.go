@@ -197,4 +197,62 @@ func TestModeDeployments(t *testing.T) {
 			t.Error("LoadBase accepts a worker Deployment with another name")
 		}
 	})
+
+	t.Run("ST-DLV-UC07-R07-T03 A variable of the api mode is only in the Deployment of the api mode", func(t *testing.T) {
+		// The fixture of ST-DLV-TD02 states the CORS settings of rest-api as read by the api mode alone, as the
+		// shipped component states them.
+		requirements := string(workerRequirements(t))
+		api := []string{"CORS_ALLOWED_HEADERS", "CORS_ALLOWED_METHODS", "CORS_ALLOWED_ORIGINS"}
+		for _, name := range api {
+			at := strings.Index(requirements, "  - name: "+name+"\n")
+			end := strings.Index(requirements[at+1:], "  - name: ")
+			if at < 0 || end < 0 || !strings.Contains(requirements[at:at+1+end], "    read_by_mode: api\n") {
+				t.Fatalf("the fixture does not state %s as read by the api mode", name)
+			}
+		}
+		for _, modes := range [][]string{{"api", "worker", "controller"}, {"worker", "controller"}, {"api"}, nil} {
+			base, _, err := WriteBase("orders", testRelease, []byte(requirements), healthCheckProbes, modes)
+			if err != nil {
+				t.Fatalf("modes %v: %v", modes, err)
+			}
+			resources, err := LoadBase(base.Files)
+			if err != nil {
+				t.Fatalf("modes %v: %v", modes, err)
+			}
+			held := func(file string) []string {
+				var in []string
+				c, _ := container(t, resources[file])
+				for _, name := range api {
+					if slices.Contains(variables(c), name) {
+						in = append(in, name)
+					}
+				}
+				return in
+			}
+			// The Deployment of a side with the api mode, or of no mode selection, holds each; the worker Deployment
+			// and the migration Job hold none.
+			wantAPI := modes == nil || slices.Contains(modes, "api")
+			want := 0
+			if wantAPI {
+				want = len(api)
+			}
+			if got := held(DeploymentFile); len(got) != want {
+				t.Errorf("modes %v: the Deployment %s holds %v of the variables of the api mode, want %d of them", modes, DeploymentFile, got, want)
+			}
+			if _, split := resources[WorkerDeploymentFile]; split {
+				if got := held(WorkerDeploymentFile); len(got) != 0 {
+					t.Errorf("modes %v: the worker Deployment holds %v", modes, got)
+				}
+			}
+			if _, job := resources[MigrationJobFile]; !job {
+				t.Fatalf("modes %v: the base has no migration Job", modes)
+			}
+			job := resources[MigrationJobFile]["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+			for _, name := range api {
+				if slices.Contains(variables(job), name) {
+					t.Errorf("modes %v: the migration Job holds %s", modes, name)
+				}
+			}
+		}
+	})
 }

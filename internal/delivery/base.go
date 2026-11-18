@@ -90,6 +90,11 @@ const MigrateMode = "migrate"
 // the worker role or a Kafka setting: the Deployment of the api mode wires none of them (ST-DLV-UC07-R07).
 const WorkerMode = "worker"
 
+// APIMode is the value of read_by_mode of a variable that only the api mode reads, such as the CORS settings of the
+// rest-api component: the Deployment of the worker modes and the migration Job wire none of them (ST-DLV-UC07-R06,
+// ST-DLV-UC07-R07).
+const APIMode = "api"
+
 // ModeVariable selects the modes of a process when no mode option is given. A Deployment of a split base selects its
 // modes with the option --mode in its args, so it wires no entry of this variable.
 const ModeVariable = "STEGO_MODE"
@@ -447,10 +452,14 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource,
 	for _, requirement := range ingress {
 		ports = append(ports, containerPort(requirement))
 	}
-	// A Deployment that runs only the api mode wires no variable of the worker mode.
+	// A Deployment that runs only the api mode wires no variable of the worker mode, and one that runs only the
+	// worker and controller modes wires no variable of the api mode.
 	side := allModes
 	if split || (slices.Contains(modes, "api") && !backgroundOnly && len(modes) == 1) {
 		side = apiSide
+	}
+	if backgroundOnly {
+		side = workerSide
 	}
 	pod, switched := workload(side, readiness, ports)
 	if err := add(DeploymentFile, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
@@ -647,8 +656,8 @@ func jobEnvironment(service string, list []AcceptedVariable) ([]any, []secretFil
 	var entries []any
 	var switched []secretFile
 	for _, variable := range list {
-		// A variable that only the worker mode reads gets no entry: the migrate mode does not read it.
-		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode == WorkerMode {
+		// A variable that only the worker or the api mode reads gets no entry: the migrate mode does not read it.
+		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode == WorkerMode || variable.ReadByMode == APIMode {
 			continue
 		}
 		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile && sourced[form] {
@@ -727,7 +736,8 @@ func baseEnvironment(service string, list []AcceptedVariable, side string, split
 	var switched []secretFile
 	for _, variable := range list {
 		if variable.Name == ConsoleSinkVariable || variable.RefusedAtStart || variable.ReadByMode == MigrateMode ||
-			(variable.ReadByMode == WorkerMode && side == apiSide) || (split && variable.Name == ModeVariable) {
+			(variable.ReadByMode == WorkerMode && side == apiSide) || (variable.ReadByMode == APIMode && side == workerSide) ||
+			(split && variable.Name == ModeVariable) {
 			continue
 		}
 		if form, isFile := strings.CutSuffix(variable.Name, "_FILE"); isFile {

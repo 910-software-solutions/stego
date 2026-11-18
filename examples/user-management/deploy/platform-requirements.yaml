@@ -102,6 +102,7 @@ environment:
     default: Content-Type,Authorization
     description: The request headers that cross-origin requests may send. When it has no value, the API allows Content-Type and Authorization.
     secret: false
+    read_by_mode: api
   - name: CORS_ALLOWED_METHODS
     read_by:
       - rest-api
@@ -110,6 +111,7 @@ environment:
     default: GET,POST,PATCH,PUT,DELETE,OPTIONS
     description: The HTTP methods that cross-origin requests may use. When it has no value, the API allows GET, POST, PATCH, PUT, DELETE and OPTIONS.
     secret: false
+    read_by_mode: api
   - name: CORS_ALLOWED_ORIGINS
     read_by:
       - rest-api
@@ -117,6 +119,7 @@ environment:
     required: false
     description: The origins that may send cross-origin requests. When it has no value, the API sets no CORS header.
     secret: false
+    read_by_mode: api
   - name: DATABASE_URL
     read_by:
       - postgres-adapter

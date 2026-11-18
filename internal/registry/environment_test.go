@@ -249,7 +249,7 @@ func TestSecretSource(t *testing.T) {
 			{"a source on a duration", "    secret: false\n    example: \"2m\"\n", "    secret: false\n    secret_source: {name: \"{service}-database\", key: url}\n    example: \"2m\"\n", "ENV_A_TIMEOUT", "secret_source"},
 			{"a source of a secret setting", "    secret: true\n", "    secret: true\n    secret_source: {name: \"{settings.key}\", key: url}\n", "ENV_A_DATABASE_URL", "secret_source"},
 			{"a source with a bad key", "    secret: true\n", "    secret: true\n    secret_source: {name: \"{service}-database\", key: \"a/b\"}\n", "ENV_A_DATABASE_URL", "secret_source"},
-			{"a mode that is not migrate", "    secret: true\n", "    secret: true\n    read_by_mode: api\n", "ENV_A_DATABASE_URL", "read_by_mode"},
+			{"a mode that is not migrate, worker or api", "    secret: true\n", "    secret: true\n    read_by_mode: serve\n", "ENV_A_DATABASE_URL", "read_by_mode"},
 			{"a required variable of one mode", "    required: false\n    description: \"The connection", "    required: true\n    read_by_mode: migrate\n    description: \"The connection", "ENV_A_DATABASE_URL", "read_by_mode"},
 		})
 		component, err := parseEnv(t, "    secret: true\n", source)

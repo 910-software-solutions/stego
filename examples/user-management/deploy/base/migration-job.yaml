@@ -28,24 +28,6 @@ spec:
         - args:
             - migrate
           env:
-            - name: CORS_ALLOWED_HEADERS
-              valueFrom:
-                configMapKeyRef:
-                  key: CORS_ALLOWED_HEADERS
-                  name: user-management-config
-                  optional: true
-            - name: CORS_ALLOWED_METHODS
-              valueFrom:
-                configMapKeyRef:
-                  key: CORS_ALLOWED_METHODS
-                  name: user-management-config
-                  optional: true
-            - name: CORS_ALLOWED_ORIGINS
-              valueFrom:
-                configMapKeyRef:
-                  key: CORS_ALLOWED_ORIGINS
-                  name: user-management-config
-                  optional: true
             - name: GODEBUG
               valueFrom:
                 configMapKeyRef:

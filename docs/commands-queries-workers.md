@@ -851,7 +851,9 @@ counted: an error of the fill, a row that is not there, an invalid value, a
 refused resource, a unique violation and a panic. A provider that cannot decide
 now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
-outbox, and a person can send it again or discard it.
+outbox, and a person can send it again or discard it. Until a person resolves
+it, a parked message holds back each later message of the same destination,
+tenant and resource key, so the later events of the same row wait.
 
 The log line and the alert of a parked message are also written to standard
 output as one JSON line each, also when no OpenTelemetry collector is set. The

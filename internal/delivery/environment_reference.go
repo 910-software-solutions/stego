@@ -131,6 +131,8 @@ func renderSecretSources(out *bytes.Buffer, list []AcceptedVariable) {
 			reader = "the migration Job only (mode migrate)"
 		case variable.ReadByMode == WorkerMode:
 			reader = "the Deployment of the worker mode only (mode worker)"
+		case variable.ReadByMode == APIMode:
+			reader = "the Deployment of the api mode only (mode api)"
 		case MigrationKeyFiles[variable.Name] != (SecretSource{}):
 			reader = "the Deployment and the migration Job"
 		}
