@@ -88,7 +88,7 @@ func TestDeclaredAPIs(t *testing.T) {
 		}
 	})
 
-	t.Run("ST-SUP-RC02-OC58-T04 A path with a ; in a segment or a percent sign after the decode reaches no API", func(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC58-T04 A path with a ; in a segment, a percent sign after the decode, or bytes that are not UTF-8 reaches no API", func(t *testing.T) {
 		f := setup(t)
 		active, _ := login(t, f)
 		counts := func() (int, int) {
@@ -97,12 +97,13 @@ func TestDeclaredAPIs(t *testing.T) {
 			return len(f.paths), len(f.secondPaths)
 		}
 		first, second := counts()
-		// A matrix parameter, the ..; of a servlet container, an encoded ;, and a double encoding of a dot, a slash and
-		// a NUL, under each API.
+		// A matrix parameter, the ..; of a servlet container, an encoded ;, a double encoding of a dot, a slash and a
+		// NUL, and an overlong form of a dot and a byte that is not UTF-8, under each API.
 		for _, target := range []string{secondPrefix + "/..;/..;/records/v1/records", secondPrefix + "/things;x=1", secondPrefix + "/a%3Bb",
-			secondPrefix + "/%252e%252e/%252e%252e/records/v1/records", secondPrefix + "/a%252Fb", apiPrefix + "/records/record-1%2500"} {
+			secondPrefix + "/%252e%252e/%252e%252e/records/v1/records", secondPrefix + "/a%252Fb", apiPrefix + "/records/record-1%2500",
+			secondPrefix + "/%C0%AE%C0%AE/%C0%AE%C0%AE/records/v1/records", secondPrefix + "/a%FFb"} {
 			w := send(f.backend, "GET", target, "", []*http.Cookie{active}, nil)
-			require(t, w.Code == 400, "a path with a ; or a double encoding was not refused: "+target)
+			require(t, w.Code == 400, "a path with a ;, a double encoding or bytes that are not UTF-8 was not refused: "+target)
 		}
 		again, secondAgain := counts()
 		require(t, again == first && secondAgain == second, "a path with a ; or a double encoding reached an API")
