@@ -568,6 +568,9 @@ func TestTables(t *testing.T) {
 	t.Run("ST-SUP-RC01-OC50-T01 The contract of a seal refuses before a completed pass, while a release before runs and while a row is not sealed, and a run again recovers", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T01")
 	})
+	t.Run("ST-SUP-RC01-OC50-T03 A release before that reports itself while the contract of a seal waits for its lock leaves the clear column", func(t *testing.T) {
+		onSeal(t, "ST-SUP-RC01-OC50-T03")
+	})
 	t.Run("ST-SUP-RC01-OC50-T02 A database that the three releases of a seal migrated in turn and a new one get the same schema", func(t *testing.T) {
 		onSeal(t, "ST-SUP-RC01-OC50-T02")
 	})

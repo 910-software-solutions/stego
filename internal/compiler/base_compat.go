@@ -145,6 +145,7 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	check.Faults = append(check.Faults, ledgerVersionFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, syncRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, sealRuntimeFaults(state.LastApplied, declaration, head)...)
 	return check, nil
 }
 
@@ -159,20 +160,58 @@ const (
 // ClearSecrets tells whether the record of a release names a postgres-adapter before SecretStorageVersion, or, with
 // no postgres-adapter in the record, a runtime library before SecretRuntimeVersion: that release stores each field
 // of sensitivity secret in clear, so its stored shape is the field in clear, and the head moves it to its sealed
-// column with a seal from secret (walkthrough 13, W13-B1; ST-SUP-RC01-OC49).
+// column with a seal from secret (walkthrough 13, W13-B1; ST-SUP-RC01-OC49). A version that does not parse, or a
+// record with neither pin, counts as such a release, so the check fails closed (security review of PR #443, I3).
 func ClearSecrets(applied *AppliedState) bool {
+	return before(applied, SecretStorageVersion, SecretRuntimeVersion)
+}
+
+// before tells whether the record of a release names a postgres-adapter before adapter, or, with no postgres-adapter
+// in the record, a runtime library before runtime; a version that does not parse, or no pin, counts as before.
+func before(applied *AppliedState, adapter, runtime string) bool {
 	if applied == nil {
-		return false
+		return true
 	}
-	if adapter, pinned := applied.Components["postgres-adapter"]; pinned {
-		version := "v" + strings.TrimPrefix(adapter.Version, "v")
-		return semver.IsValid(version) && semver.Compare(version, "v"+SecretStorageVersion) < 0
+	if pin, pinned := applied.Components["postgres-adapter"]; pinned {
+		version := "v" + strings.TrimPrefix(pin.Version, "v")
+		return !semver.IsValid(version) || semver.Compare(version, "v"+adapter) < 0
 	}
 	if applied.Archetype != nil && applied.Archetype.Runtime != nil {
 		version := applied.Archetype.Runtime.Version
-		return semver.IsValid(version) && semver.Compare(version, SecretRuntimeVersion) < 0
+		return !semver.IsValid(version) || semver.Compare(version, runtime) < 0
 	}
-	return false
+	return true
+}
+
+// ReportAdapterVersion and ReportRuntimeVersion are the first postgres-adapter and runtime library versions whose
+// processes report their release in stego_schema.releases (ST-SUP-RP09-LC14). The seal job and the contract of a seal
+// see a release before the step only through those reports, so a seal needs a base that reports itself.
+const (
+	ReportAdapterVersion = "6.4.0"
+	ReportRuntimeVersion = "v0.120.0"
+)
+
+// sealRuntimeFaults refuses a head with a new expand step of a seal when the record at the base names a
+// postgres-adapter before ReportAdapterVersion, or, with no postgres-adapter, a runtime library before
+// ReportRuntimeVersion, or neither: the processes of that release do not report themselves, so a write that they make
+// to the clear column after the seal job passed its row is not seen, and the contract would drop it (security review
+// of PR #443, H1; ST-SUP-RC01-OC49).
+func sealRuntimeFaults(applied *AppliedState, base, head *types.ServiceDeclaration) []BaseFault {
+	if !before(applied, ReportAdapterVersion, ReportRuntimeVersion) {
+		return nil
+	}
+	kinds := map[string]string{}
+	for _, change := range head.SchemaChanges {
+		kinds[change.ID] = change.Kind
+	}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		if step.Phase != "expand" || kinds[step.Change] != "seal" {
+			continue
+		}
+		return []BaseFault{{Rule: StepLedgerRule, Entity: changeEntity(head, step.Change), Message: fmt.Sprintf(
+			"the base runs a release whose processes do not report themselves (postgres-adapter before %s or runtime library before %s, or no pin), so the seal job and the contract of the seal %s cannot see its writes to the clear column; deploy a release with the runtime library %s or later, with no new schema step, first, and then declare the seal", ReportAdapterVersion, ReportRuntimeVersion, step.Change, ReportRuntimeVersion)}}
+	}
+	return nil
 }
 
 // findStoredField gives the field of the entity of the declaration, live or dropped.

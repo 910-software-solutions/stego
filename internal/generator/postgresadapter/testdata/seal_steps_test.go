@@ -44,6 +44,14 @@ func TestSealSteps(t *testing.T) {
 	}
 	clear(key)
 
+	// older makes the seal checkpoints ten minutes old: a first pass waits three minutes after the expand, so each
+	// process of a release before reports itself first (security review of PR #443, L1).
+	older := func(t *testing.T, db *sql.DB) {
+		t.Helper()
+		if _, err := db.Exec(`UPDATE stego_schema.seals SET created_at = created_at - interval '10 minutes'`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	release := func(t *testing.T, own *pgx.ConnConfig, run func(context.Context, *sql.Conn) error) error {
 		t.Helper()
 		job := stdlib.OpenDB(*own)
@@ -104,6 +112,7 @@ func TestSealSteps(t *testing.T) {
 	expand := func(t *testing.T, own *pgx.ConnConfig, db *sql.DB) {
 		t.Helper()
 		migrate(t, own, db, func(ctx context.Context, conn *sql.Conn) error { return seal.Migrate(ctx, conn) }, "seal_access.json")
+		older(t, db)
 	}
 	works := func(t *testing.T, db, reader *sql.DB, name, after string, verify func(context.Context, *sql.DB) error, m manifest.Manifest) {
 		t.Helper()
@@ -320,8 +329,8 @@ func TestSealSteps(t *testing.T) {
 			t.Fatalf("no vault of tenant-z: %s", code)
 		}
 		err := contract()
-		if err == nil || !strings.Contains(err.Error(), "vaults_code_sealed_complete") {
-			t.Fatalf("the contract over a vault that is not sealed ends with %v, want the failed VALIDATE of the completeness CHECK of code", err)
+		if !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), "vault-code-seal") || !strings.Contains(refused.Refusal(), "tenant list") {
+			t.Fatalf("the contract over a vault that is not sealed ends with %v, want a refusal that names the change and the unlisted tenant", err)
 		}
 		var clearColumns, ledger int
 		if err := db.QueryRow(`SELECT (SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.vaults'::regclass AND attname IN ('note', 'code') AND NOT attisdropped),
@@ -345,6 +354,43 @@ func TestSealSteps(t *testing.T) {
 		}
 		if after := catalog(t, db); !slices.Equal(again, after) {
 			t.Errorf("the migration job again changed the catalog:\n%s", strings.Join(after, "\n"))
+		}
+	})
+
+	t.Run("ST-SUP-RC01-OC50-T03 A release before that reports itself while the contract of a seal waits for its lock leaves the clear column", func(t *testing.T) {
+		own, db, reader := base(t)
+		expand(t, own, db)
+		job(t, reader)
+		// A session holds a lock on vaults, so the first statement of the contract waits for it after the check of the
+		// step passed; while it waits, a process of the release before reports itself (security review of PR #443, M1).
+		hold, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := hold.Exec(`LOCK TABLE public."vaults" IN ACCESS SHARE MODE`); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- release(t, own, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }) }()
+		for waiting := 0; waiting == 0; {
+			if err := db.QueryRow(`SELECT count(*) FROM pg_catalog.pg_locks WHERE relation = 'public.vaults'::regclass AND NOT granted`).Scan(&waiting); err != nil {
+				t.Fatal(err)
+			}
+		}
+		beat(t, reader, strings.Repeat("e", 32), sealbase.SchemaRelease)
+		if err := hold.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		var refused interface{ Refusal() string }
+		if err := <-done; !errors.As(err, &refused) || !strings.Contains(refused.Refusal(), "vault-note-seal") {
+			t.Fatalf("the contract ends with %v, want a refusal of vault-note-seal", err)
+		}
+		var clearColumns int
+		if err := db.QueryRow(`SELECT count(*) FROM pg_catalog.pg_attribute WHERE attrelid = 'public.vaults'::regclass AND attname IN ('note', 'code') AND NOT attisdropped`).Scan(&clearColumns); err != nil {
+			t.Fatal(err)
+		}
+		if clearColumns != 2 {
+			t.Errorf("after the refused contract the table has %d clear columns, want 2", clearColumns)
 		}
 	})
 
@@ -375,6 +421,7 @@ func TestSealSteps(t *testing.T) {
 		runtime.User, runtime.Password = tenancy.RuntimeRole, "seal-check"
 		freshReader := stdlib.OpenDB(*runtime)
 		defer freshReader.Close()
+		older(t, fresh)
 		job(t, freshReader)
 		migrate(t, freshCfg, fresh, func(ctx context.Context, conn *sql.Conn) error { return sealc.Migrate(ctx, conn) }, "sealc_access.json")
 		// The grants of the releases stay on the upgraded database, as a migration job grants only; the catalog

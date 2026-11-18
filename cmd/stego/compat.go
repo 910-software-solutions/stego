@@ -544,6 +544,41 @@ func printNewSchemaSteps(stdout io.Writer, gate baseGate, plan *compiler.Plan) {
 	}
 }
 
+// printOpenSeals warns of each seal whose expand step the base holds and whose contract step the head does not
+// declare: the clear column holds the secret, in the table, the WAL and each backup, until the contract step, so the
+// contract belongs in the next release (security review of PR #443, L2).
+func printOpenSeals(stdout io.Writer, gate baseGate) {
+	if gate.head == nil {
+		return
+	}
+	isNew := map[int]bool{}
+	for _, position := range gate.newSteps {
+		isNew[position] = true
+	}
+	kinds := map[string]string{}
+	for _, change := range gate.head.SchemaChanges {
+		kinds[change.ID] = change.Kind
+	}
+	expanded, contracted := map[string]bool{}, map[string]bool{}
+	for i, step := range gate.head.SchemaHistory {
+		if kinds[step.Change] != "seal" {
+			continue
+		}
+		switch {
+		case step.Phase == "contract":
+			contracted[step.Change] = true
+		case !isNew[i+1]:
+			expanded[step.Change] = true
+		}
+	}
+	for _, step := range gate.head.SchemaHistory {
+		if expanded[step.Change] && !contracted[step.Change] {
+			fmt.Fprintf(stdout, "warning: the seal %s is open since a release before: its clear column still holds the secret in the table, the WAL and each backup; declare its contract step in this release when the seal job has completed a pass\n", step.Change)
+			delete(expanded, step.Change)
+		}
+	}
+}
+
 // printSchemaSteps names each add step that apply writes, or wrote, into the declaration.
 func printSchemaSteps(stdout io.Writer, verb string, steps []types.SchemaChange) {
 	for _, step := range steps {

@@ -19,7 +19,7 @@ func TestBaseSecretForm(t *testing.T) {
 		} {
 			base := []byte(strings.Replace(td01, description, c.base, 1))
 			head := strings.Replace(td01, description, c.head, 1)
-			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, head))
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, SecretStorageVersion)}, parseHead(t, head))
 			if err != nil {
 				t.Fatalf("%s: %v", c.name, err)
 			}
@@ -42,7 +42,7 @@ func TestBaseSecretForm(t *testing.T) {
 		retyped := withChanges(strings.Replace(td01, description, "{ name: description, type: bool, optional: true }", 1),
 			"  - {id: organization-description-retype, kind: retype, entity: Organization, field: description, from: string, conversion: text_to_bool, inverse_conversion: bool_to_text}\n",
 			"  - {change: organization-description-retype, phase: expand}\n")
-		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: secretBase, Record: recordFor(secretBase)}, parseHead(t, retyped))
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: secretBase, Record: adapterRecord(t, secretBase, SecretStorageVersion)}, parseHead(t, retyped))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func TestBaseSecretForm(t *testing.T) {
 			t.Errorf("a retype of a compare-only secret to a public type is not refused: %+v", check.Faults)
 		}
 		required := strings.Replace(td01, description, description+"\n      - { name: api_key, type: string, sensitivity: secret }", 1)
-		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(td01), Record: recordFor([]byte(td01))}, parseHead(t, required))
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(td01), Record: adapterRecord(t, []byte(td01), SecretStorageVersion)}, parseHead(t, required))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +74,7 @@ func TestBaseSecretForm(t *testing.T) {
 			t.Errorf("a new required secret field gets %d suggestions, want one add: %+v", suggested, check.Faults)
 		}
 		base := []byte(td01)
-		if check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, td01)); err != nil || check.HasFaults() {
+		if check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, SecretStorageVersion)}, parseHead(t, td01)); err != nil || check.HasFaults() {
 			t.Fatalf("the same declaration is refused: %v %+v", err, check.Faults)
 		}
 	})
@@ -88,13 +88,13 @@ func TestBaseSeal(t *testing.T) {
 		change := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
 		expand := withChanges(strings.Replace(td01, description, secret, 1), change, "  - {change: organization-description-seal, phase: expand}\n")
 		base := []byte(td01)
-		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, expand))
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, SecretStorageVersion)}, parseHead(t, expand))
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the seal at expand is refused against the base in clear: %v %+v", err, check.Faults)
 		}
 		contract := withChanges(strings.Replace(td01, description, secret, 1), change,
 			"  - {change: organization-description-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
-		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(expand), Record: recordFor([]byte(expand))}, parseHead(t, contract))
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: []byte(expand), Record: adapterRecord(t, []byte(expand), SecretStorageVersion)}, parseHead(t, contract))
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the contract of the seal is refused against its expand: %v %+v", err, check.Faults)
 		}
@@ -102,7 +102,7 @@ func TestBaseSeal(t *testing.T) {
 		// head in clear (ST-DECL-INV102).
 		wider := withChanges(strings.Replace(td01, description, "{ name: description, type: string, optional: true, max_length: 2000, sensitivity: secret }", 1), change,
 			"  - {change: organization-description-seal, phase: expand}\n")
-		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, wider))
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, SecretStorageVersion)}, parseHead(t, wider))
 		if err != nil || !check.HasFaults() {
 			t.Fatalf("a seal that also changes max_length is accepted: %v", err)
 		}
@@ -155,6 +155,44 @@ func TestBaseClearSecret(t *testing.T) {
 		check, err = CheckBase(BaseSource{Ref: "r1", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, SecretStorageVersion)}, parseHead(t, declared))
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the same declaration over a base that sealed the secret is refused: %v %+v", err, check.Faults)
+		}
+	})
+}
+
+func TestBaseSealReports(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC49-T06 A seal over a base whose processes do not report themselves is refused, and a pin that does not parse counts as stored in clear", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		const secret = "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }"
+		declared := strings.Replace(td01, description, secret, 1)
+		base := []byte(declared)
+		head := withChanges(declared, "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description, from: secret}\n",
+			"  - {change: organization-description-seal, phase: expand}\n")
+		for _, c := range []struct {
+			name, record string
+			refused      bool
+		}{
+			{"postgres-adapter 6.3.0", string(adapterRecord(t, base, "6.3.0")), true},
+			{"no pin", string(recordFor(base)), true},
+			{"postgres-adapter 6.4.0", string(adapterRecord(t, base, ReportAdapterVersion)), false},
+		} {
+			check, err := CheckBase(BaseSource{Ref: "r1", Commit: "c0ffee", Declaration: base, Record: []byte(c.record)}, parseHead(t, head))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			for _, fault := range check.Faults {
+				refused = refused || (strings.Contains(fault.Message, "do not report themselves") && strings.Contains(fault.Message, ReportRuntimeVersion))
+			}
+			if refused != c.refused {
+				t.Errorf("%s: the seal gives %+v, want refused %t", c.name, check.Faults, c.refused)
+			}
+		}
+		// A pin that does not parse counts as a release that stored the secret in clear: the same declaration is
+		// refused with the seal step (I3).
+		check, err := CheckBase(BaseSource{Ref: "r1", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, "dev")}, parseHead(t, declared))
+		if err != nil || !check.HasFaults() {
+			t.Fatalf("the same declaration over a base with a pin that does not parse is accepted: %v", err)
 		}
 	})
 }

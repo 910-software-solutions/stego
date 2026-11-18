@@ -233,7 +233,7 @@ var reservedTypeNames = map[string]bool{
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
 	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
-	"contractStatementRun": true, "contractRefusal": true, "keyRefusal": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
+	"contractStatementRun": true, "violatesCheck": true, "contractRefusal": true, "keyRefusal": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
 	"SchemaRelease": true, "SchemaSteps": true, "BackfillCopies": true,
 	// Generator-internal identifiers.
 	"stegotenancy":             true,
@@ -1067,10 +1067,11 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 					return nil
 				}
 			}
-			if s.Guard && c.Drop {
-				// A statement of a drop takes the lock of its table first and checks the step after it, in the same
-				// transaction: a process of the release before that reports itself after the check can no longer
-				// write the table before the statement commits (security review of PR #423, M1 and I2).
+			if s.Guard && (c.Drop || c.Seal) {
+				// A statement of a drop or a seal takes the lock of its table first and checks the step after it, in
+				// the same transaction: a process of the release before that reports itself after the check can no
+				// longer write the table before the statement commits (security review of PR #423, M1 and I2; of PR
+				// #443, M1).
 				table := quoteIdentifier(c.Schema) + "." + quoteIdentifier(c.Table)
 				var there bool
 				if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass($1) IS NOT NULL", table).Scan(&there); err != nil {
@@ -1097,6 +1098,11 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 		if err == nil {
 			return nil
 		}
+		if c.Seal && s.Long && violatesCheck(err) {
+			// The VALIDATE of the completeness CHECK reads every row, also a row of a tenant that the tenant list
+			// does not hold, which the seal job does not seal (security review of PR #443, I4).
+			return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: a row has a clear value and no sealed value, and the seal job has sealed each row of the listed tenants, so the row is of a tenant that the tenant list stego_tenants does not hold; provision that tenant and run the release of the expand step %s until the seal job completes a pass, or remove the rows of that tenant", c.Change, c.Expand)}
+		}
 		if !lockTimedOut(err) {
 			return err
 		}
@@ -1107,6 +1113,12 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 			return err
 		}
 	}
+}
+
+// violatesCheck tells whether err is a row that breaks a CHECK: SQLSTATE 23514, check_violation.
+func violatesCheck(err error) bool {
+	var state interface{ SQLState() string }
+	return errors.As(err, &state) && state.SQLState() == "23514"
 }
 
 // keyRefusal is the refusal of a validate migration whose foreign key a row

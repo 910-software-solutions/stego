@@ -418,6 +418,13 @@ func TestSchemaStepPlan(t *testing.T) {
 			t.Errorf("plan does not list the seal step as\n%s\n%s", want, planned)
 		}
 		s.must(t, "apply", "--base", "HEAD", "--saved-plan")
+		// The next plan over the release of the seal warns that the clear column still holds the secret until the
+		// contract (security review of PR #443, L2).
+		git(t, s.service, "add", "-A")
+		git(t, s.service, "commit", "-q", "-m", "seal")
+		if again := s.must(t, "plan", "--base", "HEAD"); !strings.Contains(again, "warning: the seal note-body-seal is open since a release before") {
+			t.Errorf("plan over the open seal gives no warning:\n%s", again)
+		}
 		if migration := s.read(t, "out/internal/storage/migrations/step_0002_note-body-seal_expand.sql"); !strings.HasPrefix(migration, "ALTER TABLE public.\"notes\" ADD COLUMN \"body_sealed\" bytea;\n") {
 			t.Errorf("the migration of the seal step is\n%s", migration)
 		}
