@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118184953-2903248a9930
+        module_version: v0.0.0-20261118200417-7a8eabaf29e8
         vcs: git
-        revision: 2903248a99304d3f30dde0c8067cba4d0e3b2471
+        revision: 7a8eabaf29e8ab5b8e293b4ee20a11264d9de4b3
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: edf39b4f54f38b2c8811323d7dff826f338fe7fb58e4660230554798f1c8606a
+    registry_content_sha256: 0bea44f43297a4a93be3947b7c84cfcb32de37c6d9f20657eb85114637efb9be
     components:
         audit-log:
             version: 1.2.0
@@ -71,8 +71,8 @@ last_applied:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
         rest-api:
-            version: 4.14.0
-            sha: cb2fb5cb76432e8bcb2373ddff1877870a3ec5af9c8211ec7cedb299a7b20630
+            version: 4.15.0
+            sha: f8051182c358cff734d1e387e519996463c63f3f5383b341f30bbf88cf8158cd
         rh-sso-auth:
             version: 2.2.0
             sha: b30e541e47e930936ebfbac00e4b49afc51445c0ee29d067e9622f5959749a3e
@@ -126,19 +126,19 @@ last_applied:
         health/health.go: 303258996e35b5a3dd592d8d7a2ec7b8a63067edf2dd8bc946f22bb7f7d3dbeb
         http_tls_open_other.go: 5fedad5901ff9caa0dabba0acf76935b8f07314f6dbb8cb9a81471e98b99706d
         http_tls_open_unix.go: 3865bc443b82e094d9a31fbcacaa4c2fefc3e8ec4c545c29702a38c3f3d1bef1
-        internal/api/all_users_handler.go: fcade51c9bc82533de9cac8a10f02c67dce381f41da1d125cd048cc94a88677e
+        internal/api/all_users_handler.go: 401f88a3760f8aca4ca8f785af042607d9410eda4b723f373dd8fa26979e2e58
         internal/api/cors.go: 5b7863e6f7fa7f104ffbc0f97418542b07bc428766642a1856de26eac9e1fc2c
         internal/api/data/entities.go: 39dc0251b12fd66a25c295c4860594fb345cf76cbf59e90e7bd6599b02aa0fa0
         internal/api/data/links.go: 92680df2e0cb956c0174060a07b161d63f810d91bea7ddfd37875d0360020240
         internal/api/data/views.go: 9af071fd1c1f94be8b93a064777c81af4aaf22f67e61a017f27e2b940472f958
         internal/api/discovery.go: 31cf4a80ece098d319dad61a8c861282481707c57deeaab8af29485c6ded4f85
-        internal/api/errors.go: 8746d7f2437f9d6409c35b3ce25a67f3b71f5888ad3cdfe721b55663674f2ec7
+        internal/api/errors.go: 528da3f0c26e6425f940c52d4733b4a7a46f92dd37cda03b097e8eff656d9840
         internal/api/openapi.json: 6d9ce47a93a1082fe2e8dfc96585d41e52b7fb422b20599d5b62612cafce87fd
-        internal/api/org_settings_handler.go: 643c17deb0a0e307a0d8cd6117d15c9e3b3c0209418c70b74240168e4abfa1e7
-        internal/api/org_users_handler.go: 45a0d110f10fad2c383d8ded322a7a79817e29da38b564e3245fb9cc0dc54dc4
-        internal/api/organizations_handler.go: 88a48289d3f79643e52ec56f35c003bac3d8156a842581919141950a4d312d40
+        internal/api/org_settings_handler.go: a5029171c7dfdc24310543687aa18b95bd19cfde0de3516a3d79eeb0194f4066
+        internal/api/org_users_handler.go: d1f1f60f2f7bdcbb53ff9965fb31fb84a24970ced3af58e91fd7601a09258b91
+        internal/api/organizations_handler.go: af9184b13c9d348fa935f8188217b7c69264fdcdd2848b019979d1dc0b4d6271
         internal/api/router.go: 015fe23fa351aba15bb5cfa5f7e5b0ada71215d6d50e4db74a5f73f0b07fe826
-        internal/api/runtime.go: 4d709e4faedbfc2c6b16622755b770f0bc539cf7a118b00a55502aa994efa3e6
+        internal/api/runtime.go: fe3f6c4fbf537cd0759442a50fb884c98a4b3d8ec71c713a47a205794683070e
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: a18d0b5be27531bebccf58133dc6cb87198a44d7a7d694871557bfbf96d2f420
         internal/authz/authz.go: c0294e18f637f00e7907a5481a5968ef518182cbe2b813b335954b62a71cb144
@@ -195,8 +195,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 21d35f57a6f98df4fb57ad4e0988b89a6aeab058a95a14bed53e7869501eb31b
-        architecture/index.html: ae4fbd3e42d11b68b61a0fb87a6d5edc11d0ec4b070698c4ced9390c2f3d0f11
+        architecture/architecture.json: 581d8b8c014ecd8c4e4d21b0bf4cf3a19404102454623dc38f0df2664f1f9ecd
+        architecture/index.html: ccb2e22f8e8e89800c6a44979910596ab8b39b901e0027139162928394b9bde4
         deploy/base/deployment.yaml: 824a0618073778e293664f2de66853fb6e117a90708899cf2ba61a3bab2d1312
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: 1d21ebda41b48adc71e650aa150f8e5b6fee399ff7cbded405948bb6efd0b0b6

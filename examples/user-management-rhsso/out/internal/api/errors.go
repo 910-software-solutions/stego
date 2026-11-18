@@ -107,7 +107,8 @@ func InternalError(detail string) *ServiceError {
 }
 
 // handleError serializes a ServiceError as an RFC 9457 Problem Details
-// JSON response with Content-Type application/problem+json.
+// JSON response with Content-Type application/problem+json, and with X-Content-Type-Options nosniff, so a
+// client does not read the answer as another type.
 func handleError(w http.ResponseWriter, r *http.Request, svcErr *ServiceError) {
 	svcErr.Instance = r.URL.Path
 	svcErr.Timestamp = time.Now().UTC().Format(time.RFC3339)
@@ -118,6 +119,7 @@ func handleError(w http.ResponseWriter, r *http.Request, svcErr *ServiceError) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(svcErr.Status)
 	json.NewEncoder(w).Encode(svcErr)
 }
