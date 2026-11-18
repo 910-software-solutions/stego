@@ -44,6 +44,18 @@ func stegoFaultName(value string) bool {
  return true
 }
 
+// stegoCauseClass gives the fixed class of a cause of the operating system that a start meets, such as a listen port
+// that another process holds, and empty for any other cause. It never holds the text of the cause (walkthrough 8,
+// W8-B5).
+func stegoCauseClass(err error) string {
+ switch {
+ case errors.Is(err, syscall.EADDRINUSE): return "address_in_use"
+ case errors.Is(err, syscall.EADDRNOTAVAIL): return "address_not_available"
+ case errors.Is(err, syscall.EACCES): return "permission_denied"
+ }
+ return ""
+}
+
 // stegoReportFailure writes one fixed record before process exit. The stage
 // comes from generated code. The cause is never formatted or serialized.
 // A blocked output can retain one worker until the process exits.
@@ -69,7 +81,8 @@ func stegoReportFailure(output io.Writer, err error) {
   Modes []string ` + "`json:\"modes,omitempty\"`" + `
   Fault string ` + "`json:\"fault,omitempty\"`" + `
   Object string ` + "`json:\"object,omitempty\"`" + `
- }{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object}
+  Cause string ` + "`json:\"cause,omitempty\"`" + `
+ }{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object, stegoCauseClass(err)}
  done := make(chan struct{})
  go func() {
   defer close(done)

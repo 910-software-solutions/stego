@@ -211,3 +211,23 @@ func readText(b []byte) (string, []byte, bool) {
 	end := size + int(n)
 	return string(b[size:end]), b[end:], true
 }
+
+// KeyCursor is the cursor of a list in key order that goes on after the key after, for a list that the runtime
+// serves itself with the cursor rules of the declared lists, such as the parked messages of a destination
+// (ST-SUP-RP14-LC09). The empty key is the start. CursorText seals it and ParseCursor opens it as for a declared
+// list, bound to the service, the query name, the tenant and the principal.
+func KeyCursor(after string) Cursor {
+	if after == "" {
+		return Cursor{}
+	}
+	return Cursor{after: after, started: true}
+}
+
+// Key gives the key after which a list in key order goes on, empty for the start. It is false for a cursor of an
+// ordered list, a filtered list or a resource search, which a list in key order refuses.
+func (c Cursor) Key() (string, bool) {
+	if c.order != "" || c.filter != "" || !c.page.IsZero() {
+		return "", false
+	}
+	return c.after, true
+}

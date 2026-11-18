@@ -330,6 +330,8 @@ func TestContract(t *testing.T) {
 			`Read: ` + strconv.Quote(from+` AND "synced" = $3 AND "status" <> $4 ORDER BY "id" LIMIT $2`),
 			`Lock: ` + strconv.Quote(from+` AND "id" = ANY($2::text[]::uuid[]) AND "synced" = $3 AND "status" <> $4 ORDER BY "id" FOR NO KEY UPDATE`),
 			`Values: command.DeclaredValues(command.ListValue{Constant: false}, command.ListValue{Constant: "done"})}))`,
+			// The spec takes the lists that the contract package held when it started (security review of PR #416, L3).
+			`var syncPartnerOrdersDeclaredLists = command.Snapshot(SyncPartnerOrdersUnsynced)`,
 		} {
 			if !strings.Contains(contract, want) {
 				t.Errorf("the contract does not hold %s:\n%s", want, contract)
@@ -338,7 +340,7 @@ func TestContract(t *testing.T) {
 		if !strings.Contains(spaces.ReplaceAllString(string(files["workers/entities.go"]), " "), "LockAtMost: 10,") {
 			t.Error("the entity declaration does not hold the Lock at most of Order")
 		}
-		if !strings.Contains(runners, `Lists: []command.AnyList{workers.SyncPartnerOrdersUnsynced},`) || strings.Count(runners, "Lists:") != 1 {
+		if !strings.Contains(runners, `Lists: workers.SyncPartnerOrdersDeclaredLists(),`) || strings.Count(runners, "Lists:") != 1 {
 			t.Errorf("the runners do not give sync-partner-orders, and only it, its list:\n%s", runners)
 		}
 
