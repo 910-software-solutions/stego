@@ -70,7 +70,7 @@ func TestRevisionFaultsCapabilityFill(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(dir, "out", "commands", "linked.go")); err != nil {
 			t.Fatal(err)
 		}
-		if got := faults(dir, service); !strings.Contains(got, "out/commands holds linked.go, which is not a regular file") {
+		if got := faults(dir, service); !strings.Contains(got, `"out/commands" holds "linked.go", which is not a regular file`) {
 			t.Fatalf("the build did not refuse the linked contract file: %q", got)
 		}
 
