@@ -1,6 +1,9 @@
+# Version 6.13.0 stores a readable secret field as sealed bytes (bytea) and a compare-only one as its Argon2id hash
+# (text), with no CHECK and no index, and emits the re-seal statements of each readable secret (ST-SUP-RC01-OC48,
+# decision ST-DECL-Q44).
 kind: component
 name: postgres-adapter
-version: 6.12.0
+version: 6.13.0
 stage: ga
 output_namespace: internal/storage
 

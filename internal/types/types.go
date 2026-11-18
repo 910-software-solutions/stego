@@ -91,6 +91,10 @@ type Field struct {
 	Deleting        *string   `yaml:"deleting,omitempty" json:"Deleting,omitempty"`
 	// Sensitivity is public, pii or secret (ST-DECL-EN03). Omitted means public.
 	Sensitivity string `yaml:"sensitivity,omitempty" json:"Sensitivity,omitempty"`
+	// CompareOnly marks a secret string field that the service only checks and never reads back, such as a PIN or a
+	// recovery code: it is stored as an Argon2id hash. Omitted means readable: the field is sealed at rest
+	// (ST-DECL-EN03 field Compare only, decision ST-DECL-Q44).
+	CompareOnly bool `yaml:"compare_only,omitempty" json:"CompareOnly,omitempty"`
 	// Currency is the ISO 4217 code of a field of type money (ST-DECL-INV26).
 	Currency string `yaml:"currency,omitempty" json:"Currency,omitempty"`
 	// ClientSet marks a timestamp field whose value the client sets, such as a due date: the server does not
@@ -131,6 +135,12 @@ var WritableValues = []string{WritableAlways, WritableCreate, WritableNever}
 // never, so an update, an upsert of a stored row and a patch refuse another value (ST-SUP-RC20-OC44 to
 // ST-SUP-RC20-OC46).
 func (f Field) Kept() bool { return f.Writable == WritableCreate || f.Writable == WritableNever }
+
+// Secret tells whether the field is of the sensitivity secret (ST-DECL-EN03).
+func (f Field) Secret() bool { return f.Sensitivity == "secret" }
+
+// Sealed tells whether the field is a readable secret, which the generated code seals at rest (decision ST-DECL-Q44).
+func (f Field) Sealed() bool { return f.Secret() && !f.CompareOnly }
 
 // ColumnName gives the stored column of the field: Column, else Name.
 func (f Field) ColumnName() string {

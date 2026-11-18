@@ -23,6 +23,7 @@ type keptSchema struct {
 	Required   []string `json:"required"`
 	Properties map[string]struct {
 		ReadOnly    bool   `json:"readOnly"`
+		WriteOnly   bool   `json:"writeOnly"`
 		Description string `json:"description"`
 		Default     any    `json:"default"`
 	} `json:"properties"`
@@ -51,8 +52,10 @@ func TestKeptDocument(t *testing.T) {
 		schemas := document.Components.Schemas
 		ticket, create, update := schemas["Ticket"], schemas["TicketCreateRequest"], schemas["TicketUpdateRequest"]
 		kept := []string{"sku", "state", "meta", "due_at", "rank"}
-		if p := update.Properties["pin"]; !ticket.Properties["pin"].ReadOnly || p.ReadOnly || !strings.Contains(p.Description, "must leave it out") {
-			t.Errorf("the secret kept field pin is %+v in the entity schema and %+v in the update-request schema, want readOnly there and a description that the body must leave it out here", ticket.Properties["pin"], p)
+		// A secret is writeOnly, and never also readOnly; a kept secret says that an update must leave it out.
+		if e, p := ticket.Properties["pin"], update.Properties["pin"]; e.ReadOnly || !e.WriteOnly || !strings.Contains(e.Description, "An update must leave it out") ||
+			p.ReadOnly || !p.WriteOnly || !strings.Contains(p.Description, "must leave it out") || strings.Contains(p.Description, "empty") {
+			t.Errorf("the secret kept field pin is %+v in the entity schema and %+v in the update-request schema, want writeOnly and not readOnly in each, and a description that an update must leave it out", e, p)
 		}
 		for _, name := range kept {
 			p := ticket.Properties[name]

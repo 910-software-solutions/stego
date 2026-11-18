@@ -131,7 +131,11 @@ message of the same destination, tenant and resource key. The resource key of a 
 could run now. The events of other rows continue. The later events wait until you resolve the parked message:
 
 - `not_acted` sends it again. Use it when you corrected the cause, such as when you created the missing row.
-- `acted` or `discarded` releases the later events without a new run of the parked one.
+- `discarded` releases the later events without a new run of the parked one. The change that the event tells is
+  then not applied in this service.
+- `acted` is refused with 409. The destination of a subscription is idempotent: the worker applies an event with the
+  key of its source row, so to send it again is safe, and `acted` would mark it done with no run, which loses what
+  the run writes (ST-SUP-RP01-LC13). Use `not_acted` when the work must happen, and `discarded` when it must not.
 
 Thus a wrong start order can hold back many events. Do the steps above in order, and look at the parked list of
 each consuming destination after the first start.

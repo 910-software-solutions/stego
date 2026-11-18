@@ -97,6 +97,12 @@ type runtimeWiringData struct {
 	// the topic need, and the start refuses a worker mode with no STEGO_KAFKA_TOPIC and no STEGO_KAFKA_TOPIC_FILE at
 	// the stage service.start.setting.kafka-producer.STEGO_KAFKA_TOPIC (walkthrough 7, B7).
 	KafkaTopic bool
+	// Sealed is true when an entity has a readable secret field: the api, worker and controller modes read the key
+	// ring, and the controller runs the re-seal job of the columns of the PostgreSQL adapter (ST-SUP-RP14-LC12).
+	Sealed bool
+	// Secret is true when an entity has any secret field: the serving modes read the key ring, which also keys the
+	// fingerprints of the idempotency keys, since a request body can hold a secret (ST-SUP-RP16-LC05).
+	Secret bool
 }
 
 // runtimeWiring gives the runtime wiring package of a service on the runtime data path and its wiring of main.go
@@ -134,6 +140,12 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		ProblemCode: problemCode(svc.Name),
 	}
 	data.KafkaTopic = slices.Contains(in.Names, kafkaProducerComponent)
+	for _, e := range svc.Entities {
+		for _, f := range e.Fields {
+			data.Sealed = data.Sealed || f.Sealed()
+			data.Secret = data.Secret || f.Secret()
+		}
+	}
 	if slices.Contains(in.Names, idempotencyComponent) && svc.Idempotency != nil {
 		data.Idempotency = pkg(idempotencyComponent)
 	}

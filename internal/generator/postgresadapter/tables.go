@@ -121,6 +121,14 @@ func sqlName(parts ...string) string {
 // columnType gives the PostgreSQL type of a declared field. A reference holds the key of the row it refers to,
 // which is a uuid.
 func columnType(field types.Field) (string, error) {
+	// A secret column holds the sealed bytes of a readable secret, or the Argon2id string of a compare-only one, and
+	// never the value (ST-SUP-RC01-OC48).
+	if field.Secret() && (field.Type == types.FieldTypeString || field.Type == types.FieldTypeJsonb) {
+		if field.CompareOnly {
+			return "text", nil
+		}
+		return "bytea", nil
+	}
 	switch field.Type {
 	case types.FieldTypeString:
 		if field.MaxLength != nil {
@@ -208,6 +216,11 @@ type checkItem struct{ source, deparsed string }
 // numeric bounds, the finite value of a bounded float, and the declared values of an enum. A pattern stays with
 // request validation, because PostgreSQL's regular expressions are not the RE2 expressions that the API checks.
 func columnChecks(field types.Field, typ string) []checkItem {
+	// The stored form of a secret is not its value: the command runtime checks the declared constraints on the value
+	// before it seals it (ST-SUP-RC01-OC48).
+	if field.Secret() {
+		return nil
+	}
 	column := sqlIdentifier(field.ColumnName())
 	ref := deparsedName(field.ColumnName())
 	var checks []checkItem
@@ -336,6 +349,19 @@ func uniqueName(table string, columns []string) string {
 }
 
 func searchName(table, column string) string { return sqlName(table, column, "search") }
+
+// UniqueIndexes gives the unique indexes of the declared keys of entity, by the name that the migration gives each
+// index, with the columns of its key after the tenant column: each unique field and each unique_composite group
+// (uniqueKeys with no upsert key). The command generator names the fields of a key that a unique violation broke from
+// it (ST-SUP-RC32-OC22, ST-SUP-RP10-LC48).
+func UniqueIndexes(entity types.Entity) map[string][]string {
+	keys := uniqueKeys(entity, nil)
+	indexes := make(map[string][]string, len(keys))
+	for _, columns := range keys {
+		indexes[uniqueName(tableName(entity.Name), columns)] = columns
+	}
+	return indexes
+}
 
 // tableModels gives the model of each table of the declaration, in the order of tableOrder.
 func tableModels(ctx gen.Context) ([]tableModel, error) {
@@ -853,6 +879,11 @@ func generateRuntimeData(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		return nil, nil, err
 	}
 	files = append(files, migrateFile, schemaFile, opener, access, schemaManifest)
+	if sealed, ok, err := generateSealedColumns(ctx); err != nil {
+		return nil, nil, err
+	} else if ok {
+		files = append(files, sealed)
+	}
 	// The migration job of the runtime wiring runs the ledger (service.Migrate), so the wiring has no call after
 	// the database opens.
 	wiring := &gen.Wiring{

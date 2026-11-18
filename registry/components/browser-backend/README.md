@@ -147,6 +147,20 @@ The check needs these details, which PostgreSQL does not give by default:
   the owner role. A grant to it gives `fault: grant`.
 - The migration login is INHERIT, the default, so that it can connect as a
   member of the owner role.
+- The owner role has one member, the migration login, the migration login has
+  no member, and the runtime login has no member (version 4.12.0 and later).
+  Another member could take the role and read or drop the session table, so
+  the check refuses it with `fault: owner` or `fault: login`. The check counts
+  only a membership with INHERIT or SET. On PostgreSQL 16 and later, an
+  administrator that is not a superuser, such as the master user of a managed
+  server, gets a membership WITH ADMIN OPTION only in each role that it makes;
+  the check accepts it, and you must not revoke it, because the administrator
+  needs it to change a password. Such an administrator cannot make a database
+  that a role owns unless it can take that role: run
+  `GRANT <service>_owner TO <admin> WITH SET TRUE, INHERIT FALSE` before
+  `CREATE DATABASE`, run the grants of the database and of the schema `public`
+  after `SET ROLE <service>_owner` in one session, and then run
+  `REVOKE <service>_owner FROM <admin>`.
 
 The Job takes `STEGO_RUNTIME_DATABASE_ROLE=<service>_runtime`, and the owner
 Secret holds the connection string of `<service>_migrator`.
@@ -154,14 +168,19 @@ Secret holds the connection string of `<service>_migrator`.
 When Verify refuses the database, at startup or in the mode migrate, the
 failure record names the stage `database.schema`, the field `fault` (owner,
 login, table, column, constraint, index or grant) and the field `object` (the
-generated table, column, constraint or index). It holds no value, password or
-database error text. The stage `database.access` is kept for a connection that
+generated table, column, constraint or index). For the faults owner, login and
+grant, version 4.12.0 and later also names the field `remedy`, a fixed text that
+names the section [Move a browser-service database to the owner and migrator
+logins](../../../docs/upgrade.md#move-a-browser-service-database-to-the-owner-and-migrator-logins)
+of the upgrade guide. It holds no value, password or database error text. The stage `database.access` is kept for a connection that
 did not open or a login that could not be read.
 
 The generated `browser/schema.Bootstrap` function is also available to your own
 code. Version 2 requires a separate schema owner and runtime login. An older deployment
 that used the table owner as its runtime login must change its grants and table
-ownership before it uses this version. Startup rejects unsafe permissions.
+ownership before it uses this version. Startup rejects unsafe permissions. A
+database of a release before 4.6.0 has a LOGIN owner: move it with the steps of
+the upgrade guide (see above) before the first migration Job.
 
 With `postgres-client`, provision a database with `ManagedSchema: true`, then call
 `WithDatabaseOwner`. In its callback, pass the connection and `identity.User` to
@@ -197,7 +216,12 @@ Set these values in the service environment:
 - `STEGO_BROWSER_CLIENT_ID`: the confidential OIDC client ID.
 - `STEGO_BROWSER_CLIENT_SECRET_FILE`: the protected client secret file.
 - `STEGO_BROWSER_SESSION_KEY_FILE`: a protected file with 32 random bytes
-  encoded as standard base64.
+  encoded as standard base64 on one line, such as the output of
+  `openssl rand -base64 32`. Do not write the raw bytes. A file that the
+  backend refuses stops the start: the failure record names the stage
+  `browser.session_keys`, the fault class (`file`, `size`, `encoding`,
+  `document`, `count` or `duplicate`) and a remedy, and never a byte of the
+  file.
 
 Use different host names for the console, its API, and its identity provider.
 The API and identity provider can share a host with each other. They must not
@@ -235,15 +259,17 @@ such as `Cookie`, `Origin`, `X-CSRF-Token` or `traceparent`.
 | `Accept`, `Content-Type` | The media type of the request and of the answer. |
 | `If-Match`, `If-None-Match` | The version checks of a write and of a read. |
 | `Idempotency-Key` | Each STEGO command requires it. Send one new key for each command, and the same key when you send the command again. |
-| `Authz-Revocation-After` | A read after your own write waits for the revocation that the write gave in `Authz-Revocation-Location`. Give that value as it is. |
+| `Authz-Revocation-After` | A read or a write after your own write waits for the revocation that the write gave in `Authz-Revocation-Location`. Give that value as it is, such as on the create of a child at once after the create of its parent. |
 | `Prefer` | `wait=<seconds>` sets the longest wait of that read. The API prefix sends only this one preference, and drops each other preference. |
 
-A read with `Authz-Revocation-After` waits at most 4 seconds, one second less
-than the request timeout of the API prefix: the API prefix sends `wait=4`
-when the browser gives no wait or a longer one. At most 4 such reads run at
-one time for the whole service, shared among the APIs, so that they never
-take the capacity of the other requests. The next one gets 503 with
-`Retry-After: 1`.
+A read or a write with `Authz-Revocation-After` waits at most 4 seconds, one
+second less than the request timeout of the API prefix: the API prefix sends
+`wait=4` when the browser gives no wait or a longer one. At most 4 such
+requests wait at one time for the whole service, shared among the APIs, so
+that they never take the capacity of the other requests, and one session
+waits in at most one of them. A request past either limit is not refused: it
+goes to the API with `wait=0`, so it reads the state of the revocation once and
+does not wait.
 
 The API prefix returns to the browser only the API response headers
 `Content-Type`, `ETag`, `Retry-After`, `Idempotent-Replayed`,

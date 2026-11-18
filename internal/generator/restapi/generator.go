@@ -1134,14 +1134,17 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 			if keptField(f) {
 				// A field that a collection write cannot change is readOnly in the entity schema, which only the
 				// responses use: the request check refuses a readOnly member with any value (ST-SUP-RC20-OC47).
+				// A secret is writeOnly, which keeps it out of each response, and a schema is never both.
 				property := schema.Properties[f.Name]
-				property.ReadOnly = true
+				property.ReadOnly = !f.Secret()
 				property.Description = keptDescription(f, property.Description)
 				schema.Properties[f.Name] = property
 			}
 			// Scope fields are derived from URL path parameters, not the
 			// request body — exclude them from the required array.
-			if !f.Optional && !f.Computed && !scopeFields[f.Name] {
+			// A secret is in no response, and an update that leaves it out keeps it (ST-SUP-RC20-OC48), so the
+			// schema of the entity does not require it; the create request does.
+			if !f.Optional && !f.Computed && !scopeFields[f.Name] && !f.Secret() {
 				required = append(required, f.Name)
 			}
 		}
@@ -1567,6 +1570,11 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 	if f.Computed {
 		s.ReadOnly = true
 	}
+	if f.Secret() {
+		// A request sets a secret, and no response gives it back (ST-SUP-RC20-OC48).
+		s.WriteOnly = true
+		s.Description = "A secret: a request sets it, and no response gives it back. An update that leaves it out, or gives it empty, keeps the stored value."
+	}
 	// Propagate string constraint attributes.
 	if f.MinLength != nil {
 		s.MinLength = f.MinLength
@@ -1605,6 +1613,10 @@ func keptDescription(f types.Field, typeDescription string) string {
 	if f.Writable == types.WritableNever {
 		when = "Only a command or a worker sets this field; a create stores its default, and a collection write cannot change it."
 	}
+	if f.Secret() {
+		// A kept secret is never compared, so an update must leave it out, also empty (ST-SUP-RC20-OC44).
+		return joinDescription("A secret: no response gives it back.", when+" An update must leave it out.")
+	}
 	return joinDescription(typeDescription, when)
 }
 
@@ -1619,8 +1631,9 @@ func joinDescription(typeDescription, when string) string {
 // keptUpdateDescription gives the description of a field of keptField in the update-request schema (ST-SUP-RC20-OC47).
 // A secret is never compared with the stored value, so the body must leave it out.
 func keptUpdateDescription(f types.Field, typeDescription string) string {
-	if f.Sensitivity == "secret" {
-		return joinDescription(typeDescription, "An update cannot take this secret field: the body must leave it out.")
+	if f.Secret() {
+		// The update of a kept secret refuses each member that names it, also an empty one (ST-SUP-RC20-OC44).
+		return "A secret: a create sets it, and no response gives it back. An update cannot take this secret field: the body must leave it out."
 	}
 	return joinDescription(typeDescription, "An update cannot change this field: the body may leave it out or give its stored value.")
 }
@@ -2045,6 +2058,7 @@ type openAPISchema struct {
 	Ref         string                   `json:"$ref,omitempty"`
 	Enum        []string                 `json:"enum,omitempty"`
 	ReadOnly    bool                     `json:"readOnly,omitempty"`
+	WriteOnly   bool                     `json:"writeOnly,omitempty"`
 	MinLength   *int                     `json:"minLength,omitempty"`
 	MaxLength   *int                     `json:"maxLength,omitempty"`
 	Pattern     string                   `json:"pattern,omitempty"`
@@ -3048,8 +3062,9 @@ var revocationStates = []string{"pending", "complete", "parked", "failed", "expi
 
 // revocationHeaders adds the revocation headers to an operation of a collection, as ST-SUP-RC20-OC43 states them: a
 // get, a read or a list, takes the optional request headers Authz-Revocation-After and Prefer, answers 400 to a value
-// that is no revocation, and answers the state in Authz-Revocation; each write answers Authz-Revocation and
-// Authz-Revocation-Location on each success when it enqueued a tuple.
+// that is no revocation, and answers the state in Authz-Revocation; each write takes the same request headers and
+// 400 (ST-SUP-RC20-OC49), and answers Authz-Revocation and Authz-Revocation-Location on each success when it
+// enqueued a tuple.
 func revocationHeaders(method string, op openAPIOperation) openAPIOperation {
 	responses := make(map[string]openAPIResponse, len(op.Responses)+1)
 	for code, response := range op.Responses {
@@ -3072,15 +3087,19 @@ func revocationHeaders(method string, op openAPIOperation) openAPIOperation {
 		responses[code] = response
 	}
 	op.Responses = responses
-	if method == "get" {
-		op.Parameters = append(op.Parameters,
-			openAPIParam{Name: revocationAfterHeader, In: "header", Required: false,
-				Description: "The identity of the caller's own revocation, or its " + revocationLocationHeader + " path: the request waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then shows the write",
-				Schema:      openAPISchema{Type: "string"}},
-			openAPIParam{Name: "Prefer", In: "header", Required: false, Description: "wait=N: wait at most N seconds for the revocation (RFC 7240)", Schema: openAPISchema{Type: "string"}})
-		if _, ok := op.Responses["400"]; !ok {
-			op.Responses["400"] = openAPIResponse{Description: "Bad request: the " + revocationAfterHeader + " header is not the identity of a revocation, or the request is not valid"}
-		}
+	// A read or a list waits for the caller's revocation before it shows the write (ST-SUP-RC20-OC43), and a write
+	// before it decides, such as the create of a child after the create of its parent (ST-SUP-RC20-OC49).
+	description := "The identity of the caller's own revocation, or its " + revocationLocationHeader + " path: the request waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then shows the write"
+	if method != "get" {
+		description = "The identity of the caller's own revocation, or its " + revocationLocationHeader + " path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples"
+	}
+	op.Parameters = append(op.Parameters,
+		openAPIParam{Name: revocationAfterHeader, In: "header", Required: false,
+			Description: description,
+			Schema:      openAPISchema{Type: "string"}},
+		openAPIParam{Name: "Prefer", In: "header", Required: false, Description: "wait=N: wait at most N seconds for the revocation (RFC 7240)", Schema: openAPISchema{Type: "string"}})
+	if _, ok := op.Responses["400"]; !ok {
+		op.Responses["400"] = openAPIResponse{Description: "Bad request: the " + revocationAfterHeader + " header is not the identity of a revocation, or the request is not valid"}
 	}
 	return op
 }

@@ -119,6 +119,9 @@ type conflictError struct {
 	text string
 	// unique is true for a unique violation, which a consumer counts as an attempt (uniqueConflict).
 	unique bool
+	// key is the declared fields of the unique key that a unique violation broke, or empty when the entity does not
+	// declare the index (ST-SUP-RP10-LC48). It names no value.
+	key string
 }
 
 func (e *conflictError) Error() string        { return "command: conflict: " + e.text }
@@ -244,6 +247,11 @@ type EntitySpec[T any] struct {
 	// (23502) or a foreign key (23503) refuses is ErrInvalid naming that field, so a value that Check does not cover
 	// is answered 400 and never 500 (walkthrough 10, B4).
 	Constraints map[string]string
+	// Unique gives the declared fields of the key of each unique index of the entity's table, by the name of the
+	// index, joined by a comma and a space. A create or an update that a unique violation (SQLSTATE 23505) of one of
+	// them ends is a conflict that names those fields, which OutcomeOf answers 409 with the field, never a value
+	// (ST-SUP-RP10-LC48). Nil names no key.
+	Unique map[string]string
 	// Parent is the list of the references of a row to the rows of other entities, which the generated code reads
 	// from a value, such as Order and value.OrderID, in the order that the declaration gives them; empty for an
 	// entity that has none. A create, a move and the work on a child take the loaded value of each reference that
@@ -265,6 +273,9 @@ type EntitySpec[T any] struct {
 	// service's schema: a delete of a row clears each of them on the row's resource, whatever wrote the tuple
 	// (ST-SUP-Q118). The handle is bound with them, but a fill relates only its own relations.
 	Relations []string
+	// Sealed is true when the entity has a readable secret field, which Values gives as SealAt and Scan reads into
+	// OpenAt: a runtime with no key ring refuses the entity (ST-SUP-RP10-LC44).
+	Sealed bool
 	// Tenant is true when the schema gives ResourceType the relation tenant of the subject type tenant: a create then
 	// touches the tuple <resource type>:<row>#tenant@tenant:<tenant resource ID> (authz.TenantResource), so a
 	// permission such as sync = tenant->worker_<name> reaches the rows of that tenant only. Only the runtime writes
@@ -566,6 +577,9 @@ func (e *Entity[T]) register(rt *Runtime) error {
 
 // Name is the entity's name.
 func (e *Entity[T]) Name() string { return e.spec.Name }
+
+// sealedEntity tells whether the entity has a readable secret field, which needs the key ring.
+func (e *Entity[T]) sealedEntity() bool { return e.spec.Sealed }
 
 // NewEntity checks the declaration of one entity and makes its repository declaration. It refuses a missing name,
 // statement or function, a statement that does not take the tenant as $1, a locked read without its lock clause,
@@ -1278,7 +1292,30 @@ func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) e
 			}
 		}
 	}
-	return s.fail(ctx, step, err)
+	return r.failUnique(ctx, step, err)
+}
+
+// failUnique is fail for the row statement of a create or an update, which keeps the declared fields of the unique key
+// that a unique violation (SQLSTATE 23505) broke in the conflict, when the entity declares the index in Unique
+// (ST-SUP-RP10-LC48). The first conflict of the transaction is the one that Run returns, so only it takes the key.
+func (r *Repository[T]) failUnique(ctx context.Context, step string, err error) error {
+	failed := r.st.fail(ctx, step, err)
+	var pg *pgconn.PgError
+	var c *conflictError
+	if sqlState(err) == "23505" && errors.As(err, &pg) && errors.As(failed, &c) && c.unique && c.key == "" {
+		c.key = r.entity.spec.Unique[pg.ConstraintName]
+	}
+	return failed
+}
+
+// UniqueKey gives the declared fields of the unique key that the conflict err broke, or empty for any other error and
+// for a unique violation of an index that the entity does not declare (ST-SUP-RP10-LC48).
+func UniqueKey(err error) string {
+	var c *conflictError
+	if errors.As(err, &c) && c.unique {
+		return c.key
+	}
+	return ""
 }
 
 // reasonConstraint is the fixed reason of a value that a CHECK, a NOT NULL or a foreign key of the entity's table
@@ -1552,6 +1589,10 @@ func (s *state) close() {
 // fail records the error of a statement: a conflict (ST-SUP-RP10-LC25) or an internal error, which the state keeps,
 // so every later method and Run see it. It holds no database text.
 func (s *state) fail(ctx context.Context, step string, err error) error {
+	// A sealed value that does not open is an internal error of the runtime, not of a statement (ST-SUP-RP10-LC44).
+	if sealedFault(err) {
+		return s.breakWith(err)
+	}
 	code := sqlState(err)
 	if isConflict(ctx, err) {
 		if s.conflict == nil {
@@ -1633,7 +1674,7 @@ func (e *scanError) Unwrap() error { return e.err }
 // scanFailed marks err of a Scan of an entity, which is not sql.ErrNoRows, as a scanError when it has no SQLSTATE: an
 // error of the statement itself, which a row read gives at its Scan, keeps its SQLSTATE.
 func scanFailed(err error) error {
-	if err == nil || sqlState(err) != "" || errors.Is(err, sql.ErrNoRows) {
+	if err == nil || sqlState(err) != "" || errors.Is(err, sql.ErrNoRows) || sealedFault(err) {
 		return err
 	}
 	return &scanError{err: err}
@@ -1794,7 +1835,7 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 	var meta Meta
 	err := sql.ErrNoRows
 	if e.spec.ValidID(id) {
-		value, meta, err = e.spec.Scan(s.queryRow(ctx, e.spec.Select, s.tenant.ID(), id))
+		value, meta, err = e.spec.Scan(s.opening(s.queryRow(ctx, e.spec.Select, s.tenant.ID(), id)))
 		err = scanFailed(err)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1845,7 +1886,7 @@ func lockOne[T any](ctx context.Context, s *state, e *Entity[T], statement, id s
 	if _, err := s.exec(ctx, "SAVEPOINT stego_command_lock"); err != nil {
 		return zero, Meta{}, s.fail(ctx, step, err)
 	}
-	value, meta, err := e.spec.Scan(s.queryRow(ctx, statement, s.tenant.ID(), id))
+	value, meta, err := e.spec.Scan(s.opening(s.queryRow(ctx, statement, s.tenant.ID(), id)))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := s.release(ctx, step); err != nil {
@@ -2153,7 +2194,7 @@ func (r *Repository[T]) scanAll(ctx context.Context, step, statement string, arg
 	defer rows.Close()
 	var out []scanned[T]
 	for rows.Next() {
-		value, meta, err := r.entity.spec.Scan(rows)
+		value, meta, err := r.entity.spec.Scan(s.opening(rows))
 		if err != nil {
 			return nil, s.fail(ctx, step, scanFailed(err))
 		}
@@ -2271,11 +2312,15 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err != nil {
 		return nil, err
 	}
-	row, err := s.lockedRow(ctx, "create "+e.spec.Name, e.spec.Insert, append([]any{s.tenant.ID()}, e.spec.Values(value)...)...)
+	values, err := s.sealArgs(ctx, e.spec.Values(value))
+	if err != nil {
+		return nil, s.breakWith(err)
+	}
+	row, err := s.lockedRow(ctx, "create "+e.spec.Name, e.spec.Insert, append([]any{s.tenant.ID()}, values...)...)
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(row)
+	stored, meta, err := e.spec.Scan(s.opening(row))
 	if err != nil {
 		return nil, r.failWrite(ctx, "create "+e.spec.Name, scanFailed(err))
 	}
@@ -2333,12 +2378,16 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 		}
 	}
 	step := "update " + e.spec.Name
+	values, err := s.sealArgs(ctx, e.spec.Values(value))
+	if err != nil {
+		return nil, s.breakWith(err)
+	}
 	row, err := s.lockedRow(ctx, step, e.spec.Update,
-		append([]any{s.tenant.ID(), from2.meta.ID, from2.meta.Version}, e.spec.Values(value)...)...)
+		append([]any{s.tenant.ID(), from2.meta.ID, from2.meta.Version}, values...)...)
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(row)
+	stored, meta, err := e.spec.Scan(s.opening(row))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.conflict = &conflictError{text: "the version of a row of " + e.spec.Name + " moved"}

@@ -164,6 +164,7 @@ func Validate(service *types.ServiceDeclaration, undeclared ...parser.Undeclared
 	faults.Service = append(faults.Service, validateDelivery(service.Delivery)...)
 	faults.Entities = append(faults.Entities, validateFieldTypes(service.Entities)...)
 	faults.Entities = append(faults.Entities, validateFieldDefaults(service.Entities)...)
+	faults.Entities = append(faults.Entities, validateSecretFields(service)...)
 	faults.Entities = append(faults.Entities, validateMoney(service)...)
 	faults.Entities = append(faults.Entities, validateWritable(service)...)
 	faults.Entities = append(faults.Entities, validateDeclaredInvariants(service)...)

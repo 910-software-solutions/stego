@@ -71,9 +71,11 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
  });if err!=nil{return nil,err}
  var keys [][]byte
  err=startupStep(ctx,telemetry.StartupBrowserSessionKeys,func(context.Context)error{
-  raw,err:=client.ReadPrivateFile(o.KeyFile);if err!=nil{return errSession}
+  raw,err:=client.ReadPrivateFile(o.KeyFile);if err!=nil{return keyFaultOf("file")}
   defer clear(raw)
-  keys,err=sessionKeys(raw);return err
+  // sessionKeys clears each key that it decoded before a fault and returns none; the start clears again what it
+  // got on an error, so no key stays in memory after a refused file (security review of PR #440, I4).
+  keys,err=sessionKeys(raw);if err!=nil{for _,key:=range keys{clear(key)};keys=nil};return err
  });if err!=nil{return nil,err}
  defer func(){for _,key:=range keys{clear(key)}}()
  var store *sessionStore
@@ -109,15 +111,21 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
 func(b *Backend)Close(){b.close.Do(func(){ {{if .LocalApplication}}b.sockets.close();b.sockets.wg.Wait();{{end}}b.provider.close();b.upstream.Close();closeAPIs(b.apis)})}
 // apiRoute is one declared API of the setting apis: its prefix and the bounded client of its one fixed origin, which
 // STEGO_BROWSER_API_URLS gives at start and which never changes after (ST-SUP-RC02-OC58).
-type apiRoute struct{name,prefix string;upstream *client.Client;permits,waits chan struct{}}
+type apiRoute struct{name,prefix string;upstream *client.Client;permits,waits chan struct{};sessions *waitSessions}
+// waitSessions counts the slots of the wait pool of one API that each session holds (MaxWaitsPerSession).
+type waitSessions struct{mu sync.Mutex;held map[string]int}
+// take takes a slot of the session id, and tells whether the session held fewer than MaxWaitsPerSession.
+func(s *waitSessions)take(id string)bool{s.mu.Lock();defer s.mu.Unlock();if s.held[id]>=MaxWaitsPerSession{return false};s.held[id]++;return true}
+// give gives back a slot of the session id.
+func(s *waitSessions)give(id string){s.mu.Lock();defer s.mu.Unlock();if s.held[id]--;s.held[id]<=0{delete(s.held,id)}}
 // poolAPIs gives the API of api_prefix and each declared API a pool of permits and a pool of waiting reads of its
 // own, so that a slow API cannot take the capacity of another; the shares keep the total at most
 // client.MaxConcurrentRequests and MaxWaitingReads, with at least one of each for each API, and the permits of the
 // backend bound every request together.
 func poolAPIs(main *apiRoute,apis []apiRoute){
  n:=1+len(apis);share:=max(1,client.MaxConcurrentRequests/n);waits:=max(1,MaxWaitingReads/n)
- main.permits,main.waits=make(chan struct{},share),make(chan struct{},waits)
- for i:=range apis{apis[i].permits,apis[i].waits=make(chan struct{},share),make(chan struct{},waits)}
+ main.permits,main.waits,main.sessions=make(chan struct{},share),make(chan struct{},waits),&waitSessions{held:map[string]int{}}
+ for i:=range apis{apis[i].permits,apis[i].waits,apis[i].sessions=make(chan struct{},share),make(chan struct{},waits),&waitSessions{held:map[string]int{}}}
 }
 // declaredAPIs reads STEGO_BROWSER_API_URLS, a comma-separated list of name=origin, once at start. It refuses a
 // name that the declaration does not give, a name given two times or not given, and an address that is not an

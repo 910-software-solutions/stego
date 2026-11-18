@@ -31,6 +31,22 @@ func (f *Fault) Is(target error) bool { return target == ErrSchema }
 func (f *Fault) FaultClass() string { return f.class }
 func (f *Fault) FaultObject() string { return f.object }
 
+// roleLayout is the remedy of a fault of the classes owner, login and grant: the database roles are not the layout
+// of browser-backend 4.6.0 and later, a NOLOGIN NOINHERIT owner role and a migration login in it, such as a database
+// that an older release made with a LOGIN owner (walkthrough 11, W11-B1).
+const roleLayout = "the database roles are not the layout of browser-backend 4.6.0 and later: a NOLOGIN NOINHERIT owner role whose only member is the migration login, and a NOINHERIT runtime login with no member (an ADMIN-only membership of the administrator is accepted); do the steps of docs/upgrade.md#move-a-browser-service-database-to-the-owner-and-migrator-logins in the STEGO repository"
+
+// FaultRemedy gives the fixed text that tells the operator what to do, which the failure record names beside the
+// class (ST-SUP-RC02-OC57): the move to the role layout for the classes owner, login and grant, and empty for a
+// table that differs from the generated schema, which the check does not repair.
+func (f *Fault) FaultRemedy() string {
+ switch f.class {
+ case "owner", "login", "grant":
+  return roleLayout
+ }
+ return ""
+}
+
 func fault(class, object string) error { return &Fault{class: class, object: object} }
 
 const sessions = "public.stego_browser_sessions"
@@ -185,15 +201,24 @@ func Verify(ctx context.Context, db *sql.DB) (failure error) {
  return nil
 }
 
+// identity checks the roles: the owner role is a member of no role, and has at most one member, the migration
+// login, which is the login of the session on the owner connection, and that login has no member; the runtime login is
+// a member of no role and has no member, so no other login can take either role (security review of PR #435, M2, N4).
+// A member counts only when its membership gives the role's privileges (INHERIT or SET): on PostgreSQL 16 and later a
+// non-superuser CREATEROLE administrator, such as the master user of a managed server, gets an ADMIN-only membership in
+// each role that it makes, which cannot use the role (re-review of PR #435, N1).
 func identity(ctx context.Context,tx *sql.Tx,runtimeRole string,ownerConnection bool)error{
  var version,owner,login,grant bool
  err:=tx.QueryRowContext(ctx,`SELECT current_setting('server_version_num')::int BETWEEN 160000 AND 189999,
   (NOT $2 OR current_user=o.rolname) AND NOT o.rolcanlogin
   AND NOT (o.rolsuper OR o.rolcreatedb OR o.rolcreaterole OR o.rolreplication OR o.rolbypassrls OR o.rolinherit)
-  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=o.oid),
+  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=o.oid)
+  AND (SELECT count(DISTINCT member) FROM pg_catalog.pg_auth_members WHERE roleid=o.oid AND (inherit_option OR set_option))<=1
+  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r ON r.oid=m.member WHERE m.roleid=o.oid AND (m.inherit_option OR m.set_option) AND $2 AND r.rolname<>session_user)
+  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles r ON r.oid=m.roleid WHERE r.rolname=session_user AND (m.inherit_option OR m.set_option) AND $2),
   ($2 OR current_user=u.rolname) AND o.oid<>u.oid AND u.rolcanlogin
   AND NOT (u.rolsuper OR u.rolcreatedb OR u.rolcreaterole OR u.rolreplication OR u.rolbypassrls OR u.rolinherit)
-  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=u.oid),
+  AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_auth_members WHERE member=u.oid OR roleid=u.oid AND (inherit_option OR set_option)),
   pg_catalog.has_database_privilege(u.oid,d.oid,'CONNECT')
   AND NOT pg_catalog.has_database_privilege(u.oid,d.oid,'CREATE')
   AND NOT pg_catalog.has_database_privilege(u.oid,d.oid,'TEMPORARY')

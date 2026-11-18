@@ -289,10 +289,10 @@ func TestGeneratedManagedBrowserSchema(t *testing.T) {
 	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(ManagedBrowserSchema|BrowserSchemaRefusesDrift|BrowserSchemaRefusesRuntimeGrantDrift|BrowserSchemaBootstrapRollsBack)$")
 }
 
-// TestGeneratedBrowserSchemaMigrate runs the mode migrate and the fault classes of the schema check against the local
-// PostgreSQL server (ST-SUP-RC02-OC56, ST-SUP-RC02-OC57).
+// TestGeneratedBrowserSchemaMigrate runs the mode migrate, the fault classes of the schema check and the role move of
+// the upgrade guide against the local PostgreSQL server (ST-SUP-RC02-OC56, ST-SUP-RC02-OC57).
 func TestGeneratedBrowserSchemaMigrate(t *testing.T) {
-	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(BrowserSchemaMigrate|BrowserSchemaFaultClass|ReadmeDatabaseSetup)$")
+	testGeneratedRuntime(t, new(Generator), fixture(), false, "^Test(BrowserSchemaMigrate|BrowserSchemaFaultClass|ReadmeDatabaseSetup|UpgradeRoleMove|ManagedAdminLayout)$")
 }
 
 func TestGeneratedSchemaInputs(t *testing.T) {
@@ -380,6 +380,14 @@ func testGeneratedRuntime(t *testing.T, g *Generator, ctx gen.Context, local boo
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(project, "out/browser/readme.md"), readme, 0644); err != nil {
+		t.Fatal(err)
+	}
+	// The upgrade guide, whose role move a test runs as it is written (ST-SUP-RC02-OC56-T04).
+	guide, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "upgrade.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "out/browser/upgrade.md"), guide, 0644); err != nil {
 		t.Fatal(err)
 	}
 	if local {

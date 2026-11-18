@@ -640,12 +640,16 @@ type fieldShape struct {
 	Default         any
 	Values          []string
 	To              string
+	// Secret and CompareOnly are the stored form of a secret field: sealed bytes, or an Argon2id hash (decision
+	// ST-DECL-Q44), so a change of either changes what the column holds.
+	Secret, CompareOnly bool
 }
 
 func shapeOf(field types.Field) fieldShape {
 	return fieldShape{Type: field.Type, MinLength: field.MinLength, MaxLength: field.MaxLength, Min: field.Min, Max: field.Max,
 		Unique: field.Unique, UniqueComposite: field.UniqueComposite, UniqueWhenLive: field.UniqueWhenLive,
-		Optional: field.Optional, Default: field.Default, Values: field.Values, To: field.To}
+		Optional: field.Optional, Default: field.Default, Values: field.Values, To: field.To,
+		Secret: field.Secret(), CompareOnly: field.Secret() && field.CompareOnly}
 }
 
 // storedEntity is the stored shape of one entity: its fields in the order of the declaration, the declared
@@ -741,7 +745,10 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 			}
 		case "retype":
 			if field >= 0 {
-				entity.Fields[field].Shape = fieldShape{Type: types.FieldType(change.From)}
+				// The loose shape keeps the secret form of the field, so a retype never moves a value between the
+				// clear, sealed and hashed forms unseen (security re-review of PR #441, N3).
+				now := entity.Fields[field].Shape
+				entity.Fields[field].Shape = fieldShape{Type: types.FieldType(change.From), Secret: now.Secret, CompareOnly: now.CompareOnly}
 				entity.Fields[field].Loose = true
 			}
 		case "drop":
@@ -895,7 +902,11 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 	for _, field := range base.Fields {
 		at := head.field(field.Name)
 		if at < 0 {
-			pair := slices.IndexFunc(added, func(a storedField) bool { return !field.Loose && !a.Loose && reflect.DeepEqual(a.Shape, field.Shape) })
+			// A secret field is never renamed, because its sealed values are bound to its column (ST-DECL-INV101): its
+			// new name is a drop and an add.
+			pair := slices.IndexFunc(added, func(a storedField) bool {
+				return !field.Loose && !a.Loose && !field.Shape.Secret && reflect.DeepEqual(a.Shape, field.Shape)
+			})
 			if pair < 0 {
 				dropped = append(dropped, field)
 				continue
@@ -907,6 +918,13 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 			continue
 		}
 		now := head.Fields[at]
+		if field.Shape.Secret != now.Shape.Secret || field.Shape.CompareOnly != now.Shape.CompareOnly {
+			// The column of a secret holds its sealed bytes or its hash: a move between the clear, sealed and hashed
+			// forms rewrites each row, which only the schema change kind seal will do (ST-SUP-RC01-OC49, security
+			// review of PR #441, L1).
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head changes the secret form of %s.%s (sensitivity secret or compare_only), which changes what its column holds; that needs the schema change kind seal (ST-SUP-RC01-OC49), which generation does not carry out yet, so keep the form that the base stores, or add a new secret field and drop this one", head.Name, field.Name)})
+			continue
+		}
 		if field.Loose || now.Loose {
 			if field.Shape.Type == now.Shape.Type {
 				continue
@@ -930,6 +948,11 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 			Declare: []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-retype", Kind: "retype", Entity: head.Name, Field: field.Name, From: string(field.Shape.Type), Needs: "a conversion and an inverse conversion", Phase: "expand"}}})
 	}
 	addition := func(field storedField) SuggestedChange {
+		if field.Shape.Secret {
+			// A fill value of a secret would be clear text in the declaration and raw bytes in its column: a new
+			// secret field is optional and comes with an add (ST-DECL-INV101, security re-review of PR #441, N2).
+			return SuggestedChange{ID: "add-" + kebab(head.Name) + "-" + kebab(field.Name), Kind: "add", Entity: head.Name, Field: field.Name, Needs: "the field optional, because a secret field takes no fill value", Phase: "expand"}
+		}
 		if field.Shape.Optional || field.Shape.Default != nil {
 			return SuggestedChange{ID: "add-" + kebab(head.Name) + "-" + kebab(field.Name), Kind: "add", Entity: head.Name, Field: field.Name, Phase: "expand"}
 		}

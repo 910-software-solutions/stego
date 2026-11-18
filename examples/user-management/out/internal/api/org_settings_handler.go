@@ -158,7 +158,7 @@ func (h *OrgSettingsHandler) List(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, orgSettingsListQuery, h.rt.boundQuery(r.Context(), b, orgSettingsListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (orgSettingsPage, error) {
@@ -262,6 +262,17 @@ func (h *OrgSettingsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, "")
 	var persisted OrgSetting
+	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, command.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		answerWaitFailure(w, r, err)
+		return
+	}
 	result, err := command.Run(r.Context(), h.rt.Commands, orgSettingsUpsertCommand, req, decodeOrgSettings, func(ctx context.Context, orgsetting OrgSetting, ch *command.Handle[struct{}]) (idempotency.Response, error) {
 		// The parent is the deepest resource that the path names: it is read with the read permission of its entity,
 		// which decides it (ST-SUP-RC20-OC24).

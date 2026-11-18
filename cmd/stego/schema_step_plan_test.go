@@ -332,6 +332,17 @@ func TestSchemaStepPlan(t *testing.T) {
 		if !maps.Equal(before, tree(t, s.service)) {
 			t.Error("plan changed a file")
 		}
+		// apply --saved-plan refuses, names each step and the remedy, and writes nothing (walkthrough 11, rank 3).
+		stdout, stderr, err := s.stego(t, "apply", "--base", "HEAD", "--saved-plan")
+		for _, want := range []string{"add-note-body (add Note.body at expand)", "add-tag (add Tag at expand)", "against the base HEAD",
+			"Run stego apply --base HEAD without --saved-plan"} {
+			if err == nil || !strings.Contains(stdout+stderr, want) {
+				t.Errorf("apply --saved-plan with add steps to write: %v, want a refusal that names %q:\n%s%s", err, want, stdout, stderr)
+			}
+		}
+		if !maps.Equal(before, tree(t, s.service)) {
+			t.Error("the refused apply --saved-plan changed a file")
+		}
 		applied := s.must(t, "apply", "--base", "HEAD")
 		for _, want := range []string{"add-note-body", "add-tag"} {
 			if !strings.Contains(applied, want) {
@@ -354,7 +365,7 @@ func TestSchemaStepPlan(t *testing.T) {
 		}
 		required := strings.Replace(declaration, "{name: body, type: string, optional: true}", "{name: body, type: string, optional: true}, {name: owner, type: string}", 1)
 		s.write(t, "service.yaml", required)
-		stdout, stderr, err := s.stego(t, "apply", "--base", "HEAD")
+		stdout, stderr, err = s.stego(t, "apply", "--base", "HEAD")
 		if err == nil || !strings.Contains(stdout+stderr, "require note-owner-require (Note.owner) with a fill value at expand") {
 			t.Errorf("apply of a new required field with no default: %v, want a refusal that names the require to declare:\n%s%s", err, stdout, stderr)
 		}

@@ -55,6 +55,18 @@ func (m *model) usesJSON() bool {
 	return false
 }
 
+// usesSealed tells whether an entity has a secret field, whose Go type is of the sealing runtime (ST-SUP-RC32-OC20).
+func (m *model) usesSealed() bool {
+	for _, e := range m.entities {
+		for _, f := range e.fields {
+			if f.sealed || f.compared {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (m *model) usesAudit() bool {
 	for _, e := range m.entities {
 		for _, f := range e.fields {
@@ -94,6 +106,9 @@ func renderContract(m *model) []byte {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/authz\"\n")
 	}
 	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	if m.usesSealed() {
+		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/sealed\"\n")
+	}
 	if m.hasServiceLevel() {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/tenant\"\n")
 	}
@@ -212,7 +227,11 @@ func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey s
 	if m.usesAudit() {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n")
 	}
-	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n)\n\n")
+	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
+	if m.usesSealed() {
+		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/sealed\"\n")
+	}
+	w.f(")\n\n")
 	for _, e := range m.entities {
 		renderEntity(w, e, tenantKey)
 	}
@@ -513,6 +532,11 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 		}
 		if field == nil {
 			return ListPlan{}, fmt.Errorf("command: the list %s names the field %s, which %s does not declare", list.Name, term.Field, list.Entity)
+		}
+		if field.sealed || field.compared {
+			// A match on a secret would tell its value, and its stored form is not the value (ST-SUP-RP11-LC20,
+			// ST-DECL-INV101).
+			return ListPlan{}, fmt.Errorf("command: the list %s filters on the secret field %s; a list does not filter on a secret", list.Name, term.Field)
 		}
 		column := quote(field.decl.ColumnName())
 		if term.Op == types.ListIsSet {

@@ -69,7 +69,7 @@ func (w *runtimeHandlerWriter) keptCheck() {
 			w.f("\tif !create {\n")
 			indent = "\t\t"
 		}
-		if f.Sensitivity == "secret" {
+		if f.Secret() {
 			// A secret is never compared: a 400 for a wrong value and a 200 for the right one would tell the caller
 			// the secret. Each member that names the field is refused, whatever it holds, also null. A read clears
 			// the secret, so a client that sends back a row it read leaves the field out.

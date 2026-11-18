@@ -93,7 +93,10 @@ func crudContext() gen.Context {
 			{Name: "noted_at", Type: types.FieldTypeTimestamp},
 			{Name: "state", Type: types.FieldTypeEnum, Values: []string{"planned", "held"}, Default: "planned"},
 			{Name: "seats", Type: types.FieldTypeInt32, Default: 8}, {Name: "rate", Type: types.FieldTypeDouble, Default: 1.5},
-			{Name: "remote", Type: types.FieldTypeBool, Default: true}},
+			{Name: "remote", Type: types.FieldTypeBool, Default: true},
+			// code is an optional unique key: a second row with the same code is a conflict that names it
+			// (ST-SUP-RC20-OC50).
+			{Name: "code", Type: types.FieldTypeString, Optional: true, Unique: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "meeting", Permissions: permissions(types.OpUpdate, types.OpPatch), PublicReasons: reasons}},
 		// Label gives an optional implicit field with a read: the view holds it as a pointer, and a row whose
 		// implicit column is NULL is not found in the collection (ST-SUP-RC20-OC23, ST-SUP-Q128 (B)).
@@ -363,7 +366,7 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 		t.Fatal(err)
 	}
 	p.write("go.sum", sums)
-	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.134.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("go.mod", []byte("module "+ctx.ModuleName+"\n\ngo 1.26.11\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.137.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
 	p.mustGo("mod", "tidy")
 	return p
 }
@@ -748,6 +751,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause",
 	"ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC",
 	"ST-SUP-RC20-OC37-T14 A create or an update that leaves out a field with a default stores the default",
+	"ST-SUP-RC20-OC50-T01 A create or an update that breaks a unique key answers 409 that names the key and no value",
 	"ST-SUP-RC20-OC37-T12 An optional field that is NULL is absent from the answer, and an empty or false value is answered",
 	"ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response",
 	"ST-SUP-RC28-OC01-T07 A pii jsonb field is the redaction marker in the before, the after and the patch",
@@ -1378,6 +1382,58 @@ func TestOwnPass(t *testing.T) {
 		}
 		if !ownPass(output, "TestCrud", "ST-X-T02") || !ownPass(output, "TestCrud", "ST-X-T03") {
 			t.Fatal("a passed subtest, also one whose title holds a slash, does not count as passed")
+		}
+	})
+}
+
+// waitFailureCheck is a test of the generated api package: a wait for a revocation whose database cannot serve now
+// answers 503 with Retry-After, and another failure 500 (security review of PR #440, I1).
+const waitFailureCheck = `package api
+
+import (
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"syscall"
+	"testing"
+)
+
+func TestWaitFailure(t *testing.T) {
+	answer := httptest.NewRecorder()
+	answerWaitFailure(answer, httptest.NewRequest(http.MethodPost, "/api/v1/todos", nil), syscall.ECONNREFUSED)
+	if answer.Code != http.StatusServiceUnavailable || answer.Header().Get("Retry-After") == "" {
+		t.Fatalf("a database that cannot serve the wait got %d with Retry-After %q, want 503 with Retry-After", answer.Code, answer.Header().Get("Retry-After"))
+	}
+	answer = httptest.NewRecorder()
+	answerWaitFailure(answer, httptest.NewRequest(http.MethodPost, "/api/v1/todos", nil), errors.New("another failure"))
+	if answer.Code != http.StatusInternalServerError {
+		t.Fatalf("another failure of the wait got %d, want 500", answer.Code)
+	}
+}
+`
+
+func TestWaitFailureAnswer(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC49-T03 A wait whose database cannot serve now answers 503 with Retry-After, and the reads and writes use that answer", func(t *testing.T) {
+		ctx := crudContext()
+		files := crudFiles(t, ctx)
+		checked := 0
+		for name, source := range files {
+			if !strings.HasSuffix(name, "_handler.go") {
+				continue
+			}
+			checked++
+			text := string(source)
+			if waits := strings.Count(text, ".AwaitRevocation(") + strings.Count(text, ".AwaitWrite("); waits == 0 || strings.Count(text, "answerWaitFailure(w, r, err)") != waits {
+				t.Fatalf("%s has %d waits and %d calls of answerWaitFailure, want one call for each wait", name, waits, strings.Count(text, "answerWaitFailure(w, r, err)"))
+			}
+		}
+		if checked == 0 {
+			t.Fatal("the rest-api component emits no handler file")
+		}
+		p := newCrudProject(t, ctx, files)
+		p.write("out/api/wait_failure_test.go", []byte(waitFailureCheck))
+		if output, err := p.goCommand(nil, "test", "-count=1", "-run", "^TestWaitFailure$", "./out/api"); err != nil {
+			t.Fatalf("the generated answer of a failed wait: %v\n%s", err, output)
 		}
 	})
 }

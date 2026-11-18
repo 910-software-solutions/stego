@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 
 	"example.com/crud/out/api"
@@ -173,6 +175,8 @@ var tables = []string{"orders", "customers", "todos", "folders", "books", "setti
 
 // env is the running service: its database with the runtime role, its runtimes and its HTTP server.
 type env struct {
+	// ring is the key ring of the sealed secrets, which a check opens a stored secret with.
+	ring     *sealed.Ring
 	t        *testing.T
 	ctx      context.Context
 	admin    *sql.DB
@@ -451,9 +455,15 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 
 	settings := audit.Settings{Level: audit.LevelChange}
 	probes := probe.NewRecorder(nil)
+	// A throwaway key ring of the secret fields of Customer, in memory only (ST-SUP-RP16-LC02).
+	ringKey := make([]byte, 32)
+	_, _ = rand.Read(ringKey)
+	ring, err := sealed.ParseRing([]byte("1 " + base64.StdEncoding.EncodeToString(ringKey)))
+	must(t, err)
+	e.ring = ring
 	commands, err := command.New(e.ctx, command.Config{DB: pool, AuditDB: auditDB, Outbox: queue, Authz: az, Audit: writer,
 		AuditSettings: settings, Service: "crud", ServiceVersion: "1.0.0", DeclarationVersion: "d1",
-		Entities: api.Entities(), Probes: probes})
+		Entities: api.Entities(), Probes: probes, Ring: ring})
 	must(t, err)
 	cursorKey := make([]byte, query.MinCursorKey)
 	_, _ = rand.Read(cursorKey)
@@ -1694,6 +1704,33 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC50-T01 A create or an update that breaks a unique key answers 409 that names the key and no value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		const code = "m-jane.doe@example.com"
+		body := `{"title":"first","starts_at":"2026-12-01T10:00:00Z","code":"` + code + `"}`
+		first := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), body)
+		if first.status != http.StatusCreated {
+			t.Fatalf("the first create answered %d %s, want 201", first.status, first.body)
+		}
+		e.own(a, "meeting", first.member(t, "id"))
+		want := "the Meeting was not written: another Meeting has the same code, which must be unique"
+		second := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), body)
+		if second.status != http.StatusConflict || second.member(t, "detail") != want || strings.Contains(string(second.body), code) {
+			t.Fatalf("a second create with the same code answered %d %s, want 409 with %q and no value", second.status, second.body, want)
+		}
+		other := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), `{"title":"other","starts_at":"2026-12-01T10:00:00Z"}`)
+		if other.status != http.StatusCreated {
+			t.Fatalf("a create with no code answered %d %s, want 201", other.status, other.body)
+		}
+		id := other.member(t, "id")
+		e.own(a, "meeting", id)
+		updated := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", body)
+		if updated.status != http.StatusConflict || updated.member(t, "detail") != want || strings.Contains(string(updated.body), code) {
+			t.Fatalf("an update to the same code answered %d %s, want 409 with %q and no value", updated.status, updated.body, want)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T14 A create or an update that leaves out a field with a default stores the default", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
@@ -1892,8 +1929,10 @@ func TestCrud(t *testing.T) {
 		if n := e.count(`SELECT count(*) FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND status = 'completed' AND position(convert_to($3, 'UTF8') in coalesce(response_body, '')) = 0 AND position(convert_to('vault', 'UTF8') in coalesce(response_body, '')) = 0`, a.tenant.ID(), key, first); n != 1 {
 			t.Errorf("%d completed key rows whose stored response holds no secret jsonb field, want 1", n)
 		}
-		if n := e.count(`SELECT count(*) FROM customers WHERE id = $1::uuid AND vault->>'pin' = $2`, id, second); n != 1 {
-			t.Errorf("%d source rows that hold the secret jsonb value it was given, want 1", n)
+		// The source row holds the secret jsonb sealed, never in clear (decision ST-DECL-Q44).
+		if n := e.count(`SELECT count(*) FROM customers WHERE id = $1::uuid AND substring(vault from 1 for 1) = '\x01'::bytea
+ AND position(convert_to($2, 'UTF8') in vault) = 0 AND position(convert_to($3, 'UTF8') in vault) = 0`, id, first, second); n != 1 {
+			t.Errorf("%d source rows that hold the secret jsonb sealed and not in clear, want 1", n)
 		}
 	})
 
@@ -2976,10 +3015,11 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		if n < 2 {
 			t.Errorf("%d audit rows of the tenant, want the create and the update rows", n)
 		}
-		var stored string
+		// The source row holds the secret sealed, never in clear (decision ST-DECL-Q44).
+		var stored []byte
 		must(t, e.admin.QueryRowContext(e.ctx, `SELECT api_token FROM customers WHERE id = $1::uuid`, id).Scan(&stored))
-		if stored != second {
-			t.Errorf("the source row holds %q, want the secret it was given", stored)
+		if len(stored) == 0 || stored[0] != 1 || strings.Contains(string(stored), first) || strings.Contains(string(stored), second) {
+			t.Errorf("the source row does not hold the secret sealed, or holds it in clear")
 		}
 	})
 
@@ -3142,6 +3182,17 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		// A create may set a secret with writable create.
 		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1","pin":"1234"}`)
 		path := "/api/v1/tickets/" + id
+		// The secret is sealed at rest: the check compares the stored column with itself before and after.
+		sealedPin := func() string {
+			t.Helper()
+			var v string
+			must(t, e.admin.QueryRowContext(e.ctx, `SELECT coalesce(pin::text, '') FROM tickets WHERE id = $1::uuid`, id).Scan(&v))
+			return v
+		}
+		storedPin := sealedPin()
+		if storedPin == "" {
+			t.Fatal("the create stored no pin")
+		}
 		entries := func(r reply) string {
 			t.Helper()
 			var problem struct {
@@ -3180,8 +3231,8 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 				t.Errorf("%s %s %s answered the entries %s, want the same entries %s as for the right value", c.method, c.path, c.body, got, first)
 			}
 		}
-		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first' AND pin = '1234'`, id); n != 1 {
-			t.Errorf("%d ticket rows unchanged after the refused writes, want 1", n)
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first'`, id); n != 1 || sealedPin() != storedPin {
+			t.Errorf("%d ticket rows with the first title, and the pin changed %v, after the refused writes; want 1 and the stored pin", n, sealedPin() != storedPin)
 		}
 		// A body that leaves the secret out, as a read row sent back does, keeps it.
 		read := e.send(a, http.MethodGet, path, "", "")
@@ -3195,8 +3246,12 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		if r := e.send(a, http.MethodPut, path, "", string(body)); r.status != http.StatusOK {
 			t.Errorf("an update that sends back the read row answered %d %s, want 200", r.status, r.body)
 		}
-		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'second' AND pin = '1234'`, id); n != 1 {
-			t.Errorf("%d ticket rows with the new title and the stored secret, want 1", n)
+		// The update seals the kept secret again, so the check opens it.
+		var held []byte
+		must(t, e.admin.QueryRowContext(e.ctx, `SELECT pin FROM tickets WHERE id = $1::uuid AND title = 'second'`, id).Scan(&held))
+		plain, err := e.ring.Open(held, sealed.Place{Tenant: a.tenant.ID(), Table: "tickets", Column: "pin", Row: id})
+		if err != nil || string(plain) != "1234" {
+			t.Errorf("the pin after the update opens to %q (%v), want the stored 1234", plain, err)
 		}
 	})
 

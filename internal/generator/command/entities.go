@@ -34,7 +34,27 @@ func ContractRuntimeImports(entities []types.Entity, commands []types.Command) [
 	if relations {
 		out = append(out, "github.com/jsell-rh/stego/registry/runtime/authz")
 	}
-	return append(out, "github.com/jsell-rh/stego/registry/runtime/command")
+	out = append(out, "github.com/jsell-rh/stego/registry/runtime/command")
+	if WritesSecret(entities, writes) {
+		out = append(out, "github.com/jsell-rh/stego/registry/runtime/sealed")
+	}
+	return out
+}
+
+// WritesSecret tells whether one of the entities named in names has a secret field, so that its generated entity type
+// imports the sealing runtime (ST-SUP-RC32-OC20).
+func WritesSecret(entities []types.Entity, names []string) bool {
+	for _, e := range entities {
+		if !slices.Contains(names, e.Name) {
+			continue
+		}
+		for _, f := range e.Fields {
+			if f.Secret() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // WritesSensitive tells whether one of the entities named in names has a pii or secret field, so that its generated
@@ -63,6 +83,8 @@ type entity struct {
 	read, list   string
 	pii          bool
 	deep         bool // a field is a pointer or a slice, so Clone copies it
+	// sealed is true when a field is a readable secret: the runtime needs the key ring (ST-SUP-RP10-LC44).
+	sealed bool
 	// references are the references of the entity to entities with a resource type, in field order, which the
 	// generated Parent list declares (ST-SUP-RP10-LC05, ST-DECL-EN02).
 	references []reference
@@ -114,6 +136,9 @@ type entityField struct {
 	pointer     bool
 	slice       bool
 	sensitivity string
+	// sealed is a readable secret, of the Go type sealed.Secret, and compared a compare-only secret, of the Go type
+	// sealed.Compared (ST-SUP-RC32-OC20).
+	sealed, compared bool
 }
 
 // goTypes are the Go types of the declared field types, as the PostgreSQL columns of ST-SUP-RC01-OC41 scan.
@@ -237,7 +262,21 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 		}
 		ef := &entityField{decl: f, goName: mixedCase(f.Name), goType: goType, sensitivity: f.Sensitivity}
 		ef.slice = strings.HasPrefix(goType, "[]")
-		if f.Optional && !ef.slice {
+		if f.Secret() {
+			// A secret field is a string (ST-DECL-INV101), sealed at rest or hashed (ST-SUP-RC32-OC20). Its value type
+			// tells a value that is not set, so an optional one is no pointer.
+			// A readable secret jsonb holds the JSON text of its value (ST-DECL-INV101).
+			if f.Type != types.FieldTypeString && (f.Type != types.FieldTypeJsonb || f.CompareOnly) {
+				return nil, fmt.Errorf("the secret field %s has the type %s; a secret field is a string, or a jsonb that is not compare-only", f.Name, f.Type)
+			}
+			ef.slice = false
+			ef.sealed, ef.compared = !f.CompareOnly, f.CompareOnly
+			ef.goType = "sealed.Secret"
+			if f.CompareOnly {
+				ef.goType = "sealed.Compared"
+			}
+			p.sealed = p.sealed || ef.sealed
+		} else if f.Optional && !ef.slice {
 			ef.pointer = true
 			ef.goType = "*" + goType
 		}
@@ -381,6 +420,37 @@ func renderCheck(w *writer, e *entity) {
 		}
 		base := strings.TrimPrefix(f.goType, "*")
 		var rs []rule
+		if f.sealed || f.compared {
+			// The check of a secret reads its value before the seal or the hash; a required secret is set
+			// (ST-SUP-RC32-OC20). A compare-only value gives its text only to the check of a new value.
+			if !d.Optional {
+				rs = append(rs, rule{fmt.Sprintf("!v.%s.IsSet()", f.goName), "is required"})
+			}
+			text := "s"
+			var tests []string
+			if d.MinLength != nil {
+				tests = append(tests, fmt.Sprintf("command.MinLength(%s, %d)", text, *d.MinLength))
+			}
+			if d.MaxLength != nil {
+				tests = append(tests, fmt.Sprintf("command.MaxLength(%s, %d)", text, *d.MaxLength))
+			}
+			if d.Pattern != "" {
+				tests = append(tests, fmt.Sprintf("%s.MatchString(%s)", patternVar(e, f), text))
+			}
+			if len(tests) > 0 {
+				check := fmt.Sprintf("func(s string) bool { return %s }", strings.Join(tests, " && "))
+				if f.sealed {
+					rs = append(rs, rule{fmt.Sprintf("v.%s.IsSet() && !(%s)(v.%s.Reveal())", f.goName, check, f.goName), "does not meet the declared length or pattern"})
+				} else {
+					rs = append(rs, rule{fmt.Sprintf("!v.%s.Check(%s)", f.goName, check), "does not meet the declared length or pattern"})
+				}
+			}
+			if len(rs) > 0 {
+				fields = append(fields, f.goName)
+				rules[f.goName] = rs
+			}
+			continue
+		}
 		if base == "string" {
 			if d.MinLength != nil {
 				rs = append(rs, rule{fmt.Sprintf("!command.MinLength(%s, %d)", value, *d.MinLength), fmt.Sprintf("shorter than min_length %d", *d.MinLength)})
@@ -448,7 +518,7 @@ func renderCheck(w *writer, e *entity) {
 	}
 	for _, f := range e.fields {
 		column := f.decl.ColumnName()
-		if len(rules[f.goName]) > 0 {
+		if len(rules[f.goName]) > 0 && !f.sealed && !f.compared {
 			put(postgresadapter.CheckName(e.decl.Name, column), f.decl.Name)
 		}
 		if f.decl.Type == types.FieldTypeRef && f.decl.To != "" {
@@ -459,6 +529,36 @@ func renderCheck(w *writer, e *entity) {
 		put(f.decl.ColumnName(), f.decl.Name)
 	}
 	w.f("\t},\n")
+	renderUnique(w, e)
+}
+
+// renderUnique writes Unique of the entity declaration: the declared fields of the key of each unique index of its
+// table, by the name that the postgres adapter gives the index, so a unique violation names its key and never a value
+// (ST-SUP-RC32-OC22, ST-SUP-RP10-LC48). An index whose columns are not all declared fields is not given.
+func renderUnique(w *writer, e *entity) {
+	fields := map[string]string{}
+	for _, f := range e.fields {
+		fields[f.decl.ColumnName()] = f.decl.Name
+	}
+	indexes := postgresadapter.UniqueIndexes(e.decl)
+	var lines []string
+	for _, name := range slices.Sorted(maps.Keys(indexes)) {
+		var key []string
+		for _, column := range indexes[name] {
+			if fields[column] == "" {
+				key = nil
+				break
+			}
+			key = append(key, fields[column])
+		}
+		if len(key) > 0 {
+			lines = append(lines, fmt.Sprintf("\t\t%q: %q,\n", name, strings.Join(key, ", ")))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	w.f("\tUnique: map[string]string{\n%s\t},\n", strings.Join(lines, ""))
 }
 
 // renderEntity writes the Go type, the repository declaration and the repository accessor of one entity.
@@ -509,18 +609,39 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	w.f("\tScan: func(row command.Scanner) (%s, command.Meta, error) {\n\t\tvar v %s\n\t\tvar m command.Meta\n", e.goName, e.goName)
 	targets := []string{"&v.ID"}
 	for _, f := range e.fields {
-		targets = append(targets, "&v."+f.goName)
+		switch {
+		case f.sealed:
+			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
+			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared:
+			targets = append(targets, fmt.Sprintf("command.ComparedAt(&v.%s)", f.goName))
+		default:
+			targets = append(targets, "&v."+f.goName)
+		}
 	}
 	targets = append(targets, "&m.Version", "&m.Token")
 	w.f("\t\terr := row.Scan(%s)\n\t\tm.ID = v.ID\n\t\treturn v, m, err\n\t},\n", strings.Join(targets, ", "))
 	// Values gives the ID and the field values; a new row with no ID gets a new one.
 	values := []string{"id"}
 	for _, f := range e.fields {
-		values = append(values, "v."+f.goName)
+		switch {
+		case f.sealed:
+			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
+			// compare-only secret as its hash (ST-SUP-RP10-LC44).
+			values = append(values, fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
+		case f.compared:
+			values = append(values, fmt.Sprintf("command.HashOf(v.%s)", f.goName))
+		default:
+			values = append(values, "v."+f.goName)
+		}
 	}
 	w.f("\tValues: func(v %s) []any {\n\t\tid := v.ID\n\t\tif id == \"\" {\n\t\t\tid = command.NewID()\n\t\t}\n\t\treturn []any{%s}\n\t},\n", e.goName, strings.Join(values, ", "))
 	state := []string{`"id": v.ID`}
 	for _, f := range e.fields {
+		// No audit row holds a secret field (ST-SUP-RP10-LC44).
+		if f.sealed || f.compared {
+			continue
+		}
 		// The audit runtime encodes plain values only, so an optional field gives its value, or nil when it is not set.
 		if f.pointer {
 			state = append(state, fmt.Sprintf("%q: command.StateOf(v.%s)", f.decl.ColumnName(), f.goName))
@@ -563,6 +684,9 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 		w.f("\t\treturn v\n\t},\n")
 	}
 	w.f("\tValidID: command.ValidUUID,\n")
+	if e.sealed {
+		w.f("\tSealed: true,\n")
+	}
 	renderCheck(w, e)
 	if len(e.references) > 0 {
 		w.f("\tParent: []command.Reference[%s]{\n", e.goName)

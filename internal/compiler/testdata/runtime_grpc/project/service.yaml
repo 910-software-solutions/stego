@@ -87,6 +87,5 @@ queries:
     reads: [Order]
     resource_type: order
     permission: view
-    route: GET /orders/watch
     method: shop.v1.Shop/WatchOrders
     fill: watch-orders

@@ -281,7 +281,7 @@ field (rest-api 4.8.0), and the request changes nothing. An update does not
 move a row to another parent.
 
 A field that only a command or a worker changes, such as a status, takes the
-setting `writable` (rest-api 4.9.0):
+setting `writable` (rest-api 4.13.0):
 
 ```yaml
       - { name: sku, type: string, writable: create }
@@ -481,8 +481,12 @@ against an older contract than the revision holds. `stego test` passes only
 reads no Go environment file, and records evidence only when at least one
 test of the fill ran and passed.
 
-Each unfinished fill returns `ErrNotImplemented`, and its test expects that
-error. Change the test when you write the fill.
+Each unfinished fill returns `ErrNotImplemented`, and its test passes while
+the fill refuses each call. When you write the fill, the test fails and tells
+you to replace it with the tests of what the fill does. The test compares the
+text of the refusal, not the variable, so it compiles when you remove the
+variable. For an older scaffold test, see [the upgrade
+guide](docs/upgrade.md#write-the-tests-of-your-fills).
 
 **Upgrade:** before this release, STEGO did not qualify the fills of commands,
 queries and workers. Now plan and apply refuse each such fill that has no
@@ -632,6 +636,13 @@ go test ./internal/assure -run TestOwnTree -update-docs
 ```
 
 ## Release notes
+
+To move a running service to a newer release, follow [the upgrade
+guide](docs/upgrade.md). It gives the procedure, the release notes of each
+change that needs an action from you, such as a new Secret or the move of a
+browser-service database to its new roles, and the steps of each action. For
+the work after the upgrade, such as the rotation of a password or a key and a
+restore from a backup, see [Day-2 operations](docs/operations.md).
 
 ### Nested routes: a grant on the deepest resource is enough; check your schema
 

@@ -353,6 +353,30 @@ func TestCapabilityFillScaffold(t *testing.T) {
 				}
 			}
 		}
+		// The test of an unfinished fill does not name ErrNotImplemented, so it still compiles when the author writes
+		// the fill and removes the variable; when the fill is written, it fails and says to replace it (walkthrough 11,
+		// W11-B7).
+		for _, name := range []string{"place-order", "open-orders", "fulfill-orders"} {
+			if test, err := os.ReadFile(filepath.Join("fills", name, "fill_test.go")); err != nil || strings.Contains(string(test), "ErrNotImplemented") {
+				t.Fatalf("fills/%s/fill_test.go names ErrNotImplemented: %v\n%s", name, err, test)
+			}
+		}
+		source, err := os.ReadFile(filepath.Join("fills", "place-order", "fill.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		written := strings.Replace(string(source), "return nil, ErrNotImplemented", "return nil, nil", 1)
+		if written == string(source) {
+			t.Fatalf("fills/place-order/fill.go has no unfinished return:\n%s", source)
+		}
+		writeProjectFile(t, "fills/place-order/fill.go", written)
+		command := exec.Command("go", "test", "-count=1", "./fills/place-order")
+		command.Env = append(os.Environ(), "GOFLAGS=-mod=readonly")
+		output, err := command.CombinedOutput()
+		writeProjectFile(t, "fills/place-order/fill.go", string(source))
+		if err == nil || !strings.Contains(string(output), "replace it in fill_test.go with the tests of what the fill does") {
+			t.Fatalf("the scaffold test of a written fill gave %v, want a failure that says to replace it:\n%s", err, output)
+		}
 		// The fill of a worker serves no collection, so its manifest holds no collection key (walkthrough 7, B12).
 		if strings.Contains(string(data), "collection") {
 			t.Fatalf("the manifest of fulfill-orders holds a collection key:\n%s", data)
