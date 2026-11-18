@@ -2,10 +2,11 @@
 # Version 1.1.0 gives, in the command contract, typed helpers that relate and unrelate a subject through each
 # relation that a command declares in relationships_written (ST-SUP-RC32-OC13). Version 1.3.0 generates a command
 # whose resource type is the resource type of the tenant provisioning: it is decided on the service-level resource
-# of the tenant, and its handle offers only the create and the read (ST-SUP-RC32-OC15).
+# of the tenant, and its handle offers only the create and the read (ST-SUP-RC32-OC15). Version 1.7.0 gives each
+# entity declaration its unique keys, so a unique violation names the fields of its key (ST-SUP-RC32-OC22).
 kind: component
 name: command
-version: 1.5.0
+version: 1.7.0
 stage: ga
 output_namespace: commands
 
