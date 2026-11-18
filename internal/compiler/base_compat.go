@@ -127,11 +127,64 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	if err != nil {
 		return check, err
 	}
+	if ClearSecrets(state.LastApplied) {
+		// The base declares a secret field that its generator stored in clear (walkthrough 13, W13-B1): its stored
+		// shape is the field in clear, which a seal from secret moves (ST-SUP-RC01-OC49, ST-DECL-INV102).
+		declaration = withClearSecrets(declaration)
+	}
 	check.Faults = append(check.Faults, validateBaseSchema(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, ledgerVersionFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, syncRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
 	return check, nil
+}
+
+// SecretStorageVersion is the first postgres-adapter version that stores a secret field sealed or hashed, as the
+// introduced_in of ST-SUP-RC01-OC48 names it; SecretRuntimeVersion is the first runtime library version that seals
+// it (decision ST-DECL-Q44). An adapter before it stored a field that its declaration named secret in clear.
+const (
+	SecretStorageVersion = "6.13.0"
+	SecretRuntimeVersion = "v0.135.0"
+)
+
+// ClearSecrets tells whether the record of a release names a postgres-adapter before SecretStorageVersion, or, with
+// no postgres-adapter in the record, a runtime library before SecretRuntimeVersion: that release stores each field
+// of sensitivity secret in clear, so its stored shape is the field in clear, and the head moves it to its sealed
+// column with a seal from secret (walkthrough 13, W13-B1; ST-SUP-RC01-OC49).
+func ClearSecrets(applied *AppliedState) bool {
+	if applied == nil {
+		return false
+	}
+	if adapter, pinned := applied.Components["postgres-adapter"]; pinned {
+		version := "v" + strings.TrimPrefix(adapter.Version, "v")
+		return semver.IsValid(version) && semver.Compare(version, "v"+SecretStorageVersion) < 0
+	}
+	if applied.Archetype != nil && applied.Archetype.Runtime != nil {
+		version := applied.Archetype.Runtime.Version
+		return semver.IsValid(version) && semver.Compare(version, SecretRuntimeVersion) < 0
+	}
+	return false
+}
+
+// withClearSecrets gives a copy of the declaration in which each field of sensitivity secret, of a live or a dropped
+// entity, is a field with no sensitivity: the stored shape of a release whose generator stored it in clear.
+func withClearSecrets(service *types.ServiceDeclaration) *types.ServiceDeclaration {
+	out := *service
+	clearOf := func(entities []types.Entity) []types.Entity {
+		copied := make([]types.Entity, len(entities))
+		for i, entity := range entities {
+			entity.Fields = append([]types.Field(nil), entity.Fields...)
+			for j := range entity.Fields {
+				if entity.Fields[j].Secret() {
+					entity.Fields[j].Sensitivity, entity.Fields[j].CompareOnly = "", false
+				}
+			}
+			copied[i] = entity
+		}
+		return copied
+	}
+	out.Entities, out.DroppedEntities = clearOf(service.Entities), clearOf(service.DroppedEntities)
+	return &out
 }
 
 // StepLedgerVersion is the first postgres-adapter version that holds ST-SUP-RC01-OC28, as the introduced_in of that
@@ -770,6 +823,11 @@ func shapeAt(service *types.ServiceDeclaration, from int) []*storedEntity {
 				}
 			}
 			entity.Fields = slices.Insert(entity.Fields, place, storedField{Name: change.Field, Shape: shapeOf(dropped.Field)})
+		case "seal":
+			// A seal is undone by giving the field its clear form (ST-SUP-RC01-OC49, ST-DECL-INV102).
+			if field >= 0 {
+				entity.Fields[field].Shape.Secret, entity.Fields[field].Shape.CompareOnly = false, false
+			}
 		case "unique":
 			entity.Uniques = slices.DeleteFunc(entity.Uniques, func(unique storedUnique) bool { return unique.Name == change.Field })
 		case "relax":
@@ -920,9 +978,17 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 		now := head.Fields[at]
 		if field.Shape.Secret != now.Shape.Secret || field.Shape.CompareOnly != now.Shape.CompareOnly {
 			// The column of a secret holds its sealed bytes or its hash: a move between the clear, sealed and hashed
-			// forms rewrites each row, which only the schema change kind seal will do (ST-SUP-RC01-OC49, security
+			// forms rewrites each row. A seal moves a field in clear, with no other change, to its sealed column
+			// (ST-SUP-RC01-OC49, ST-DECL-INV102); no schema change moves a field the other way, or to a hash (security
 			// review of PR #441, L1).
-			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head changes the secret form of %s.%s (sensitivity secret or compare_only), which changes what its column holds; that needs the schema change kind seal (ST-SUP-RC01-OC49), which generation does not carry out yet, so keep the form that the base stores, or add a new secret field and drop this one", head.Name, field.Name)})
+			clearForm := field.Shape
+			clearForm.Secret, clearForm.CompareOnly = true, false
+			if !field.Shape.Secret && now.Shape.Secret && !now.Shape.CompareOnly && !field.Loose && !now.Loose && reflect.DeepEqual(clearForm, now.Shape) {
+				faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head stores %s.%s sealed, which the base stores in clear, and no schema step declares it; the release that runs now reads and writes the clear column, so declare a seal step for %s, which adds the sealed column, seals each row and drops the clear column at its contract step", head.Name, field.Name, field.Name),
+					Declare: []SuggestedChange{{ID: kebab(head.Name) + "-" + kebab(field.Name) + "-seal", Kind: "seal", Entity: head.Name, Field: field.Name, Needs: "from: the sensitivity of the field in the base, public or pii, or secret when the generator of the base stored the secret field in clear", Phase: "expand"}}})
+				continue
+			}
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head changes the secret form of %s.%s (sensitivity secret or compare_only), which changes what its column holds; only a seal moves a field, with no other change, from the clear form to a readable secret (ST-SUP-RC01-OC49), so keep the form that the base stores, or add a new secret field and drop this one", head.Name, field.Name)})
 			continue
 		}
 		if field.Loose || now.Loose {

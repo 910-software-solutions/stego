@@ -20,8 +20,8 @@ import (
 // first release, and each step of the schema history is one SQL migration after the component's own migrations,
 // named step_<position>_<change ID>_<phase>, from the declaration alone. A database that the migrations of each
 // release made in turn and a new one that the migrations of the last release made get the same schema
-// (ST-GEN-INV35). Generation carries out the add, rename, retype and require kinds: an add at expand creates the table
-// of a new entity, with its row-level security in a pooled service, or adds the column of a new field, and changes
+// (ST-GEN-INV35). Generation carries out the add, rename, retype, require, relax, within, drop and seal kinds (the
+// last three in schema_relax.go, schema_drop.go and schema_seal.go): an add at expand creates the table of a new entity, with its row-level security in a pooled service, or adds the column of a new field, and changes
 // nothing that is there (ST-GEN-UC12-R02); a rename and a retype add a new column with a sync trigger and a backfill,
 // and a require adds its column with the fill value as its default (decision on ST-GEN-Q22 (a), orchestrator under the
 // owner's delegation, 2026-11-14); each but the add has a contract step (ST-GEN-UC15).
@@ -63,6 +63,9 @@ type contractStep struct {
 	// drop tells that the step is the contract of a drop, whose check is the running releases alone, while the old
 	// column from, or with no from the table, is there (ST-SUP-RC01-OC44, ST-SUP-RC01-OC47).
 	drop bool
+	// seal tells that the step is the contract of a seal, whose check is its seal checkpoint, the rows left and the
+	// running releases while the clear column from is there (ST-SUP-RC01-OC50).
+	seal bool
 }
 
 // contractStatement is one statement of a contract step: its SQL; when, a query that gives whether the statement
@@ -213,6 +216,21 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			}
 			models = withColumnOf(models, earlier, change, pair.k)
 		}
+		// The clear column of a seal stays in the table from its expand step until its contract step, and its sealed
+		// column is nullable until then (ST-SUP-RC01-OC49).
+		for _, change := range ctx.SchemaChanges {
+			e, c := expand[change.ID], contract[change.ID]
+			if change.Kind != "seal" || e == 0 || e > steps || (c != 0 && c <= steps) {
+				continue
+			}
+			earlier, err := at(e - 1)
+			if err != nil {
+				return nil, err
+			}
+			if models, err = withSealing(ctx, models, earlier, change); err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+		}
 		// The old column or table of a drop stays in the database from its expand step until its contract step, so
 		// the models after each step between keep it, as the expand step leaves it (ST-SUP-RC01-OC34).
 		for _, change := range ctx.SchemaChanges {
@@ -245,9 +263,9 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema_history[%d] names the schema change %q, which schema_changes does not declare", i, step.Change)
 		}
-		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || change.Kind == "drop" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within") && step.Phase == "expand")
+		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || change.Kind == "drop" || change.Kind == "seal" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within") && step.Phase == "expand")
 		if !built || (step.Phase != "expand" && step.Phase != "contract") {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax and a within and the expand and contract steps of a rename, a retype, a require and a drop", i, step.Phase, change.ID, change.Kind)
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax and a within and the expand and contract steps of a rename, a retype, a require, a drop and a seal", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {
@@ -257,6 +275,16 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			// A drop at expand keeps the old column or table and only takes from it what the release of the change
 			// does not write (ST-SUP-RC01-OC34).
 			body, err := dropExpandSQL(ctx, i+1, before, after, change)
+			if err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body})
+			before = after
+			continue
+		}
+		if change.Kind == "seal" && step.Phase == "expand" {
+			// A seal at expand adds the sealed column beside the clear one (ST-SUP-RC01-OC49).
+			body, err := sealExpandSQL(ctx, i+1, before, after, change)
 			if err != nil {
 				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
 			}
@@ -289,6 +317,8 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 				contract, err = requireContractSQL(before, after, change)
 			case "drop":
 				contract, err = dropContractSQL(ctx, before, after, change)
+			case "seal":
+				contract, err = sealContractSQL(ctx, before, after, change)
 			default:
 				contract, err = contractSQL(ctx, before, after, change)
 			}
@@ -744,6 +774,7 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 	fmt.Fprintf(&out.sync, "INSERT INTO stego_schema.backfills (change_id) VALUES (%s) ON CONFLICT (change_id) DO NOTHING;\n", sqlString(change.ID))
 	// The table of the release reports, with EXECUTE on its two functions for the runtime role (ST-SUP-RP09-LC14).
 	fmt.Fprintf(&out.sync, releasesText, sqlIdentifier(runtime))
+	out.sync.WriteString(sealsAgain(ctx, change.ID, runtime))
 	if slices.Contains(next.search, pair.u) {
 		out.indexes = append(out.indexes, stepIndex{name: "public." + sqlIdentifier(searchName(next.name, pair.u)),
 			statement: concurrently(searchIndexSQL(next, pair.u)), definition: searchIndexDefinition(next, pair.u)})

@@ -541,3 +541,57 @@ func TestSchemaChangeDrop(t *testing.T) {
 		})
 	}
 }
+
+func TestSchemaSeal(t *testing.T) {
+	secret := []string{"{name: title, type: string, min_length: 1, max_length: 255, sensitivity: secret}", "{name: done, type: bool, default: false}"}
+	seal := "{id: todo-title-seal, kind: seal, entity: Todo, field: title, from: pii}"
+	rules := []string{"schema-change-kind", "schema-change-entity", "schema-change-seal", "schema-change-open", "schema-step"}
+	t.Run("ST-DECL-INV102-T A seal of a readable secret is accepted at expand and at contract, from pii, public, secret or none", func(t *testing.T) {
+		for _, change := range []string{seal, "{id: todo-title-seal, kind: seal, entity: Todo, field: title, from: public}", "{id: todo-title-seal, kind: seal, entity: Todo, field: title}",
+			"{id: todo-title-seal, kind: seal, entity: Todo, field: title, from: secret}"} {
+			wantNoFault(t, schemaFaults(t, todoFields(secret, "", []string{change}, "todo-title-seal expand"), rules...))
+		}
+		wantNoFault(t, schemaFaults(t, todoFields(secret, "", []string{seal}, "todo-title-seal expand", "todo-title-seal contract"), rules...))
+	})
+	for _, c := range []struct {
+		name   string
+		fields []string
+		change []string
+		steps  []string
+		names  []string
+	}{
+		{"of a field that is not secret", []string{"{name: title, type: string, min_length: 1, max_length: 255, sensitivity: pii}", "{name: done, type: bool, default: false}"},
+			[]string{seal}, []string{"todo-title-seal expand"}, []string{"todo-title-seal", "readable secret"}},
+		{"of a compare-only secret", []string{"{name: title, type: string, min_length: 1, max_length: 255, sensitivity: secret, compare_only: true}", "{name: done, type: bool, default: false}"},
+			[]string{seal}, []string{"todo-title-seal expand"}, []string{"todo-title-seal", "readable secret"}},
+		{"of a field that the entity does not declare", secret, []string{"{id: todo-title-seal, kind: seal, entity: Todo, field: note}"},
+			[]string{"todo-title-seal expand"}, []string{"todo-title-seal", "does not declare"}},
+		{"from the sensitivity confidential", secret, []string{"{id: todo-title-seal, kind: seal, entity: Todo, field: title, from: confidential}"},
+			[]string{"todo-title-seal expand"}, []string{"todo-title-seal", "public, pii or secret", "ST-DECL-INV102"}},
+		{"with a definition", secret, []string{"{id: todo-title-seal, kind: seal, entity: Todo, field: title, definition: string}"},
+			[]string{"todo-title-seal expand"}, []string{"todo-title-seal", "definition"}},
+		{"twice of one field", secret, []string{seal, "{id: todo-title-seal-again, kind: seal, entity: Todo, field: title}"},
+			[]string{"todo-title-seal expand", "todo-title-seal contract", "todo-title-seal-again expand"}, []string{"todo-title-seal", "todo-title-seal-again", "at most one seal"}},
+		{"beside a relax of the field", secret, []string{seal, "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: max_length 100}"},
+			[]string{"todo-title-relax expand", "todo-title-seal expand"}, []string{"todo-title-relax", "todo-title-seal", "no other schema change"}},
+	} {
+		t.Run("ST-DECL-INV102-T A seal "+c.name+" is refused", func(t *testing.T) {
+			faults := schemaFaults(t, todoFields(c.fields, "", c.change, c.steps...), rules...)
+			if len(faults) == 0 {
+				t.Fatal("want a fault, got none")
+			}
+			text := ""
+			for _, fault := range faults {
+				text += fault.Message + "\n"
+			}
+			for _, part := range c.names {
+				if !strings.Contains(text, part) {
+					t.Errorf("the faults do not name %s:\n%s", part, text)
+				}
+			}
+		})
+	}
+	t.Run("ST-DECL-INV102-T A seal at expand needs the controller mode for its seal job", func(t *testing.T) {
+		wantFault(t, schemaFaults(t, todoFields(secret, "[api]", []string{seal}, "todo-title-seal expand"), "schema-change-mode"), "todo-title-seal", "controller")
+	})
+}

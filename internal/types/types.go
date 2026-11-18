@@ -105,6 +105,10 @@ type Field struct {
 	// its name before its first rename, and stores it in the column of its declared name (ST-GEN-UC12-R04). The
 	// declaration never sets it.
 	Column string `yaml:"-" json:"Column,omitempty"`
+	// SealedFrom is the clear column of a readable secret whose seal step is open: from its expand step to its
+	// contract step the field is in two columns, the clear one, which a release before writes, and Column, its
+	// sealed column <column>_sealed (ST-SUP-RC01-OC49). The declaration never sets it.
+	SealedFrom string `yaml:"-" json:"SealedFrom,omitempty"`
 }
 
 // ServerTimestampNames are the timestamp field names that always hold a time the server sets: the time a row was

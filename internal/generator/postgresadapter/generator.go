@@ -232,7 +232,7 @@ var reservedTypeNames = map[string]bool{
 	"refreshMarker": true, "RegisterStep": true, "RegisterValidateStep": true, "ValidateConstraint": true, "runtimetenant": true, "RegisterIndexStep": true, "applyPending": true,
 	"applyIndex": true, "stepTimeouts": true, "lockTimedOut": true, "pause": true, "sessionOf": true, "dropInvalid": true,
 	"dropAfterFailure": true, "indexBuilt": true, "dropAttempts": true,
-	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true,
+	"ContractStep": true, "ContractStatement": true, "RegisterContractStep": true, "applyContract": true, "checkContract": true, "checkSeal": true,
 	"contractStatementRun": true, "contractRefusal": true, "keyRefusal": true, "rowsLeft": true, "runningReleases": true, "releaseWindow": true,
 	"SchemaRelease": true, "SchemaSteps": true, "BackfillCopies": true,
 	// Generator-internal identifiers.
@@ -349,11 +349,16 @@ type Migration struct {
 // running releases alone while the old column From, or with no From the
 // table, is there: a drop has no sync trigger and no backfill
 // (ST-SUP-RC01-OC44, ST-SUP-RC01-OC47).
+//
+// Seal, for the contract step of a seal, tells that the check, while the
+// clear column From is there, is the seal checkpoint of the change, the rows
+// of the listed tenants with Old set and New empty, and the running releases
+// (ST-SUP-RC01-OC50).
 type ContractStep struct {
 	Change, Schema, Table, Check, Definition, Trigger, Expand string
 	From, Old, New, TenantColumn, TenantSchema                string
 	Statements                                                []ContractStatement
-	Drop                                                      bool
+	Drop, Seal                                                bool
 }
 
 // ContractStatement is one statement of a contract step: SQL; When, a query
@@ -1166,6 +1171,9 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 			_, err = tx.ExecContext(ctx, "SELECT pg_catalog.set_config('search_path', $1, true)", path)
 		}
 	}()
+	if c.Seal {
+		return checkSeal(ctx, tx, c, table)
+	}
 	if c.Drop {
 		// A drop has no sync trigger and no backfill: while its old column or table is there, the check refuses
 		// while a release that still reads it runs, and when it is gone a run before dropped it.
@@ -1240,6 +1248,55 @@ func checkContract(ctx context.Context, tx *sql.Tx, c ContractStep) (err error) 
 	}
 	if left > 0 {
 		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its backfill: rows of the listed tenants with the old column set and the new one empty: %d; run the migration job of the release before until the backfill completes", c.Change, left)}
+	}
+	return runningReleases(ctx, tx, c)
+}
+
+// checkSeal checks the contract step c of a seal in tx (ST-SUP-RC01-OC50):
+// while the clear column is there, the seal checkpoint of the change must
+// hold a completed pass, no release before the expand migration may have
+// reported itself within its window after the start of that pass, since such a
+// release writes the clear column alone and its write would be lost with the
+// column (ST-SUP-RP09-LC15), no row of a listed tenant may have a clear value
+// and no sealed value, and no release before may run (runningReleases). When
+// the clear column is gone, a run before dropped it and the check passes.
+func checkSeal(ctx context.Context, tx *sql.Tx, c ContractStep, table string) error {
+	var there bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped)", table, c.From).Scan(&there); err != nil {
+		return err
+	}
+	if !there {
+		return nil
+	}
+	var seals bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.seals') IS NOT NULL AND pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&seals); err != nil {
+		return err
+	}
+	state := "the seal checkpoint of the change is not there"
+	if seals {
+		var complete, stale bool
+		err := tx.QueryRowContext(ctx, "SELECT s.completed_at IS NOT NULL, EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE \"C\" < s.expand COLLATE \"C\" AND r.seen_at + r.every_ms * $2::integer * interval '1 millisecond' > s.pass_started) FROM stego_schema.seals s WHERE s.change_id = $1", c.Change, releaseWindow).Scan(&complete, &stale)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return err
+		case !complete:
+			state = "the seal job of the controller has not completed a pass over the rows"
+		case stale:
+			state = "a release before the step ran after the start of the last pass of the seal job, so a sealed value can be older than its clear value"
+		default:
+			state = ""
+		}
+	}
+	if state != "" {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: %s; run the release of the expand step %s, with its controller, until the seal job completes a pass", c.Change, state, c.Expand)}
+	}
+	left, err := rowsLeft(ctx, tx, c)
+	if err != nil {
+		return err
+	}
+	if left > 0 {
+		return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: rows of the listed tenants with a clear value and no sealed value: %d; run the release of the expand step %s, with its controller, until the seal job completes a pass", c.Change, left, c.Expand)}
 	}
 	return runningReleases(ctx, tx, c)
 }
@@ -1475,6 +1532,9 @@ func generateMigrate(ns string, rowSecurity string, steps []schemaStep) (gen.Fil
 			drop := ""
 			if c.drop {
 				drop = ", Drop: true"
+			}
+			if c.seal {
+				drop = ", Seal: true"
 			}
 			fmt.Fprintf(&buf, "\t}%s})\n", drop)
 		default:

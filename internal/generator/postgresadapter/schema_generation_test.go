@@ -273,6 +273,7 @@ func TestSyncTemplateCopy(t *testing.T) {
 			{"backfill table", "lease/backfill.go", "const BackfillsTable = `", backfillsTable},
 			{"backfill functions", "lease/backfill.go", "const BackfillFunctions = `", backfillFunctions},
 			{"release reports", "lease/release.go", "const releasesText = `", releasesText},
+			{"seal checkpoints", "lease/seal.go", "const sealsText = `", sealsText},
 		} {
 			if got := runtimeText(t, c.path, c.head); got != c.copy {
 				t.Errorf("the generator's copy of the %s differs from registry/runtime/%s", c.name, c.path)
