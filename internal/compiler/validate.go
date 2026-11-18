@@ -757,22 +757,37 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 		if len(files) == 0 {
 			return nil, fmt.Errorf("the contract package %s holds no Go file", folder)
 		}
-		// Go builds each package under out that a file imports, such as the handlers of out/commands, so every
-		// folder under out is held to the same rule as the contract package (sec-419 LOW-2).
-		if err := checkGeneratedTree(projectDir); err != nil {
-			return nil, err
-		}
+		// The other folders under out are held to the same rule once per build, by CheckGeneratedTree.
 		return files, nil
 	}
 	return check
 }
 
+// generatedFolder is the folder of the project that stego apply writes the generated code to, and the one folder
+// that stego build checks: the contract packages of RevisionFillCheck are under it.
+const generatedFolder = "out"
+
+// CheckGeneratedTree refuses, once per build, a source revision whose generated code go build could take in a form
+// that the generated Go files do not show (sec-419 LOW-2, sec-420 INFO-3, INFO-4). outputDir is the output folder
+// that the generation state of the revision names: a folder other than out is refused, as stego build checks and
+// builds out only. Go builds each package under out that a file imports, so every folder under out is checked,
+// also for a service that binds only slot fills or no fill.
+func CheckGeneratedTree(projectDir, outputDir string) error {
+	if outputDir != generatedFolder {
+		return fmt.Errorf("the generation state names the output folder %q; stego apply writes the generated code to %s, and stego build checks only %s, so stego build refuses it", outputDir, generatedFolder, generatedFolder)
+	}
+	return checkGeneratedTree(projectDir)
+}
+
 // checkGeneratedTree refuses an entry under the out folder of the project that go build could take but that the
-// generated Go files do not show: a link or another file that is not a regular file, at any depth, and a file that
-// go build puts in the binary that is not a Go file. WalkDir does not follow a link, so a linked folder is refused
-// as a link.
+// generated Go files do not show: an out that is not a folder, a link or another file that is not a regular file,
+// at any depth, and a file that go build puts in the binary that is not a Go file. WalkDir does not follow a link,
+// so a linked folder is refused as a link.
 func checkGeneratedTree(projectDir string) error {
-	out := filepath.Join(projectDir, "out")
+	out := filepath.Join(projectDir, generatedFolder)
+	if info, err := os.Lstat(out); err != nil || !info.IsDir() {
+		return fmt.Errorf("the generated folder %s is not a folder", generatedFolder)
+	}
 	return filepath.WalkDir(out, func(name string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err

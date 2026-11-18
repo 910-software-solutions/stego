@@ -49,3 +49,9 @@ definition service_account {}
 definition tenant {
 	relation worker_fulfill_orders: service_account
 }
+
+// The operators who resolve the parked messages of an outbox destination (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}

@@ -37,6 +37,12 @@ definition activity_entry {
 	permission edit = owner
 }
 
+// The operators who resolve the parked messages of an outbox destination (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
 definition stego_floor {
 	relation marker: stego_floor
 }

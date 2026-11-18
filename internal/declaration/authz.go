@@ -355,6 +355,7 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 	faults = append(faults, validateWrittenRelations(service, schema)...)
 	faults = append(faults, validateSystemPrincipal(service, schema)...)
 	faults = append(faults, checkProvisioningSchema(service, schema)...)
+	faults = append(faults, checkOutboxDestination(schema)...)
 	faults = append(faults, droppedSchemaNames(service, schema)...)
 	return faults
 }
@@ -394,6 +395,40 @@ func droppedSchemaNames(service *types.ServiceDeclaration, schema *AuthzSchema) 
 		}
 	}
 	return faults
+}
+
+// OutboxDestinationType and OutboxResolvePermission are the resource type and the permission on which the outbox
+// decides the resolve of a parked message: resolve on outbox_destination:<destination> (ST-SUP-RC29-OC20).
+const (
+	OutboxDestinationType   = "outbox_destination"
+	OutboxResolvePermission = "resolve"
+)
+
+// checkOutboxDestination checks that the schema of a service that binds authorization declares the resource type
+// outbox_destination with the permission resolve (ST-SUP-RC29-OC20). The runtime wiring of each such service
+// registers the parked-message routes, and its authz relay delivers the relationship writes and revocations through
+// the outbox destination authz, also with no mixin bound (security review of PR #425, M1). Without the type the
+// routes decide on a type the provider does not know, and answer 500. A resolve that reaches a wildcard subject is
+// refused too: anyone could then send a parked message again or discard it, also a revocation of the destination
+// authz.
+func checkOutboxDestination(schema *AuthzSchema) []ValidationError {
+	fault := ValidationError{Category: "authorization", Rule: "outbox-resolve", Path: "authorization.schema_path", Found: schema.Path}
+	switch {
+	case !schema.Defines(OutboxDestinationType):
+		fault.Allowed = []string{OutboxDestinationType}
+		fault.Message = fmt.Sprintf("the declaration binds authorization, but the schema %s does not define the resource type %s; the outbox decides the resolve of a parked message on the permission %s of %s:<destination>, so define %s with the permission %s",
+			schema.Path, OutboxDestinationType, OutboxResolvePermission, OutboxDestinationType, OutboxDestinationType, OutboxResolvePermission)
+	case !schema.declaresPermission(OutboxDestinationType, OutboxResolvePermission):
+		fault.Allowed = []string{OutboxResolvePermission}
+		fault.Message = fmt.Sprintf("the declaration binds authorization, but the resource type %s of the schema %s has no permission %s; the outbox decides the resolve of a parked message on it, so add the permission %s",
+			OutboxDestinationType, schema.Path, OutboxResolvePermission, OutboxResolvePermission)
+	case schema.reachesWildcard(OutboxDestinationType, OutboxResolvePermission):
+		fault.Message = fmt.Sprintf("the permission %s of the resource type %s reaches a wildcard subject of the schema %s, so anyone could resolve a parked message; give it to the operators only",
+			OutboxResolvePermission, OutboxDestinationType, schema.Path)
+	default:
+		return nil
+	}
+	return []ValidationError{fault}
 }
 
 // readAuthzSchema reads and compiles the schema at the path in the project folder. It gives no schema and no fault
@@ -627,6 +662,13 @@ func validateSchemaNames(service *types.ServiceDeclaration, schema *AuthzSchema)
 		a := entity.EntityAuthorization
 		where := fmt.Sprintf("entity %q", entity.Name)
 		definition, defined := schema.definitions[a.ResourceType]
+		if a.ResourceType == OutboxDestinationType {
+			// The outbox decides the resolve of a parked message on outbox_destination:<destination>; a row of the
+			// type could take the ID of a destination such as authz, and its relationships would grant the resolve of
+			// that destination (security review of PR #425, L1).
+			faults = append(faults, ValidationError{Category: "authorization", Rule: "schema-names", Path: fmt.Sprintf("entities[%d].resource_type", ei), Found: a.ResourceType,
+				Message: fmt.Sprintf("%s names the resource type %q, which is reserved for the outbox destinations on which the resolve of a parked message is decided (ST-SUP-RC29-OC20); a row of it could take the ID of a destination, and its relationships would grant the resolve of that destination; give the entity another resource type", where, a.ResourceType)})
+		}
 		if a.ResourceType == TenantResourceType {
 			faults = append(faults, ValidationError{Category: "authorization", Rule: "schema-names", Path: fmt.Sprintf("entities[%d].resource_type", ei), Found: a.ResourceType,
 				Message: fmt.Sprintf("%s names the resource type %q, which is reserved for the tenant resource that holds the tuple of each worker (ST-SUP-RC35-OC13, ST-SUP-Q132); a row of it could take the ID of its tenant's resource, and its delete would clear the worker tuples; give the entity another resource type", where, a.ResourceType)})

@@ -63,6 +63,12 @@ definition activity_entry {
 	permission edit = owner
 }
 
+// The operators who resolve the parked messages of an outbox destination (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
 definition stego_floor {
 	relation marker: stego_floor
 }
@@ -70,7 +76,7 @@ definition stego_floor {
 
 // Definitions are the definitions of Schema. After the migration job writes Schema, it waits until SpiceDB
 // serves each of them, so the release does not start while a read of a new resource type fails (ST-SUP-Q140).
-var Definitions = []string{"activity_entry", "member", "org_setting", "organization", "service", "stego_floor", "user"}
+var Definitions = []string{"activity_entry", "member", "org_setting", "organization", "outbox_destination", "service", "stego_floor", "user"}
 
 // DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.
 const DatabaseSchema = "public"
