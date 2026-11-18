@@ -72,8 +72,9 @@ const (
 )
 
 // Runtime owns the private tracer, meter and logger providers of one service process and their one export
-// connection. It never sets a global OpenTelemetry provider. Without a collector endpoint it starts no provider
-// and opens no connection (ST-SUP-RP03-LC01).
+// connection. It never sets a global OpenTelemetry provider. Without a collector endpoint it starts no tracer or
+// meter provider and opens no connection (ST-SUP-RP03-LC01); its logger provider then has only the console, which
+// writes each record of severity WARN or higher as one line to standard output (ST-SUP-RP03-LC16).
 type Runtime struct {
 	service    string
 	instance   string
@@ -85,6 +86,8 @@ type Runtime struct {
 	rpcTracer  trace.Tracer
 	meter      *sdkmetric.MeterProvider
 	logs       *sdklog.LoggerProvider
+	console    *console
+	ticker     *time.Ticker
 	signals    requestSignals
 	records    sync.Map // spanKey to *spanRecord, for each recording span of the runtime that has not ended
 	operations map[string]bool
@@ -143,7 +146,7 @@ func New(service string, operations ...string) (*Runtime, error) {
 }
 
 // newRuntime is New with the clock of the export and shutdown bounds.
-func newRuntime(service string, bound deadline, operations ...string) (*Runtime, error) {
+func newRuntime(service string, bound deadline, operations ...string) (_ *Runtime, err error) {
 	values, err := readSettings(service, os.Environ())
 	if err != nil {
 		return nil, err
@@ -156,7 +159,21 @@ func newRuntime(service string, bound deadline, operations ...string) (*Runtime,
 	if err := r.register(operations); err != nil {
 		return nil, err
 	}
+	// Each record of severity WARN or higher is also one console line, whether or not an endpoint is set
+	// (ST-SUP-RP03-LC16).
+	r.ticker = time.NewTicker(ConsoleWindow / 6)
+	r.console = newConsole(os.Stdout, time.Now, r.ticker.C, consoleSkip(values.endpoint != ""))
+	defer func() {
+		// A start that fails stops the console and what else it started.
+		if err != nil {
+			r.Close()
+		}
+	}()
 	if values.endpoint == "" {
+		if err := r.startSignals(nil, nil); err != nil {
+			r.Close()
+			return nil, err
+		}
 		return r, nil
 	}
 	connection, err := dial(values)
@@ -281,8 +298,13 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 		}
 		if r.logs != nil {
 			shut(r.logs.Shutdown)
+		} else if r.console != nil {
+			shut(r.console.Shutdown)
 		}
 		group.Wait()
+		if r.ticker != nil {
+			r.ticker.Stop()
+		}
 		if r.connection != nil {
 			_ = r.connection.Close()
 		}
@@ -312,7 +334,8 @@ func (r *Runtime) MeterProvider() metric.MeterProvider {
 	return r.meter
 }
 
-// LoggerProvider is the private logger provider, or nil when no collector was set at start or logs are off.
+// LoggerProvider is the private logger provider. Without a collector, or with logs off, it has only the console
+// (ST-SUP-RP03-LC16); it is nil only for a runtime that New did not make.
 func (r *Runtime) LoggerProvider() otellog.LoggerProvider {
 	if r.logs == nil {
 		return nil
@@ -337,6 +360,23 @@ func (r *Runtime) MetricExportFailures() uint64 { return r.metricFailures.Load()
 
 // LogExportFailures counts the log export batches that failed.
 func (r *Runtime) LogExportFailures() uint64 { return r.logFailures.Load() }
+
+// ConsoleDropped returns how many console lines a full console queue dropped (ST-SUP-RP03-LC16). The lines that
+// the rate limit drops are counted on the console itself, in the line of their event name.
+func (r *Runtime) ConsoleDropped() uint64 {
+	if r.console == nil {
+		return 0
+	}
+	return r.console.dropped.Load()
+}
+
+// ConsoleFailures returns how many console lines standard output did not take.
+func (r *Runtime) ConsoleFailures() uint64 {
+	if r.console == nil {
+		return 0
+	}
+	return r.console.failed.Load()
+}
 
 // ShutdownFailures counts the providers that did not shut down inside the shutdown limit.
 func (r *Runtime) ShutdownFailures() uint64 { return r.shutdownFailures.Load() }

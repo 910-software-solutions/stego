@@ -153,7 +153,9 @@ func TestProbeConsole(t *testing.T) {
 		if len(stdout.all()) != 10 {
 			t.Fatalf("the console holds %d lines, want 10", len(stdout.all()))
 		}
-		if telemetry.TracerProvider() != nil || telemetry.MeterProvider() != nil || telemetry.LoggerProvider() != nil || telemetry.CollectorSet() || r.otlp != nil {
+		// The logger provider of the telemetry runtime has only its console (ST-SUP-RP03-LC16), which opens no
+		// connection; the probe starts no provider of its own.
+		if telemetry.TracerProvider() != nil || telemetry.MeterProvider() != nil || telemetry.CollectorSet() || r.otlp != nil {
 			t.Fatal("a provider or the OTLP sink was started with no collector")
 		}
 		if after := socketCount(t); after != before {

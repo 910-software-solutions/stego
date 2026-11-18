@@ -54,10 +54,18 @@ func (r *Runtime) startSignals(reader sdkmetric.Reader, processor sdklog.Process
 			return failed
 		}
 	}
+	// The console comes first, so it takes a record before the OTLP queue does (ST-SUP-RP03-LC16).
+	var processors []sdklog.LoggerProviderOption
+	if r.console != nil {
+		processors = append(processors, sdklog.WithProcessor(r.console))
+	}
 	if processor != nil {
+		processors = append(processors, sdklog.WithProcessor(processor))
+	}
+	if len(processors) > 0 {
 		// Twelve attributes: a probe record carries the tenant, the principal, the operation, stego.outcome and up to
 		// eight declared fields (ST-SUP-RP12-LC03, ST-SUP-RP12-LC04).
-		r.logs = sdklog.NewLoggerProvider(sdklog.WithResource(r.resource), sdklog.WithAttributeCountLimit(12), sdklog.WithAttributeValueLengthLimit(256), sdklog.WithProcessor(processor))
+		r.logs = sdklog.NewLoggerProvider(append([]sdklog.LoggerProviderOption{sdklog.WithResource(r.resource), sdklog.WithAttributeCountLimit(12), sdklog.WithAttributeValueLengthLimit(256)}, processors...)...)
 		r.signals.logger = r.logs.Logger("stego/requests")
 	}
 	return nil

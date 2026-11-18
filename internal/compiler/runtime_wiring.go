@@ -90,6 +90,9 @@ type runtimeWiringData struct {
 	// Modes are the modes that the declaration states, in the order api, worker, controller; all three when it
 	// states none (ST-GEN-INV26, ST-DECL-EN01).
 	Modes []string
+	// BasePath is the base path of the service, under which the runtime serves the parked-message routes of the api
+	// mode (ST-SUP-RP14-LC09, ST-SUP-RP14-LC10).
+	BasePath string
 	// KafkaTopic is true when the kafka-producer component is active: the worker mode then needs the one topic of
 	// the topic need, and the start refuses a worker mode with no STEGO_KAFKA_TOPIC and no STEGO_KAFKA_TOPIC_FILE at
 	// the stage service.start.setting.kafka-producer.STEGO_KAFKA_TOPIC (walkthrough 7, B7).
@@ -168,6 +171,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	data.Provisioning = svc.Tenancy.Provisioning != nil
 	data.AdminRelation = tenancy.AdminRelation(svc.Tenancy.Provisioning)
 	data.Modes = declaredModes(svc.Modes)
+	data.BasePath = strings.TrimSuffix(svc.BasePath, "/")
 	source, err := renderRuntimeWiring(data)
 	if err != nil {
 		return nil, ComponentWiring{}, err
@@ -223,6 +227,11 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 			wiring.Routes = append(wiring.Routes, fmt.Sprintf("mux.Handle(%q, service.Routes())", route))
 		}
 	}
+	// The parked-message list and resolve of an operator: main.go forwards their patterns to Routes, where the
+	// service runtime registers them in the api mode only (ST-SUP-RP14-LC09, ST-SUP-RP14-LC10).
+	for _, route := range parkedRoutes(svc.BasePath) {
+		wiring.Routes = append(wiring.Routes, fmt.Sprintf("mux.Handle(%q, service.Routes())", route))
+	}
 	if data.API != "" || data.Commands != "" {
 		// The revocation status route of the writes: main.go forwards its pattern, the route of its entry of the
 		// operation-to-permission table, to Routes, which registers its handler from that entry (ST-SUP-RC29-OC18).
@@ -230,6 +239,20 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 	}
 	files := []gen.File{{Path: path.Join(RuntimeWiringNamespace, "runtime.go"), Content: source}}
 	return files, ComponentWiring{Name: runtimeWiringComponent, Wiring: wiring}, nil
+}
+
+// The paths of the parked-message routes after the base path, as the service runtime registers them
+// (service.ParkedPath and service.ResolvePath of the runtime library): the last segment of the resolve route is
+// <id>:resolve, which the router matches as one path value.
+const (
+	parkedPath  = "/stego/outbox/{destination}/parked"
+	resolvePath = parkedPath + "/{action}"
+)
+
+// parkedRoutes gives the patterns of the parked-message list and resolve of a service whose base path is basePath.
+func parkedRoutes(basePath string) []string {
+	base := strings.TrimSuffix(basePath, "/")
+	return []string{"GET " + base + parkedPath, "POST " + base + resolvePath}
 }
 
 // renderRuntimeWiring renders the runtime wiring package.

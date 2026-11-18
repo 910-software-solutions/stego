@@ -730,6 +730,8 @@ var grantObject = regexp.MustCompile(`^GRANT [A-Z, ]+ ON (TABLE|SEQUENCE) ("[^"]
 type tableGrant struct {
 	schema, table string
 	privileges    []string
+	// columns limits the privileges to these columns; empty is the whole table.
+	columns []string
 }
 
 // consumerGrants are the grants of the worker role that the fill of a consuming worker needs in the transaction of
@@ -754,10 +756,22 @@ func consumerGrants(p *Parts) []tableGrant {
 		tableGrant{schema: audit.RecordSchema, table: audit.HeadsTable, privileges: []string{"SELECT", "INSERT", "UPDATE"}},
 		tableGrant{schema: idempotency.KeySchema, table: "idempotency_keys", privileges: []string{"SELECT", "INSERT", "UPDATE"}})
 	if p.AuthzSchema != "" {
-		grants = append(grants, tableGrant{schema: p.AuthzSchema, table: "authz_floor", privileges: []string{"SELECT"}})
+		grants = append(grants, tableGrant{schema: p.AuthzSchema, table: "authz_floor", privileges: []string{"SELECT"}},
+			// A consuming worker that creates a row with a reference relates its tuples and records their revocation:
+			// it inserts these columns and reads neither table. The foreign key of a tuple and its deferred check run
+			// as the owner and as SECURITY DEFINER, so no SELECT is needed (walkthrough 8, W8-B1; security review of
+			// PR #421, L2).
+			tableGrant{schema: p.AuthzSchema, table: "authz_revocations", privileges: []string{"INSERT"},
+				columns: []string{"id", "tenant_id", "principal"}},
+			tableGrant{schema: p.AuthzSchema, table: "authz_revocation_tuples", privileges: []string{"INSERT"},
+				columns: []string{"message_id", "revocation_id", "tenant_id"}})
 	}
 	return grants
 }
+
+// authzTables are the tables of the authorization text that the worker role gets grants on: they exist only after
+// that text, so their grants are in the floor part of the step.
+var authzTables = map[string]bool{"authz_floor": true, "authz_revocations": true, "authz_revocation_tuples": true}
 
 // workerGrants gives the grants of the worker role, which the step authorization_tables runs in its one transaction:
 // tables before the authorization text, whose text gives the worker role its column grants on the token of each
@@ -791,7 +805,9 @@ func workerGrants(m Migration) (tables, floor string, err error) {
 	}
 	var floorText strings.Builder
 	if m.Parts.AuthzSchema != "" {
-		floorText.WriteString("REVOKE ALL ON TABLE " + quote(m.Parts.AuthzSchema) + "." + quote("authz_floor") + " FROM " + role + ";\n")
+		for _, table := range []string{"authz_floor", "authz_revocations", "authz_revocation_tuples"} {
+			floorText.WriteString("REVOKE ALL ON TABLE " + quote(m.Parts.AuthzSchema) + "." + quote(table) + " FROM " + role + ";\n")
+		}
 	}
 	for _, table := range m.Parts.Workers.ConsumerTables {
 		if !sqlName.MatchString(table) || !runtimeTables[quote("public")+"."+quote(table)] {
@@ -799,8 +815,16 @@ func workerGrants(m Migration) (tables, floor string, err error) {
 		}
 	}
 	for _, g := range consumerGrants(m.Parts) {
-		statement := "GRANT " + strings.Join(g.privileges, ", ") + " ON TABLE " + quote(g.schema) + "." + quote(g.table) + " TO " + role + ";\n"
-		if g.table == "authz_floor" {
+		privileges := strings.Join(g.privileges, ", ")
+		if len(g.columns) > 0 {
+			quoted := make([]string, len(g.columns))
+			for i, c := range g.columns {
+				quoted[i] = quote(c)
+			}
+			privileges += " (" + strings.Join(quoted, ", ") + ")"
+		}
+		statement := "GRANT " + privileges + " ON TABLE " + quote(g.schema) + "." + quote(g.table) + " TO " + role + ";\n"
+		if authzTables[g.table] {
 			floorText.WriteString(statement)
 			continue
 		}

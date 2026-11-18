@@ -314,6 +314,9 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 			rt.routes.Handle(o.Route, command.ServeRevocationStatus(svc.Collections(), subjectType))
 		}
 	}
+	// The parked-message list and resolve of an operator, behind authentication and in the api mode only
+	// (ST-SUP-RP14-LC09, ST-SUP-RP14-LC10).
+	svc.RegisterParked(rt.routes, basePath, selection)
 	// Provision and Retire, which the service serves itself, come from their entries of the operation-to-permission
 	// table only (ST-SUP-RC27-OC09, ST-SUP-RC29-OC15).
 	provision, retire := svc.TenantRoutes()
@@ -327,6 +330,9 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	}
 	return rt, nil
 }
+
+// basePath is the base path of the service, under which the runtime serves the parked-message routes.
+const basePath = "/api/user-mgmt/v1"
 
 // retention is how long a completed idempotency key is kept: the declared retention, or zero for the runtime's
 // default.
@@ -416,7 +422,8 @@ func (rt *Runtime) Readiness() http.Handler {
 // (ST-SUP-RP04-LC07).
 const tenantSchema = "public"
 
-// Routes serves the declared commands and queries, each at its route, and the revocation status route.
+// Routes serves the declared commands and queries, each at its route, the revocation status route and, in the api
+// mode, the parked-message routes.
 func (rt *Runtime) Routes() http.Handler { return rt.routes }
 
 // Service gives the runtime library objects of the running service, on which the gRPC application serves the

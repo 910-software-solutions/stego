@@ -210,6 +210,16 @@ func TestServe(t *testing.T) {
 		if w.Code != http.StatusBadRequest || calls != 0 {
 			t.Fatalf("a request with no key gave %d, want 400 with no fill call", w.Code)
 		}
+		// The problem type of a missing key sits under the problem base of the service (ST-SUP-RC30-OC02).
+		e.rt.cfg.ProblemBase = "https://errors.example.com/orders/"
+		r = httptest.NewRequest(http.MethodPost, "/commands/reserve", strings.NewReader(`{"order_id":"o5"}`))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w = httptest.NewRecorder()
+		verifier.Middleware(h).ServeHTTP(w, r)
+		if !strings.Contains(w.Body.String(), `"type":"https://errors.example.com/orders/idempotency-key-missing"`) {
+			t.Fatalf("a request with no key gave the problem %s, want the type under the problem base", w.Body.String())
+		}
+		e.rt.cfg.ProblemBase = ""
 		broken := spec
 		broken.Fill = nil
 		if _, err := Serve(e.rt, broken); err == nil {
