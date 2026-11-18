@@ -76,6 +76,9 @@ Deployments:
   worker mode reads (`read_by_mode: worker` in the platform requirements), such as `STEGO_WORKER_DATABASE_URL`,
   `STEGO_RELAY_DATABASE_URL`, the audit sink settings and the Kafka settings, is only in the worker Deployment.
   Thus the API pod holds no credential of the worker role, the relay role or Kafka.
+  A variable that only the api mode reads (`read_by_mode: api`), such as the CORS settings `CORS_ALLOWED_*` and
+  the gRPC settings `STEGO_GRPC_ADDR`, `STEGO_GRPC_STREAM_TIMEOUT` and `STEGO_GRPC_STREAM_IO_TIMEOUT`, is only in
+  the api Deployment. The worker Deployment and the migration Job do not get it.
 - The `args` select the modes, so neither Deployment has an entry of `STEGO_MODE`.
 - The pods of the worker Deployment have the label `app.kubernetes.io/name: <service>-worker`, so that the
   selector of `<service>`, which does not change, takes none of them.
