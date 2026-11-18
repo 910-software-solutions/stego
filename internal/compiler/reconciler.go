@@ -854,7 +854,7 @@ const DeliveryObjectFile = "deploy/argocd/applicationset.yaml"
 // import. A run writes the files that the platform
 // requirements need, and apply removes a file of the base that a run no longer writes.
 var BaseFiles = []string{"deploy/base/kustomization.yaml", "deploy/base/service-account.yaml", "deploy/base/deployment.yaml",
-	"deploy/base/worker-deployment.yaml", "deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml", "deploy/base/migration-job.yaml",
+	"deploy/base/worker-service-account.yaml", "deploy/base/worker-deployment.yaml", "deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml", "deploy/base/migration-job.yaml",
 	"deploy/components/secret-files/kustomization.yaml", "deploy/components/secret-files/remove-env.yaml",
 	"deploy/components/secret-files/mount-files.yaml", "deploy/components/secret-files/remove-worker-env.yaml",
 	"deploy/components/secret-files/mount-worker-files.yaml", "deploy/components/secret-files/remove-job-env.yaml",

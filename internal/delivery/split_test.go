@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -252,6 +253,109 @@ func TestModeDeployments(t *testing.T) {
 				if slices.Contains(variables(job), name) {
 					t.Errorf("modes %v: the migration Job holds %s", modes, name)
 				}
+			}
+		}
+	})
+
+	t.Run("ST-DLV-UC07-R07-T04 The worker Deployment runs as its own ServiceAccount, and the Role binds the ServiceAccount of each Deployment", func(t *testing.T) {
+		// The fixture of ST-DLV-TD02 with one cluster permission, so that the base holds a Role and a RoleBinding.
+		requirements := strings.Replace(string(workerRequirements(t)), "requirements:\n",
+			"requirements:\n  - kind: cluster permission\n    name: orders-maps\n    resource: configmaps\n    verbs: [get]\n    components: [kubernetes-client]\n", 1)
+		base, _, err := WriteBase("orders", testRelease, []byte(requirements), healthCheckProbes, []string{"api", "worker", "controller"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadBase(base.Files); err != nil {
+			t.Fatalf("LoadBase refuses the split base: %v", err)
+		}
+		built := resourcesOf(t, buildOverlay(t, writeProject(t, base.Files), "overlay", "namespace: shop\n"))
+		accounts := map[string]bool{}
+		for _, account := range built["ServiceAccount"] {
+			accounts[account["metadata"].(map[string]any)["name"].(string)] = true
+		}
+		if len(accounts) != 2 || !accounts["orders"] || !accounts["orders-worker"] {
+			t.Errorf("the build holds the ServiceAccounts %v, want orders and orders-worker", accounts)
+		}
+		for _, deployment := range built["Deployment"] {
+			name := deployment["metadata"].(map[string]any)["name"].(string)
+			pod := deployment["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+			if pod["serviceAccountName"] != name {
+				t.Errorf("the Deployment %s runs as the ServiceAccount %v, want %s", name, pod["serviceAccountName"], name)
+			}
+		}
+		if len(built["RoleBinding"]) != 1 {
+			t.Fatalf("the build holds %d RoleBindings, want 1", len(built["RoleBinding"]))
+		}
+		var subjects []string
+		for _, subject := range built["RoleBinding"][0]["subjects"].([]any) {
+			subject := subject.(map[string]any)
+			subjects = append(subjects, subject["name"].(string)+"/"+subject["namespace"].(string))
+		}
+		if !slices.Equal(subjects, []string{"orders/shop", "orders-worker/shop"}) {
+			t.Errorf("the RoleBinding binds %v, want orders and orders-worker in the namespace of the overlay", subjects)
+		}
+
+		// One Deployment alone runs as the ServiceAccount of the service, and the base holds no worker ServiceAccount.
+		for _, modes := range [][]string{{"api"}, {"worker", "controller"}, nil} {
+			one, _, err := WriteBase("orders", testRelease, []byte(requirements), healthCheckProbes, modes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, held := one.Files[WorkerServiceAccountFile]; held {
+				t.Errorf("modes %v: the base holds a worker ServiceAccount", modes)
+			}
+		}
+
+		// LoadBase refuses a worker ServiceAccount of another name, and one in a base with no worker Deployment.
+		changed := maps.Clone(base.Files)
+		changed[WorkerServiceAccountFile] = []byte(strings.Replace(string(base.Files[WorkerServiceAccountFile]), "\n  name: orders-worker\n", "\n  name: other\n", 1))
+		if _, err := LoadBase(changed); err == nil {
+			t.Error("LoadBase accepts a worker ServiceAccount with another name")
+		}
+		one, _, err := WriteBase("orders", testRelease, []byte(requirements), healthCheckProbes, []string{"api"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		alone := maps.Clone(one.Files)
+		alone[WorkerServiceAccountFile] = base.Files[WorkerServiceAccountFile]
+		alone[KustomizationFile] = []byte(strings.Replace(string(one.Files[KustomizationFile]), "- service-account.yaml\n", "- service-account.yaml\n  - worker-service-account.yaml\n", 1))
+		if _, err := LoadBase(alone); err == nil {
+			t.Error("LoadBase accepts a worker ServiceAccount in a base with no worker Deployment")
+		}
+	})
+
+	t.Run("ST-DLV-UC07-R07-T05 LoadBase holds each Deployment to its own ServiceAccount, and the RoleBinding to exactly those", func(t *testing.T) {
+		requirements := strings.Replace(string(workerRequirements(t)), "requirements:\n",
+			"requirements:\n  - kind: cluster permission\n    name: orders-maps\n    resource: configmaps\n    verbs: [get]\n    components: [kubernetes-client]\n", 1)
+		base, _, err := WriteBase("orders", testRelease, []byte(requirements), healthCheckProbes, []string{"api", "worker", "controller"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadBase(base.Files); err != nil {
+			t.Fatalf("LoadBase refuses the split base: %v", err)
+		}
+		changed := func(file, from, to string) map[string][]byte {
+			t.Helper()
+			files := maps.Clone(base.Files)
+			if !strings.Contains(string(files[file]), from) {
+				t.Fatalf("%s does not hold %q", file, from)
+			}
+			files[file] = []byte(strings.Replace(string(files[file]), from, to, 1))
+			return files
+		}
+		noWorkerAccount := changed(KustomizationFile, "  - worker-service-account.yaml\n", "")
+		delete(noWorkerAccount, WorkerServiceAccountFile)
+		for name, files := range map[string]map[string][]byte{
+			"no worker ServiceAccount":                        noWorkerAccount,
+			"a worker Deployment that runs as the service":    changed(WorkerDeploymentFile, "serviceAccountName: orders-worker", "serviceAccountName: orders"),
+			"an api Deployment that runs as default":          changed(DeploymentFile, "serviceAccountName: orders", "serviceAccountName: default"),
+			"a ServiceAccount of the service of another name": changed(ServiceAccountFile, "\n  name: orders\n", "\n  name: other\n"),
+			"a RoleBinding with no worker subject":            changed(RoleBindingFile, "  - kind: ServiceAccount\n    name: orders-worker\n", ""),
+			"a RoleBinding with another subject":              changed(RoleBindingFile, "name: orders-worker\n", "name: orders-worker\n  - kind: ServiceAccount\n    name: default\n"),
+			"a RoleBinding subject with a namespace":          changed(RoleBindingFile, "name: orders-worker\n", "name: orders-worker\n    namespace: other\n"),
+		} {
+			if _, err := LoadBase(files); err == nil {
+				t.Errorf("LoadBase accepts a base with %s", name)
 			}
 		}
 	})

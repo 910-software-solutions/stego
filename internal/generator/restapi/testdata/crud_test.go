@@ -1925,8 +1925,16 @@ func TestCrud(t *testing.T) {
 		s2 := e.create(a, "folders", "folder", `{"name":"two"}`)
 		foreign := e.create(other, "folders", "folder", `{"name":"not mine"}`)
 		books := func(folder string) string { return "/api/v1/folders/" + folder + "/books" }
-		// The scope field comes from the path, also when the body names another folder.
-		created := e.send(a, http.MethodPost, books(s1), "k-"+uuid.NewString(), `{"title":"t1","folder_id":"`+s2+`"}`)
+		// A body that names another folder than the path is refused with a problem that names the field, and
+		// writes nothing; a body that gives the folder of the path is taken.
+		empty := e.count(`SELECT count(*) FROM books`)
+		if r := e.send(a, http.MethodPost, books(s1), "k-"+uuid.NewString(), `{"title":"t1","folder_id":"`+s2+`"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"folder_id"`) {
+			t.Errorf("a create with another folder in the body answered %d %s, want 400 that names folder_id", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM books`); n != empty {
+			t.Errorf("%d book rows after the refused create, want %d", n, empty)
+		}
+		created := e.send(a, http.MethodPost, books(s1), "k-"+uuid.NewString(), `{"title":"t1","folder_id":"`+s1+`"}`)
 		if created.status != http.StatusCreated {
 			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
 		}
@@ -1955,8 +1963,15 @@ func TestCrud(t *testing.T) {
 		if n := e.count(`SELECT count(*) FROM books WHERE id = $1::uuid AND folder_id = $2::uuid AND title = 't1'`, id, s1); n != 1 {
 			t.Errorf("%d book rows as created after the writes under another folder, want 1", n)
 		}
-		// An update keeps the parent of the path.
-		if r := e.send(a, http.MethodPut, books(s1)+"/"+id, "", `{"title":"t2","folder_id":"`+s2+`"}`); r.status != http.StatusOK {
+		// An update with another folder in the body is refused and changes nothing; one with no folder keeps the
+		// parent of the path.
+		if r := e.send(a, http.MethodPut, books(s1)+"/"+id, "", `{"title":"t2","folder_id":"`+s2+`"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"folder_id"`) {
+			t.Errorf("an update with another folder in the body answered %d %s, want 400 that names folder_id", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM books WHERE id = $1::uuid AND folder_id = $2::uuid AND title = 't1'`, id, s1); n != 1 {
+			t.Errorf("%d book rows as created after the refused update, want 1", n)
+		}
+		if r := e.send(a, http.MethodPut, books(s1)+"/"+id, "", `{"title":"t2"}`); r.status != http.StatusOK {
 			t.Fatalf("the update answered %d %s, want 200", r.status, r.body)
 		}
 		if n := e.count(`SELECT count(*) FROM books WHERE id = $1::uuid AND folder_id = $2::uuid AND title = 't2'`, id, s1); n != 1 {
@@ -2005,12 +2020,19 @@ func TestCrud(t *testing.T) {
 		}
 		c1, c2, c3 := card(f1, r1, "c1"), card(f2, r2, "c2"), card(f2, r2, "c3")
 		e.createUnder(a, marks(f1, r1, c1), "mark", "card", c1, `{"label":"l1","note":"n1"}`)
-		created := e.send(a, http.MethodPost, "/api/v1"+marks(f2, r2, c2), "k-"+uuid.NewString(), `{"label":"l2","note":"n2","card_id":"`+c1+`"}`)
+		// A body that names another card than the path is refused and writes nothing.
+		if r := e.send(a, http.MethodPost, "/api/v1"+marks(f2, r2, c2), "k-"+uuid.NewString(), `{"label":"l2","note":"n2","card_id":"`+c1+`"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"card_id"`) {
+			t.Errorf("a create of a mark with another card in the body answered %d %s, want 400 that names card_id", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM marks WHERE label = 'l2'`); n != 0 {
+			t.Errorf("%d mark rows after the refused create, want 0", n)
+		}
+		created := e.send(a, http.MethodPost, "/api/v1"+marks(f2, r2, c2), "k-"+uuid.NewString(), `{"label":"l2","note":"n2"}`)
 		if created.status != http.StatusCreated {
 			t.Fatalf("the create of a mark answered %d %s, want 201", created.status, created.body)
 		}
 		m2 := created.member(t, "id")
-		// The parent of the mark is the card of the path, also when the body names another card.
+		// The parent of the mark is the card of the path.
 		e.relayParent(a, "mark", m2, "card", c2)
 		if href := created.member(t, "href"); href != "/api/v1"+marks(f2, r2, c2)+"/"+m2 {
 			t.Errorf("the href is %q, want the path of the mark under each of its ancestors", href)
@@ -2540,7 +2562,14 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		// The relay of the check does not run, so the caller owns the row: its relation to the folder is in the
 		// outbox.
 		e.own(a, "setting", id)
-		second := e.send(a, http.MethodPut, settings, "", `{"name":"color","value":"blue","folder_id":"`+foreign+`"}`)
+		// An upsert with another folder in the body is refused and changes nothing.
+		if r := e.send(a, http.MethodPut, settings, "", `{"name":"color","value":"blue","folder_id":"`+foreign+`"}`); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"folder_id"`) {
+			t.Errorf("an upsert with another folder in the body answered %d %s, want 400 that names folder_id", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM settings WHERE id = $1::uuid AND value = 'red'`, id); n != 1 {
+			t.Errorf("%d setting rows as created after the refused upsert, want 1", n)
+		}
+		second := e.send(a, http.MethodPut, settings, "", `{"name":"color","value":"blue","folder_id":"`+folder+`"}`)
 		if second.status != http.StatusOK || second.member(t, "id") != id || second.member(t, "value") != "blue" {
 			t.Fatalf("the second upsert answered %d %s, want 200 with the same row and the new value", second.status, second.body)
 		}
