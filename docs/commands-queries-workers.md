@@ -1058,7 +1058,11 @@ worker mode, which runs the relay, runs.
   before the controller of the release writes the tuple. New field
   `command.Config.WorkerTuples`, constants `command.WorkerTupleMissingCode`
   and `command.HeldTupleAge`, and the class `worker_tuple_missing` in
-  `probe.WorkerCauses`.
+  `probe.WorkerCauses`. A read of the tuple that fails is undecided, with the
+  cause `undecided`. A tuple that stays missing for 15 minutes
+  (`command.WorkerTupleAlertAfter`) logs the warn line
+  `command.consumer.worker_tuple_missing` with the worker, at most once in
+  each 15 minutes.
 - The key set reads the refresh age of a key document from its
   `Cache-Control` max-age, from `authn.MinAge` (1 minute) to `authn.MaxAge`
   (5 minutes) (ST-SUP-RP13-LC23). From half the refresh age a known key ID
@@ -1077,7 +1081,8 @@ worker mode, which runs the relay, runs.
 - Retire stages, for each tenant-qualified type of the schema, the delete of
   the tuples of the rows of the tenant (ST-SUP-RC27-OC15). The relay deletes
   them by resource ID prefix in parts (`authz.TenantDeleteLimit`, 1000, and
-  `authz.TenantDeleteCalls`, 10, in one attempt) and logs
+  `authz.TenantDeleteCalls`, 10, in one attempt), with no lock of the floor
+  row, raises the floor after each attempt, and logs
   `authz.tenant_tuples.deleted` with the type and the count. New operation
   `authz.OperationDeleteTenant`, function `authz.TenantPrefix`, method
   `authz.Handle.UnrelateTenant` and interface `authz.PrefixDeleter`.
