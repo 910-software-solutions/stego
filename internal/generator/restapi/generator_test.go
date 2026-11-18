@@ -4608,7 +4608,7 @@ func helperRun(t *testing.T, name string) {
 	p := &crudProject{t: t, dir: t.TempDir()}
 	p.write("go.mod", []byte("module example.com/helpers\n\ngo 1.26.11\n"))
 	p.write("query/query.go", []byte("package query\n\nimport \"errors\"\n\ntype OrderBy struct {\n\tField      string\n\tDescending bool\n}\n\nvar ErrBadCursor = errors.New(\"bad cursor\")\n"))
-	p.write("api/helpers.go", []byte("package api\n\nimport (\n\t\"encoding/json\"\n\t\"errors\"\n\t\"strings\"\n\n\t\"example.com/helpers/query\"\n)\n\n"+listOrderHelper))
+	p.write("api/helpers.go", []byte("package api\n\nimport (\n\t\"encoding/json\"\n\t\"errors\"\n\t\"slices\"\n\t\"strconv\"\n\t\"strings\"\n\n\t\"example.com/helpers/query\"\n)\n\n"+listOrderHelper))
 	p.write("api/helpers_test.go", []byte(helperChecks))
 	output, err := p.goCommand(nil, "test", "-count=1", "-v", "-run", "^"+name+"$", "./api")
 	if err != nil || !strings.Contains(output, "--- PASS: "+name+" ") {

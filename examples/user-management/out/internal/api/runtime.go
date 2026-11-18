@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -436,6 +438,44 @@ func remoteIP(addr string) string {
 		return ""
 	}
 	return host
+}
+
+// listParameters are the query parameters that a list reads, by their exact names (ST-SUP-RC20-OC51).
+var listParameters = map[string]bool{"pageSize": true, "cursor": true, "orderBy": true, "fields": true, "search": true}
+
+// unreadParameters gives the detail of the 400 of a list request whose query string holds a parameter that the list
+// does not read, or "" when the list reads each one (ST-SUP-RC20-OC51). It names each such parameter once, in byte
+// order, at most 10 of them, each cut to its first 64 bytes, and quotes no value. For limit it says that pageSize sets
+// the page size.
+func unreadParameters(parameters map[string][]string) string {
+	var names []string
+	for name := range parameters {
+		if !listParameters[name] {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	slices.Sort(names)
+	limit := slices.Contains(names, "limit")
+	more := max(len(names)-10, 0)
+	names = names[:len(names)-more]
+	for i, name := range names {
+		if len(name) > 64 {
+			name = name[:64]
+		}
+		names[i] = strconv.Quote(name)
+	}
+	detail := "the list does not read the query parameter " + strings.Join(names, ", ")
+	if more > 0 {
+		detail += " and " + strconv.Itoa(more) + " more"
+	}
+	detail += "; it reads only pageSize, cursor, orderBy, fields and search"
+	if limit {
+		detail += "; pageSize sets the page size"
+	}
+	return detail
 }
 
 // errOrder is the error of an orderBy that names a field that is not declared, or a direction that is not asc or

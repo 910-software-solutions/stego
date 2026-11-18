@@ -201,6 +201,10 @@ func (h *OrgActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, Unauthorized("the request is not authenticated"))
 		return
 	}
+	if detail := unreadParameters(r.URL.Query()); detail != "" {
+		handleError(w, r, BadRequest(detail))
+		return
+	}
 	limit := 100
 	if text := r.URL.Query().Get("pageSize"); text != "" {
 		n, err := strconv.Atoi(text)

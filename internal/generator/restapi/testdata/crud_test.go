@@ -1202,12 +1202,22 @@ func TestCrud(t *testing.T) {
 
 	t.Run("ST-SUP-RC20-OC35-T03 A tenant in a query parameter is not accepted", func(t *testing.T) {
 		e := service(t)
-		tenantRoutes(e, e.as("u-1", newTenant()), func(r *http.Request) {
+		a := e.as("u-1", newTenant())
+		tenantRoutes(e, a, func(r *http.Request) {
+			// A list refuses a query parameter that it does not read (ST-SUP-RC20-OC51), so it is sent below.
+			if r.Method == http.MethodGet && strings.Count(r.URL.Path, "/") == 3 {
+				return
+			}
 			q := r.URL.Query()
 			q.Set("tenant", "t2")
 			q.Set("tenant_id", "t2")
 			r.URL.RawQuery = q.Encode()
 		})
+		for _, collection := range []string{"orders", "customers", "todos"} {
+			if r := e.send(a, http.MethodGet, "/api/v1/"+collection+"?tenant=t2&tenant_id=t2", "", ""); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `\"tenant\", \"tenant_id\"`) {
+				t.Errorf("a list of %s with a tenant in the query answered %d %s, want 400 that names tenant and tenant_id", collection, r.status, r.body)
+			}
+		}
 	})
 
 	t.Run("ST-SUP-RC20-OC35-T04 A tenant in a body field is not accepted", func(t *testing.T) {
@@ -3252,6 +3262,145 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		plain, err := e.ring.Open(held, sealed.Place{Tenant: a.tenant.ID(), Table: "tickets", Column: "pin", Row: id})
 		if err != nil || string(plain) != "1234" {
 			t.Errorf("the pin after the update opens to %q (%v), want the stored 1234", plain, err)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC48-T03 A compare-only secret with writable never is refused whenever a body gives it, and no write stores it", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		entries := func(r reply) string {
+			t.Helper()
+			var problem struct {
+				Errors []struct {
+					Field   string `json:"field"`
+					Message string `json:"message"`
+				} `json:"validation_errors"`
+			}
+			if json.Unmarshal(r.body, &problem) != nil {
+				return ""
+			}
+			return fmt.Sprint(problem.Errors)
+		}
+		ticket := func(code, title, recovery string) string {
+			return `{"folder_id":"` + folder + `","code":"` + code + `","title":"` + title + `","sku":"s1"` + recovery + `}`
+		}
+		id := e.create(a, "tickets", "ticket", ticket("c1", "first", ""))
+		path := "/api/v1/tickets/" + id
+		// A create, an upsert that inserts, an update, a patch and an upsert of the stored row, each with a value,
+		// another value and null: no write compares the secret, so each answer is the same.
+		first := ""
+		for _, c := range []struct{ method, path, key, body string }{
+			{http.MethodPost, "/api/v1/tickets", "k-" + uuid.NewString(), ticket("c2", "t", `,"recovery":"1234"`)},
+			{http.MethodPost, "/api/v1/tickets", "k-" + uuid.NewString(), ticket("c2", "t", `,"Recovery":null`)},
+			{http.MethodPut, "/api/v1/tickets", "", ticket("c3", "t", `,"recovery":"1234"`)},
+			{http.MethodPut, path, "", ticket("c1", "t", `,"recovery":"1234"`)},
+			{http.MethodPut, path, "", ticket("c1", "t", `,"recovery":null`)},
+			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","recovery":"9999"}`},
+			{http.MethodPut, "/api/v1/tickets", "", ticket("c1", "t", `,"recovery":"1234"`)},
+		} {
+			r := e.send(a, c.method, c.path, c.key, c.body)
+			got := entries(r)
+			if r.status != http.StatusBadRequest || !strings.Contains(got, "recovery") || !strings.Contains(got, "leave it out") || strings.Contains(string(r.body), "1234") || strings.Contains(string(r.body), "9999") {
+				t.Errorf("%s %s %s answered %d %s, want 400 that names recovery and says to leave it out", c.method, c.path, c.body, r.status, r.body)
+			}
+			if first == "" {
+				first = got
+			} else if got != first {
+				t.Errorf("%s %s %s answered the entries %s, want the same entries %s as for the first write", c.method, c.path, c.body, got, first)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE folder_id = $1::uuid AND code IN ('c2', 'c3')`, folder); n != 0 {
+			t.Errorf("%d ticket rows of the refused create and upsert, want 0", n)
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first' AND recovery IS NULL`, id); n != 1 {
+			t.Errorf("%d ticket rows with the first title and no recovery after the refused writes, want 1", n)
+		}
+		// The read gives no recovery, and a body that leaves it out is written.
+		read := e.send(a, http.MethodGet, path, "", "")
+		if _, ok := read.object(t)["recovery"]; ok {
+			t.Errorf("the read answers the secret: %s", read.body)
+		}
+		if r := e.send(a, http.MethodPut, path, "", ticket("c1", "second", "")); r.status != http.StatusOK {
+			t.Errorf("an update that leaves recovery out answered %d %s, want 200", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		// noSecret fails when the object holds a member of the required secret api_token or the optional secret vault.
+		noSecret := func(what string, object map[string]any) {
+			t.Helper()
+			for _, name := range []string{"api_token", "vault"} {
+				if _, ok := object[name]; ok {
+					t.Errorf("%s holds the member %s of a secret field: %v", what, name, object)
+				}
+			}
+		}
+		created := e.send(a, http.MethodPost, "/api/v1/customers", "k-"+uuid.NewString(), `{"name":"Sam","api_token":"tok-1","plan":"free","vault":{"pin":"4321"}}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		noSecret("the create answer", created.object(t))
+		id := created.member(t, "id")
+		e.own(a, "customer", id)
+		noSecret("the read answer", e.send(a, http.MethodGet, "/api/v1/customers/"+id, "", "").object(t))
+		updated := e.send(a, http.MethodPut, "/api/v1/customers/"+id, "", `{"name":"Sam","plan":"pro"}`)
+		if updated.status != http.StatusOK {
+			t.Fatalf("the update answered %d %s, want 200", updated.status, updated.body)
+		}
+		noSecret("the update answer", updated.object(t))
+		list := e.send(a, http.MethodGet, "/api/v1/customers", "", "")
+		items, _ := list.object(t)["items"].([]any)
+		if len(items) == 0 {
+			t.Fatalf("the list answered %d %s, want the customer", list.status, list.body)
+		}
+		for _, item := range items {
+			object, _ := item.(map[string]any)
+			noSecret("a list item", object)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		e.create(a, "todos", "todo", `{"title":"t1"}`)
+		detail := func(r reply) string {
+			t.Helper()
+			var problem struct {
+				Detail string `json:"detail"`
+			}
+			if json.Unmarshal(r.body, &problem) != nil {
+				return ""
+			}
+			return problem.Detail
+		}
+		many := ""
+		for i := range 12 {
+			many += fmt.Sprintf("&x%02d=v", i)
+		}
+		long := strings.Repeat("p", 100)
+		for _, c := range []struct{ query, want, absent string }{
+			{"limit=SECRET-VALUE", `"limit"`, "SECRET-VALUE"},
+			{"PageSize=1", `"PageSize"`, ""},
+			{"zz=1&page_size=1&pageSize=1", `"page_size", "zz"`, ""},
+			{"tenant=t2", `"tenant"`, ""},
+			{many[1:], `"x09" and 2 more`, `"x10"`},
+			{long + "=1", `"` + strings.Repeat("p", 64) + `"`, strings.Repeat("p", 65)},
+		} {
+			r := e.send(a, http.MethodGet, "/api/v1/todos?"+c.query, "", "")
+			got := detail(r)
+			if r.status != http.StatusBadRequest || !strings.Contains(got, c.want) || (c.absent != "" && strings.Contains(string(r.body), c.absent)) {
+				t.Errorf("a list with %.60s answered %d %s, want 400 whose detail names %s", c.query, r.status, r.body, c.want)
+			}
+			if strings.HasPrefix(c.query, "limit") && !strings.Contains(got, "pageSize sets the page size") {
+				t.Errorf("a list with limit answered the detail %q, want it to name pageSize", got)
+			}
+		}
+		// The parameters that the list reads are taken.
+		if r := e.send(a, http.MethodGet, "/api/v1/todos?pageSize=1&orderBy=title&fields=title&search=&cursor=", "", ""); r.status != http.StatusOK {
+			t.Errorf("a list with only the parameters that it reads answered %d %s, want 200", r.status, r.body)
 		}
 	})
 
