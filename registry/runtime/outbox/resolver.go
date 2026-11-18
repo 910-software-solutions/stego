@@ -97,7 +97,21 @@ func stricter(destination string, row resolveRow, declared Rules, ok bool) (reso
 	return resolveRules{mustLand: row.mustLand && declared.MustLand, idempotent: row.idempotent || declared.Idempotent}, nil
 }
 
+// Resolve applies a person's resolution of one parked message in the caller's transaction tx, as Worker.Resolve
+// does (ST-SUP-RP01-LC13, ST-SUP-RP01-LC17): it asks the decision port before it reads the message, so a deny is
+// ErrNotAllowed for every message; then, for a resolver of NewDeclaredResolver, an error that matches
+// ErrRefusedOutcome for every message of a destination that the release does not declare, before it reads the
+// message, so that answer is the same for every ID (security review of PR #429, L4); then ErrNotFound for a message
+// that the tenant of tx does not hold under the destination, ErrNotParked for a message that is not parked, and an
+// error that matches ErrRefusedOutcome for an outcome that the destination refuses. The state hook of the
+// destination and the audit row are written in tx with the state change. The caller commits tx with tenant.Commit.
 func (r *Resolver) Resolve(ctx context.Context, tx *sql.Tx, request ResolveRequest) error {
+	admit := func(destination string) error {
+		if _, ok := r.declared[destination]; r.declared != nil && !ok {
+			return fmt.Errorf("%w: the release does not declare the destination %s", ErrRefusedOutcome, destination)
+		}
+		return nil
+	}
 	rules := func(destination string, row resolveRow) (resolveRules, error) {
 		declared, ok := r.declared[destination]
 		if r.declared == nil {
@@ -108,7 +122,7 @@ func (r *Resolver) Resolve(ctx context.Context, tx *sql.Tx, request ResolveReque
 		rules.hook = r.hooks[destination]
 		return rules, err
 	}
-	_, _, err := resolveCore(ctx, tx, request, r.decider, r.auditor, r.queue.now(), rules, nil)
+	_, _, err := resolveCore(ctx, tx, request, r.decider, r.auditor, r.queue.now(), admit, rules, nil)
 	return err
 }
 

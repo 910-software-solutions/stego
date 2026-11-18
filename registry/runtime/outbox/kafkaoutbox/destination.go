@@ -107,6 +107,12 @@ const (
 // class, as kafkainbox.DefaultFailingAfter is for the sessions of the inbox.
 const FailingAfter = 5
 
+// FailingExpiry is the age of the last failed attempt after which Failing gives empty again, with no new failure:
+// two times the longest backoff of the outbox worker by default (outbox.DefaultWorkerConfig, 5 minutes). In an
+// outage each message is tried again within one backoff, so the state stays; when another replica delivered the
+// backlog and this one gets no message, the state ends (security review of PR #429, L1).
+const FailingExpiry = 10 * time.Minute
+
 // The reasons of the failure class FailureTopicRefused.
 const (
 	ReasonUnknownTopic       = "unknown-topic"
@@ -143,9 +149,12 @@ type Destination struct {
 	mu      sync.Mutex
 	session *session
 	closed  bool
-	// failures is the count of the attempts in a row that failed at the broker, and class the class of the last.
+	// failures is the count of the attempts in a row that failed at the broker, class the class of the last and
+	// failedAt its time; now is the clock of failedAt, which a test sets.
 	failures int
 	class    string
+	failedAt time.Time
+	now      func() time.Time
 }
 
 type session struct {
@@ -211,7 +220,7 @@ func New(s Settings, logs otellog.LoggerProvider) (*Destination, error) {
 		// The key hash of the Java client, so one entity's events go to one partition whatever client reads them.
 		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)),
 	)
-	d := &Destination{options: options, topic: s.Topic}
+	d := &Destination{options: options, topic: s.Topic, now: time.Now}
 	if logs != nil {
 		d.logger = logs.Logger("github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox")
 		if s.InsecureLoopback {
@@ -376,12 +385,13 @@ func (d *Destination) Registration() outbox.Destination {
 
 // Failing gives the failure class of the last attempt when FailingAfter attempts in a row failed at the broker, such
 // as broker-unavailable in a broker outage, or empty. The readiness of the worker mode names it, so a worker that
-// cannot publish is not ready (ST-SUP-RP09-LC05, walkthrough 9). An attempt that the broker acknowledged clears it;
-// a record that the destination or the broker refuses for itself does not count.
+// cannot publish is not ready (ST-SUP-RP09-LC05, walkthrough 9). An attempt that the broker acknowledged clears it,
+// and so does FailingExpiry with no new failed attempt; a record that the destination or the broker refuses for
+// itself does not count.
 func (d *Destination) Failing() string {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.failures >= FailingAfter {
+	if d.failures >= FailingAfter && d.now().Sub(d.failedAt) < FailingExpiry {
 		return d.class
 	}
 	return ""
@@ -396,8 +406,13 @@ func (d *Destination) count(class string) {
 		d.failures, d.class = 0, ""
 		return
 	}
+	now := d.now()
+	// A failure after the state expired starts a new count.
+	if d.failures > 0 && now.Sub(d.failedAt) >= FailingExpiry {
+		d.failures = 0
+	}
 	d.failures++
-	d.class = class
+	d.class, d.failedAt = class, now
 }
 
 // Rules returns the declared rules of the destination kafka, idempotent and not must land, which the resolver of a

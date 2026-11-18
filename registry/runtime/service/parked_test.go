@@ -296,7 +296,11 @@ func TestParkedRoutes(t *testing.T) {
 		if status := resolve("billing", row, "discarded"); status != http.StatusNoContent {
 			t.Fatalf("discarded of a row that must land of a destination that must land got %d, want 204", status)
 		}
-		// A destination that the release does not declare refuses every outcome.
+		// A destination that the release does not declare refuses every outcome, with one answer for every ID: a
+		// missing message gets the same 409 as a parked one (security review of PR #429, L4).
+		if status := resolve("ledger", uuid.Must(uuid.NewV7()), "not_acted"); status != http.StatusConflict {
+			t.Fatalf("a missing message of an undeclared destination got %d, want 409 as a parked one", status)
+		}
 		for _, resolution := range []string{"acted", "not_acted", "discarded"} {
 			undeclared := s.parkRow(t, "t1", "ledger", true, false)
 			if status := resolve("ledger", undeclared, resolution); status != http.StatusConflict {

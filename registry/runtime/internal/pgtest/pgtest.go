@@ -359,10 +359,13 @@ func remove() {
 				args = []string{"network", "rm", other.name}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-			if _, err := command(ctx, other.path, args...); err != nil {
-				fmt.Fprintf(os.Stderr, "pgtest: remove the %s %s: %v\n", kind, other.name, err)
-			}
+			_, err := command(ctx, other.path, args...)
 			cancel()
+			if err != nil {
+				// The reaper stays: it removes the object when the binary ends (security review of PR #429, L3).
+				fmt.Fprintf(os.Stderr, "pgtest: remove the %s %s: %v\n", kind, other.name, err)
+				continue
+			}
 			// The object is removed: its reaper ends now, and does not outlive a clean exit.
 			if other.reaper != nil {
 				other.reaper.done()

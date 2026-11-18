@@ -603,3 +603,46 @@ func TestSecurity(t *testing.T) {
 		expect(t)
 	})
 }
+
+func TestFailingExpiry(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC31-T07 The failing state of the destination ends after FailingExpiry with no new failed attempt", func(t *testing.T) {
+		d, err := New(Settings{Brokers: []string{"127.0.0.1:9"}, InsecureLoopback: true}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		at := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		d.now = func() time.Time { return at }
+		for range FailingAfter {
+			d.count(FailureUnavailable)
+		}
+		if got := d.Failing(); got != FailureUnavailable {
+			t.Fatalf("after %d failed attempts Failing gives %q, want %s", FailingAfter, got, FailureUnavailable)
+		}
+		// Another replica delivered the backlog: this one gets no message, and the state ends after the expiry
+		// (security review of PR #429, L1).
+		at = at.Add(FailingExpiry - time.Second)
+		if got := d.Failing(); got != FailureUnavailable {
+			t.Fatalf("before the expiry Failing gives %q, want %s", got, FailureUnavailable)
+		}
+		at = at.Add(time.Second)
+		if got := d.Failing(); got != "" {
+			t.Fatalf("at the expiry Failing gives %q, want empty", got)
+		}
+		// A failure after the expiry starts a new count.
+		d.count(FailureUnavailable)
+		if got := d.Failing(); got != "" {
+			t.Fatalf("one failure after the expiry gives %q, want empty", got)
+		}
+		for range FailingAfter - 1 {
+			d.count(FailureUnavailable)
+		}
+		if got := d.Failing(); got != FailureUnavailable {
+			t.Fatalf("a new run of failures gives %q, want %s", got, FailureUnavailable)
+		}
+		d.count("")
+		if got := d.Failing(); got != "" {
+			t.Fatalf("an acknowledged attempt leaves %q, want empty", got)
+		}
+	})
+}

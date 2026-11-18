@@ -72,6 +72,29 @@ func TestReap(t *testing.T) {
 		waitCall(calls, "rm --force spicedb-b")
 		<-r.ended
 
+		// A removal that fails leaves the reaper, which removes the object when the binary ends (security review of PR
+		// #429, L3).
+		dir := t.TempDir()
+		failing, failed := filepath.Join(dir, "tool"), filepath.Join(dir, "calls")
+		if err := os.WriteFile(failing, []byte("#!/bin/sh\necho \"$@\" >> \""+failed+"\"\nexit 1\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		Reap(failing, "spicedb-c")
+		mu.Lock()
+		kept := reaped[len(reaped)-1].reaper
+		mu.Unlock()
+		remove()
+		select {
+		case <-kept.ended:
+			t.Fatal("the reaper ended after a removal that failed")
+		default:
+		}
+		_ = kept.stop.Close()
+		<-kept.ended
+		if data, err := os.ReadFile(failed); err != nil || strings.TrimSpace(string(data)) != "rm --force spicedb-c\nrm --force spicedb-c" {
+			t.Fatalf("the failed removal and the reaper called the tool with %q, %v; want rm --force spicedb-c twice", data, err)
+		}
+
 		// A network of the harness is reaped too, after its containers.
 		tool, calls = fakeTool(t)
 		if r, err = reap(kindNetwork, tool, "net-b"); err != nil {

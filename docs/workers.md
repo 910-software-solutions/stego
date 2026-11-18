@@ -49,3 +49,10 @@ worker in two releases:
    `worker_<name>` in the schema. The reconcile of this release deletes the
    tuples of the worker in each active tenant.
 2. In a later release, remove the relation from the schema.
+
+Keep this order: first the worker, then its relation. The authorization relay
+writes only the relations of the schema of its own release. When a release
+removes the relation while the relation still has tuples, the relay of that
+release refuses the deletes of the reconcile and of a Retire, and the outbox
+parks them. Thus run the release of step 1 until the reconcile deleted the
+tuples in each active tenant, then deploy the release of step 2.
