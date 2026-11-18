@@ -127,12 +127,21 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	if err != nil {
 		return check, err
 	}
+	declared := declaration
 	if ClearSecrets(state.LastApplied) {
 		// The base declares a secret field that its generator stored in clear (walkthrough 13, W13-B1): its stored
 		// shape is the field in clear, which a seal from secret moves (ST-SUP-RC01-OC49, ST-DECL-INV102).
 		declaration = withClearSecrets(declaration)
 	}
-	check.Faults = append(check.Faults, validateBaseSchema(state.LastApplied, declaration, head)...)
+	faults := validateBaseSchema(state.LastApplied, declaration, head)
+	for i := range faults {
+		for j, change := range faults[i].Declare {
+			if field, ok := findStoredField(declared, change.Entity, change.Field); ok && change.Kind == "seal" && field.Secret() {
+				faults[i].Declare[j].Needs = "from: secret, because the generator of the base stored the secret field in clear"
+			}
+		}
+	}
+	check.Faults = append(check.Faults, faults...)
 	check.Faults = append(check.Faults, ledgerVersionFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, syncRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
@@ -166,8 +175,24 @@ func ClearSecrets(applied *AppliedState) bool {
 	return false
 }
 
+// findStoredField gives the field of the entity of the declaration, live or dropped.
+func findStoredField(service *types.ServiceDeclaration, entity, name string) (types.Field, bool) {
+	for _, e := range append(slices.Clone(service.Entities), service.DroppedEntities...) {
+		if e.Name != entity {
+			continue
+		}
+		for _, f := range e.Fields {
+			if f.Name == name {
+				return f, true
+			}
+		}
+	}
+	return types.Field{}, false
+}
+
 // withClearSecrets gives a copy of the declaration in which each field of sensitivity secret, of a live or a dropped
-// entity, is a field with no sensitivity: the stored shape of a release whose generator stored it in clear.
+// entity, is marked as stored in clear (types.Field.ClearStored): the stored shape of a release whose generator stored
+// it in clear, with its CHECKs and no search index.
 func withClearSecrets(service *types.ServiceDeclaration) *types.ServiceDeclaration {
 	out := *service
 	clearOf := func(entities []types.Entity) []types.Entity {
@@ -176,7 +201,7 @@ func withClearSecrets(service *types.ServiceDeclaration) *types.ServiceDeclarati
 			entity.Fields = append([]types.Field(nil), entity.Fields...)
 			for j := range entity.Fields {
 				if entity.Fields[j].Secret() {
-					entity.Fields[j].Sensitivity, entity.Fields[j].CompareOnly = "", false
+					entity.Fields[j].ClearStored, entity.Fields[j].CompareOnly = true, false
 				}
 			}
 			copied[i] = entity
@@ -702,7 +727,7 @@ func shapeOf(field types.Field) fieldShape {
 	return fieldShape{Type: field.Type, MinLength: field.MinLength, MaxLength: field.MaxLength, Min: field.Min, Max: field.Max,
 		Unique: field.Unique, UniqueComposite: field.UniqueComposite, UniqueWhenLive: field.UniqueWhenLive,
 		Optional: field.Optional, Default: field.Default, Values: field.Values, To: field.To,
-		Secret: field.Secret(), CompareOnly: field.Secret() && field.CompareOnly}
+		Secret: field.Secret() && !field.ClearStored, CompareOnly: field.Secret() && !field.ClearStored && field.CompareOnly}
 }
 
 // storedEntity is the stored shape of one entity: its fields in the order of the declaration, the declared

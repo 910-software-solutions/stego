@@ -123,7 +123,7 @@ func sqlName(parts ...string) string {
 func columnType(field types.Field) (string, error) {
 	// A secret column holds the sealed bytes of a readable secret, or the Argon2id string of a compare-only one, and
 	// never the value (ST-SUP-RC01-OC48).
-	if field.Secret() && (field.Type == types.FieldTypeString || field.Type == types.FieldTypeJsonb) {
+	if field.Secret() && !field.ClearStored && (field.Type == types.FieldTypeString || field.Type == types.FieldTypeJsonb) {
 		if field.CompareOnly {
 			return "text", nil
 		}
@@ -217,8 +217,8 @@ type checkItem struct{ source, deparsed string }
 // request validation, because PostgreSQL's regular expressions are not the RE2 expressions that the API checks.
 func columnChecks(field types.Field, typ string) []checkItem {
 	// The stored form of a secret is not its value: the command runtime checks the declared constraints on the value
-	// before it seals it (ST-SUP-RC01-OC48).
-	if field.Secret() {
+	// before it seals it (ST-SUP-RC01-OC48). A secret that an older generator stored in clear kept its CHECKs.
+	if field.Secret() && !field.ClearStored {
 		return nil
 	}
 	column := sqlIdentifier(field.ColumnName())

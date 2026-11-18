@@ -309,8 +309,8 @@ type Context struct {
 // (types.SchemaChange.RelaxedFrom), a within by taking the within off its reference, a drop of a field by giving the
 // entity back the field of its Definition in its place (DropDefinition), and a drop of an entity by giving back the
 // entity and the collections over it, which the declaration keeps with dropped_by (ST-GEN-Q47).
-// A seal is undone by giving the field its sensitivity From in its clear column, with no sensitivity for From secret,
-// a secret that an older generator stored in clear (ST-SUP-RC01-OC49).
+// A seal is undone by giving the field its sensitivity From in its clear column, and for From secret the mark of a
+// secret that an older generator stored in clear (types.Field.ClearStored, ST-SUP-RC01-OC49).
 // AtSchemaStep refuses a change of another kind, and a change with no step.
 func (c Context) AtSchemaStep(steps int) (Context, error) {
 	first := map[string]int{}
@@ -419,11 +419,10 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 				return Context{}, fmt.Errorf("schema change %q seals the field %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
 			}
 			fields[found].Sensitivity, fields[found].CompareOnly = change.From, false
-			if change.From == "secret" {
-				// A field that its declaration named secret and that a generator before postgres-adapter 6.13.0
-				// stored in clear: its stored shape is the field in clear (walkthrough 13, W13-B1).
-				fields[found].Sensitivity = ""
-			}
+			// A field that its declaration named secret and that a generator before postgres-adapter 6.13.0 stored
+			// in clear: its stored shape is the field in clear, with its CHECKs and no search index (walkthrough 13,
+			// W13-B1).
+			fields[found].ClearStored = change.From == "secret"
 			fields[found].Column, fields[found].SealedFrom = "", ""
 			continue
 		}

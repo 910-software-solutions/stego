@@ -827,9 +827,10 @@ func schemaChangeSettings(service *types.ServiceDeclaration) []Setting {
 var sealSensitivities = []string{"", "public", "pii", "secret"}
 
 // validateSealChanges enforces the rest of ST-DECL-INV102 (decision ST-DECL-Q44): From of a seal is public, pii,
-// secret or empty; a field has at most one seal change; and no other schema change names a sealed field, as Field or as From,
-// because the field before the seal is the field of the head with the sensitivity From, in its clear column, and a
-// second change of the field has no one column before the seal. The kind and the field are checked with the other
+// secret or empty; a field has at most one seal change; and no other schema change names a sealed field, as Field or
+// as From, but an add or a relax whose step comes before the seal's, because the field before the seal is the field of
+// the head with the sensitivity From, in its clear column, and another change of the field has no one column before
+// the seal. The kind and the field are checked with the other
 // changes (validateSchemaChangeKind, validateSchemaChangeEntity). Each fault names the change.
 func validateSealChanges(service *types.ServiceDeclaration) []ValidationError {
 	var faults []ValidationError
@@ -851,15 +852,26 @@ func validateSealChanges(service *types.ServiceDeclaration) []ValidationError {
 		}
 		sealed[key] = change.ID
 	}
+	// An add or a relax finishes at its expand step, so one before the expand step of the seal leaves the field in its
+	// clear column, which the seal moves; any other change of the field, or one after the seal, has no one column
+	// before the seal.
+	first := firstSteps(service.SchemaHistory)
 	for i, change := range service.SchemaChanges {
 		if change.Kind == "seal" {
 			continue
 		}
 		for _, name := range []string{change.Field, change.From} {
-			if id, ok := sealed[[2]string{change.Entity, name}]; ok && name != "" {
-				faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-seal", Path: schemaChangePath(i), Found: change.ID,
-					Message: fmt.Sprintf("schema change %q of kind %s names %s.%s, which the seal %q moves; no other schema change names a sealed field (ST-DECL-INV102)", change.ID, change.Kind, change.Entity, name, id)})
+			id, ok := sealed[[2]string{change.Entity, name}]
+			if !ok || name == "" {
+				continue
 			}
+			at, stepped := first[change.ID]
+			sealAt, sealStepped := first[id]
+			if (change.Kind == "add" || change.Kind == "relax") && stepped && sealStepped && at < sealAt {
+				continue
+			}
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-seal", Path: schemaChangePath(i), Found: change.ID,
+				Message: fmt.Sprintf("schema change %q of kind %s names %s.%s, which the seal %q moves; only an add or a relax before the seal may name a sealed field (ST-DECL-INV102)", change.ID, change.Kind, change.Entity, name, id)})
 		}
 	}
 	return faults

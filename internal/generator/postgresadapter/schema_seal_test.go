@@ -10,13 +10,13 @@ import (
 )
 
 // sealEntities are the entities of the release before the seals (ST-SUP-RC01-OC49): the owned entity Vault with the
-// title, the optional pii string note of at most 200 characters and the required string code of at most 40
-// characters, both in clear.
+// title, the optional pii string note of at most 200 characters and the required secret string code of at most 40
+// characters, both in clear, as a generator before postgres-adapter 6.13.0 stored code (walkthrough 13, W13-B1).
 func sealEntities() []types.Entity {
 	two, forty := 200, 40
 	return []types.Entity{{Name: "Vault", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString},
 		{Name: "note", Type: types.FieldTypeString, Optional: true, MaxLength: &two, Sensitivity: "pii"},
-		{Name: "code", Type: types.FieldTypeString, MaxLength: &forty}}}}
+		{Name: "code", Type: types.FieldTypeString, MaxLength: &forty, Sensitivity: "secret", ClearStored: true}}}}
 }
 
 func sealCollections() []types.Collection {
@@ -34,7 +34,7 @@ func sealSteps(ns, tenancyNS string, contract bool) gen.Context {
 	ctx := sealBase(ns, tenancyNS)
 	entities := sealEntities()
 	for i := range entities[0].Fields[1:] {
-		entities[0].Fields[i+1].Sensitivity = "secret"
+		entities[0].Fields[i+1].Sensitivity, entities[0].Fields[i+1].ClearStored = "secret", false
 	}
 	ctx.SchemaChanges = []types.SchemaChange{
 		{ID: "vault-note-seal", Kind: "seal", Entity: "Vault", Field: "note", From: "pii"},

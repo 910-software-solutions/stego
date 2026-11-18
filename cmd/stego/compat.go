@@ -531,9 +531,13 @@ func printNewSchemaSteps(stdout io.Writer, gate baseGate, plan *compiler.Plan) {
 		if trigger == "" {
 			trigger = "none"
 		}
-		if backfill == "" {
+		switch {
+		case change.Kind == "seal" && step.Phase == "expand":
+			// The seal job of the controller seals the rows, as the runtime role with the key ring (ST-SUP-RP10-LC50).
+			backfill = "the seal job of the controller under the lease " + postgresadapter.BackfillLease(change.ID)
+		case backfill == "":
 			backfill = "none"
-		} else {
+		default:
 			backfill = "in the migration job under the lease " + backfill
 		}
 		fmt.Fprintf(stdout, "  %d. %s: %s %s at %s; migration %s; trigger %s; backfill %s\n", position, step.Change, change.Kind, target, step.Phase, migration, trigger, backfill)

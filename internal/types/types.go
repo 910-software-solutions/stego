@@ -113,6 +113,10 @@ type Field struct {
 	// contract step the field is in two columns, the clear one, which a release before writes, and Column, its
 	// sealed column <column>_sealed (ST-SUP-RC01-OC49). The declaration never sets it.
 	SealedFrom string `yaml:"-" json:"SealedFrom,omitempty"`
+	// ClearStored marks a field of sensitivity secret that a generator before postgres-adapter 6.13.0 stored in
+	// clear, in a column of its type with its CHECKs: the stored shape before a seal from secret (walkthrough 13,
+	// W13-B1). The declaration never sets it.
+	ClearStored bool `yaml:"-" json:"ClearStored,omitempty"`
 }
 
 // ServerTimestampNames are the timestamp field names that always hold a time the server sets: the time a row was

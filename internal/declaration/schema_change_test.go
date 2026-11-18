@@ -552,6 +552,11 @@ func TestSchemaSeal(t *testing.T) {
 			wantNoFault(t, schemaFaults(t, todoFields(secret, "", []string{change}, "todo-title-seal expand"), rules...))
 		}
 		wantNoFault(t, schemaFaults(t, todoFields(secret, "", []string{seal}, "todo-title-seal expand", "todo-title-seal contract"), rules...))
+		// An add of the field and a relax of it before the seal finish at their expand steps (ST-DECL-INV102).
+		note := []string{"{name: title, type: string, min_length: 1, max_length: 255}", "{name: done, type: bool, default: false}", "{name: note, type: string, optional: true, max_length: 300, sensitivity: secret}"}
+		wantNoFault(t, schemaFaults(t, todoFields(note, "", []string{"{id: add-todo-note, kind: add, entity: Todo, field: note}",
+			"{id: todo-note-relax, kind: relax, entity: Todo, field: note, definition: max_length 200}", "{id: todo-note-seal, kind: seal, entity: Todo, field: note}"},
+			"add-todo-note expand", "todo-note-relax expand", "todo-note-seal expand"), rules...))
 	})
 	for _, c := range []struct {
 		name   string
@@ -572,8 +577,8 @@ func TestSchemaSeal(t *testing.T) {
 			[]string{"todo-title-seal expand"}, []string{"todo-title-seal", "definition"}},
 		{"twice of one field", secret, []string{seal, "{id: todo-title-seal-again, kind: seal, entity: Todo, field: title}"},
 			[]string{"todo-title-seal expand", "todo-title-seal contract", "todo-title-seal-again expand"}, []string{"todo-title-seal", "todo-title-seal-again", "at most one seal"}},
-		{"beside a relax of the field", secret, []string{seal, "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: max_length 100}"},
-			[]string{"todo-title-relax expand", "todo-title-seal expand"}, []string{"todo-title-relax", "todo-title-seal", "no other schema change"}},
+		{"before a relax of the field", secret, []string{seal, "{id: todo-title-relax, kind: relax, entity: Todo, field: title, definition: max_length 100}"},
+			[]string{"todo-title-seal expand", "todo-title-relax expand"}, []string{"todo-title-relax", "todo-title-seal", "only an add or a relax before the seal"}},
 	} {
 		t.Run("ST-DECL-INV102-T A seal "+c.name+" is refused", func(t *testing.T) {
 			faults := schemaFaults(t, todoFields(c.fields, "", c.change, c.steps...), rules...)

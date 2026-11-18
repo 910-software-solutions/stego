@@ -391,6 +391,40 @@ func TestSchemaStepPlan(t *testing.T) {
 			t.Errorf("stego validate refuses the declared unique, which checking accepts: %v\n%s%s", err, stdout, stderr)
 		}
 	})
+	t.Run("ST-SUP-RC01-OC49-T05 Plan refuses a field made secret over a base in clear with the seal step, and lists the seal step with the seal job and the same 001_initial", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		s.write(t, "service.yaml", noteFields("[{name: title, type: string}, {name: body, type: string, optional: true, sensitivity: pii}]"))
+		s.must(t, "apply", "--base", "HEAD")
+		git(t, s.service, "add", "-A")
+		git(t, s.service, "commit", "-q", "-m", "body in clear")
+		// The apply wrote the add step of body into the declaration of the base.
+		base := s.read(t, "service.yaml")
+		secret := strings.Replace(base, "sensitivity: pii", "sensitivity: secret", 1)
+		if !strings.HasSuffix(secret, "phase: expand}\n") {
+			t.Fatalf("the declaration of the base does not end with its schema history:\n%s", secret)
+		}
+		s.write(t, "service.yaml", secret)
+		stdout, stderr, err := s.stego(t, "plan", "--base", "HEAD")
+		if err == nil || !strings.Contains(stdout+stderr, "declare a seal step for body") || !strings.Contains(stdout+stderr, "seal note-body-seal (Note.body)") {
+			t.Fatalf("plan of a field made secret: %v, want a refusal that names the seal step:\n%s%s", err, stdout, stderr)
+		}
+		sealed := strings.Replace(secret, "schema_changes:\n", "schema_changes:\n  - {id: note-body-seal, kind: seal, entity: Note, field: body, from: pii}\n", 1) +
+			"  - {change: note-body-seal, phase: expand}\n"
+		s.write(t, "service.yaml", sealed)
+		planned := s.must(t, "plan", "--base", "HEAD")
+		want := "2. note-body-seal: seal Note.body at expand; migration internal/storage/migrations/step_0002_note-body-seal_expand.sql; trigger none; backfill the seal job of the controller under the lease stego.backfill.note-body-seal"
+		if !strings.Contains(planned, "New schema steps:\n  "+want+"\n") {
+			t.Errorf("plan does not list the seal step as\n%s\n%s", want, planned)
+		}
+		s.must(t, "apply", "--base", "HEAD", "--saved-plan")
+		if migration := s.read(t, "out/internal/storage/migrations/step_0002_note-body-seal_expand.sql"); !strings.HasPrefix(migration, "ALTER TABLE public.\"notes\" ADD COLUMN \"body_sealed\" bytea;\n") {
+			t.Errorf("the migration of the seal step is\n%s", migration)
+		}
+		if base := git(t, s.service, "show", "HEAD:out/internal/storage/migrations/001_initial.sql"); strings.TrimSpace(base) != strings.TrimSpace(s.read(t, "out/internal/storage/migrations/001_initial.sql")) {
+			t.Errorf("001_initial changed with the seal step:\nbase %s\nnow %s", base, s.read(t, "out/internal/storage/migrations/001_initial.sql"))
+		}
+	})
 	t.Run("ST-GEN-UC12-R01-T02 Plan lists a new add step with its kind, phase and migration, and no trigger or backfill", func(t *testing.T) {
 		t.Parallel()
 		s := newSmallService(t)

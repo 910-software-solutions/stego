@@ -137,7 +137,7 @@ func TestBaseClearSecret(t *testing.T) {
 		var sealed bool
 		for _, fault := range check.Faults {
 			for _, change := range fault.Declare {
-				sealed = sealed || (change.Kind == "seal" && change.Field == "description" && strings.Contains(change.Needs, "secret") &&
+				sealed = sealed || (change.Kind == "seal" && change.Field == "description" && strings.HasPrefix(change.Needs, "from: secret") &&
 					strings.Contains(fault.Message, "seal step for description"))
 			}
 		}
