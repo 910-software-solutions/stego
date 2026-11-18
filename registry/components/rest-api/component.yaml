@@ -12,9 +12,13 @@
 # the revocation status route (ST-SUP-RC20-OC43). Version 4.4.1 lists the state expired of a revocation in its OpenAPI
 # document (ST-SUP-RC20-OC43). Version 4.8.0 refuses with a 400 validation problem a create, an update or an upsert of
 # a scoped collection whose body names another parent in the scope field than the path (walkthrough 8, step 30).
+# Version 4.9.0 keeps each field with writable create or never: an update, an upsert and a patch refuse another
+# value with a 400 validation problem that names the field, a create stores the default of a never field, and the
+# OpenAPI document marks such a field readOnly in the entity schema and gives the update its own request schema
+# (ST-SUP-RC20-OC44 to ST-SUP-RC20-OC47).
 kind: component
 name: rest-api
-version: 4.8.0
+version: 4.9.0
 stage: ga
 output_namespace: internal/api
 

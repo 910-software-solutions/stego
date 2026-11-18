@@ -99,6 +99,17 @@ func crudContext() gen.Context {
 		// implicit column is NULL is not found in the collection (ST-SUP-RC20-OC23, ST-SUP-Q128 (B)).
 		types.Entity{Name: "Label", Fields: []types.Field{{Name: "source", Type: types.FieldTypeString, Optional: true}, {Name: "name", Type: types.FieldTypeString}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "label", Permissions: permissions(), PublicReasons: reasons}},
+		// Ticket gives the fields that a collection write cannot change (ST-DECL-Q45 (a)): sku, meta and due_at with
+		// writable create, state with writable never and a default, and rank with writable never and no default
+		// (ST-SUP-RC20-OC44 to ST-SUP-RC20-OC46).
+		types.Entity{Name: "Ticket", Fields: []types.Field{{Name: "folder_id", Type: types.FieldTypeRef, To: "Folder"}, {Name: "code", Type: types.FieldTypeString},
+			{Name: "title", Type: types.FieldTypeString}, {Name: "sku", Type: types.FieldTypeString, Writable: types.WritableCreate},
+			{Name: "state", Type: types.FieldTypeEnum, Values: []string{"open", "closed"}, Default: "open", Writable: types.WritableNever},
+			{Name: "meta", Type: types.FieldTypeJsonb, Optional: true, Writable: types.WritableCreate},
+			{Name: "due_at", Type: types.FieldTypeTimestamp, Optional: true, ClientSet: true, Writable: types.WritableCreate},
+			{Name: "rank", Type: types.FieldTypeInt32, Optional: true, Writable: types.WritableNever}},
+			EntityAuthorization: types.EntityAuthorization{ResourceType: "ticket", Permissions: permissions(types.OpUpdate, types.OpPatch, types.OpUpsert), PublicReasons: reasons,
+				References: map[string]types.Reference{"folder_id": {Relation: "folder", Permission: "edit"}}}},
 		// Rack, Card and Mark give a parent chain of three levels: a mark is of a card, which is of a rack, which is
 		// of a folder (ST-SUP-RC20-OC24).
 		types.Entity{Name: "Rack", Fields: []types.Field{{Name: "folder_id", Type: types.FieldTypeRef, To: "Folder"}, {Name: "name", Type: types.FieldTypeString}},
@@ -133,6 +144,7 @@ func crudContext() gen.Context {
 			{Name: "folder-quotas", Entity: "Quota", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpList, types.OpUpsert}, UpsertKey: []string{"name"}, Concurrency: types.ConcurrencyOptimistic},
 			{Name: "meetings", Entity: "Meeting", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate, types.OpPatch}, Patchable: []string{"starts_at", "ends_at"}},
 			{Name: "green-labels", Entity: "Label", PathPrefix: "/green-labels", Implicit: map[string]string{"source": "green"}, Operations: []types.Operation{types.OpCreate, types.OpRead}},
+			{Name: "tickets", Entity: "Ticket", Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpUpdate, types.OpPatch, types.OpUpsert}, Patchable: []string{"title"}, UpsertKey: []string{"code"}},
 			// /folders/{folder_id}/racks, /folders/{folder_id}/racks/{rack_id}/cards and
 			// /folders/{folder_id}/racks/{rack_id}/cards/{card_id}/marks.
 			{Name: "folder-racks", Entity: "Rack", Scope: map[string]string{"folder_id": "Folder"}, Operations: []types.Operation{types.OpCreate, types.OpRead, types.OpList}},
@@ -707,6 +719,9 @@ func TestFieldRelationship(t *testing.T) {
 // crudCheckIDs are the checks of the generated service that this test runs, each with the ID of the test record it
 // proves.
 var crudCheckIDs = []string{
+	"ST-SUP-RC20-OC44-T01 An update refuses a changed create or never field, names each, changes nothing, and keeps a field that the body leaves out or repeats",
+	"ST-SUP-RC20-OC45-T01 A create and an upsert that inserts store the default of a never field and refuse another value, and an upsert of a stored row keeps each kept field",
+	"ST-SUP-RC20-OC46-T01 A patch refuses a create or never field that the body names with another value, and changes nothing",
 	"ST-SUP-RC20-OC37-T01 A collection create runs as a command",
 	"ST-SUP-RC20-OC37-T02 A refusing before slot stops the command before any write",
 	"ST-SUP-RC20-OC37-T03 A write that the caller may not make, or of a missing row, is 404 and changes nothing",

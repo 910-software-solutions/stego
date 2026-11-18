@@ -1117,7 +1117,10 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	if c.ops[types.OpList] {
 		w.f("\t\"strconv\"\n")
 	}
-	if w.decodesClientTime() {
+	if w.checksKept() && keptJSON(e) {
+		w.f("\t\"reflect\"\n")
+	}
+	if w.decodesClientTime() || w.checksKept() {
 		w.f("\t\"strings\"\n")
 	}
 	if needTime {
@@ -1441,6 +1444,7 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.canonicalRefs("patch", c.patchFields(), true)
 		w.f("\treturn patch, nil\n}\n\n")
 	}
+	w.keptCheck()
 }
 
 // clientTimeExample is the example of an RFC 3339 time in the problem of a client-set timestamp.
@@ -1494,6 +1498,11 @@ func (w *runtimeHandlerWriter) clientTimeValue(v, zero string, fields []types.Fi
 		if f.Optional || pointers {
 			invalid := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" must be an RFC 3339 time after the zero time, such as "+clientTimeExample)
 			w.f("\tif %s != nil && %s.IsZero() {\n\t\treturn %s, %s\n\t}\n", name, name, zero, invalid)
+			continue
+		}
+		if keptField(f) {
+			// An update keeps the stored value of a field that a collection write cannot change, so its body may
+			// leave the field out: the create checks it (keptCreate).
 			continue
 		}
 		required := fmt.Sprintf("&invalidRequest{problem: BadRequest(%q)}", f.Name+" is required: an RFC 3339 time after the zero time, such as "+clientTimeExample)
@@ -1684,12 +1693,14 @@ func (w *runtimeHandlerWriter) presetDefaults(v string, fields []types.Field) {
 	}
 }
 
-// generationDefaults refuses an entity whose generation field, or a field of presetsDefault, has a default with no
-// Go literal (defaultLiteral), because the handlers write that default into the generated code.
+// generationDefaults refuses an entity whose generation field, a field of presetsDefault or a field with writable
+// never has a default with no Go literal (defaultLiteral), because the handlers write that default into the
+// generated code.
 func generationDefaults(entities []types.Entity) error {
 	for _, e := range entities {
 		for _, f := range e.Fields {
-			if f.Name == "generation" && f.Default != nil || presetsDefault(f) {
+			// A create stores the default of a field with writable never, which the handler writes (keptDefaults).
+			if f.Name == "generation" && f.Default != nil || presetsDefault(f) || keptField(f) && f.Writable == types.WritableNever && f.Default != nil {
 				if _, err := defaultLiteral(f); err != nil {
 					return fmt.Errorf("entity %s: %w", e.Name, err)
 				}
@@ -1997,6 +2008,7 @@ func (w *runtimeHandlerWriter) create() {
 		w.f("\t\t%s.ID = command.NewID()\n", c.lower)
 	}
 	w.populateCreate()
+	w.keptCreate()
 	w.forceScope("scope")
 	w.before(types.OpCreate, nil)
 	w.f("\t\trepo, err := data.%sRepository(ch)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", e.Name)
@@ -2023,6 +2035,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
 	w.f("\t\t%s.ID = id\n", c.lower)
+	w.keptUpdate()
 	w.populateUpdate()
 	w.forceScope("stored." + toPascalCase(c.scope))
 	w.before(types.OpUpdate, nil)
@@ -2199,6 +2212,7 @@ func (w *runtimeHandlerWriter) upsert() {
 		w.f("\t\t\treturn idempotency.Response{}, &preconditionFailed{status: http.StatusPreconditionFailed, detail: \"the If-Match precondition names a %s that does not exist\"}\n\t\t}\n", e.Name)
 	}
 	w.populateCreate()
+	w.keptCreate()
 	if w.envelope {
 		w.f("\t\tid, err := uuid.NewV7()\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n\t\t%s.ID = id.String()\n", c.lower)
 	} else {
@@ -2221,6 +2235,7 @@ func (w *runtimeHandlerWriter) upsert() {
 		w.f("\t\tif !ifMatchSent {\n\t\t\treturn idempotency.Response{}, &preconditionFailed{status: http.StatusPreconditionRequired, detail: \"an upsert of a stored %s needs an If-Match precondition with its generation\"}\n\t\t}\n", e.Name)
 		w.f("\t\tif !ifMatchValid || int64(stored.Generation) != ifMatch {\n\t\t\treturn idempotency.Response{}, &preconditionFailed{status: http.StatusPreconditionFailed, detail: \"the If-Match precondition does not name the stored generation of the %s\"}\n\t\t}\n", e.Name)
 	}
+	w.keptUpdate()
 	w.populateUpdate()
 	w.forceScope("scope")
 	w.parents("stored")
@@ -2273,6 +2288,11 @@ func (w *runtimeHandlerWriter) patch() {
 	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
 	w.f("\t\t%s := stored\n", c.lower)
+	if w.checksKept() {
+		// A patch keeps each field that a collection write cannot change: a body that names it with another value
+		// is refused, not ignored in silence (ST-SUP-RC20-OC46).
+		w.f("\t\tif err := %sKept(body, stored, false); err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", c.camel)
+	}
 	w.before(types.OpPatch, fields)
 	for _, f := range fields {
 		name := toPascalCase(f.Name)

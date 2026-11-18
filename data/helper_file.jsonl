@@ -59,6 +59,7 @@
 {"record_id":"ST-SUP-RC01-G22","file":"internal/generator/postgresadapter/schema_relax.go"}
 {"record_id":"ST-SUP-RC18-G01","file":"internal/generator/outbox/runtime.go"}
 {"record_id":"ST-SUP-RC20-G01","file":"internal/generator/restapi/runtime_data.go"}
+{"record_id":"ST-SUP-RC20-G01","file":"internal/generator/restapi/writable.go"}
 {"record_id":"ST-SUP-RC32-G01","file":"internal/generator/command/entities.go"}
 {"record_id":"ST-SUP-RC32-G01","file":"internal/generator/command/messages.go"}
 {"record_id":"ST-SUP-RC32-G01","file":"internal/generator/command/names.go"}

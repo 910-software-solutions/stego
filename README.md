@@ -280,6 +280,25 @@ body that gives another value gets a 400 validation problem that names the
 field (rest-api 4.8.0), and the request changes nothing. An update does not
 move a row to another parent.
 
+A field that only a command or a worker changes, such as a status, takes the
+setting `writable` (rest-api 4.9.0):
+
+```yaml
+      - { name: sku, type: string, writable: create }
+      - { name: status, type: enum, values: [open, closed], default: open, writable: never }
+```
+
+`always` (the default) lets each collection write set the field. `create` lets
+only a create set it. `never` lets no collection write set it: a create stores
+its default, so the field must be optional or have a default. An update, an
+upsert and a patch that give such a field another value than the stored one
+get a 400 validation problem that names the field, and change nothing. A body
+that leaves the field out, or gives its stored value, keeps the stored value,
+so a client can send back a row that it read. A `patchable` list cannot name
+such a field. The OpenAPI document marks the field `readOnly` in the entity
+schema, and the update takes its own request schema, in which the field is
+optional.
+
 Put the SpiceDB schema at `authz/schema.zed`:
 
 ```zed
