@@ -216,7 +216,12 @@ Set these values in the service environment:
 - `STEGO_BROWSER_CLIENT_ID`: the confidential OIDC client ID.
 - `STEGO_BROWSER_CLIENT_SECRET_FILE`: the protected client secret file.
 - `STEGO_BROWSER_SESSION_KEY_FILE`: a protected file with 32 random bytes
-  encoded as standard base64.
+  encoded as standard base64 on one line, such as the output of
+  `openssl rand -base64 32`. Do not write the raw bytes. A file that the
+  backend refuses stops the start: the failure record names the stage
+  `browser.session_keys`, the fault class (`file`, `size`, `encoding`,
+  `document`, `count` or `duplicate`) and a remedy, and never a byte of the
+  file.
 
 Use different host names for the console, its API, and its identity provider.
 The API and identity provider can share a host with each other. They must not
@@ -254,12 +259,12 @@ such as `Cookie`, `Origin`, `X-CSRF-Token` or `traceparent`.
 | `Accept`, `Content-Type` | The media type of the request and of the answer. |
 | `If-Match`, `If-None-Match` | The version checks of a write and of a read. |
 | `Idempotency-Key` | Each STEGO command requires it. Send one new key for each command, and the same key when you send the command again. |
-| `Authz-Revocation-After` | A read after your own write waits for the revocation that the write gave in `Authz-Revocation-Location`. Give that value as it is. |
+| `Authz-Revocation-After` | A read or a write after your own write waits for the revocation that the write gave in `Authz-Revocation-Location`. Give that value as it is, such as on the create of a child at once after the create of its parent. |
 | `Prefer` | `wait=<seconds>` sets the longest wait of that read. The API prefix sends only this one preference, and drops each other preference. |
 
-A read with `Authz-Revocation-After` waits at most 4 seconds, one second less
-than the request timeout of the API prefix: the API prefix sends `wait=4`
-when the browser gives no wait or a longer one. At most 4 such reads run at
+A read or a write with `Authz-Revocation-After` waits at most 4 seconds, one
+second less than the request timeout of the API prefix: the API prefix sends
+`wait=4` when the browser gives no wait or a longer one. At most 4 such requests run at
 one time for the whole service, shared among the APIs, so that they never
 take the capacity of the other requests. The next one gets 503 with
 `Retry-After: 1`.
