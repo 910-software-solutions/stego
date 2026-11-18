@@ -41,7 +41,7 @@ func TestSealedColumns(t *testing.T) {
 		}
 		sealed := findFileContent(t, files, "internal/storage/sealed_columns.go")
 		for _, want := range []string{`Entity: "Vault", Table: "vaults", Column: "api_token"`, `\"tenant_id\" = $1`, `FOR UPDATE SKIP LOCKED`,
-			`substring(\"api_token\" from 1 for 5) <> $2`, `\"id\" > $4::uuid ORDER BY \"id\"`, `AND \"api_token\" = $4`} {
+			`substring(\"api_token\" from 1 for 5) <> $2`, `\"id\" > $4::uuid ORDER BY \"id\"`, `AND \"api_token\" = $4`, `SELECT count(*) FROM public.`} {
 			if !strings.Contains(sealed, want) {
 				t.Errorf("sealed_columns.go has no %s:\n%s", want, sealed)
 			}

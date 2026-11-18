@@ -1,6 +1,7 @@
 package sealed
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -116,10 +117,13 @@ func (c Compared) Check(ok func(text string) bool) bool {
 }
 
 // Stored gives the text that the column stores: the hash of a new text, the stored hash, or empty when not set.
-func (c Compared) Stored() (string, error) {
+func (c Compared) Stored() (string, error) { return c.StoredContext(context.Background()) }
+
+// StoredContext is Stored, whose wait for a hash slot ends with ctx.
+func (c Compared) StoredContext(ctx context.Context) (string, error) {
 	switch {
 	case c.text != nil:
-		return Hash(*c.text)
+		return HashContext(ctx, *c.text)
 	case c.hash != nil:
 		return *c.hash, nil
 	}

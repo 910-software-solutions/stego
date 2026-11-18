@@ -67,7 +67,8 @@ func vaultSpec() EntitySpec[vault] {
 // vaultReseal is the re-seal column of vault, as the PostgreSQL adapter gives it.
 var vaultReseal = []ResealColumn{{Entity: "Vault", Table: "vaults", Column: "token",
 	Select: "SELECT id, token FROM vaults WHERE tenant_id = $1 AND token IS NOT NULL AND substring(token from 1 for 5) <> $2 AND id > $4 ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED",
-	Update: "UPDATE vaults SET token = $3 WHERE tenant_id = $1 AND id = $2 AND token = $4"}}
+	Update: "UPDATE vaults SET token = $3 WHERE tenant_id = $1 AND id = $2 AND token = $4",
+	Left:   "SELECT count(*) FROM vaults WHERE tenant_id = $1 AND token IS NOT NULL AND substring(token from 1 for 5) <> $2"}}
 
 func vaultEntity(t *testing.T) *Entity[vault] {
 	t.Helper()
@@ -352,12 +353,25 @@ func TestSealedFields(t *testing.T) {
 		job.tenants = func(context.Context) ([]tenant.Tenant, error) {
 			return []tenant.Tenant{mustTenant(t, "org-a"), mustTenant(t, "org-b")}, nil
 		}
-		results, err := job.Run(v.ctx)
+		// A command holds the row v001 of org-b locked while the job runs: SKIP LOCKED passes it, and the count with
+		// no lock after the pages still names it as left (security re-review of PR #441, N1).
+		lock, err := v.admin.BeginTx(v.ctx, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(results) != 1 || results[0].Moved != rows-1 || results[0].Left != 1 {
-			t.Fatalf("the re-seal job gave %+v, want %d moved and the bad row left", results, rows-1)
+		if _, err := lock.ExecContext(v.ctx, `SELECT 1 FROM vaults WHERE tenant_id = 'org-b' AND id = 'v001' FOR UPDATE`); err != nil {
+			t.Fatal(err)
+		}
+		results, err := job.Run(v.ctx)
+		_ = lock.Rollback()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 || results[0].Moved != rows-2 || results[0].Left != 2 || results[0].Failed != 1 {
+			t.Fatalf("the re-seal job gave %+v, want %d moved, the bad and the locked row left and the bad row failed", results, rows-2)
+		}
+		if again, err := job.Run(v.ctx); err != nil || again[0].Moved != 1 || again[0].Left != 1 || again[0].Failed != 1 {
+			t.Fatalf("the run after the lock gave %+v, %v, want the locked row moved and only the bad row left", again, err)
 		}
 		if n := v.count(`SELECT count(*) FROM vaults WHERE substring(token from 1 for 5) <> $1`, sealed.Prefix(2)); n != 1 {
 			t.Fatalf("%d values are not sealed with the key 2, want only the bad row", n)
@@ -375,7 +389,7 @@ func TestSealedFields(t *testing.T) {
 				t.Fatalf("the value %d does not read with the new key alone: %v", i, err)
 			}
 		}
-		if again, err := job.Run(v.ctx); err != nil || again[0].Moved != 0 || again[0].Left != 1 {
+		if again, err := job.Run(v.ctx); err != nil || again[0].Moved != 0 || again[0].Left != 1 || again[0].Failed != 1 {
 			t.Fatalf("a second run gave %+v, %v", again, err)
 		}
 		v.noValueAnywhere(token)

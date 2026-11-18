@@ -2,6 +2,7 @@ package sealed
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -206,6 +207,20 @@ func TestCompare(t *testing.T) {
 		}
 		if ComparedOf("").IsSet() || ComparedOf("").Matches("") {
 			t.Fatal("an empty Compared is set or matches")
+		}
+		// With each hash slot taken, a wait ends with its context and hashes nothing.
+		for range cap(hashSlots) {
+			hashSlots <- struct{}{}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err = HashContext(ctx, "4711")
+		matched := MatchesContext(ctx, hash, "4711")
+		for range cap(hashSlots) {
+			<-hashSlots
+		}
+		if !errors.Is(err, context.Canceled) || matched {
+			t.Fatalf("a hash with every slot taken and an ended context gave %v and a match %t", err, matched)
 		}
 	})
 }

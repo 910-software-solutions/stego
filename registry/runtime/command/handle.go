@@ -2281,7 +2281,7 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err != nil {
 		return nil, err
 	}
-	values, err := s.sealArgs(e.spec.Values(value))
+	values, err := s.sealArgs(ctx, e.spec.Values(value))
 	if err != nil {
 		return nil, s.breakWith(err)
 	}
@@ -2347,7 +2347,7 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 		}
 	}
 	step := "update " + e.spec.Name
-	values, err := s.sealArgs(e.spec.Values(value))
+	values, err := s.sealArgs(ctx, e.spec.Values(value))
 	if err != nil {
 		return nil, s.breakWith(err)
 	}

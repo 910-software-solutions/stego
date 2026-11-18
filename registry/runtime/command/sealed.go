@@ -113,7 +113,7 @@ var errNoRing = errors.New("command: the runtime has no key ring for the secret 
 
 // sealArgs gives the statement values with each readable secret sealed and each compare-only secret hashed, at the
 // tenant of the transaction. A failure names the column and the row, never a value.
-func (s *state) sealArgs(args []any) ([]any, error) {
+func (s *state) sealArgs(ctx context.Context, args []any) ([]any, error) {
 	out := args
 	copied := false
 	for i, arg := range args {
@@ -136,7 +136,7 @@ func (s *state) sealArgs(args []any) ([]any, error) {
 			}
 			value = b
 		case hashArg:
-			stored, err := a.value.Stored()
+			stored, err := a.value.StoredContext(ctx)
 			if err != nil {
 				return nil, sealedf("command: a compare-only value does not hash")
 			}
@@ -218,10 +218,13 @@ func (rt *Runtime) keyed(req idempotency.Request) idempotency.Request {
 //   - Select reads the ID text and the sealed value of at most $3 rows after the ID $4, in ID order, whose value does
 //     not start with the prefix $2 of the first key, FOR UPDATE SKIP LOCKED: the job pages by the key and reads each
 //     row once in a run;
-//   - Update sets the column of the row of ID $2 to $3 only while it holds $4.
+//   - Update sets the column of the row of ID $2 to $3 only while it holds $4;
+//   - Left counts, with no lock, the rows whose value does not start with $2, after the pages: a row that SKIP
+//     LOCKED passed or that a command wrote in between counts until a later run moves it (security re-review of PR
+//     #441, N1).
 type ResealColumn struct {
 	Entity, Table, Column string
-	Select, Update        string
+	Select, Update, Left  string
 }
 
 // ResealBatch is the most rows that one statement of the re-seal job reads.
@@ -231,11 +234,12 @@ const ResealBatch = 100
 const firstID = "00000000-0000-0000-0000-000000000000"
 
 // ResealResult is what one run of the re-seal job did for one column over all tenants: the values that it moved to
-// the first key, and the values that it left on an earlier key because they do not open, such as of a key that the
-// ring no longer holds.
+// the first key; Left, the values that are still on an earlier key after its pages, by a count with no lock; and
+// Failed, those of them that do not open, such as of a key that the ring no longer holds. An earlier key may go only
+// after a whole run that gives Left 0.
 type ResealResult struct {
-	Entity, Column string
-	Moved, Left    int64
+	Entity, Column      string
+	Moved, Left, Failed int64
 }
 
 // Reseal is the re-seal job of the secret fields of a service (ST-SUP-RP10-LC46).
@@ -257,7 +261,7 @@ func NewReseal(db *sql.DB, schema string, ring *sealed.Ring, columns []ResealCol
 		return nil, errors.New("command: the re-seal job needs the schema of the tenant list")
 	}
 	for _, c := range columns {
-		if c.Entity == "" || c.Table == "" || c.Column == "" || c.Select == "" || c.Update == "" {
+		if c.Entity == "" || c.Table == "" || c.Column == "" || c.Select == "" || c.Update == "" || c.Left == "" {
 			return nil, fmt.Errorf("command: the re-seal column %s.%s lacks a name or a statement", c.Entity, c.Column)
 		}
 	}
@@ -282,9 +286,10 @@ func (r *Reseal) Run(ctx context.Context) ([]ResealResult, error) {
 	for i, c := range r.columns {
 		results[i] = ResealResult{Entity: c.Entity, Column: c.Column}
 		for _, t := range tenants {
-			moved, left, err := r.tenantColumn(ctx, t, c, prefix)
+			moved, left, bad, err := r.tenantColumn(ctx, t, c, prefix)
 			results[i].Moved += moved
 			results[i].Left += left
+			results[i].Failed += bad
 			if err != nil {
 				failed = append(failed, err)
 				if ctx.Err() != nil {
@@ -293,33 +298,50 @@ func (r *Reseal) Run(ctx context.Context) ([]ResealResult, error) {
 			}
 		}
 		slog.InfoContext(ctx, "command: re-seal of a secret column", "entity", c.Entity, "column", c.Column,
-			"moved", results[i].Moved, "left", results[i].Left, "first_key", r.ring.First())
+			"moved", results[i].Moved, "left", results[i].Left, "failed", results[i].Failed, "first_key", r.ring.First())
 	}
 	return results, errors.Join(failed...)
 }
 
-// tenantColumn moves the values of one column of one tenant, one page per transaction, until the last page, and
-// counts the values that it left because they do not open.
-func (r *Reseal) tenantColumn(ctx context.Context, t tenant.Tenant, c ResealColumn, prefix []byte) (moved, left int64, err error) {
+// tenantColumn moves the values of one column of one tenant, one page per transaction, until the last page; then it
+// counts, with no lock, the values that are still on an earlier key. It gives the values that it moved, those that
+// are left, and those of them that it read and that do not open. It logs the first maxFailedLogs rows that do not
+// open, and then one count for the column and the tenant (security re-review of PR #441, N4).
+func (r *Reseal) tenantColumn(ctx context.Context, t tenant.Tenant, c ResealColumn, prefix []byte) (moved, left, failed int64, err error) {
 	last := firstID
 	for {
 		var p page
 		err := tenant.Each(ctx, r.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, t tenant.Tenant) error {
 			var err error
-			p, err = r.batch(ctx, tx, t, c, prefix, last)
+			p, err = r.batch(ctx, tx, t, c, prefix, last, failed)
 			return err
 		})
 		if err != nil {
-			return moved, left, fmt.Errorf("command: the re-seal of the column %s of %s for the tenant %s: %w", c.Column, c.Entity, t.ID(), unwrapEach(err))
+			return moved, left, failed, fmt.Errorf("command: the re-seal of the column %s of %s for the tenant %s: %w", c.Column, c.Entity, t.ID(), unwrapEach(err))
 		}
 		moved += p.written
-		left += p.skipped
+		failed += p.skipped
 		if p.read < ResealBatch {
-			return moved, left, nil
+			break
 		}
 		last = p.last
 	}
+	if failed > maxFailedLogs {
+		slog.WarnContext(ctx, "command: re-seal leaves values that do not open", "entity", c.Entity, "column", c.Column,
+			"tenant", t.ID(), "failed", failed)
+	}
+	err = tenant.Each(ctx, r.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, t tenant.Tenant) error {
+		return tx.QueryRowContext(ctx, c.Left, t.ID(), prefix).Scan(&left)
+	})
+	if err != nil {
+		return moved, left, failed, fmt.Errorf("command: the count of the column %s of %s for the tenant %s: %w", c.Column, c.Entity, t.ID(), unwrapEach(err))
+	}
+	return moved, left, failed, nil
 }
+
+// maxFailedLogs is the most rows that do not open that the re-seal job logs one by one for a column and a tenant in
+// a run; it logs the rest as one count.
+const maxFailedLogs = 3
 
 // page is what one batch of the re-seal job did: the rows that it read, wrote and skipped, and the last ID it read.
 type page struct {
@@ -328,7 +350,7 @@ type page struct {
 }
 
 // batch moves at most ResealBatch values of one column of one tenant after the ID after, in its transaction.
-func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, c ResealColumn, prefix []byte, after string) (page, error) {
+func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, c ResealColumn, prefix []byte, after string, failedBefore int64) (page, error) {
 	var p page
 	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), prefix, ResealBatch, after)
 	if err != nil {
@@ -360,7 +382,9 @@ func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, 
 		plain, err := r.ring.Open(f.value, at)
 		if err != nil {
 			// The error names the column and the row, never a value.
-			slog.WarnContext(ctx, "command: re-seal skips a value that does not open", "entity", c.Entity, "error", err.Error())
+			if failedBefore+p.skipped < maxFailedLogs {
+				slog.WarnContext(ctx, "command: re-seal skips a value that does not open", "entity", c.Entity, "error", err.Error())
+			}
 			p.skipped++
 			continue
 		}

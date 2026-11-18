@@ -45,6 +45,7 @@ func TestSecretFields(t *testing.T) {
 			{"compare_only on a public field", "", []string{title, "- {name: token, type: string, compare_only: true}"}},
 			{"a rename of a secret field", "schema_changes:\n  - {id: token-rename, kind: rename, entity: Todo, field: token, from: old_token}\nschema_history:\n  - {change: token-rename, phase: expand}\n", []string{title, "- {name: token, type: string, sensitivity: secret}"}},
 			{"a retype of a secret field", "schema_changes:\n  - {id: token-retype, kind: retype, entity: Todo, field: token, from: jsonb, conversion: jsonb_to_text, inverse_conversion: text_to_jsonb}\nschema_history:\n  - {change: token-retype, phase: expand}\n", []string{title, "- {name: token, type: string, sensitivity: secret}"}},
+			{"a require of a secret field with a fill value", "schema_changes:\n  - {id: token-require, kind: require, entity: Todo, field: token, fill_value: " + secret + "}\nschema_history:\n  - {change: token-require, phase: expand}\n", []string{title, "- {name: token, type: string, sensitivity: secret}"}},
 			{"a declared unique invariant by a secret", "invariants:\n  - {name: one-token, kind: unique, on: Todo, by: [token]}\n", []string{title, "- {name: token, type: string, sensitivity: secret}"}},
 		}
 		for _, c := range refused {
