@@ -491,6 +491,10 @@ func generateRouter(ns string, entities []types.Entity, collections []types.Coll
 				// spec to distinguish JSON null from absent.
 				goType = "*" + goType
 				jsonTag += ",omitempty"
+			} else if f.Secret() {
+				// Presented clears a secret to its zero value, which omitempty leaves out, so no response holds a
+				// member of a required secret, also not an empty one (ST-SUP-RC20-OC48, walkthrough 13, W13-B7).
+				jsonTag += ",omitempty"
 			}
 			fmt.Fprintf(&buf, "\t%s %s `json:%q`\n", goName, goType, jsonTag)
 		}

@@ -298,8 +298,12 @@ func TestRuntimeProxyServesThePinnedZip(t *testing.T) {
 		// A go.mod that is a link: the zip leaves it out, so the proxy has no go.mod of the pinned bytes to serve,
 		// and it refuses to serve the go.mod of the folder in its place.
 		linked := runtimeFolder(true)
-		if _, proxy, err = stageProxy(linked, zipSum(linked)); err == nil || proxy != "" || !strings.Contains(err.Error(), "no go.mod") {
+		if stage, proxy, err = stageProxy(linked, zipSum(linked)); err == nil || proxy != "" || !strings.Contains(err.Error(), "no go.mod") {
 			t.Fatalf("a runtime folder with a linked go.mod gave the proxy %q, %v; want a refusal that the zip holds no go.mod", proxy, err)
+		}
+		// The refusal leaves no partial proxy folder in the stage (security review of PR #436, L2).
+		if _, err := os.Lstat(filepath.Join(stage, "runtime-proxy")); !os.IsNotExist(err) {
+			t.Fatalf("the refusal of a linked go.mod left the proxy folder: %v", err)
 		}
 	})
 }

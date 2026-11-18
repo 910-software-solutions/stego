@@ -125,26 +125,52 @@ type RuntimeArchive struct {
 // WriteRuntimeArchive writes the module zip of the folder as module@version to zipPath, as the Go module proxy
 // serves it for the tag registry/runtime/<version>, and gives its go.sum hashes and its go.mod. The folder holds its
 // own LICENSE, so the zip is the same as the one the proxy makes from the tag. It refuses a zip that holds no go.mod,
-// such as one of a folder whose go.mod is a symbolic link, which the zip leaves out.
+// such as one of a folder whose go.mod is a symbolic link, which the zip leaves out. It makes the zip in memory, and
+// hashes it and reads its go.mod from those bytes before it writes them, so no other process can change the zip
+// between the hash and the read (security review of PR #436, L1).
 func WriteRuntimeArchive(folder, modulePath, version, zipPath string) (RuntimeArchive, error) {
+	var zipped bytes.Buffer
+	if err := modzip.CreateFromDir(&zipped, module.Version{Path: modulePath, Version: version}, folder); err != nil {
+		return RuntimeArchive{}, fmt.Errorf("module zip of %s: %w", folder, err)
+	}
+	archive, err := runtimeArchiveOf(zipped.Bytes(), modulePath+"@"+version+"/go.mod")
+	if err != nil {
+		return RuntimeArchive{}, fmt.Errorf("module zip of %s: %w", folder, err)
+	}
 	file, err := os.OpenFile(zipPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return RuntimeArchive{}, err
 	}
-	err = modzip.CreateFromDir(file, module.Version{Path: modulePath, Version: version}, folder)
+	_, err = file.Write(zipped.Bytes())
 	if closeErr := file.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
-		return RuntimeArchive{}, fmt.Errorf("module zip of %s: %w", folder, err)
+		return RuntimeArchive{}, err
 	}
-	sum, err := dirhash.HashZip(zipPath, dirhash.Hash1)
+	return archive, nil
+}
+
+// runtimeArchiveOf gives the go.sum hashes and the go.mod named goModName of the module zip data, all from the same
+// bytes. The hash of the zip is the one dirhash.HashZip gives of a file with these bytes.
+func runtimeArchiveOf(data []byte, goModName string) (RuntimeArchive, error) {
+	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return RuntimeArchive{}, err
 	}
-	mod, err := zipGoMod(zipPath, modulePath+"@"+version+"/go.mod")
+	var names []string
+	entries := map[string]*zip.File{}
+	for _, entry := range reader.File {
+		names = append(names, entry.Name)
+		entries[entry.Name] = entry
+	}
+	sum, err := dirhash.Hash1(names, func(name string) (io.ReadCloser, error) { return entries[name].Open() })
 	if err != nil {
-		return RuntimeArchive{}, fmt.Errorf("module zip of %s: %w", folder, err)
+		return RuntimeArchive{}, err
+	}
+	mod, err := zipGoMod(reader, goModName)
+	if err != nil {
+		return RuntimeArchive{}, err
 	}
 	modSum, err := dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(mod)), nil
@@ -158,34 +184,37 @@ func WriteRuntimeArchive(folder, modulePath, version, zipPath string) (RuntimeAr
 // maxGoModBytes bounds the go.mod that zipGoMod reads, as the go command bounds a go.mod file.
 const maxGoModBytes = 16 << 20
 
-// zipGoMod gives the file name of the module zip at zipPath, at most maxGoModBytes long.
-func zipGoMod(zipPath, name string) ([]byte, error) {
-	archive, err := zip.OpenReader(zipPath)
-	if err != nil {
-		return nil, err
-	}
-	defer archive.Close()
+// zipGoMod gives the file name of the module zip, at most maxGoModBytes long. It refuses a zip with two entries of
+// that name, which a module zip never holds, so it never picks one of two (security review of PR #436, I1).
+func zipGoMod(archive *zip.Reader, name string) ([]byte, error) {
+	var found *zip.File
 	for _, entry := range archive.File {
 		if entry.Name != name {
 			continue
 		}
-		reader, err := entry.Open()
-		if err != nil {
-			return nil, err
+		if found != nil {
+			return nil, fmt.Errorf("it holds more than one go.mod file")
 		}
-		data, err := io.ReadAll(io.LimitReader(reader, maxGoModBytes+1))
-		if closeErr := reader.Close(); err == nil {
-			err = closeErr
-		}
-		if err != nil {
-			return nil, err
-		}
-		if len(data) > maxGoModBytes {
-			return nil, fmt.Errorf("its go.mod is larger than %d bytes", maxGoModBytes)
-		}
-		return data, nil
+		found = entry
 	}
-	return nil, fmt.Errorf("it holds no go.mod file; a go.mod that is a symbolic link is left out of a module zip")
+	if found == nil {
+		return nil, fmt.Errorf("it holds no go.mod file; a go.mod that is a symbolic link is left out of a module zip")
+	}
+	reader, err := found.Open()
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxGoModBytes+1))
+	if closeErr := reader.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxGoModBytes {
+		return nil, fmt.Errorf("its go.mod is larger than %d bytes", maxGoModBytes)
+	}
+	return data, nil
 }
 
 // RuntimeSum gives the go.sum hash of the folder as module@version: the sum an archetype's runtime pin must hold

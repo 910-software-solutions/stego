@@ -513,7 +513,7 @@ func generateRuntimeHandlers(ctx gen.Context, collections []*runtimeCollection, 
 func renderRuntimeHelpers(ctx gen.Context, names []string, dataImport, slotsImportPath string, hasSlots bool, keys *idempotencyHeader) ([]byte, error) {
 	var b bytes.Buffer
 	pkg := path.Base(ctx.OutputNamespace)
-	fmt.Fprintf(&b, "package %s\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"errors\"\n\t\"log/slog\"\n\t\"net\"\n\t\"net/http\"\n\t\"strings\"\n\t\"sync\"\n\t\"sync/atomic\"\n\t\"time\"\n\n", pkg)
+	fmt.Fprintf(&b, "package %s\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n\t\"errors\"\n\t\"log/slog\"\n\t\"net\"\n\t\"net/http\"\n\t\"slices\"\n\t\"strconv\"\n\t\"strings\"\n\t\"sync\"\n\t\"sync/atomic\"\n\t\"time\"\n\n", pkg)
 	fmt.Fprintf(&b, "\t\"go.opentelemetry.io/otel/attribute\"\n\t\"go.opentelemetry.io/otel/metric\"\n\n")
 	fmt.Fprintf(&b, "\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n\t\"github.com/jsell-rh/stego/registry/runtime/authn\"\n\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
 	fmt.Fprintf(&b, "\t\"github.com/jsell-rh/stego/registry/runtime/idempotency\"\n\t\"github.com/jsell-rh/stego/registry/runtime/outbox\"\n\t\"github.com/jsell-rh/stego/registry/runtime/probe\"\n\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n\n")
@@ -548,8 +548,47 @@ func renderRuntimeHelpers(ctx gen.Context, names []string, dataImport, slotsImpo
 	return formatted, nil
 }
 
-// listOrderHelper reads the orderBy and the fields parameters of a list (ST-SUP-RC20-OC38, ST-SUP-RC20-OC12).
-const listOrderHelper = `// errOrder is the error of an orderBy that names a field that is not declared, or a direction that is not asc or
+// listOrderHelper reads the query parameters of a list: it refuses one that the list does not read
+// (ST-SUP-RC20-OC51), and reads orderBy and fields (ST-SUP-RC20-OC38, ST-SUP-RC20-OC12).
+const listOrderHelper = `// listParameters are the query parameters that a list reads, by their exact names (ST-SUP-RC20-OC51).
+var listParameters = map[string]bool{"pageSize": true, "cursor": true, "orderBy": true, "fields": true, "search": true}
+
+// unreadParameters gives the detail of the 400 of a list request whose query string holds a parameter that the list
+// does not read, or "" when the list reads each one (ST-SUP-RC20-OC51). It names each such parameter once, in byte
+// order, at most 10 of them, each cut to its first 64 bytes, and quotes no value. For limit it says that pageSize sets
+// the page size.
+func unreadParameters(parameters map[string][]string) string {
+	var names []string
+	for name := range parameters {
+		if !listParameters[name] {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	slices.Sort(names)
+	limit := slices.Contains(names, "limit")
+	more := max(len(names)-10, 0)
+	names = names[:len(names)-more]
+	for i, name := range names {
+		if len(name) > 64 {
+			name = name[:64]
+		}
+		names[i] = strconv.Quote(name)
+	}
+	detail := "the list does not read the query parameter " + strings.Join(names, ", ")
+	if more > 0 {
+		detail += " and " + strconv.Itoa(more) + " more"
+	}
+	detail += "; it reads only pageSize, cursor, orderBy, fields and search"
+	if limit {
+		detail += "; pageSize sets the page size"
+	}
+	return detail
+}
+
+// errOrder is the error of an orderBy that names a field that is not declared, or a direction that is not asc or
 // desc.
 var errOrder = errors.New("orderBy names a field that is not declared or a direction that is not asc or desc")
 
@@ -2479,6 +2518,8 @@ func (w *runtimeHandlerWriter) list() {
 	w.f("// List runs the query list of %s through query.Run: it pages by the sealed cursor of the query runtime, at\n// most pageSize values a page, and keeps only the rows that the caller may see (ST-SUP-RP11-LC07, ST-SUP-RP11-LC15).\n", c.decl.Name)
 	w.f("func (h *%sHandler) List(w http.ResponseWriter, r *http.Request) {\n", c.pascal)
 	w.start(false)
+	// A parameter that the list does not read is refused, not ignored, before the list reads a row (ST-SUP-RC20-OC51).
+	w.f("\tif detail := unreadParameters(r.URL.Query()); detail != \"\" {\n\t\thandleError(w, r, BadRequest(detail))\n\t\treturn\n\t}\n")
 	w.f("\tlimit := 100\n\tif text := r.URL.Query().Get(\"pageSize\"); text != \"\" {\n\t\tn, err := strconv.Atoi(text)\n\t\tif err != nil || n < 1 {\n\t\t\thandleError(w, r, BadRequest(\"pageSize must be a whole number of at least 1\"))\n\t\t\treturn\n\t\t}\n\t\tlimit = min(n, query.MaxLimit)\n\t}\n")
 	var fields []string
 	// A pii or secret field orders no list: the order would tell its value (ST-SUP-RP11-LC20).

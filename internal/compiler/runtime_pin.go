@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	goparser "go/parser"
 	"go/token"
@@ -251,8 +252,9 @@ func runtimeProxyStager(reg *registry.Registry, archetype string) func(stage str
 
 // writeRuntimeProxy writes the module proxy folder of pin from the registry's runtime folder under stage, and the
 // hashes of the pin into the go.sum of stageRoot. It gives "" when the registry has no runtime folder ("") or the
-// folder does not hold the pinned version. The .mod file it serves is the go.mod of the zip whose sum it checked.
-func writeRuntimeProxy(folder string, pin registry.RuntimePin, stageRoot *os.Root, stage string) (string, error) {
+// folder does not hold the pinned version. The .mod file it serves is the go.mod of the zip whose sum it checked. It
+// removes the proxy folder on each error.
+func writeRuntimeProxy(folder string, pin registry.RuntimePin, stageRoot *os.Root, stage string) (_ string, err error) {
 	if folder == "" {
 		return "", nil
 	}
@@ -269,6 +271,13 @@ func writeRuntimeProxy(folder string, pin registry.RuntimePin, stageRoot *os.Roo
 	if err := os.MkdirAll(versions, 0o700); err != nil {
 		return "", err
 	}
+	// An error leaves no partial proxy folder, so a caller that keeps the stage can stage it again (security review
+	// of PR #436, L2).
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, os.RemoveAll(proxy))
+		}
+	}()
 	archive, err := registry.WriteRuntimeArchive(folder, pin.Module, pin.Version, filepath.Join(versions, version+".zip"))
 	if err != nil {
 		return "", err
