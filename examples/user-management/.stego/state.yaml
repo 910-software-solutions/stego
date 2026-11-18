@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118134222-e3889139d0dc
+        module_version: v0.0.0-20261118141257-67f417d76c64
         vcs: git
-        revision: e3889139d0dc43e717436938505bbe8294d80935
+        revision: 67f417d76c64fb9299a39b0171b44df6cd916033
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
