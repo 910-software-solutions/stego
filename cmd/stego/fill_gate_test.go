@@ -784,6 +784,12 @@ func TestCapabilityFillFolderFailsClosed(t *testing.T) {
 			if err == nil || !strings.Contains(printed+err.Error(), "place-order") {
 				t.Fatalf("a linked fill folder passed: %v\n%s", err, printed)
 			}
+			// The rules refuse the link itself and the code behind it, not only some other fault of the fill.
+			for _, rule := range []string{`[fill-files] commands[0].fill: fill "place-order" holds the file ., which is not a Go source file`, `[fill-imports] commands[0].fill: fill "place-order" may not import os/exec`} {
+				if !strings.Contains(printed+err.Error(), rule) {
+					t.Errorf("a linked fill folder is not refused by %q: %v\n%s", rule, err, printed)
+				}
+			}
 		}
 		// A fill folder with a sub folder that cannot be read is held to the fill rules too.
 		if err := os.Remove("fills/place-order"); err != nil {
@@ -801,6 +807,9 @@ func TestCapabilityFillFolderFailsClosed(t *testing.T) {
 		printed, err := capture(t, runValidate)
 		if err == nil {
 			t.Fatalf("a fill folder that cannot be read passed:\n%s", printed)
+		}
+		if !strings.Contains(err.Error(), "reading the files of the fill place-order") {
+			t.Errorf("a fill folder that cannot be read is refused for another reason: %v\n%s", err, printed)
 		}
 	})
 }
