@@ -3255,6 +3255,67 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC48-T03 A compare-only secret with writable never is refused whenever a body gives it, and no write stores it", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		entries := func(r reply) string {
+			t.Helper()
+			var problem struct {
+				Errors []struct {
+					Field   string `json:"field"`
+					Message string `json:"message"`
+				} `json:"validation_errors"`
+			}
+			if json.Unmarshal(r.body, &problem) != nil {
+				return ""
+			}
+			return fmt.Sprint(problem.Errors)
+		}
+		ticket := func(code, title, recovery string) string {
+			return `{"folder_id":"` + folder + `","code":"` + code + `","title":"` + title + `","sku":"s1"` + recovery + `}`
+		}
+		id := e.create(a, "tickets", "ticket", ticket("c1", "first", ""))
+		path := "/api/v1/tickets/" + id
+		// A create, an upsert that inserts, an update, a patch and an upsert of the stored row, each with a value,
+		// another value and null: no write compares the secret, so each answer is the same.
+		first := ""
+		for _, c := range []struct{ method, path, key, body string }{
+			{http.MethodPost, "/api/v1/tickets", "k-" + uuid.NewString(), ticket("c2", "t", `,"recovery":"1234"`)},
+			{http.MethodPost, "/api/v1/tickets", "k-" + uuid.NewString(), ticket("c2", "t", `,"Recovery":null`)},
+			{http.MethodPut, "/api/v1/tickets", "", ticket("c3", "t", `,"recovery":"1234"`)},
+			{http.MethodPut, path, "", ticket("c1", "t", `,"recovery":"1234"`)},
+			{http.MethodPut, path, "", ticket("c1", "t", `,"recovery":null`)},
+			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","recovery":"9999"}`},
+			{http.MethodPut, "/api/v1/tickets", "", ticket("c1", "t", `,"recovery":"1234"`)},
+		} {
+			r := e.send(a, c.method, c.path, c.key, c.body)
+			got := entries(r)
+			if r.status != http.StatusBadRequest || !strings.Contains(got, "recovery") || !strings.Contains(got, "leave it out") || strings.Contains(string(r.body), "1234") || strings.Contains(string(r.body), "9999") {
+				t.Errorf("%s %s %s answered %d %s, want 400 that names recovery and says to leave it out", c.method, c.path, c.body, r.status, r.body)
+			}
+			if first == "" {
+				first = got
+			} else if got != first {
+				t.Errorf("%s %s %s answered the entries %s, want the same entries %s as for the first write", c.method, c.path, c.body, got, first)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE folder_id = $1::uuid AND code IN ('c2', 'c3')`, folder); n != 0 {
+			t.Errorf("%d ticket rows of the refused create and upsert, want 0", n)
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first' AND recovery IS NULL`, id); n != 1 {
+			t.Errorf("%d ticket rows with the first title and no recovery after the refused writes, want 1", n)
+		}
+		// The read gives no recovery, and a body that leaves it out is written.
+		read := e.send(a, http.MethodGet, path, "", "")
+		if _, ok := read.object(t)["recovery"]; ok {
+			t.Errorf("the read answers the secret: %s", read.body)
+		}
+		if r := e.send(a, http.MethodPut, path, "", ticket("c1", "second", "")); r.status != http.StatusOK {
+			t.Errorf("an update that leaves recovery out answered %d %s, want 200", r.status, r.body)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not", func(t *testing.T) {
 		e := service(t)
 		tn := newTenant()
