@@ -323,9 +323,9 @@ func TestSealedFields(t *testing.T) {
 		versions := v.count(`SELECT sum(version) FROM vaults`)
 		rotated := vaultRing(t, "2 "+newKey, "1 "+oldKey)
 		rt := v.runtime(func(c *Config) { c.Ring = rotated })
-		// The key table holds keyed fingerprints of the key 1, and a request again with the key of an earlier write
+		// The key table holds keyed fingerprints of the key 1 with the mark of a sealed answer, and a request again with the key of an earlier write
 		// replays on the rotated runtime, whose first key is 2 (ST-SUP-RP16-LC05).
-		if n := v.count(`SELECT count(*) FROM idempotency_keys WHERE fingerprint NOT LIKE 'k1:%'`); n != 0 {
+		if n := v.count(`SELECT count(*) FROM idempotency_keys WHERE fingerprint NOT LIKE 's1:k1:%'`); n != 0 {
 			t.Fatalf("%d key rows hold a fingerprint that is not keyed with the key 1", n)
 		}
 		replay, err := v.runOn(rt, v.cmd, v.request("org-a", u7(t), "r0", `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {

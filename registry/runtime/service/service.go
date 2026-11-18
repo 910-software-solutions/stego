@@ -109,6 +109,10 @@ type Parts struct {
 	// Reseal are the readable secret fields of the entities of the service, which the controller mode moves to the
 	// first key of the key ring of Settings (ST-SUP-RP10-LC46, ST-SUP-RP14-LC12). A service with one needs the key ring.
 	Reseal []command.ResealColumn
+	// Seal are the readable secret fields whose seal step is open, which the seal job of the controller mode seals
+	// under the backfill lease of each change (ST-SUP-RP10-LC50, ST-SUP-RP14-LC12). A service with one needs the key
+	// ring.
+	Seal []command.SealColumn
 	// Provisioning is the declared tenant provisioning of a pooled service, or nil for a service that declares none
 	// (ST-DECL-EN27). With it, New serves Provision and Retire (TenantRoutes), and Middleware and Authenticate refuse
 	// a request of a tenant that the tenant list in Workers.TenantSchema does not hold as active (ST-SUP-RC27-OC09,
@@ -281,7 +285,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
 		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring}
-	if len(p.Reseal) > 0 && s.Ring == nil {
+	if (len(p.Reseal) > 0 || len(p.Seal) > 0) && s.Ring == nil {
 		return nil, settingError(KeyRingFileSetting, "is not read: the service has a readable secret field and no key ring")
 	}
 	svc.ring = s.Ring

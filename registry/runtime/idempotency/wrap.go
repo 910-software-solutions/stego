@@ -86,6 +86,9 @@ type Request struct {
 	// Matches, when it is not nil, tells whether a stored fingerprint is the fingerprint of this request, such as a
 	// keyed fingerprint of an earlier key of a key ring (ST-SUP-RP16-LC05); nil compares the two texts.
 	Matches func(stored string) bool
+	// Sealer, when it is not nil, seals the headers and the body of a completed answer, and the stored fingerprint
+	// gets SealedPrefix (ST-SUP-RP07-LC13); nil keeps them in clear.
+	Sealer Sealer
 	// Retention is how long a completed key is kept; zero is DefaultRetention.
 	Retention time.Duration
 	// Clock gives the current time; nil is time.Now.
@@ -188,7 +191,7 @@ func Wrap(ctx context.Context, tx Tx, req Request, handler Handler) (Result, err
 
 	start := clock()
 	var inserted string
-	err := tx.QueryRowContext(ctx, req.statement(insertSQL), req.Tenant, req.Principal, req.Key, req.Fingerprint, start,
+	err := tx.QueryRowContext(ctx, req.statement(insertSQL), req.Tenant, req.Principal, req.Key, req.storedFingerprint(), start,
 		start.Add(retention)).Scan(&inserted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return existing(ctx, tx, req)
@@ -208,9 +211,13 @@ func Wrap(ctx context.Context, tx Tx, req Request, handler Handler) (Result, err
 	if body == nil {
 		body = []byte{}
 	}
+	header, stored, err := req.sealAnswer(encodeHeader(resp.Header), body)
+	if err != nil {
+		return Result{}, &StatementError{Step: "complete", Err: err}
+	}
 	done := clock()
 	res, err := tx.ExecContext(ctx, req.statement(completeSQL), req.Tenant, req.Principal, req.Key, resp.Status,
-		encodeHeader(resp.Header), body, done.Add(retention))
+		header, stored, done.Add(retention))
 	if err != nil {
 		return failure(ctx, "complete", err)
 	}
@@ -274,6 +281,9 @@ func existing(ctx context.Context, tx Tx, req Request) (Result, error) {
 	if !req.sameFingerprint(fingerprint) {
 		return Result{Response: Response{Status: http.StatusUnprocessableEntity}, Problem: ProblemReused}, nil
 	}
+	if header, body, err = req.openAnswer(header, body); err != nil {
+		return Result{}, &StatementError{Step: "select", Err: err}
+	}
 	h, err := decodeHeader(header)
 	if err != nil {
 		return Result{}, &StatementError{Step: "select", Err: err}
@@ -316,6 +326,10 @@ func sqlState(err error) string {
 
 // sameFingerprint tells whether a stored fingerprint is the fingerprint of the request.
 func (req Request) sameFingerprint(stored string) bool {
+	stored, ok := req.unsealed(stored)
+	if !ok {
+		return false
+	}
 	if req.Matches != nil {
 		return req.Matches(stored)
 	}

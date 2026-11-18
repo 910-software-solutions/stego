@@ -86,15 +86,26 @@ var releaseName = regexp.MustCompile(`^[0-9a-z_-]{1,200}$`)
 
 // CleanReleases deletes in tx, a transaction of the owner role, the reports older than one day, which processes that
 // ended with no Stop left, and passes over each such row that another session holds, so it waits for no row lock of
-// the runtime role; on a database with no table of the reports it does nothing. The migration job runs it on each run
+// the runtime role; on a database with no table of the reports it does nothing. It keeps each report of a release
+// that sorts before the expand migration of an open seal change (ST-SUP-RP09-LC15). The migration job runs it on each run
 // (ST-SUP-RP09-LC14; security review of PR #316, M1).
 func CleanReleases(ctx context.Context, tx *sql.Tx) error {
 	var table bool
 	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&table); err != nil || !table {
 		return err
 	}
+	// A report of a release before the expand migration of an open seal change stays, so the contract of the seal
+	// still sees that such a release ran after its pass started (ST-SUP-RP09-LC15).
+	var seals bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.seals') IS NOT NULL").Scan(&seals); err != nil {
+		return err
+	}
+	keep := ""
+	if seals {
+		keep = ` AND NOT EXISTS (SELECT 1 FROM stego_schema.seals s WHERE o.release COLLATE "C" < s.expand COLLATE "C")`
+	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM stego_schema.releases r WHERE r.holder IN (SELECT o.holder FROM stego_schema.releases o
- WHERE o.seen_at < pg_catalog.clock_timestamp() - interval '1 day' FOR UPDATE SKIP LOCKED)`)
+ WHERE o.seen_at < pg_catalog.clock_timestamp() - interval '1 day'`+keep+` FOR UPDATE SKIP LOCKED)`)
 	return err
 }
 

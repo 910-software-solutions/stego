@@ -171,6 +171,15 @@ func (o openingRow) Scan(dest ...any) error {
 		return err
 	}
 	for _, d := range dest {
+		if sealing, ok := d.(sealingTarget); ok {
+			// A field whose seal step is open reads the clear value when the two columns differ (ST-SUP-RP10-LC49).
+			at := sealed.Place{Tenant: o.s.tenant.ID(), Table: sealing.s.table, Column: sealing.s.column}
+			if sealing.s.row != nil {
+				at.Row = strings.ToLower(*sealing.s.row)
+			}
+			sealing.s.resolve(context.Background(), o.s.rt.cfg.Ring, at)
+			continue
+		}
 		target, ok := d.(*openTarget)
 		if !ok {
 			continue
@@ -197,11 +206,11 @@ func (o openingRow) Scan(dest ...any) error {
 	return nil
 }
 
-// keyed gives req with a keyed fingerprint when the runtime has a key ring: a body of a service with a secret field
-// can hold a secret, so the key table stores the HMAC of the fingerprint with a key that HKDF derives from the first
-// key of the ring, and a fingerprint of an earlier key of the ring still matches while the ring holds that key
-// (ST-SUP-RP16-LC05, security review of PR #441, M2). A runtime with no key ring is of a service with no secret
-// field, and keeps the plain fingerprint.
+// keyed gives req with a keyed fingerprint and a sealer of its answer when the runtime has a key ring: a body of a
+// service with a secret or a pii field can hold a secret or personal data, so the key table stores the HMAC of the
+// fingerprint with a key that HKDF derives from the first key of the ring, and a fingerprint of an earlier key of the
+// ring still matches while the ring holds that key (ST-SUP-RP16-LC05, security review of PR #441, M2). A runtime with
+// no key ring is of a service with no secret and no pii field, and keeps the plain fingerprint and the clear answer.
 func (rt *Runtime) keyed(req idempotency.Request) idempotency.Request {
 	ring := rt.cfg.Ring
 	if ring == nil || req.Fingerprint == "" {
@@ -210,7 +219,21 @@ func (rt *Runtime) keyed(req idempotency.Request) idempotency.Request {
 	raw := req.Fingerprint
 	req.Fingerprint = ring.Fingerprint(raw)
 	req.Matches = func(stored string) bool { return ring.FingerprintMatches(stored, raw) }
+	// An answer can hold a secret or a pii field of a row, so the key table keeps it sealed with the ring for the
+	// retention of the key (ST-SUP-RP07-LC13, decision on ST-SUP-Q182 (b)).
+	req.Sealer = answerSealer{ring: ring}
 	return req
+}
+
+// answerSealer seals and opens the stored answers of the idempotency keys with the key ring of the runtime.
+type answerSealer struct{ ring *sealed.Ring }
+
+func (a answerSealer) SealAnswer(tenant, column, row string, plain []byte) ([]byte, error) {
+	return a.ring.Seal(plain, sealed.Place{Tenant: tenant, Table: idempotency.AnswerTable, Column: column, Row: row})
+}
+
+func (a answerSealer) OpenAnswer(tenant, column, row string, data []byte) ([]byte, error) {
+	return a.ring.Open(data, sealed.Place{Tenant: tenant, Table: idempotency.AnswerTable, Column: column, Row: row})
 }
 
 // ResealColumn is one sealed column that the re-seal job moves to the first key of the ring (ST-SUP-RP10-LC46): its
