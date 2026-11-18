@@ -621,7 +621,13 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading the local module replacements of go.mod: %w", err)
 		}
-		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, modules, schemaDigest(allFiles, runtime))
+		// A binary of the runtime data path selects its modes, so the base runs them as the declared modes need
+		// (ST-DLV-UC07-R07); another binary has no modes.
+		var modes []string
+		if resolved.RuntimeData {
+			modes = declaredModes(svcDecl.Modes)
+		}
+		files, written, err := deploymentFiles(input.WriteDeployment, svcDecl, componentNames, input.Generators, resolved.Contexts, requirements, pipelines, outDirName, resolved.HoldsFills, modules, schemaDigest(allFiles, runtime), modes)
 		if err != nil {
 			return nil, err
 		}
@@ -811,11 +817,13 @@ const DeliveryObjectFile = "deploy/argocd/applicationset.yaml"
 // import. A run writes the files that the platform
 // requirements need, and apply removes a file of the base that a run no longer writes.
 var BaseFiles = []string{"deploy/base/kustomization.yaml", "deploy/base/service-account.yaml", "deploy/base/deployment.yaml",
-	"deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml", "deploy/base/migration-job.yaml",
+	"deploy/base/worker-deployment.yaml", "deploy/base/service.yaml", "deploy/base/role.yaml", "deploy/base/role-binding.yaml", "deploy/base/migration-job.yaml",
 	"deploy/components/secret-files/kustomization.yaml", "deploy/components/secret-files/remove-env.yaml",
-	"deploy/components/secret-files/mount-files.yaml", "deploy/components/secret-files/remove-job-env.yaml",
+	"deploy/components/secret-files/mount-files.yaml", "deploy/components/secret-files/remove-worker-env.yaml",
+	"deploy/components/secret-files/mount-worker-files.yaml", "deploy/components/secret-files/remove-job-env.yaml",
 	"deploy/components/secret-files/mount-job-files.yaml", "deploy/components/fs-group/kustomization.yaml",
-	"deploy/components/fs-group/deployment-fs-group.yaml", "deploy/components/fs-group/job-fs-group.yaml"}
+	"deploy/components/fs-group/deployment-fs-group.yaml", "deploy/components/fs-group/worker-deployment-fs-group.yaml",
+	"deploy/components/fs-group/job-fs-group.yaml"}
 
 // DeploymentWriter writes the Kubernetes base of the service from the platform requirements of the run and the
 // probes of the active set, and then the delivery object or the plan line that says why the run writes none
@@ -846,6 +854,10 @@ type DeploymentInput struct {
 	// Release is the digest of the schema of the release, in hex (schemaDigest), which names the migration Job of
 	// the base (ST-DLV-UC07-R06).
 	Release string
+	// Modes are the declared modes of a service whose binary selects its modes, all three when the declaration
+	// states none, or nil for a binary with no mode selection. With the api mode and a background mode, the base
+	// runs them in two Deployments (ST-DLV-UC07-R07).
+	Modes []string
 }
 
 // DeploymentFiles are the files of the Kubernetes base and of the delivery object, and the lines of the plan.
@@ -858,7 +870,7 @@ type DeploymentFiles struct {
 // component of the active set serves, in the order of the active set (ST-DLV-INV08). It refuses a file out of the
 // paths of the base.
 func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, names []string, generators map[string]gen.Generator,
-	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool, modules []string, release string) ([]gen.File, []string, error) {
+	contexts map[string]gen.Context, requirements []byte, pipelines map[string]registry.PipelinePins, outDirName string, holdsFills bool, modules []string, release string, modes []string) ([]gen.File, []string, error) {
 	var probes *gen.Probes
 	for _, name := range names {
 		declarer, ok := generators[name].(gen.ProbeDeclarer)
@@ -875,7 +887,7 @@ func deploymentFiles(write DeploymentWriter, svcDecl *types.ServiceDeclaration, 
 		probes = &served
 	}
 	written, err := write(DeploymentInput{Service: svcDecl.Name, Requirements: requirements, Probes: probes, Delivery: svcDecl.Delivery, Pipelines: pipelines,
-		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills, LocalModules: modules, Release: release})
+		OutputDir: filepath.ToSlash(outDirName), HoldsFills: holdsFills, LocalModules: modules, Release: release, Modes: modes})
 	if err != nil {
 		return nil, nil, fmt.Errorf("writing the Kubernetes base: %w", err)
 	}

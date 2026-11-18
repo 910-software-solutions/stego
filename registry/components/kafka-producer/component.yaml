@@ -4,7 +4,7 @@
 # (ST-SUP-RC20-OC40). The settings are the STEGO_KAFKA_ settings of the worker mode.
 kind: component
 name: kafka-producer
-version: 3.1.0
+version: 3.2.0
 stage: ga
 output_namespace: internal/events
 
@@ -26,6 +26,7 @@ architecture:
 
 environment:
   - name: STEGO_KAFKA_BROKERS
+    read_by_mode: worker
     type: list
     required: false
     description: "The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value."
@@ -33,6 +34,7 @@ environment:
     one_of: kafka-brokers
     example: "kafka-0.example.com:9093,kafka-1.example.com:9093"
   - name: STEGO_KAFKA_BROKERS_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two."
@@ -40,18 +42,21 @@ environment:
     one_of: kafka-brokers
     example: "/etc/stego/kafka/brokers"
   - name: STEGO_KAFKA_BROKER_HOSTS
+    read_by_mode: worker
     type: list
     required: false
     description: "The hosts that the worker may dial, at most 64, or STEGO_KAFKA_BROKER_HOSTS_FILE in its place. When the two have no value, the worker dials each broker that a broker names."
     secret: false
     example: "kafka-0.example.com,kafka-1.example.com"
   - name: STEGO_KAFKA_BROKER_HOSTS_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the list of the hosts that the worker may dial. Give it or STEGO_KAFKA_BROKER_HOSTS, not the two."
     secret: false
     example: "/etc/stego/kafka/broker-hosts"
   - name: STEGO_KAFKA_TOPIC
+    read_by_mode: worker
     type: string
     required: false
     description: "The topic of every message, which must be the topic of the topic need; give it or STEGO_KAFKA_TOPIC_FILE. stego env check refuses another topic in this variable, and does not read the file."
@@ -59,6 +64,7 @@ environment:
     one_of: kafka-topic
     example: "orders.changes"
   - name: STEGO_KAFKA_TOPIC_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the topic of every message. Give it or STEGO_KAFKA_TOPIC, not the two."
@@ -66,24 +72,28 @@ environment:
     one_of: kafka-topic
     example: "/etc/stego/kafka/topic"
   - name: STEGO_KAFKA_CA_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots."
     secret: false
     example: "/etc/stego/kafka/ca.crt"
   - name: STEGO_KAFKA_CLIENT_CERT_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the PEM client certificate of mutual TLS. Give it with STEGO_KAFKA_CLIENT_KEY_FILE."
     secret: false
     example: "/etc/stego/kafka/tls.crt"
   - name: STEGO_KAFKA_CLIENT_KEY_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the PEM client key of mutual TLS. Give it with STEGO_KAFKA_CLIENT_CERT_FILE."
     secret: false
     example: "/etc/stego/kafka/tls.key"
   - name: STEGO_KAFKA_SASL_MECHANISM
+    read_by_mode: worker
     type: string
     required: false
     description: "The SASL mechanism. When it has no value, the worker uses no SASL and needs a client certificate."
@@ -91,30 +101,35 @@ environment:
     example: "SCRAM-SHA-512"
     allowed: {values: ["SCRAM-SHA-512", "OAUTHBEARER"]}
   - name: STEGO_KAFKA_USERNAME
+    read_by_mode: worker
     type: string
     required: false
     description: "The SCRAM user name. Give it or STEGO_KAFKA_USERNAME_FILE when the mechanism is SCRAM-SHA-512."
     secret: false
     example: "orders-worker"
   - name: STEGO_KAFKA_USERNAME_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the SCRAM user name. Give it or STEGO_KAFKA_USERNAME, not the two."
     secret: false
     example: "/etc/stego/kafka/username"
   - name: STEGO_KAFKA_PASSWORD_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it."
     secret: false
     example: "/etc/stego/kafka/password"
   - name: STEGO_KAFKA_TOKEN_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the OAUTHBEARER token. The mechanism OAUTHBEARER needs it."
     secret: false
     example: "/etc/stego/kafka/token"
   - name: STEGO_KAFKA_INSECURE_LOOPBACK
+    read_by_mode: worker
     type: boolean
     required: false
     default: "0"

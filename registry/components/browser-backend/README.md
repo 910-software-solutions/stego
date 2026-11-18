@@ -17,6 +17,48 @@ relative to the service project and a public `path`. Public assets use
 `{id}`. An optional `roles_claim` selects a dotted identity claim path.
 The compiler captures the declared asset files and checks their sizes.
 
+### More than one API
+
+`api_prefix` goes to the API of `STEGO_BROWSER_API_URL`. To reach more APIs,
+declare `apis` (version 4.8.0), a list of 1 to 8 entries:
+
+```yaml
+overrides:
+  browser-backend:
+    api_prefix: /api/orders/v1
+    apis:
+      - {name: fulfilment, prefix: /api/fulfilment/v1}
+```
+
+Then give the origin of each name in `STEGO_BROWSER_API_URLS`, a
+comma-separated list of `name=origin`, such as
+`fulfilment=https://fulfilment.example.com`. All APIs use the trust root of
+`STEGO_BROWSER_API_CA_FILE`.
+
+- A name is in lower case with hyphens, of at most 32 characters, and unique.
+- A prefix follows the rules of `api_prefix`. No prefix can be equal to
+  another, or be above or below another at a whole path segment, and no
+  route can start with a prefix.
+- The backend reads the list once at start. It does not start when the list
+  does not give each declared name one time, gives a name that the
+  declaration does not give, or gives an address that is not an HTTPS origin
+  on another host than the console, or that is the origin of the issuer.
+- A request goes to the one origin of the API whose prefix its path is
+  under. No header, query or path part of a request can choose another host.
+  A path with an encoded slash gets 400. The router of the service sends a
+  path with a `.` or `..` segment, or an empty segment, to its clean form
+  with 307 before the backend reads it, so such a path reaches no API; the
+  backend refuses it with 400 when it gets one.
+- A `Location` of an answer must be under the prefix of the same API, with no
+  `.` or `..` segment, plain or encoded, and no other encoded character.
+- Each API has a bounded client of its own, and its own share of the 16
+  requests and of the 4 waiting reads that the backend runs at one time, at
+  least one of each. When an API uses all of its share, its next request gets
+  503 with `Retry-After: 1`, and the other APIs keep their shares. The same access token goes to
+  each API, so the identity provider must give a token whose `aud` holds the
+  audience of each API.
+- A local application cannot declare `apis`.
+
 Run the service binary with the one argument `migrate` before service startup
 (version 4.6.0). The Kubernetes base writes this migration Job with the Secret
 `<service>-database-owner`, as for a rest-crud service. The mode migrate reads
@@ -137,6 +179,8 @@ Set these values in the service environment:
 - `STEGO_HTTP_TLS_CERT` and `STEGO_HTTP_TLS_KEY`: the service certificate files.
 - `STEGO_BROWSER_ORIGIN`: the public HTTPS origin without a path.
 - `STEGO_BROWSER_API_URL`: the separate API HTTPS origin without a path.
+- `STEGO_BROWSER_API_URLS`: the origin of each API of `apis`, as
+  `name=origin` pairs separated by commas. Give it only with `apis`.
 - `STEGO_BROWSER_API_CA_FILE`: the API trust root file, if required.
 - `STEGO_BROWSER_ISSUER`: the OIDC issuer URL.
 - `STEGO_BROWSER_ISSUER_CA_FILE`: the issuer trust root file, if required.
@@ -179,8 +223,9 @@ such as `Cookie`, `Origin`, `X-CSRF-Token` or `traceparent`.
 A read with `Authz-Revocation-After` waits at most 4 seconds, one second less
 than the request timeout of the API prefix: the API prefix sends `wait=4`
 when the browser gives no wait or a longer one. At most 4 such reads run at
-one time for the whole service, so that they never take the capacity of the
-other requests. The next one gets 503 with `Retry-After: 1`.
+one time for the whole service, shared among the APIs, so that they never
+take the capacity of the other requests. The next one gets 503 with
+`Retry-After: 1`.
 
 The API prefix returns to the browser only the API response headers
 `Content-Type`, `ETag`, `Retry-After`, `Idempotent-Replayed`,

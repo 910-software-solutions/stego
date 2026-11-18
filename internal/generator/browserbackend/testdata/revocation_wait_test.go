@@ -38,21 +38,24 @@ func TestReadsThatWait(t *testing.T) {
 			require(t, len(sent.Values("Prefer")) <= 1 && sent.Get("Prefer") == test.want, "Prefer "+test.prefer+" reached the API as "+sent.Get("Prefer")+", want "+test.want)
 		}
 
-		// A pending revocation keeps each waiting read at the API. MaxWaitingReads of them hold their pool, the next
+		// A pending revocation keeps each waiting read at the API. Its share of MaxWaitingReads holds their pool, the next
 		// is refused at once, and a read that does not wait still passes.
+		// The API of api_prefix has its share of MaxWaitingReads (ST-SUP-RC02-OC58): all of it with one API.
+		waits := cap(f.backend.main.waits)
+		require(t, waits >= 1 && waits <= MaxWaitingReads, "the waiting reads of the API have no pool of their own")
 		f.mu.Lock()
-		f.hold, f.held = make(chan struct{}), make(chan struct{}, MaxWaitingReads+1)
+		f.hold, f.held = make(chan struct{}), make(chan struct{}, waits+1)
 		f.mu.Unlock()
 		var group sync.WaitGroup
-		codes := make(chan int, MaxWaitingReads)
-		for range MaxWaitingReads {
+		codes := make(chan int, waits)
+		for range waits {
 			group.Add(1)
 			go func() {
 				defer group.Done()
 				codes <- send(f.backend, "GET", apiPrefix+"/records/record-1", "", []*http.Cookie{active}, http.Header{"Authz-Revocation-After": {revocation}}).Code
 			}()
 		}
-		for range MaxWaitingReads {
+		for range waits {
 			<-f.held
 		}
 		w := send(f.backend, "GET", apiPrefix+"/records/record-1", "", []*http.Cookie{active}, http.Header{"Authz-Revocation-After": {revocation}})

@@ -84,7 +84,9 @@ not start without them. It refuses a password, token or client key file that its
 or that others may use: in Kubernetes, mount these secrets with `defaultMode: 0400` or `0440`. It
 refuses a CA file or a `_FILE` setting that its group or others may write. An event holds the entity,
 the action and the ID of the row, and no field value. The controller mode runs the audit jobs under one lease. `/readyz/modes`
-answers the readiness of the worker and controller modes.
+answers the readiness of the worker and controller modes. The Kubernetes base runs the api mode and
+the worker and controller modes in two Deployments, `<service>` and `<service>-worker` (see
+[Probes and modes](docs/delivery.md#probes-and-modes)).
 Its binary with the one argument `migrate` is the migration job: it reads
 `STEGO_MIGRATION_DATABASE_URL` or `STEGO_MIGRATION_DATABASE_URL_FILE`, runs as the
 owner role over verified TLS, refuses a database with tables that it did not make,

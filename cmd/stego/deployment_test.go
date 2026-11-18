@@ -198,8 +198,21 @@ func TestKubernetesBaseApply(t *testing.T) {
 		if port == 0 {
 			t.Fatal("the platform requirements state no default for PORT, which health-check declares")
 		}
-		for _, container := range containersOf(t, buildBase(t, base)) {
-			for probe, path := range map[string]string{"livenessProbe": "/livez", "readinessProbe": "/readyz"} {
+		// The Deployment of the api mode has the readiness of health-check, and the Deployment orders-worker of the
+		// worker and controller modes the readiness of the modes (ST-DLV-UC07-R03, ST-DLV-UC07-R07).
+		resources := buildBase(t, base)
+		deployments := 0
+		for _, resource := range resources {
+			if resource["kind"] != "Deployment" {
+				continue
+			}
+			deployments++
+			readiness := "/readyz"
+			if field(resource, "metadata", "name") == "orders-worker" {
+				readiness = delivery.WorkerReadiness
+			}
+			container := containersOf(t, []map[string]any{resource})[0]
+			for probe, path := range map[string]string{"livenessProbe": "/livez", "readinessProbe": readiness} {
 				if got := field(container, probe, "httpGet", "path"); got != path {
 					t.Errorf("container %v: %s path is %v, want %s", container["name"], probe, got, path)
 				}
@@ -207,6 +220,9 @@ func TestKubernetesBaseApply(t *testing.T) {
 					t.Errorf("container %v: %s port is %v, want %d", container["name"], probe, got, port)
 				}
 			}
+		}
+		if deployments != 2 {
+			t.Errorf("the base holds %d Deployments, want the api Deployment and the worker Deployment", deployments)
 		}
 	})
 
@@ -240,8 +256,10 @@ func TestKubernetesBaseApply(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		write("kustomization.yaml", "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [../base]\npatches: [{path: memory.yaml}]\n")
-		write("memory.yaml", "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: orders}\nspec:\n  template:\n    spec:\n      containers:\n        - name: orders\n          resources: {limits: {memory: 1Gi}}\n")
+		write("kustomization.yaml", "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [../base]\npatches: [{path: memory.yaml}, {path: worker-memory.yaml}]\n")
+		patch := "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: %s}\nspec:\n  template:\n    spec:\n      containers:\n        - name: orders\n          resources: {limits: {memory: 1Gi}}\n"
+		write("memory.yaml", fmt.Sprintf(patch, "orders"))
+		write("worker-memory.yaml", fmt.Sprintf(patch, "orders-worker"))
 		expect(t, buildBase(t, overlay), "1Gi")
 	})
 

@@ -1,6 +1,6 @@
 kind: component
 name: browser-backend
-version: 4.7.0
+version: 4.8.0
 stage: ga
 output_namespace: browser
 config:
@@ -19,6 +19,15 @@ config:
   api_prefix:
     type: string
     author_supplied: true
+  # The other APIs that the proxy reaches, each with its own prefix and its one fixed origin (ST-SUP-RC02-OC58).
+  apis:
+    type: list
+    optional: true
+    items:
+      name:
+        type: string
+      prefix:
+        type: string
   logout_scope:
     type: string
     optional: true
@@ -112,6 +121,12 @@ environment:
     description: "The HTTPS origin of the service API, which a local application must not have. In other cases, the backend does not start when it has no value."
     secret: false
     example: "https://api.example.com"
+  - name: STEGO_BROWSER_API_URLS
+    type: string
+    required: false
+    description: "The HTTPS origin of each API of the setting apis, as a comma list of name=origin. The backend does not start when the list does not give each declared name one time and no other name."
+    secret: false
+    example: "fulfilment=https://fulfilment.example.com,billing=https://billing.example.com"
   - name: STEGO_BROWSER_API_CA_FILE
     type: path
     required: false
