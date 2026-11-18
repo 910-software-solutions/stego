@@ -334,6 +334,13 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
+		// A command after the caller's own write waits for its revocation before its decision (ST-SUP-RP10-LC47).
+		if err := rt.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+			if httpStatus, code, ok := awaitAnswer(r.Context(), err); ok {
+				rt.writeProblem(w, httpStatus, "", code)
+			}
+			return
+		}
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
 			Resource: s.Resource(request), RequestID: NewID(), ActorIP: remoteIP(r.RemoteAddr),
 			UserAgent: r.UserAgent(), Retention: s.Retention}
@@ -393,6 +400,10 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 				return request, ErrBadRequest
 			}
 			return request, nil
+		}
+		// A command after the caller's own write waits for its revocation before its decision (ST-SUP-RP10-LC47).
+		if err := rt.AwaitRevocationRPC(ctx, b.Tenant, b.Principal); err != nil {
+			return none, awaitStatus(ctx, err)
 		}
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
 			Resource: s.Resource(request), RequestID: NewID(), Retention: s.Retention}
