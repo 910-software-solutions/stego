@@ -180,9 +180,11 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 	for _, file := range append([]string{"fills/.", ".stego/config.yaml", localStateIgnorePath, "go.mod", "service.yaml"}, examplePaths(exampleFiles)...) {
 		made = appendAbsentFolders(root, made, path.Dir(file))
 	}
+	// identities holds the identity of each file that this run put in place, by its path in made.
+	identities := map[string]os.FileInfo{}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, removeMade(root, made))
+			err = errors.Join(err, removeMade(root, made, identities))
 		}
 	}()
 	// create writes a new file and names it in made once this run has put it there, also when a later step of the
@@ -190,8 +192,9 @@ func Initialize(opts InitOptions) (result *InitResult, err error) {
 	// before, or that another process made first, is never named (sec-419 LOW-1).
 	create := func(name string, data []byte) error {
 		published, err := publishRootFile(root, name, data, 0644, false)
-		if published && !slices.Contains(made, name) {
+		if published != nil && !slices.Contains(made, name) {
 			made = append(made, name)
+			identities[name] = published
 		}
 		return err
 	}
@@ -279,10 +282,18 @@ func appendAbsentFolders(root *os.Root, made []string, folder string) []string {
 }
 
 // removeMade removes each path of made that is there, the last first, so a folder goes after the files in it. A
-// folder that holds another file is kept.
-func removeMade(root *os.Root, made []string) error {
+// folder that holds another file is kept. A file of identities is removed only while the path is still the file
+// that this run put there: a file that a local writer renamed over it is kept (sec-420 INFO-5). The check and the
+// removal are two steps, so a rename between them is not seen; the run holds the project lock, and only a writer
+// that ignores the lock can make that rename.
+func removeMade(root *os.Root, made []string, identities map[string]os.FileInfo) error {
 	var faults []error
 	for i := len(made) - 1; i >= 0; i-- {
+		if identity, ok := identities[made[i]]; ok {
+			if current, err := root.Lstat(made[i]); err != nil || !os.SameFile(identity, current) {
+				continue
+			}
+		}
 		if err := root.Remove(made[i]); err != nil && !errors.Is(err, os.ErrNotExist) && !isNotEmpty(err) {
 			faults = append(faults, fmt.Errorf("removing %s after the failed scaffold: %w", made[i], err))
 		}
