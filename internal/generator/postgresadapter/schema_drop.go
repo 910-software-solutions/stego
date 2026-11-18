@@ -202,7 +202,7 @@ func dropExpandSQL(ctx gen.Context, position int, before, after []tableModel, ch
 			sql = fmt.Sprintf("ALTER TABLE %s %s;\nCOMMENT ON COLUMN %s.%s IS %s;\n", table, strings.Join(parts, ", "), table, sqlIdentifier(k.name), sqlString(comment))
 		}
 	}
-	return sql + fmt.Sprintf(releasesText, sqlIdentifier(runtime)), nil
+	return sql + fmt.Sprintf(releasesText, sqlIdentifier(runtime)) + sealsAgain(ctx, change.ID, runtime), nil
 }
 
 // dropContractSQL gives the contract step of a drop (ST-SUP-RC01-OC47): before is the tables of the expand step, with

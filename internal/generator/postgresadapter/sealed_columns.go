@@ -11,7 +11,8 @@ import (
 
 // generateSealedColumns gives the file sealed_columns.go of a service with a readable secret field: ResealColumns,
 // the columns that the re-seal job of the controller moves to the first key of the key ring, with the statements of
-// the job, which take the tenant as $1 (ST-SUP-RP10-LC46, ST-SUP-RC01-OC48). A service with none gets no file, so its
+// the job, which take the tenant as $1 (ST-SUP-RP10-LC46, ST-SUP-RC01-OC48), and SealColumns, the fields whose seal
+// step is open, for the seal job (ST-SUP-RP10-LC50, ST-SUP-RC32-OC23). A service with none gets no file, so its
 // generated code does not import the sealing runtime and is not asked for the key ring.
 func generateSealedColumns(ctx gen.Context) (gen.File, bool, error) {
 	key := tenantColumn(ctx)
@@ -44,11 +45,21 @@ func generateSealedColumns(ctx gen.Context) (gen.File, bool, error) {
 	if count == 0 {
 		return gen.File{}, false, nil
 	}
+	seals, open, err := sealColumns(ctx)
+	if err != nil {
+		return gen.File{}, false, err
+	}
 	var out bytes.Buffer
 	fmt.Fprintf(&out, "package %s\n\nimport \"github.com/jsell-rh/stego/registry/runtime/command\"\n\n", path.Base(ctx.OutputNamespace))
 	out.WriteString("// ResealColumns are the readable secret fields of the service: the re-seal job of the controller moves each\n// sealed value to the first key of the key ring (ST-SUP-RP10-LC46).\nvar ResealColumns = []command.ResealColumn{\n")
 	out.Write(b.Bytes())
 	out.WriteString("}\n")
+	if open > 0 {
+		// The seal job of the controller seals the rows of each open seal step (ST-SUP-RP10-LC50).
+		out.WriteString("\n// SealColumns are the readable secret fields whose seal step is open: the seal job of the controller seals and\n// checks each row under the backfill lease of the change (ST-SUP-RP10-LC50).\nvar SealColumns = []command.SealColumn{\n")
+		out.WriteString(seals)
+		out.WriteString("}\n")
+	}
 	code, err := format.Source(out.Bytes())
 	if err != nil {
 		return gen.File{}, false, fmt.Errorf("formatting sealed_columns.go: %w", err)

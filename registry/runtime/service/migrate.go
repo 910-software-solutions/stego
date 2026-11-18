@@ -109,6 +109,10 @@ type Migration struct {
 	// WorkerLeases are the names of the declared single workers: the audit step makes the row of the lease
 	// stego.worker.<name> of each (ST-SUP-RC35-OC05). Each is a worker name in lower kebab case.
 	WorkerLeases []string
+	// SealLeases are the IDs of the seal changes whose step is open: the audit step makes the row of the backfill
+	// lease stego.backfill.<change ID> of each, under which the seal job of the controller runs (ST-SUP-RP10-LC50).
+	// Each is a change ID in lower kebab case.
+	SealLeases []string
 	// Timeout is the longest time that the job runs; zero is MigrationTimeout.
 	Timeout time.Duration
 	// Backfills are the backfills of the schema changes of this release whose last step is expand, which the job
@@ -204,6 +208,11 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	if m.OwnerRole == "" || m.RuntimeRole == "" || m.WorkerRole == "" || m.PurgeRole == "" || m.OutboxRelayRole == "" || m.TenantConfig == nil || m.LedgerCheck == nil || m.Ledger == nil ||
 		m.WriteSchema == nil || len(m.Definitions) == 0 || m.Outbox == "" || m.Audit == "" || m.Authorization == "" || m.Parts == nil {
 		return failed(StepSettings, errors.New("the migration job needs its roles, the adapter, the ledger, the migration texts, the schema writer with its definitions and the declared parts"))
+	}
+	for _, name := range m.SealLeases {
+		if !workerName.MatchString(name) {
+			return failed(StepSettings, fmt.Errorf("the seal change %q is not a change ID in lower kebab case", name))
+		}
 	}
 	for _, name := range m.WorkerLeases {
 		if !workerName.MatchString(name) {
@@ -340,7 +349,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 	}
 	texts := []struct{ name, text string }{
 		{StepOutboxQueue, m.Outbox},
-		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole, m.WorkerLeases)},
+		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole, m.WorkerLeases, m.SealLeases)},
 		{StepAuditSink, sinkTable},
 		{StepInbox, inboxText(m.Inbox, tenants, m.WorkerRole)},
 		{StepIdempotencyKeys, keys},
@@ -713,11 +722,16 @@ var betweenSequenceReads func()
 // controllerLease gives the statements of the lease table and the row of the controller lease, under which the audit
 // jobs run (ST-SUP-RP14-LC04), with SELECT and UPDATE on the table for the runtime role, the role of the lease
 // client; the table belongs to no tenant. Each statement runs again with no error on a database that it made.
-func controllerLease(runtimeRole string, workers []string) string {
+func controllerLease(runtimeRole string, workers, seals []string) string {
 	text := lease.LeasesTable + ";\nINSERT INTO public.leases (name) VALUES ('" + ControllerLease + "') ON CONFLICT (name) DO NOTHING;\n"
 	// The lease of each single worker (ST-SUP-RC35-OC05); Migrate checked each name against workerName.
 	for _, name := range workers {
 		text += "INSERT INTO public.leases (name) VALUES ('" + WorkerLeasePrefix + name + "') ON CONFLICT (name) DO NOTHING;\n"
+	}
+	// The backfill lease of each open seal change, under which the seal job of the controller runs
+	// (ST-SUP-RP10-LC50); Migrate checked each change ID against workerName.
+	for _, change := range seals {
+		text += "INSERT INTO public.leases (name) VALUES ('" + BackfillLeaseName(change) + "') ON CONFLICT (name) DO NOTHING;\n"
 	}
 	return text + "GRANT SELECT, UPDATE ON TABLE public.leases TO " + quote(runtimeRole) + ";\n"
 }

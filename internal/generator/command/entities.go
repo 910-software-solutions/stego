@@ -361,7 +361,7 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 func (e *entity) columns() string {
 	cols := []string{`"id"::text`}
 	for _, f := range e.fields {
-		cols = append(cols, quote(f.decl.ColumnName()))
+		cols = append(cols, f.columns()...)
 	}
 	cols = append(cols, `"version"`)
 	if e.resourceType != "" {
@@ -383,10 +383,14 @@ func (e *entity) statements(tenantKey string) (selectRow, forUpdate, forDelete, 
 	names := []string{quote(tenantKey), `"id"`}
 	params := []string{"$1", "$2::uuid"}
 	sets := make([]string, 0, len(e.fields)+2)
-	for i, f := range e.fields {
-		names = append(names, quote(f.decl.ColumnName()))
-		params = append(params, fmt.Sprintf("$%d", i+3))
-		sets = append(sets, fmt.Sprintf("%s = $%d", quote(f.decl.ColumnName()), i+5))
+	i := 0
+	for _, f := range e.fields {
+		for _, column := range f.columns() {
+			names = append(names, column)
+			params = append(params, fmt.Sprintf("$%d", i+3))
+			sets = append(sets, fmt.Sprintf("%s = $%d", column, i+5))
+			i++
+		}
 	}
 	sets = append(sets, `"version" = "version" + 1`, `"updated_time" = now()`)
 	insert = fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) RETURNING %s", table, strings.Join(names, ", "), strings.Join(params, ", "), e.columns())
@@ -397,6 +401,20 @@ func (e *entity) statements(tenantKey string) (selectRow, forUpdate, forDelete, 
 }
 
 func quote(name string) string { return `"` + name + `"` }
+
+// columns gives the quoted columns of the field in the order that the statements write and Scan reads them: the
+// clear column and then the sealed column of a readable secret whose seal step is open (ST-SUP-RC32-OC23), else its
+// one column.
+func (f *entityField) columns() []string {
+	if f.sealing() {
+		return []string{quote(f.decl.SealedFrom), quote(f.decl.ColumnName())}
+	}
+	return []string{quote(f.decl.ColumnName())}
+}
+
+// sealing tells whether the field is a readable secret whose seal step is open: a write sets its clear and its
+// sealed column, and a read resolves the two (ST-SUP-RP10-LC49).
+func (f *entityField) sealing() bool { return f.sealed && f.decl.SealedFrom != "" }
 
 // patternVar is the name of the package-level variable of the compiled pattern of field f of entity e.
 func patternVar(e *entity, f *entityField) string {
@@ -527,6 +545,11 @@ func renderCheck(w *writer, e *entity) {
 	}
 	for _, f := range e.fields {
 		put(f.decl.ColumnName(), f.decl.Name)
+		if f.sealing() {
+			// The clear column of an open seal keeps its CHECK and its NOT NULL (ST-SUP-RC01-OC49).
+			put(postgresadapter.CheckName(e.decl.Name, f.decl.SealedFrom), f.decl.Name)
+			put(f.decl.SealedFrom, f.decl.Name)
+		}
 	}
 	w.f("\t},\n")
 	renderUnique(w, e)
@@ -610,6 +633,10 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	targets := []string{"&v.ID"}
 	for _, f := range e.fields {
 		switch {
+		case f.sealing():
+			// The runtime reads the clear value of an open seal when the two columns differ (ST-SUP-RP10-LC49).
+			w.f("\t\tsealing%s := command.SealingAt(%q, %q, &v.ID, &v.%s)\n", f.goName, e.table, f.decl.ColumnName(), f.goName)
+			targets = append(targets, "sealing"+f.goName+".Clear()", "sealing"+f.goName+".Sealed()")
 		case f.sealed:
 			// The runtime opens a readable secret after the scan, at the place of its row (ST-SUP-RP10-LC44).
 			targets = append(targets, fmt.Sprintf("command.OpenAt(%q, %q, &v.ID, &v.%s)", e.table, f.decl.ColumnName(), f.goName))
@@ -625,6 +652,9 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	values := []string{"id"}
 	for _, f := range e.fields {
 		switch {
+		case f.sealing():
+			// An open seal writes the clear column too, which a release before reads (ST-SUP-RP10-LC49).
+			values = append(values, fmt.Sprintf("command.ClearOf(v.%s)", f.goName), fmt.Sprintf("command.SealAt(%q, %q, id, v.%s)", e.table, f.decl.ColumnName(), f.goName))
 		case f.sealed:
 			// The runtime seals a readable secret just before the statement, at the place of its row, and stores a
 			// compare-only secret as its hash (ST-SUP-RP10-LC44).

@@ -17,11 +17,11 @@ func schemaChangePath(i int) string { return fmt.Sprintf("schema_changes[%d]", i
 func schemaStepPath(i int) string   { return fmt.Sprintf("schema_history[%d]", i) }
 
 // schemaChangeKinds are the kinds of schema change, in the order the specification gives them.
-var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique", "relax", "within"}
+var schemaChangeKinds = []string{"add", "rename", "retype", "require", "drop", "unique", "relax", "within", "seal"}
 
 // backfillKinds are the kinds of schema change whose expand step starts a backfill, which runs only in controller
 // mode.
-var backfillKinds = map[string]bool{"rename": true, "retype": true, "require": true, "unique": true}
+var backfillKinds = map[string]bool{"rename": true, "retype": true, "require": true, "unique": true, "seal": true}
 
 // maxOpenSchemaChanges is the most schema changes that may be open at one time, because the backfill observations
 // carry the change as an enum (ST-SUP-RP12-LC23).
@@ -40,8 +40,8 @@ const (
 // for add and drop, which may change a whole entity. A relax names its field and gives the field before the change
 // as its Definition (decision on finding F12, owner, 2026-11-13).
 var schemaValues = map[string]map[string]schemaValue{
-	"field":              {"add": valueOptional, "rename": valueRequired, "retype": valueRequired, "require": valueRequired, "drop": valueOptional, "unique": valueRequired, "relax": valueRequired, "within": valueRequired},
-	"from":               {"rename": valueRequired, "retype": valueRequired},
+	"field":              {"add": valueOptional, "rename": valueRequired, "retype": valueRequired, "require": valueRequired, "drop": valueOptional, "unique": valueRequired, "relax": valueRequired, "within": valueRequired, "seal": valueRequired},
+	"from":               {"rename": valueRequired, "retype": valueRequired, "seal": valueOptional},
 	"conversion":         {"retype": valueRequired},
 	"inverse_conversion": {"retype": valueRequired},
 	"fill_value":         {"require": valueRequired, "retype": valueOptional, "drop": valueOptional},
@@ -80,15 +80,8 @@ func validateSchemaChangeKind(changes []types.SchemaChange) []ValidationError {
 			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".id", Found: change.ID, Message: fmt.Sprintf("the schema change ID %q is used twice; no change can use the ID of another", change.ID)})
 		}
 		seen[change.ID] = true
-		if change.Kind == "seal" {
-			// The kind seal is in the specification (ST-DECL-EN21, ST-SUP-RC01-OC49), and generation does not carry
-			// it out yet: a field that the base stores in clear cannot become secret yet (decision ST-DECL-Q44).
-			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind,
-				Message: fmt.Sprintf("schema change %q has the kind seal, which generation does not carry out yet; a field that the base stores in clear cannot become secret yet", change.ID)})
-			continue
-		}
 		if !contains(schemaChangeKinds, change.Kind) {
-			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind, Allowed: schemaChangeKinds, Message: fmt.Sprintf("schema change %q has the kind %q; its kind must be add, rename, retype, require, drop, unique or relax", change.ID, change.Kind)})
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind, Allowed: schemaChangeKinds, Message: fmt.Sprintf("schema change %q has the kind %q; its kind must be add, rename, retype, require, drop, unique, relax, within or seal", change.ID, change.Kind)})
 			continue
 		}
 		for _, value := range []string{"field", "from", "conversion", "inverse_conversion", "fill_value", "definition"} {
@@ -301,6 +294,11 @@ func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) s
 				return cannot(fmt.Sprintf("it does not relax the field %s.%s after that step, %s: %s", other.Entity, other.Field, fieldShape(fields[found]), reason))
 			}
 			fields[found] = before
+		case "seal":
+			// A seal is undone by giving the field its sensitivity before the change (ST-DECL-INV102).
+			if found >= 0 {
+				fields[found].Sensitivity, fields[found].CompareOnly = other.From, false
+			}
 		case "drop":
 			// A drop is undone as gen.Context.AtSchemaStep undoes it: a drop of an entity by the entity that the
 			// declaration keeps with dropped_by, which the shape is already, and a drop of a field by giving the
@@ -422,6 +420,14 @@ func validateSchemaChangeEntity(service *types.ServiceDeclaration) []ValidationE
 		case "drop":
 			if hasField {
 				fault(".field", "the entity still declares the field that the change drops; remove the field")
+			}
+		case "seal":
+			// A seal moves a readable secret field out of its clear column (ST-DECL-INV102).
+			switch field, _ := findField(entity, change.Field); {
+			case !hasField:
+				fault(".field", "the entity does not declare the field that the seal moves to its sealed column")
+			case !field.Secret() || field.CompareOnly:
+				fault(".field", "the field is not a readable secret; a seal moves a field of sensitivity secret that is not compare_only, which the base stores in clear")
 			}
 		case "within":
 			// The reference of a within holds its key within a field (ST-DECL-INV58, ST-DECL-Q42).
@@ -813,4 +819,60 @@ func schemaChangeSettings(service *types.ServiceDeclaration) []Setting {
 		}
 	}
 	return settings
+}
+
+// sealSensitivities are the sensitivities that a seal change can give as From: the field before the change. secret
+// is a field that its declaration named secret and that a generator before postgres-adapter 6.13.0 stored in clear
+// (walkthrough 13, W13-B1).
+var sealSensitivities = []string{"", "public", "pii", "secret"}
+
+// validateSealChanges enforces the rest of ST-DECL-INV102 (decision ST-DECL-Q44): From of a seal is public, pii,
+// secret or empty; a field has at most one seal change; and no other schema change names a sealed field, as Field or
+// as From, but an add or a relax whose step comes before the seal's, because the field before the seal is the field of
+// the head with the sensitivity From, in its clear column, and another change of the field has no one column before
+// the seal. The kind and the field are checked with the other
+// changes (validateSchemaChangeKind, validateSchemaChangeEntity). Each fault names the change.
+func validateSealChanges(service *types.ServiceDeclaration) []ValidationError {
+	var faults []ValidationError
+	sealed := map[[2]string]string{}
+	for i, change := range service.SchemaChanges {
+		if change.Kind != "seal" {
+			continue
+		}
+		path := schemaChangePath(i)
+		if !slices.Contains(sealSensitivities, change.From) {
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-seal", Path: path + ".from", Found: change.From, Allowed: []string{"public", "pii", "secret"},
+				Message: fmt.Sprintf("schema change %q seals %s.%s from the sensitivity %q; From of a seal is the sensitivity of the field before the change, public, pii or secret (a secret that an older generator stored in clear), or no From when it had none (ST-DECL-INV102)", change.ID, change.Entity, change.Field, change.From)})
+		}
+		key := [2]string{change.Entity, change.Field}
+		if first, taken := sealed[key]; taken {
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-seal", Path: path, Found: change.ID,
+				Message: fmt.Sprintf("schema changes %q and %q both seal %s.%s; a field has at most one seal change (ST-DECL-INV102)", first, change.ID, change.Entity, change.Field)})
+			continue
+		}
+		sealed[key] = change.ID
+	}
+	// An add or a relax finishes at its expand step, so one before the expand step of the seal leaves the field in its
+	// clear column, which the seal moves; any other change of the field, or one after the seal, has no one column
+	// before the seal.
+	first := firstSteps(service.SchemaHistory)
+	for i, change := range service.SchemaChanges {
+		if change.Kind == "seal" {
+			continue
+		}
+		for _, name := range []string{change.Field, change.From} {
+			id, ok := sealed[[2]string{change.Entity, name}]
+			if !ok || name == "" {
+				continue
+			}
+			at, stepped := first[change.ID]
+			sealAt, sealStepped := first[id]
+			if (change.Kind == "add" || change.Kind == "relax") && stepped && sealStepped && at < sealAt {
+				continue
+			}
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-seal", Path: schemaChangePath(i), Found: change.ID,
+				Message: fmt.Sprintf("schema change %q of kind %s names %s.%s, which the seal %q moves; only an add or a relax before the seal may name a sealed field (ST-DECL-INV102)", change.ID, change.Kind, change.Entity, name, id)})
+		}
+	}
+	return faults
 }

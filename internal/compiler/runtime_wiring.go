@@ -103,6 +103,13 @@ type runtimeWiringData struct {
 	// Secret is true when an entity has any secret field: the serving modes read the key ring, which also keys the
 	// fingerprints of the idempotency keys, since a request body can hold a secret (ST-SUP-RP16-LC05).
 	Secret bool
+	// Ring is true when an entity has a secret or a pii field: the serving modes read the key ring, which also seals
+	// the stored answers of the idempotency keys, since an answer can hold such a field (ST-SUP-RP14-LC12,
+	// ST-SUP-RP07-LC13, decision on ST-SUP-Q182 (b)).
+	Ring bool
+	// Seals are the IDs of the seal changes whose step is open: the controller seals their rows under the backfill
+	// lease of each, which the migration job makes (ST-SUP-RP10-LC50).
+	Seals []string
 }
 
 // runtimeWiring gives the runtime wiring package of a service on the runtime data path and its wiring of main.go
@@ -146,6 +153,7 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 			data.Secret = data.Secret || f.Secret()
 		}
 	}
+	data.Ring, data.Seals = sealing(svc)
 	if slices.Contains(in.Names, idempotencyComponent) && svc.Idempotency != nil {
 		data.Idempotency = pkg(idempotencyComponent)
 	}
@@ -267,6 +275,29 @@ const (
 func parkedRoutes(basePath string) []string {
 	base := strings.TrimSuffix(basePath, "/")
 	return []string{"GET " + base + parkedPath, "POST " + base + resolvePath}
+}
+
+// sealing tells whether the serving modes of the service read the key ring: an entity has a secret or a pii field,
+// which an answer that the idempotency store keeps can hold (ST-SUP-RP14-LC12, ST-SUP-RP07-LC13); and gives the IDs
+// of the seal changes whose step is open, whose rows the controller seals (ST-SUP-RP10-LC50).
+func sealing(svc *types.ServiceDeclaration) (ring bool, seals []string) {
+	for _, e := range svc.Entities {
+		for _, f := range e.Fields {
+			ring = ring || f.Secret() || f.Sensitivity == "pii"
+		}
+	}
+	contracted := map[string]bool{}
+	for _, step := range svc.SchemaHistory {
+		if step.Phase == "contract" {
+			contracted[step.Change] = true
+		}
+	}
+	for _, change := range svc.SchemaChanges {
+		if change.Kind == "seal" && !contracted[change.ID] {
+			seals = append(seals, change.ID)
+		}
+	}
+	return ring, seals
 }
 
 // renderRuntimeWiring renders the runtime wiring package.

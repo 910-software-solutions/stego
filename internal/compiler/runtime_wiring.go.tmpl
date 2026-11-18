@@ -27,6 +27,9 @@ import (
 {{- end}}
 	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
+{{- if .Ring}}
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
+{{- end}}
 	"github.com/jsell-rh/stego/registry/runtime/service"
 
 	svcaudit {{printf "%q" .Audit}}
@@ -277,6 +280,14 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 		// The readable secret fields, which the controller moves to the first key of the key ring (ST-SUP-RP10-LC46).
 		Reseal: svcstorage.ResealColumns,
 {{- end}}
+{{- if .Ring}}
+		// A secret or a pii field: the service does not start without the key ring (ST-SUP-RP14-LC12).
+		KeyRing: true,
+{{- end}}
+{{- if .Seals}}
+		// The readable secret fields whose seal step is open, which the controller seals (ST-SUP-RP10-LC50).
+		Seal: svcstorage.SealColumns,
+{{- end}}
 		// The declared rules of the destinations that the outbox worker registers, which the resolver of the api mode
 		// applies to a parked message (ST-SUP-RP14-LC10).
 		Destinations: destinations(),
@@ -380,12 +391,15 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	if err != nil {
 		return nil, err
 	}
-{{- if .Secret}}
-	// The key ring of the secret fields, which each mode of this process reads and the migration job does not
-	// (ST-SUP-RP14-LC12); it also keys the fingerprints of the idempotency keys (ST-SUP-RP16-LC05).
-	if settings.Ring, err = service.ReadKeyRing(); err != nil {
+{{- if .Ring}}
+	// The key ring of the secret and pii fields, which each mode of this process reads and the migration job does not
+	// (ST-SUP-RP14-LC12); it also keys the fingerprints of the idempotency keys and seals their stored answers
+	// (ST-SUP-RP16-LC05, ST-SUP-RP07-LC13).
+	var ring *sealed.Ring
+	if ring, err = service.ReadKeyRing(); err != nil {
 		return nil, err
 	}
+	settings.Ring = ring
 {{- end}}
 	var workerSettings service.WorkerSettings
 	if selection.Has(modes.Worker) {
@@ -642,6 +656,10 @@ func Migrate(ctx context.Context) error {
 {{- if .Workers}}
 		// The lease row of each single worker (ST-SUP-RC35-OC05).
 		WorkerLeases: workerrunners.Leases(),
+{{- end}}
+{{- if .Seals}}
+		// The backfill lease of each open seal change, under which the controller seals (ST-SUP-RP10-LC50).
+		SealLeases: []string{ {{- range $i, $c := .Seals}}{{if $i}}, {{end}}{{printf "%q" $c}}{{end -}} },
 {{- end}}
 	})
 }

@@ -1022,3 +1022,42 @@ func TestUniqueEmission(t *testing.T) {
 		}
 	})
 }
+
+func TestSealingEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC23-T01 A field with an open seal step writes and reads both columns, and after the contract only its sealed column", func(t *testing.T) {
+		vault := types.Entity{Name: "Vault", Fields: []types.Field{
+			{Name: "title", Type: types.FieldTypeString},
+			{Name: "note", Type: types.FieldTypeString, Optional: true, Sensitivity: "secret"},
+		}}
+		changes := []types.SchemaChange{{ID: "vault-note-seal", Kind: "seal", Entity: "Vault", Field: "note", From: "pii"}}
+		render := func(history []types.SchemaStep) string {
+			entity := gen.SealedNames([]types.Entity{vault}, changes, history)[0]
+			p, err := planEntity(entity, map[string]types.Entity{"Vault": entity}, "tenant_id", Relations{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := &writer{}
+			renderEntity(w, p, "tenant_id")
+			return w.String()
+		}
+		open := render([]types.SchemaStep{{Change: "vault-note-seal", Phase: "expand"}})
+		for _, want := range []string{
+			`sealingNote := command.SealingAt("vaults", "note_sealed", &v.ID, &v.Note)`,
+			`err := row.Scan(&v.ID, &v.Title, sealingNote.Clear(), sealingNote.Sealed(), &m.Version, &m.Token)`,
+			`return []any{id, v.Title, command.ClearOf(v.Note), command.SealAt("vaults", "note_sealed", id, v.Note)}`,
+			`INSERT INTO public.\"vaults\" (\"tenant_id\", \"id\", \"title\", \"note\", \"note_sealed\") VALUES ($1, $2::uuid, $3, $4, $5)`,
+			`\"note\" = $6, \"note_sealed\" = $7`,
+			`"note": "note",`, `"note_sealed": "note",`,
+			"Sealed: true,",
+		} {
+			if !strings.Contains(open, want) {
+				t.Errorf("the entity with an open seal does not hold %s:\n%s", want, open)
+			}
+		}
+		closed := render([]types.SchemaStep{{Change: "vault-note-seal", Phase: "expand"}, {Change: "vault-note-seal", Phase: "contract"}})
+		if strings.Contains(closed, "SealingAt") || strings.Contains(closed, "ClearOf") || strings.Contains(closed, `\"note\",`) ||
+			!strings.Contains(closed, `command.OpenAt("vaults", "note_sealed", &v.ID, &v.Note)`) {
+			t.Errorf("the entity after the contract of its seal still names the clear column:\n%s", closed)
+		}
+	})
+}
