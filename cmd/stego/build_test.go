@@ -1266,3 +1266,60 @@ func TestBuildRecordThroughTheCommand(t *testing.T) {
 		}
 	})
 }
+
+// TestCheckBuildFillsGeneratedTree runs the source check of stego build on a copy of the example service with no
+// fills folder: the generated folder is checked also then (sec-420 INFO-3), with the output folder that the
+// generation state names (sec-420 INFO-4). The refusal of an output folder other than out is proved on
+// compiler.CheckGeneratedTree, since the state holds a digest of its options (TestRevisionFaultsGeneratedTree).
+func TestCheckBuildFillsGeneratedTree(t *testing.T) {
+	const t12 = "ST-EXT-UC02-R02-T12 stego build checks the generated folder of a service with no fill, and the output folder of its state"
+	example := filepath.Join("..", "..", "examples", "user-management")
+	project := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		for _, name := range []string{"service.yaml", "go.mod"} {
+			if err := copyFile(filepath.Join(example, name), filepath.Join(dir, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, name := range []string{".stego", "out"} {
+			if err := os.CopyFS(filepath.Join(dir, name), os.DirFS(filepath.Join(example, name))); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	t.Run(t12+": the generated folder of the example is accepted", func(t *testing.T) {
+		if err := checkBuildFills(project(t)); err != nil {
+			t.Fatalf("the source check refused the example with no fills folder: %v", err)
+		}
+	})
+	t.Run(t12+": a file that go build takes that is not a Go file is refused", func(t *testing.T) {
+		dir := project(t)
+		if err := os.WriteFile(filepath.Join(dir, "out", "internal", "api", "stub.s"), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		err := checkBuildFills(dir)
+		if err == nil || !strings.Contains(err.Error(), "the generated package out/internal/api holds stub.s, which is not a Go file") {
+			t.Fatalf("the source check gave %v, want a refusal of out/internal/api/stub.s", err)
+		}
+	})
+	t.Run(t12+": a state with no generation record is refused", func(t *testing.T) {
+		dir := project(t)
+		if err := os.Remove(filepath.Join(dir, ".stego", "state.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkBuildFills(dir); err == nil || !strings.Contains(err.Error(), "no complete generation state") {
+			t.Fatalf("the source check gave %v, want a refusal of the missing state", err)
+		}
+	})
+}
+
+// copyFile copies the regular file from to the new file to.
+func copyFile(from, to string) error {
+	data, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(to, data, 0o644)
+}
