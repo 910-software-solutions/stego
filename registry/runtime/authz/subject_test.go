@@ -110,7 +110,7 @@ func TestSubjects(t *testing.T) {
 	t.Run("ST-SUP-RP06-LC07-T02 A worker, a controller and the relay call with their own service account subject", func(t *testing.T) {
 		fake := &recorder{}
 		rt := newUnitRuntime(t, fake)
-		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: &fakeRelationships{}, DB: fakeDB(t),
+		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: &fakeRelationships{}, DB: fakeDB(t),
 			Schema: "public"})
 		if err != nil {
 			t.Fatal(err)

@@ -470,7 +470,7 @@ func (e *pgEnv) runtimeOf(t *testing.T, provider Decision, clock authzclock.Cloc
 
 func (e *pgEnv) relay(t *testing.T, relationships Relationships) *Relay {
 	t.Helper()
-	relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: relationships, DB: e.relayDB, Schema: e.schema,
+	relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: relationships, DB: e.relayDB, Schema: e.schema,
 		Owners: map[string]Owner{"document": {Table: "documents", Key: "id"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -1592,7 +1592,7 @@ func TestHandleWrites(t *testing.T) {
 			t.Fatalf("the call for a pending message changed the record to %s", got)
 		}
 		// The relay's state hook counts and alerts on a change that the function did not count.
-		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: &fakeRelationships{}, DB: env.relayDB,
+		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: &fakeRelationships{}, DB: env.relayDB,
 			Schema: env.schema, Meter: sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewManualReader()))})
 		if err != nil {
 			t.Fatal(err)
