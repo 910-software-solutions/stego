@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"slices"
@@ -939,6 +940,30 @@ func TestAlerts(t *testing.T) {
 	})
 }
 
+func TestFailureClass(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC36-T05 The failure class names the operation that failed at the broker, and no error text", func(t *testing.T) {
+		secret := errors.New("dial tcp 10.0.0.7:9093: the topic secret-orders refused alice")
+		cases := []struct {
+			err  error
+			want string
+		}{
+			{&opError{op: opDescribeConfigs, err: kerr.TopicAuthorizationFailed}, "broker:TOPIC_AUTHORIZATION_FAILED (describe-configs)"},
+			{&opError{op: opFetch, err: fmt.Errorf("fetch of a partition: %w", kerr.TopicAuthorizationFailed)}, "broker:TOPIC_AUTHORIZATION_FAILED (fetch)"},
+			{&opError{op: opFetch, err: kerr.GroupAuthorizationFailed}, "broker:GROUP_AUTHORIZATION_FAILED (fetch)"},
+			{&opError{op: opCommit, err: fmt.Errorf("%w: %w", errCommit, kerr.GroupAuthorizationFailed)}, "broker:GROUP_AUTHORIZATION_FAILED (commit)"},
+			{&opError{op: opCommit, err: fmt.Errorf("%w: %w", errCommit, secret)}, "broker (commit)"},
+			{&opError{op: opDescribeConfigs, err: secret}, "broker (describe-configs)"},
+			{fmt.Errorf("%w: %w", errDatabase, secret), "database"},
+			{secret, "broker"},
+		}
+		for _, c := range cases {
+			if got := failureClass(c.err); got != c.want {
+				t.Errorf("the class of %v is %q, want %q", c.err, got, c.want)
+			}
+		}
+	})
+}
+
 func TestFailing(t *testing.T) {
 	t.Run("ST-SUP-RP01-LC36-T04 Sessions that fail in a row make the inbox report its failure class and the gauge 1, and a session that reads clears both", func(t *testing.T) {
 		e := newEnv(t)
@@ -983,7 +1008,7 @@ func TestFailing(t *testing.T) {
 		for in.Failing() == "" {
 			time.Sleep(20 * time.Millisecond)
 		}
-		if class := in.Failing(); class != "broker:UNKNOWN_TOPIC_OR_PARTITION" || gauge() != 1 {
+		if class := in.Failing(); class != "broker:UNKNOWN_TOPIC_OR_PARTITION (describe-configs)" || gauge() != 1 {
 			t.Fatalf("the failing inbox gives the class %q and the gauge %d", class, gauge())
 		}
 		e.topicNamed(t, name)
