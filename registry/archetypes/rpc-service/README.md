@@ -11,10 +11,11 @@ through queries.
 1. Make the project:
 
    ```bash
-   stego init --archetype rpc-service
+   stego init --archetype rpc-service --module github.com/my-org/greeter
    ```
 
-   The scaffold holds one query, `get-greeting`, its fill and the fill's test,
+   Init writes `go.mod` with that module path, and each later command reads
+   it from there. The scaffold holds one query, `get-greeting`, its fill and the fill's test,
    one proto file and the schema `authz/schema.zed`.
 
 2. Check the declaration:

@@ -211,7 +211,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 		for path := range treeOf(t, project) {
 			paths = append(paths, path)
 		}
-		want := []string{"./", ".stego/", ".stego/.gitignore", ".stego/apply.lock", ".stego/config.yaml", "fills/", "service.yaml"}
+		want := []string{"./", ".stego/", ".stego/.gitignore", ".stego/apply.lock", ".stego/config.yaml", "fills/", "go.mod", "service.yaml"}
 		if strings.Join(sortStrings(paths), " ") != strings.Join(want, " ") {
 			t.Errorf("the project holds %v, want %v", sortStrings(paths), want)
 		}
@@ -256,7 +256,7 @@ func TestStartAServiceDeclaration(t *testing.T) {
 	})
 
 	t.Run("ST-DECL-UC01-R06-T04 A symbolic link at each path init would write is refused, naming the path", func(t *testing.T) {
-		for _, path := range []string{"service.yaml", ".stego/config.yaml", ".stego", ".stego/apply.lock", ".stego/.gitignore", "fills"} {
+		for _, path := range []string{"service.yaml", ".stego/config.yaml", ".stego", ".stego/apply.lock", ".stego/.gitignore", "fills", "go.mod"} {
 			project, outside := serviceFolder(t), t.TempDir()
 			if path != ".stego" {
 				putFile(t, project, ".stego/config.yaml", declaringConfig(t))
@@ -524,6 +524,85 @@ func TestArchetypeScaffolds(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-DECL-UC01-R01-T04 Init writes the go.mod of the module, and each later command reads the module from it", func(t *testing.T) {
+		// cleared leaves the module and the Go version to the command line and go.mod.
+		cleared := []string{"STEGO_MODULE=", "STEGO_GO_VERSION=", "GOWORK=off"}
+		read := func(t *testing.T, name string) string {
+			t.Helper()
+			data, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return string(data)
+		}
+		// --module comes before STEGO_MODULE, and the go.mod holds the module and the Go version only.
+		project := namedProject(t)
+		run := stegoIn(t, project, append(slices.Clone(cleared), "STEGO_MODULE=example.com/other"), "init", "--archetype", "rpc-service", "--module", "example.com/acme/greeter")
+		if run.code != 0 || !strings.Contains(run.stdout, "  go.mod\n") || !strings.Contains(run.stdout, "Module: example.com/acme/greeter (from --module)\n") {
+			t.Fatalf("stego init --module: exit %d, want exit 0, go.mod among the files it made and the module with its source: %s%s", run.code, run.stdout, run.stderr)
+		}
+		if got := read(t, filepath.Join(project, "go.mod")); got != "module example.com/acme/greeter\n\ngo 1.26.11\n" {
+			t.Errorf("init wrote the go.mod %q", got)
+		}
+		if got := read(t, filepath.Join(project, "fills", "get-greeting", "fill.go")); !strings.Contains(got, `"example.com/acme/greeter/out/`) {
+			t.Errorf("the example fill does not import the module of go.mod:\n%s", got)
+		}
+		// A later command with no STEGO_MODULE takes the module of go.mod: fill create, before any apply, writes the
+		// fill of the example query again.
+		if err := os.RemoveAll(filepath.Join(project, "fills", "get-greeting")); err != nil {
+			t.Fatal(err)
+		}
+		if run := stegoIn(t, project, cleared, "fill", "create", "get-greeting", "--slot", "query.query"); run.code != 0 {
+			t.Fatalf("stego fill create: exit %d: %s%s", run.code, run.stdout, run.stderr)
+		}
+		if got := read(t, filepath.Join(project, "fills", "get-greeting", "fill.go")); !strings.Contains(got, `"example.com/acme/greeter/out/`) {
+			t.Errorf("fill create did not import the module of go.mod:\n%s", got)
+		}
+		// A later command refuses a STEGO_MODULE that differs from go.mod, and names both.
+		run = stegoIn(t, project, append(slices.Clone(cleared), "STEGO_MODULE=example.com/other"), "validate")
+		if output := run.stdout + run.stderr; run.code == 0 || !strings.Contains(output, `"example.com/other"`) || !strings.Contains(output, `conflicts with the module "example.com/acme/greeter" of go.mod`) {
+			t.Errorf("stego validate with another STEGO_MODULE: exit %d, want a refusal that names both modules: %s", run.code, output)
+		}
+		// With no --module, init takes STEGO_MODULE, and with neither the default.
+		for env, want := range map[string]string{"STEGO_MODULE=example.com/from-env": "example.com/from-env", "STEGO_MODULE=": "github.com/example/service"} {
+			project := namedProject(t)
+			run := stegoIn(t, project, append(slices.Clone(cleared), env), "init", "--archetype", "rest-crud")
+			if run.code != 0 {
+				t.Fatalf("%s: stego init: exit %d: %s", env, run.code, run.stderr)
+			}
+			source := map[bool]string{true: "STEGO_MODULE", false: "the default"}[env != "STEGO_MODULE="]
+			if !strings.Contains(run.stdout, "Module: "+want+" (from "+source+")\n") {
+				t.Errorf("%s: stego init did not print the module with its source %s: %s", env, source, run.stdout)
+			}
+			if got := read(t, filepath.Join(project, "go.mod")); got != "module "+want+"\n\ngo 1.26.11\n" {
+				t.Errorf("%s: init wrote the go.mod %q", env, got)
+			}
+		}
+		// A go.mod that the project holds is the source: a --module that differs is refused and changes no file,
+		// and init with no --module keeps the go.mod as written and gives its module to the example content.
+		project = namedProject(t)
+		const own = "module example.com/mine\n\ngo 1.26.11\n\n// The author's own line.\n"
+		putFile(t, project, "go.mod", own)
+		before := treeOf(t, project)
+		run = stegoIn(t, project, cleared, "init", "--archetype", "rpc-service", "--module", "example.com/other")
+		if run.code == 0 || !strings.Contains(run.stderr, `conflicts with the module "example.com/mine" of go.mod`) {
+			t.Errorf("stego init --module with another go.mod: exit %d, want a refusal: %s", run.code, run.stderr)
+		}
+		if !reflect.DeepEqual(before, treeOf(t, project)) {
+			t.Errorf("the refused scaffold changed a file")
+		}
+		run = stegoIn(t, project, cleared, "init", "--archetype", "rpc-service")
+		if run.code != 0 || strings.Contains(run.stdout, "  go.mod\n") || !strings.Contains(run.stdout, "Module: example.com/mine (from the go.mod of the folder)\n") {
+			t.Fatalf("stego init beside a go.mod: exit %d, want exit 0 and no go.mod among the files it made: %s%s", run.code, run.stdout, run.stderr)
+		}
+		if got := read(t, filepath.Join(project, "go.mod")); got != own {
+			t.Errorf("init changed the go.mod of the project: %q", got)
+		}
+		if got := read(t, filepath.Join(project, "fills", "get-greeting", "fill.go")); !strings.Contains(got, `"example.com/mine/out/`) {
+			t.Errorf("the example fill does not import the module of the project's go.mod:\n%s", got)
+		}
+	})
+
 	t.Run("ST-DECL-UC01-R06-T07 An example file outside the declaration and the example folders, or in a hidden folder, is refused, naming the archetype and the path", func(t *testing.T) {
 		for _, target := range []string{
 			".github/workflows/evil.yml", ".stego/state.yaml", "fills/.hidden/fill.go", "proto/.env",
@@ -578,7 +657,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 	})
 
 	t.Run("ST-DECL-UC01-R01-T03 Init refuses a project folder whose name is not a service name, and writes nothing", func(t *testing.T) {
-		for _, name := range []string{"Greeter", "greeter_service", "-greeter", "001", "<img src=x onerror=alert(1)>"} {
+		for _, name := range []string{"Greeter", "greeter_service", "-greeter", "greeter-", "001", "<img src=x onerror=alert(1)>"} {
 			project := filepath.Join(t.TempDir(), name)
 			putFile(t, project, ".stego/config.yaml", declaringConfig(t))
 			before := treeOf(t, project)
@@ -688,7 +767,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 		for path := range treeOf(t, project) {
 			paths = append(paths, path)
 		}
-		want := []string{"./", ".stego/", ".stego/.gitignore", ".stego/apply.lock", ".stego/config.yaml", "fills/", "service.yaml"}
+		want := []string{"./", ".stego/", ".stego/.gitignore", ".stego/apply.lock", ".stego/config.yaml", "fills/", "go.mod", "service.yaml"}
 		if strings.Join(sortStrings(paths), " ") != strings.Join(want, " ") {
 			t.Errorf("the empty scaffold holds %v, want %v", sortStrings(paths), want)
 		}

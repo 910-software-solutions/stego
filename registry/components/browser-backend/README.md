@@ -79,16 +79,46 @@ the database and USAGE on the schema public, and a migration login that is a
 member of the owner role. Revoke the default PUBLIC grants on the database and
 on the schema public. The schema check refuses other attributes and grants, so
 use this SQL as it is. Replace `<service>` with the service name, with each `-`
-as `_`, and each password with a new secret.
+as `_`. Generation refuses a service name that gives a role name longer than
+the 63 bytes of a PostgreSQL name, because PostgreSQL cuts a longer name with
+no error.
 
 ```sql
 -- As a database administrator, connected to any database of the server:
 CREATE ROLE <service>_owner NOLOGIN NOINHERIT;
-CREATE ROLE <service>_runtime LOGIN NOINHERIT PASSWORD '<runtime password>';
-CREATE ROLE <service>_migrator LOGIN PASSWORD '<migration password>' IN ROLE <service>_owner;
+CREATE ROLE <service>_runtime LOGIN NOINHERIT;
+CREATE ROLE <service>_migrator LOGIN IN ROLE <service>_owner;
 CREATE DATABASE <service> OWNER <service>_owner;
 REVOKE ALL ON DATABASE <service> FROM PUBLIC;
 GRANT CONNECT ON DATABASE <service> TO <service>_runtime;
+```
+
+Then give each login a new secret in `psql`. First make sure that the server
+keeps secrets as SCRAM: `SHOW password_encryption` must give `scram-sha-256`.
+If it gives `md5`, do not go on; run `SET password_encryption =
+'scram-sha-256';` in the session first. The `\password` command asks for the
+secret and sends only its SCRAM verifier. The secret is then not in the SQL or
+the shell history, and the server log can hold only its SCRAM verifier:
+
+```psql
+SHOW password_encryption;
+\password <service>_runtime
+\password <service>_migrator
+```
+
+PostgreSQL gives CONNECT on the databases `postgres` and `template1` to PUBLIC.
+The block below revokes it, so that the runtime login cannot open them. It
+changes the server for each login: before you run it, grant CONNECT on these
+databases to each other login that uses them, such as a monitoring login or
+the `auth_query` login of PgBouncer. A database of another application where
+PUBLIC still has CONNECT stays open to the runtime login. The real limit is a
+`pg_hba.conf` rule such as `host <service> <service>_runtime <cidr>
+scram-sha-256`, with no other line that matches the role.
+
+```sql
+-- As a database administrator, after the grants to the other logins:
+REVOKE CONNECT ON DATABASE postgres FROM PUBLIC;
+REVOKE CONNECT ON DATABASE template1 FROM PUBLIC;
 ```
 
 ```sql

@@ -86,30 +86,35 @@ func writeRootFile(root *os.Root, name string, data []byte) (err error) {
 }
 
 func writeRootFileMode(root *os.Root, name string, data []byte, mode os.FileMode) error {
-	return publishRootFile(root, name, data, mode, true)
+	_, err := publishRootFile(root, name, data, mode, true)
+	return err
 }
 
 // createRootFile publishes complete bytes without replacing any existing path.
 func createRootFile(root *os.Root, name string, data []byte) error {
-	return publishRootFile(root, name, data, 0644, false)
+	_, err := publishRootFile(root, name, data, 0644, false)
+	return err
 }
 
-func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, replace bool) (err error) {
+// publishRootFile writes the bytes to a temporary file and then puts it at name. published tells whether this call
+// put the file at name, also when a later step fails: a caller that removes its own files after a failure removes
+// name only then, and never a file that another process put there first.
+func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, replace bool) (published bool, err error) {
 	if err := checkFilePath(root, name); err != nil {
-		return err
+		return false, err
 	}
 	directory := filepath.Dir(name)
 	if err := root.MkdirAll(directory, 0755); err != nil {
-		return err
+		return false, err
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		return fmt.Errorf("creating temporary file name: %w", err)
+		return false, fmt.Errorf("creating temporary file name: %w", err)
 	}
 	temporary := filepath.Join(directory, ".stego-write-"+hex.EncodeToString(nonce[:]))
 	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
 		if removeErr := root.Remove(temporary); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -125,19 +130,29 @@ func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, 
 	}
 	closeErr := file.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
-		return err
+		return false, err
+	}
+	if publishingFault != nil {
+		publishingFault(name)
 	}
 	if replace {
 		err = root.Rename(temporary, name)
 	} else {
 		err = root.Link(temporary, name)
 	}
-	if err == nil && publishedFault != nil {
+	if err != nil {
+		return false, err
+	}
+	if publishedFault != nil {
 		err = publishedFault(name)
 	}
-	return err
+	return true, err
 }
 
 // publishedFault is nil in a product build. A test sets it to make the write of a file fail after the file is
 // there, as when the removal of the temporary file fails.
 var publishedFault func(name string) error
+
+// publishingFault is nil in a product build. A test sets it to act as another process that puts a file at the name
+// after the checks of the caller and before this write puts its own file there.
+var publishingFault func(name string)

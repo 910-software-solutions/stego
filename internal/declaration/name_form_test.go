@@ -37,6 +37,7 @@ func TestNameForms(t *testing.T) {
 			{"a service name in upper case", "name: todo-svc", "name: Todo-svc", "name", "Todo-svc"},
 			{"a service name that starts with a hyphen", "name: todo-svc", "name: -todo", "name", "-todo"},
 			{"a service name that starts with a digit", "name: todo-svc", "name: \"001\"", "name", "001"},
+			{"a service name that ends with a hyphen", "name: todo-svc", "name: todo-", "name", "todo-"},
 			{"an entity name with a backtick", "  - name: Todo", "  - name: \"To`do\"", "entities[0].name", "To`do"},
 			{"an entity name in lower case", "  - name: Todo", "  - name: todo", "entities[0].name", "todo"},
 			{"a field name with a semicolon", "{name: title,", `{name: "ti;tle",`, "entities[0].fields[0].name", "ti;tle"},
