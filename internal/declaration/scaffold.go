@@ -20,6 +20,9 @@ func Scaffold(name, archetype, language string, example []byte, module, serviceP
 	if !serviceNameForm.MatchString(name) {
 		return nil, fmt.Errorf("the project folder name %q is not a service name: a service name is 1 to 63 lower-case letters, digits and hyphens, starts with a letter and does not end with a hyphen, because the Kubernetes Service and the database roles take it (ST-DECL-Q43); rename the folder and run stego init again", name)
 	}
+	if workerSuffixed(name) {
+		return nil, fmt.Errorf("the project folder name %q is not a service name: a service name does not end with %s, because %s; rename the folder and run stego init again", name, workerSuffix, workerSuffixReason)
+	}
 	if len(example) == 0 {
 		return yaml.Marshal(types.ServiceDeclaration{Kind: "service", Name: name, Archetype: archetype, Language: language, Entities: []types.Entity{}, Collections: []types.Collection{}})
 	}

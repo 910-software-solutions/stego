@@ -224,7 +224,7 @@ func stageRuntimeProxy(plan *Plan, stageRoot *os.Root, stage string) (string, er
 	if plan.runtime == nil || plan.registry == nil {
 		return "", nil
 	}
-	return writeRuntimeProxy(plan.registry, *plan.runtime, stageRoot, stage)
+	return writeRuntimeProxy(plan.registry.RuntimeFolder(), *plan.runtime, stageRoot, stage)
 }
 
 // runtimeProxyStager gives the RuntimeProxy port of a fill check (FillCheck.RuntimeProxy): it stages the runtime proxy
@@ -245,15 +245,14 @@ func runtimeProxyStager(reg *registry.Registry, archetype string) func(stage str
 			return "", err
 		}
 		defer stageRoot.Close()
-		return writeRuntimeProxy(reg, pin, stageRoot, stage)
+		return writeRuntimeProxy(reg.RuntimeFolder(), pin, stageRoot, stage)
 	}
 }
 
 // writeRuntimeProxy writes the module proxy folder of pin from the registry's runtime folder under stage, and the
-// hashes of the pin into the go.sum of stageRoot. It gives "" when the registry has no runtime folder or the folder
-// does not hold the pinned version.
-func writeRuntimeProxy(reg *registry.Registry, pin registry.RuntimePin, stageRoot *os.Root, stage string) (string, error) {
-	folder := reg.RuntimeFolder()
+// hashes of the pin into the go.sum of stageRoot. It gives "" when the registry has no runtime folder ("") or the
+// folder does not hold the pinned version. The .mod file it serves is the go.mod of the zip whose sum it checked.
+func writeRuntimeProxy(folder string, pin registry.RuntimePin, stageRoot *os.Root, stage string) (string, error) {
 	if folder == "" {
 		return "", nil
 	}
@@ -277,10 +276,7 @@ func writeRuntimeProxy(reg *registry.Registry, pin registry.RuntimePin, stageRoo
 	if archive.Sum != pin.Sum {
 		return "", os.RemoveAll(proxy)
 	}
-	modData, err := os.ReadFile(filepath.Join(folder, "go.mod"))
-	if err != nil {
-		return "", err
-	}
+	modData := archive.Mod
 	info := fmt.Sprintf("{\"Version\":%q}\n", pin.Version)
 	for name, data := range map[string][]byte{version + ".mod": modData, version + ".info": []byte(info), "list": []byte(pin.Version + "\n")} {
 		if err := os.WriteFile(filepath.Join(versions, name), data, 0o600); err != nil {
