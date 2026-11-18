@@ -166,6 +166,12 @@ func TestTenantGate(t *testing.T) {
 				Code string `json:"code"`
 			}
 			_ = json.Unmarshal(w.Body.Bytes(), &problem)
+			if w.Code != http.StatusUnauthorized && w.Header().Get("Content-Type") != "application/problem+json" {
+				t.Errorf("%s %s answered with %q, want a problem response", c.method, c.target, w.Header().Get("Content-Type"))
+			}
+			if w.Code == http.StatusMethodNotAllowed && w.Header().Get("Allow") != "GET, HEAD" {
+				t.Errorf("the 405 has Allow %q, want GET, HEAD", w.Header().Get("Allow"))
+			}
 			if w.Code != c.want || (c.code != "" && problem.Code != c.code) || reached != "" {
 				t.Errorf("%s %s (token %t) answered %d %s and reached %q, want %d %s and no handler", c.method, c.target, c.bearer,
 					w.Code, w.Body.String(), reached, c.want, c.code)

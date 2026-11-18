@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -196,6 +197,59 @@ func unrouted(router *http.ServeMux, r *http.Request) bool {
 	return pattern == ""
 }
 
+// notRouted serves a request that the main router matches to no route: the answer of the router, 404 or 405 with its
+// Allow header, in the one problem form of the service (ST-SUP-RC27-OC14, ST-SUP-RC27-OC17); any other answer of
+// the router, such as the redirect of a path that it cleans, goes out as the router gave it.
+func (tp *tenantProvisioning) notRouted(router *http.ServeMux, w http.ResponseWriter, r *http.Request) {
+	h, _ := router.Handler(r)
+	answer := &routerAnswer{header: http.Header{}}
+	h.ServeHTTP(answer, r)
+	if answer.status == http.StatusNotFound || answer.status == http.StatusMethodNotAllowed {
+		if allow := answer.header.Get("Allow"); allow != "" {
+			w.Header().Set("Allow", allow)
+		}
+		writeTenantProblem(w, answer.status, tp.problemType, "")
+		return
+	}
+	for name, values := range answer.header {
+		w.Header()[name] = values
+	}
+	if answer.status == 0 {
+		answer.status = http.StatusOK
+	}
+	w.WriteHeader(answer.status)
+	_, _ = w.Write(answer.body.Bytes())
+}
+
+// routerAnswer keeps the answer of the main router to a request of no route, which is small: a status, its headers
+// and a short body.
+type routerAnswer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (a *routerAnswer) Header() http.Header { return a.header }
+
+func (a *routerAnswer) WriteHeader(status int) {
+	if a.status == 0 {
+		a.status = status
+	}
+}
+
+func (a *routerAnswer) Write(b []byte) (int, error) {
+	if a.status == 0 {
+		a.status = http.StatusOK
+	}
+	if a.body.Len()+len(b) > maxRouterAnswer {
+		return len(b), nil
+	}
+	return a.body.Write(b)
+}
+
+// maxRouterAnswer bounds the body of the router's own answer that notRouted keeps.
+const maxRouterAnswer = 4096
+
 // gated serves next only for a request whose verified tenant is an active tenant of the tenant list, after the
 // verifier and before any handler, decision or fill; the two provisioning routes of the main router are exempt,
 // because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11), and a request that
@@ -204,8 +258,12 @@ func unrouted(router *http.ServeMux, r *http.Request) bool {
 // be read for another cause, with Cache-Control no-store.
 func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tp.exempted(router, r) || unrouted(router, r) {
+		if tp.exempted(router, r) {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if unrouted(router, r) {
+			tp.notRouted(router, w, r)
 			return
 		}
 		switch err := tp.admit(r.Context()); {
