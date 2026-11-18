@@ -20,3 +20,9 @@ definition service {
 	permission provision = operator
 	permission retire = operator
 }
+
+// The operators who resolve the parked messages of an outbox destination (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}

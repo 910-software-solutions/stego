@@ -62,6 +62,12 @@ const (
 	password = "crud-check"
 	schema   = `definition user {}
 
+// The operators who resolve a parked outbox message (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
 definition order {
 	relation owner: user
 	relation viewer: user

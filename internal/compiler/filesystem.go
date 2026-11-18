@@ -96,25 +96,26 @@ func createRootFile(root *os.Root, name string, data []byte) error {
 	return err
 }
 
-// publishRootFile writes the bytes to a temporary file and then puts it at name. published tells whether this call
-// put the file at name, also when a later step fails: a caller that removes its own files after a failure removes
-// name only then, and never a file that another process put there first.
-func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, replace bool) (published bool, err error) {
+// publishRootFile writes the bytes to a temporary file and then puts it at name. published is the identity of the
+// file that this call put at name, also when a later step fails, and nil when the call put no file there: a caller
+// that removes its own files after a failure removes name only then, and only while name is still that file
+// (os.SameFile), never a file that another process put there first or later (sec-419 LOW-1, sec-420 INFO-5).
+func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, replace bool) (published os.FileInfo, err error) {
 	if err := checkFilePath(root, name); err != nil {
-		return false, err
+		return nil, err
 	}
 	directory := filepath.Dir(name)
 	if err := root.MkdirAll(directory, 0755); err != nil {
-		return false, err
+		return nil, err
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		return false, fmt.Errorf("creating temporary file name: %w", err)
+		return nil, fmt.Errorf("creating temporary file name: %w", err)
 	}
 	temporary := filepath.Join(directory, ".stego-write-"+hex.EncodeToString(nonce[:]))
 	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer func() {
 		if removeErr := root.Remove(temporary); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
@@ -129,8 +130,11 @@ func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, 
 		writeErr = file.Sync()
 	}
 	closeErr := file.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
-		return false, err
+	// The identity of the file is that of the temporary file, read before the file is at name, so a file that
+	// another process puts at name later never takes its place.
+	identity, statErr := root.Lstat(temporary)
+	if err := errors.Join(writeErr, closeErr, statErr); err != nil {
+		return nil, err
 	}
 	if publishingFault != nil {
 		publishingFault(name)
@@ -141,12 +145,12 @@ func publishRootFile(root *os.Root, name string, data []byte, mode os.FileMode, 
 		err = root.Link(temporary, name)
 	}
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if publishedFault != nil {
 		err = publishedFault(name)
 	}
-	return true, err
+	return identity, err
 }
 
 // publishedFault is nil in a product build. A test sets it to make the write of a file fail after the file is
