@@ -17,9 +17,13 @@
 # Version 4.11.0 makes each write that names the caller's revocation in Authz-Revocation-After wait for it before
 # it decides (ST-SUP-RC20-OC49), and answers a unique violation of a declared key with 409 that names the fields of
 # the key (ST-SUP-RC20-OC50) (walkthrough 12, W12-B1 and W12-B11).
+# Version 4.13.0 keeps each field with writable create or never: an update, an upsert and a patch refuse another
+# value with a 400 validation problem that names the field, and refuse any member of a secret such field with no
+# compare; a create stores the default of a never field; and the OpenAPI document marks such a field readOnly in the
+# entity schema and gives the update its own request schema (ST-SUP-RC20-OC44 to ST-SUP-RC20-OC47).
 kind: component
 name: rest-api
-version: 4.12.0
+version: 4.13.0
 stage: ga
 output_namespace: internal/api
 

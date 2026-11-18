@@ -161,13 +161,22 @@ definition label {
 	permission view = owner
 	permission edit = owner
 }
+
+definition ticket {
+	relation folder: folder
+	relation owner: user
+	permission view = owner + folder->view
+	permission edit = owner + folder->edit
+}
 `
 )
 
-var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "meetings", "labels", "racks", "cards", "marks"}
+var tables = []string{"orders", "customers", "todos", "folders", "books", "settings", "events", "quotas", "meetings", "labels", "racks", "cards", "marks", "tickets"}
 
 // env is the running service: its database with the runtime role, its runtimes and its HTTP server.
 type env struct {
+	// ring is the key ring of the sealed secrets, which a check opens a stored secret with.
+	ring     *sealed.Ring
 	t        *testing.T
 	ctx      context.Context
 	admin    *sql.DB
@@ -451,6 +460,7 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	_, _ = rand.Read(ringKey)
 	ring, err := sealed.ParseRing([]byte("1 " + base64.StdEncoding.EncodeToString(ringKey)))
 	must(t, err)
+	e.ring = ring
 	commands, err := command.New(e.ctx, command.Config{DB: pool, AuditDB: auditDB, Outbox: queue, Authz: az, Audit: writer,
 		AuditSettings: settings, Service: "crud", ServiceVersion: "1.0.0", DeclarationVersion: "d1",
 		Entities: api.Entities(), Probes: probes, Ring: ring})
@@ -498,7 +508,14 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 	folderQuotas := api.NewFolderQuotasHandler(rt)
 	greenLabels := api.NewGreenLabelsHandler(rt)
 	folderRacks, rackCards, cardMarks := api.NewFolderRacksHandler(rt), api.NewRackCardsHandler(rt), api.NewCardMarksHandler(rt)
+	tickets := api.NewTicketsHandler(rt)
 	mux := http.NewServeMux()
+	// The fields of a ticket that a collection write cannot change (ST-SUP-RC20-OC44 to ST-SUP-RC20-OC46).
+	mux.HandleFunc("POST /api/v1/tickets", tickets.Create)
+	mux.HandleFunc("GET /api/v1/tickets/{id}", tickets.Read)
+	mux.HandleFunc("PUT /api/v1/tickets/{id}", tickets.Update)
+	mux.HandleFunc("PATCH /api/v1/tickets/{id}", tickets.Patch)
+	mux.HandleFunc("PUT /api/v1/tickets", tickets.Upsert)
 	// The routes of the parent chain of three levels, as the wiring of the generator gives them (ST-SUP-RC20-OC24).
 	mux.HandleFunc("POST /api/v1/folders/{folder_id}/racks", folderRacks.Create)
 	mux.HandleFunc("GET /api/v1/folders/{folder_id}/racks/{id}", folderRacks.Read)
@@ -3003,6 +3020,261 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		must(t, e.admin.QueryRowContext(e.ctx, `SELECT api_token FROM customers WHERE id = $1::uuid`, id).Scan(&stored))
 		if len(stored) == 0 || stored[0] != 1 || strings.Contains(string(stored), first) || strings.Contains(string(stored), second) {
 			t.Errorf("the source row does not hold the secret sealed, or holds it in clear")
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC44-T01 An update refuses a changed create or never field, names each, changes nothing, and keeps a field that the body leaves out or repeats", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a, other := e.as("u-1", tn), e.as("u-2", tn)
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1","meta":{"a":1},"due_at":"2026-12-01T10:00:00+02:00"}`)
+		// A command or a worker changes the never fields: the check writes them as the administrator.
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE tickets SET state = 'closed', rank = 3 WHERE id = $1::uuid`, id); err != nil {
+			t.Fatal(err)
+		}
+		kept := func(what string, r reply, title string) {
+			t.Helper()
+			object := r.object(t)
+			if r.status != http.StatusOK || object["title"] != title || object["sku"] != "s1" || object["state"] != "closed" || object["rank"] != float64(3) ||
+				object["due_at"] != "2026-12-01T08:00:00Z" || fmt.Sprint(object["meta"]) != "map[a:1]" {
+				t.Errorf("%s answered %d %s, want 200 with the title %s and the stored sku, state, rank, meta and due_at", what, r.status, r.body, title)
+			}
+			if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = $2 AND sku = 's1' AND state = 'closed' AND rank = 3 AND meta = '{"a":1}'::jsonb AND due_at = '2026-12-01T08:00:00Z'`, id, title); n != 1 {
+				t.Errorf("%s: %d ticket rows with the title %s and the stored values, want 1", what, n, title)
+			}
+		}
+		path := "/api/v1/tickets/" + id
+		kept("an update that leaves out each kept field", e.send(a, http.MethodPut, path, "", `{"folder_id":"`+folder+`","code":"c1","title":"second"}`), "second")
+		// A client sends back the row it read, with each member as the read gives it.
+		read := e.send(a, http.MethodGet, path, "", "")
+		if read.status != http.StatusOK {
+			t.Fatalf("the read answered %d %s, want 200", read.status, read.body)
+		}
+		row := read.object(t)
+		row["title"] = "third"
+		body, err := json.Marshal(row)
+		must(t, err)
+		kept("an update that sends back the read row", e.send(a, http.MethodPut, path, "", string(body)), "third")
+		kept("an update that repeats each stored value in another form", e.send(a, http.MethodPut, path, "",
+			`{"folder_id":"`+folder+`","code":"c1","title":"fourth","SKU":"s1","state":"closed","rank":3,"meta":{ "a" : 1.0 },"due_at":"2026-12-01T03:00:00-05:00"}`), "fourth")
+		refused := func(what, body string, fields ...string) {
+			t.Helper()
+			r := e.send(a, http.MethodPut, path, "", body)
+			var problem struct {
+				Errors []struct {
+					Field   string `json:"field"`
+					Message string `json:"message"`
+				} `json:"validation_errors"`
+			}
+			if r.status != http.StatusBadRequest || json.Unmarshal(r.body, &problem) != nil || len(problem.Errors) != len(fields) {
+				t.Errorf("%s answered %d %s, want 400 that names %v", what, r.status, r.body, fields)
+				return
+			}
+			for i, field := range fields {
+				if problem.Errors[i].Field != field || !strings.Contains(problem.Errors[i].Message, "cannot change") {
+					t.Errorf("%s: entry %d is %+v, want the field %s that a collection write cannot change", what, i, problem.Errors[i], field)
+				}
+			}
+			if strings.Contains(string(r.body), "s2") || strings.Contains(string(r.body), "secret") {
+				t.Errorf("%s: the problem quotes a value of the request: %s", what, r.body)
+			}
+		}
+		refused("an update that changes each kept field", `{"folder_id":"`+folder+`","code":"c1","title":"changed","sku":"s2","state":"open","rank":4,"meta":{"a":"secret"},"due_at":"2026-12-02T08:00:00Z"}`,
+			"sku", "state", "meta", "due_at", "rank")
+		refused("an update that changes sku in another case", `{"folder_id":"`+folder+`","code":"c1","title":"changed","Sku":"s2"}`, "sku")
+		refused("an update that clears rank", `{"folder_id":"`+folder+`","code":"c1","title":"changed","rank":null}`, "rank")
+		refused("an update that gives sku as null", `{"folder_id":"`+folder+`","code":"c1","title":"changed","sku":null}`, "sku")
+		kept("the row after the refused updates", e.send(a, http.MethodGet, path, "", ""), "fourth")
+		// A caller who may not edit the row gets 404, as for any update, and not the 400 of a kept field.
+		if r := e.send(other, http.MethodPut, path, "", `{"folder_id":"`+folder+`","code":"c1","title":"changed","sku":"s2"}`); r.status != http.StatusNotFound {
+			t.Errorf("an update of a caller who may not edit the row answered %d %s, want 404", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC45-T01 A create and an upsert that inserts store the default of a never field and refuse another value, and an upsert of a stored row keeps each kept field", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		problemNames := func(what string, r reply, fields ...string) {
+			t.Helper()
+			var problem struct {
+				Errors []struct {
+					Field   string `json:"field"`
+					Message string `json:"message"`
+				} `json:"validation_errors"`
+			}
+			if r.status != http.StatusBadRequest || json.Unmarshal(r.body, &problem) != nil || len(problem.Errors) != len(fields) {
+				t.Errorf("%s answered %d %s, want 400 that names %v", what, r.status, r.body, fields)
+				return
+			}
+			for i, field := range fields {
+				if problem.Errors[i].Field != field {
+					t.Errorf("%s: entry %d is %+v, want the field %s", what, i, problem.Errors[i], field)
+				}
+			}
+		}
+		// A create keeps the client's value of a create field and stores the default of each never field.
+		ticket := `{"folder_id":"` + folder + `","code":"%s","title":"t","sku":"s1"%s}`
+		problemNames("a create with another state than the default", e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), fmt.Sprintf(ticket, "c1", `,"state":"closed"`)), "state")
+		problemNames("a create with a rank", e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), fmt.Sprintf(ticket, "c1", `,"rank":5,"STATE":"closed"`)), "state", "rank")
+		if n := e.count(`SELECT count(*) FROM tickets WHERE code = 'c1' AND tenant_id = $1`, a.tenant.ID()); n != 0 {
+			t.Errorf("%d ticket rows of the refused creates, want 0", n)
+		}
+		created := e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), fmt.Sprintf(ticket, "c1", `,"state":"open","rank":null`))
+		if object := created.object(t); created.status != http.StatusCreated || object["sku"] != "s1" || object["state"] != "open" || object["rank"] != nil {
+			t.Errorf("a create that gives the default state and no rank answered %d %s, want 201 with sku s1, state open and no rank", created.status, created.body)
+		}
+		// An upsert that inserts acts as a create.
+		problemNames("an upsert that inserts with another state", e.send(a, http.MethodPut, "/api/v1/tickets", "", fmt.Sprintf(ticket, "u1", `,"state":"closed"`)), "state")
+		if n := e.count(`SELECT count(*) FROM tickets WHERE code = 'u1' AND tenant_id = $1`, a.tenant.ID()); n != 0 {
+			t.Errorf("%d ticket rows of the refused upsert, want 0", n)
+		}
+		inserted := e.send(a, http.MethodPut, "/api/v1/tickets", "", fmt.Sprintf(ticket, "u1", `,"meta":{"b":2}`))
+		if object := inserted.object(t); inserted.status != http.StatusCreated || object["sku"] != "s1" || object["state"] != "open" {
+			t.Fatalf("the upsert that inserts answered %d %s, want 201 with sku s1 and state open", inserted.status, inserted.body)
+		}
+		id := inserted.member(t, "id")
+		e.own(a, "ticket", id)
+		if _, err := e.admin.ExecContext(e.ctx, `UPDATE tickets SET state = 'closed' WHERE id = $1::uuid`, id); err != nil {
+			t.Fatal(err)
+		}
+		// An upsert of the stored row acts as an update: it keeps each kept field and refuses another value.
+		updated := e.send(a, http.MethodPut, "/api/v1/tickets", "", `{"folder_id":"`+folder+`","code":"u1","title":"second","sku":"s1"}`)
+		if object := updated.object(t); updated.status != http.StatusOK || object["id"] != id || object["title"] != "second" || object["state"] != "closed" || fmt.Sprint(object["meta"]) != "map[b:2]" {
+			t.Errorf("the upsert of the stored row answered %d %s, want 200 with the new title and the stored state and meta", updated.status, updated.body)
+		}
+		problemNames("an upsert of the stored row that changes sku and state", e.send(a, http.MethodPut, "/api/v1/tickets", "", `{"folder_id":"`+folder+`","code":"u1","title":"third","sku":"s2","state":"open"}`), "sku", "state")
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'second' AND sku = 's1' AND state = 'closed' AND meta = '{"b":2}'::jsonb`, id); n != 1 {
+			t.Errorf("%d ticket rows as the first upsert of the stored row left them, want 1", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC46-T01 A patch refuses a create or never field that the body names with another value, and changes nothing", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1"}`)
+		path := "/api/v1/tickets/" + id
+		if r := e.send(a, http.MethodPatch, path, "k-"+uuid.NewString(), `{"title":"second","sku":"s1","state":"open"}`); r.status != http.StatusOK || r.member(t, "title") != "second" {
+			t.Errorf("a patch that repeats the stored sku and state answered %d %s, want 200 with the new title", r.status, r.body)
+		}
+		for name, body := range map[string]string{
+			"sku":   `{"title":"third","sku":"s2"}`,
+			"state": `{"title":"third","State":"closed"}`,
+			"rank":  `{"title":"third","rank":1}`,
+			"meta":  `{"title":"third","meta":{}}`,
+		} {
+			r := e.send(a, http.MethodPatch, path, "k-"+uuid.NewString(), body)
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+name+`"`) {
+				t.Errorf("a patch %s answered %d %s, want 400 that names %s", body, r.status, r.body, name)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'second' AND sku = 's1' AND state = 'open' AND rank IS NULL AND meta IS NULL`, id); n != 1 {
+			t.Errorf("%d ticket rows as the first patch left them, want 1", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC44-T02 A secret kept field is refused whenever the body gives it, so the answer tells nothing of its value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		// A create may set a secret with writable create.
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1","pin":"1234"}`)
+		path := "/api/v1/tickets/" + id
+		// The secret is sealed at rest: the check compares the stored column with itself before and after.
+		sealedPin := func() string {
+			t.Helper()
+			var v string
+			must(t, e.admin.QueryRowContext(e.ctx, `SELECT coalesce(pin::text, '') FROM tickets WHERE id = $1::uuid`, id).Scan(&v))
+			return v
+		}
+		storedPin := sealedPin()
+		if storedPin == "" {
+			t.Fatal("the create stored no pin")
+		}
+		entries := func(r reply) string {
+			t.Helper()
+			var problem struct {
+				Errors []struct {
+					Field   string `json:"field"`
+					Message string `json:"message"`
+				} `json:"validation_errors"`
+			}
+			if json.Unmarshal(r.body, &problem) != nil {
+				return ""
+			}
+			return fmt.Sprint(problem.Errors)
+		}
+		full := func(pin string) string {
+			return `{"folder_id":"` + folder + `","code":"c1","title":"t","sku":"s1",` + pin + `}`
+		}
+		// The right value, a wrong value and null, through the update, the patch and the upsert of the stored row.
+		first := ""
+		for _, c := range []struct{ method, path, key, body string }{
+			{http.MethodPut, path, "", full(`"pin":"1234"`)},
+			{http.MethodPut, path, "", full(`"pin":"9999"`)},
+			{http.MethodPut, path, "", full(`"PIN":null`)},
+			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","pin":"1234"}`},
+			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","pin":"9999"}`},
+			{http.MethodPut, "/api/v1/tickets", "", full(`"pin":"1234"`)},
+			{http.MethodPut, "/api/v1/tickets", "", full(`"pin":null`)},
+		} {
+			r := e.send(a, c.method, c.path, c.key, c.body)
+			got := entries(r)
+			if r.status != http.StatusBadRequest || !strings.Contains(got, "pin") || !strings.Contains(got, "leave it out") || strings.Contains(string(r.body), "1234") {
+				t.Errorf("%s %s %s answered %d %s, want 400 that names pin and says to leave it out", c.method, c.path, c.body, r.status, r.body)
+			}
+			if first == "" {
+				first = got
+			} else if got != first {
+				t.Errorf("%s %s %s answered the entries %s, want the same entries %s as for the right value", c.method, c.path, c.body, got, first)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first'`, id); n != 1 || sealedPin() != storedPin {
+			t.Errorf("%d ticket rows with the first title, and the pin changed %v, after the refused writes; want 1 and the stored pin", n, sealedPin() != storedPin)
+		}
+		// A body that leaves the secret out, as a read row sent back does, keeps it.
+		read := e.send(a, http.MethodGet, path, "", "")
+		row := read.object(t)
+		if _, ok := row["pin"]; ok {
+			t.Fatalf("the read answers the secret: %s", read.body)
+		}
+		row["title"] = "second"
+		body, err := json.Marshal(row)
+		must(t, err)
+		if r := e.send(a, http.MethodPut, path, "", string(body)); r.status != http.StatusOK {
+			t.Errorf("an update that sends back the read row answered %d %s, want 200", r.status, r.body)
+		}
+		// The update seals the kept secret again, so the check opens it.
+		var held []byte
+		must(t, e.admin.QueryRowContext(e.ctx, `SELECT pin FROM tickets WHERE id = $1::uuid AND title = 'second'`, id).Scan(&held))
+		plain, err := e.ring.Open(held, sealed.Place{Tenant: a.tenant.ID(), Table: "tickets", Column: "pin", Row: id})
+		if err != nil || string(plain) != "1234" {
+			t.Errorf("the pin after the update opens to %q (%v), want the stored 1234", plain, err)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a, other := e.as("u-1", tn), e.as("u-2", tn)
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"held","title":"t","sku":"s1"}`)
+		// Each body breaks a kept field: a state other than the default.
+		var answers []reply
+		for _, code := range []string{"held", "free"} {
+			r := e.send(other, http.MethodPut, "/api/v1/tickets", "", `{"folder_id":"`+folder+`","code":"`+code+`","title":"x","sku":"s2","state":"closed"}`)
+			if r.status != http.StatusNotFound {
+				t.Errorf("the upsert of the key %s by a caller who may not edit the folder answered %d %s, want 404", code, r.status, r.body)
+			}
+			answers = append(answers, r)
+		}
+		if len(answers) == 2 && fmt.Sprint(answers[0].object(t)["title"], answers[0].object(t)["detail"]) != fmt.Sprint(answers[1].object(t)["title"], answers[1].object(t)["detail"]) {
+			t.Errorf("the answers differ: %s and %s", answers[0].body, answers[1].body)
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE code = 'free' AND tenant_id = $1`, a.tenant.ID()); n != 0 {
+			t.Errorf("%d ticket rows of the refused upsert, want 0", n)
 		}
 	})
 }
