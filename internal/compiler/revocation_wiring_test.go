@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// The service tests of the revocation wiring (ST-SUP-RC29-OC16 to OC19, ST-SUP-RC20-OC41): a service generated with
+// The service tests of the revocation wiring (ST-SUP-RC29-OC16 to OC19, ST-SUP-RC20-OC41, ST-SUP-RC33-OC10): a service generated with
 // stego apply from revocationService, built with the pinned Go, on a local PostgreSQL server. The check of
 // testdata/revocation_wiring/check runs in the module of the generated service: it starts a fake SpiceDB server and a
 // fake token key set in its own process, runs the migration job and the service binary, and drives the service over
@@ -41,7 +41,7 @@ definition service {
 
 // revocationService is the declaration of the service: the entity Document with resource type document, a public
 // create whose owner is the caller, and the collection documents; the commands share-document and unshare-document,
-// which write the relation document#viewer; idempotency on create; and the bounds of a wait for a revocation: a cap
+// which write the relation document#viewer; the query document-card, which reads one Document; idempotency on create; and the bounds of a wait for a revocation: a cap
 // of 3 s, at most 3 waits, and at most 2 of one tenant.
 const revocationService = `kind: service
 name: docs-svc
@@ -111,6 +111,14 @@ commands:
     route: POST /documents/{documentId}/unshare
     fill: unshare-document
     relationships_written: [document#viewer]
+queries:
+  - name: document-card
+    reads: [Document]
+    resource_type: document
+    permission: view
+    resource_member: documentId
+    route: GET /documents/{documentId}/card
+    fill: document-card
 `
 
 // TestRevocationWiring generates the service of revocationService with stego apply, builds it with the pinned Go,
@@ -186,4 +194,5 @@ func TestRevocationWiring(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC42-T01 A read that names the caller's write waits for it and shows it", passed)
 	t.Run("ST-SUP-RC20-OC42-T02 A wait does not open a denied row, and reads and the status route share the waiter limit", passed)
 	t.Run("ST-SUP-RC32-OC13-T01 A fill shares and unshares a document through the typed relation helpers", passed)
+	t.Run("ST-SUP-RC33-OC10-T01 A declared query that names the caller's write waits for it and shows it", passed)
 }
