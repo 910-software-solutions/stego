@@ -2506,6 +2506,9 @@ func TestGenerate_ErrorsFileGenerated(t *testing.T) {
 		if !strings.Contains(errorsContent, `"application/problem+json"`) {
 			t.Error("errors.go missing application/problem+json content type")
 		}
+		if !strings.Contains(errorsContent, `w.Header().Set("X-Content-Type-Options", "nosniff")`) {
+			t.Error("errors.go does not set X-Content-Type-Options nosniff on a problem")
+		}
 		if !strings.Contains(errorsContent, "func handleError(") {
 			t.Error("errors.go missing handleError function")
 		}
@@ -4459,11 +4462,11 @@ func TestRuntimeList(t *testing.T) {
 		}
 	})
 	t.Run("ST-SUP-RC20-OC09-T01 The emitted list handler clamps the page size", func(t *testing.T) {
-		inOrder(t, "orders List", list, "limit := 100", `r.URL.Query().Get("pageSize")`, "if err != nil || n < 1 {", "handleError(w, r, BadRequest(", "limit = min(n, query.MaxLimit)")
+		inOrder(t, "orders List", list, "limit := 100", `parameters.Get("pageSize")`, "if err != nil || n < 1 {", "handleError(w, r, BadRequest(", "limit = min(n, query.MaxLimit)")
 	})
 	t.Run("ST-SUP-RC20-OC09-T02 The emitted list handler parses every list parameter", func(t *testing.T) {
 		for _, name := range []string{"pageSize", "cursor", "orderBy", "fields", "search"} {
-			if !strings.Contains(list, `r.URL.Query().Get("`+name+`")`) {
+			if !strings.Contains(list, `parameters.Get("`+name+`")`) {
 				t.Errorf("the list does not read the parameter %s", name)
 			}
 		}
@@ -4486,9 +4489,9 @@ func TestRuntimeList(t *testing.T) {
 		}
 	})
 	t.Run("ST-SUP-RC20-OC10-T01 The emitted list handler refuses an order field that is not an entity field", func(t *testing.T) {
-		inOrder(t, "orders List", list, `listOrder(r.URL.Query().Get("orderBy"), map[string]bool{"sku": true, "qty": true})`, "handleError(w, r, BadRequest(err.Error()))")
+		inOrder(t, "orders List", list, `listOrder(parameters.Get("orderBy"), map[string]bool{"sku": true, "qty": true})`, "handleError(w, r, BadRequest(err.Error()))")
 		// A pii or secret field orders no list (ST-SUP-RP11-LC20).
-		if customers := handlerMethod(t, files, "customers", "List"); !strings.Contains(customers, `listOrder(r.URL.Query().Get("orderBy"), map[string]bool{"plan": true})`) {
+		if customers := handlerMethod(t, files, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true})`) {
 			t.Error("the customers list orders by a sensitive field")
 		}
 		helperRun(t, "TestOrderField")
@@ -4500,7 +4503,7 @@ func TestRuntimeList(t *testing.T) {
 		helperRun(t, "TestOrderDefault")
 	})
 	t.Run("ST-SUP-RC20-OC12-T01 The emitted list handler checks the field selection and keeps the identifier", func(t *testing.T) {
-		inOrder(t, "orders List", list, `listFields(r.URL.Query().Get("fields"), map[string]bool{"sku": true, "qty": true})`, "handleError(w, r, BadRequest(err.Error()))")
+		inOrder(t, "orders List", list, `listFields(parameters.Get("fields"), map[string]bool{"sku": true, "qty": true})`, "handleError(w, r, BadRequest(err.Error()))")
 		helperRun(t, "TestFieldsDeclared")
 	})
 	t.Run("ST-SUP-RC20-OC12-T02 The identifier stays in the field selection", func(t *testing.T) {
@@ -4508,6 +4511,13 @@ func TestRuntimeList(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC20-OC12-T03 A field selection removes the fields it did not name", func(t *testing.T) {
 		helperRun(t, "TestFieldsSelect")
+	})
+	t.Run("ST-SUP-RC20-OC51-T02 A list parses its query string once and refuses one that does not parse", func(t *testing.T) {
+		inOrder(t, "orders List", list, "parameters, detail := listQuery(r)", "handleError(w, r, BadRequest(detail))", `parameters.Get("pageSize")`)
+		helperRun(t, "TestListQuery")
+	})
+	t.Run("ST-SUP-RC20-OC51-T03 The detail cuts a parameter name on a character boundary and names a cut name once", func(t *testing.T) {
+		helperRun(t, "TestUnreadNames")
 	})
 }
 
@@ -4517,12 +4527,41 @@ const helperChecks = `package api
 
 import (
 	"encoding/json"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"example.com/helpers/query"
 )
 
 var declared = map[string]bool{"sku": true, "qty": true}
+
+func TestListQuery(t *testing.T) {
+	many := make([]string, 10001)
+	for i := range many {
+		many[i] = "k=1"
+	}
+	for _, raw := range []string{"a;pageSize=5", "%zz=1", "pageSize=5&" + strings.Join(many, "&")} {
+		if values, detail := listQuery(httptest.NewRequest("GET", "/orders?"+raw, nil)); values != nil || detail != "the query string is not valid" {
+			t.Errorf("the query string %.40s gave %v and %q, want the 400 of a query string that is not valid", raw, values, detail)
+		}
+	}
+	values, detail := listQuery(httptest.NewRequest("GET", "/orders?pageSize=5&search=a%3Db", nil))
+	if detail != "" || values.Get("pageSize") != "5" || values.Get("search") != "a=b" {
+		t.Errorf("a valid query string gave %v and %q", values, detail)
+	}
+}
+
+func TestUnreadNames(t *testing.T) {
+	// 63 bytes and then a character of 3 bytes: the cut keeps the 63 bytes and no part of the character.
+	long := strings.Repeat("p", 63) + "\u20ac" + "tail"
+	detail := unreadParameters(map[string][]string{long: {"1"}, long + "other": {"1"}})
+	want := "the list does not read the query parameter \"" + strings.Repeat("p", 63) + "\";"
+	if !strings.HasPrefix(detail, want) || !utf8.ValidString(detail) || strings.Contains(detail, "\\x") {
+		t.Errorf("two long names gave %q, want the one cut name %q", detail, want)
+	}
+}
 
 func TestOrderField(t *testing.T) {
 	for _, text := range []string{"price", "sku,price", "sku asc desc", ","} {
@@ -4608,7 +4647,7 @@ func helperRun(t *testing.T, name string) {
 	p := &crudProject{t: t, dir: t.TempDir()}
 	p.write("go.mod", []byte("module example.com/helpers\n\ngo 1.26.11\n"))
 	p.write("query/query.go", []byte("package query\n\nimport \"errors\"\n\ntype OrderBy struct {\n\tField      string\n\tDescending bool\n}\n\nvar ErrBadCursor = errors.New(\"bad cursor\")\n"))
-	p.write("api/helpers.go", []byte("package api\n\nimport (\n\t\"encoding/json\"\n\t\"errors\"\n\t\"slices\"\n\t\"strconv\"\n\t\"strings\"\n\n\t\"example.com/helpers/query\"\n)\n\n"+listOrderHelper))
+	p.write("api/helpers.go", []byte("package api\n\nimport (\n\t\"encoding/json\"\n\t\"errors\"\n\t\"net/http\"\n\t\"net/url\"\n\t\"slices\"\n\t\"strconv\"\n\t\"strings\"\n\t\"unicode/utf8\"\n\n\t\"example.com/helpers/query\"\n)\n\n"+listOrderHelper))
 	p.write("api/helpers_test.go", []byte(helperChecks))
 	output, err := p.goCommand(nil, "test", "-count=1", "-v", "-run", "^"+name+"$", "./api")
 	if err != nil || !strings.Contains(output, "--- PASS: "+name+" ") {

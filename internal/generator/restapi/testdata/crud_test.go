@@ -3363,6 +3363,39 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 			object, _ := item.(map[string]any)
 			noSecret("a list item", object)
 		}
+		// A replay of the create gives the stored answer, which holds no secret either (security review of PR #442,
+		// I2).
+		key := "k-" + uuid.NewString()
+		body := `{"name":"Kim","api_token":"tok-2","plan":"free","vault":{"pin":"8765"}}`
+		first := e.send(a, http.MethodPost, "/api/v1/customers", key, body)
+		replay := e.send(a, http.MethodPost, "/api/v1/customers", key, body)
+		if first.status != http.StatusCreated || replay.status != http.StatusCreated || replay.header.Get(idempotency.ReplayedHeader) != "true" {
+			t.Fatalf("the create and its replay answered %d and %d (replayed %q), want 201 and the replayed 201", first.status, replay.status, replay.header.Get(idempotency.ReplayedHeader))
+		}
+		noSecret("the replayed create answer", replay.object(t))
+		// An upsert that inserts and a patch answer the ticket with no member of its secret pin or of its
+		// compare-only secret recovery.
+		ticketSecret := func(what string, r reply) {
+			t.Helper()
+			for _, name := range []string{"pin", "recovery"} {
+				if _, ok := r.object(t)[name]; ok {
+					t.Errorf("%s holds the member %s of a secret field: %s", what, name, r.body)
+				}
+			}
+		}
+		folder := e.create(a, "folders", "folder", `{"name":"secrets"}`)
+		upserted := e.send(a, http.MethodPut, "/api/v1/tickets", "", `{"folder_id":"`+folder+`","code":"sec-1","title":"t","sku":"s1","pin":"2468"}`)
+		if upserted.status != http.StatusCreated && upserted.status != http.StatusOK {
+			t.Fatalf("the upsert answered %d %s, want 200 or 201", upserted.status, upserted.body)
+		}
+		ticketSecret("the upsert answer", upserted)
+		ticket := upserted.member(t, "id")
+		e.own(a, "ticket", ticket)
+		patched := e.send(a, http.MethodPatch, "/api/v1/tickets/"+ticket, "k-"+uuid.NewString(), `{"title":"t2"}`)
+		if patched.status != http.StatusOK {
+			t.Fatalf("the patch answered %d %s, want 200", patched.status, patched.body)
+		}
+		ticketSecret("the patch answer", patched)
 	})
 
 	t.Run("ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value", func(t *testing.T) {
@@ -3399,6 +3432,19 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 			}
 			if strings.HasPrefix(c.query, "limit") && !strings.Contains(got, "pageSize sets the page size") {
 				t.Errorf("a list with limit answered the detail %q, want it to name pageSize", got)
+			}
+		}
+		// A query string that does not parse is refused, not read in part: a ';', a bad escape, and more parameters
+		// than the url package takes, which r.URL.Query() gives as no parameter at all (security review of PR #442, L1).
+		var past strings.Builder
+		past.WriteString("pageSize=1")
+		for range 10001 {
+			past.WriteString("&k=1")
+		}
+		for _, query := range []string{"a;pageSize=1", "%zz=1&pageSize=1", past.String()} {
+			r := e.send(a, http.MethodGet, "/api/v1/todos?"+query, "", "")
+			if got := detail(r); r.status != http.StatusBadRequest || got != "the query string is not valid" || r.header.Get("X-Content-Type-Options") != "nosniff" {
+				t.Errorf("a list with the query string %.30s (%d bytes) answered %d %q, want 400 with nosniff that the query string is not valid", query, len(query), r.status, got)
 			}
 		}
 		// The parameters that the list reads are taken.
