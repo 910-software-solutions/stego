@@ -1202,12 +1202,22 @@ func TestCrud(t *testing.T) {
 
 	t.Run("ST-SUP-RC20-OC35-T03 A tenant in a query parameter is not accepted", func(t *testing.T) {
 		e := service(t)
-		tenantRoutes(e, e.as("u-1", newTenant()), func(r *http.Request) {
+		a := e.as("u-1", newTenant())
+		tenantRoutes(e, a, func(r *http.Request) {
+			// A list refuses a query parameter that it does not read (ST-SUP-RC20-OC51), so it is sent below.
+			if r.Method == http.MethodGet && strings.Count(r.URL.Path, "/") == 3 {
+				return
+			}
 			q := r.URL.Query()
 			q.Set("tenant", "t2")
 			q.Set("tenant_id", "t2")
 			r.URL.RawQuery = q.Encode()
 		})
+		for _, collection := range []string{"orders", "customers", "todos"} {
+			if r := e.send(a, http.MethodGet, "/api/v1/"+collection+"?tenant=t2&tenant_id=t2", "", ""); r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `\"tenant\", \"tenant_id\"`) {
+				t.Errorf("a list of %s with a tenant in the query answered %d %s, want 400 that names tenant and tenant_id", collection, r.status, r.body)
+			}
+		}
 	})
 
 	t.Run("ST-SUP-RC20-OC35-T04 A tenant in a body field is not accepted", func(t *testing.T) {
@@ -3349,6 +3359,48 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		for _, item := range items {
 			object, _ := item.(map[string]any)
 			noSecret("a list item", object)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		e.create(a, "todos", "todo", `{"title":"t1"}`)
+		detail := func(r reply) string {
+			t.Helper()
+			var problem struct {
+				Detail string `json:"detail"`
+			}
+			if json.Unmarshal(r.body, &problem) != nil {
+				return ""
+			}
+			return problem.Detail
+		}
+		many := ""
+		for i := range 12 {
+			many += fmt.Sprintf("&x%02d=v", i)
+		}
+		long := strings.Repeat("p", 100)
+		for _, c := range []struct{ query, want, absent string }{
+			{"limit=SECRET-VALUE", `"limit"`, "SECRET-VALUE"},
+			{"PageSize=1", `"PageSize"`, ""},
+			{"zz=1&page_size=1&pageSize=1", `"page_size", "zz"`, ""},
+			{"tenant=t2", `"tenant"`, ""},
+			{many[1:], `"x09" and 2 more`, `"x10"`},
+			{long + "=1", `"` + strings.Repeat("p", 64) + `"`, strings.Repeat("p", 65)},
+		} {
+			r := e.send(a, http.MethodGet, "/api/v1/todos?"+c.query, "", "")
+			got := detail(r)
+			if r.status != http.StatusBadRequest || !strings.Contains(got, c.want) || (c.absent != "" && strings.Contains(string(r.body), c.absent)) {
+				t.Errorf("a list with %.60s answered %d %s, want 400 whose detail names %s", c.query, r.status, r.body, c.want)
+			}
+			if strings.HasPrefix(c.query, "limit") && !strings.Contains(got, "pageSize sets the page size") {
+				t.Errorf("a list with limit answered the detail %q, want it to name pageSize", got)
+			}
+		}
+		// The parameters that the list reads are taken.
+		if r := e.send(a, http.MethodGet, "/api/v1/todos?pageSize=1&orderBy=title&fields=title&search=&cursor=", "", ""); r.status != http.StatusOK {
+			t.Errorf("a list with only the parameters that it reads answered %d %s, want 200", r.status, r.body)
 		}
 	})
 

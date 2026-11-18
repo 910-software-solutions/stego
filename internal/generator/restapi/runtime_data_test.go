@@ -731,6 +731,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC44-T02 A secret kept field is refused whenever the body gives it, so the answer tells nothing of its value",
 	"ST-SUP-RC20-OC48-T03 A compare-only secret with writable never is refused whenever a body gives it, and no write stores it",
 	"ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one",
+	"ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value",
 	"ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not",
 	"ST-SUP-RC20-OC37-T01 A collection create runs as a command",
 	"ST-SUP-RC20-OC37-T02 A refusing before slot stops the command before any write",
