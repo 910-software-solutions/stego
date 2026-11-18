@@ -371,8 +371,9 @@ already declared `sensitivity: secret` and that a release before runtime
 v0.135.0 (postgres-adapter 6.13.0) stored in clear; see [Seal the secret
 fields of a release before runtime v0.135.0](upgrade.md#seal-the-secret-fields-of-a-release-before-runtime-v01350). A seal is only of a
 readable secret: a `compare_only` field needs a hash, and a seal does not make
-one. No other schema change may name a sealed field, and a field has one seal
-only. Keep the other attributes of the field as the base has them: the
+one. A field has one seal only, and no other schema change may name a sealed
+field, but an add or a relax before the seal, which finish at their expand
+steps. Keep the other attributes of the field as the base has them: the
 baseline with the seal undone is the field in clear, so `001_initial` stays
 the same.
 
@@ -393,6 +394,8 @@ While the step is open:
   contract step.**
 - A read takes the clear value when the two columns differ, because only a
   release before writes the clear column alone.
+- `stego plan` lists the step with the backfill `the seal job of the
+  controller under the lease stego.backfill.<change ID>`.
 - The controller runs the seal job each 10 minutes, under the lease
   `stego.backfill.<change ID>`. It reads 100 rows at a time in ID order, in
   the transaction of each tenant, seals each row whose sealed value is not

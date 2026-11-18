@@ -305,8 +305,8 @@ it sealed, in a `bytea` column. The database holds the rows in clear, so the
 newer release must move them with a seal step (decision ST-DECL-Q44). Without
 it, `stego compat --base` and `stego plan --base` refuse the release with the
 fault `the head stores <Entity>.<field> sealed, which the base stores in
-clear`, and its suggested change is a seal. The check reads the version of
-postgres-adapter in `.stego/state.yaml` of the base.
+clear`, and its suggested change is a seal `with from: secret`. The check reads
+the version of postgres-adapter in `.stego/state.yaml` of the base.
 
 1. Make the Secret `<service>-secret-key-ring` before you deploy. See [The key
    ring](operations.md#the-key-ring). `stego env check` names it when it is
