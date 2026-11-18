@@ -4,15 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
+	"strings"
+	"time"
 
+	"github.com/google/uuid"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // RPC is what the generated code gives ServeRPC for one query that a unary gRPC method serves: only what varies with
@@ -88,6 +97,10 @@ func ServeRPC[In any, Out proto.Message, Req, Res, P any](rt *Runtime, s RPC[In,
 		if err != nil {
 			return none, status.Error(codes.InvalidArgument, "bad_request")
 		}
+		// A query after the caller's own write waits for its revocation before the read (ST-SUP-RP11-LC22).
+		if err := rt.AwaitWriteRPC(ctx, b.Tenant, b.Principal); err != nil {
+			return none, awaitError(ctx, err)
+		}
 		ran = true
 		res, err := Run(ctx, rt, s.Query, b, req, s.Fill)
 		if err != nil {
@@ -125,6 +138,35 @@ type StreamRPC[In any, Out proto.Message, Req, T, P any] struct {
 	NewMessage func() Out
 	// Refusal is the refusal lookup of the query. Nil knows no refusal.
 	Refusal func(err error) (status int, code string, ok bool)
+	// Runtime is the query runtime, whose AwaitWriteRPC the stream calls when the request metadata names the
+	// caller's revocation (ST-SUP-RP11-LC22). A stream with no runtime answers such a call Internal.
+	Runtime *Runtime
+}
+
+// awaitStream is AwaitWriteRPC of the runtime rt of a stream; with no runtime, a call that names a revocation is an
+// error, and one that names none waits for nothing.
+func awaitStream[P any](ctx context.Context, rt *Runtime, b Bound[P]) error {
+	if rt == nil {
+		md, _ := metadata.FromIncomingContext(ctx)
+		if len(md.Get(authz.RevocationAfterMetadata)) == 0 {
+			return nil
+		}
+		return errors.New("query: the stream has no runtime to wait for a revocation")
+	}
+	return rt.AwaitWriteRPC(ctx, b.Tenant, b.Principal)
+}
+
+// awaitError is the gRPC status of an error of AwaitWriteRPC: InvalidArgument bad_request for a bad value, the status
+// of the context for a call that its client cancelled or whose deadline passed, with no internal code (review of PR
+// #428, L1), and Internal for every other error.
+func awaitError(ctx context.Context, err error) error {
+	switch {
+	case errors.Is(err, ErrBadRequest):
+		return status.Error(codes.InvalidArgument, "bad_request")
+	case ctx.Err() != nil:
+		return status.FromContextError(ctx.Err()).Err()
+	}
+	return internal(ctx)
 }
 
 // ServeStream returns the server stream handler of the query that s declares (ST-SUP-RP11-LC19): it binds the
@@ -152,6 +194,14 @@ func ServeStream[In any, Out proto.Message, Req, T, P any](s StreamRPC[In, Out, 
 				b.Call.Rollback()
 			}
 			return status.Error(codes.InvalidArgument, "bad_request")
+		}
+		// A stream after the caller's own write waits for its revocation before the read (ST-SUP-RP11-LC22).
+		if err := awaitStream(ctx, s.Runtime, b); err != nil {
+			if b.Call != nil {
+				b.Call.Returned()
+				b.Call.Rollback()
+			}
+			return awaitError(ctx, err)
 		}
 		var sendErr error
 		_, err = s.Stream(ctx, b, req, func(value T) error {
@@ -211,15 +261,7 @@ func internal(ctx context.Context) error {
 // rpcError maps an error of Run or RunStream to its gRPC status, as Serve maps it to an HTTP status: a declared
 // refusal to the code of its status with its fixed code as the message, and the completion log gets the fixed code.
 func rpcError(ctx context.Context, err error, refusal func(error) (int, string, bool)) error {
-	httpStatus, code := statusOf(err), ""
-	if refusal != nil {
-		if declared, declaredCode, ok := refusal(err); ok && declared >= 400 && declared <= 599 {
-			httpStatus, code = declared, declaredCode
-		}
-	}
-	if code == "" && httpStatus == http.StatusInternalServerError {
-		code = ErrorCodeInternal
-	}
+	httpStatus, code := answerOf(err, refusal)
 	otel.SetErrorCode(ctx, code)
 	message := code
 	if message == "" {
@@ -254,4 +296,49 @@ func rpcCode(httpStatus int) codes.Code {
 		return codes.Unavailable
 	}
 	return codes.Internal
+}
+
+// AwaitWriteRPC is AwaitWrite for a gRPC call (ST-SUP-RP11-LC22, ST-SUP-Q163): it waits for the revocation of the
+// caller's own write that the request metadata authz-revocation-after names, by its identity or by the path of
+// authz-revocation-location, before the read opens its transaction. It waits through authz WaitFor at most the wait
+// of the request metadata prefer (wait=N) when the call gives one, at most the wait cap, and at most half the time
+// that the deadline of the call leaves, so the read itself still has time. It sends the state that it read last in
+// the header metadata authz-revocation, and unknown for a revocation that is not one of tenant t and principal p. A
+// call with no such metadata waits for nothing. A value that is not an identity, and more than one value, is
+// ErrBadRequest; a call that its client cancelled ends with the error of its context.
+func (rt *Runtime) AwaitWriteRPC(ctx context.Context, t tenant.Tenant, p authz.Principal) error {
+	md, _ := metadata.FromIncomingContext(ctx)
+	values := md.Get(authz.RevocationAfterMetadata)
+	if len(values) == 0 {
+		return nil
+	}
+	if len(values) != 1 {
+		return fmt.Errorf("%w: more than one %s value", ErrBadRequest, authz.RevocationAfterMetadata)
+	}
+	text := strings.TrimPrefix(values[0], authz.RevocationPath)
+	id, err := uuid.Parse(text)
+	if err != nil || id.String() != text {
+		return fmt.Errorf("%w: %s is not the identity of a revocation", ErrBadRequest, authz.RevocationAfterMetadata)
+	}
+	if rt.authz == nil {
+		return errors.New("query: no authorization runtime to wait for a revocation")
+	}
+	wait, ok := authz.PreferWait(http.Header{"Prefer": md.Get(authz.PreferMetadata)})
+	if !ok {
+		wait = math.MaxInt64
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		wait = min(wait, time.Until(deadline)/2)
+	}
+	state := RevocationUnknown
+	status, _, err := rt.authz.WaitFor(ctx, t, p, id, wait)
+	switch {
+	case errors.Is(err, authz.ErrRevocationNotFound):
+	case err != nil:
+		return err
+	default:
+		state = string(status.State)
+	}
+	_ = grpc.SetHeader(ctx, metadata.Pairs(authz.RevocationMetadata, state))
+	return nil
 }

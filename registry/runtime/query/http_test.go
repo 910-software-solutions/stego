@@ -6,16 +6,20 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
@@ -396,3 +400,38 @@ func TestServe(t *testing.T) {
 		}
 	})
 }
+
+func TestUnavailableAnswer(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC43-T02 A query read that the database cannot serve now is 503 unavailable with Retry-After, and Unavailable over gRPC", func(t *testing.T) {
+		refused := fmt.Errorf("tenant: begin the transaction of tenant t1: %w", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
+		shutdown := fmt.Errorf("query: read order: %w", sqlState("57P01"))
+		for name, err := range map[string]error{"a refused connection": refused, "a server that shuts down": shutdown} {
+			if status, code := answerOf(err, nil); status != http.StatusServiceUnavailable || code != ErrorCodeUnavailable || !Transient(err) {
+				t.Fatalf("%s gave %d %q (transient %v), want 503 unavailable", name, status, code, Transient(err))
+			}
+			grpcErr := rpcError(context.Background(), err, nil)
+			if status.Code(grpcErr) != codes.Unavailable || status.Convert(grpcErr).Message() != ErrorCodeUnavailable {
+				t.Fatalf("%s over gRPC gave %v, want Unavailable with the code unavailable", name, grpcErr)
+			}
+			w := httptest.NewRecorder()
+			status, code := answerOf(err, nil)
+			writeCodedProblem(w, status, code)
+			if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" || strings.Contains(w.Body.String(), "refused") {
+				t.Fatalf("%s over HTTP gave %d %v %s, want 503 with Retry-After and no error text", name, w.Code, w.Header(), w.Body)
+			}
+		}
+		// An undecided read keeps its own message, and a statement that the server refuses stays 500 internal.
+		if status, code := answerOf(&undecidedError{transient: true}, nil); status != http.StatusServiceUnavailable || code != "" {
+			t.Fatalf("an undecided read gave %d %q, want 503 with no code", status, code)
+		}
+		if status, code := answerOf(fmt.Errorf("query: read: %w", sqlState("42703")), nil); status != http.StatusInternalServerError || code != ErrorCodeInternal {
+			t.Fatalf("an undefined column gave %d %q, want 500 internal", status, code)
+		}
+	})
+}
+
+// sqlState is a database error with a SQLSTATE, as the driver gives it.
+type sqlState string
+
+func (s sqlState) Error() string    { return "sqlstate " + string(s) }
+func (s sqlState) SQLState() string { return string(s) }

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"regexp"
@@ -561,12 +562,20 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 		if isConflict(ctx, err) {
 			return Result{}, &conflictError{text: "the transaction did not begin before the deadline"}, true
 		}
+		if tenant.Unavailable(err) {
+			logUnavailable(ctx, cmd.spec.Name, "begin")
+			return Result{}, unavailablef("the transaction did not begin"), false
+		}
 		return Result{}, internalf("the transaction did not begin"), false
 	}
 	if err := rt.markStep(ctx, tx); err != nil {
 		_ = tx.Rollback()
 		if isConflict(ctx, err) {
 			return Result{}, &conflictError{text: "the transaction did not begin before the deadline"}, true
+		}
+		if tenant.Unavailable(err) {
+			logUnavailable(ctx, cmd.spec.Name, "begin")
+			return Result{}, unavailablef("the transaction did not begin"), false
 		}
 		return Result{}, internalf("the transaction did not begin"), false
 	}
@@ -599,6 +608,10 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	if err := s.setLockTimeout(ctx); err != nil {
 		if isConflict(ctx, err) {
 			return Result{}, s.fail(ctx, "lock timeout", err), true
+		}
+		if tenant.Unavailable(err) {
+			logUnavailable(ctx, cmd.spec.Name, "lock timeout")
+			return Result{}, unavailablef("the lock timeout was not set"), false
 		}
 		return Result{}, internalf("the lock timeout was not set"), false
 	}
@@ -649,6 +662,9 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	switch {
 	case errors.As(err, &failure):
 		return Result{}, failure.err, failure.conflict
+	case err != nil && tenant.Unavailable(err):
+		logUnavailable(ctx, cmd.spec.Name, "idempotency")
+		return Result{}, unavailablef("the idempotency wrapper failed"), false
 	case err != nil:
 		// A statement of the wrapper itself failed: an internal error, never a conflict (ST-SUP-RP10-LC25).
 		return Result{}, internalf("the idempotency wrapper failed"), false
@@ -665,6 +681,19 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	outcome = otel.OutcomeCommitted
 	call.Commit()
 	return Result{Response: wrapped.Response}, nil, false
+}
+
+// unavailableLog holds back the log of a step that the database could not serve to one line for each action and step
+// in each authz.LogEvery.
+var unavailableLog = authz.NewCauseLog(nil)
+
+// logUnavailable logs that the database could not serve the step of the command action now, with no error text, so
+// a 503 of an outage is never an answer that no log explains (walkthrough 10, B7).
+func logUnavailable(ctx context.Context, action, step string) {
+	if ok, held := unavailableLog.Allow(action + "/" + step); ok {
+		slog.WarnContext(ctx, "command: the database cannot serve now", "action", action, "step", step,
+			"cause", "unavailable", "held_back", held)
+	}
 }
 
 // answerRevocation sets the revocation headers of a response that commits (ST-SUP-RP10-LC35, ST-SUP-RC29-OC16):

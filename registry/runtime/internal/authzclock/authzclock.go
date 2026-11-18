@@ -28,6 +28,9 @@ type WaitClock interface {
 type Clocks struct {
 	Retention Clock
 	Wait      WaitClock
+	// Decision bounds each call of the decision provider with the decision time limit. It is apart from Wait, so a
+	// test of the waits sees only their bounds.
+	Decision WaitClock
 }
 
 // set is the setter that the authz package registers when it starts.

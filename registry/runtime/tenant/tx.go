@@ -3,11 +3,14 @@ package tenant
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -26,6 +29,47 @@ const setTenantStatement = "SELECT pg_catalog.set_config('app.tenant', $1, true)
 
 // readTenantStatement reads the tenant setting of the connection, with the function named with its schema.
 const readTenantStatement = "SELECT pg_catalog.current_setting('app.tenant', true)"
+
+// Unavailable reports whether err tells that the database cannot serve now, so a retry later may pass: a
+// connection that the server refused, reset or closed, a lost or broken connection of the pool, a connection that
+// could not be made in time, a server that shuts down or does not accept connections yet, and a server with no free
+// connection (SQLSTATE class 08, 57P01, 57P02, 57P03 and 53300). An error that tells so itself, through a method
+// Unavailable() bool, counts too. A statement that the server refuses for its values or its schema, a conflict and a
+// cancel of the caller are not unavailable. A handler answers it 503 with Retry-After, or Unavailable over gRPC
+// (walkthrough 10, B7).
+func Unavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var marked interface{ Unavailable() bool }
+	if errors.As(err, &marked) {
+		return marked.Unavailable()
+	}
+	var coded interface{ SQLState() string }
+	if errors.As(err, &coded) {
+		code := coded.SQLState()
+		switch {
+		case strings.HasPrefix(code, "08"), code == "57P01", code == "57P02", code == "57P03", code == "53300":
+			return true
+		case code != "":
+			return false
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var opError *net.OpError
+	var dnsError *net.DNSError
+	switch {
+	case errors.Is(err, driver.ErrBadConn), errors.Is(err, sql.ErrConnDone), errors.Is(err, net.ErrClosed),
+		errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF),
+		errors.Is(err, syscall.ECONNREFUSED), errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE),
+		errors.Is(err, syscall.ECONNABORTED), errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH),
+		errors.As(err, &opError), errors.As(err, &dnsError):
+		return true
+	}
+	return false
+}
 
 // Begin opens a transaction on db and sets its tenant with SELECT set_config('app.tenant', $1, true) as the first
 // statement, before the caller's first statement (ST-SUP-RP04-LC03). It refuses the zero tenant before it sends a

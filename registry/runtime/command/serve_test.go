@@ -116,6 +116,15 @@ func TestServe(t *testing.T) {
 			{name: "another error", resource: "o5", status: http.StatusInternalServerError, code: "internal",
 				rpc: codes.Internal, outcome: "failed", auditErr: "internal",
 				fill: func(context.Context, *Handle[testProbe]) error { return errors.New("no stock for " + secret) }},
+			// A permission that the provider could not decide now, such as past the decision time limit, and a
+			// database that cannot serve now are 503 with Retry-After and Unavailable over gRPC (walkthrough 10, B5
+			// and B7).
+			{name: "a permission that could not be decided now", resource: "o5", status: http.StatusServiceUnavailable,
+				code: "undecided", rpc: codes.Unavailable, outcome: "failed", auditErr: "undecided",
+				fill: func(context.Context, *Handle[testProbe]) error { return ErrUndecided }},
+			{name: "a database that cannot serve now", resource: "o5", status: http.StatusServiceUnavailable,
+				code: "unavailable", rpc: codes.Unavailable, outcome: "failed", auditErr: "unavailable",
+				fill: func(context.Context, *Handle[testProbe]) error { return unavailablef("the statement failed") }},
 			{name: "a refusal that the fill made itself", resource: "o5", status: http.StatusInternalServerError,
 				code: "internal", rpc: codes.Internal, outcome: "failed", auditErr: "internal",
 				fill: func(context.Context, *Handle[testProbe]) error {
@@ -148,6 +157,9 @@ func TestServe(t *testing.T) {
 			answer, _ := io.ReadAll(w.Result().Body)
 			if w.Code != c.status || strings.Contains(string(answer), secret) {
 				t.Fatalf("%s over HTTP gave %d %s, want %d with no error text", c.name, w.Code, answer, c.status)
+			}
+			if retry := w.Header().Get("Retry-After"); (c.status == http.StatusServiceUnavailable) != (retry != "") {
+				t.Fatalf("%s over HTTP gave Retry-After %q with %d, want it only with 503", c.name, retry, w.Code)
 			}
 			if c.code != "" {
 				var p map[string]any

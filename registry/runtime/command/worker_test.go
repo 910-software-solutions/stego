@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1787,6 +1788,42 @@ func TestCommandLists(t *testing.T) {
 		}
 		if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), "SELECT") {
 			t.Fatalf("the log holds a value or a statement:\n%s", logs.String())
+		}
+	})
+}
+
+func TestWorkerNoParent(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC17-T04 A worker's create of a row with a resource type and no parent is ErrNoParent, which the run log names create_without_parent with the entity", func(t *testing.T) {
+		e := newEnv(t)
+		var logs strings.Builder
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+		w := e.worker("import-orders", "sync", nil, e.orders)
+		err := RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+			_, err := repo(t, h, e.orders).Create(ctx, order{ID: "o-root", Status: "new"})
+			return err
+		}))
+		entity, ok := NoParentEntity(err)
+		if !errors.Is(err, ErrNoParent) || !ok || entity != e.orders.spec.Name {
+			t.Fatalf("the root create gave %v (entity %q), want ErrNoParent for %s", err, entity, e.orders.spec.Name)
+		}
+		if cause := causeOf(err); cause != "create_without_parent" || !slices.Contains(probe.WorkerCauses, cause) {
+			t.Fatalf("the cause class is %q, want create_without_parent, one of probe.WorkerCauses", cause)
+		}
+		if outcome, cause := consumerOutcome(fmt.Errorf("fill: %w", err)); cause != "create_without_parent" || outcome != probe.WorkerRolledBack {
+			t.Fatalf("a consumer run gave %s/%s, want rolled_back/create_without_parent", outcome, cause)
+		}
+		if !streakCauses["create_without_parent"] {
+			t.Fatal("create_without_parent does not count for the poison bound, as the other faults of a fill do")
+		}
+		line := logs.String()
+		if !strings.Contains(line, "cause=create_without_parent") || !strings.Contains(line, "entity="+e.orders.spec.Name) ||
+			!strings.Contains(line, "level=WARN") || strings.Contains(line, "o-root") {
+			t.Fatalf("the log is %q, want a warn line with the cause and the entity and no value", line)
+		}
+		if e.count(`SELECT count(*) FROM orders WHERE id = 'o-root'`) != 0 {
+			t.Fatal("the root create wrote its row")
 		}
 	})
 }

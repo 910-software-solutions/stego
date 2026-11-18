@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -540,14 +542,18 @@ func IsRefused(err error) bool {
 type fixedError struct {
 	text  string
 	cause error
+	// unavailable keeps that the database could not serve now (tenant.Unavailable).
+	unavailable bool
 }
 
-func (e *fixedError) Error() string { return e.text }
-func (e *fixedError) Unwrap() error { return e.cause }
+func (e *fixedError) Error() string     { return e.text }
+func (e *fixedError) Unwrap() error     { return e.cause }
+func (e *fixedError) Unavailable() bool { return e.unavailable }
 
-// fixed returns an error with the fixed text that keeps the context error of err, if it has one.
+// fixed returns an error with the fixed text that keeps the context error of err, if it has one, and whether the
+// database could not serve now (tenant.Unavailable).
 func fixed(text string, err error) error {
-	return &fixedError{text: text, cause: contextCause(err)}
+	return &fixedError{text: text, cause: contextCause(err), unavailable: tenant.Unavailable(err)}
 }
 
 // contextCause gives context.Canceled or context.DeadlineExceeded when err is one, or carries the gRPC status code of
@@ -574,18 +580,44 @@ type Floor interface {
 // and an evaluation of a resource whose ID is not the tenant-qualified form of ResourceID (ST-SUP-RP06-LC22), before
 // the provider is called, raises every consistency to the revocation floor, and sends ExecuteAll for a batch
 // that gives no semantic. It holds no relationships port.
+//
+// Each call of the provider runs within the decision time limit, DefaultDecisionTimeout unless the configuration of
+// the runtime gives another, or within the deadline of the caller when that is sooner. A call that runs past it ends
+// with a deadline error, which Transient reports, so the request is answered 503 with Retry-After, or Unavailable
+// over gRPC, and never waits for a provider that does not answer (walkthrough 10, B5). It fails closed: a call that
+// ran out of time allows nothing.
 type Port struct {
 	provider Decision
 	floor    Floor
+	timeout  time.Duration
+	clock    authzclock.WaitClock
 }
 
+// DefaultDecisionTimeout is the time limit of one call of the decision provider when the configuration gives none.
+// A check of SpiceDB takes some milliseconds; 2 s is far above that, and far below the deadline of a request, so a
+// provider that does not answer gives 503 in time for the client to try again. It is the bound of the schema probe
+// of AwaitSchema too.
+const DefaultDecisionTimeout = 2 * time.Second
+
 // NewPort returns the entry point to provider. floor gives the revocation floor; it may be nil only for a service
-// with no relay, whose floor is always zero.
+// with no relay, whose floor is always zero. Each provider call runs within DefaultDecisionTimeout.
 func NewPort(provider Decision, floor Floor) (*Port, error) {
 	if provider == nil {
 		return nil, errors.New("authz: no decision provider")
 	}
-	return &Port{provider: provider, floor: floor}, nil
+	return &Port{provider: provider, floor: floor, timeout: DefaultDecisionTimeout}, nil
+}
+
+// bound gives the context of one provider call: it ends at the decision time limit, or when ctx ends.
+func (p *Port) bound(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := p.timeout
+	if timeout <= 0 {
+		timeout = DefaultDecisionTimeout
+	}
+	if p.clock != nil {
+		return p.clock.WithTimeout(ctx, timeout)
+	}
+	return context.WithTimeout(ctx, timeout)
 }
 
 // Searches reports whether the provider offers a resource search.
@@ -619,6 +651,8 @@ func (p *Port) evaluate(ctx context.Context, request EvaluationRequest, floor To
 		return EvaluationResult{}, err
 	}
 	request.Consistency = request.Consistency.raise(floor)
+	ctx, cancel := p.bound(ctx)
+	defer cancel()
 	return p.provider.Evaluate(ctx, request)
 }
 
@@ -633,6 +667,8 @@ func (p *Port) evaluateService(ctx context.Context, request EvaluationRequest, f
 		return EvaluationResult{}, err
 	}
 	request.Consistency = request.Consistency.raise(floor)
+	ctx, cancel := p.bound(ctx)
+	defer cancel()
 	return p.provider.Evaluate(ctx, request)
 }
 
@@ -671,6 +707,8 @@ func (p *Port) evaluateBatch(ctx context.Context, request BatchRequest, floor To
 		evaluations[i] = evaluation
 	}
 	request.Evaluations = evaluations
+	ctx, cancel := p.bound(ctx)
+	defer cancel()
 	return p.provider.EvaluateBatch(ctx, request)
 }
 
@@ -691,6 +729,8 @@ func (p *Port) search(ctx context.Context, request SearchRequest, floor Token) (
 		return SearchResult{}, errors.New("authz: the page limit is negative")
 	}
 	request.Consistency = request.Consistency.raise(floor)
+	ctx, cancel := p.bound(ctx)
+	defer cancel()
 	return p.provider.Search(ctx, request)
 }
 

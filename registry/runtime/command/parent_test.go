@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/grpc/codes"
 
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 )
@@ -633,6 +634,104 @@ func TestWithin(t *testing.T) {
 			} else if !errors.Is(err, ErrInternal) || errors.Is(err, ErrInvalid) {
 				t.Fatalf("%s gave %v, want an internal error", c.name, err)
 			}
+		}
+	})
+}
+
+func TestFieldChecks(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC42-T01 A value that breaks a declared constraint of a field is invalid with the field, before any statement or by the table, and a unique violation stays a conflict", func(t *testing.T) {
+		e := newEnv(t)
+		_, orders, _ := referenceEntities(e)
+		// The table holds the CHECK and the foreign key that the postgres adapter writes, by their names.
+		e.exec(`ALTER TABLE placed_orders ADD CONSTRAINT placed_orders_customer_id_check CHECK (char_length(customer_id) >= 2)`,
+			`CREATE UNIQUE INDEX placed_orders_product_unique ON placed_orders (tenant_id, product_id)`,
+			`ALTER TABLE placed_orders ADD CONSTRAINT placed_orders_product_id_fkey FOREIGN KEY (tenant_id, product_id) REFERENCES products (tenant_id, id)`,
+			`INSERT INTO products (tenant_id, id, name) VALUES ('t1', 'p1', 'P1'), ('t1', 'p2', 'P2')`)
+		s := orders.spec
+		s.Parent, s.ResourceType, s.ReadPermission = nil, "", ""
+		checked := s
+		checked.Check = func(v placedOrder) (string, string, bool) {
+			if !MinLength(v.CustomerID, 2) {
+				return "customer_id", "shorter than min_length 2", false
+			}
+			if !MaxLength(v.ProductID, 8) {
+				return "product_id", "longer than max_length 8", false
+			}
+			return "", "", true
+		}
+		checked.Constraints = map[string]string{"placed_orders_customer_id_check": "customer_id",
+			"placed_orders_product_id_fkey": "product_id", "customer_id": "customer_id", "product_id": "product_id"}
+		withCheck, err := NewEntity(checked)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The same entity with no Check: the table refuses the value, and Constraints names the field.
+		tableOnly := checked
+		tableOnly.Check = nil
+		byTable, err := NewEntity(tableOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		create := func(entity *Entity[placedOrder], key string, v placedOrder) error {
+			cmd := e.command("place-"+key, nil, entity)
+			_, err := e.run(cmd, e.request("t1", u7(t), key, `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+				_, err := repo(t, h, entity).Create(ctx, v)
+				return err
+			}))
+			return err
+		}
+		invalid := func(err error) Outcome {
+			t.Helper()
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("the create gave %v, want ErrInvalid", err)
+			}
+			return OutcomeOf(err)
+		}
+		rows := func() int { return e.count(`SELECT count(*) FROM placed_orders`) }
+
+		// The generated Check refuses before any statement: the reason is the one of the Check, and no row is written.
+		o := invalid(create(withCheck, "k-f1", placedOrder{ID: "f1", CustomerID: "c", ProductID: "p1"}))
+		if o.Status != http.StatusBadRequest || o.Field != "customer_id" || o.Reason != "shorter than min_length 2" || RPCCode(o.Status) != codes.InvalidArgument {
+			t.Fatalf("a customer_id under min_length gave %+v, want 400 invalid customer_id with the reason of the Check", o)
+		}
+		if o := invalid(create(withCheck, "k-f2", placedOrder{ID: "f2", CustomerID: "c1", ProductID: "p-123456789"})); o.Field != "product_id" {
+			t.Fatalf("a product_id over max_length gave %+v, want the field product_id", o)
+		}
+		// With no Check, the CHECK of the table refuses the value, and the answer names the field of the constraint.
+		if o := invalid(create(byTable, "k-f3", placedOrder{ID: "f3", CustomerID: "c", ProductID: "p1"})); o.Status != http.StatusBadRequest ||
+			o.Field != "customer_id" || o.Reason != reasonConstraint {
+			t.Fatalf("a value that the table CHECK refused gave %+v, want 400 invalid customer_id", o)
+		}
+		// A foreign key (23503) names its field too.
+		if o := invalid(create(byTable, "k-f4", placedOrder{ID: "f4", CustomerID: "c1", ProductID: "p9"})); o.Field != "product_id" {
+			t.Fatalf("a missing product gave %+v, want the field product_id", o)
+		}
+		if rows() != 0 {
+			t.Fatalf("a refused create wrote %d rows, want none", rows())
+		}
+		// A valid value commits, and a unique violation (23505) stays a conflict, never invalid.
+		if err := create(withCheck, "k-f5", placedOrder{ID: "f5", CustomerID: "c1", ProductID: "p1"}); err != nil {
+			t.Fatal(err)
+		}
+		err = create(withCheck, "k-f6", placedOrder{ID: "f6", CustomerID: "c2", ProductID: "p1"})
+		if errors.Is(err, ErrInvalid) || OutcomeOf(err).Status != http.StatusConflict {
+			t.Fatalf("a unique violation gave %v (%+v), want 409 conflict", err, OutcomeOf(err))
+		}
+		// An update checks the new value as a create does.
+		cmd := e.command("change", nil, withCheck)
+		_, err = e.run(cmd, e.request("t1", u7(t), "k-f7", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			r := repo(t, h, withCheck)
+			loaded, err := r.GetForUpdate(ctx, "f5")
+			if err != nil {
+				return err
+			}
+			v := loaded.Value()
+			v.CustomerID = "x"
+			_, err = r.Update(ctx, loaded, v)
+			return err
+		}))
+		if o := invalid(err); o.Field != "customer_id" {
+			t.Fatalf("an update under min_length gave %+v, want the field customer_id", o)
 		}
 	})
 }
