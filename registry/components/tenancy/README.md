@@ -6,6 +6,19 @@ role is a member of the purge and outbox relay roles WITH SET TRUE, INHERIT
 FALSE and no ADMIN, so the migration job can make their functions as those
 roles.
 
+The database administrator runs the role migration once, before the first
+migration job, connected to the database of the service. Run it with psql and
+`ON_ERROR_STOP`, so that psql stops at the first error:
+
+```sh
+psql -v ON_ERROR_STOP=1 -d <database> -f out/internal/tenancy/migrations/roles.sql
+```
+
+Without `ON_ERROR_STOP`, psql runs the statements after a failed statement,
+and the role migration is then not complete. The file opens with `BEGIN` and
+commits the revoke of `CONNECT` with its own `COMMIT`, so psql gives no
+warning.
+
 At start, the service checks that the purge and outbox relay roles have no
 other member (ST-SUP-RP15-LC01). On PostgreSQL 16 and later, a login with
 CREATEROLE that makes a role becomes a member of it WITH ADMIN, granted by the

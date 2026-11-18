@@ -2,18 +2,10 @@ syntax = "proto3";
 
 package greeter.v1;
 
-// Greeter serves the queries of the service over gRPC.
+import "greeter/v1/messages.proto";
+
+// Greeter serves the commands and queries of the service over gRPC.
 service Greeter {
   // GetGreeting is the query get-greeting.
   rpc GetGreeting(GetGreetingRequest) returns (GetGreetingResponse);
-}
-
-// GetGreetingRequest names who to greet.
-message GetGreetingRequest {
-  string name = 1;
-}
-
-// GetGreetingResponse holds the greeting.
-message GetGreetingResponse {
-  string text = 1;
 }

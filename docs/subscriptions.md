@@ -67,6 +67,13 @@ worker runs once for each event.
   times in a row parks the message as poison (see [A failed run of a consuming worker](commands-queries-workers.md#a-failed-run-of-a-consuming-worker)).
 - The payload of a change event holds only the entity, the action and the row
   ID. To read the row, call the API of the source service.
+- The key of each change event record is
+  `<tenant ID>\x1f<resource type>:<row ID>`: the tenant, the unit separator
+  (byte 0x1f), then the resource type of the entity (the entity name when it
+  has none), a colon and the row ID, such as `acme\x1fpatient:0193...`. A tenant
+  ID holds no control character, so the tenant is the text before the first
+  0x1f. Kafka puts the records of one key in one partition, so the events of
+  one row come in order; two tenants never share a key.
 
 The inbox does not start when the topic keeps its records longer than the
 outbox keeps a done message (7 days by default), because an offset reset to an
@@ -139,7 +146,25 @@ only the source service write the topic. Thus:
   `deploy/platform-requirements.yaml`, and the need of the consumer has
   `access: read`. Give each service only that access.
 - Give the consumer a Kafka user of its own, with read access to the topic and
-  to its consumer group only. While the consumer reads the connection settings
+  to its consumer group only. The inbox needs these ACLs, and no more:
+
+  | Resource | Operations | Why |
+  |---|---|---|
+  | The topic of the source service | `Read`, `Describe`, `DescribeConfigs` | `Read` and `Describe` to fetch the records; `DescribeConfigs` to read `retention.ms` and `cleanup.policy` for the retention check, at start and again while it reads |
+  | The consumer group `<service>.<subscription>` | `Read` | to join the group and commit the offsets |
+
+  For example, with Apache Kafka:
+
+  ```sh
+  kafka-acls.sh --add --allow-principal User:fulfilment \
+    --operation Read --operation Describe --operation DescribeConfigs --topic orders-events
+  kafka-acls.sh --add --allow-principal User:fulfilment \
+    --operation Read --group fulfilment.order-changes
+  ```
+
+  Without `DescribeConfigs`, the records come, but the retention check fails
+  each session: the readiness of the worker mode names the inbox and the class
+  `broker:TOPIC_AUTHORIZATION_FAILED`, the same class as a missing `Read`. While the consumer reads the connection settings
   `STEGO_KAFKA_*`, a service that both writes its own events and reads a
   subscription uses one user for the two; give that user write access to its
   own topic and read access to the source topic only.

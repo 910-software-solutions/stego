@@ -1,3 +1,5 @@
+# Version 1.4.0 answers a get query on a key that is not a UUID as a missing row, 404 over HTTP and NotFound over
+# gRPC, before any statement or decision (walkthrough 10, B4; ST-SUP-RC33-OC05).
 kind: component
 name: query
 version: 1.5.0

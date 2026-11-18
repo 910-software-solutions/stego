@@ -23,7 +23,9 @@ const (
 	authzImport  = "github.com/jsell-rh/stego/registry/runtime/authz"
 	otelImport   = "github.com/jsell-rh/stego/registry/runtime/otel"
 	tenantImport = "github.com/jsell-rh/stego/registry/runtime/tenant"
-	protoImport  = "google.golang.org/protobuf/proto"
+	// commandImport gives ValidUUID, the check of the key form of every entity (ST-SUP-RP10-LC33).
+	commandImport = "github.com/jsell-rh/stego/registry/runtime/command"
+	protoImport   = "google.golang.org/protobuf/proto"
 )
 
 // ContractRuntimeImports gives the packages of the runtime library that the query slot contract out/queries imports
@@ -400,8 +402,9 @@ func must[T any](v T, err error) T {
 // the page body and the refusal lookup are the runtime's (ST-STD-RUNTIME-R05).
 func renderServe(m *model) []byte {
 	var w writer
-	hasHTTP, hasStream, hasRPC := false, false, false
+	hasHTTP, hasStream, hasRPC, hasGet := false, false, false, false
 	for _, q := range m.queries {
+		hasGet = hasGet || q.kind == getKind
 		hasHTTP = hasHTTP || q.kind != streamKind
 		hasStream = hasStream || q.kind == streamKind
 		hasRPC = hasRPC || q.rpc || q.kind == streamKind
@@ -420,11 +423,23 @@ func renderServe(m *model) []byte {
 	if hasRPC {
 		w.p("\n%q", protoImport)
 	}
+	imports := []string{authnImport}
 	if hasHTTP {
-		w.p("\n%q\n%q\n%q\n%q\n%q\n)\n", authnImport, authzImport, otelImport, queryImport, tenantImport)
-	} else {
-		w.p("\n%q\n%q\n)\n", authnImport, queryImport)
+		imports = append(imports, authzImport)
 	}
+	if hasGet {
+		imports = append(imports, commandImport)
+	}
+	if hasHTTP {
+		imports = append(imports, otelImport, queryImport, tenantImport)
+	} else {
+		imports = append(imports, queryImport)
+	}
+	w.p("")
+	for _, path := range imports {
+		w.p("%q", path)
+	}
+	w.p(")\n")
 	w.raw(`// Config is what the query handlers need.
 type Config struct {
 	// Runtime runs each query fill in a READ ONLY transaction of the caller's tenant. A list query needs its cursor
@@ -535,6 +550,9 @@ func renderGet(w *writer, m *model, q *queryModel) {
 	w.p("// decided%s decides the permission %s on the %s of the request at the floor before it calls the fill %s,", q.goName, q.decl.Permission, e.value.Entity.Name, q.decl.Fill[0])
 	w.p("// once. A row that is not there and a deny are both not found, and neither reaches the fill.")
 	w.p("func decided%s(ctx context.Context, req %s.%s, h *%s.%sHandle) (%s.%s, error) {", q.goName, m.pkg, q.requestType(), m.pkg, q.goName, m.pkg, q.responseType())
+	// A key that is not in the form of the entity's key type names no row: it is not found, as a missing row is, with
+	// no statement and no decision, so a client fault never reaches the database as an error (walkthrough 10, B4).
+	w.p("if !command.ValidUUID(req.%s) {\nreturn nil, query.ErrNotFound\n}", q.memberGo)
 	if q.decide != nil {
 		w.p("if err := decide.Decide%s(ctx, h, req.%s); err != nil {\nreturn nil, err\n}", q.goName, q.memberGo)
 	} else {

@@ -17,6 +17,12 @@ relative to the service project and a public `path`. Public assets use
 `{id}`. An optional `roles_claim` selects a dotted identity claim path.
 The compiler captures the declared asset files and checks their sizes.
 
+The backend sends a request under `api_prefix` to the API with the same path:
+it does not remove the prefix. Thus `api_prefix` must be equal to the base
+path of the API, such as `/api/orders/v1` for a rest-crud service with
+`base_path: /api/orders/v1`. Each `prefix` of `apis` must also be equal to the
+base path of its API. A different prefix gives 404 from the API.
+
 ### More than one API
 
 `api_prefix` goes to the API of `STEGO_BROWSER_API_URL`. To reach more APIs,
@@ -201,7 +207,15 @@ PKCE, and token revocation. Grant the access token the audience and roles
 required by the domain API. ID tokens must identify the browser client.
 
 The service exposes GET `/auth/login`, GET `/auth/callback`, GET
-`/auth/session`, and GET and POST `/auth/logout`. The session response includes
+`/auth/session`, and GET and POST `/auth/logout`.
+
+GET `/auth/login` answers 403 to a request that does not come from the
+console. It accepts a request with the header `Sec-Fetch-Site: same-origin` or
+`Sec-Fetch-Site: none`, or with an `Origin` header equal to
+`STEGO_BROWSER_ORIGIN`. A browser sends `Sec-Fetch-Site` itself: `none` when
+the user types the address, and `same-origin` for a link of the console. A
+client that is not a browser, such as `curl` in a test, does not send it, so
+it gets 403. Give it `-H 'Sec-Fetch-Site: none'`. The session response includes
 `authenticated`, `expires_at`, `roles`, `user`, and `csrf_token` when signed
 in. It does not include OAuth tokens. Mutations require the exact Origin and
 `X-CSRF-Token` headers. The API prefix forwards the user's server-held access

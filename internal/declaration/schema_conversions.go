@@ -78,16 +78,32 @@ func ValidateSchemaConversions(service *types.ServiceDeclaration, conversions ma
 		}
 		if reason := checksKept(before, after); reason != "" && okForward && okInverse {
 			// A retype with no Definition takes the field before the change as its From type alone, with no
-			// constraint, so the author who left the Definition out is told to give it (walkthrough 7, K12).
-			missing := ""
+			// constraint, so the author who left the Definition out is told first to give it, and not that the
+			// bounds differ, which they do not in the author's view (walkthrough 7, K12; walkthrough 8 and 9, B9).
 			integer := func(t types.FieldType) bool { return t == types.FieldTypeInt32 || t == types.FieldTypeInt64 }
 			if strings.TrimSpace(change.Definition) == "" && integer(before.Type) && integer(after.Type) {
-				missing = fmt.Sprintf("; the change gives no definition, so the field before the change is taken as %s with no constraint: give the field before the change in definition, such as definition: \"%s\"", change.From, sideDefinition(change.From, after))
+				fault("schema-change-total", ".definition", "", fmt.Sprintf("the retype of %s.%s gives no definition, so the field before the change is taken as %s with no min and no max, and the field after the change has %s: give the field before the change in definition, such as definition: \"%s\", so that the CHECK of each column holds the values of the other%s", change.Entity, change.Field, change.From, bounds(after), sideDefinition(change.From, after), at))
+				continue
 			}
-			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused%s%s", change.Entity, change.Field, reason, missing, at))
+			fault("schema-change-total", ".field", change.Field, fmt.Sprintf("the retype of %s.%s: %s, so a converted value of one release could break the CHECK of the column of the other, and its write would be refused%s", change.Entity, change.Field, reason, at))
 		}
 	}
 	return faults
+}
+
+// bounds names the bounds min and max of an integer field, or says that it has none.
+func bounds(field types.Field) string {
+	var items []string
+	if field.Min != nil {
+		items = append(items, "min "+strconv.FormatFloat(*field.Min, 'f', -1, 64))
+	}
+	if field.Max != nil {
+		items = append(items, "max "+strconv.FormatFloat(*field.Max, 'f', -1, 64))
+	}
+	if len(items) == 0 {
+		return "no min and no max"
+	}
+	return strings.Join(items, " and ")
 }
 
 // sideDefinition gives an example Definition of a field of the type from with the bounds min and max of field, the

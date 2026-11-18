@@ -14,6 +14,10 @@ spec:
         - env:
             - name: DATABASE_URL_FILE
               value: /var/run/secrets/stego/user-management-database/url
+            - name: STEGO_KAFKA_CA_FILE
+              value: /var/run/secrets/stego/user-management-kafka-client/ca-crt
+            - name: STEGO_KAFKA_PASSWORD_FILE
+              value: /var/run/secrets/stego/user-management-kafka-client/password
             - name: STEGO_QUERY_CURSOR_KEY_FILE
               value: /var/run/secrets/stego/user-management-query-cursor/key
             - name: STEGO_RELAY_DATABASE_URL_FILE
@@ -26,6 +30,9 @@ spec:
           volumeMounts:
             - mountPath: /var/run/secrets/stego/user-management-database
               name: user-management-database
+              readOnly: true
+            - mountPath: /var/run/secrets/stego/user-management-kafka-client
+              name: user-management-kafka-client
               readOnly: true
             - mountPath: /var/run/secrets/stego/user-management-query-cursor
               name: user-management-query-cursor
@@ -46,6 +53,15 @@ spec:
               - key: worker-url
                 path: worker-url
             secretName: user-management-database
+        - name: user-management-kafka-client
+          secret:
+            defaultMode: 256
+            items:
+              - key: ca-crt
+                path: ca-crt
+              - key: password
+                path: password
+            secretName: user-management-kafka-client
         - name: user-management-query-cursor
           secret:
             defaultMode: 256

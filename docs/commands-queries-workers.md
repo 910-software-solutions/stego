@@ -633,6 +633,27 @@ The request of a get query has one field for the member: `req.OrderID` for
 `orderId`. The response of a get query is any value that the handler can
 write as JSON.
 
+### An optional field in a command and in a query
+
+The Go type of an optional field is not the same in the two packages:
+
+- In `out/commands`, an optional field that is not bytes or jsonb is a
+  pointer, such as `*string`. A command writes the row, so `nil` sets the
+  column to NULL, and a pointer to `""` sets it to the empty text.
+- In `out/queries`, the value that a fill reads has the field as a value,
+  such as `string`. A NULL column gives the zero value: `""`, `0` or `false`.
+
+Thus a command fill uses `v.Carrier != nil` and `*v.Carrier`, and a query
+fill uses `v.Carrier` with no `*`. Do not copy the code that reads a field from
+a command fill into a query fill.
+
+The rest-api handlers read the type `<Entity>View`, in which an optional field
+is a pointer, so an answer leaves out a NULL field (decision ST-SUP-Q128,
+option B). The value that a query fill reads did not change, so no fill had to
+change. Thus a query fill cannot tell NULL from the zero value. A pointer in
+the query value needs a major version of each archetype that has a query
+(ST-SUP-Q128, option A), and it is not built.
+
 ## Paging
 
 A collection list and a list query page in different ways:

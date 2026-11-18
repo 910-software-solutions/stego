@@ -238,6 +238,26 @@ The expand migration keeps the old column, its CHECK and its indexes:
 
 Each statement takes a short lock and reads no row.
 
+#### A client that still sends the dropped field
+
+The API of the expand release does not know the field. When a create or an
+update body holds it, the API ignores that member, as it ignores each member
+that the entity does not declare, and answers as for a body without it: a
+create gives 201, and the row has no value of the field. The API sends no
+message about it.
+
+This is intentional. In the time between the two releases, the release before
+and the new release serve the same routes, and a client that the release
+before knows still sends the field. A refusal (400) from the new release would
+make the writes of such a client fail by chance, at each request that the new
+release gets. The release before keeps the field: it writes the value, and
+the old column keeps it until the contract step.
+
+Thus, before the contract step, change each client to stop sending the field.
+A value that a client sends to the new release is lost. If a client must not
+lose it, keep the field in the API until each client stops sending it, and
+only then declare the drop.
+
 ### Remove an entity
 
 Keep the entity and the collections over it as they are, and add
@@ -411,7 +431,12 @@ before the change, with its constraints, in `definition`, such as
 `string, pattern ^[0-9]{1,9}$`; a pattern is the last item, as it can hold
 a comma.
 
-The field keeps its name in the API. Its values go to a new column,
+The field keeps its name in the API, but its JSON type in the API changes with
+its type: a retype from `int64` to `string` changes the value `14` to `"14"`,
+and a retype from `string` to `int64` changes `"14"` to `14`. The OpenAPI
+contract of the release after the change gives the new type. Thus a client
+that reads the field must accept both types while the two releases run.
+Its values go to a new column,
 `<field>_<type>`, such as `rank_string`, which stays its column after the
 contract step. The expand step adds the column, nullable, its CHECK
 `NOT VALID` and its indexes, and then the sync trigger, which converts each
