@@ -72,7 +72,7 @@ func TestImmutableApplyOverTLS(t *testing.T) {
 						t.Error("missing credential")
 					}
 					if r.Method == "GET" {
-						if r.URL.Query().Get("size") != "2" || r.URL.Query().Get("search") != "group = 'team' and member = 'a'' OR member = ''b'" {
+						if q := r.URL.Query(); len(q) != 2 || q.Get("pageSize") != "2" || q.Get("search") != "group = 'team' and member = 'a'' OR member = ''b'" {
 							t.Error("identity query changed", r.URL.Query())
 						}
 						if mode == "denied" {
@@ -90,7 +90,7 @@ func TestImmutableApplyOverTLS(t *testing.T) {
 						if mode == "ambiguous" {
 							items = append(items, row)
 						}
-						json.NewEncoder(w).Encode(map[string]any{"items": items, "total": len(items)})
+						json.NewEncoder(w).Encode(map[string]any{"kind": "MembershipList", "size": len(items), "items": items})
 						return
 					}
 					writes.Add(1)

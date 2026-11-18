@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/cliapplication"
 	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 	"github.com/jsell-rh/stego/internal/slot"
 	"github.com/jsell-rh/stego/internal/types"
@@ -376,6 +377,8 @@ func newCrudProject(t *testing.T, ctx gen.Context, files map[string][]byte) *cru
 // crudRun is the one run of the checks of the generated service: one go test of the check package with every
 // check, so the service is built and its test binary run once.
 type crudRun struct {
+	// cli is the path of the generated CLI program, which the checks get as STEGO_TEST_CLI.
+	cli    string
 	once   sync.Once
 	output string
 	err    error
@@ -390,7 +393,7 @@ func (run *crudRun) passed(t *testing.T, p *crudProject, endpoint, key, id strin
 		t.Fatal("STEGO_TEST_POSTGRES_DSN is not set: this test needs a local PostgreSQL server")
 	}
 	run.once.Do(func() {
-		run.output, run.err = p.goCommand([]string{"STEGO_TEST_SPICEDB=" + endpoint, "STEGO_TEST_SPICEDB_KEY=" + key},
+		run.output, run.err = p.goCommand([]string{"STEGO_TEST_SPICEDB=" + endpoint, "STEGO_TEST_SPICEDB_KEY=" + key, "STEGO_TEST_CLI=" + run.cli},
 			"test", "-count=1", "-timeout=300s", "-v", "-run", "^TestCrud$", "./check")
 	})
 	if !ownPass(run.output, "TestCrud", id) {
@@ -558,12 +561,48 @@ func TestCrudService(t *testing.T) {
 		}
 	})
 	p := newCrudProject(t, ctx, files)
+	cli := p.addCLI()
 	p.mustGo("vet", "./...")
 	endpoint, key := startCrudSpiceDB(t)
-	run := &crudRun{}
+	run := &crudRun{cli: cli}
 	for _, id := range crudCheckIDs {
 		t.Run(id, func(t *testing.T) { run.passed(t, p, endpoint, key, strings.SplitN(id, " ", 2)[0]) })
 	}
+}
+
+// crudCLIFactory is the factory of the generated CLI of the test service: one immutable apply resource, Folder, whose
+// identity is its name, on the folders collection.
+const crudCLIFactory = `package cliapp
+
+import command "example.com/crud/out/cli/command"
+
+// Commands gives the CLI of the test service.
+func Commands() command.Application {
+	return command.Application{ConfigEnv: "CRUD_CLI_CONFIG", ConfigName: "crud", Resources: []command.ApplyResource{{
+		Kind: "Folder", APIVersion: "crud/v1", Path: "/api/v1/folders",
+		CreateFields:      []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}},
+		ImmutableIdentity: []string{"name"},
+	}}}
+}
+`
+
+// addCLI writes the CLI that the cli-application component emits, with the factory crudCLIFactory, into the project
+// and builds it. It gives the path of the CLI program, which a check runs against the test service.
+func (p *crudProject) addCLI() string {
+	p.t.Helper()
+	files, _, err := new(cliapplication.Generator).Generate(gen.Context{ModuleName: crudModule, OutDirName: "out", OutputNamespace: "cli",
+		ComponentConfig: map[string]any{"factory_package": "cliapp"}})
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	for _, f := range files {
+		p.write("out/"+f.Path, f.Bytes())
+	}
+	p.write("cliapp/app.go", []byte(crudCLIFactory))
+	p.mustGo("mod", "tidy")
+	program := filepath.Join(p.dir, "bin", "crud-cli")
+	p.mustGo("build", "-o", program, "./out/cli/cmd")
+	return program
 }
 
 func TestTopLevelCreate(t *testing.T) {
@@ -732,6 +771,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC48-T03 A compare-only secret with writable never is refused whenever a body gives it, and no write stores it",
 	"ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one",
 	"ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value",
+	"ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service",
 	"ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not",
 	"ST-SUP-RC20-OC37-T01 A collection create runs as a command",
 	"ST-SUP-RC20-OC37-T02 A refusing before slot stops the command before any write",

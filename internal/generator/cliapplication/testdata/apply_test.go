@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -32,10 +34,12 @@ func applyDefinition() Application {
 type applyFixture struct {
 	mu            sync.Mutex
 	calls, writes int
-	mode          string
-	rows          map[string]map[string]any
-	order         []string
-	directory     string
+	// pages counts the list pages that the server answered.
+	pages     int
+	mode      string
+	rows      map[string]map[string]any
+	order     []string
+	directory string
 }
 
 func applySetup(t *testing.T) *applyFixture {
@@ -56,14 +60,6 @@ func applySetup(t *testing.T) *applyFixture {
 				fmt.Fprint(w, `{"private":"do-not-print"}`)
 				return
 			}
-			if f.mode == "null-total" {
-				fmt.Fprint(w, `{"items":[],"total":null}`)
-				return
-			}
-			if f.mode == "invalid-list" {
-				fmt.Fprint(w, `{"items":null,"total":0}`)
-				return
-			}
 			if r.URL.RawQuery == "" {
 				if row, ok := f.rows[r.URL.Path]; ok {
 					json.NewEncoder(w).Encode(row)
@@ -72,14 +68,58 @@ func applySetup(t *testing.T) *applyFixture {
 				}
 				return
 			}
+			// The list of a generated service refuses a parameter it does not read, and it can give a page with fewer
+			// values than its size, or none, with a next cursor. So this list answers one value a page, after an
+			// empty first page.
+			query := r.URL.Query()
+			for name := range query {
+				if name != "pageSize" && name != "search" && name != "cursor" {
+					w.WriteHeader(400)
+					return
+				}
+			}
+			if query.Get("pageSize") != "2" {
+				t.Error("lookup page size changed", query)
+			}
+			switch f.mode {
+			case "null-next":
+				fmt.Fprint(w, `{"items":[],"size":0,"next":null}`)
+				return
+			case "wrong-size":
+				fmt.Fprint(w, `{"items":[],"size":1}`)
+				return
+			case "endless":
+				f.pages++
+				fmt.Fprint(w, `{"items":[],"size":0,"next":"again"}`)
+				return
+			case "invalid-list":
+				fmt.Fprint(w, `{"items":null,"size":0}`)
+				return
+			}
 			var items []map[string]any
-			items = make([]map[string]any, 0)
-			for path, row := range f.rows {
-				if strings.HasPrefix(path, r.URL.Path+"/") && r.URL.Query().Get("search") == "name = '"+strings.ReplaceAll(row["name"].(string), "'", "''")+"'" {
+			for _, path := range slices.Sorted(maps.Keys(f.rows)) {
+				row := f.rows[path]
+				if strings.HasPrefix(path, r.URL.Path+"/") && query.Get("search") == "name = '"+strings.ReplaceAll(row["name"].(string), "'", "''")+"'" {
 					items = append(items, row)
 				}
 			}
-			json.NewEncoder(w).Encode(map[string]any{"items": items, "total": len(items)})
+			f.pages++
+			at := 0
+			if cursor := query.Get("cursor"); cursor != "" {
+				var err error
+				if at, err = strconv.Atoi(strings.TrimPrefix(cursor, "c")); err != nil || at < 1 {
+					w.WriteHeader(400)
+					return
+				}
+			}
+			page := map[string]any{"kind": "RecordList", "size": 0, "items": []any{}}
+			if at > 0 {
+				page["size"], page["items"] = 1, items[at-1:at]
+			}
+			if at < len(items) {
+				page["next"] = "c" + strconv.Itoa(at+1)
+			}
+			json.NewEncoder(w).Encode(page)
 			return
 		}
 		f.writes++
@@ -422,13 +462,18 @@ func TestApplyAliasesCannotDuplicateTarget(t *testing.T) {
 	})
 }
 
-func TestApplyRejectsNullListCount(t *testing.T) {
-	t.Run("ST-SUP-RC04-OC23-T05 A null list count causes no create", func(t *testing.T) {
-		f := applySetup(t)
-		f.mode = "null-total"
-		path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "example", "{}"))
-		if _, _, err := runApplyTest(t, applyDefinition(), "apply", "-f", path, "-o", "json"); err == nil || f.writes != 0 {
-			t.Fatal("null list count caused a create")
+func TestApplyRejectsMalformedListPage(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC23-T05 A malformed list page causes no create", func(t *testing.T) {
+		for _, mode := range []string{"null-next", "wrong-size", "endless"} {
+			f := applySetup(t)
+			f.mode = mode
+			path := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "example", "{}"))
+			if _, _, err := runApplyTest(t, applyDefinition(), "apply", "-f", path, "-o", "json"); err == nil || f.writes != 0 {
+				t.Fatalf("%s: the list page caused a create (%v)", mode, err)
+			}
+			if mode == "endless" && f.pages != 32 {
+				t.Errorf("the lookup read %d pages of a list that never ends, want 32", f.pages)
+			}
 		}
 	})
 }

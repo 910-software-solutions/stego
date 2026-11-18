@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -20,9 +21,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3401,6 +3404,91 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		// The parameters that the list reads are taken.
 		if r := e.send(a, http.MethodGet, "/api/v1/todos?pageSize=1&orderBy=title&fields=title&search=&cursor=", "", ""); r.status != http.StatusOK {
 			t.Errorf("a list with only the parameters that it reads answered %d %s, want 200", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service", func(t *testing.T) {
+		e := service(t)
+		program := os.Getenv("STEGO_TEST_CLI")
+		if program == "" {
+			t.Fatal("the check needs STEGO_TEST_CLI, the generated CLI program: a missing result is not a pass")
+		}
+		a := e.as("cli-1", newTenant())
+		// The CLI calls only an HTTPS URL, so the service gets a TLS front with the same handler. The test service
+		// requires an Idempotency-Key on a create, and the CLI sends none (its HTTP client refuses the header, because
+		// it does not retry), so the front gives each POST a key of its own. A lookup is a GET, which the front does
+		// not change.
+		var gets atomic.Int32
+		front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.Header.Get("Idempotency-Key") == "" {
+				r.Header.Set("Idempotency-Key", `"cli-`+uuid.NewString()+`"`)
+			}
+			if r.Method == http.MethodGet {
+				gets.Add(1)
+			}
+			e.server.Config.Handler.ServeHTTP(w, r)
+		}))
+		defer front.Close()
+		dir := t.TempDir()
+		// The CLI keeps its configuration only in a folder that no other user can write.
+		must(t, os.Chmod(dir, 0o700))
+		ca, token, config := dir+"/ca.pem", dir+"/token", dir+"/config.json"
+		must(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: front.Certificate().Raw}), 0o600))
+		must(t, os.WriteFile(token, []byte(a.token), 0o600))
+		cli := func(args ...string) (string, error) {
+			t.Helper()
+			cmd := exec.Command(program, args...)
+			cmd.Env = append(os.Environ(), "CRUD_CLI_CONFIG="+config)
+			var stdout, stderr strings.Builder
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			if err != nil {
+				err = fmt.Errorf("%w: %s", err, stderr.String())
+			}
+			return stdout.String(), err
+		}
+		if out, err := cli("login", "--url", front.URL, "--token-file", token, "--ca-file", ca); err != nil {
+			t.Fatalf("the CLI login failed: %v %s", err, out)
+		}
+		apply := func(name string) ([]map[string]string, error) {
+			t.Helper()
+			file := dir + "/" + name + ".yaml"
+			must(t, os.WriteFile(file, []byte("apiVersion: crud/v1\nkind: Folder\nmetadata: {name: label}\nspec: {name: "+name+"}\n"), 0o600))
+			out, err := cli("apply", "-f", file, "-o", "json")
+			var results []map[string]string
+			if out != "" {
+				must(t, json.Unmarshal([]byte(out), &results))
+			}
+			return results, err
+		}
+		folders := func(name string) int {
+			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
+		}
+		// A new name: the lookup lists no folder, so the CLI creates one.
+		results, err := apply("alpha")
+		if err != nil || len(results) != 1 || results[0]["status"] != "created" || results[0]["id"] == "" {
+			t.Fatalf("the first apply of alpha gave %v %v, want the status created with an ID", results, err)
+		}
+		if gets.Load() == 0 {
+			t.Error("the apply of alpha listed no folder before its create")
+		}
+		e.own(a, "folder", results[0]["id"])
+		// The same name again: the lookup lists the folder, so the CLI writes nothing.
+		again, err := apply("alpha")
+		if err != nil || len(again) != 1 || again[0]["status"] != "unchanged" || again[0]["id"] != results[0]["id"] {
+			t.Errorf("the second apply of alpha gave %v %v, want the status unchanged with the ID %s", again, err, results[0]["id"])
+		}
+		if n := folders("alpha"); n != 1 {
+			t.Errorf("%d folders alpha after two applies, want 1", n)
+		}
+		// Two folders of one name: the lookup lists both, so the CLI stops before any write.
+		e.create(a, "folders", "folder", `{"name":"twin"}`)
+		e.create(a, "folders", "folder", `{"name":"twin"}`)
+		if results, err := apply("twin"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Errorf("the apply of an ambiguous name gave %v %v, want the error that the identity is ambiguous", results, err)
+		}
+		if n := folders("twin"); n != 2 {
+			t.Errorf("%d folders twin after the ambiguous apply, want 2", n)
 		}
 	})
 
