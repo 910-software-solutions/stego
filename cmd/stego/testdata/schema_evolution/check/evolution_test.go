@@ -745,7 +745,7 @@ func TestEvolution(t *testing.T) {
 			t.Errorf("a change through v1 of the row of v2 gives %q, %q", old, now)
 		}
 		list := func(a *api) string {
-			r := d.send(a, owner, http.MethodGet, "/organizations/"+org+"/orgsettings?limit=100", "")
+			r := d.send(a, owner, http.MethodGet, "/organizations/"+org+"/orgsettings?pageSize=100", "")
 			if r.status != http.StatusOK {
 				t.Fatalf("a list through %s answered %d %s", a.release, r.status, r.body)
 			}
