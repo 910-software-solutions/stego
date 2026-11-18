@@ -36,6 +36,14 @@ environment:
     secret_source: {name: "{service}-query-cursor", key: key}
     read_with: service
     example: "/etc/stego/query/cursor-key"
+  - name: STEGO_QUERY_CURSOR_EXTRA_KEY_FILE
+    read_by_mode: api
+    type: path
+    required: false
+    description: "The file of a second key of the list cursors, which opens a cursor and seals none: the new key before it seals, or the old key after a rotation. It must differ from the key."
+    secret: false
+    read_with: service
+    example: "/etc/stego/query/cursor-extra-key"
 # The platform needs (ST-SUP-EN09): the key of the list cursors, the same in each replica.
 needs:
   - {kind: secret, name: "{service}-query-cursor", keys: [key]}

@@ -329,7 +329,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	if svc.queries, err = query.New(query.Config{DB: svc.pool, AuditDB: svc.auditDB, Audit: svc.writer,
 		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, CursorKey: s.CursorKey,
-		Meter: svc.telemetry.MeterProvider()}); err != nil {
+		ExtraCursorKeys: extraKeys(s.ExtraCursorKey),
+		Meter:           svc.telemetry.MeterProvider()}); err != nil {
 		return nil, err
 	}
 	// The parked-message list and resolve of an operator, which the generated code serves in the api mode only
@@ -734,4 +735,12 @@ func identityManifest(p Parts, runtimeRole string) manifest.Manifest {
 		CheckGrants: true,
 		Grants:      []manifest.Grant{{Role: runtimeRole, Privileges: []string{"SELECT"}}},
 	}}}
+}
+
+// extraKeys gives the extra cursor key as the list of query.Config, or none.
+func extraKeys(key []byte) [][]byte {
+	if len(key) == 0 {
+		return nil
+	}
+	return [][]byte{key}
 }
