@@ -19,8 +19,6 @@ spec:
             - $patch: delete
               name: STEGO_KAFKA_PASSWORD_FILE
             - $patch: delete
-              name: STEGO_QUERY_CURSOR_KEY_FILE
-            - $patch: delete
               name: STEGO_RELAY_DATABASE_URL
             - $patch: delete
               name: STEGO_SPICEDB_KEY_FILE
