@@ -33,7 +33,12 @@
 {"source_id":"ST-DECL-Q44","target_id":"ST-DECL-UC05-R06"}
 {"source_id":"ST-DECL-Q44","target_id":"ST-DECL-UC05-R06-T02"}
 {"source_id":"ST-DECL-Q45","target_id":"ST-DECL-EN03"}
+{"source_id":"ST-DECL-Q45","target_id":"ST-DECL-INV100"}
 {"source_id":"ST-DECL-Q45","target_id":"ST-SUP-RC20-OC17"}
+{"source_id":"ST-DECL-Q45","target_id":"ST-SUP-RC20-OC44"}
+{"source_id":"ST-DECL-Q45","target_id":"ST-SUP-RC20-OC45"}
+{"source_id":"ST-DECL-Q45","target_id":"ST-SUP-RC20-OC46"}
+{"source_id":"ST-DECL-Q45","target_id":"ST-SUP-RC20-OC47"}
 {"source_id":"ST-DLV-Q04","target_id":"ST-DLV-DS01"}
 {"source_id":"ST-DLV-Q04","target_id":"ST-DLV-INV01"}
 {"source_id":"ST-DLV-Q04","target_id":"ST-DLV-TD01"}
