@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package greeter.v1;
+
+// The request and response messages of the service. The service itself is in service.proto: the command component
+// reads a proto file of messages only, so a command's messages go here and the file is listed under
+// overrides.command.proto_files too.
+
+// GetGreetingRequest names who to greet.
+message GetGreetingRequest {
+  string name = 1;
+}
+
+// GetGreetingResponse holds the greeting.
+message GetGreetingResponse {
+  string text = 1;
+}

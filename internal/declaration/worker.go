@@ -582,3 +582,50 @@ func listValueFits(field types.Field, value any) bool {
 	}
 	return false
 }
+
+// RootCreateWarnings gives one warning for each entity that a worker writes when a create of it by the worker can
+// have no parent resource: the entity has a resource type, and no reference of it to an entity with a resource type
+// is required. The worker handle decides a create on the parent resource that the call names, and refuses a create
+// with none (ST-SUP-RP10-LC17), so each such create fails its run, while an update or a delete of a row of the
+// entity runs. The warning names the worker and the entity, and tells what a create needs. It is a warning, not a
+// fault, because a worker that only updates or deletes such rows is correct; ST-SUP-Q164 asks how a worker creates
+// a row with no parent, such as the local copy of an event of another service. A service with no authorization
+// decides nothing, so it gets no warning.
+func RootCreateWarnings(service *types.ServiceDeclaration) []ValidationError {
+	if service == nil || service.Authorization == nil {
+		return nil
+	}
+	byName := map[string]*types.Entity{}
+	for i := range service.Entities {
+		byName[service.Entities[i].Name] = &service.Entities[i]
+	}
+	var warnings []ValidationError
+	for wi, worker := range service.Workers {
+		for _, name := range worker.Writes {
+			e := byName[name]
+			if e == nil || e.ResourceType == "" {
+				continue
+			}
+			var optional []string
+			required := false
+			for _, f := range e.Fields {
+				if to := byName[f.To]; f.Type == types.FieldTypeRef && to != nil && to.ResourceType != "" {
+					if !f.Optional {
+						required = true
+					}
+					optional = append(optional, f.Name)
+				}
+			}
+			if required {
+				continue
+			}
+			need := fmt.Sprintf("the entity %s has no reference to an entity with a resource type, so no create of it by a worker can succeed", e.Name)
+			if len(optional) > 0 {
+				need = fmt.Sprintf("a create of %s by a worker succeeds only when it sets %s and gives that loaded row as the parent", e.Name, strings.Join(optional, " or "))
+			}
+			warnings = append(warnings, ValidationError{Category: "worker", Rule: "worker-root-create", Path: workerPath(wi) + ".writes", Found: e.Name,
+				Message: fmt.Sprintf("worker %q writes %s, which has the resource type %s: the worker handle decides a create on the parent resource of the new row and refuses a create with no parent (ST-SUP-RP10-LC17), and the run then fails with fill_error; %s. An update or a delete of a row of %s runs. ST-SUP-Q164 asks how a worker creates a row with no parent", worker.Name, e.Name, e.ResourceType, need, e.Name)})
+		}
+	}
+	return warnings
+}

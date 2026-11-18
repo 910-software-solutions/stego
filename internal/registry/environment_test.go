@@ -296,8 +296,25 @@ func TestSecretSource(t *testing.T) {
 				t.Errorf("postgres-adapter does not state %s as read by the migrate mode", name)
 			}
 		}
-		if sources < 14 {
-			t.Errorf("the shipped registry states %d secret sources, fewer than the 14 it ships", sources)
+		// The Kafka components give the SCRAM password file and the certificate authority file from the Secret
+		// {service}-kafka-client, which only the worker mode reads, so only the worker Deployment mounts it
+		// (walkthrough 10, N1).
+		for _, component := range []string{"kafka-producer", "kafka-consumer"} {
+			for name, key := range map[string]string{"STEGO_KAFKA_PASSWORD_FILE": "password", "STEGO_KAFKA_CA_FILE": "ca-crt"} {
+				found := false
+				for _, variable := range shipped.Component(component).Variables() {
+					if variable.Name == name {
+						found = variable.SecretSource != nil && variable.SecretSource.Name == "{service}-kafka-client" &&
+							variable.SecretSource.Key == key && variable.ReadByMode == "worker"
+					}
+				}
+				if !found {
+					t.Errorf("%s does not state %s with the secret source {service}-kafka-client key %s, read by the worker mode", component, name, key)
+				}
+			}
+		}
+		if sources < 18 {
+			t.Errorf("the shipped registry states %d secret sources, fewer than the 18 it ships", sources)
 		}
 	})
 }
