@@ -502,6 +502,11 @@ func validateOperationRoutes(svcDecl *types.ServiceDeclaration, components map[s
 		operations = append(operations, operation{"command", command.Name, fmt.Sprintf("commands[%d].route", i), command.Route})
 	}
 	for i, query := range svcDecl.Queries {
+		if query.Route == "" {
+			// A stream query declares no route: it is served over gRPC only (ST-DECL-INV73). Declaring refuses an
+			// empty route of every other query.
+			continue
+		}
 		operations = append(operations, operation{"query", query.Name, fmt.Sprintf("queries[%d].route", i), query.Route})
 	}
 	var faults []ValidationError

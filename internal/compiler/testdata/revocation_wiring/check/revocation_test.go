@@ -1012,6 +1012,35 @@ func TestRevocationWiring(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC49-T01 A write that names the caller's write waits for it and is decided on its tuples", func(t *testing.T) {
+		id, created := s.create(t, bob, "k-oc49-1")
+		path := location(t, created)
+		item := basePath + "/documents/" + id
+		// With no header an update before the delivery is decided at once and denied: the gap of W12-B1.
+		if r := s.do(t, &bob, http.MethodPut, item, `{"title":"early"}`, "Prefer", "wait=5"); r.code != http.StatusNotFound || r.took > time.Second {
+			t.Fatalf("an update before the delivery with no %s answered %d after %s, want 404 at once", authz.RevocationAfterHeader, r.code, r.took)
+		}
+		// A value that is no identity is a bad request, before any decision.
+		if r := s.do(t, &bob, http.MethodPut, item, `{"title":"bad"}`, authz.RevocationAfterHeader, "not-an-id"); r.code != http.StatusBadRequest {
+			t.Fatalf("an update with a bad %s answered %d %s, want 400", authz.RevocationAfterHeader, r.code, r.body)
+		}
+		stopped := make(chan func(), 1)
+		go func() { time.Sleep(300 * time.Millisecond); stopped <- s.startRelay(t) }()
+		r := s.do(t, &bob, http.MethodPut, item, `{"title":"renamed"}`, authz.RevocationAfterHeader, path, "Prefer", "wait=5")
+		defer (<-stopped)()
+		// The update enqueued no tuple, so it answers no revocation header: the wait sets none.
+		if r.code != http.StatusOK || r.header.Get(authz.RevocationHeader) != "" || !strings.Contains(string(r.body), "renamed") {
+			t.Fatalf("an update with %s answered %d %v %s, want 200 with the new title and no %s", authz.RevocationAfterHeader, r.code, r.header, r.body, authz.RevocationHeader)
+		}
+		// A declared command, which Serve runs, waits as well: the share of a new document at once after its create.
+		second, created := s.create(t, bob, "k-oc49-2")
+		shared := s.do(t, &bob, http.MethodPost, item[:len(item)-len(id)]+second+"/viewers", `{"user_id":"`+alice.subject+`"}`,
+			"Idempotency-Key", keyOf("k-oc49-2s"), authz.RevocationAfterHeader, location(t, created), "Prefer", "wait=5")
+		if shared.code != http.StatusOK && shared.code != http.StatusCreated {
+			t.Fatalf("a share with %s at once after the create answered %d %s, want 200 or 201", authz.RevocationAfterHeader, shared.code, shared.body)
+		}
+	})
+
 	t.Run("ST-SUP-RC33-OC10-T01 A declared query that names the caller's write waits for it and shows it", func(t *testing.T) {
 		id, created := s.create(t, bob, "k-oc10-1")
 		path := location(t, created)

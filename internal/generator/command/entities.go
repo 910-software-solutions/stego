@@ -529,6 +529,36 @@ func renderCheck(w *writer, e *entity) {
 		put(f.decl.ColumnName(), f.decl.Name)
 	}
 	w.f("\t},\n")
+	renderUnique(w, e)
+}
+
+// renderUnique writes Unique of the entity declaration: the declared fields of the key of each unique index of its
+// table, by the name that the postgres adapter gives the index, so a unique violation names its key and never a value
+// (ST-SUP-RC32-OC22, ST-SUP-RP10-LC48). An index whose columns are not all declared fields is not given.
+func renderUnique(w *writer, e *entity) {
+	fields := map[string]string{}
+	for _, f := range e.fields {
+		fields[f.decl.ColumnName()] = f.decl.Name
+	}
+	indexes := postgresadapter.UniqueIndexes(e.decl)
+	var lines []string
+	for _, name := range slices.Sorted(maps.Keys(indexes)) {
+		var key []string
+		for _, column := range indexes[name] {
+			if fields[column] == "" {
+				key = nil
+				break
+			}
+			key = append(key, fields[column])
+		}
+		if len(key) > 0 {
+			lines = append(lines, fmt.Sprintf("\t\t%q: %q,\n", name, strings.Join(key, ", ")))
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	w.f("\tUnique: map[string]string{\n%s\t},\n", strings.Join(lines, ""))
 }
 
 // renderEntity writes the Go type, the repository declaration and the repository accessor of one entity.

@@ -150,6 +150,26 @@
         "tags": [
           "organizations"
         ],
+        "parameters": [
+          {
+            "name": "Authz-Revocation-After",
+            "in": "header",
+            "required": false,
+            "description": "The identity of the caller's own revocation, or its Authz-Revocation-Location path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Prefer",
+            "in": "header",
+            "required": false,
+            "description": "wait=N: wait at most N seconds for the revocation (RFC 7240)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -205,6 +225,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
           }
         }
       }
@@ -221,6 +244,24 @@
             "name": "id",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Authz-Revocation-After",
+            "in": "header",
+            "required": false,
+            "description": "The identity of the caller's own revocation, or its Authz-Revocation-Location path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Prefer",
+            "in": "header",
+            "required": false,
+            "description": "wait=N: wait at most N seconds for the revocation (RFC 7240)",
             "schema": {
               "type": "string"
             }
@@ -246,6 +287,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
           }
         }
       },
@@ -498,6 +542,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Authz-Revocation-After",
+            "in": "header",
+            "required": false,
+            "description": "The identity of the caller's own revocation, or its Authz-Revocation-Location path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Prefer",
+            "in": "header",
+            "required": false,
+            "description": "wait=N: wait at most N seconds for the revocation (RFC 7240)",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -600,6 +662,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
           },
           "409": {
             "description": "Conflict — the row of the key changed during the request"
@@ -768,6 +833,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Authz-Revocation-After",
+            "in": "header",
+            "required": false,
+            "description": "The identity of the caller's own revocation, or its Authz-Revocation-Location path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Prefer",
+            "in": "header",
+            "required": false,
+            "description": "wait=N: wait at most N seconds for the revocation (RFC 7240)",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -825,6 +908,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
           }
         }
       }
@@ -852,6 +938,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Authz-Revocation-After",
+            "in": "header",
+            "required": false,
+            "description": "The identity of the caller's own revocation, or its Authz-Revocation-Location path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Prefer",
+            "in": "header",
+            "required": false,
+            "description": "wait=N: wait at most N seconds for the revocation (RFC 7240)",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -874,6 +978,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
           }
         }
       },
@@ -994,6 +1101,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "Authz-Revocation-After",
+            "in": "header",
+            "required": false,
+            "description": "The identity of the caller's own revocation, or its Authz-Revocation-Location path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Prefer",
+            "in": "header",
+            "required": false,
+            "description": "wait=N: wait at most N seconds for the revocation (RFC 7240)",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -1052,6 +1177,9 @@
               }
             }
           },
+          "400": {
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
+          },
           "404": {
             "description": "Not found"
           }
@@ -1076,6 +1204,24 @@
             "name": "id",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Authz-Revocation-After",
+            "in": "header",
+            "required": false,
+            "description": "The identity of the caller's own revocation, or its Authz-Revocation-Location path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Prefer",
+            "in": "header",
+            "required": false,
+            "description": "wait=N: wait at most N seconds for the revocation (RFC 7240)",
             "schema": {
               "type": "string"
             }
@@ -1136,6 +1282,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad request: the Authz-Revocation-After header is not the identity of a revocation, or the request is not valid"
           }
         }
       }

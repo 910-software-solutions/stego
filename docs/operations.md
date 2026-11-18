@@ -619,6 +619,30 @@ the lost rows.
 The audit rows after `T0` are lost in the database. The audit sink holds the
 copies that it got. Keep them as the record of that time.
 
+## Write a grant in SpiceDB yourself
+
+Most grants come from the service: Provision, a command, or the owner of a new
+row. Each of them goes through the outbox and the relay, and its write raises
+the revocation floor, the token that each check of the service reads at least.
+Thus a client that sends `Authz-Revocation-After` sees the grant at once.
+
+An operator can also write a grant in SpiceDB with `zed relationship create`,
+such as the relation `operator` on `outbox_destination:<base64url of the
+tenant ID>/<base64url of the destination>`. Such a grant does not raise the
+floor. A check reads at least the floor, and SpiceDB can answer from a
+revision that is older than the grant. SpiceDB rounds the revision of a read
+to its quantization window: the flag
+`--datastore-revision-quantization-interval`, 5 seconds by default. Thus:
+
+- The grant can take up to that interval to work. A request in that time gets
+  403 or 404, as with no grant.
+- A removal that you write in SpiceDB yourself can also take up to that
+  interval to stop the access.
+
+Wait for that interval after you write the grant, then try the request again.
+To remove an access at once, use the command of the service that removes it:
+its revocation raises the floor.
+
 ## Which older releases can run on a newer database
 
 STEGO supports a rollback by one release: the pods of release N-1 on the

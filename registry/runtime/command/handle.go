@@ -119,6 +119,9 @@ type conflictError struct {
 	text string
 	// unique is true for a unique violation, which a consumer counts as an attempt (uniqueConflict).
 	unique bool
+	// key is the declared fields of the unique key that a unique violation broke, or empty when the entity does not
+	// declare the index (ST-SUP-RP10-LC48). It names no value.
+	key string
 }
 
 func (e *conflictError) Error() string        { return "command: conflict: " + e.text }
@@ -244,6 +247,11 @@ type EntitySpec[T any] struct {
 	// (23502) or a foreign key (23503) refuses is ErrInvalid naming that field, so a value that Check does not cover
 	// is answered 400 and never 500 (walkthrough 10, B4).
 	Constraints map[string]string
+	// Unique gives the declared fields of the key of each unique index of the entity's table, by the name of the
+	// index, joined by a comma and a space. A create or an update that a unique violation (SQLSTATE 23505) of one of
+	// them ends is a conflict that names those fields, which OutcomeOf answers 409 with the field, never a value
+	// (ST-SUP-RP10-LC48). Nil names no key.
+	Unique map[string]string
 	// Parent is the list of the references of a row to the rows of other entities, which the generated code reads
 	// from a value, such as Order and value.OrderID, in the order that the declaration gives them; empty for an
 	// entity that has none. A create, a move and the work on a child take the loaded value of each reference that
@@ -1284,7 +1292,30 @@ func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) e
 			}
 		}
 	}
-	return s.fail(ctx, step, err)
+	return r.failUnique(ctx, step, err)
+}
+
+// failUnique is fail for the row statement of a create or an update, which keeps the declared fields of the unique key
+// that a unique violation (SQLSTATE 23505) broke in the conflict, when the entity declares the index in Unique
+// (ST-SUP-RP10-LC48). The first conflict of the transaction is the one that Run returns, so only it takes the key.
+func (r *Repository[T]) failUnique(ctx context.Context, step string, err error) error {
+	failed := r.st.fail(ctx, step, err)
+	var pg *pgconn.PgError
+	var c *conflictError
+	if sqlState(err) == "23505" && errors.As(err, &pg) && errors.As(failed, &c) && c.unique && c.key == "" {
+		c.key = r.entity.spec.Unique[pg.ConstraintName]
+	}
+	return failed
+}
+
+// UniqueKey gives the declared fields of the unique key that the conflict err broke, or empty for any other error and
+// for a unique violation of an index that the entity does not declare (ST-SUP-RP10-LC48).
+func UniqueKey(err error) string {
+	var c *conflictError
+	if errors.As(err, &c) && c.unique {
+		return c.key
+	}
+	return ""
 }
 
 // reasonConstraint is the fixed reason of a value that a CHECK, a NOT NULL or a foreign key of the entity's table

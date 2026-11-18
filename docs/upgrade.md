@@ -79,6 +79,7 @@ archetype does not have the change.
 | 3.176.0 | 1.178.0 | - | The worker Deployment runs as the ServiceAccount `<service>-worker`, not `<service>`. | [Give the worker ServiceAccount its grants](#give-the-worker-serviceaccount-its-grants) |
 | 3.179.0 | 1.181.0 | 1.182.0 | `stego fill create` writes a test that does not name `ErrNotImplemented`. `stego test` names the cause when an old scaffold test still expects it. | [Write the tests of your fills](#write-the-tests-of-your-fills) |
 | runtime v0.134.0 | runtime v0.134.0 | - | A new consumer waits for its worker tuple, so a new subscription no longer parks its backlog. The refresh age of the OIDC key set is the `max-age` of the issuer. A second cursor key can open cursors. A route that does not exist answers 404. A retire removes the tuples of the rows of the tenant. A message that an older runtime counted toward poison keeps its count. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service), [Rotate the OIDC signing key](operations.md#rotate-the-oidc-signing-key), [Rotate the cursor key](operations.md#rotate-the-cursor-key). Before the upgrade, resolve each parked message of a consuming worker (see [See and resolve the parked messages](commands-queries-workers.md#see-and-resolve-the-parked-messages)): a message that the older runtime almost parked can park soon after the upgrade. |
+| 3.182.0 | 1.184.0 | - | Checking refuses a `route` on a query whose `method` is a gRPC server stream: no handler served it. The query contract names the repository of an entity with the plural of its table, such as `GetEntryEntries`; the old name, such as `GetEntryEntrys`, stays one release as a deprecated function. Runtime v0.136.0: a write waits for the revocation that `Authz-Revocation-After` names, and a unique violation names the fields of its key. | [Remove the route of a stream query](#remove-the-route-of-a-stream-query), [Use the new names of the query repositories](#use-the-new-names-of-the-query-repositories). A client that creates a child at once after its parent can send `Authz-Revocation-After` (see [Write a child at once after its parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent)). |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -289,6 +290,39 @@ For each fill that it names:
 A new `stego fill create` writes a test that passes while the fill is not
 written. When you write the fill, the test fails with a message that tells you
 to replace it. It does not stop the compile.
+
+## Remove the route of a stream query
+
+Do this when `stego validate` gives the fault `query-stream-route`.
+
+Why: a query whose `method` is a gRPC server stream is served over gRPC only
+(ST-SUP-RC33-OC08). Its `route` was served by no handler: a request to it got
+404 or 405. Checking now refuses the route, so the declaration says what the
+service serves.
+
+1. Remove the `route` of the stream query from `service.yaml`.
+2. When an HTTP client must list the same rows, declare a second list query
+   with a `route` and a unary `method`, or with no `method`, and its own fill.
+   See [Declare a query](commands-queries-workers.md#a-get-query-and-a-list-query).
+3. Run `stego validate` and `stego apply`.
+
+## Use the new names of the query repositories
+
+Do this in the first release at rest-crud 3.182.0 or rpc-service 1.184.0, or
+in the release after it.
+
+Why: the query contract named the repository of an entity with the plural
+`<Entity>s`, such as `GetEntryEntrys` for the table `entries`. It now uses the
+plural of the table names: `GetEntryEntries`, `ListBoxesBoxes`,
+`ListCategoriesCategories`. The old name stays for one release as a function
+marked `Deprecated` that calls the new one, so a fill still builds. Only an
+entity whose name ends in `s`, `x`, `z`, `sh`, `ch`, or a consonant and `y`
+has a new name.
+
+1. In each query fill, replace each call of the old name with the new name.
+   `staticcheck` (SA1019) and `gopls` name each call of a deprecated function.
+2. Run `stego test` and `stego fill sign <fill>` for each fill that you
+   changed.
 
 ## Add a subscription to a running service
 

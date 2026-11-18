@@ -890,6 +890,11 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 	case http.StatusNotFound:
 		handleError(w, r, missing(kind, req))
 	case http.StatusConflict:
+		if o.Field != "" {
+			// A unique violation names the fields of the key, never a value (ST-SUP-RC20-OC50, ST-SUP-RP10-LC48).
+			handleError(w, r, Conflict("the "+kind+" was not written: another "+kind+" has the same "+o.Field+", which must be unique"))
+			return
+		}
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
 	case http.StatusServiceUnavailable:
 		answerUndecided(w, r)
@@ -963,6 +968,17 @@ func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err err
 func answerUndecided(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Retry-After", query.RetryAfter())
 	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
+}
+
+// answerWaitFailure answers a wait for a revocation that failed: a database that cannot serve the wait now is 503
+// with Retry-After, as command.Serve answers it, and every other failure 500 (security review of PR #440, I1).
+func answerWaitFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if query.Transient(err) {
+		w.Header().Set("Retry-After", query.RetryAfter())
+		handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the service cannot read the state of the revocation now; try again"))
+		return
+	}
+	handleError(w, r, InternalError("internal error"))
 }
 
 // writeResult writes the response that Run gives: the fill's response or the stored one of a replay.
@@ -1104,9 +1120,9 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	}
 	needUUID := w.envelope && (c.ops[types.OpCreate] || c.ops[types.OpUpsert])
 	w.f("package %s\n\nimport (\n\t\"context\"\n\t\"encoding/json\"\n", path.Base(ctx.OutputNamespace))
-	if c.ops[types.OpList] || c.ops[types.OpRead] {
-		w.f("\t\"errors\"\n")
-	}
+	// Each read and list waits through AwaitWrite, and each write through AwaitRevocation, and each tests its error with
+	// errors.Is (ST-SUP-RC20-OC41, ST-SUP-RC20-OC49).
+	w.f("\t\"errors\"\n")
 	if needFmt {
 		w.f("\t\"fmt\"\n")
 	}
@@ -2051,6 +2067,7 @@ func (w *runtimeHandlerWriter) create() {
 	w.f("\tfingerprint, err := idempotency.FieldFingerprint(r.Method, r.URL.Path, body, %sCreateFields)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n", c.camel)
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, \"\")\n")
 	w.f("\tvar persisted %s\n", e.Name)
+	w.awaitRevocation()
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpCreate), c.pascal, c.lower, e.Name)
 	w.ancestors(false, "idempotency.Response{}", true)
 	if w.envelope {
@@ -2081,6 +2098,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.f("\trequestID := command.NewID()\n\tfingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n")
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
+	w.awaitRevocation()
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpdate), c.pascal, c.lower, e.Name)
 	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
@@ -2227,6 +2245,7 @@ func (w *runtimeHandlerWriter) upsert() {
 		w.f("\tifMatch, ifMatchSent, ifMatchValid := ifMatchGeneration(r)\n")
 	}
 	w.f("\tvar persisted %s\n", e.Name)
+	w.awaitRevocation()
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%s, func(ctx context.Context, %s %s, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpUpsert), c.pascal, c.lower, e.Name)
 	w.ancestors(false, "idempotency.Response{}", true)
 	// The before slots decide the requested value before the lookup, on both branches (ST-SUP-RC20-OC13). They see
@@ -2331,6 +2350,7 @@ func (w *runtimeHandlerWriter) patch() {
 	w.f("\tfingerprint, err := idempotency.FieldFingerprint(r.Method, r.URL.Path, body, %sPatchFields)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n", c.camel)
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
+	w.awaitRevocation()
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, decode%sPatch, func(ctx context.Context, patch %sPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpPatch), c.pascal, c.pascal)
 	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
@@ -2370,6 +2390,7 @@ func (w *runtimeHandlerWriter) remove() {
 	w.start(false)
 	w.f("\trequestID := command.NewID()\n\tfingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, nil)\n\tif err != nil {\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)\n")
+	w.awaitRevocation()
 	w.f("\tresult, err := command.Run(r.Context(), h.rt.Commands, %s, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {\n", w.commandVar(types.OpDelete))
 	w.ancestors(false, "idempotency.Response{}", false)
 	w.lockRow()
@@ -2413,11 +2434,20 @@ func (w *runtimeHandlerWriter) read() {
 	w.f("\tw.Header().Set(\"Content-Type\", \"application/json\")\n\t_ = json.NewEncoder(w).Encode(%sPresented(%s))\n}\n\n", c.camel, w.presentedArgs("value"))
 }
 
+// awaitRevocation emits the call of AwaitRevocation of a write, after the bind and before Run decides the write
+// (ST-SUP-RC20-OC49, ST-SUP-RP10-LC47): a value that is not the identity of a revocation is 400, a client that went away
+// during the wait gets no answer and no internal error code, a database that cannot serve the wait now 503, and any
+// other failure 500. The wait sets no
+// Authz-Revocation header: that header of a write names the revocation of the write itself.
+func (w *runtimeHandlerWriter) awaitRevocation() {
+	w.f("\tif err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, command.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\tif r.Context().Err() != nil {\n\t\t\treturn\n\t\t}\n\t\tanswerWaitFailure(w, r, err)\n\t\treturn\n\t}\n")
+}
+
 // awaitWrite emits the call of AwaitWrite of a read or a list (ST-SUP-RP11-LC21): a value that is not the identity
-// of a revocation is 400, and any other failure is 500.
+// of a revocation is 400, a database that cannot serve the wait now 503, and any other failure 500.
 // A client that went away during the wait gets no answer and no internal error code (review of PR #428, L1).
 func (w *runtimeHandlerWriter) awaitWrite() {
-	w.f("\tif err := h.rt.Queries.AwaitWrite(w, r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, query.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\tif r.Context().Err() != nil {\n\t\t\treturn\n\t\t}\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
+	w.f("\tif err := h.rt.Queries.AwaitWrite(w, r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, query.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\tif r.Context().Err() != nil {\n\t\t\treturn\n\t\t}\n\t\tanswerWaitFailure(w, r, err)\n\t\treturn\n\t}\n")
 }
 
 func (w *runtimeHandlerWriter) list() {

@@ -107,6 +107,39 @@ func TestGRPCMethods(t *testing.T) {
 			t.Fatalf("the stream queries are %v, want open-reservations-stream alone", streams)
 		}
 	})
+	t.Run("ST-DECL-INV73-T A gRPC method that is unknown, of the wrong kind or named twice is refused: a stream query with a route", func(t *testing.T) {
+		// A stream is served over gRPC only, so its route would be served by no handler (walkthrough 12, W12-B2).
+		svc := declared()
+		svc.Queries[0].Route = "GET /reservations/open"
+		svc.Queries = append(svc.Queries, types.Query{Name: "watch-orders", Method: "orders.v1.OrderService/WatchOrders", Route: "GET /orders/watch"})
+		methods, err := grpcMethodFacts(project, svc, active)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var faults []declaration.ValidationError
+		for _, f := range declaration.ValidateComposition(svc, declaration.Facts{GRPCMethods: methods}) {
+			if f.Category == "query" && (f.Rule == "query-stream-route" || f.Rule == "operation-route") {
+				faults = append(faults, f)
+			}
+		}
+		if len(faults) != 1 || faults[0].Rule != "query-stream-route" || faults[0].Path != "queries[1].route" || faults[0].Found != "GET /orders/watch" ||
+			!strings.Contains(faults[0].Message, "watch-orders") || !strings.Contains(faults[0].Message, "over gRPC only") ||
+			!strings.Contains(faults[0].Message, "To list over HTTP, declare a second query") {
+			t.Fatalf("a stream query with a route gave %+v, want one fault query-stream-route that names the query and tells how to list over HTTP", faults)
+		}
+		// With no route the stream query is accepted, and the query on a unary method still needs its route.
+		svc.Queries[1].Route = ""
+		svc.Queries[0].Route = ""
+		faults = nil
+		for _, f := range declaration.ValidateComposition(svc, declaration.Facts{GRPCMethods: methods}) {
+			if f.Category == "query" && (f.Rule == "query-stream-route" || f.Rule == "operation-route") {
+				faults = append(faults, f)
+			}
+		}
+		if len(faults) != 1 || faults[0].Rule != "operation-route" || faults[0].Path != "queries[0].route" {
+			t.Fatalf("a stream query with no route and a unary query with no route gave %+v, want one fault for the route of the unary query", faults)
+		}
+	})
 	t.Run("ST-DECL-INV73-T A gRPC method that is unknown, of the wrong kind or named twice is refused: a method without the grpc-application component", func(t *testing.T) {
 		svc := declared()
 		svc.Queries = nil
