@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 	parse "github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/types"
 )
@@ -339,6 +340,54 @@ func TestStreamRuntime(t *testing.T) {
 		}
 		if !strings.Contains(strings.Join(strings.Fields(all.String()), " "), "ValidID: query.ValidUUID,") {
 			t.Fatal("the entity declarations do not check the form of the key")
+		}
+	})
+}
+
+func TestRepositoryPlural(t *testing.T) {
+	t.Run("ST-SUP-RC33-OC01-T03 The repository of an entity in the query contract has the plural of the table names, and the old name stays as deprecated", func(t *testing.T) {
+		for word, want := range map[string]string{"Order": "Orders", "Entry": "Entries", "Batch": "Batches", "Box": "Boxes", "Key": "Keys"} {
+			if got := postgresadapter.Plural(word); got != want {
+				t.Errorf("the plural of %s is %s, want %s", word, got, want)
+			}
+		}
+		ctx := shopContext(t)
+		for i := range ctx.Entities {
+			if ctx.Entities[i].Name == "Charge" {
+				ctx.Entities[i].Name = "Entry"
+			}
+		}
+		for i := range ctx.Queries {
+			for j, name := range ctx.Queries[i].Reads {
+				if name == "Charge" {
+					ctx.Queries[i].Reads[j] = "Entry"
+				}
+			}
+		}
+		files, _, err := new(Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var contract string
+		for _, f := range files {
+			if strings.HasSuffix(f.Path, "queries/queries.go") {
+				contract = string(f.Bytes())
+			}
+		}
+		for _, want := range []string{
+			"func ListChargesEntries(h *ListChargesHandle) (*Repository[Entry], error)",
+			"// ListChargesEntrys is ListChargesEntries.\n//\n// Deprecated: use ListChargesEntries",
+			"func ListChargesEntrys(h *ListChargesHandle) (*Repository[Entry], error)",
+			"return ListChargesEntries(h)",
+			"func ListOrdersOrders(h *ListOrdersHandle) (*Repository[Order], error)",
+		} {
+			if !strings.Contains(contract, want) {
+				t.Errorf("the query contract does not hold %q", want)
+			}
+		}
+		// A regular plural gives no deprecated name.
+		if strings.Contains(contract, "ListOrdersOrderss") || strings.Count(contract, "Deprecated:") != strings.Count(contract, "Entrys is") {
+			t.Error("the query contract gives a deprecated name for a regular plural")
 		}
 	})
 }
