@@ -100,6 +100,11 @@ func TestCompat(t *testing.T) {
 		if code := exitCode(t, err); code == 0 || !strings.Contains(stderr, "correct each fault as its text says") || strings.Contains(stdout+stderr, "declare the schema changes") {
 			t.Fatalf("plan gave exit %d, want a refusal that asks to correct each fault and names no schema change:\n%s%s", code, stdout, stderr)
 		}
+		// The last line also names the flag that takes the release tag, as the base that the author means is often
+		// a tag and not the branch (walkthrough 8 and 9, rank 3).
+		if !strings.Contains(stderr, "--base <release tag>") {
+			t.Fatalf("plan's refusal does not name --base <release tag>:\n%s", stderr)
+		}
 	})
 	t.Run("ST-GEN-UC14-R02-T01 With no record at the base ref, any stored shape is accepted", func(t *testing.T) {
 		t.Parallel()
