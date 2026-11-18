@@ -110,7 +110,7 @@ environment:
   - name: STEGO_SECRET_KEY_RING_FILE
     type: path
     required: false
-    description: "The file of the key ring of the secret and pii fields, one line of a key ID and a base64 key of 32 bytes for each key, of which the first seals. It seals the secret fields and the stored answers of the idempotency keys. The api, worker and controller modes do not start without it."
+    description: "The key ring file of the secret fields and stored idempotency answers: a key ID and a base64 key of 32 bytes on each line; the first seals. The api, worker and controller modes need it."
     secret: false
     secret_source: {name: "{service}-secret-key-ring", key: key-ring}
     read_with: sealed
