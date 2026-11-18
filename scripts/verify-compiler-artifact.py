@@ -110,7 +110,7 @@ def verify(inputs, bundle, revision, output, gh):
     # cannot replace the bytes that are later copied to the result directory.
     with tempfile.TemporaryDirectory(prefix=".stego-verify-", dir=output.parent) as temporary:
         stage = Path(temporary)
-        for name, limit in [(BINARY, 64 << 20), ("build.json", 1 << 20), ("SHA256SUMS", 1024)]:
+        for name, limit in [(BINARY, 128 << 20), ("build.json", 1 << 20), ("SHA256SUMS", 1024)]:
             (stage / name).write_bytes(regular_bytes(inputs / name, limit))
         saved_bundle = stage / "provenance.jsonl"
         saved_bundle.write_bytes(regular_bytes(bundle, 4 << 20))

@@ -181,7 +181,7 @@ def publish(images, expected, source, compiler, compiler_sha256, repository, ca,
     with tempfile.TemporaryDirectory(prefix=".private-", dir=output) as directory:
         private = Path(directory)
         selected = load_set(images, expected, private)
-        data = records.verification.regular_bytes(compiler, 64 << 20)
+        data = records.verification.regular_bytes(compiler, 128 << 20)
         if not re.fullmatch(r"[0-9a-f]{64}", compiler_sha256) or digest(data) != compiler_sha256:
             raise CheckError("The publishing compiler digest differs")
         executable = private / "stego"
