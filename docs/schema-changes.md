@@ -415,7 +415,10 @@ The release before must report itself: its processes write
 `stego_schema.releases` from runtime v0.120.0 (postgres-adapter 6.4.0). Over an
 older release, or a base record with no pin, `stego compat` and `stego plan`
 refuse a new seal: first deploy a release with runtime v0.120.0 or later and no
-new schema step, then declare the seal. The first pass also waits 3 minutes
+new schema step, then declare the seal. While a seal is open, do not roll back past a
+release that reports itself (runtime v0.120.0 or later). Plan and apply with
+no check against the base, such as in a folder with no Git repository, refuse
+an open seal: give `--base` with the release that runs now. The first pass also waits 3 minutes
 after the expand step, so that each running process of the release before
 reports itself first.
 

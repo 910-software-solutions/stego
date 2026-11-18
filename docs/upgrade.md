@@ -338,7 +338,9 @@ the version of postgres-adapter in `.stego/state.yaml` of the base.
    roll. The new release writes both columns. The controller seals each row
    when no pod of the release before runs. See [Seal steps](schema-changes.md#seal-steps).
    You can go back to the release before in this phase: it reads the clear
-   column, and the seal job checks each row again later.
+   column, and the seal job checks each row again later. While a seal is open,
+   do not go back past a release that reports itself (runtime v0.120.0 or
+   later): an older release writes the clear column unseen.
 6. In the next release, declare the contract step of each seal. Until then the
    clear column holds the secret, also in each backup that you take. Its migration
    refuses until the seal job completed a pass after the last pod of the

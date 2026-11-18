@@ -431,6 +431,14 @@ func TestSchemaStepPlan(t *testing.T) {
 		if base := git(t, s.service, "show", "HEAD:out/internal/storage/migrations/001_initial.sql"); strings.TrimSpace(base) != strings.TrimSpace(s.read(t, "out/internal/storage/migrations/001_initial.sql")) {
 			t.Errorf("001_initial changed with the seal step:\nbase %s\nnow %s", base, s.read(t, "out/internal/storage/migrations/001_initial.sql"))
 		}
+		// With no check against a base that holds a record, plan refuses the open seal and names --base (security
+		// re-review of PR #443, N1).
+		if err := os.RemoveAll(filepath.Join(s.service, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		if stdout, stderr, err := s.stego(t, "plan"); err == nil || !strings.Contains(stdout+stderr, "open seal note-body-seal") || !strings.Contains(stdout+stderr, "give --base") {
+			t.Errorf("plan of an open seal with no base check: %v, want a refusal that names --base:\n%s%s", err, stdout, stderr)
+		}
 	})
 	t.Run("ST-GEN-UC12-R01-T02 Plan lists a new add step with its kind, phase and migration, and no trigger or backfill", func(t *testing.T) {
 		t.Parallel()

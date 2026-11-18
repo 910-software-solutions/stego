@@ -422,14 +422,17 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 	if named == "" {
 		ref, found, err := defaultBaseRef()
 		if errors.Is(err, errNoCommit) {
-			return gate, firstRelease(stdout)
+			if err := firstRelease(stdout); err != nil {
+				return gate, err
+			}
+			return gate, refuseUncheckedSeal()
 		}
 		if err != nil {
 			return gate, err
 		}
 		if !found {
 			fmt.Fprintln(stdout, "No base check: the service folder is in no Git repository, and --base names no base.")
-			return gate, nil
+			return gate, refuseUncheckedSeal()
 		}
 		gate.ref = ref
 	} else if strings.HasPrefix(named, "-") {
@@ -467,6 +470,9 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 		fmt.Fprintf(stdout, "Base: %s at commit %s; the declaration can run beside it.\n", gate.ref, base.Commit)
 	} else {
 		fmt.Fprintf(stdout, "Base: %s at commit %s holds no record, so no release has run, and any stored shape is accepted.\n", gate.ref, base.Commit)
+		if err := refuseUncheckedSeal(); err != nil {
+			return gate, err
+		}
 	}
 	if len(steps) > 0 {
 		gate.steps = steps
@@ -479,6 +485,33 @@ func checkBaseBeforePlan(named string, stdout io.Writer) (baseGate, error) {
 		return gate, err
 	}
 	return gate, nil
+}
+
+// refuseUncheckedSeal refuses plan and apply with no check against the base of a release when the declaration in the
+// working folder declares a seal whose contract step it does not declare: a seal moves rows that a release before
+// wrote, and only the check against the record of that release refuses a seal over a release whose processes do not
+// report themselves, whose writes the contract would drop (security re-review of PR #443, N1).
+func refuseUncheckedSeal() error {
+	data, err := parser.ReadDocument("service.yaml")
+	if err != nil {
+		return err
+	}
+	head, err := parser.ParseServiceDeclarationFromBytes(data, "service.yaml")
+	if err != nil {
+		return err
+	}
+	contracted := map[string]bool{}
+	for _, step := range head.SchemaHistory {
+		if step.Phase == "contract" {
+			contracted[step.Change] = true
+		}
+	}
+	for _, change := range head.SchemaChanges {
+		if change.Kind == "seal" && !contracted[change.ID] {
+			return fmt.Errorf("the declaration has the open seal %s, which moves rows that a release before wrote, and no check against the record of that release ran: give --base <release tag or commit of the release that runs now>", change.ID)
+		}
+	}
+	return nil
 }
 
 // firstRelease lets plan and apply go on with no base check in a repository with no commit, when the service has no
