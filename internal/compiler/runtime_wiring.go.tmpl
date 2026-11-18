@@ -213,6 +213,9 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 		Service: Service, DeclarationVersion: DeclarationVersion, SubjectType: subjectType, TenantClaim: tenantClaim,
 		// The open changes with a sync trigger, which the writer marker of each write names (ST-SUP-RC01-OC23).
 		SchemaSteps: svcstorage.SchemaSteps, Release: svcstorage.SchemaRelease,
+		// The start refuses a database whose ledger holds another body of a migration of the release
+		// (ST-SUP-RP14-LC13).
+		Migrations: svcstorage.MigrationDigests(),
 		ProblemType: problemType, ProblemCode: problemCode, TenantConfig: svcstorage.TenantConfig,
 		NewQueue:   func(db *sql.DB) (*outbox.Queue, error) { return svcoutbox.NewQueue(db, nil) },
 		AuditQueue: func(q *outbox.Queue) (audit.Enqueuer, error) { return svcoutbox.AuditQueue(q) },

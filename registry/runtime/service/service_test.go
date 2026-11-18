@@ -695,7 +695,7 @@ func TestStartRelease(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = closed.Close()
-		if err := checkRelease(ctx, closed, "todo-svc", "002_release"); err == nil || errors.Is(err, ErrMigrationPending) ||
+		if err := checkRelease(ctx, closed, "todo-svc", "002_release", nil); err == nil || errors.Is(err, ErrMigrationPending) ||
 			!strings.Contains(err.Error(), "read the migration ledger "+LedgerTable+" in the catalog") {
 			t.Errorf("the check on a closed pool gave %v, want an error of the catalog read that is not ErrMigrationPending", err)
 		}
@@ -749,5 +749,41 @@ CREATE TABLE IF NOT EXISTS stego_schema.migrations (version text PRIMARY KEY, di
 		if logs, err := start(); err != nil {
 			t.Fatalf("New after the migration job of the release gave %v:\n%s", err, logs)
 		}
+
+		t.Run("ST-SUP-RP14-LC13-T01 New refuses a database whose ledger holds another body of a migration of the release", func(t *testing.T) {
+			// The ledger rows of the job above hold the digest d.
+			declared.Migrations = map[string]string{"001_initial": "d", "002_release": "d"}
+			if logs, err := start(); err != nil {
+				t.Fatalf("New with the digests of the ledger gave %v:\n%s", err, logs)
+			}
+			// A ledger row of a name that the release does not give, such as a step of a later release, passes.
+			declared.Migrations = map[string]string{"001_initial": "d"}
+			if logs, err := start(); err != nil {
+				t.Fatalf("New with a ledger row that the release does not give gave %v:\n%s", err, logs)
+			}
+			const body = "CREATE TABLE secret_body_text (id int)"
+			declared.Migrations = map[string]string{"001_initial": "e3b0c4", "002_release": "d"}
+			logs, err := start()
+			if !errors.Is(err, ErrMigrationChanged) || StartStage(err) != "service.start.migration" {
+				t.Fatalf("New with another digest of 001_initial gave %v at the stage %q, want ErrMigrationChanged at service.start.migration", err, StartStage(err))
+			}
+			for _, text := range []string{err.Error(), logs} {
+				for _, want := range []string{"001_initial", "holds the digest", "e3b0c4", "never changes", "new schema step", "nothing repairs the digest"} {
+					if !strings.Contains(text, want) {
+						t.Errorf("the refusal does not say %q:\n%s", want, text)
+					}
+				}
+				if strings.Contains(text, body) || strings.Contains(text, rolePassword) {
+					t.Errorf("the refusal holds a body or the password:\n%s", text)
+				}
+			}
+			if !strings.Contains(logs, `"migration":"001_initial"`) {
+				t.Errorf("the log line does not name the migration:\n%s", logs)
+			}
+			var digest string
+			if err := f.admin.QueryRow("SELECT digest FROM stego_schema.migrations WHERE version = '001_initial'").Scan(&digest); err != nil || digest != "d" {
+				t.Fatalf("the refused start changed the ledger row to %q (%v)", digest, err)
+			}
+		})
 	})
 }

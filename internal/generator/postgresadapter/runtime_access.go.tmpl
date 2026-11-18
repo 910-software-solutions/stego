@@ -64,8 +64,13 @@ func CheckLedger(ctx context.Context, db Database) error {
 			return err
 		}
 		// A row after the migrations of this release passes only within its compatible_with set
-		// (ST-SUP-RC01-OC28).
-		if checkLedger(applied, orderedMigrations()) != nil {
+		// (ST-SUP-RC01-OC28). A changed body of an applied migration is refused with the fault that names it
+		// (ST-SUP-RC01-OC51).
+		if err := checkLedger(applied, orderedMigrations()); err != nil {
+			var changed *digestRefusal
+			if errors.As(err, &changed) {
+				return changed
+			}
 			return ErrForeignTables
 		}
 		return nil

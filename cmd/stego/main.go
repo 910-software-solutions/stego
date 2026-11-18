@@ -489,6 +489,9 @@ func runPlan(args []string) error {
 	if err := checkPinStanding(input, plan, os.Stdout); err != nil {
 		return err
 	}
+	if err := refuseChangedBodies(gate, plan, os.Stdout); err != nil {
+		return err
+	}
 	if err := compiler.SavePlan(plan, input.ProjectDir); err != nil {
 		return err
 	}
@@ -566,7 +569,7 @@ func runApply(args []string) error {
 			return fmt.Errorf("the declaration that apply wrote does not pass the base check, so apply wrote the old one back: %w", err)
 		}
 		printSchemaSteps(os.Stdout, "Wrote the", gate.steps)
-		if started, err := applyPlanned(*replaceHandEdits, *savedPlan); err != nil {
+		if started, err := applyPlanned(gate, *replaceHandEdits, *savedPlan); err != nil {
 			// Once Apply starts, its journal names the new declaration, and stego recover completes it.
 			if !started {
 				restore()
@@ -576,7 +579,7 @@ func runApply(args []string) error {
 		}
 		return nil
 	}
-	_, err = applyPlanned(*replaceHandEdits, *savedPlan)
+	_, err = applyPlanned(gate, *replaceHandEdits, *savedPlan)
 	return err
 }
 
@@ -645,9 +648,10 @@ func replaceDeclaration(data []byte, mode os.FileMode) error {
 	return os.Rename(name, "service.yaml")
 }
 
-// applyPlanned plans from the files on disk and carries the plan out. started tells whether Apply ran, after which
+// applyPlanned plans from the files on disk, refuses a changed body of a migration that the base of gate lists
+// (ST-GEN-INV38), and carries the plan out. started tells whether Apply ran, after which
 // its journal, not the old declaration, is what stego recover completes.
-func applyPlanned(replaceHandEdits, savedPlan bool) (started bool, err error) {
+func applyPlanned(gate baseGate, replaceHandEdits, savedPlan bool) (started bool, err error) {
 	input, err := buildReconcilerInput()
 	if err != nil {
 		return false, err
@@ -659,6 +663,10 @@ func applyPlanned(replaceHandEdits, savedPlan bool) (started bool, err error) {
 	}
 
 	if err := checkPinStanding(input, plan, os.Stdout); err != nil {
+		return false, err
+	}
+	// A changed body of a released migration is refused before anything is written (ST-GEN-INV38).
+	if err := refuseChangedBodies(gate, plan, os.Stdout); err != nil {
 		return false, err
 	}
 	if savedPlan {

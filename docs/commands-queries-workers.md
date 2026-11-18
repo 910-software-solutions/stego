@@ -1236,6 +1236,11 @@ worker mode, which runs the relay, runs.
 - Provision and Retire store a keyed fingerprint and a sealed answer in the
   key table when the service has a key ring, as each other command does
   (ST-SUP-RP16-LC05).
+- The start of a service refuses a database whose migration ledger holds
+  another digest of a migration of the release, at the stage
+  `service.start.migration`, with `service.ErrMigrationChanged`
+  (ST-SUP-RP14-LC13). New field `service.Parts.Migrations`, which the
+  generated code fills from `MigrationDigests` of postgres-adapter 6.15.0.
 
 ### Release notes for runtime v0.136.0
 
