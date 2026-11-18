@@ -26,14 +26,15 @@ const sealsText = `CREATE TABLE IF NOT EXISTS stego_schema.seals (
 	checked_rows bigint NOT NULL DEFAULT 0,
 	pass_started timestamptz,
 	completed_at timestamptz,
-	token bigint NOT NULL DEFAULT 0
+	token bigint NOT NULL DEFAULT 0,
+	created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp()
 );
 REVOKE ALL ON TABLE stego_schema.seals FROM PUBLIC;
 CREATE OR REPLACE FUNCTION stego_schema.seal_read(text)
  RETURNS TABLE (last_tenant text, last_id text, sealed_rows bigint, checked_rows bigint, started boolean, completed boolean, waiting boolean, stale boolean)
  LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET lock_timeout = '1s'
  AS $stego_seal$SELECT s.last_tenant, s.last_id::text, s.sealed_rows, s.checked_rows, s.pass_started IS NOT NULL, s.completed_at IS NOT NULL,
-  EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
+  s.created_at + interval '3 minutes' > pg_catalog.clock_timestamp() OR EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
    AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > pg_catalog.clock_timestamp()),
   s.pass_started IS NOT NULL AND EXISTS (SELECT 1 FROM stego_schema.releases r WHERE r.release COLLATE "C" < s.expand COLLATE "C"
    AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > s.pass_started)
@@ -47,7 +48,8 @@ BEGIN
     RETURN 0;
   END IF;
   IF $6 THEN
-    IF EXISTS (SELECT 1 FROM stego_schema.seals s JOIN stego_schema.releases r ON r.release COLLATE "C" < s.expand COLLATE "C"
+    IF EXISTS (SELECT 1 FROM stego_schema.seals s WHERE s.change_id = $1 AND s.created_at + interval '3 minutes' > pg_catalog.clock_timestamp())
+     OR EXISTS (SELECT 1 FROM stego_schema.seals s JOIN stego_schema.releases r ON r.release COLLATE "C" < s.expand COLLATE "C"
      WHERE s.change_id = $1 AND r.seen_at + r.every_ms * 3 * interval '1 millisecond' > pg_catalog.clock_timestamp()) THEN
       RETURN -1;
     END IF;
@@ -99,7 +101,9 @@ GRANT EXECUTE ON FUNCTION stego_schema.release_stop(text) TO %[1]s;
 
 // SealsText gives the text that makes the table of the seal checkpoints, stego_schema.seals, and its three
 // functions, as the owner role (ST-SUP-RP09-LC15): seal_read gives the row of a change, with whether a release before
-// its expand migration reports itself now (waiting) and whether one reported itself after the start of the pass
+// its expand migration reports itself now, or the row is younger than 3 minutes, three times the longest report
+// interval, so that each process of a release before has reported itself before a first pass (waiting; security
+// review of PR #443, L1) and whether one reported itself after the start of the pass
 // (stale); seal_checkpoint starts a pass, which it refuses with -1 while such a release reports itself, or moves its
 // position; seal_complete marks the pass completed, or starts it again with -1 when such a release reported itself
 // after its start. seal_checkpoint and seal_complete change the row only under the lease stego.backfill.<change ID>

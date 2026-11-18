@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -119,16 +118,17 @@ func TestSealedAnswers(t *testing.T) {
 		if _, err := admin.ExecContext(ctx, "UPDATE "+schema+".idempotency_keys SET response_body = $1 WHERE key = 'k3'", body); err != nil {
 			t.Fatal(err)
 		}
-		_, err = runWrap(ctx, db, withSealer("k3"), answer)
-		var statement *StatementError
-		if !errors.As(err, &statement) || !errors.Is(statement.Err, ErrSealed) || strings.Contains(err.Error(), secret) {
-			t.Fatalf("a moved sealed body = %v; want ErrSealed with no value", err)
+		// A sealed answer that does not open is answered as a reused key, so the client sends again with a new key,
+		// and the handler does not run (security review of PR #443, L3).
+		res, err := runWrap(ctx, db, withSealer("k3"), answer)
+		if err != nil || res.Problem != ProblemReused || res.Replayed || runs != 1 {
+			t.Fatalf("a moved sealed body = %+v, %v; want %s and no run", res, err, ProblemReused)
 		}
 		// A ring with no key 1 does not open the answer of k1.
 		other := request("k1", "f1")
 		other.Sealer = ringSealer{ring: throwawayRing(t, "2")}
-		if _, err := runWrap(ctx, db, other, answer); !errors.As(err, &statement) || !errors.Is(statement.Err, ErrSealed) {
-			t.Fatalf("a ring with no key 1 = %v; want ErrSealed", err)
+		if res, err := runWrap(ctx, db, other, answer); err != nil || res.Problem != ProblemReused || runs != 1 {
+			t.Fatalf("a ring with no key 1 = %+v, %v; want %s", res, err, ProblemReused)
 		}
 	})
 }

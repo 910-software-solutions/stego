@@ -282,7 +282,9 @@ func existing(ctx context.Context, tx Tx, req Request) (Result, error) {
 		return Result{Response: Response{Status: http.StatusUnprocessableEntity}, Problem: ProblemReused}, nil
 	}
 	if header, body, err = req.openAnswer(header, body); err != nil {
-		return Result{}, &StatementError{Step: "select", Err: err}
+		// A sealed answer that does not open, such as of a key that the ring no longer holds, cannot be replayed: the
+		// client sends the request again with a new key (security review of PR #443, L3).
+		return Result{Response: Response{Status: http.StatusUnprocessableEntity}, Problem: ProblemReused}, nil
 	}
 	h, err := decodeHeader(header)
 	if err != nil {

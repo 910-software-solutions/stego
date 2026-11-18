@@ -30,7 +30,8 @@ const (
 	AnswerTable = "idempotency_keys"
 )
 
-// ErrSealed is the error of a stored answer that does not seal or open. Its text names no value.
+// ErrSealed is the error of an answer that does not seal. Its text names no value. A stored answer that does not open
+// is answered as a reused key (ST-SUP-RP07-LC13).
 var ErrSealed = errors.New("idempotency: a stored answer does not seal or open")
 
 // AnswerRow gives the row of the place of a sealed answer: the principal and the key, each as a four-byte length and

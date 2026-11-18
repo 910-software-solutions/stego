@@ -89,9 +89,18 @@ func TestSealCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if s := read(); s.Started || s.Completed || s.Waiting || s.Stale {
+		if s := read(); s.Started || s.Completed || s.Stale {
 			t.Fatalf("a new seal reads %+v, want no pass", s)
 		}
+		// A seal younger than three times the longest report interval waits, so each process of a release before
+		// reports itself before a first pass (security review of PR #443, L1).
+		if s := read(); !s.Waiting {
+			t.Fatalf("a new seal reads %+v, want waiting", s)
+		}
+		if err := inTx(func(tx *sql.Tx) error { return SealCheckpoint(ctx, tx, held, change, "", "", 0, 0, true) }); !errors.Is(err, ErrSealWaiting) {
+			t.Fatalf("a start of a new seal gives %v, want ErrSealWaiting", err)
+		}
+		d.exec(t, "UPDATE stego_schema.seals SET created_at = created_at - interval '10 minutes'")
 		// A release before the expand migration reports itself: the pass waits.
 		d.exec(t, "INSERT INTO stego_schema.releases VALUES ('old', 'step_0001_x_expand', 'v1', 10000, clock_timestamp())")
 		d.exec(t, "INSERT INTO stego_schema.releases VALUES ('new', $1, 'v2', 10000, clock_timestamp())", expand)

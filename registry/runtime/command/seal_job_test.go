@@ -75,7 +75,7 @@ func newNoteEnv(t *testing.T) *noteEnv {
 		"ALTER TABLE notes ENABLE ROW LEVEL SECURITY", "ALTER TABLE notes FORCE ROW LEVEL SECURITY",
 		"CREATE POLICY notes_tenant ON notes USING (tenant_id = current_setting('app.tenant', true)) WITH CHECK (tenant_id = current_setting('app.tenant', true))",
 		"CREATE SCHEMA IF NOT EXISTS stego_schema", releases, seals,
-		"INSERT INTO stego_schema.seals (change_id, expand) VALUES ('"+noteChange+"', 'step_0002_note-body-seal_expand')",
+		"INSERT INTO stego_schema.seals (change_id, expand, created_at) VALUES ('"+noteChange+"', 'step_0002_note-body-seal_expand', clock_timestamp() - interval '10 minutes')",
 		"INSERT INTO leases (name) VALUES ('"+SealLease(noteChange)+"')")
 	entity, err := NewEntity(noteSpec())
 	if err != nil {
