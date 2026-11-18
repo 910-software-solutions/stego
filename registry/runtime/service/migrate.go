@@ -340,7 +340,7 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		{StepOutboxQueue, m.Outbox},
 		{StepAuditTables, m.Audit + ";\n" + controllerLease(m.RuntimeRole, m.WorkerLeases)},
 		{StepAuditSink, sinkTable},
-		{StepInbox, m.Inbox},
+		{StepInbox, inboxText(m.Inbox, tenants, m.WorkerRole)},
 		{StepIdempotencyKeys, keys},
 		// The grants of the worker role are in the one transaction of the authorization tables: a table-level REVOKE
 		// also takes back the column grants on the token of each protected table, which the authorization text gives
@@ -1087,4 +1087,14 @@ func validateTenantKeys(ctx context.Context, conn *sql.Conn, owner, tenants stri
 		}
 	}
 	return nil
+}
+
+// inboxText is the text of the step kafka_inbox: the migration of the refused records of the Kafka inbox and the
+// grant of SELECT on the tenant list to the worker role, on whose pool the inbox reads, in the transaction of each
+// record, whether its tenant is still active (security review of PR #418, L1). No inbox is no text.
+func inboxText(inbox, tenants, workerRole string) string {
+	if inbox == "" {
+		return ""
+	}
+	return strings.TrimRight(inbox, ";\n") + ";\nGRANT SELECT ON " + quote(tenants) + ".stego_tenants TO " + quote(workerRole) + ";\n"
 }

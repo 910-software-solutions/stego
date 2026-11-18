@@ -67,7 +67,10 @@ type plan struct {
 	SchemaPath string
 	Schema     string
 	// Definitions are the definitions of Schema, with the floor marker definition, sorted.
-	Definitions   []string
+	Definitions []string
+	// Relations are the relations of the schema but the floor marker's, each as type#relation: the allow list of the
+	// relay (security review of PR #421, I3).
+	Relations     []relationPlan
 	RelayName     string
 	AlertBound    time.Duration
 	WatchInterval time.Duration
@@ -169,6 +172,14 @@ func read(ctx gen.Context) (plan, error) {
 		return plan{}, fmt.Errorf("spicedb-authz: the schema with the floor marker definition does not compile: %w", err)
 	}
 	p.Definitions = compiled.TypeNames()
+	for _, definition := range p.Definitions {
+		if definition == types.FloorMarkerType {
+			continue
+		}
+		for _, relation := range compiled.Relations(definition) {
+			p.Relations = append(p.Relations, relationPlan{ResourceType: definition, Name: relation})
+		}
+	}
 	if p.AlertBound, err = duration(ctx.ComponentConfig, "alert_bound"); err != nil {
 		return plan{}, err
 	}
@@ -439,6 +450,15 @@ func render(p plan) []byte {
 		fmt.Fprintf(&b, "%q", definition)
 	}
 	b.WriteString("}\n\n")
+	b.WriteString("// Relations are the relations of Schema but that of the floor marker: the allow list of the relay, which refuses\n// a delivered tuple of any other relation (ST-SUP-RP06-LC06).\n")
+	b.WriteString("var Relations = []stegoauthz.Relation{")
+	for i, r := range p.Relations {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		fmt.Fprintf(&b, "{ResourceType: %q, Name: %q}", r.ResourceType, r.Name)
+	}
+	b.WriteString("}\n\n")
 	b.WriteString("// DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.\n")
 	fmt.Fprintf(&b, "const DatabaseSchema = %q\n\n", databaseSchema)
 	b.WriteString("// RelayName is the name of the relay's service account, service_account:<RelayName> (ST-SUP-RP06-LC07).\n")
@@ -548,7 +568,7 @@ func NewRuntime(db *sql.DB, provider stegoauthz.Decision, queue *outbox.Queue, m
 // ST-SUP-RP01-LC25). db is the relay role's pool, and relationships the provider's relationships port, which only
 // the relay holds (ST-SUP-RC29-OC08).
 func NewRelay(ctx context.Context, db *sql.DB, relationships stegoauthz.Relationships, worker *outbox.Worker, meter metric.MeterProvider, logger otellog.LoggerProvider) (*stegoauthz.Relay, error) {
-	relay, err := stegoauthz.NewRelay(stegoauthz.RelayConfig{Name: RelayName, Relationships: relationships, DB: db,
+	relay, err := stegoauthz.NewRelay(stegoauthz.RelayConfig{Name: RelayName, Relations: Relations, Relationships: relationships, DB: db,
 		Schema: DatabaseSchema, Owners: Owners, Meter: meter, Logger: logger}, stegoauthz.WithAlertBound(AlertBound))
 	if err != nil {
 		return nil, err

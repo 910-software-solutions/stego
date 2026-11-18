@@ -613,6 +613,21 @@ func renderRunners(m *model) []byte {
 		}
 	}
 	w.f("}\n}\n\n")
+	// The declared rules of the consumed destinations, as Consumers registers them, which the resolver of the api mode
+	// applies to a parked message (ST-SUP-RP14-LC10, security review of PR #421, L3).
+	w.f("// ConsumedRules are the declared rules of the destination of each worker with a consumes trigger, idempotent and\n// must land as Consumers registers it, which the resolver of the api mode applies to a parked message\n// (ST-SUP-RP14-LC10).\nfunc ConsumedRules() []outbox.Rules {\n\treturn []outbox.Rules{")
+	consumed := map[string]bool{}
+	for _, wk := range m.workers {
+		if wk.consumes == "" || consumed[wk.consumes] {
+			continue
+		}
+		if len(consumed) > 0 {
+			w.f(", ")
+		}
+		consumed[wk.consumes] = true
+		w.f("{Name: %q, Idempotent: true, MustLand: true}", wk.consumes)
+	}
+	w.f("}\n}\n\n")
 	w.f("// Fills holds the one fill of each worker.\ntype Fills struct {\n")
 	for _, wk := range m.workers {
 		w.f("\t// %s is the fill %s of the worker %s.\n\t%s %s.%sFill\n", wk.goName, wk.decl.Fill[0], wk.decl.Name, wk.goName, m.pkg, wk.goName)

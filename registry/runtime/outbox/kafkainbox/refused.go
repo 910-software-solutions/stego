@@ -2,7 +2,9 @@ package kafkainbox
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -47,6 +49,15 @@ var reasons = []string{ReasonMissingHeader, ReasonBadEventID, ReasonBadKind, Rea
 	ReasonTooLarge, ReasonNotJSON, ReasonBadTenant, ReasonKeyMismatch, ReasonUnknownTenant, ReasonRetiredTenant,
 	ReasonBadResourceKey, ReasonDuplicateHeader, ReasonNotOutboxMessage, ReasonEventIDReused, ReasonKindMismatch}
 
+// reasonsCheck is the name of the CHECK of the column reason: refused_reason_check_ and the first 8 bytes, in hex,
+// of the SHA-256 of the reasons joined by commas. A new list of reasons is a new name, so the migration sees in the
+// catalog that the CHECK of an earlier list is there, and drops and adds it, which CREATE TABLE IF NOT EXISTS
+// does not do (security review of PR #418b, N2).
+func reasonsCheck() string {
+	sum := sha256.Sum256([]byte(strings.Join(reasons, ",")))
+	return "refused_reason_check_" + hex.EncodeToString(sum[:8])
+}
+
 // roleName is a role name that the migration text takes: a lower-case SQL name of at most 63 characters.
 var roleName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
 
@@ -66,6 +77,8 @@ func Migration(workerRole string) (string, error) {
 	for i, r := range reasons {
 		quoted[i] = "'" + r + "'"
 	}
+	check := reasonsCheck()
+	inList := "CHECK (reason IN (" + strings.Join(quoted, ", ") + "))"
 	return strings.Join([]string{
 		"CREATE SCHEMA IF NOT EXISTS " + Schema,
 		"REVOKE ALL ON SCHEMA " + Schema + " FROM PUBLIC",
@@ -74,13 +87,29 @@ func Migration(workerRole string) (string, error) {
 	topic         text        NOT NULL CHECK (octet_length(topic) BETWEEN 1 AND 249),
 	partition     integer     NOT NULL CHECK (partition >= 0),
 	record_offset bigint      NOT NULL CHECK (record_offset >= 0),
-	reason        text        NOT NULL CHECK (reason IN (` + strings.Join(quoted, ", ") + `)),
+	reason        text        NOT NULL CONSTRAINT ` + check + ` ` + inList + `,
 	event_id      uuid,
 	tenant_id     text        CHECK (octet_length(tenant_id) BETWEEN 1 AND 255),
 	kind          text        CHECK (kind ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$'),
 	refused_at    timestamptz NOT NULL DEFAULT pg_catalog.now(),
 	PRIMARY KEY (subscription, topic, partition, record_offset)
 )`,
+		// The CHECK of the reasons of an earlier list, by its name: the unnamed one of the first release is
+		// refused_reason_check. It is dropped and the CHECK of this list is added, NOT VALID and then validated, only
+		// when the catalog does not hold this list's name, so a run that changes nothing takes no lock on the table.
+		`DO $reasons$
+DECLARE
+	former record;
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint WHERE conrelid = '` + table + `'::regclass AND conname = '` + check + `') THEN
+		FOR former IN SELECT conname FROM pg_catalog.pg_constraint WHERE conrelid = '` + table + `'::regclass AND contype = 'c'
+			AND conname LIKE 'refused\_reason\_check%' LOOP
+			EXECUTE pg_catalog.format('ALTER TABLE ` + table + ` DROP CONSTRAINT %I', former.conname);
+		END LOOP;
+		ALTER TABLE ` + table + ` ADD CONSTRAINT ` + check + ` ` + inList + ` NOT VALID;
+		ALTER TABLE ` + table + ` VALIDATE CONSTRAINT ` + check + `;
+	END IF;
+END $reasons$`,
 		"CREATE INDEX IF NOT EXISTS refused_age ON " + table + " (refused_at)",
 		"REVOKE ALL ON TABLE " + table + " FROM PUBLIC",
 		"REVOKE ALL ON TABLE " + table + " FROM " + role,

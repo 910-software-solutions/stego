@@ -67,6 +67,8 @@ END $former$;
 type destination struct {
 	// Name is the destination name on the outbox.
 	Name string
+	// Rules is the call of the runtime that gives its declared rules.
+	Rules string
 }
 
 // runtimePlan is what the emitted wiring holds, read from the context.
@@ -82,11 +84,11 @@ func readRuntime(ctx gen.Context) runtimePlan {
 	p := runtimePlan{Package: path.Base(ctx.OutputNamespace)}
 	if ctx.PeerNamespaces[auditComponent] != "" {
 		p.Audit = true
-		p.Destinations = append(p.Destinations, destination{Name: "audit-sink"})
+		p.Destinations = append(p.Destinations, destination{Name: "audit-sink", Rules: "auditoutbox.Rules()"})
 	}
 	if ctx.PeerNamespaces[kafkaComponent] != "" {
 		p.Kafka = true
-		p.Destinations = append(p.Destinations, destination{Name: kafkaDestination})
+		p.Destinations = append(p.Destinations, destination{Name: kafkaDestination, Rules: "kafkaoutbox.Rules()"})
 	}
 	return p
 }
@@ -136,6 +138,18 @@ func renderRuntime(p runtimePlan) []byte {
 		fmt.Fprintf(&b, "%q", d.Name)
 	}
 	b.WriteString("}\n\n")
+
+	// The declared rules of the same destinations, which the resolver of the api mode applies to a parked message
+	// (ST-SUP-RP14-LC10, security review of PR #421, L3).
+	b.WriteString("// Rules gives the declared rules of each destination of Destinations, must land and idempotent, which the resolver of\n// the api mode applies to a parked message (ST-SUP-RP14-LC10).\n")
+	b.WriteString("func Rules() []outbox.Rules {\n\treturn []outbox.Rules{")
+	for i, d := range p.Destinations {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(d.Rules)
+	}
+	b.WriteString("}\n}\n\n")
 
 	b.WriteString("// PayloadLimits gives the payload limit of each destination of the service that sets one of its own; a\n// destination it does not name takes outbox.MaxPayloadBytes (ST-SUP-RC18-OC02).\n")
 	b.WriteString("func PayloadLimits() map[string]int {\n\tlimits := map[string]int{}\n")

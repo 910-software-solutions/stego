@@ -100,6 +100,11 @@ type Parts struct {
 	// (ST-SUP-RC01-OC12). New adds the manifest of the audit record to it, for the anchor period of Workers
 	// (ST-SUP-RP14-LC06).
 	Schema manifest.Manifest
+	// Destinations are the declared rules of each outbox destination of the service that its components and workers
+	// register on the outbox worker, but authz, whose rules New adds itself. The resolver of the api mode applies the
+	// stricter of these rules and the rules of the row of a parked message, and refuses a message of a destination
+	// that they do not name (ST-SUP-RP14-LC10, security review of PR #421, L3).
+	Destinations []outbox.Rules
 	// Provisioning is the declared tenant provisioning of a pooled service, or nil for a service that declares none
 	// (ST-DECL-EN27). With it, New serves Provision and Retire (TenantRoutes), and Middleware and Authenticate refuse
 	// a request of a tenant that the tenant list in Workers.TenantSchema does not hold as active (ST-SUP-RC27-OC09,

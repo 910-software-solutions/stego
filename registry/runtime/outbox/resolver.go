@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,20 +14,45 @@ import (
 )
 
 // Resolver resolves parked messages in a process that does not deliver them, such as the api mode of a service,
-// which serves the resolve route of an operator (ST-SUP-RP14-LC10). It holds the decision port, the auditor and the
-// state hook of each destination that has one, and no handler and no claim: it never delivers a message. It
-// resolves by the rules that the row of the message recorded at enqueue, must land and idempotent, which are the
-// rules that the relay function resolve holds too.
+// which serves the resolve route of an operator (ST-SUP-RP14-LC10). It holds the decision port, the auditor, the
+// declared rules of each destination of the release and the state hook of each destination that has one, and no
+// handler and no claim: it never delivers a message. It resolves by the stricter of the rules that the row of the
+// message recorded at enqueue and the rules that the release declares, so a release that makes a destination
+// stricter also holds the older parked messages of it; it refuses each message of a destination that the release
+// does not declare (security review of PR #421, L3).
 type Resolver struct {
-	queue   *Queue
-	decider Decider
-	auditor Auditor
-	hooks   map[string]StateHook
+	queue    *Queue
+	decider  Decider
+	auditor  Auditor
+	declared map[string]Rules
+	hooks    map[string]StateHook
 }
 
-// NewResolver returns the resolver on queue with the decision port decider, the auditor auditor and the state hook
-// of each destination that has one, by name. It refuses a missing part and a hook of a name that is not a label.
+// Rules are the declared rules of one destination of a release: its name, whether its messages must land and
+// whether it is idempotent, as the destination is registered on the outbox worker of the release.
+type Rules struct {
+	Name       string
+	MustLand   bool
+	Idempotent bool
+}
+
+// NewResolver returns the resolver on queue with the decision port decider, the auditor auditor and the state hook of
+// each destination that has one, by name, which resolves by the rules of the row alone, as before v0.132.0.
+//
+// Deprecated: use NewDeclaredResolver, which also applies the declared rules and refuses an undeclared destination.
 func NewResolver(queue *Queue, decider Decider, auditor Auditor, hooks map[string]StateHook) (*Resolver, error) {
+	return newResolver(queue, decider, auditor, nil, hooks, false)
+}
+
+// NewDeclaredResolver returns the resolver on queue with the decision port decider, the auditor auditor, the declared
+// rules of each destination of the release and the state hook of each destination that has one, by name. It refuses
+// a missing part, a rule whose name is not a label or is declared twice, and a hook of a destination that the rules
+// do not declare.
+func NewDeclaredResolver(queue *Queue, decider Decider, auditor Auditor, declared []Rules, hooks map[string]StateHook) (*Resolver, error) {
+	return newResolver(queue, decider, auditor, declared, hooks, true)
+}
+
+func newResolver(queue *Queue, decider Decider, auditor Auditor, declared []Rules, hooks map[string]StateHook, checked bool) (*Resolver, error) {
 	switch {
 	case queue == nil || queue.db == nil:
 		return nil, errors.New("outbox: the resolver needs a queue")
@@ -35,27 +61,68 @@ func NewResolver(queue *Queue, decider Decider, auditor Auditor, hooks map[strin
 	case auditor == nil:
 		return nil, errors.New("outbox: the resolver needs an auditor")
 	}
+	rules := make(map[string]Rules, len(declared))
+	for _, d := range declared {
+		if !labelPattern.MatchString(d.Name) {
+			return nil, fmt.Errorf("outbox: the declared destination %q of the resolver is not a label", d.Name)
+		}
+		if _, ok := rules[d.Name]; ok {
+			return nil, fmt.Errorf("outbox: the resolver gets the rules of the destination %s twice", d.Name)
+		}
+		rules[d.Name] = d
+	}
 	own := make(map[string]StateHook, len(hooks))
 	for name, hook := range hooks {
 		if !labelPattern.MatchString(name) || hook == nil {
 			return nil, errors.New("outbox: a state hook of the resolver needs a label name and a function")
 		}
+		if _, ok := rules[name]; checked && !ok {
+			return nil, fmt.Errorf("outbox: the resolver gets a state hook of %s, which the rules do not declare", name)
+		}
 		own[name] = hook
 	}
-	return &Resolver{queue: queue, decider: decider, auditor: auditor, hooks: own}, nil
+	if !checked {
+		rules = nil
+	}
+	return &Resolver{queue: queue, decider: decider, auditor: auditor, declared: rules, hooks: own}, nil
+}
+
+// stricter gives the rules of a resolution of a message of destination: the stricter of what the row recorded and
+// what the release declares. Acted is refused when either is idempotent, and discarded when either need not land
+// (ST-SUP-RP01-LC13). A destination that the release does not declare refuses every outcome.
+func stricter(destination string, row resolveRow, declared Rules, ok bool) (resolveRules, error) {
+	if !ok {
+		return resolveRules{}, fmt.Errorf("%w: the release does not declare the destination %s", ErrRefusedOutcome, destination)
+	}
+	return resolveRules{mustLand: row.mustLand && declared.MustLand, idempotent: row.idempotent || declared.Idempotent}, nil
 }
 
 // Resolve applies a person's resolution of one parked message in the caller's transaction tx, as Worker.Resolve
 // does (ST-SUP-RP01-LC13, ST-SUP-RP01-LC17): it asks the decision port before it reads the message, so a deny is
-// ErrNotAllowed for every message; then ErrNotFound for a message that the tenant of tx does not hold under the
-// destination, ErrNotParked for a message that is not parked, and an error that matches ErrRefusedOutcome for an
-// outcome that the destination refuses. The state hook of the destination and the audit row are written in tx with
-// the state change. The caller commits tx with tenant.Commit.
+// ErrNotAllowed for every message; then, for a resolver of NewDeclaredResolver, an error that matches
+// ErrRefusedOutcome for every message of a destination that the release does not declare, before it reads the
+// message, so that answer is the same for every ID (security review of PR #429, L4); then ErrNotFound for a message
+// that the tenant of tx does not hold under the destination, ErrNotParked for a message that is not parked, and an
+// error that matches ErrRefusedOutcome for an outcome that the destination refuses. The state hook of the
+// destination and the audit row are written in tx with the state change. The caller commits tx with tenant.Commit.
 func (r *Resolver) Resolve(ctx context.Context, tx *sql.Tx, request ResolveRequest) error {
-	rules := func(destination string, row resolveRow) (resolveRules, error) {
-		return resolveRules{mustLand: row.mustLand, idempotent: row.idempotent, hook: r.hooks[destination]}, nil
+	admit := func(destination string) error {
+		if _, ok := r.declared[destination]; r.declared != nil && !ok {
+			return fmt.Errorf("%w: the release does not declare the destination %s", ErrRefusedOutcome, destination)
+		}
+		return nil
 	}
-	_, _, err := resolveCore(ctx, tx, request, r.decider, r.auditor, r.queue.now(), rules, nil)
+	rules := func(destination string, row resolveRow) (resolveRules, error) {
+		declared, ok := r.declared[destination]
+		if r.declared == nil {
+			// A resolver of NewResolver: the rules of the row alone.
+			declared, ok = Rules{Name: destination, MustLand: row.mustLand, Idempotent: row.idempotent}, true
+		}
+		rules, err := stricter(destination, row, declared, ok)
+		rules.hook = r.hooks[destination]
+		return rules, err
+	}
+	_, _, err := resolveCore(ctx, tx, request, r.decider, r.auditor, r.queue.now(), admit, rules, nil)
 	return err
 }
 

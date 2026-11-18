@@ -137,8 +137,10 @@ type InboxEnv struct {
 	// Queue is the outbox queue on the pool of the worker role, DB, on which the inbox writes.
 	Queue *outbox.Queue
 	DB    *sql.DB
-	// Tenants looks a tenant ID up in the tenant list, on the pool of the runtime role (ST-SUP-RP01-LC35).
-	Tenants kafkainbox.Lookup
+	// Tenants looks a tenant ID up in the tenant list, on the pool of the runtime role (ST-SUP-RP01-LC35), and
+	// TenantSchema is the schema of that list, which the write of each record reads again in its transaction.
+	Tenants      kafkainbox.Lookup
+	TenantSchema string
 	// Retention is the done retention of the outbox worker, which the topic's retention must not exceed.
 	Retention time.Duration
 	// Logs and Meter are the providers of the service's telemetry.
@@ -410,7 +412,7 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 			return nil, err
 		}
 		if inbox, err = p.Inbox(InboxEnv{Queue: queue, DB: w.workerDB, Retention: w.worker.Retention(),
-			Logs: svc.telemetry.LoggerProvider(), Meter: svc.telemetry.MeterProvider(), Tenants: lookup}); err != nil {
+			Logs: svc.telemetry.LoggerProvider(), Meter: svc.telemetry.MeterProvider(), Tenants: lookup, TenantSchema: p.TenantSchema}); err != nil {
 			return nil, inboxSetting(err)
 		}
 		// The refused records are purged on the timer of the outbox (ST-SUP-RP01-LC37).
@@ -666,8 +668,8 @@ func (w *Workers) stopped(names ...string) string {
 func (w *Workers) Readiness() *modes.Readiness { return w.readiness }
 
 // Ready answers the readiness of each selected mode (ST-SUP-RP09-LC05) and names each mode that is not ready and
-// why: the worker mode is ready while the worker role's pool reaches the database and the outbox worker and the
-// relay's watch run; the controller mode while the controller lease loop and the periodic jobs run and every job is
+// why: the worker mode is ready while the worker role's pool reaches the database, the outbox worker and the
+// relay's watch run, and neither the Kafka inbox nor a destination of the outbox fails in a row; the controller mode while the controller lease loop and the periodic jobs run and every job is
 // healthy, whether or not this replica holds the lease. The reason names components and jobs, never a tenant.
 func (w *Workers) Ready(ctx context.Context) error {
 	var errs []error
@@ -687,6 +689,10 @@ func (w *Workers) Ready(ctx context.Context) error {
 			} else if reason := w.stopped(OutboxWorkerName, RelayWatchName, w.inboxName); reason != "" {
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
 			} else if reason := w.inboxFailing(); reason != "" {
+				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
+			} else if reason := w.destinationFailing(); reason != "" {
+				// A destination that fails each delivery in a row, such as the Kafka destination in a broker outage,
+				// makes the worker mode not ready, as a Kafka inbox that fails does (walkthrough 9).
 				errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, reason))
 			}
 		}
@@ -778,6 +784,15 @@ func inboxSetting(err error) error {
 		return &SettingError{Component: KafkaConsumerComponent, Variable: setting.Variable, names: setting.Variable, problem: setting.Problem}
 	}
 	return err
+}
+
+// destinationFailing names the first destination of the outbox worker that fails each delivery in a row, with its
+// fixed failure class, or gives "".
+func (w *Workers) destinationFailing() string {
+	if w.worker == nil {
+		return ""
+	}
+	return w.worker.Failing()
 }
 
 // inboxFailing names the Kafka inbox and its fixed failure class while its sessions fail in a row, or gives "".

@@ -205,6 +205,28 @@ func relateAdmins(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx,
 	return nil
 }
 
+// unrelateAdmins stages, for a Retire of t with a declared admin relation, the delete of every tuple of the admin
+// relation on the tenant-qualified service-level resource of t, whatever its subject, through an authorization handle
+// bound to the caller in the transaction tx of the Retire, so a retired tenant keeps no administrator (security
+// review of PR #414, L4).
+func unrelateAdmins(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx, req Request, t tenant.Tenant) error {
+	if spec.Action != tenant.RetireAction || spec.AdminRelation == "" {
+		return nil
+	}
+	resource, err := authz.NewResource(t, spec.ResourceType, rt.cfg.Service)
+	if err != nil {
+		return err
+	}
+	handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, []authz.Relation{{ResourceType: spec.ResourceType, Name: spec.AdminRelation}})
+	if err != nil {
+		return fmt.Errorf("command: the authorization handle of the admin tuples was not bound: %w", err)
+	}
+	if _, err := handle.UnrelateAll(ctx, resource, spec.AdminRelation); err != nil {
+		return fmt.Errorf("command: the delete of the admin relation %s#%s of the retired tenant was not staged: %w", spec.ResourceType, spec.AdminRelation, err)
+	}
+	return nil
+}
+
 // WorkerTenantRelation is the relation of the type tenant that holds the tuple of the worker name in each tenant:
 // worker_<name in snake case> (ST-SUP-RC35-OC13).
 func WorkerTenantRelation(name string) string { return "worker_" + strings.ReplaceAll(name, "-", "_") }
@@ -626,6 +648,10 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, a
 			// The grants of the first administrators commit with the new tenant, or not at all; a replay of the key
 			// stages none again (ST-SUP-RC27-OC13).
 			if err := relateAdmins(ctx, rt, spec, tx, req, t, admins); err != nil {
+				return idempotency.Response{}, err
+			}
+			// A Retire deletes the admin tuples of the tenant with its worker tuples (security review of PR #414, L4).
+			if err := unrelateAdmins(ctx, rt, spec, tx, req, t); err != nil {
 				return idempotency.Response{}, err
 			}
 			// The tuples of the workers commit with the change of the tenant list, or not at all; a replay of the

@@ -2,9 +2,9 @@ package pgtest
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -22,41 +22,86 @@ func fakeTool(t *testing.T) (string, string) {
 
 func TestReap(t *testing.T) {
 	t.Run("ST-STD-LOCAL-R05-T02 A container of an image with no time limit is removed when the tests end and when the test binary is killed", func(t *testing.T) {
-		// Main's path: remove removes each container that Reap took.
+		// waitCall waits for the one call of the tool, with no bound of its own (-test.timeout).
+		waitCall := func(calls, want string) {
+			t.Helper()
+			for {
+				data, err := os.ReadFile(calls)
+				if err == nil && strings.HasSuffix(string(data), "\n") {
+					if got := strings.TrimSpace(string(data)); got != want {
+						t.Fatalf("the reaper called the tool with %q, want %s", got, want)
+					}
+					return
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		// Main's path: remove removes each container and then each network that Reap and ReapNetwork took, and
+		// stops their reapers, so no reaper outlives a clean exit and calls the tool again.
 		tool, calls := fakeTool(t)
+		Reap(tool, "spicedb-a")
+		ReapNetwork(tool, "net-a")
 		mu.Lock()
-		reaped = append(reaped, reapedContainer{path: tool, name: "spicedb-a"})
+		took := append([]reapedContainer(nil), reaped...)
 		mu.Unlock()
 		remove()
-		if data, err := os.ReadFile(calls); err != nil || strings.TrimSpace(string(data)) != "rm --force spicedb-a" {
-			t.Fatalf("remove called the tool with %q, %v; want rm --force spicedb-a", data, err)
+		for _, r := range took {
+			if r.reaper == nil {
+				t.Fatalf("no reaper started for the %s %s", r.kind, r.name)
+			}
+			<-r.reaper.ended
 		}
-		// The killed path: the reaper removes the container once the watched process has ended, and not before.
+		if data, err := os.ReadFile(calls); err != nil || strings.TrimSpace(string(data)) != "rm --force spicedb-a\nnetwork rm net-a" {
+			t.Fatalf("remove and the reapers called the tool with %q, %v; want the container and then the network, once each", data, err)
+		}
+
+		// The killed path: the end of the binary closes the write end of the pipe, and only then does the reaper remove
+		// the container. It is in a process group of its own, so a kill of the group of the binary does not take it.
 		tool, calls = fakeTool(t)
-		binary := exec.Command("sleep", "3600")
-		if err := binary.Start(); err != nil {
+		r, err := reap(kindContainer, tool, "spicedb-b")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := reap(binary.Process.Pid, tool, "spicedb-b"); err != nil {
-			t.Fatal(err)
+		if group, err := syscall.Getpgid(r.pid); err != nil || group != r.pid || group == syscall.Getpgrp() {
+			t.Fatalf("the reaper is in the process group %d (%v), want one of its own, not %d", group, err, syscall.Getpgrp())
 		}
 		if _, err := os.Stat(calls); !os.IsNotExist(err) {
-			t.Fatalf("the reaper called the tool while the watched process runs: %v", err)
+			t.Fatalf("the reaper called the tool while the binary runs: %v", err)
 		}
-		if err := binary.Process.Kill(); err != nil {
+		_ = r.stop.Close()
+		waitCall(calls, "rm --force spicedb-b")
+		<-r.ended
+
+		// A removal that fails leaves the reaper, which removes the object when the binary ends (security review of PR
+		// #429, L3).
+		dir := t.TempDir()
+		failing, failed := filepath.Join(dir, "tool"), filepath.Join(dir, "calls")
+		if err := os.WriteFile(failing, []byte("#!/bin/sh\necho \"$@\" >> \""+failed+"\"\nexit 1\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		_ = binary.Wait()
-		// The reaper polls once a second; the test waits for its call with no bound of its own (-test.timeout).
-		for {
-			data, err := os.ReadFile(calls)
-			if err == nil && strings.HasSuffix(string(data), "\n") {
-				if got := strings.TrimSpace(string(data)); got != "rm --force spicedb-b" {
-					t.Fatalf("the reaper called the tool with %q, want rm --force spicedb-b", got)
-				}
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
+		Reap(failing, "spicedb-c")
+		mu.Lock()
+		kept := reaped[len(reaped)-1].reaper
+		mu.Unlock()
+		remove()
+		select {
+		case <-kept.ended:
+			t.Fatal("the reaper ended after a removal that failed")
+		default:
 		}
+		_ = kept.stop.Close()
+		<-kept.ended
+		if data, err := os.ReadFile(failed); err != nil || strings.TrimSpace(string(data)) != "rm --force spicedb-c\nrm --force spicedb-c" {
+			t.Fatalf("the failed removal and the reaper called the tool with %q, %v; want rm --force spicedb-c twice", data, err)
+		}
+
+		// A network of the harness is reaped too, after its containers.
+		tool, calls = fakeTool(t)
+		if r, err = reap(kindNetwork, tool, "net-b"); err != nil {
+			t.Fatal(err)
+		}
+		_ = r.stop.Close()
+		waitCall(calls, "network rm net-b")
+		<-r.ended
 	})
 }
