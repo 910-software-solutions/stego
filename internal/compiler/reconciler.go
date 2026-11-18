@@ -321,6 +321,9 @@ type FillCheck struct {
 	// commands, queries or workers imports, whose digest is the contract digest of that fill (ST-EXT-DS01). Nil when
 	// no declaration is read.
 	CapabilityContract func(component string) (map[string][]byte, error)
+	// contractFailure gives the error of the plan that CapabilityContract makes, nil when that plan was not made or
+	// was made, so that validation gives that error once at the top level and not inside each fill's fault.
+	contractFailure func() error
 	// ContractRuntime gives, by the import path of a command, query or worker slot contract, the packages of the
 	// runtime library that its generator can write into that contract, which a fill of the slot may import
 	// (ST-EXT-INV05). The generator gives them, so the fill check does not depend on a generated out/ folder.
@@ -396,6 +399,16 @@ type FillReader func(path string) (collection string, err error)
 // component.slot. The compiler owns this port and Extending's fill package implements it (ST-STD-CODE-R03).
 type FillSlotReader func(path string) (slot string, err error)
 
+// ValidationFailure is the error of Reconcile when validation refuses the declaration: it holds the faults, so that
+// the check of the fills, which makes a plan for the contract of the fills, gives each fault once at the top level.
+type ValidationFailure struct {
+	Result *ValidationResult
+}
+
+func (f *ValidationFailure) Error() string {
+	return "service validation failed:\n" + FormatValidation(f.Result)
+}
+
 // Reconcile computes a plan by loading the service declaration, resolving the
 // archetype, running all component generators, and assembling shared files.
 // The plan can then be inspected (plan) or applied (Apply).
@@ -415,7 +428,7 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 		return nil, err
 	}
 	if validation.HasErrors() {
-		return nil, fmt.Errorf("service validation failed:\n%s", FormatValidation(validation))
+		return nil, &ValidationFailure{Result: validation}
 	}
 	if !input.CheckOnly {
 		if err := authorizationGeneratorMissing(source.Service, source.Registry, input.Generators); err != nil {

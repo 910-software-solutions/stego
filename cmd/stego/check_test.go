@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jsell-rh/stego/internal/compiler"
+	"github.com/jsell-rh/stego/internal/declaration"
 )
 
 // projectFiles reads every file of a project folder, by its path in the folder, leaving out the apply lock, which
@@ -93,6 +95,72 @@ func TestCheckADeclaration(t *testing.T) {
 			if named != 1 {
 				t.Errorf("%d faults name %s, want one:\n%s", named, value, run.stdout)
 			}
+		}
+	})
+
+	t.Run("ST-DECL-UC03-R02-T02 A fault that stops the plan of the fills' contract is reported once at the top level, not inside the fault of each fill", func(t *testing.T) {
+		// The project has the fill of a command, a query and a worker, so the check of each fill makes the plan of
+		// their contract (walkthrough 8 and 9, rank 3).
+		p := newCapabilityProject(t)
+		check := func(t *testing.T) declaration.FaultsDocument {
+			t.Helper()
+			stdout, stderr, _ := p.stego(t, "no-key", "validate", "--json")
+			var document declaration.FaultsDocument
+			if err := json.NewDecoder(strings.NewReader(stdout)).Decode(&document); err != nil {
+				t.Fatalf("stego validate --json printed no JSON document: %v\n%s\n%s", err, stdout, stderr)
+			}
+			seen := map[string]bool{}
+			for _, fault := range document.Faults {
+				if strings.Contains(fault.Message, "the contract cannot be generated") {
+					t.Errorf("a fault gives the error of the contract plan nested in a fill fault: %s", fault.Message)
+				}
+				key := fault.Rule + "|" + fault.Path + "|" + fault.Message
+				if seen[key] {
+					t.Errorf("validate repeats the fault [%s] %s: %s", fault.Rule, fault.Path, fault.Message)
+				}
+				seen[key] = true
+			}
+			return document
+		}
+		top := func(document declaration.FaultsDocument, rule, text string) int {
+			count := 0
+			for _, fault := range document.Faults {
+				if fault.Rule == rule && strings.Contains(fault.Message, text) {
+					count++
+				}
+			}
+			return count
+		}
+
+		// A linked out/: the plan of the contract refuses the link, and validate names it once.
+		elsewhere := t.TempDir()
+		if err := os.Symlink(elsewhere, p.path("out")); err != nil {
+			t.Fatal(err)
+		}
+		if document := check(t); document.Accepted || top(document, "fill-contract", "refusing symbolic link at out") != 1 {
+			t.Fatalf("validate does not name the linked out/ once at the top level: %+v", document.Faults)
+		}
+		if err := os.Remove(p.path("out")); err != nil {
+			t.Fatal(err)
+		}
+
+		// A proto message with the name of an entity: only the generators find it, which validate runs only when
+		// no other fault stands, so with the fault of a fill that does not fit its binding only the plan of the
+		// contract finds it, and validate gives it at the top level.
+		proto := string(p.read(t, "proto/inventory.proto"))
+		p.write(t, "proto/inventory.proto", proto+"\n// Order has the name of an entity that a command writes.\nmessage Order {\n  string id = 1;\n}\n")
+		p.replace(t, "fills/open-orders/fill.yaml", "implements: query.query\n", "implements: query.query\ncollection: warehouses\n")
+		if document := check(t); document.Accepted || top(document, "generator-input", "Order") != 1 || len(document.Faults) < 2 {
+			t.Fatalf("validate does not name the proto message Order once at the top level, beside the misfit fill: %+v", document.Faults)
+		}
+		p.replace(t, "fills/open-orders/fill.yaml", "implements: query.query\ncollection: warehouses\n", "implements: query.query\n")
+		p.write(t, "proto/inventory.proto", proto)
+
+		// A fault that validate finds too, which the plan of the contract also finds: validate gives it once.
+		service := string(p.read(t, "service.yaml"))
+		p.write(t, "service.yaml", service+"schema_changes:\n  - {id: warehouse-name-drop, kind: drop, entity: Warehouse, field: name}\nschema_history:\n  - {change: warehouse-name-drop, phase: expand}\n")
+		if document := check(t); document.Accepted || top(document, "schema-change-kind", "warehouse-name-drop") != 1 {
+			t.Fatalf("validate does not give the drop with no definition once: %+v", document.Faults)
 		}
 	})
 
