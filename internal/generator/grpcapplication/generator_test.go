@@ -146,3 +146,17 @@ func TestGRPCApplicationHasNoFactory(t *testing.T) {
 		}
 	})
 }
+
+func TestAuthenticateKeepsUnavailable(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC43-T04 The generated verifier of a gRPC call passes an Unavailable of the tenant check on, and not as Unauthenticated", func(t *testing.T) {
+		source, err := os.ReadFile("runtime.go.tmpl")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		want := "err!=nil&&(code==codes.PermissionDenied||code==codes.Internal||code==codes.Unavailable){return nil,err}"
+		if strings.Count(text, want) != 1 {
+			t.Fatalf("the verifier of the gRPC runtime does not pass PermissionDenied, Internal and Unavailable on as they are; want %s", want)
+		}
+	})
+}
