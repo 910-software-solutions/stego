@@ -41,6 +41,8 @@ definition service_account {}
 definition tenant {
 	relation worker_sync_partner_orders: service_account
 	relation worker_apply_partner_replies: service_account
+	permission sync = worker_sync_partner_orders
+	permission apply = worker_apply_partner_replies
 }
 
 definition order {
@@ -441,9 +443,9 @@ func TestContract(t *testing.T) {
 			ctx := workerContext(workerSlot)
 			ctx.Workers = ctx.Workers[keep : keep+1]
 			if keep == 0 {
-				ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\trelation worker_apply_partner_replies: service_account\n", "", 1))}
+				ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.NewReplacer("\trelation worker_apply_partner_replies: service_account\n", "", "\tpermission apply = worker_apply_partner_replies\n", "").Replace(schemaZed))}
 			} else {
-				ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\trelation worker_sync_partner_orders: service_account\n", "", 1))}
+				ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.NewReplacer("\trelation worker_sync_partner_orders: service_account\n", "", "\tpermission sync = worker_sync_partner_orders\n", "").Replace(schemaZed))}
 			}
 			files := generated(t, ctx)
 			for _, name := range []string{"workers/runners/runners.go", "workers/workers.go"} {
@@ -486,7 +488,7 @@ func TestContract(t *testing.T) {
 
 	t.Run("ST-SUP-RC35-OC13-T02 Generation refuses a schema without the relation of a worker on tenant", func(t *testing.T) {
 		ctx := workerContext(workerSlot)
-		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\trelation worker_apply_partner_replies: service_account\n", "", 1))}
+		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.NewReplacer("\trelation worker_apply_partner_replies: service_account\n", "", "\tpermission apply = worker_apply_partner_replies\n", "").Replace(schemaZed))}
 		files, _, err := new(Generator).Generate(ctx)
 		if err == nil || !strings.Contains(err.Error(), "tenant#worker_apply_partner_replies") || files != nil {
 			t.Fatalf("a schema without tenant#worker_apply_partner_replies gave %v and %d files, want a refusal that names it", err, len(files))
@@ -526,6 +528,36 @@ func unusedImports(t *testing.T, name string, source []byte) []string {
 		}
 	}
 	return unused
+}
+
+func TestRootCreateSchema(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC17-T01 Generation refuses a schema whose type tenant lacks the permission of a worker that can create a row with no parent", func(t *testing.T) {
+		ctx := workerContext(workerSlot)
+		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.Replace(schemaZed, "\tpermission apply = worker_apply_partner_replies\n", "", 1))}
+		files, _, err := new(Generator).Generate(ctx)
+		if err == nil || files != nil {
+			t.Fatalf("a schema whose tenant lacks apply gave %v and %d files, want a refusal", err, len(files))
+		}
+		for _, want := range []string{"apply-partner-replies", "Order", "permission apply", "tenant", "ST-SUP-RC35-OC17"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal %q does not name %q", err, want)
+			}
+		}
+		// A worker whose entity has a required reference to an entity with a resource type needs no permission on
+		// tenant; with the permissions of both workers the schema passes.
+		generated(t, workerContext(workerSlot))
+		ctx = workerContext(workerSlot)
+		ctx.Entities = append(ctx.Entities, types.Entity{Name: "Line", EntityAuthorization: types.EntityAuthorization{ResourceType: "order"},
+			Fields: []types.Field{{Name: "order_id", Type: types.FieldTypeRef, To: "Order"}}})
+		for i := range ctx.Workers {
+			ctx.Workers[i].Writes = []string{"Line"}
+		}
+		ctx.Inputs = map[string][]byte{"authz/schema.zed": []byte(strings.NewReplacer("\tpermission apply = worker_apply_partner_replies\n", "",
+			"\tpermission sync = worker_sync_partner_orders\n", "").Replace(schemaZed))}
+		if _, _, err := new(Generator).Generate(ctx); err != nil && strings.Contains(err.Error(), "ST-SUP-RC35-OC17") {
+			t.Fatalf("a worker that writes only an entity with a required parent gave %v, want no refusal of OC17", err)
+		}
+	})
 }
 
 func TestContractRuntimeImports(t *testing.T) {

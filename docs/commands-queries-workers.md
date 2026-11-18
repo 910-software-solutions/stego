@@ -766,6 +766,25 @@ Validate examines the permission on `resource_type` only. If another type in
 `writes` does not give the permission through the worker relation, the
 runtime refuses each read and write of the worker on those rows.
 
+3. When the worker creates a row with no parent, give the type `tenant` the
+   permission of the worker too. A row has no parent when its entity has a
+   resource type and no required reference to an entity with a resource type,
+   such as the local copy of an event of another service. The runtime decides
+   such a create on the tenant resource `tenant:<tenant>` with the permission
+   of the worker. A consuming worker also needs the permission of the stager
+   there.
+
+   <!-- excerpt -->
+   ```zed
+   definition tenant {
+   	relation worker_record_orders: service_account
+   	permission record = worker_record_orders
+   }
+   ```
+
+   Generation refuses a schema whose type `tenant` has no such permission,
+   and validate gives the warning `worker-root-create` before that.
+
 ### The fill of a worker
 
 The fill package exports `New`, as for a command. The type of the fill
@@ -1048,9 +1067,11 @@ worker mode, which runs the relay, runs.
 - `command.EntitySpec` has the new fields `Check` and `Constraints`, and the
   new helpers `command.MinLength`, `MaxLength`, `OneOf` and `MustPattern`.
   `query.Spec` has the new field `ValidID`, with `query.ValidUUID`.
-- New error `command.ErrNoParent` and function `command.NoParentEntity`. A
-  worker's create with no parent logs the cause `create_without_parent` with
-  the entity, and `probe.WorkerCauses` holds it.
+- A worker's create of a row with no parent is decided on the tenant resource
+  with the permission of the worker, and in a consumer also as the staging
+  principal (ST-SUP-Q164 (b)). New error `command.ErrNoParent` and function
+  `command.NoParentEntity` stay for the API; no call gives the error now. The
+  class `create_without_parent` is in `probe.WorkerCauses`.
 - `command.ServeRPC` sends the revocation metadata of a write.
   `query.Runtime.AwaitWriteRPC` waits for the revocation of the request
   metadata, which `query.ServeRPC` and `query.ServeStream` call;

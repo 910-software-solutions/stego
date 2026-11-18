@@ -1793,37 +1793,44 @@ func TestCommandLists(t *testing.T) {
 }
 
 func TestWorkerNoParent(t *testing.T) {
-	t.Run("ST-SUP-RP10-LC17-T04 A worker's create of a row with a resource type and no parent is ErrNoParent, which the run log names create_without_parent with the entity", func(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC17-T04 A worker's create of a row with a resource type and no parent is decided on the tenant resource, and a deny writes nothing", func(t *testing.T) {
 		e := newEnv(t)
-		var logs strings.Builder
-		previous := slog.Default()
-		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-		t.Cleanup(func() { slog.SetDefault(previous) })
 		w := e.worker("import-orders", "sync", nil, e.orders)
-		err := RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
-			_, err := repo(t, h, e.orders).Create(ctx, order{ID: "o-root", Status: "new"})
-			return err
-		}))
-		entity, ok := NoParentEntity(err)
-		if !errors.Is(err, ErrNoParent) || !ok || entity != e.orders.spec.Name {
-			t.Fatalf("the root create gave %v (entity %q), want ErrNoParent for %s", err, entity, e.orders.spec.Name)
+		create := func(id string) error {
+			return RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+				_, err := repo(t, h, e.orders).Create(ctx, order{ID: id, Status: "new"})
+				return err
+			}))
 		}
-		if cause := causeOf(err); cause != "create_without_parent" || !slices.Contains(probe.WorkerCauses, cause) {
-			t.Fatalf("the cause class is %q, want create_without_parent, one of probe.WorkerCauses", cause)
+		// The worker's permission on the tenant resource of the run allows the create.
+		e.decision.setAllow(func(subject, action, resource string) bool { return action == "sync" && resource == "tenant:t1" })
+		e.decision.taken()
+		if err := create("o-root"); err != nil {
+			t.Fatalf("the root create allowed on the tenant resource gave %v", err)
 		}
-		if outcome, cause := consumerOutcome(fmt.Errorf("fill: %w", err)); cause != "create_without_parent" || outcome != probe.WorkerRolledBack {
-			t.Fatalf("a consumer run gave %s/%s, want rolled_back/create_without_parent", outcome, cause)
+		var decided []string
+		for _, d := range e.decision.taken() {
+			decided = append(decided, d.Subject+" "+d.Action+" "+d.Resource)
 		}
-		if !streakCauses["create_without_parent"] {
-			t.Fatal("create_without_parent does not count for the poison bound, as the other faults of a fill do")
+		if !slices.Contains(decided, "service_account:import-orders sync tenant:t1") {
+			t.Fatalf("the root create was decided as %v, want the worker's permission sync on tenant:t1", decided)
 		}
-		line := logs.String()
-		if !strings.Contains(line, "cause=create_without_parent") || !strings.Contains(line, "entity="+e.orders.spec.Name) ||
-			!strings.Contains(line, "level=WARN") || strings.Contains(line, "o-root") {
-			t.Fatalf("the log is %q, want a warn line with the cause and the entity and no value", line)
+		if e.count(`SELECT count(*) FROM orders WHERE id = 'o-root'`) != 1 {
+			t.Fatal("the allowed root create wrote no row")
 		}
-		if e.count(`SELECT count(*) FROM orders WHERE id = 'o-root'`) != 0 {
-			t.Fatal("the root create wrote its row")
+		// A deny on the tenant resource is the refused error, and writes nothing.
+		e.decision.setAllow(func(string, string, string) bool { return false })
+		err := create("o-denied")
+		if !errors.Is(err, ErrRefused) || errors.Is(err, ErrNoParent) || causeOf(err) != "refused" {
+			t.Fatalf("the denied root create gave %v (cause %s), want the refused error", err, causeOf(err))
+		}
+		if e.count(`SELECT count(*) FROM orders WHERE id = 'o-denied'`) != 0 {
+			t.Fatal("the denied root create wrote its row")
+		}
+		// ErrNoParent stays for the API, and its class stays a fixed cause of the run log.
+		if causeOf(fmt.Errorf("fill: %w", &noParentError{entity: "Order"})) != "create_without_parent" ||
+			!slices.Contains(probe.WorkerCauses, "create_without_parent") {
+			t.Fatal("ErrNoParent has no fixed cause class")
 		}
 	})
 }

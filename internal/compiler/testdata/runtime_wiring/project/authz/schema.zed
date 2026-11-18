@@ -9,6 +9,9 @@ definition tenant {
 	// The relation of a worker that a release removed: the reconcile of the controller mode deletes its tuples, and a
 	// later release drops it (ST-SUP-RC35-OC13).
 	relation worker_retired_export: service_account
+	// A worker that creates an order with no parent is decided on the tenant resource with its permission
+	// (ST-SUP-RP10-LC17, ST-SUP-RC35-OC17).
+	permission sync = worker_sync_partner_orders + worker_apply_note_replies
 }
 
 definition service {

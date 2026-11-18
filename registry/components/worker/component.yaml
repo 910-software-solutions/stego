@@ -3,7 +3,7 @@
 # acceptance that names it.
 kind: component
 name: worker
-version: 0.2.0
+version: 0.4.0
 stage: alpha
 sunset: 2027-04-30
 output_namespace: workers
