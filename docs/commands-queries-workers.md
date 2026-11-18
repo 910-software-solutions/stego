@@ -1048,6 +1048,70 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.134.0
+
+- A consumer runs no fill before SpiceDB holds the tuple of its own worker in
+  the tenant of the message (ST-SUP-RC35-OC18). A message whose tuple is
+  missing goes back to pending with the failure code `worker-tuple-missing`
+  and the cause `worker_tuple_missing`, and the poison count does not count
+  it. Thus a subscription that a release adds no longer parks its backlog
+  before the controller of the release writes the tuple. New field
+  `command.Config.WorkerTuples`, constants `command.WorkerTupleMissingCode`
+  and `command.HeldTupleAge`, and the class `worker_tuple_missing` in
+  `probe.WorkerCauses`. A read of the tuple that fails is undecided, with the
+  cause `undecided`. A tuple that stays missing for 15 minutes
+  (`command.WorkerTupleAlertAfter`) logs the warn line
+  `command.consumer.worker_tuple_missing` with the worker, at most once in
+  each 15 minutes.
+- The key set reads the refresh age of a key document from its
+  `Cache-Control` max-age, from `authn.MinAge` (1 minute) to `authn.MaxAge`
+  (5 minutes) (ST-SUP-RP13-LC23). From half the refresh age a known key ID
+  starts one load beside the request; at the refresh age it waits for the
+  load, so a key that the issuer removed stops within the refresh age. New
+  function `authn.RefreshAge`.
+- A cursor key ring: `query.Config.ExtraCursorKeys` opens cursors and seals
+  none, and the api mode reads the new optional variable
+  `STEGO_QUERY_CURSOR_EXTRA_KEY_FILE` (ST-SUP-RP11-LC23). Rotate the key in
+  three rollouts: give the new key as the extra key; give the new key as the
+  key and the old key as the extra key; after the longest list session,
+  remove the extra key. No cursor is refused.
+- The tenant check does not run for a request that the main router matches
+  to no route: such a request gets 404, or 405, and not 403
+  `tenant.not_provisioned` (ST-SUP-RC27-OC14).
+- Retire stages, for each tenant-qualified type of the schema, the delete of
+  the tuples of the rows of the tenant (ST-SUP-RC27-OC15). The relay deletes
+  them by resource ID prefix in parts (`authz.TenantDeleteLimit`, 1000, and
+  `authz.TenantDeleteCalls`, 10, in one attempt), with no lock of the floor
+  row, raises the floor after each attempt, and logs
+  `authz.tenant_tuples.deleted` with the type and the count. New operation
+  `authz.OperationDeleteTenant`, function `authz.TenantPrefix`, method
+  `authz.Handle.UnrelateTenant` and interface `authz.PrefixDeleter`.
+- One problem form (ST-SUP-Q171 (a)): the type of each problem of the command
+  runtime, the query runtime, the idempotency check, the tenant check and the
+  provisioning routes is `<error_type_base><path>`, where the path is the code
+  with `.` and `_` as `-`, such as `tenant-not-provisioned`, or the name of the
+  status when there is no code, such as `not-found`. With no
+  `error_type_base` the type is `about:blank`. The codes do not change. A
+  client that reads the type, not the code, must read the new types. New
+  function `authn.ProblemTypeOf`, field `query.Config.ProblemBase` and method
+  `query.Runtime.WriteProblem`.
+- The tenant list of the operator (ST-SUP-Q172 (a)): `GET <base
+  path>/stego/tenants`, when the schema declares `permission list_tenants`
+  on the resource type of the provisioning. It pages with `limit` and
+  `cursor`, answers `items` and `next`, and writes the audit row
+  `list-tenants`. New function `command.ServeTenantList`, method
+  `service.Service.TenantList`, function `tenant.Entries` and method
+  `authz.Handle.DecideService`. Add `permission list_tenants = operator` to
+  the definition of the resource type of the provisioning to serve it.
+- Upgrade note: a message that an older runtime counted keeps its attempt
+  count, and so its back-off, after the upgrade. The runtime does not reset
+  it, because the outbox row holds no runtime version, and a new column would
+  need a schema step of every service. The back-off has the bound
+  `RetryMax` (5 minutes by default), so the next attempt comes at most 5
+  minutes after the upgrade. A failure code of an older form starts the
+  poison count at 1. When such a message is parked, resolve it with
+  `not_acted` to send it again.
+
 ### Release notes for runtime v0.133.0
 
 - Each call of the decision provider has a time limit, 2 seconds by default

@@ -1122,6 +1122,14 @@ environment:
     description: The format of the domain probe values on standard output. When it has no value, the probes write nothing to standard output.
     secret: false
     allowed: json, logfmt, off
+  - name: STEGO_QUERY_CURSOR_EXTRA_KEY_FILE
+    read_by:
+      - query
+    type: path
+    required: false
+    description: 'The file of a second key of the list cursors, which opens a cursor and seals none: the new key before it seals, or the old key after a rotation. It must differ from the key.'
+    secret: false
+    read_by_mode: api
   - name: STEGO_QUERY_CURSOR_KEY_FILE
     read_by:
       - query

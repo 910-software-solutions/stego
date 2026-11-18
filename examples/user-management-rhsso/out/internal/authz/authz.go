@@ -31,6 +31,7 @@ definition service {
 	relation operator: user
 	permission provision = operator
 	permission retire = operator
+	permission list_tenants = operator
 }
 
 definition organization {
@@ -135,6 +136,7 @@ var Operations = []Operation{
 	{Collection: "org-settings", Operation: "upsert", ResourceType: "org_setting", Permission: "edit"},
 	{Operation: "provision-tenant", ResourceType: "service", Permission: "provision", Route: "POST /api/user-mgmt/v1/stego/tenants", Tenant: "provision"},
 	{Operation: "retire-tenant", ResourceType: "service", Permission: "retire", Route: "POST /api/user-mgmt/v1/stego/tenants/{tenantId}/retire", Tenant: "retire"},
+	{Operation: "list-tenants", ResourceType: "service", Permission: "list_tenants", Route: "GET /api/user-mgmt/v1/stego/tenants", Tenant: "list"},
 	{Operation: "revocation-status", Route: "GET /authz/revocations/{id}", Writer: true},
 }
 

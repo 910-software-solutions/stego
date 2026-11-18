@@ -105,6 +105,108 @@ func TestTenantGate(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC27-OC14-T01 A request that no route matches gets the answer of the router, and a route gets the tenant check", func(t *testing.T) {
+		// The tenant list is on a closed port: a request that reaches the tenant check gets 503 unavailable, so the
+		// test sees each request that the check reads the list for.
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := listener.Addr().String()
+		_ = listener.Close()
+		db, err := sql.Open("pgx", "postgres://runtime:none@"+closed+"/app?sslmode=disable&connect_timeout=5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		tp := gateFixture(t)
+		if tp.gate, err = tenant.NewGate(db, "public", time.Second); err != nil {
+			t.Fatal(err)
+		}
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			TenantClaim: "tenant", Keys: keys})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "orders", "u-1", time.Now())
+		claims["tenant"] = "initech"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		reached := ""
+		router := http.NewServeMux()
+		router.HandleFunc("GET /api/v1/orders", func(http.ResponseWriter, *http.Request) { reached = "orders" })
+		router.HandleFunc("POST /api/v1/stego/tenants", func(http.ResponseWriter, *http.Request) { reached = "provision" })
+		router.HandleFunc("POST /api/v1/stego/tenants/{tenantId}/retire", func(http.ResponseWriter, *http.Request) { reached = "retire" })
+		handler := verifier.Middleware(tp.gated(router, router))
+		for _, c := range []struct {
+			method, target string
+			bearer         bool
+			want           int
+			code           string
+		}{
+			{"POST", "/api/v1/stego/tenants/initech:retire", true, http.StatusNotFound, ""},
+			{"GET", "/api/v1/nothing", true, http.StatusNotFound, ""},
+			{"DELETE", "/api/v1/orders", true, http.StatusMethodNotAllowed, ""},
+			{"GET", "/api/v1/orders", true, http.StatusServiceUnavailable, "unavailable"},
+			{"GET", "/api/v1/nothing", false, http.StatusUnauthorized, ""},
+		} {
+			reached = ""
+			r := httptest.NewRequest(c.method, c.target, nil)
+			if c.bearer {
+				r.Header.Set("Authorization", "Bearer "+token)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			var problem struct {
+				Code string `json:"code"`
+			}
+			_ = json.Unmarshal(w.Body.Bytes(), &problem)
+			if w.Code != http.StatusUnauthorized && w.Header().Get("Content-Type") != "application/problem+json" {
+				t.Errorf("%s %s answered with %q, want a problem response", c.method, c.target, w.Header().Get("Content-Type"))
+			}
+			if w.Code == http.StatusMethodNotAllowed && w.Header().Get("Allow") != "GET, HEAD" {
+				t.Errorf("the 405 has Allow %q, want GET, HEAD", w.Header().Get("Allow"))
+			}
+			if w.Code != c.want || (c.code != "" && problem.Code != c.code) || reached != "" {
+				t.Errorf("%s %s (token %t) answered %d %s and reached %q, want %d %s and no handler", c.method, c.target, c.bearer,
+					w.Code, w.Body.String(), reached, c.want, c.code)
+			}
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC17-T01 The problems of the tenant check have the type of their code under the problem base", func(t *testing.T) {
+		const base = "https://errors.example.test/orders/"
+		for _, c := range []struct {
+			status int
+			code   string
+			want   string
+		}{
+			{http.StatusForbidden, tenant.ErrNotProvisionedCode, base + "tenant-not-provisioned"},
+			{http.StatusServiceUnavailable, "unavailable", base + "unavailable"},
+			{http.StatusInternalServerError, "internal", base + "internal"},
+		} {
+			w := httptest.NewRecorder()
+			writeTenantProblem(w, c.status, base, c.code)
+			var p map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["type"] != c.want || p["code"] != c.code || w.Code != c.status {
+				t.Errorf("the tenant problem %d %s is %v, want the type %s, never the bare base", c.status, c.code, p, c.want)
+			}
+		}
+		w := httptest.NewRecorder()
+		writeTenantProblem(w, http.StatusForbidden, "", tenant.ErrNotProvisionedCode)
+		if !strings.Contains(w.Body.String(), `"type":"about:blank"`) {
+			t.Errorf("with no base the tenant problem is %s, want the type about:blank", w.Body)
+		}
+	})
+
 	t.Run("ST-SUP-RC27-OC11-T06 A verified token with no valid tenant claim is refused as not provisioned", func(t *testing.T) {
 		tp := gateFixture(t)
 		signing := authntest.NewKey(t, "k1")

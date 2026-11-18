@@ -931,8 +931,10 @@ func TestCommand(t *testing.T) {
 		order := e.order(a)
 		e.behave(t, reservecharge.ReserveAndCharge)
 		got := e.post(a.token, "", order, body)
-		if got.status != http.StatusBadRequest || got.header.Get("Content-Type") != "application/problem+json" || !bytes.Contains(got.body, []byte(idempotency.ProblemMissing)) {
-			t.Fatalf("the answer is %d %s %s, want 400 with the problem %s", got.status, got.header.Get("Content-Type"), got.body, idempotency.ProblemMissing)
+		if got.status != http.StatusBadRequest || got.header.Get("Content-Type") != "application/problem+json" || !bytes.Contains(got.body, []byte(`"type":"about:blank"`)) {
+			// The service declares no error_type_base, so the type is about:blank, never the bare word
+			// idempotency-key-missing (ST-SUP-RC32-OC19).
+			t.Fatalf("the answer is %d %s %s, want 400 with the type about:blank", got.status, got.header.Get("Content-Type"), got.body)
 		}
 		if e.calls.Load() != 0 || e.rows("reservations", order) != 0 {
 			t.Error("the fill ran")

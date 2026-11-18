@@ -424,7 +424,7 @@ func TestOutcomeTransient(t *testing.T) {
 		// Serve writes the 503 with Retry-After, and no other answer has it.
 		for status, want := range map[int][]string{http.StatusServiceUnavailable: {"1", "2", "3"}, http.StatusInternalServerError: {""}, http.StatusNotFound: {""}} {
 			w := httptest.NewRecorder()
-			writeProblem(w, status, "", "code")
+			(*Runtime)(nil).writeProblem(w, status, "", "code")
 			if got := w.Header().Get("Retry-After"); !slices.Contains(want, got) || w.Code != status {
 				t.Errorf("the answer %d has Retry-After %q (status %d), want one of %q", status, got, w.Code, want)
 			}
@@ -490,6 +490,55 @@ func TestFinite(t *testing.T) {
 		}
 		if !Finite(0) || !Finite(-1.5) || !Finite(math.MaxFloat64) {
 			t.Fatal("Finite refuses a finite number")
+		}
+	})
+}
+
+func TestProblemForm(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC19-T02 A command problem has the type of its code under the problem base, and about:blank with no base", func(t *testing.T) {
+		const base = "https://errors.example.test/orders/"
+		read := func(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+			t.Helper()
+			var p map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+				t.Fatal(err)
+			}
+			for member := range p {
+				if member != strings.ToLower(member) {
+					t.Errorf("the problem member %q is not snake_case", member)
+				}
+			}
+			return p
+		}
+		rt := &Runtime{cfg: Config{ProblemBase: base}}
+		for _, c := range []struct {
+			status            int
+			problemType, code string
+			want              string
+		}{
+			{http.StatusNotFound, "", ErrorCodeDenied, base + "denied"},
+			{http.StatusInternalServerError, "", ErrorCodeInternal, base + "internal"},
+			{http.StatusMethodNotAllowed, "", "", base + "method-not-allowed"},
+			{http.StatusBadRequest, "", "", base + "bad-request"},
+			{http.StatusConflict, "", "appointment.not_booked", base + "appointment-not-booked"},
+			{http.StatusBadRequest, rt.problemType("idempotency-key-missing"), "", base + "idempotency-key-missing"},
+		} {
+			w := httptest.NewRecorder()
+			rt.writeProblem(w, c.status, c.problemType, c.code)
+			if p := read(t, w); p["type"] != c.want || (c.code != "" && p["code"] != c.code) {
+				t.Errorf("the problem %d %q has %v, want the type %s", c.status, c.code, p, c.want)
+			}
+		}
+		w := httptest.NewRecorder()
+		rt.writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, "patient_ref")
+		if p := read(t, w); p["type"] != base+"invalid" || p["field"] != "patient_ref" {
+			t.Errorf("the invalid problem is %v", p)
+		}
+		bare := &Runtime{}
+		w = httptest.NewRecorder()
+		bare.writeProblem(w, http.StatusBadRequest, bare.problemType("idempotency-key-missing"), "")
+		if p := read(t, w); p["type"] != "about:blank" {
+			t.Errorf("with no base the idempotency problem has the type %v, want about:blank, never a bare word", p["type"])
 		}
 	})
 }

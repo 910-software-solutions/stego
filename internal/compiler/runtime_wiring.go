@@ -223,7 +223,9 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		// Provision and Retire: main.go forwards their patterns, the routes of their entries of the
 		// operation-to-permission table, to Routes, which registers their handlers from those entries.
 		provisionRoute, retireRoute := tenancy.ProvisioningRoutes(svc.BasePath)
-		for _, route := range []string{provisionRoute, retireRoute} {
+		// The tenant list of the operator: Routes registers it when the schema declares list_tenants, and else its
+		// route answers 404 (ST-SUP-RC27-OC16).
+		for _, route := range []string{provisionRoute, retireRoute, tenancy.ListRoute(svc.BasePath)} {
 			wiring.Routes = append(wiring.Routes, fmt.Sprintf("mux.Handle(%q, service.Routes())", route))
 		}
 	}

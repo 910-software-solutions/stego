@@ -261,6 +261,12 @@ spec:
                   key: STEGO_OTEL_TOKEN_FILE
                   name: user-management-config
                   optional: true
+            - name: STEGO_QUERY_CURSOR_EXTRA_KEY_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_QUERY_CURSOR_EXTRA_KEY_FILE
+                  name: user-management-config
+                  optional: true
             - name: STEGO_QUERY_CURSOR_KEY_FILE
               valueFrom:
                 configMapKeyRef:

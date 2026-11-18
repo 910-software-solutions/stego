@@ -1,9 +1,10 @@
+# Version 0.5.0 runs no consumer fill before SpiceDB holds the tuple of the worker (ST-SUP-RC35-OC18).
 # The worker capability (ST-SUP-RC35): for each declared worker, its slot contract and one runner bound to its one
 # fill. A declared worker selects it (ST-GEN-INV37); while it is not ga, the declaration carries an experimental
 # acceptance that names it.
 kind: component
 name: worker
-version: 0.4.0
+version: 0.5.0
 stage: alpha
 sunset: 2027-04-30
 output_namespace: workers

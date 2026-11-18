@@ -292,22 +292,22 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch && r.Method != http.MethodDelete {
 			w.Header().Set("Allow", "POST, PUT, PATCH, DELETE")
-			writeProblem(w, http.StatusMethodNotAllowed, "", "")
+			rt.writeProblem(w, http.StatusMethodNotAllowed, "", "")
 			return
 		}
 		b, err := BindIdentity(r.Context(), s.SubjectType)
 		if err != nil {
-			writeProblem(w, http.StatusUnauthorized, "", "")
+			rt.writeProblem(w, http.StatusUnauthorized, "", "")
 			return
 		}
 		key, err := idempotency.KeyFrom(r.Header, s.KeyRequired)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
+			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		decode := func(body []byte) (Req, error) {
@@ -326,12 +326,12 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		}
 		request, err := decode(body)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		fingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
@@ -340,9 +340,9 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		result, failed := serveRun(r.Context(), rt, s, req, decode)
 		switch {
 		case failed != nil:
-			writeFieldProblem(w, failed.Status, "", failed.AnswerCode(), failed.Field)
+			rt.writeFieldProblem(w, failed.Status, "", failed.AnswerCode(), failed.Field)
 		case result.Problem != "":
-			writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
+			rt.writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
 		default:
 			for name, values := range result.Response.Header {
 				w.Header()[name] = values
@@ -438,12 +438,12 @@ func ServeRevocationStatus(rt *Runtime, subjectType string) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
-			writeProblem(w, http.StatusMethodNotAllowed, "", "")
+			rt.writeProblem(w, http.StatusMethodNotAllowed, "", "")
 			return
 		}
 		b, err := BindIdentity(r.Context(), subjectType)
 		if err != nil {
-			writeProblem(w, http.StatusUnauthorized, "", "")
+			rt.writeProblem(w, http.StatusUnauthorized, "", "")
 			return
 		}
 		text := r.PathValue("id")
@@ -452,21 +452,21 @@ func ServeRevocationStatus(rt *Runtime, subjectType string) http.Handler {
 		}
 		id, err := uuid.Parse(text)
 		if err != nil || id.String() != text {
-			writeProblem(w, http.StatusNotFound, "", ErrorCodeDenied)
+			rt.writeProblem(w, http.StatusNotFound, "", ErrorCodeDenied)
 			return
 		}
 		wait, _ := authz.PreferWait(r.Header)
 		status, allowed, err := rt.cfg.Authz.WaitFor(r.Context(), b.Tenant, b.Principal, id, wait)
 		switch {
 		case errors.Is(err, authz.ErrRevocationNotFound):
-			writeProblem(w, http.StatusNotFound, "", ErrorCodeDenied)
+			rt.writeProblem(w, http.StatusNotFound, "", ErrorCodeDenied)
 			return
 		case err != nil && r.Context().Err() != nil:
 			// The client went away during the wait: no one reads the answer, and it is no internal error of the
 			// service (review of PR #428, L1).
 			return
 		case err != nil:
-			writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
+			rt.writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
 			return
 		}
 		if allowed > 0 {
@@ -477,7 +477,7 @@ func ServeRevocationStatus(rt *Runtime, subjectType string) http.Handler {
 		body := map[string]string{"id": status.ID.String(), "state": string(status.State)}
 		data, err := json.Marshal(body)
 		if err != nil {
-			writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
+			rt.writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -533,20 +533,25 @@ var titles = map[int]string{
 	http.StatusInternalServerError: "the command failed",
 }
 
-// writeProblem writes a problem response (RFC 9457) with a fixed title, the status, and the problem type and the
-// fixed code when they are given. It holds no error text and no value of a row.
-func writeProblem(w http.ResponseWriter, httpStatus int, problemType, code string) {
-	writeFieldProblem(w, httpStatus, problemType, code, "")
+// writeProblem writes a problem response (RFC 9457) with a fixed title, the status, the problem type, and the fixed
+// code when there is one. An empty problem type is the type of the code under the declared problem base
+// (ST-SUP-RC32-OC19). It holds no error text and no value of a row. A nil runtime has no problem base.
+func (rt *Runtime) writeProblem(w http.ResponseWriter, httpStatus int, problemType, code string) {
+	rt.writeFieldProblem(w, httpStatus, problemType, code, "")
 }
 
 // writeFieldProblem is writeProblem with the declared field that an ErrInvalid names, when field is not empty.
-func writeFieldProblem(w http.ResponseWriter, httpStatus int, problemType, code, field string) {
+func (rt *Runtime) writeFieldProblem(w http.ResponseWriter, httpStatus int, problemType, code, field string) {
 	if httpStatus == http.StatusServiceUnavailable {
 		// A 503 is a decision that the provider could not make now; the client may try again (ST-SUP-Q140).
 		w.Header().Set("Retry-After", authz.RetryAfter())
 	}
 	if problemType == "" {
-		problemType = "about:blank"
+		base := ""
+		if rt != nil {
+			base = rt.cfg.ProblemBase
+		}
+		problemType = authn.ProblemTypeOf(base, httpStatus, code)
 	}
 	title := titles[httpStatus]
 	if title == "" {

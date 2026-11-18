@@ -145,7 +145,7 @@ var workerOutcomes = []WorkerOutcome{WorkerRolledBack, WorkerFenced, WorkerPanic
 // (command.ErrNoParent); and unknown a run whose class the observer did not get.
 var WorkerCauses = []string{"invalid", "not_found", "refused", "conflict", "closed", "internal", "deadline", "panic",
 	"fill_error", "undecided", "not_granted", "declared_refusal", "staging_denied", "tenant", "message", "fenced", "statement", "data", "unknown",
-	"create_without_parent"}
+	"create_without_parent", "worker_tuple_missing"}
 
 // SchemaChange is one schema change of the declaration. Open is set when its last step is expand.
 type SchemaChange struct {

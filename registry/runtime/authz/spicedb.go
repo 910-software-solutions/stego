@@ -347,6 +347,25 @@ func (s *SpiceDB) Delete(ctx context.Context, filters []Filter, preconditions []
 	return tokenOf(response.GetDeletedAt())
 }
 
+// DeletePrefix deletes at most limit relationships of resourceType whose resource ID starts with prefix, with partial
+// deletions allowed, and tells how many it deleted and whether some may remain (ST-SUP-RC27-OC15). It refuses an
+// empty type, prefix or limit, so it never deletes the relationships of a whole type.
+func (s *SpiceDB) DeletePrefix(ctx context.Context, resourceType, prefix string, limit uint32) (uint64, bool, error) {
+	if resourceType == "" || prefix == "" || limit == 0 {
+		return 0, false, Refused(errors.New("authz: a delete by prefix needs a resource type, a prefix and a limit"))
+	}
+	response, err := s.permissions.DeleteRelationships(ctx, &v1.DeleteRelationshipsRequest{
+		RelationshipFilter:            &v1.RelationshipFilter{ResourceType: resourceType, OptionalResourceIdPrefix: prefix},
+		OptionalLimit:                 limit,
+		OptionalAllowPartialDeletions: true,
+	})
+	if err != nil {
+		return 0, false, spiceError("delete the relationships of a prefix", err)
+	}
+	return response.GetRelationshipsDeletedCount(),
+		response.GetDeletionProgress() == v1.DeleteRelationshipsResponse_DELETION_PROGRESS_PARTIAL, nil
+}
+
 // Write applies the touches and the deletes of exact filters in one WriteRelationships request, with
 // OPERATION_TOUCH and OPERATION_DELETE only, and returns its one written_at token.
 func (s *SpiceDB) Write(ctx context.Context, touches []Tuple, deletes []Filter, preconditions []Precondition) (Token, error) {

@@ -262,6 +262,12 @@ func read(ctx gen.Context) (plan, error) {
 			p.Tenants = append(p.Tenants, tenantPlan{Operation: t.operation, ResourceType: provisioning.ResourceType,
 				Permission: t.permission, Route: t.route, Tenant: t.action})
 		}
+		// The tenant list of the operator, when the schema declares list_tenants on the service-level resource type
+		// (ST-SUP-RC27-OC16).
+		if _, declared := compiled.PermissionRewrite(provisioning.ResourceType, tenancy.ListPermission); declared {
+			p.Tenants = append(p.Tenants, tenantPlan{Operation: tenancy.ListOperation, ResourceType: provisioning.ResourceType,
+				Permission: tenancy.ListPermission, Route: tenancy.ListRoute(ctx.BasePath), Tenant: "list"})
+		}
 	}
 	names := map[string]string{}
 	for _, e := range p.Entities {

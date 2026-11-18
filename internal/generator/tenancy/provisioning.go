@@ -19,7 +19,17 @@ const (
 const (
 	ProvisionOperation = "provision-tenant"
 	RetireOperation    = "retire-tenant"
+	// ListOperation is the tenant list of the operator, and ListPermission the permission of the service-level
+	// resource type that decides it, which the schema may declare (ST-SUP-RC27-OC16).
+	ListOperation  = "list-tenants"
+	ListPermission = "list_tenants"
 )
+
+// ListRoute gives the route of the tenant list of a service whose base path is basePath: GET <base
+// path>/stego/tenants (ST-SUP-RC27-OC16).
+func ListRoute(basePath string) string {
+	return "GET " + strings.TrimSuffix(basePath, "/") + ProvisionPath
+}
 
 // ownPrefix is the path under the base path that the generated service keeps for its own routes.
 const ownPrefix = "/stego"

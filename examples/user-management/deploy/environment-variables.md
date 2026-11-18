@@ -179,6 +179,7 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
+| `STEGO_QUERY_CURSOR_EXTRA_KEY_FILE` | path | no | none | no | - | `/etc/stego/query/cursor-extra-key` | The file of a second key of the list cursors, which opens a cursor and seals none: the new key before it seals, or the old key after a rotation. It must differ from the key. |
 | `STEGO_QUERY_CURSOR_KEY_FILE` | path | no | none | no | - | `/etc/stego/query/cursor-key` | The file of the key of the list cursors, at least 32 bytes, the same in each replica. Only the api mode reads it, and the api mode does not start when it has no value. |
 
 ## rest-api
