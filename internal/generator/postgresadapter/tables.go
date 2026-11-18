@@ -496,6 +496,14 @@ func (k withinKey) foreign(lead []string) foreignModel {
 		from: append(append([]string{}, lead...), k.own, k.column), to: append(append([]string{}, lead...), k.theirs, keyColumn)}
 }
 
+// CheckName gives the name of the CHECK of the declared constraints of the column of the table of entity: its length
+// and numeric bounds and its enum values. The command runtime maps its violation to the declared field
+// (walkthrough 10, B4).
+func CheckName(entity, column string) string { return sqlName(tableName(entity), column, "check") }
+
+// ForeignKeyName gives the name of the foreign key of the reference column of the table of entity.
+func ForeignKeyName(entity, column string) string { return sqlName(tableName(entity), column, "fkey") }
+
 // WithinCheckName gives the name of the CHECK that holds the within field of the table of entity set when its
 // reference column is set. The suffix wcheck keeps it apart from the CHECK of a field named <column>_within.
 func WithinCheckName(entity, column string) string {

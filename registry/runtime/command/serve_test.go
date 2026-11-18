@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -116,6 +117,15 @@ func TestServe(t *testing.T) {
 			{name: "another error", resource: "o5", status: http.StatusInternalServerError, code: "internal",
 				rpc: codes.Internal, outcome: "failed", auditErr: "internal",
 				fill: func(context.Context, *Handle[testProbe]) error { return errors.New("no stock for " + secret) }},
+			// A permission that the provider could not decide now, such as past the decision time limit, and a
+			// database that cannot serve now are 503 with Retry-After and Unavailable over gRPC (walkthrough 10, B5
+			// and B7).
+			{name: "a permission that could not be decided now", resource: "o5", status: http.StatusServiceUnavailable,
+				code: "undecided", rpc: codes.Unavailable, outcome: "failed", auditErr: "undecided",
+				fill: func(context.Context, *Handle[testProbe]) error { return ErrUndecided }},
+			{name: "a database that cannot serve now", resource: "o5", status: http.StatusServiceUnavailable,
+				code: "unavailable", rpc: codes.Unavailable, outcome: "failed", auditErr: "unavailable",
+				fill: func(context.Context, *Handle[testProbe]) error { return unavailablef("the statement failed") }},
 			{name: "a refusal that the fill made itself", resource: "o5", status: http.StatusInternalServerError,
 				code: "internal", rpc: codes.Internal, outcome: "failed", auditErr: "internal",
 				fill: func(context.Context, *Handle[testProbe]) error {
@@ -148,6 +158,9 @@ func TestServe(t *testing.T) {
 			answer, _ := io.ReadAll(w.Result().Body)
 			if w.Code != c.status || strings.Contains(string(answer), secret) {
 				t.Fatalf("%s over HTTP gave %d %s, want %d with no error text", c.name, w.Code, answer, c.status)
+			}
+			if retry := w.Header().Get("Retry-After"); (c.status == http.StatusServiceUnavailable) != (retry != "") {
+				t.Fatalf("%s over HTTP gave Retry-After %q with %d, want it only with 503", c.name, retry, w.Code)
 			}
 			if c.code != "" {
 				var p map[string]any
@@ -415,6 +428,68 @@ func TestOutcomeTransient(t *testing.T) {
 			if got := w.Header().Get("Retry-After"); !slices.Contains(want, got) || w.Code != status {
 				t.Errorf("the answer %d has Retry-After %q (status %d), want one of %q", status, got, w.Code, want)
 			}
+		}
+	})
+}
+
+func TestInvalidRPC(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC42-T03 An invalid value over gRPC is InvalidArgument with the field and the reason in a BadRequest detail, and no value", func(t *testing.T) {
+		err := OutcomeOf(fmt.Errorf("fill: %w", &invalidError{field: "patient_ref", reason: "shorter than min_length 1"})).RPCStatus()
+		st := status.Convert(err)
+		if st.Code() != codes.InvalidArgument || st.Message() != ErrorCodeInvalid || len(st.Details()) != 1 {
+			t.Fatalf("the invalid value gave %v with %d details, want InvalidArgument invalid with one detail", st, len(st.Details()))
+		}
+		bad, ok := st.Details()[0].(*errdetails.BadRequest)
+		if !ok || len(bad.GetFieldViolations()) != 1 || bad.GetFieldViolations()[0].GetField() != "patient_ref" ||
+			bad.GetFieldViolations()[0].GetDescription() != "shorter than min_length 1" {
+			t.Fatalf("the detail is %v, want the field patient_ref and its reason", st.Details()[0])
+		}
+		// An outcome with no field has no detail.
+		if st := status.Convert(OutcomeOf(ErrDenied).RPCStatus()); st.Code() != codes.NotFound || len(st.Details()) != 0 {
+			t.Fatalf("a deny gave %v with %d details, want NotFound with none", st, len(st.Details()))
+		}
+	})
+}
+
+func TestTransientEndsRun(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC25-T03 A decision that the provider cannot make now ends the command run: no later decision is tried, and the answer is 503 undecided", func(t *testing.T) {
+		e := newEnv(t)
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-a', 'new'), ('t1', 'o-b', 'new')`)
+		cmd := e.command("read-two", nil, e.orders)
+		calls := 0
+		e.decision.setFail(func(string) error {
+			calls++
+			// The error of a provider call that ran past the decision time limit.
+			return context.DeadlineExceeded
+		})
+		var second error
+		_, err := e.run(cmd, e.request("t1", u7(t), "k-lc25-t03", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			r := repo(t, h, e.orders)
+			_, first := r.Get(ctx, "o-a")
+			_, second = r.Get(ctx, "o-b")
+			return first
+		}))
+		if calls != 1 {
+			t.Fatalf("the provider was called %d times, want once: the run ends at the first transient error", calls)
+		}
+		if second == nil || !errors.Is(second, ErrInternal) {
+			t.Fatalf("the second read gave %v, want the broken call", second)
+		}
+		if o := OutcomeOf(err); o.Status != http.StatusServiceUnavailable || o.Code != audit.ErrorCodeUndecided || RPCCode(o.Status) != codes.Unavailable {
+			t.Fatalf("the run gave %v and the outcome %+v, want 503 undecided", err, o)
+		}
+	})
+}
+
+func TestFinite(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC42-T04 Finite refuses NaN and both infinities, which the generated Check of a bounded float uses", func(t *testing.T) {
+		for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			if Finite(v) {
+				t.Fatalf("Finite(%v) is true", v)
+			}
+		}
+		if !Finite(0) || !Finite(-1.5) || !Finite(math.MaxFloat64) {
+			t.Fatal("Finite refuses a finite number")
 		}
 	})
 }

@@ -44,7 +44,10 @@ const (
 	ReasonKindMismatch = "kind-mismatch"
 )
 
-// reasons are the fixed reasons that the table takes.
+// reasons are the fixed reasons that the table takes. The list only grows: a new reason is appended, and no reason is
+// removed or moved, because the migration validates the CHECK of the list on the rows of each earlier release
+// (ValidateMigration), and a removed reason would refuse them and stop the migration job (security review of PR
+// #429, L2). TestRefusedReasons holds the list of each release.
 var reasons = []string{ReasonMissingHeader, ReasonBadEventID, ReasonBadKind, ReasonForeignKind, ReasonBadContentType,
 	ReasonTooLarge, ReasonNotJSON, ReasonBadTenant, ReasonKeyMismatch, ReasonUnknownTenant, ReasonRetiredTenant,
 	ReasonBadResourceKey, ReasonDuplicateHeader, ReasonNotOutboxMessage, ReasonEventIDReused, ReasonKindMismatch}
@@ -95,8 +98,10 @@ func Migration(workerRole string) (string, error) {
 	PRIMARY KEY (subscription, topic, partition, record_offset)
 )`,
 		// The CHECK of the reasons of an earlier list, by its name: the unnamed one of the first release is
-		// refused_reason_check. It is dropped and the CHECK of this list is added, NOT VALID and then validated, only
-		// when the catalog does not hold this list's name, so a run that changes nothing takes no lock on the table.
+		// refused_reason_check. It is dropped and the CHECK of this list is added NOT VALID, only when the catalog does
+		// not hold this list's name, so a run that changes nothing takes no lock on the table. The ADD takes an ACCESS
+		// EXCLUSIVE lock but reads no row; ValidateMigration validates the CHECK in a transaction of its own, which
+		// blocks no read or write (security review of PR #429, L2).
 		`DO $reasons$
 DECLARE
 	former record;
@@ -107,7 +112,6 @@ BEGIN
 			EXECUTE pg_catalog.format('ALTER TABLE ` + table + ` DROP CONSTRAINT %I', former.conname);
 		END LOOP;
 		ALTER TABLE ` + table + ` ADD CONSTRAINT ` + check + ` ` + inList + ` NOT VALID;
-		ALTER TABLE ` + table + ` VALIDATE CONSTRAINT ` + check + `;
 	END IF;
 END $reasons$`,
 		"CREATE INDEX IF NOT EXISTS refused_age ON " + table + " (refused_at)",
@@ -116,6 +120,25 @@ END $reasons$`,
 		"GRANT USAGE ON SCHEMA " + Schema + " TO " + role,
 		"GRANT SELECT, INSERT, DELETE ON TABLE " + table + " TO " + role,
 	}, ";\n") + ";\n", nil
+}
+
+// ValidateMigration gives the statement that validates the CHECK of the reasons that Migration adds NOT VALID. The
+// migration job runs it after the text of Migration, in a transaction of its own (the step kafka_inbox_validate), so
+// the scan of the rows holds only a SHARE UPDATE EXCLUSIVE lock, which blocks no read or write of the running release
+// (security review of PR #429, L2). It reads the catalog first and takes no lock when the CHECK is valid. The list of
+// reasons only grows (each release appends), so a row of an earlier release always holds a reason of the list and the
+// validation passes.
+func ValidateMigration() string {
+	table := Schema + "." + Table
+	check := reasonsCheck()
+	return `DO $validate$
+BEGIN
+	IF EXISTS (SELECT 1 FROM pg_catalog.pg_constraint WHERE conrelid = '` + table + `'::regclass AND conname = '` + check + `'
+		AND NOT convalidated) THEN
+		ALTER TABLE ` + table + ` VALIDATE CONSTRAINT ` + check + `;
+	END IF;
+END $validate$;
+`
 }
 
 // Refusal is one refused record: where it is in Kafka, the fixed reason, and the event ID, the tenant ID and the kind

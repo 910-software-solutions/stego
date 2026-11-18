@@ -361,6 +361,9 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
 			return
 		}
+		if r.Context().Err() != nil {
+			return
+		}
 		handleError(w, r, InternalError("internal error"))
 		return
 	}
@@ -663,6 +666,9 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 	if err := h.rt.Queries.AwaitWrite(w, r, b.Tenant, b.Principal); err != nil {
 		if errors.Is(err, query.ErrBadRequest) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
 			return
 		}
 		handleError(w, r, InternalError("internal error"))

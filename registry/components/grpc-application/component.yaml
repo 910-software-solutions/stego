@@ -2,7 +2,7 @@
 # not hold as active with PERMISSION_DENIED and the code tenant.not_provisioned (ST-SUP-RC27-OC11).
 kind: component
 name: grpc-application
-version: 2.2.0
+version: 2.3.0
 stage: ga
 output_namespace: grpcapi
 config:

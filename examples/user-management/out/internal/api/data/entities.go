@@ -55,7 +55,27 @@ var OrganizationEntity = command.Must(command.NewEntity(command.EntitySpec[Organ
 		v.Description = command.ClonePointer(v.Description)
 		return v
 	},
-	ValidID:   command.ValidUUID,
+	ValidID: command.ValidUUID,
+	Check: func(v Organization) (string, string, bool) {
+		if !command.MinLength(v.Name, 1) {
+			return "name", "shorter than min_length 1", false
+		}
+		if !command.MaxLength(v.Name, 255) {
+			return "name", "longer than max_length 255", false
+		}
+		if v.Description != nil {
+			if !command.MaxLength(*v.Description, 1000) {
+				return "description", "longer than max_length 1000", false
+			}
+		}
+		return "", "", true
+	},
+	Constraints: map[string]string{
+		"organizations_name_check":        "name",
+		"organizations_description_check": "description",
+		"name":                            "name",
+		"description":                     "description",
+	},
 	Relations: []string{"owner", "viewer"},
 }))
 
@@ -115,6 +135,32 @@ var UserEntity = command.Must(command.NewEntity(command.EntitySpec[User]{
 		return v
 	},
 	ValidID: command.ValidUUID,
+	Check: func(v User) (string, string, bool) {
+		if !command.MaxLength(v.Email, 255) {
+			return "email", "longer than max_length 255", false
+		}
+		if !command.MinLength(v.DisplayName, 1) {
+			return "display_name", "shorter than min_length 1", false
+		}
+		if !command.MaxLength(v.DisplayName, 100) {
+			return "display_name", "longer than max_length 100", false
+		}
+		if !command.OneOf(v.Role, "admin", "member", "viewer") {
+			return "role", "is not one of the declared values", false
+		}
+		return "", "", true
+	},
+	Constraints: map[string]string{
+		"users_email_check":        "email",
+		"users_display_name_check": "display_name",
+		"users_role_check":         "role",
+		"users_org_id_fkey":        "org_id",
+		"email":                    "email",
+		"display_name":             "display_name",
+		"role":                     "role",
+		"org_id":                   "org_id",
+		"metadata":                 "metadata",
+	},
 	Parent: []command.Reference[User]{
 		{Entity: "Organization", ResourceType: "organization", ID: func(v User) string { return v.OrgID }, Permission: "edit", Relation: "organization"},
 	},
@@ -176,6 +222,20 @@ var OrgSettingEntity = command.Must(command.NewEntity(command.EntitySpec[OrgSett
 		return v
 	},
 	ValidID: command.ValidUUID,
+	Check: func(v OrgSetting) (string, string, bool) {
+		if !command.MaxLength(v.Key, 255) {
+			return "key", "longer than max_length 255", false
+		}
+		return "", "", true
+	},
+	Constraints: map[string]string{
+		"org_settings_org_id_fkey": "org_id",
+		"org_settings_key_check":   "key",
+		"org_id":                   "org_id",
+		"key":                      "key",
+		"value":                    "value",
+		"generation":               "generation",
+	},
 	Parent: []command.Reference[OrgSetting]{
 		{Entity: "Organization", ResourceType: "organization", ID: func(v OrgSetting) string { return v.OrgID }, Permission: "edit", Relation: "organization"},
 	},
@@ -236,7 +296,28 @@ var ActivityEntryEntity = command.Must(command.NewEntity(command.EntitySpec[Acti
 		v.Detail = bytes.Clone(v.Detail)
 		return v
 	},
-	ValidID:   command.ValidUUID,
+	ValidID: command.ValidUUID,
+	Check: func(v ActivityEntry) (string, string, bool) {
+		if !command.MaxLength(v.SourceType, 50) {
+			return "source_type", "longer than max_length 50", false
+		}
+		if !command.MaxLength(v.SourceID, 255) {
+			return "source_id", "longer than max_length 255", false
+		}
+		if !command.MaxLength(v.Action, 100) {
+			return "action", "longer than max_length 100", false
+		}
+		return "", "", true
+	},
+	Constraints: map[string]string{
+		"activity_entries_source_type_check": "source_type",
+		"activity_entries_source_id_check":   "source_id",
+		"activity_entries_action_check":      "action",
+		"source_type":                        "source_type",
+		"source_id":                          "source_id",
+		"action":                             "action",
+		"detail":                             "detail",
+	},
 	Relations: []string{"owner"},
 }))
 

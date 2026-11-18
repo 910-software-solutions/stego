@@ -578,6 +578,19 @@ func runtimeSchema(declaration string) string {
 		for _, w := range workers {
 			schema += "\trelation worker_" + strings.ReplaceAll(w[1], "-", "_") + ": service_account\n"
 		}
+		// A worker that can create a row with no parent is decided on the tenant resource with its permission
+		// (ST-SUP-RP10-LC17, ST-SUP-RC35-OC17): the type tenant gives each permission of a worker to its relation.
+		var permissions []string
+		holders := map[string][]string{}
+		for _, w := range regexp.MustCompile(`(?m)^  - name: ([a-z][a-z0-9-]*)\n    trigger:[^\n]*\n(?:    [^\n]*\n)*?    permission: ([a-z][a-z0-9_]*)`).FindAllStringSubmatch(declaration, -1) {
+			if holders[w[2]] == nil {
+				permissions = append(permissions, w[2])
+			}
+			holders[w[2]] = append(holders[w[2]], "worker_"+strings.ReplaceAll(w[1], "-", "_"))
+		}
+		for _, permission := range permissions {
+			schema += "\tpermission " + permission + " = " + strings.Join(holders[permission], " + ") + "\n"
+		}
 		schema += "}\n"
 	}
 	return schema

@@ -408,6 +408,18 @@ func (m *model) checkTenantRelations() error {
 			return fmt.Errorf("worker: the schema %s has no relation %s#%s of the subject type %s, which holds the tuple of the worker %s in each tenant (ST-SUP-RC35-OC13)", setting.SchemaPath, tenantType, relation, serviceAccount, w.decl.Name)
 		}
 	}
+	// A worker that can create a row with no parent is decided on the tenant resource, with its permission there
+	// (ST-SUP-RP10-LC17, ST-SUP-Q164 (b), ST-SUP-RC35-OC17).
+	declared := &types.ServiceDeclaration{Authorization: m.ctx.Authorization, Entities: m.ctx.Entities}
+	for _, w := range m.ctx.Workers {
+		declared.Workers = append(declared.Workers, w.Worker)
+	}
+	for _, root := range declaration.RootCreates(declared) {
+		worker := declared.Workers[root.Worker]
+		if _, ok := schema.PermissionRewrite(tenantType, worker.Permission); !ok {
+			return fmt.Errorf("worker: the worker %s writes %s, which it can create with no parent, and the runtime decides such a create on the tenant resource with the permission %s; the type %s of the schema %s has no permission %s (ST-SUP-RC35-OC17, ST-SUP-RP10-LC17)", worker.Name, root.Entity, worker.Permission, tenantType, setting.SchemaPath, worker.Permission)
+		}
+	}
 	return nil
 }
 

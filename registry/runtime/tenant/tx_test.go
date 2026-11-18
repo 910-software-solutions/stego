@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/token"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -321,3 +323,68 @@ func sessionSetting(statement string) (string, bool) {
 		}
 	}
 }
+
+func TestUnavailable(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC43-T01 Begin on a database that cannot serve now gives an error that Unavailable reports, and a refused statement is not unavailable", func(t *testing.T) {
+		env := newPG(t)
+		ctx := context.Background()
+		// A server that refuses the connection: a port on the loopback address that nothing listens on.
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := listener.Addr().String()
+		_ = listener.Close()
+		refusedURL := *env.url(env.runtime, rolePassword)
+		refusedURL.Host = closed
+		refused, err := sql.Open("pgx", refusedURL.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = refused.Close() })
+		if _, err := Begin(ctx, refused, mustTenant(t, "tenant-a"), nil); err == nil || !Unavailable(err) {
+			t.Fatalf("Begin on a refused connection gave %v (unavailable %v), want an unavailable error", err, Unavailable(err))
+		}
+		// A server that ends the session of the transaction, as at a shutdown: SQLSTATE 57P01 or a lost connection.
+		tx, err := Begin(ctx, env.runtimeDB, mustTenant(t, "tenant-a"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pid int
+		if err := tx.QueryRowContext(ctx, "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.admin.ExecContext(ctx, "SELECT pg_terminate_backend($1)", pid); err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.ExecContext(ctx, "SELECT 1")
+		if err == nil || !Unavailable(err) {
+			t.Fatalf("a statement on a terminated session gave %v (unavailable %v), want an unavailable error", err, Unavailable(err))
+		}
+		_ = tx.Rollback()
+		// A statement that the server refuses for its values, a cancel and no error are not unavailable.
+		tx, err = Begin(ctx, env.runtimeDB, mustTenant(t, "tenant-a"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = tx.ExecContext(ctx, "INSERT INTO items (tenant_id, note) VALUES ('tenant-a', NULL)")
+		_ = tx.Rollback()
+		for name, err := range map[string]error{"a not-null violation": err, "a cancel": context.Canceled, "no error": nil,
+			"another error": errors.New("tenant: other")} {
+			if Unavailable(err) {
+				t.Fatalf("%s (%v) is unavailable, want not", name, err)
+			}
+		}
+		for code, want := range map[string]bool{"08006": true, "08001": true, "57P01": true, "57P03": true, "53300": true, "40001": false, "42501": false} {
+			if got := Unavailable(fmt.Errorf("wrapped: %w", sqlStateError(code))); got != want {
+				t.Fatalf("SQLSTATE %s is unavailable %v, want %v", code, got, want)
+			}
+		}
+	})
+}
+
+// sqlStateError is an error with a SQLSTATE, as a driver gives one.
+type sqlStateError string
+
+func (e sqlStateError) Error() string    { return "sqlstate " + string(e) }
+func (e sqlStateError) SQLState() string { return string(e) }

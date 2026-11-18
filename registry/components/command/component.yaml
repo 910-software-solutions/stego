@@ -4,7 +4,7 @@
 # of the tenant, and its handle offers only the create and the read (ST-SUP-RC32-OC15).
 kind: component
 name: command
-version: 1.3.0
+version: 1.4.0
 stage: ga
 output_namespace: commands
 

@@ -17,6 +17,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // spiceDBName is the provider name in the page tokens of the SpiceDB provider.
@@ -550,6 +552,9 @@ const (
 	CauseRefused = "authz_provider_refused"
 	// CauseConditional is a conditional permission whose caveat context is missing (ContextError).
 	CauseConditional = "authz_conditional_permission"
+	// CauseStoreUnavailable is a database that cannot serve the read of the revocation floor now, such as for a lost
+	// connection (tenant.Unavailable; walkthrough 10, B7).
+	CauseStoreUnavailable = "authz_store_unavailable"
 	// CauseProvider is every other failure of a provider call.
 	CauseProvider = "authz_provider_failed"
 	// CauseOther is an error that no provider call gave.
@@ -581,6 +586,8 @@ func Cause(err error) string {
 		}
 	case errors.As(err, &conditional):
 		return CauseConditional
+	case tenant.Unavailable(err) && !errors.Is(err, context.DeadlineExceeded):
+		return CauseStoreUnavailable
 	case errors.Is(err, context.DeadlineExceeded):
 		return CauseDeadline
 	case errors.Is(err, context.Canceled):
@@ -593,10 +600,11 @@ func Cause(err error) string {
 // Transient reports whether err is a failure of the provider that a retry of the same request may pass, so that the
 // request is answered as unavailable for now (HTTP 503 with Retry-After), not as an internal error: a provider that
 // does not serve yet a definition of the schema the release wrote, one that does not answer or has no capacity, and
-// a provider call that ran out of time.
+// a provider call that ran out of time, which includes a call that ran past the decision time limit
+// (DefaultDecisionTimeout), and a database that cannot serve the read of the revocation floor now.
 func Transient(err error) bool {
 	switch Cause(err) {
-	case CauseSchemaNotServed, CauseUnavailable, CauseDeadline:
+	case CauseSchemaNotServed, CauseUnavailable, CauseDeadline, CauseStoreUnavailable:
 		return true
 	default:
 		return false

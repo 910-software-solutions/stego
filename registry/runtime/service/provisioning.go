@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/jsell-rh/stego/registry/runtime/authn"
+	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/command"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -162,8 +163,9 @@ func (tp *tenantProvisioning) exempted(router *http.ServeMux, r *http.Request) b
 // gated serves next only for a request whose verified tenant is an active tenant of the tenant list, after the
 // verifier and before any handler, decision or fill; the two provisioning routes of the main router are exempt,
 // because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11). It answers any
-// other request with 403 and the code tenant.not_provisioned, also a verified token with no valid tenant claim, or 500
-// when the list cannot be read, with Cache-Control no-store.
+// other request with 403 and the code tenant.not_provisioned, also a verified token with no valid tenant claim, 503
+// with Retry-After and the code unavailable when the database cannot serve the list now, or 500 when the list cannot
+// be read for another cause, with Cache-Control no-store.
 func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tp.exempted(router, r) {
@@ -175,6 +177,11 @@ func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) ht
 			next.ServeHTTP(w, r)
 		case errors.Is(err, errNotProvisioned):
 			writeTenantProblem(w, http.StatusForbidden, tp.problemType, tenant.ErrNotProvisionedCode)
+		case tenant.Unavailable(err):
+			// A tenant list that the database cannot serve now is 503 with Retry-After, never a bare 500
+			// (walkthrough 10, B7; ST-SUP-RP10-LC43).
+			w.Header().Set("Retry-After", authz.RetryAfter())
+			writeTenantProblem(w, http.StatusServiceUnavailable, tp.problemType, command.ErrorCodeUnavailable)
 		default:
 			writeTenantProblem(w, http.StatusInternalServerError, tp.problemType, command.ErrorCodeInternal)
 		}
@@ -222,6 +229,8 @@ func (svc *Service) Authenticate(ctx context.Context, credential string) (contex
 		return verified, nil
 	case errors.Is(err, errNotProvisioned):
 		return nil, status.Error(codes.PermissionDenied, tenant.ErrNotProvisionedCode)
+	case tenant.Unavailable(err):
+		return nil, status.Error(codes.Unavailable, command.ErrorCodeUnavailable)
 	default:
 		return nil, status.Error(codes.Internal, command.ErrorCodeInternal)
 	}

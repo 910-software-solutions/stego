@@ -123,7 +123,7 @@ func New(authenticate Authenticate,register func(grpc.ServiceRegistrar)error,opt
   values:=md.Get("authorization")
   if len(values)!=1||len(values[0])>16400{return nil,status.Error(codes.Unauthenticated,"authentication is required")}
   fields:=strings.Fields(values[0]);if len(fields)!=2||!strings.EqualFold(fields[0],"Bearer"){return nil,status.Error(codes.Unauthenticated,"authentication is required")}
-  verified,err:=authenticate(ctx,fields[1]);if code:=status.Code(err);err!=nil&&(code==codes.PermissionDenied||code==codes.Internal){return nil,err};if err!=nil||verified==nil{return nil,status.Error(codes.Unauthenticated,"invalid access token")}
+  verified,err:=authenticate(ctx,fields[1]);if code:=status.Code(err);err!=nil&&(code==codes.PermissionDenied||code==codes.Internal||code==codes.Unavailable){return nil,err};if err!=nil||verified==nil{return nil,status.Error(codes.Unauthenticated,"invalid access token")}
   return verified,nil
  }
  server:=grpc.NewServer(

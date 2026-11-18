@@ -583,15 +583,22 @@ func listValueFits(field types.Field, value any) bool {
 	return false
 }
 
-// RootCreateWarnings gives one warning for each entity that a worker writes when a create of it by the worker can
-// have no parent resource: the entity has a resource type, and no reference of it to an entity with a resource type
-// is required. The worker handle decides a create on the parent resource that the call names, and refuses a create
-// with none (ST-SUP-RP10-LC17), so each such create fails its run, while an update or a delete of a row of the
-// entity runs. The warning names the worker and the entity, and tells what a create needs. It is a warning, not a
-// fault, because a worker that only updates or deletes such rows is correct; ST-SUP-Q164 asks how a worker creates
-// a row with no parent, such as the local copy of an event of another service. A service with no authorization
-// decides nothing, so it gets no warning.
-func RootCreateWarnings(service *types.ServiceDeclaration) []ValidationError {
+// tenantType is the type of the schema of the tenant resource, on which the worker tuples are written
+// (ST-SUP-RC35-OC13) and a worker's create with no parent is decided (ST-SUP-RP10-LC17).
+const tenantType = "tenant"
+
+// RootCreate is one entity that a worker writes and can create with no parent: the entity has a resource type, and
+// no reference of it to an entity with a resource type is required. The runtime decides such a create on the tenant
+// resource of the run, with the worker's declared permission (ST-SUP-RP10-LC17, ST-SUP-Q164 (b)).
+type RootCreate struct {
+	// Worker is the index of the worker in the declaration, and Entity the entity that it writes.
+	Worker int
+	Entity string
+}
+
+// RootCreates gives, for each worker of the declaration, each entity that it writes and can create with no parent,
+// in the order of the workers and of their writes. A service with no authorization decides nothing, so it gives none.
+func RootCreates(service *types.ServiceDeclaration) []RootCreate {
 	if service == nil || service.Authorization == nil {
 		return nil
 	}
@@ -599,33 +606,44 @@ func RootCreateWarnings(service *types.ServiceDeclaration) []ValidationError {
 	for i := range service.Entities {
 		byName[service.Entities[i].Name] = &service.Entities[i]
 	}
-	var warnings []ValidationError
+	var out []RootCreate
 	for wi, worker := range service.Workers {
 		for _, name := range worker.Writes {
 			e := byName[name]
 			if e == nil || e.ResourceType == "" {
 				continue
 			}
-			var optional []string
 			required := false
 			for _, f := range e.Fields {
-				if to := byName[f.To]; f.Type == types.FieldTypeRef && to != nil && to.ResourceType != "" {
-					if !f.Optional {
-						required = true
-					}
-					optional = append(optional, f.Name)
+				if to := byName[f.To]; f.Type == types.FieldTypeRef && to != nil && to.ResourceType != "" && !f.Optional {
+					required = true
 				}
 			}
-			if required {
-				continue
+			if !required {
+				out = append(out, RootCreate{Worker: wi, Entity: e.Name})
 			}
-			need := fmt.Sprintf("the entity %s has no reference to an entity with a resource type, so no create of it by a worker can succeed", e.Name)
-			if len(optional) > 0 {
-				need = fmt.Sprintf("a create of %s by a worker succeeds only when it sets %s and gives that loaded row as the parent", e.Name, strings.Join(optional, " or "))
-			}
-			warnings = append(warnings, ValidationError{Category: "worker", Rule: "worker-root-create", Path: workerPath(wi) + ".writes", Found: e.Name,
-				Message: fmt.Sprintf("worker %q writes %s, which has the resource type %s: the worker handle decides a create on the parent resource of the new row and refuses a create with no parent (ST-SUP-RP10-LC17), and the run then fails with fill_error; %s. An update or a delete of a row of %s runs. ST-SUP-Q164 asks how a worker creates a row with no parent", worker.Name, e.Name, e.ResourceType, need, e.Name)})
 		}
+	}
+	return out
+}
+
+// RootCreateWarnings gives one warning for each entity that a worker writes and can create with no parent, when the
+// type tenant of the schema has no permission with the name of the worker's declared permission: the runtime
+// decides such a create on the tenant resource (ST-SUP-RP10-LC17, ST-SUP-Q164 (b)), so each create would be denied,
+// and generation refuses the schema (ST-SUP-RC35-OC17). Checking gives it before generation runs. The warning names
+// the worker, the entity and the permission. A schema that is nil gives none.
+func RootCreateWarnings(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
+	if schema == nil {
+		return nil
+	}
+	var warnings []ValidationError
+	for _, root := range RootCreates(service) {
+		worker := service.Workers[root.Worker]
+		if _, ok := schema.PermissionRewrite(tenantType, worker.Permission); ok {
+			continue
+		}
+		warnings = append(warnings, ValidationError{Category: "worker", Rule: "worker-root-create", Path: workerPath(root.Worker) + ".writes", Found: root.Entity,
+			Message: fmt.Sprintf("worker %q writes %s, which it can create with no parent: the runtime decides such a create on the tenant resource with the permission %s (ST-SUP-RP10-LC17, ST-SUP-Q164), and the type %s of the schema has no permission %s, so generation refuses the schema (ST-SUP-RC35-OC17); add permission %s to definition %s, such as %s = %s", worker.Name, root.Entity, worker.Permission, tenantType, worker.Permission, worker.Permission, tenantType, worker.Permission, "worker_"+strings.ReplaceAll(worker.Name, "-", "_"))})
 	}
 	return warnings
 }

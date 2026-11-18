@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -91,6 +92,13 @@ type Config struct {
 	// TenantWaiters is the most calls of WaitFor of one tenant that wait at one time, inside Waiters, so the waits
 	// of one tenant cannot use up the waiter limit of all (ST-SUP-RP06-LC24). Zero is DefaultTenantWaiters.
 	TenantWaiters int
+	// DecisionTimeout is the time limit of each call of the decision provider; a call past it is answered 503 with
+	// Retry-After, or Unavailable over gRPC (walkthrough 10, B5). Zero is DefaultDecisionTimeout.
+	DecisionTimeout time.Duration
+	// PrincipalWaiters is the most calls of WaitFor of one principal of a tenant that wait at one time, inside
+	// TenantWaiters, so one principal cannot use up the waiter limit of its tenant (review of PR #428, L2). Zero is
+	// DefaultPrincipalWaiters.
+	PrincipalWaiters int
 	// Meter gives the metric of the search results that a handle drops because they name another tenant
 	// (ST-SUP-RP06-LC22). Nil records no metric; DroppedResults counts them still.
 	Meter metric.MeterProvider
@@ -139,6 +147,10 @@ type Runtime struct {
 	tenantWaiters int
 	waitingMu     sync.Mutex
 	waiting       map[string]int
+	// principalWaiters is the limit of the waits of one principal of a tenant, and waitingPrincipal the waits of each
+	// principal of a tenant now.
+	principalWaiters int
+	waitingPrincipal map[string]int
 	// waitReads counts the reads of WaitFor, for the test of its poll.
 	waitReads atomic.Int64
 
@@ -178,7 +190,15 @@ func New(cfg Config) (*Runtime, error) {
 		return nil, errors.New("authz: the waiter limit is negative")
 	case cfg.TenantWaiters < 0:
 		return nil, errors.New("authz: the waiter limit of a tenant is negative")
+	case cfg.PrincipalWaiters < 0:
+		return nil, errors.New("authz: the waiter limit of a principal is negative")
+	case cfg.DecisionTimeout < 0:
+		return nil, errors.New("authz: the decision time limit is negative")
 	}
+	if cfg.DecisionTimeout > 0 {
+		port.timeout = cfg.DecisionTimeout
+	}
+	port.clock = cfg.clocks.Decision
 	schema, err := quoteName("schema", cfg.Schema)
 	if err != nil {
 		return nil, err
@@ -211,6 +231,11 @@ func New(cfg Config) (*Runtime, error) {
 		r.tenantWaiters = DefaultTenantWaiters
 	}
 	r.waiting = map[string]int{}
+	r.principalWaiters = cfg.PrincipalWaiters
+	if r.principalWaiters == 0 {
+		r.principalWaiters = DefaultPrincipalWaiters
+	}
+	r.waitingPrincipal = map[string]int{}
 	if cfg.Meter != nil {
 		r.droppedMetric, err = cfg.Meter.Meter(instrumentation).Int64Counter("authz.search.dropped",
 			metric.WithDescription("The resource search results that name another tenant or are not tenant-qualified, which a handle drops."))
@@ -865,6 +890,11 @@ const DefaultWaiters = 100
 // (ST-SUP-RP06-LC24).
 const DefaultTenantWaiters = 10
 
+// DefaultPrincipalWaiters is the most calls of WaitFor of one principal of a tenant that wait at one time when Config
+// gives none: fewer than DefaultTenantWaiters, so one principal with its own pending revocations leaves places for
+// the other principals of its tenant (review of PR #428, L2).
+const DefaultPrincipalWaiters = 4
+
 // MaxPoll is the longest time between two reads of WaitFor: the time starts at the poll time and doubles after each
 // read up to MaxPoll, so a long wait reads about once a second (ST-SUP-RP06-LC24).
 const MaxPoll = time.Second
@@ -880,6 +910,20 @@ const (
 	RevocationAfterHeader = "Authz-Revocation-After"
 	// RevocationPath is the path of the revocation status route, before the identity of the revocation.
 	RevocationPath = "/authz/revocations/"
+)
+
+// The gRPC metadata of a revocation, the forms of the HTTP headers in lower case (ST-SUP-RP10-LC40,
+// ST-SUP-RP11-LC22, ST-SUP-Q163).
+const (
+	// RevocationMetadata is the header metadata that gives the state of a revocation: pending on the answer of a
+	// command, and the last state that a query read.
+	RevocationMetadata = "authz-revocation"
+	// RevocationLocationMetadata is the header metadata of a command answer that gives the path of its revocation.
+	RevocationLocationMetadata = "authz-revocation-location"
+	// RevocationAfterMetadata is the request metadata of a query that names the revocation of the caller's write.
+	RevocationAfterMetadata = "authz-revocation-after"
+	// PreferMetadata is the request metadata that gives the wait preference, wait=N, as the HTTP header Prefer.
+	PreferMetadata = "prefer"
 )
 
 // Current returns the revocation of the handle's transaction, and true, when a tuple write of any handle bound to the
@@ -910,11 +954,11 @@ func (h *Handle) Current(ctx context.Context) (Revocation, bool, error) {
 // answers ErrRevocationNotFound to any other tenant and principal, as Status does, and also when the wait ends
 // before a read found the revocation of t and p: it answers pending only after a read found it.
 func (r *Runtime) WaitFor(ctx context.Context, t tenant.Tenant, p Principal, id uuid.UUID, wait time.Duration) (status RevocationStatus, allowed time.Duration, err error) {
-	if wait <= 0 || !r.startWait(t) {
+	if wait <= 0 || !r.startWait(t, p) {
 		status, err = r.Status(ctx, t, p, id)
 		return status, 0, err
 	}
-	defer r.endWait(t)
+	defer r.endWait(t, p)
 	allowed = min(wait, r.waitCap)
 	waitCtx, cancel := r.waitClock.WithTimeout(ctx, allowed)
 	defer cancel()
@@ -940,6 +984,9 @@ func (r *Runtime) WaitFor(ctx context.Context, t tenant.Tenant, p Principal, id 
 		}
 		select {
 		case <-waitCtx.Done():
+			if ctx.Err() == nil && allowed == r.waitCap {
+				pendingPastCap(ctx, r.waitCap)
+			}
 			return status, allowed, ctx.Err()
 		case <-r.waitClock.After(poll):
 		}
@@ -956,9 +1003,27 @@ func nextPoll(poll time.Duration) time.Duration {
 	return min(2*poll, MaxPoll)
 }
 
-// startWait takes a place of the waiter limit and of the waiter limit of tenant t, and tells whether it took both;
-// when it did not, it holds neither.
-func (r *Runtime) startWait(t tenant.Tenant) bool {
+// pendingLog holds back the warning of a revocation that stayed pending past the wait cap to one line in each
+// LogEvery.
+var pendingLog = NewCauseLog(nil)
+
+// PendingPastCapEvent is the event name of the warning that a revocation stayed pending for the whole wait cap.
+const PendingPastCapEvent = "authz.revocation.pending_past_cap"
+
+// pendingPastCap logs a warning that a wait for a revocation used the whole wait cap and the revocation is still
+// pending, at most one line in each LogEvery with the count of the lines held back. Only the relay, which the worker
+// mode runs, makes a revocation complete, so the line names that as the first thing to check. It holds no tenant,
+// principal or identity of a revocation.
+func pendingPastCap(ctx context.Context, waitCap time.Duration) {
+	if ok, held := pendingLog.Allow(PendingPastCapEvent); ok {
+		slog.WarnContext(ctx, "authz: a revocation stayed pending past the wait cap; check that the relay runs (the worker mode) and that the destination authz is not parked",
+			"event", PendingPastCapEvent, "wait_cap_seconds", waitCap.Seconds(), "held_back", held)
+	}
+}
+
+// startWait takes a place of the waiter limit, of the waiter limit of tenant t and of the waiter limit of principal p
+// in t, and tells whether it took all three; when it did not, it holds none.
+func (r *Runtime) startWait(t tenant.Tenant, p Principal) bool {
 	select {
 	case r.waiters <- struct{}{}:
 	default:
@@ -966,19 +1031,30 @@ func (r *Runtime) startWait(t tenant.Tenant) bool {
 	}
 	r.waitingMu.Lock()
 	defer r.waitingMu.Unlock()
-	if r.waiting[t.ID()] >= r.tenantWaiters {
+	principal := waiterKey(t, p)
+	if r.waiting[t.ID()] >= r.tenantWaiters || r.waitingPrincipal[principal] >= r.principalWaiters {
 		<-r.waiters
 		return false
 	}
 	r.waiting[t.ID()]++
+	r.waitingPrincipal[principal]++
 	return true
 }
 
-// endWait gives back the places that startWait took for tenant t.
-func (r *Runtime) endWait(t tenant.Tenant) {
+// waiterKey is the key of principal p of tenant t in the principal waiter counts.
+func waiterKey(t tenant.Tenant, p Principal) string {
+	return t.ID() + "\x00" + p.Subject().String()
+}
+
+// endWait gives back the places that startWait took for tenant t and principal p.
+func (r *Runtime) endWait(t tenant.Tenant, p Principal) {
 	r.waitingMu.Lock()
 	if r.waiting[t.ID()]--; r.waiting[t.ID()] <= 0 {
 		delete(r.waiting, t.ID())
+	}
+	principal := waiterKey(t, p)
+	if r.waitingPrincipal[principal]--; r.waitingPrincipal[principal] <= 0 {
+		delete(r.waitingPrincipal, principal)
 	}
 	r.waitingMu.Unlock()
 	<-r.waiters
@@ -1414,11 +1490,15 @@ type statementError struct {
 	text  string
 	state string
 	cause error
+	// unavailable is true when the database could not serve the statement now (tenant.Unavailable), such as for a
+	// lost connection, which has no SQLSTATE (walkthrough 10, B7).
+	unavailable bool
 }
 
-func (e *statementError) Error() string    { return e.text }
-func (e *statementError) SQLState() string { return e.state }
-func (e *statementError) Unwrap() error    { return e.cause }
+func (e *statementError) Error() string     { return e.text }
+func (e *statementError) SQLState() string  { return e.state }
+func (e *statementError) Unwrap() error     { return e.cause }
+func (e *statementError) Unavailable() bool { return e.unavailable }
 
 // failedStatement gives the fixed error text of a failed statement with the SQLSTATE of err, when it has one, and
 // a cancel or a deadline of err.
@@ -1428,5 +1508,5 @@ func failedStatement(text string, err error) error {
 	if errors.As(err, &coded) {
 		state = coded.SQLState()
 	}
-	return &statementError{text: text, state: state, cause: contextCause(err)}
+	return &statementError{text: text, state: state, cause: contextCause(err), unavailable: tenant.Unavailable(err)}
 }
