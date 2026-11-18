@@ -15,7 +15,7 @@ last_applied:
                 mode: 420
             authz/schema.zed:
                 exists: true
-                sha256: 87e9c0b65aca9a22c4e7386893b21b0c86f0d2f1f2f7f7988bf1ba8b5546559f
+                sha256: e5f80f992fd27397c8fa3fd93bacf3f59ceb0d87fed3efa7e72773e7e9691610
                 mode: 420
             go.mod:
                 exists: true
@@ -29,19 +29,19 @@ last_applied:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: 9bac6c4b77f44afa66fa68e4a406596a7c4240400ab657e025de8fd4a944e9ff
+        sha256: 6f3cd36351866130e52d02bbe52718f48c30f8883f9ff714c961989f0959df6a
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261117203219-fe4f0a9b8723
+        module_version: v0.0.0-20261118001312-5cf823b37514
         vcs: git
-        revision: fe4f0a9b8723e1c1d5913a2bfe223448116c0ad2
+        revision: 5cf823b375144629bf95bea7c1274d108c3c9eeb
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 96090e53f9501ade43e171010575aa85c63f7563cdb9c5f21c596bbcecb9c9da
+    registry_content_sha256: 330953b7fb0a2552bc9d930f89862f2ba06cc5d147d2d2d2a9b49206d5d2899d
     components:
         audit-log:
             version: 1.1.1
@@ -156,8 +156,8 @@ last_applied:
         internal/api/user_activity_handler.go: 879317fda7698a24710044d6422617cd0cc6d71ddc0a0cbad2134533952060d4
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: 7fa2142f0f392775f4e230cef051034f050d33723732be342d1ae8eed40364fc
-        internal/authz/authz.go: 5455408e2aa38c878ccb43b032314fd8f6474725935b089b6b88afe38ef31dc8
-        internal/authz/schema.zed: 5dc471ea0e3cee6c2a66ebe4280a044fa6108f5de24eb11c47a668d5c55e61d9
+        internal/authz/authz.go: b43bbd7f6ca545cc2cb155157157ebf25e42edcd8f4922ab5de95a6ecdc93dda
+        internal/authz/schema.zed: 2197e04a78a11ac1b8f22164c3b88930bbf37f7f38eafee3e26a7495d59cb47d
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
         internal/stegoruntime/runtime.go: 64b25addc8709dfd2251923c4a65e938881d2c5b009f578d4279b5bde9778f6f
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
