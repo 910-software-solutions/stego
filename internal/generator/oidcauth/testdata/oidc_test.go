@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -162,7 +163,7 @@ func start(t *testing.T) *service {
 	_, _ = rand.Read(cursor)
 	s.env = append(common, "DATABASE_URL="+as(stegoruntime.RuntimeRole), "STEGO_MODE=api",
 		"STEGO_AUTHN_CA_FILE="+s.provider.CAFile(t), "STEGO_QUERY_CURSOR_KEY_FILE="+writeFile(t, "cursor.key", cursor),
-		"STEGO_SERVICE_VERSION=1.0.0")
+		"STEGO_SERVICE_VERSION=1.0.0", "STEGO_SECRET_KEY_RING_FILE="+writeFile(t, "key-ring", throwawayRing(t)))
 	port := freePort(t)
 	s.base = "http://127.0.0.1:" + port
 	process := exec.Command(binary)
@@ -459,4 +460,12 @@ func TestOIDC(t *testing.T) {
 	default:
 		t.Fatalf("STEGO_OIDC_FORM is %q, want oidc-auth or rh-sso-auth", form)
 	}
+}
+
+// throwawayRing gives a key ring of one new random key: the Order of the fixture has secret fields, whose key ring
+// the service reads at start (ST-SUP-RP14-LC12). The key lives in a file of the test folder that the test removes.
+func throwawayRing(t *testing.T) []byte {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	return []byte("1 " + base64.StdEncoding.EncodeToString(key) + "\n")
 }
