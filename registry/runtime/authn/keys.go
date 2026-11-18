@@ -18,6 +18,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,8 +42,11 @@ const (
 	MaxKeyBits = 8192
 	// Cooldown is the least time between two key loads.
 	Cooldown = 30 * time.Second
-	// MaxAge is the age of the last load after which a token of a known key ID also refreshes the key set.
+	// MaxAge is the longest refresh age of a key document: the age of the last load at which a token of a known key
+	// ID waits for a load of the key set (ST-SUP-RP13-LC23). A response with no max-age, and a file, have it.
 	MaxAge = 5 * time.Minute
+	// MinAge is the shortest refresh age, which a response with no-store, no-cache or a lower max-age gets.
+	MinAge = time.Minute
 	// OutageWindow is the time after the last successful load after which the key set denies every token.
 	OutageWindow = 15 * time.Minute
 	// LoadTimeout is the deadline of one key load.
@@ -121,11 +126,13 @@ type publicKey struct {
 // source refreshes its cache when a token names an unknown key ID, at most one load at a time and at least Cooldown
 // apart. It is safe for concurrent use. A zero KeySet denies every token.
 type KeySet struct {
-	mu        sync.Mutex
-	ready     bool
-	keys      map[string]publicKey
-	single    *publicKey
-	load      func(context.Context) ([]byte, error)
+	mu     sync.Mutex
+	ready  bool
+	keys   map[string]publicKey
+	single *publicKey
+	load   func(context.Context) ([]byte, time.Duration, error)
+	// fresh is the refresh age of the last loaded key document (ST-SUP-RP13-LC23).
+	fresh     time.Duration
 	source    string
 	tracer    trace.Tracer
 	now       func() time.Time
@@ -195,7 +202,10 @@ func newKeySet(ctx context.Context, source KeySource, options keyOptions) (*KeyS
 	if source.File != "" {
 		file := source.File
 		s.source = "file"
-		s.load = func(context.Context) ([]byte, error) { return readFile(file) }
+		s.load = func(context.Context) ([]byte, time.Duration, error) {
+			data, err := readFile(file)
+			return data, MaxAge, err
+		}
 	} else {
 		target := source.URL
 		if source.Issuer != "" {
@@ -220,7 +230,7 @@ func newKeySet(ctx context.Context, source KeySource, options keyOptions) (*KeyS
 				return nil, err
 			}
 		}
-		s.load = func(ctx context.Context) ([]byte, error) { return fetch(ctx, client, target) }
+		s.load = func(ctx context.Context) ([]byte, time.Duration, error) { return fetch(ctx, client, target) }
 	}
 	s.mu.Lock()
 	s.attempted = s.now()
@@ -299,10 +309,12 @@ func (s *KeySet) Stop() {
 
 // lookup gives the key of the exact key ID, with no fallback to another key (ST-SUP-RP13-LC07). A key set of a PEM
 // file gives its one key, only to a token that names no key ID (ST-SUP-RP13-LC19); a key document needs a key ID.
-// A known key ID of a fresh cache needs no load. A known key ID of a cache older than MaxAge is answered at once,
-// within OutageWindow, and starts one load unless one runs or the last attempt is less than Cooldown ago. An
-// unknown key ID, or a cache older than OutageWindow, waits for the one load that runs or starts it, under the same
-// cooldown (ST-SUP-RP13-LC09, LC10, LC15).
+// A known key ID of a cache younger than half its refresh age needs no load. From half the refresh age, a known key
+// ID is answered at once and starts one load unless one runs or the last attempt is less than Cooldown ago. From the
+// refresh age, a known key ID waits for the one load that runs or starts, and is decided on its key document, so a
+// key that the issuer removed is denied; when the load fails, or the cooldown holds it back, the cached key answers
+// within OutageWindow. An unknown key ID waits for the one load that runs or starts it, under the same cooldown
+// (ST-SUP-RP13-LC09, LC10, LC15, LC23).
 func (s *KeySet) lookup(ctx context.Context, kid string, hasKid bool) (publicKey, error) {
 	if s == nil {
 		return publicKey{}, errNotReady
@@ -338,15 +350,26 @@ func (s *KeySet) lookup(ctx context.Context, kid string, hasKid bool) (publicKey
 	}
 	now := s.now()
 	age := now.Sub(s.loaded)
-	if known && age < MaxAge {
+	fresh := s.fresh
+	if fresh <= 0 {
+		fresh = MaxAge
+	}
+	if known && age < fresh/2 {
 		s.mu.Unlock()
 		return key, nil
 	}
 	cooling := now.Sub(s.attempted) < Cooldown
-	if known && age < OutageWindow {
+	if known && age < fresh {
+		// From half the refresh age, the cache answers at once and one load runs beside the request.
 		if s.flight == nil && !cooling {
 			s.start(ctx, now)
 		}
+		s.mu.Unlock()
+		return key, nil
+	}
+	if known && age < OutageWindow && s.flight == nil && cooling {
+		// At the refresh age a known key ID waits for a load; when the cooldown holds the load back, as after a load
+		// that failed, the cache answers within the outage window (ST-SUP-RP13-LC10, LC23).
 		s.mu.Unlock()
 		return key, nil
 	}
@@ -412,7 +435,7 @@ func (s *KeySet) refresh(parent context.Context, first bool) error {
 	ctx = trace.ContextWithSpanContext(ctx, trace.SpanContextFromContext(parent))
 	ctx, span := s.tracer.Start(ctx, "authn.keys.refresh", trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(attribute.String("authn.keys.source", s.source)))
-	data, err := s.load(ctx)
+	data, fresh, err := s.load(ctx)
 	var keys map[string]publicKey
 	if err == nil {
 		keys, err = parseDocument(data)
@@ -430,6 +453,7 @@ func (s *KeySet) refresh(parent context.Context, first bool) error {
 	default:
 		s.keys = keys
 		s.loaded = s.now()
+		s.fresh = fresh
 		span.SetAttributes(attribute.String("authn.keys.outcome", "success"))
 	}
 	s.mu.Unlock()
@@ -442,28 +466,50 @@ func (s *KeySet) refresh(parent context.Context, first bool) error {
 
 // fetch loads the key document from the URL. Every error is errLoad or a key document refusal, with no URL and no
 // response text.
-func fetch(ctx context.Context, client *http.Client, target string) ([]byte, error) {
+func fetch(ctx context.Context, client *http.Client, target string) ([]byte, time.Duration, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return nil, errLoad
+		return nil, 0, errLoad
 	}
 	request.Header.Set("Accept", "application/json")
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, errLoad
+		return nil, 0, errLoad
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK || response.ContentLength > MaxDocumentBytes {
-		return nil, errLoad
+		return nil, 0, errLoad
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, MaxDocumentBytes+1))
 	if err != nil {
-		return nil, errLoad
+		return nil, 0, errLoad
 	}
 	if len(data) > MaxDocumentBytes {
-		return nil, errDocumentSize
+		return nil, 0, errDocumentSize
 	}
-	return data, nil
+	return data, RefreshAge(response.Header.Values("Cache-Control")), nil
+}
+
+// RefreshAge gives the refresh age of a key document from the values of its Cache-Control header (ST-SUP-RP13-LC23):
+// its max-age, bounded to MinAge and MaxAge; MinAge for no-store, no-cache or a max-age of 0; and MaxAge with no
+// max-age or a max-age that is not a whole number.
+func RefreshAge(values []string) time.Duration {
+	age, found := MaxAge, false
+	for _, value := range values {
+		for _, directive := range strings.Split(value, ",") {
+			name, argument, _ := strings.Cut(strings.TrimSpace(directive), "=")
+			switch strings.ToLower(strings.TrimSpace(name)) {
+			case "no-store", "no-cache":
+				return MinAge
+			case "max-age":
+				seconds, err := strconv.ParseInt(strings.Trim(strings.TrimSpace(argument), `"`), 10, 64)
+				if err == nil && seconds >= 0 && !found {
+					age, found = time.Duration(min(seconds, int64(MaxAge/time.Second)))*time.Second, true
+				}
+			}
+		}
+	}
+	return min(max(age, MinAge), MaxAge)
 }
 
 // readFile reads the key document from a regular file of at most MaxDocumentBytes.

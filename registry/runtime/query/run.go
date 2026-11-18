@@ -1,6 +1,7 @@
 package query
 
 import (
+	"bytes"
 	"context"
 	"crypto/cipher"
 	"database/sql"
@@ -42,6 +43,13 @@ type Config struct {
 	// CursorKey is the key of the MAC of the text form of a list cursor (ST-SUP-RP11-LC15): at least MinCursorKey
 	// random bytes, the same in every replica of the service, and secret. Without it, a cursor has no text form.
 	CursorKey []byte
+	// ExtraCursorKeys are keys that open a cursor and seal none, such as the next key before every replica has it,
+	// or the last key after a rotation (ST-SUP-RP11-LC23). Each holds at least MinCursorKey bytes and differs from
+	// CursorKey; they need CursorKey.
+	ExtraCursorKeys [][]byte
+	// ProblemBase is the declared problem base of the service, error_type_base: the type of each problem response is
+	// the type of its code under it (ST-SUP-RC33-OC12). Empty gives about:blank.
+	ProblemBase string
 	// Meter, when it is not nil, records the metric query.list.over_bound: the count of ordered lists of an entity of
 	// small expected cardinality whose resource search gave more than MaxSearchKeys keys, by entity
 	// (ST-SUP-RP11-LC20). Nil records no metric.
@@ -61,6 +69,10 @@ type Runtime struct {
 	overBound metric.Int64Counter
 
 	cursorAEAD cipher.AEAD
+	// problemBase is Config.ProblemBase.
+	problemBase string
+	// openAEADs are the AEADs that open a cursor: of CursorKey first, then of each extra key (ST-SUP-RP11-LC23).
+	openAEADs []cipher.AEAD
 
 	// afterFill, when a test sets it, runs after the fill returned and the handle closed, before Run ends the
 	// transaction.
@@ -93,12 +105,23 @@ func New(cfg Config) (*Runtime, error) {
 	if len(cfg.CursorKey) > 0 && len(cfg.CursorKey) < MinCursorKey {
 		return nil, fmt.Errorf("query: the cursor key holds fewer than %d bytes", MinCursorKey)
 	}
+	if len(cfg.ExtraCursorKeys) > 0 && len(cfg.CursorKey) == 0 {
+		return nil, errors.New("query: an extra cursor key needs the cursor key that seals")
+	}
+	for i, extra := range cfg.ExtraCursorKeys {
+		if len(extra) < MinCursorKey {
+			return nil, fmt.Errorf("query: the extra cursor key %d holds fewer than %d bytes", i+1, MinCursorKey)
+		}
+		if bytes.Equal(extra, cfg.CursorKey) {
+			return nil, fmt.Errorf("query: the extra cursor key %d is the cursor key", i+1)
+		}
+	}
 	if len(cfg.CursorKey) > 0 && cfg.Service == "" {
 		// The service is associated data of each cursor: without it, two services with one key read each other's.
 		return nil, errors.New("query: a cursor key needs the service name")
 	}
 	rt := &Runtime{db: cfg.DB, auditDB: cfg.AuditDB, audit: cfg.Audit, settings: cfg.AuditSettings, authz: cfg.Authz,
-		service: cfg.Service}
+		service: cfg.Service, problemBase: cfg.ProblemBase}
 	if cfg.Meter != nil {
 		counter, err := cfg.Meter.Meter(instrumentation).Int64Counter("query.list.over_bound",
 			metric.WithDescription("The ordered lists of an entity of small expected cardinality whose resource search gave more keys than the bound, by entity."))
@@ -113,6 +136,14 @@ func New(cfg Config) (*Runtime, error) {
 			return nil, err
 		}
 		rt.cursorAEAD = aead
+		rt.openAEADs = []cipher.AEAD{aead}
+		for _, extra := range cfg.ExtraCursorKeys {
+			opener, err := newCursorAEAD(extra)
+			if err != nil {
+				return nil, err
+			}
+			rt.openAEADs = append(rt.openAEADs, opener)
+		}
 	}
 	return rt, nil
 }

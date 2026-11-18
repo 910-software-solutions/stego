@@ -24,6 +24,9 @@ const MaxCursorText = 4096
 // does not decode. It names no part of the text.
 var ErrBadCursor = errors.New("query: the cursor is not a cursor of this query")
 
+// errBadSeal is the failure of a cursor that no key of the ring opens.
+var errBadSeal = errors.New("query: no cursor key opens the cursor")
+
 // ErrNoCursorKey is the error of a cursor text with a runtime that has no cursor key.
 var ErrNoCursorKey = errors.New("query: the runtime has no cursor key")
 
@@ -115,7 +118,16 @@ func (rt *Runtime) ParseCursor(q *Query, t tenant.Tenant, p authz.Principal, tex
 		return Cursor{}, ErrBadCursor
 	}
 	nonce, sealed := raw[1:1+nonceSize], raw[1+nonceSize:]
-	payload, err := rt.cursorAEAD.Open(nil, nonce, sealed, rt.cursorData(q, t, p))
+	// Each key of the ring opens a cursor; the first seals (ST-SUP-RP11-LC23). The nonce and overhead sizes are the
+	// same for each, all AES-256-GCM.
+	data := rt.cursorData(q, t, p)
+	var payload []byte
+	err = errBadSeal
+	for _, aead := range rt.openAEADs {
+		if payload, err = aead.Open(nil, nonce, sealed, data); err == nil {
+			break
+		}
+	}
 	if err != nil || len(payload) < 2 || payload[0] != cursorVersion {
 		return Cursor{}, ErrBadCursor
 	}

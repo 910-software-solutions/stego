@@ -288,6 +288,111 @@ func (rt *Runtime) activeTenant(ctx context.Context, t tenant.Tenant) error {
 	return nil
 }
 
+// WorkerTupleMissingCode is the failure code of a consumed message whose worker's own tuple SpiceDB does not hold yet,
+// such as for a subscription that a new release adds, before its controller writes the tuple (ST-SUP-RC35-OC18).
+const WorkerTupleMissingCode = "worker-tuple-missing"
+
+// HeldTupleAge is the most time that RunConsumer keeps that SpiceDB holds the tuple of a worker in a tenant.
+const HeldTupleAge = time.Minute
+
+// errWorkerTupleMissing matches the transient refusal of a consumed message whose worker's tuple is not in SpiceDB.
+var errWorkerTupleMissing = errors.New("command: the tuple of the consuming worker on the tenant of the message is not in SpiceDB")
+
+// workerTupleHeld checks, before any fill, that SpiceDB holds the tuple tenant:<t>#worker_<name>@service_account:
+// <name> of the consuming worker, at full consistency (ST-SUP-RC35-OC18). A tuple that is missing is a transient
+// refusal with the failure code worker-tuple-missing, which the poison count does not count: the outbox tries the
+// message again with its back-off, and the fill never runs with lists that the missing tuple empties. A read that
+// fails is a transient refusal of an undecided run, with its own cause, so an outage of SpiceDB never reads as a
+// missing tuple (security review of PR #437, L1). When the tuple of a worker stays missing for WorkerTupleAlertAfter,
+// it logs one warn line, at most once in each WorkerTupleAlertAfter. It keeps that the tuple is held for at most
+// HeldTupleAge, and never that it is missing. With no Config.WorkerTuples it checks nothing.
+func (rt *Runtime) workerTupleHeld(ctx context.Context, t tenant.Tenant, worker string) error {
+	reader := rt.cfg.WorkerTuples
+	if reader == nil {
+		return nil
+	}
+	cacheKey := t.ID() + "\x00" + worker
+	now := rt.clock().Now()
+	rt.heldTuplesMu.Lock()
+	at, ok := rt.heldTuples[cacheKey]
+	rt.heldTuplesMu.Unlock()
+	if ok && now.Sub(at) < HeldTupleAge && !now.Before(at) {
+		return nil
+	}
+	undecided := outbox.TransientRefusal(fmt.Errorf("%w: the tuple of the consuming worker was not read", ErrUndecided))
+	resource, err := authz.TenantResource(t)
+	if err != nil {
+		return undecided
+	}
+	subject, err := authz.ServiceAccount(worker)
+	if err != nil {
+		return undecided
+	}
+	held, err := reader.Exists(ctx, authz.FilterOf(authz.Tuple{Resource: resource, Relation: WorkerTenantRelation(worker), Subject: subject}))
+	if err != nil {
+		return undecided
+	}
+	if !held {
+		rt.tupleMissing(ctx, cacheKey, worker, now)
+		return outbox.WithFailureCode(outbox.TransientRefusal(errWorkerTupleMissing), WorkerTupleMissingCode)
+	}
+	rt.heldTuplesMu.Lock()
+	delete(rt.missingSince, cacheKey)
+	if rt.heldTuples == nil {
+		rt.heldTuples = map[string]time.Time{}
+	}
+	if len(rt.heldTuples) >= maxHeldTuples {
+		clear(rt.heldTuples)
+	}
+	rt.heldTuples[cacheKey] = now
+	rt.heldTuplesMu.Unlock()
+	return nil
+}
+
+// WorkerTupleAlertAfter is how long the tuple of a worker in a tenant stays missing before RunConsumer logs the warn
+// line command.consumer.worker_tuple_missing, and the least time between two such lines of one worker and tenant.
+const WorkerTupleAlertAfter = 15 * time.Minute
+
+// WorkerTupleMissingEvent is the event name of the warn line of a worker tuple that stays missing.
+const WorkerTupleMissingEvent = "command.consumer.worker_tuple_missing"
+
+// tupleMissing records that the tuple of key is missing at now, and logs one warn line when it has been missing for
+// WorkerTupleAlertAfter and no line of it came in the last WorkerTupleAlertAfter: the worker and the minutes, and no
+// tenant and no message.
+func (rt *Runtime) tupleMissing(ctx context.Context, key, worker string, now time.Time) {
+	rt.heldTuplesMu.Lock()
+	if rt.missingSince == nil {
+		rt.missingSince, rt.missingWarned = map[string]time.Time{}, map[string]time.Time{}
+	}
+	if len(rt.missingSince) >= maxHeldTuples {
+		clear(rt.missingSince)
+		clear(rt.missingWarned)
+	}
+	since, ok := rt.missingSince[key]
+	if !ok || now.Before(since) {
+		rt.missingSince[key], since = now, now
+	}
+	warned, was := rt.missingWarned[key]
+	due := now.Sub(since) >= WorkerTupleAlertAfter && (!was || now.Sub(warned) >= WorkerTupleAlertAfter)
+	if due {
+		rt.missingWarned[key] = now
+	}
+	rt.heldTuplesMu.Unlock()
+	if !due || rt.logger == nil {
+		return
+	}
+	var record otellog.Record
+	record.SetEventName(WorkerTupleMissingEvent)
+	record.SetSeverity(otellog.SeverityWarn)
+	record.SetSeverityText("WARN")
+	record.SetBody(attribute.StringValue("the tuple of a consuming worker is still missing in SpiceDB, so its messages wait; the controller writes it"))
+	record.AddAttributes(attribute.String("worker", worker), attribute.Int64("minutes", int64(now.Sub(since)/time.Minute)))
+	rt.logger.Emit(context.WithoutCancel(ctx), record)
+}
+
+// maxHeldTuples bounds the memory of the held tuples: when it is full, it starts again empty.
+const maxHeldTuples = 10000
+
 // errTenantList is the transient refusal of a consumed message whose tenant list was not read.
 var errTenantList = internalf("the tenant list was not read")
 
@@ -342,6 +447,9 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		}
 	}()
 	if err := rt.activeTenant(ctx, d.Tenant); err != nil {
+		return err
+	}
+	if err := rt.workerTupleHeld(ctx, d.Tenant, w.spec.Name); err != nil {
 		return err
 	}
 	if err := rt.markStep(ctx, tx); err != nil {
@@ -524,6 +632,9 @@ func consumerOutcome(err error) (probe.WorkerOutcome, string) {
 		return probe.WorkerRefused, "declared_refusal"
 	case errors.As(err, &denied) && denied.staging:
 		return probe.WorkerDenied, "staging_denied"
+	case errors.Is(err, errWorkerTupleMissing):
+		// Not counted for poison: a later attempt runs when the controller wrote the tuple (ST-SUP-RC35-OC18).
+		return probe.WorkerUndecided, "worker_tuple_missing"
 	case errors.Is(err, errTenantNotActive) || errors.Is(err, errTenantList):
 		if outbox.IsPermanent(err) {
 			return probe.WorkerRefused, "tenant"

@@ -512,6 +512,12 @@ type Relationships interface {
 	Write(ctx context.Context, touches []Tuple, deletes []Filter, preconditions []Precondition) (Token, error)
 }
 
+// PrefixDeleter deletes, in one call, at most limit relationships of resourceType whose resource ID starts with
+// prefix, and tells how many it deleted and whether some may remain (ST-SUP-RC27-OC15). authz.SpiceDB is one.
+type PrefixDeleter interface {
+	DeletePrefix(ctx context.Context, resourceType, prefix string, limit uint32) (deleted uint64, more bool, err error)
+}
+
 // refusedError marks an error of a provider that refused the request itself, such as a malformed tuple or a failed
 // precondition: a retry of the same request fails again.
 type refusedError struct {

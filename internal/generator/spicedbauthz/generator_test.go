@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,6 +249,33 @@ func TestOperations(t *testing.T) {
 		ctx := documentContext(t)
 		ctx.Entities[0].Permissions[types.OpUpdate] = "rename"
 		refused(t, ctx, "Document", "update", "rename")
+	})
+}
+
+func TestTenantListOperation(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC16-T02 The tenant list is an operation of the table only when the schema declares list_tenants", func(t *testing.T) {
+		listed := func(ctx gen.Context) []map[string]string {
+			var out []map[string]string
+			for _, e := range operationEntries(t, emitted(t, generate(t, ctx), "authz.go")) {
+				if e["Tenant"] == "list" {
+					out = append(out, e)
+				}
+			}
+			return out
+		}
+		if got := listed(documentContext(t)); len(got) != 0 {
+			t.Fatalf("a schema with no list_tenants gave the entries %v, want none", got)
+		}
+		ctx := documentContext(t)
+		ctx.BasePath = "/api/v1"
+		ctx.Inputs["authz/schema.zed"] = []byte(strings.Replace(documentSchema, "\tpermission retire = operator\n",
+			"\tpermission retire = operator\n\tpermission list_tenants = operator\n", 1))
+		got := listed(ctx)
+		want := map[string]string{"Operation": "list-tenants", "ResourceType": "service", "Permission": "list_tenants",
+			"Route": "GET /api/v1/stego/tenants", "Tenant": "list"}
+		if len(got) != 1 || !maps.Equal(got[0], want) {
+			t.Fatalf("a schema with list_tenants gave the entries %v, want %v", got, want)
+		}
 	})
 }
 

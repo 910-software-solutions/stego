@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -44,6 +45,10 @@ const (
 	// CursorKeyFileSetting is the file of the key of the list cursors: at least query.MinCursorKey bytes, the same in
 	// every replica.
 	CursorKeyFileSetting = "STEGO_QUERY_CURSOR_KEY_FILE"
+	// ExtraCursorKeyFileSetting is the file of a second key of the list cursors, of the same form, which opens a
+	// cursor and seals none: the new key before every replica has it, or the old key after a rotation
+	// (ST-SUP-RP11-LC23). It is optional.
+	ExtraCursorKeyFileSetting = "STEGO_QUERY_CURSOR_EXTRA_KEY_FILE"
 	// VersionSetting is the version of the release, which each audit row carries.
 	VersionSetting = "STEGO_SERVICE_VERSION"
 )
@@ -96,6 +101,8 @@ type Settings struct {
 	SpiceDB SpiceDB
 	// CursorKey is the key of the list cursors.
 	CursorKey []byte
+	// ExtraCursorKey is the key that opens a list cursor and seals none, or nil (ST-SUP-RP11-LC23).
+	ExtraCursorKey []byte
 	// ServiceVersion is the version of the release, or empty.
 	ServiceVersion string
 }
@@ -143,7 +150,7 @@ func settingComponent(variable, auth string) string {
 		return auth
 	case SpiceDBEndpointSetting, SpiceDBKeyFileSetting, SpiceDBInsecureLoopbackSetting:
 		return "spicedb-authz"
-	case CursorKeyFileSetting:
+	case CursorKeyFileSetting, ExtraCursorKeyFileSetting:
 		return "query"
 	}
 	return ""
@@ -232,6 +239,8 @@ func readSettingsOf(stated Auth, api bool) (Settings, error) {
 		}
 	} else if s.CursorKey, err = cursorKey(); err != nil {
 		return Settings{}, err
+	} else if s.ExtraCursorKey, err = extraCursorKey(s.CursorKey); err != nil {
+		return Settings{}, err
 	}
 	s.ServiceVersion = os.Getenv(VersionSetting)
 	return s, nil
@@ -299,6 +308,26 @@ func cursorKey() ([]byte, error) {
 		return nil, settingError(CursorKeyFileSetting, fmt.Sprintf("names a key of fewer than %d bytes", query.MinCursorKey))
 	}
 	return key, nil
+}
+
+// extraCursorKey reads the key of ExtraCursorKeyFileSetting, when it is set, with the checks of cursorKey; it refuses
+// a key that is the key of CursorKeyFileSetting (ST-SUP-RP11-LC23).
+func extraCursorKey(key []byte) ([]byte, error) {
+	name := os.Getenv(ExtraCursorKeyFileSetting)
+	if name == "" {
+		return nil, nil
+	}
+	extra, err := settingFile(ExtraCursorKeyFileSetting, name)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case len(extra) < query.MinCursorKey:
+		return nil, settingError(ExtraCursorKeyFileSetting, fmt.Sprintf("names a key of fewer than %d bytes", query.MinCursorKey))
+	case bytes.Equal(extra, key):
+		return nil, settingError(ExtraCursorKeyFileSetting, "names the key of "+CursorKeyFileSetting+"; give the other key of the rotation")
+	}
+	return extra, nil
 }
 
 // declared gives the value that the declaration states, or the setting when it states none. A setting that is set
