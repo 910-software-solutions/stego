@@ -15,7 +15,7 @@ last_applied:
                 mode: 420
             authz/schema.zed:
                 exists: true
-                sha256: 6408151b0b33e69d6a501e0a12fb75bff80c3d9933cdc06c4abd6b2fa033e516
+                sha256: 559089a7f749375ea889af4aa7ad8ba184c7c2e17e44813c9c411e7304bb160e
                 mode: 420
             go.mod:
                 exists: true
@@ -29,14 +29,14 @@ last_applied:
                 exists: true
                 sha256: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
                 mode: 420
-        sha256: 4f1158dc6293aeaf2cbc8e856ea495409d71f69d2312dcf78ac2237671c706e5
+        sha256: a2ab8c2a7481f871d45e94f4b56de6df2dda53d218769216659560ff377f02e6
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118002149-55a51fb51b6e
+        module_version: v0.0.0-20261118033647-29b33e02e5b2
         vcs: git
-        revision: 55a51fb51b6e1058375c2b9919a473dddb632f90
+        revision: 29b33e02e5b2aca69c72088447e2300c97660fb3
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -141,8 +141,8 @@ last_applied:
         internal/api/runtime.go: 5e8210a09465d8cd55fb74b9aa4f3978b6c97a76db43c0d52ec6399a8d55c823
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: a18d0b5be27531bebccf58133dc6cb87198a44d7a7d694871557bfbf96d2f420
-        internal/authz/authz.go: c84f935f8bf6fa237f6d6118d5c32bd8b48d36aa06d5ea6813fc74639a9bcac1
-        internal/authz/schema.zed: 881da5f5a7f691489d0955f2e94b2ecda64b74424ed2eb9c9d1c5c9354738cff
+        internal/authz/authz.go: eb9a87cb73ce01b1ed5c8be7e4f36eed4bcc9893cb001e34a548e5a5edfefc6e
+        internal/authz/schema.zed: 430cc4c9be1c27b9ee186d193371bdb6dce3f9e5b533ece54af242a4356386b0
         internal/outbox/outbox.go: 5f090d5ae397ff12f1e888f4d3fa758131767e7cc1ec5102fe6962e2397b410a
         internal/stegoruntime/runtime.go: 4b701f18bd72e4704b70da70b7bea1d1839b4c5170c01530cfc5c2279111932a
         internal/storage/database.go: 77efa03136bd57b6d17284e987d172b93139b57f5e8a76381389627f7d951c2f
