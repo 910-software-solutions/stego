@@ -12,32 +12,32 @@ last_applied:
             .stego/config.yaml:
                 exists: true
                 sha256: 1f22e1d31edec033c594c2564b8069aa79b45707f2319448a8c234843177b8e9
-                mode: 436
+                mode: 420
             authz/schema.zed:
                 exists: true
                 sha256: e5f80f992fd27397c8fa3fd93bacf3f59ceb0d87fed3efa7e72773e7e9691610
-                mode: 436
+                mode: 420
             go.mod:
                 exists: true
                 sha256: 4e5500ddb563414c451cedadddaef4187741a0e4cd404c200934370c45240d1f
-                mode: 436
+                mode: 420
             go.sum:
                 exists: true
                 sha256: 468e8eb656e8e198fd97964ddb24609c5c54441fad45896187644a270d6db791
-                mode: 436
+                mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
-                mode: 436
-        sha256: f54f777bedb5de8416caefe923560e2ce4fcfe383b1fd3e570a225880d126678
+                mode: 420
+        sha256: 9e5b221e3041f40679863d21e85aed65cad80b99f90cb5cfc35bcd5fdbbdc213
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: (devel)
-        vcs: unknown
-        revision: unknown
-        source_state: unknown
+        module_version: v0.0.0-20261118073512-5968c10ff165
+        vcs: git
+        revision: 5968c10ff165c681f09c037df2fb302ff7660cc9
+        source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
