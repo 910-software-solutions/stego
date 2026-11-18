@@ -944,3 +944,81 @@ func TestForeignRoles(t *testing.T) {
 		}
 	})
 }
+
+// statements splits a migration text into its statements as psql sends a file with autocommit: each ends at a line
+// that ends with ";" outside a $$ block.
+func statements(text string) []string {
+	var out []string
+	var current strings.Builder
+	inBlock := false
+	for _, line := range strings.SplitAfter(text, "\n") {
+		current.WriteString(line)
+		if strings.Count(line, "$$")%2 == 1 {
+			inBlock = !inBlock
+		}
+		if !inBlock && strings.HasSuffix(strings.TrimSpace(line), ";") {
+			out = append(out, current.String())
+			current.Reset()
+		}
+	}
+	if rest := strings.TrimSpace(current.String()); rest != "" {
+		out = append(out, rest)
+	}
+	return out
+}
+
+func TestRoleAutocommit(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC04-T14 The role migration run one statement at a time with autocommit, as psql runs a file, gives no warning", func(t *testing.T) {
+		dsn := os.Getenv("STEGO_TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Fatal("STEGO_TEST_POSTGRES_DSN names no PostgreSQL server")
+		}
+		cfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := stdlib.OpenDB(*cfg)
+		t.Cleanup(func() { server.Close() })
+		ctx := context.Background()
+		name := "tenancy_autocommit_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+		if _, err := server.ExecContext(ctx, "CREATE DATABASE "+name); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = server.ExecContext(context.Background(), "DROP DATABASE "+name+" WITH (FORCE)")
+			for _, role := range []string{tenancy.RuntimeRole, tenancy.WorkerRole, tenancy.RelayRole, tenancy.PurgeRole, tenancy.OutboxRelayRole, tenancy.OwnerRole} {
+				_, _ = server.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+pgx.Identifier{role}.Sanitize())
+			}
+		})
+		ac := cfg.Copy()
+		ac.Database = name
+		var warnings []string
+		ac.OnNotice = func(_ *pgconn.PgConn, notice *pgconn.Notice) {
+			if notice.Severity == "WARNING" {
+				warnings = append(warnings, notice.Message)
+			}
+		}
+		conn, err := pgx.ConnectConfig(ctx, ac)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+		parts := statements(tenancy.Roles)
+		if len(parts) < 3 {
+			t.Fatalf("the role migration splits into %d statements, want the parts before and after its COMMIT", len(parts))
+		}
+		for _, statement := range parts {
+			if _, err := conn.Exec(ctx, statement, pgx.QueryExecModeSimpleProtocol); err != nil {
+				t.Fatalf("%s: %v", statement, err)
+			}
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("the role migration gave the warnings %q", warnings)
+		}
+		var roles int
+		if err := conn.QueryRow(ctx, "SELECT pg_catalog.count(*) FROM pg_catalog.pg_roles WHERE rolname = ANY($1)",
+			[]string{tenancy.RuntimeRole, tenancy.OwnerRole, tenancy.WorkerRole, tenancy.RelayRole, tenancy.PurgeRole, tenancy.OutboxRelayRole}).Scan(&roles); err != nil || roles != 6 {
+			t.Fatalf("the role migration made %d of the 6 roles: %v", roles, err)
+		}
+	})
+}
