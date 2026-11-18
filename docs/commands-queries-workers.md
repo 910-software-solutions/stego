@@ -774,13 +774,9 @@ runtime refuses each read and write of the worker on those rows.
    of the worker. A consuming worker also needs the permission of the stager
    there.
 
-   <!-- excerpt -->
-   ```zed
-   definition tenant {
-   	relation worker_record_orders: service_account
-   	permission record = worker_record_orders
-   }
-   ```
+   For a worker `record-orders` with the permission `record`, the type
+   `tenant` holds `relation worker_record_orders: service_account` and
+   `permission record = worker_record_orders`.
 
    Generation refuses a schema whose type `tenant` has no such permission,
    and validate gives the warning `worker-root-create` before that.
