@@ -336,8 +336,8 @@ func checkAccepted(v AcceptedVariable) error {
 	if v.Default != nil && (len(*v.Default) > maxVariableValue || strings.ContainsAny(*v.Default, "\n\r")) {
 		return fmt.Errorf("the default is not one line of at most %d characters", maxVariableValue)
 	}
-	if v.ReadByMode != "" && (v.ReadByMode != "migrate" || v.Required) {
-		return fmt.Errorf("the mode that reads the variable is migrate, and such a variable is not required")
+	if v.ReadByMode != "" && ((v.ReadByMode != MigrateMode && v.ReadByMode != WorkerMode) || v.Required) {
+		return fmt.Errorf("the mode that reads the variable is migrate or worker, and such a variable is not required")
 	}
 	if v.OneOf != "" && !groupName.MatchString(v.OneOf) {
 		return fmt.Errorf("the group of one of %q is not a name of at most 63 lower-case letters, digits and '-'", v.OneOf)

@@ -41,11 +41,22 @@ func (*Generator) HTTPRoutes(gen.Context) ([]gen.HTTPRoute, error) {
 }
 
 type asset struct{ Source, Path, Hash string }
+
+// api is one entry of the setting apis: a declared API with its own prefix, whose origin the setting
+// STEGO_BROWSER_API_URLS gives for its name at start (ST-SUP-RC02-OC58).
+type api struct{ Name, Prefix string }
+
+// MaxAPIs is the most entries of the setting apis.
+const MaxAPIs = 8
+
+var apiName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
+
 type settings struct {
 	DynamicStyles                                                 bool
 	RuntimeConfigOffset                                           int
 	Prefix, RolesClaim, LogoutScope, TelemetryService, OAuthScope string
 	Routes                                                        []string
+	APIs                                                          []api
 	Assets                                                        []asset
 	Bundle                                                        string `json:"-"`
 	ScriptHashes                                                  []string
@@ -60,7 +71,7 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 		return s, fmt.Errorf("local application port must be 1024 through 65535")
 	}
 	for key := range values {
-		if key != "dynamic_styles" && key != "additional_scopes" && key != "telemetry_service_name" && key != "asset_bundle" && key != "api_prefix" && key != "routes" && key != "assets" && key != "roles_claim" && key != "logout_scope" {
+		if key != "dynamic_styles" && key != "additional_scopes" && key != "telemetry_service_name" && key != "asset_bundle" && key != "api_prefix" && key != "routes" && key != "assets" && key != "roles_claim" && key != "logout_scope" && key != "apis" {
 			return s, fmt.Errorf("unknown browser-backend setting %q", key)
 		}
 	}
@@ -119,6 +130,9 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 	if !canonicalPath(s.Prefix) || s.Prefix == "/" || strings.ContainsAny(s.Prefix, "{}") || reservedPath(s.Prefix) {
 		return s, fmt.Errorf("browser-backend requires a distinct canonical api_prefix")
 	}
+	if err := g.apis(values, &s); err != nil {
+		return s, err
+	}
 	routes, ok := values["routes"].([]any)
 	if !ok || len(routes) == 0 || len(routes) > 64 {
 		return s, fmt.Errorf("browser-backend requires one through 64 routes")
@@ -126,7 +140,7 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 	seen := map[string]bool{}
 	for _, raw := range routes {
 		route, ok := raw.(string)
-		if !ok || !canonicalPath(route) || reservedPath(route) || strings.HasPrefix(route, s.Prefix) || strings.HasPrefix(route, "/assets") || seen[route] {
+		if !ok || !canonicalPath(route) || reservedPath(route) || s.underAPI(route) || strings.HasPrefix(route, "/assets") || seen[route] {
 			return s, fmt.Errorf("invalid or duplicate browser route")
 		}
 		for _, segment := range strings.Split(route, "/") {
@@ -197,6 +211,66 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 	sort.Strings(s.Routes)
 	sort.Slice(s.Assets, func(i, j int) bool { return s.Assets[i].Path < s.Assets[j].Path })
 	return s, nil
+}
+
+// apis reads the setting apis (ST-SUP-RC02-OC58): 1 to MaxAPIs entries {name, prefix}, each name lower case with
+// hyphens, at most 32 characters and unique, and each prefix canonical, with no parameter, not reserved, and not
+// equal to or a whole-segment prefix of api_prefix or of another prefix. A local application takes no other API.
+func (g *Generator) apis(values map[string]any, s *settings) error {
+	raw, present := values["apis"]
+	if !present {
+		return nil
+	}
+	entries, ok := raw.([]any)
+	if !ok || len(entries) == 0 || len(entries) > MaxAPIs {
+		return fmt.Errorf("browser-backend apis requires one through %d entries", MaxAPIs)
+	}
+	if g.LocalApplicationPort != 0 {
+		return fmt.Errorf("browser-backend apis is not available with a local application")
+	}
+	names := map[string]bool{}
+	prefixes := []string{s.Prefix}
+	for i, item := range entries {
+		entry, ok := item.(map[string]any)
+		if !ok || len(entry) != 2 {
+			return fmt.Errorf("browser-backend apis[%d] requires exactly name and prefix", i)
+		}
+		name, nameOK := entry["name"].(string)
+		prefix, prefixOK := entry["prefix"].(string)
+		if !nameOK || len(name) > 32 || !apiName.MatchString(name) || names[name] {
+			return fmt.Errorf("browser-backend apis[%d].name must be a unique name in lower case with hyphens, of at most 32 characters", i)
+		}
+		if !prefixOK || !canonicalPath(prefix) || prefix == "/" || strings.ContainsAny(prefix, "{}") || reservedPath(prefix) {
+			return fmt.Errorf("browser-backend apis[%d].prefix requires a distinct canonical path", i)
+		}
+		for _, other := range prefixes {
+			if segmentPrefix(prefix, other) || segmentPrefix(other, prefix) {
+				return fmt.Errorf("browser-backend apis[%d].prefix %s overlaps the API prefix %s", i, prefix, other)
+			}
+		}
+		names[name] = true
+		prefixes = append(prefixes, prefix)
+		s.APIs = append(s.APIs, api{Name: name, Prefix: prefix})
+	}
+	return nil
+}
+
+// segmentPrefix tells whether prefix is value or a prefix of value at a whole path segment.
+func segmentPrefix(prefix, value string) bool {
+	return value == prefix || strings.HasPrefix(value, prefix+"/")
+}
+
+// underAPI tells whether a path is under api_prefix or the prefix of a declared API.
+func (s settings) underAPI(value string) bool {
+	if strings.HasPrefix(value, s.Prefix) {
+		return true
+	}
+	for _, a := range s.APIs {
+		if strings.HasPrefix(value, a.Prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func reservedPath(value string) bool {

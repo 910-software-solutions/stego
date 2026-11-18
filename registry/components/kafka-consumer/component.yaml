@@ -6,7 +6,7 @@
 # settings are the STEGO_KAFKA_ settings of the Kafka destination.
 kind: component
 name: kafka-consumer
-version: 0.1.0
+version: 0.2.0
 stage: alpha
 sunset: 2027-05-31
 output_namespace: internal/subscriptions
@@ -29,6 +29,7 @@ architecture:
 
 environment:
   - name: STEGO_KAFKA_BROKERS
+    read_by_mode: worker
     type: list
     required: false
     description: "The seed brokers, 1 to 16 host:port items, or STEGO_KAFKA_BROKERS_FILE in its place. The worker does not start when the two have no value."
@@ -36,6 +37,7 @@ environment:
     one_of: kafka-brokers
     example: "kafka-0.example.com:9093,kafka-1.example.com:9093"
   - name: STEGO_KAFKA_BROKERS_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the list of seed brokers. Give it or STEGO_KAFKA_BROKERS, not the two."
@@ -43,36 +45,42 @@ environment:
     one_of: kafka-brokers
     example: "/etc/stego/kafka/brokers"
   - name: STEGO_KAFKA_BROKER_HOSTS
+    read_by_mode: worker
     type: list
     required: false
     description: "The hosts that the worker may dial, at most 64, or STEGO_KAFKA_BROKER_HOSTS_FILE in its place. When the two have no value, the worker dials each broker that a broker names."
     secret: false
     example: "kafka-0.example.com,kafka-1.example.com"
   - name: STEGO_KAFKA_BROKER_HOSTS_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the list of the hosts that the worker may dial. Give it or STEGO_KAFKA_BROKER_HOSTS, not the two."
     secret: false
     example: "/etc/stego/kafka/broker-hosts"
   - name: STEGO_KAFKA_CA_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots."
     secret: false
     example: "/etc/stego/kafka/ca.crt"
   - name: STEGO_KAFKA_CLIENT_CERT_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the PEM client certificate of mutual TLS. Give it with STEGO_KAFKA_CLIENT_KEY_FILE."
     secret: false
     example: "/etc/stego/kafka/tls.crt"
   - name: STEGO_KAFKA_CLIENT_KEY_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the PEM client key of mutual TLS. Give it with STEGO_KAFKA_CLIENT_CERT_FILE."
     secret: false
     example: "/etc/stego/kafka/tls.key"
   - name: STEGO_KAFKA_SASL_MECHANISM
+    read_by_mode: worker
     type: string
     required: false
     description: "The SASL mechanism. When it has no value, the worker uses no SASL and needs a client certificate."
@@ -80,30 +88,35 @@ environment:
     example: "SCRAM-SHA-512"
     allowed: {values: ["SCRAM-SHA-512", "OAUTHBEARER"]}
   - name: STEGO_KAFKA_USERNAME
+    read_by_mode: worker
     type: string
     required: false
     description: "The SCRAM user name. Give it or STEGO_KAFKA_USERNAME_FILE when the mechanism is SCRAM-SHA-512."
     secret: false
     example: "orders-worker"
   - name: STEGO_KAFKA_USERNAME_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the SCRAM user name. Give it or STEGO_KAFKA_USERNAME, not the two."
     secret: false
     example: "/etc/stego/kafka/username"
   - name: STEGO_KAFKA_PASSWORD_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it."
     secret: false
     example: "/etc/stego/kafka/password"
   - name: STEGO_KAFKA_TOKEN_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file of the OAUTHBEARER token. The mechanism OAUTHBEARER needs it."
     secret: false
     example: "/etc/stego/kafka/token"
   - name: STEGO_KAFKA_INSECURE_LOOPBACK
+    read_by_mode: worker
     type: boolean
     required: false
     default: "0"
@@ -111,6 +124,7 @@ environment:
     secret: false
     allowed: {values: ["0", "1"]}
   - name: STEGO_KAFKA_CONSUMER_TOPIC
+    read_by_mode: worker
     type: string
     required: false
     description: "The topic of the change events of the source service, which the inbox reads. Give it or STEGO_KAFKA_CONSUMER_TOPIC_FILE; the worker mode does not start when the two have no value."
@@ -118,6 +132,7 @@ environment:
     one_of: kafka-consumer-topic
     example: "orders-events"
   - name: STEGO_KAFKA_CONSUMER_TOPIC_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the topic that the inbox reads. Give it or STEGO_KAFKA_CONSUMER_TOPIC, not the two."
@@ -125,18 +140,21 @@ environment:
     one_of: kafka-consumer-topic
     example: "/etc/stego/kafka/consumer-topic"
   - name: STEGO_KAFKA_CONSUMER_GROUP
+    read_by_mode: worker
     type: string
     required: false
     description: "The consumer group of the inbox, or STEGO_KAFKA_CONSUMER_GROUP_FILE in its place. When the two have no value, the group is <service>.<subscription>."
     secret: false
     example: "fulfilment.order-changes"
   - name: STEGO_KAFKA_CONSUMER_GROUP_FILE
+    read_by_mode: worker
     type: path
     required: false
     description: "The file that holds the consumer group of the inbox. Give it or STEGO_KAFKA_CONSUMER_GROUP, not the two."
     secret: false
     example: "/etc/stego/kafka/consumer-group"
   - name: STEGO_KAFKA_CONSUMER_ACCEPT_INFINITE_RETENTION
+    read_by_mode: worker
     type: boolean
     required: false
     default: "0"

@@ -170,7 +170,15 @@ func TestGeneratedBrowserLogout(t *testing.T) {
 	}
 	testGeneratedRuntime(t, new(Generator), fixture(), false, "^TestNativeLogoutBrowser$")
 }
-func TestGeneratedRuntime(t *testing.T)                 { testGeneratedRuntime(t, new(Generator), fixture(), false) }
+
+// TestGeneratedRuntime runs the tests of testdata in the generated module, with the declared API second beside
+// api_prefix (ST-SUP-RC02-OC58-T01).
+func TestGeneratedRuntime(t *testing.T) {
+	ctx := fixture()
+	ctx.ComponentConfig["apis"] = []any{map[string]any{"name": "second", "prefix": "/api/second/v1"}}
+	testGeneratedRuntime(t, new(Generator), ctx, false)
+}
+
 func TestGeneratedLocalApplicationRuntime(t *testing.T) { testLocalApplicationRuntime(t, false, false) }
 func TestGeneratedCapturedApplicationRuntime(t *testing.T) {
 	testLocalApplicationRuntime(t, true, false)

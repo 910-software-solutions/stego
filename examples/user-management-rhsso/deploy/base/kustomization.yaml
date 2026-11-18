@@ -7,5 +7,6 @@ kind: Kustomization
 resources:
   - service-account.yaml
   - deployment.yaml
+  - worker-deployment.yaml
   - service.yaml
   - migration-job.yaml

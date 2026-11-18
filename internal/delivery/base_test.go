@@ -53,7 +53,7 @@ func TestKubernetesBase(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		base, _, err := WriteBase("orders", testRelease, requirements, healthCheckProbes)
+		base, _, err := WriteBase("orders", testRelease, requirements, healthCheckProbes, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -238,7 +238,7 @@ func secretsBase(t *testing.T) Base {
 	if err != nil {
 		t.Fatal(err)
 	}
-	base, _, err := WriteBase("orders", testRelease, files.Requirements, healthCheckProbes)
+	base, _, err := WriteBase("orders", testRelease, files.Requirements, healthCheckProbes, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestBaseEnvironment(t *testing.T) {
 		if strings.Contains(string(written.Requirements), "password") {
 			t.Errorf("the platform requirements keep a secret source with a key that the need does not state:\n%s", written.Requirements)
 		}
-		other, _, err := WriteBase("orders", testRelease, written.Requirements, healthCheckProbes)
+		other, _, err := WriteBase("orders", testRelease, written.Requirements, healthCheckProbes, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -669,7 +669,7 @@ func TestMigrationJob(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		other, _, err := WriteBase("orders", "", written.Requirements, healthCheckProbes)
+		other, _, err := WriteBase("orders", "", written.Requirements, healthCheckProbes, nil)
 		if err != nil {
 			t.Fatalf("a base with no migration job needs a release digest: %v", err)
 		}
@@ -754,12 +754,12 @@ func TestMigrationJob(t *testing.T) {
 		}
 		files, err := WriteRequirements(longest+"s", secretsFixture())
 		if err == nil {
-			_, _, err = WriteBase(longest+"s", testRelease, files.Requirements, healthCheckProbes)
+			_, _, err = WriteBase(longest+"s", testRelease, files.Requirements, healthCheckProbes, nil)
 		}
 		if err == nil {
 			t.Error("WriteBase writes a Job whose name is longer than a Kubernetes label value")
 		}
-		other, _, err := WriteBase("orders", strings.Replace(testRelease, "0", "f", 1), mustRequirements(t), healthCheckProbes)
+		other, _, err := WriteBase("orders", strings.Replace(testRelease, "0", "f", 1), mustRequirements(t), healthCheckProbes, nil)
 		if err != nil || other.Files[MigrationJobFile] == nil || strings.Contains(string(other.Files[MigrationJobFile]), testJob) {
 			t.Errorf("another release does not give the Job another name: %v", err)
 		}
@@ -1061,7 +1061,7 @@ func TestRefusedVariables(t *testing.T) {
 				t.Errorf("the platform requirements mark %s refused at start: %v", variable.Name, variable.RefusedAtStart)
 			}
 		}
-		base, _, err := WriteBase("orders", testRelease, files.Requirements, healthCheckProbes)
+		base, _, err := WriteBase("orders", testRelease, files.Requirements, healthCheckProbes, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1293,7 +1293,7 @@ func TestFSGroupComponent(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		noJob, _, err := WriteBase("orders", testRelease, requirements.Requirements, healthCheckProbes)
+		noJob, _, err := WriteBase("orders", testRelease, requirements.Requirements, healthCheckProbes, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1319,7 +1319,7 @@ func TestLongServiceName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		base, _, err := WriteBase(service, testRelease, files.Requirements, healthCheckProbes)
+		base, _, err := WriteBase(service, testRelease, files.Requirements, healthCheckProbes, nil)
 		if err != nil {
 			t.Fatalf("a service name of 63 characters is refused: %v", err)
 		}

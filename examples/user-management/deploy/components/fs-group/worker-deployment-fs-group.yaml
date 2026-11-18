@@ -1,0 +1,14 @@
+# The opt-in kustomize Component fs-group of the service. stego apply writes this file next to the Component
+# secret-files. It sets the pod fsGroup 65532 of the Deployment and of the migration Job, so that the process reads
+# the secret files of the mode 0400. List it only on a cluster that sets no fsGroup itself. Never list it on
+# OpenShift: the restricted-v2 SCC gives each namespace its own fsGroup and refuses a pod that sets another one.
+# Do not edit it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: user-management-worker
+spec:
+  template:
+    spec:
+      securityContext:
+        fsGroup: 65532

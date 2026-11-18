@@ -231,6 +231,6 @@ alone reads a variable of the mode migrate; the serving Deployment never referen
 | `DATABASE_URL` | `user-management-database` | `url` | the Deployment |
 | `STEGO_MIGRATION_DATABASE_URL` | `user-management-database-owner` | `url` | the migration Job only (mode migrate) |
 | `STEGO_QUERY_CURSOR_KEY_FILE` | `user-management-query-cursor` | `key` | the Deployment |
-| `STEGO_RELAY_DATABASE_URL` | `user-management-database-relay` | `url` | the Deployment |
+| `STEGO_RELAY_DATABASE_URL` | `user-management-database-relay` | `url` | the Deployment of the worker mode only (mode worker) |
 | `STEGO_SPICEDB_KEY_FILE` | `user-management-spicedb` | `preshared-key` | the Deployment and the migration Job |
-| `STEGO_WORKER_DATABASE_URL` | `user-management-database` | `worker-url` | the Deployment |
+| `STEGO_WORKER_DATABASE_URL` | `user-management-database` | `worker-url` | the Deployment of the worker mode only (mode worker) |

@@ -11,6 +11,7 @@ import (
  "mime"
  "net/http"
  "net/url"
+ "path"
  "regexp"
  "strconv"
  "strings"
@@ -193,11 +194,18 @@ func(b *Backend)proxy(w http.ResponseWriter,r *http.Request){
  for _,name:=range forwardedRequestHeaders{values:=r.Header.Values(name);if len(values)>1{failure(w,400);return};if len(values)==1&&name!="Prefer"{headers.Set(name,values[0])}}
  waiting:=headers.Get("Authz-Revocation-After")!=""
  if wait:=preferWait(r.Header.Get("Prefer"),waiting);wait!=""{headers.Set("Prefer",wait)}
- if waiting{select{case b.waits<-struct{}{}:defer func(){<-b.waits}();default:w.Header().Set("Retry-After","1");failure(w,503);return}}
- upstream,err:=b.upstream.Do(r.Context(),r.Method,r.URL.RequestURI(),headers,body);if err!=nil{failure(w,502);return}
+ // The request goes to the one fixed origin of the API whose prefix its path is under, and nothing in the request
+ // chooses the host (ST-SUP-RC02-OC58). A path under no API prefix, such as an asset of a local application, goes
+ // to the API of api_prefix. It takes a permit of that API, and a waiting read a wait of that API, so that a slow
+ // API cannot take the capacity of another.
+ route:=b.apiPrefix(r.URL.Path);if route==nil{route=&b.main}
+ prefix,api:=route.prefix,route.upstream
+ select{case route.permits<-struct{}{}:defer func(){<-route.permits}();default:w.Header().Set("Retry-After","1");failure(w,503);return}
+ if waiting{select{case route.waits<-struct{}{}:defer func(){<-route.waits}();default:w.Header().Set("Retry-After","1");failure(w,503);return}}
+ upstream,err:=api.Do(r.Context(),r.Method,r.URL.RequestURI(),headers,body);if err!=nil{failure(w,502);return}
  if upstream.StatusCode==401{if b.store.remove(r.Context(),id)!=nil{failure(w,503);return};{{if .LocalApplication}}b.sockets.end(id);{{end}}clearCookie(w,SessionCookie);reauthenticate(w);return}
  for _,name:=range forwardedResponseHeaders{if value:=upstream.Header.Get(name);value!=""{w.Header().Set(name,value)}}
  if location:=upstream.Header.Get("Authz-Revocation-Location");location!=""&&revocationLocation.MatchString(location){w.Header().Set("Authz-Revocation-Location",location)}
- if location:=upstream.Header.Get("Location");location!=""{target,err:=url.Parse(location);if err!=nil||target.IsAbs()||target.Host!=""||!strings.HasPrefix(target.Path,b.config.Prefix+"/")||strings.ContainsAny(location,"\\\r\n\x00"){failure(w,502);return};w.Header().Set("Location",location)}
+ if location:=upstream.Header.Get("Location");location!=""{target,err:=url.Parse(location);if err!=nil||target.IsAbs()||target.Host!=""||target.RawPath!=""||path.Clean(target.Path)!=target.Path||!strings.HasPrefix(target.Path,prefix+"/")||strings.ContainsAny(location,"\\\r\n\x00"){failure(w,502);return};w.Header().Set("Location",location)}
  w.WriteHeader(upstream.StatusCode);if r.Method!="HEAD"{_,_=w.Write(upstream.Body)}
 }

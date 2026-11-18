@@ -66,7 +66,7 @@ func TestBrowserStartupDiagnostics(t *testing.T) {
 			if mode == "success" || mode == "discovery" {
 				f := setup(t)
 				db = f.db
-				for name, value := range map[string]string{"STEGO_BROWSER_ORIGIN": f.options.Origin, "STEGO_BROWSER_API_URL": f.options.Upstream, "STEGO_BROWSER_API_CA_FILE": f.options.UpstreamCA, "STEGO_BROWSER_ISSUER": f.options.Issuer, "STEGO_BROWSER_ISSUER_CA_FILE": f.options.IssuerCA, "STEGO_BROWSER_CLIENT_ID": f.options.ClientID, "STEGO_BROWSER_CLIENT_SECRET_FILE": f.options.SecretFile, "STEGO_BROWSER_SESSION_KEY_FILE": f.options.KeyFile} {
+				for name, value := range map[string]string{"STEGO_BROWSER_ORIGIN": f.options.Origin, "STEGO_BROWSER_API_URL": f.options.Upstream, "STEGO_BROWSER_API_URLS": f.options.Upstreams, "STEGO_BROWSER_API_CA_FILE": f.options.UpstreamCA, "STEGO_BROWSER_ISSUER": f.options.Issuer, "STEGO_BROWSER_ISSUER_CA_FILE": f.options.IssuerCA, "STEGO_BROWSER_CLIENT_ID": f.options.ClientID, "STEGO_BROWSER_CLIENT_SECRET_FILE": f.options.SecretFile, "STEGO_BROWSER_SESSION_KEY_FILE": f.options.KeyFile} {
 					t.Setenv(name, value)
 				}
 				if mode == "discovery" {

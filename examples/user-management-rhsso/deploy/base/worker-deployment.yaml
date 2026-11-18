@@ -1,0 +1,500 @@
+# The Kubernetes base of the service. stego apply writes this file from the declaration and the platform
+# requirements, with no value that differs per environment: the platform's overlay supplies them, and every
+# overlay must set the image by digest, because the image of the base is a name that no registry serves. Do not
+# edit it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/name: user-management-worker
+    app.kubernetes.io/part-of: user-management
+  name: user-management-worker
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: worker
+      app.kubernetes.io/name: user-management-worker
+      app.kubernetes.io/part-of: user-management
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/name: user-management-worker
+        app.kubernetes.io/part-of: user-management
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - args:
+            - --mode=worker
+            - --mode=controller
+          env:
+            - name: AUTH_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  key: AUTH_ENABLED
+                  name: user-management-config
+                  optional: true
+            - name: CORS_ALLOWED_HEADERS
+              valueFrom:
+                configMapKeyRef:
+                  key: CORS_ALLOWED_HEADERS
+                  name: user-management-config
+                  optional: true
+            - name: CORS_ALLOWED_METHODS
+              valueFrom:
+                configMapKeyRef:
+                  key: CORS_ALLOWED_METHODS
+                  name: user-management-config
+                  optional: true
+            - name: CORS_ALLOWED_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  key: CORS_ALLOWED_ORIGINS
+                  name: user-management-config
+                  optional: true
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  key: url
+                  name: user-management-database
+            - name: GODEBUG
+              valueFrom:
+                configMapKeyRef:
+                  key: GODEBUG
+                  name: user-management-config
+                  optional: true
+            - name: GOGC
+              valueFrom:
+                configMapKeyRef:
+                  key: GOGC
+                  name: user-management-config
+                  optional: true
+            - name: GOMAXPROCS
+              valueFrom:
+                configMapKeyRef:
+                  key: GOMAXPROCS
+                  name: user-management-config
+                  optional: true
+            - name: GOMEMLIMIT
+              valueFrom:
+                configMapKeyRef:
+                  key: GOMEMLIMIT
+                  name: user-management-config
+                  optional: true
+            - name: GOTRACEBACK
+              valueFrom:
+                configMapKeyRef:
+                  key: GOTRACEBACK
+                  name: user-management-config
+                  optional: true
+            - name: GRPC_GO_LOG_FORMATTER
+              valueFrom:
+                configMapKeyRef:
+                  key: GRPC_GO_LOG_FORMATTER
+                  name: user-management-config
+                  optional: true
+            - name: GRPC_GO_LOG_SEVERITY_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  key: GRPC_GO_LOG_SEVERITY_LEVEL
+                  name: user-management-config
+                  optional: true
+            - name: GRPC_GO_LOG_VERBOSITY_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  key: GRPC_GO_LOG_VERBOSITY_LEVEL
+                  name: user-management-config
+                  optional: true
+            - name: HOME
+              valueFrom:
+                configMapKeyRef:
+                  key: HOME
+                  name: user-management-config
+                  optional: true
+            - name: JWK_CA_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: JWK_CA_FILE
+                  name: user-management-config
+                  optional: true
+            - name: JWK_CERT_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: JWK_CERT_FILE
+                  name: user-management-config
+                  optional: true
+            - name: JWK_CERT_URL
+              valueFrom:
+                configMapKeyRef:
+                  key: JWK_CERT_URL
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_CERTIFICATE
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_EXPORTER_OTLP_CERTIFICATE
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_EXPORTER_OTLP_ENDPOINT
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_EXPORTER_OTLP_PROTOCOL
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_LOGS_EXPORTER
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_LOGS_EXPORTER
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_METRICS_EXPORTER
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_METRICS_EXPORTER
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_METRIC_EXPORT_INTERVAL
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_SERVICE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_SERVICE_NAME
+                  name: user-management-config
+                  optional: true
+            - name: OTEL_TRACES_SAMPLER_ARG
+              valueFrom:
+                configMapKeyRef:
+                  key: OTEL_TRACES_SAMPLER_ARG
+                  name: user-management-config
+                  optional: true
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  key: PORT
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUDIT_SINK_AUTH_HEADER
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUDIT_SINK_AUTH_HEADER
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUDIT_SINK_CA_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUDIT_SINK_CA_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUDIT_SINK_CLIENT_CERT_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUDIT_SINK_CLIENT_KEY_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUDIT_SINK_TOKEN_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUDIT_SINK_TOKEN_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUDIT_SINK_URL
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUDIT_SINK_URL
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTHN_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTHN_AUDIENCE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTHN_CA_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTHN_CA_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTHN_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTHN_ISSUER
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTHN_KEYS_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTHN_KEYS_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTHN_KEYS_URL
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTHN_KEYS_URL
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTH_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTH_AUDIENCE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTH_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTH_ISSUER
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTH_PUBLIC_KEY_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTH_PUBLIC_KEY_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_AUTH_ROLES_CLAIM
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_AUTH_ROLES_CLAIM
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_DATABASE_CONNECTION_MAX_IDLE_TIME
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_DATABASE_CONNECTION_MAX_LIFETIME
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_DATABASE_CONNECTION_MAX_LIFETIME
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_DATABASE_MAX_IDLE_CONNECTIONS
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_DATABASE_MAX_IDLE_CONNECTIONS
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_DATABASE_MAX_OPEN_CONNECTIONS
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_DATABASE_MAX_OPEN_CONNECTIONS
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_HTTP_REQUIRE_TLS
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_HTTP_REQUIRE_TLS
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_HTTP_TLS_CERT
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_HTTP_TLS_CERT
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_HTTP_TLS_KEY
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_HTTP_TLS_KEY
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_BROKERS
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_BROKERS
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_BROKERS_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_BROKERS_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_BROKER_HOSTS
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_BROKER_HOSTS
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_BROKER_HOSTS_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_BROKER_HOSTS_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_CA_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_CA_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_CLIENT_CERT_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_CLIENT_CERT_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_CLIENT_KEY_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_CLIENT_KEY_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_INSECURE_LOOPBACK
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_INSECURE_LOOPBACK
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_PASSWORD_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_PASSWORD_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_SASL_MECHANISM
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_SASL_MECHANISM
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_TOKEN_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_TOKEN_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_TOPIC
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_TOPIC
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_TOPIC_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_TOPIC_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_USERNAME
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_KAFKA_USERNAME_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_KAFKA_USERNAME_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_OTEL_TOKEN_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_OTEL_TOKEN_FILE
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_QUERY_CURSOR_KEY_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_QUERY_CURSOR_KEY_FILE
+                  name: user-management-config
+            - name: STEGO_RELAY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  key: url
+                  name: user-management-database-relay
+            - name: STEGO_SERVICE_VERSION
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_SERVICE_VERSION
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_SPICEDB_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_SPICEDB_ENDPOINT
+                  name: user-management-config
+            - name: STEGO_SPICEDB_INSECURE_LOOPBACK
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_SPICEDB_INSECURE_LOOPBACK
+                  name: user-management-config
+                  optional: true
+            - name: STEGO_SPICEDB_KEY_FILE
+              valueFrom:
+                configMapKeyRef:
+                  key: STEGO_SPICEDB_KEY_FILE
+                  name: user-management-config
+            - name: STEGO_WORKER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  key: worker-url
+                  name: user-management-database
+            - name: TZ
+              valueFrom:
+                configMapKeyRef:
+                  key: TZ
+                  name: user-management-config
+                  optional: true
+          image: stego.invalid/user-management:set-by-overlay
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8080
+          name: user-management
+          readinessProbe:
+            httpGet:
+              path: /readyz/modes
+              port: 8080
+          resources:
+            limits:
+              cpu: "1"
+              ephemeral-storage: 128Mi
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 32Mi
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccountName: user-management
+      volumes:
+        - emptyDir:
+            sizeLimit: 64Mi
+          name: tmp
