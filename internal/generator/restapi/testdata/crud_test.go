@@ -3134,4 +3134,92 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 			t.Errorf("%d ticket rows as the first patch left them, want 1", n)
 		}
 	})
+
+	t.Run("ST-SUP-RC20-OC44-T02 A secret kept field is refused whenever the body gives it, so the answer tells nothing of its value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		// A create may set a secret with writable create.
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1","pin":"1234"}`)
+		path := "/api/v1/tickets/" + id
+		entries := func(r reply) string {
+			t.Helper()
+			var problem struct {
+				Errors []struct {
+					Field   string `json:"field"`
+					Message string `json:"message"`
+				} `json:"validation_errors"`
+			}
+			if json.Unmarshal(r.body, &problem) != nil {
+				return ""
+			}
+			return fmt.Sprint(problem.Errors)
+		}
+		full := func(pin string) string {
+			return `{"folder_id":"` + folder + `","code":"c1","title":"t","sku":"s1",` + pin + `}`
+		}
+		// The right value, a wrong value and null, through the update, the patch and the upsert of the stored row.
+		first := ""
+		for _, c := range []struct{ method, path, key, body string }{
+			{http.MethodPut, path, "", full(`"pin":"1234"`)},
+			{http.MethodPut, path, "", full(`"pin":"9999"`)},
+			{http.MethodPut, path, "", full(`"PIN":null`)},
+			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","pin":"1234"}`},
+			{http.MethodPatch, path, "k-" + uuid.NewString(), `{"title":"t","pin":"9999"}`},
+			{http.MethodPut, "/api/v1/tickets", "", full(`"pin":"1234"`)},
+			{http.MethodPut, "/api/v1/tickets", "", full(`"pin":null`)},
+		} {
+			r := e.send(a, c.method, c.path, c.key, c.body)
+			got := entries(r)
+			if r.status != http.StatusBadRequest || !strings.Contains(got, "pin") || !strings.Contains(got, "leave it out") || strings.Contains(string(r.body), "1234") {
+				t.Errorf("%s %s %s answered %d %s, want 400 that names pin and says to leave it out", c.method, c.path, c.body, r.status, r.body)
+			}
+			if first == "" {
+				first = got
+			} else if got != first {
+				t.Errorf("%s %s %s answered the entries %s, want the same entries %s as for the right value", c.method, c.path, c.body, got, first)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first' AND pin = '1234'`, id); n != 1 {
+			t.Errorf("%d ticket rows unchanged after the refused writes, want 1", n)
+		}
+		// A body that leaves the secret out, as a read row sent back does, keeps it.
+		read := e.send(a, http.MethodGet, path, "", "")
+		row := read.object(t)
+		if _, ok := row["pin"]; ok {
+			t.Fatalf("the read answers the secret: %s", read.body)
+		}
+		row["title"] = "second"
+		body, err := json.Marshal(row)
+		must(t, err)
+		if r := e.send(a, http.MethodPut, path, "", string(body)); r.status != http.StatusOK {
+			t.Errorf("an update that sends back the read row answered %d %s, want 200", r.status, r.body)
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'second' AND pin = '1234'`, id); n != 1 {
+			t.Errorf("%d ticket rows with the new title and the stored secret, want 1", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not", func(t *testing.T) {
+		e := service(t)
+		tn := newTenant()
+		a, other := e.as("u-1", tn), e.as("u-2", tn)
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"held","title":"t","sku":"s1"}`)
+		// Each body breaks a kept field: a state other than the default.
+		var answers []reply
+		for _, code := range []string{"held", "free"} {
+			r := e.send(other, http.MethodPut, "/api/v1/tickets", "", `{"folder_id":"`+folder+`","code":"`+code+`","title":"x","sku":"s2","state":"closed"}`)
+			if r.status != http.StatusNotFound {
+				t.Errorf("the upsert of the key %s by a caller who may not edit the folder answered %d %s, want 404", code, r.status, r.body)
+			}
+			answers = append(answers, r)
+		}
+		if len(answers) == 2 && fmt.Sprint(answers[0].object(t)["title"], answers[0].object(t)["detail"]) != fmt.Sprint(answers[1].object(t)["title"], answers[1].object(t)["detail"]) {
+			t.Errorf("the answers differ: %s and %s", answers[0].body, answers[1].body)
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE code = 'free' AND tenant_id = $1`, a.tenant.ID()); n != 0 {
+			t.Errorf("%d ticket rows of the refused upsert, want 0", n)
+		}
+	})
 }

@@ -294,7 +294,9 @@ its default, so the field must be optional or have a default. An update, an
 upsert and a patch that give such a field another value than the stored one
 get a 400 validation problem that names the field, and change nothing. A body
 that leaves the field out, or gives its stored value, keeps the stored value,
-so a client can send back a row that it read. A `patchable` list cannot name
+so a client can send back a row that it read. A `secret` field is never
+compared: a body that gives it gets a 400, so the body must leave it out. A
+`patchable` list cannot name
 such a field. The OpenAPI document marks the field `readOnly` in the entity
 schema, and the update takes its own request schema, in which the field is
 optional.

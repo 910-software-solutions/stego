@@ -1175,7 +1175,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 				// The request check writes the default of a member that the body leaves out into the body, which
 				// would then give a value other than the stored one: the member has no default here.
 				property := updateSchema.Properties[f.Name]
-				property.Description = keptUpdateDescription(property.Description)
+				property.Description = keptUpdateDescription(f, property.Description)
 				property.Default = nil
 				updateSchema.Properties[f.Name] = property
 			} else if !f.Optional {
@@ -1617,7 +1617,11 @@ func joinDescription(typeDescription, when string) string {
 }
 
 // keptUpdateDescription gives the description of a field of keptField in the update-request schema (ST-SUP-RC20-OC47).
-func keptUpdateDescription(typeDescription string) string {
+// A secret is never compared with the stored value, so the body must leave it out.
+func keptUpdateDescription(f types.Field, typeDescription string) string {
+	if f.Sensitivity == "secret" {
+		return joinDescription(typeDescription, "An update cannot take this secret field: the body must leave it out.")
+	}
 	return joinDescription(typeDescription, "An update cannot change this field: the body may leave it out or give its stored value.")
 }
 

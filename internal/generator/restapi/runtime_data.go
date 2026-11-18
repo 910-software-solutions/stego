@@ -2212,7 +2212,7 @@ func (w *runtimeHandlerWriter) upsert() {
 		w.f("\t\t\treturn idempotency.Response{}, &preconditionFailed{status: http.StatusPreconditionFailed, detail: \"the If-Match precondition names a %s that does not exist\"}\n\t\t}\n", e.Name)
 	}
 	w.populateCreate()
-	w.keptCreate()
+	w.keptDefaults()
 	if w.envelope {
 		w.f("\t\tid, err := uuid.NewV7()\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n\t\t%s.ID = id.String()\n", c.lower)
 	} else {
@@ -2220,6 +2220,8 @@ func (w *runtimeHandlerWriter) upsert() {
 	}
 	w.parents("")
 	w.f("\t\tcreated, err := repo.Create(ctx, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
+	// The check of the kept fields runs after the create decided the parent (keptCreateCheck).
+	w.keptCreateCheck()
 	w.f("\t\tpersisted = %s\n", w.fromData("created.Value()"))
 	w.after(types.OpUpsert, "persisted", "created", nil)
 	w.respond("http.StatusCreated", "persisted")
