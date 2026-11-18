@@ -549,7 +549,7 @@ func runApply(args []string) error {
 	}
 	if len(gate.steps) > 0 {
 		if *savedPlan {
-			return fmt.Errorf("the declaration needs add steps that the saved plan does not hold; run stego apply without --saved-plan")
+			return savedPlanNeedsSteps(gate)
 		}
 		restore, err := writeSchemaSteps(gate.data)
 		if err != nil {
@@ -577,6 +577,27 @@ func runApply(args []string) error {
 	}
 	_, err = applyPlanned(*replaceHandEdits, *savedPlan)
 	return err
+}
+
+// savedPlanNeedsSteps is the refusal of apply --saved-plan when the declaration needs add steps: it names each step,
+// tells that stego plan saved no plan for such a declaration, and gives the two ways on (walkthrough 11, rank 3).
+func savedPlanNeedsSteps(gate baseGate) error {
+	var steps []string
+	for _, step := range gate.steps {
+		target := step.Entity
+		if step.Field != "" {
+			target += "." + step.Field
+		}
+		steps = append(steps, fmt.Sprintf("%s (add %s at expand)", step.ID, target))
+	}
+	base, against := "", ""
+	if gate.ref != "" {
+		base, against = " --base "+gate.ref, " against the base "+gate.ref
+	}
+	return fmt.Errorf("apply --saved-plan refused: the declaration needs the add step(s) %s, which service.yaml does not declare%s. "+
+		"stego plan saves no plan until service.yaml declares them, so no saved plan holds them. "+
+		"Run stego apply%s without --saved-plan: it writes the steps in service.yaml and applies. Then commit service.yaml, and the next stego plan%s saves a plan again",
+		strings.Join(steps, ", "), against, base, base)
 }
 
 // writeSchemaSteps writes the declaration with its new add steps over service.yaml, with the file's mode, and
