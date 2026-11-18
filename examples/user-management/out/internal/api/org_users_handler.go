@@ -252,6 +252,17 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, "")
 	var persisted User
+	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, command.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		answerWaitFailure(w, r, err)
+		return
+	}
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersCreateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
 		// The parent is the deepest resource that the path names: it is read with the read permission of its entity,
 		// which decides it (ST-SUP-RC20-OC24).
@@ -399,7 +410,7 @@ func (h *OrgUsersHandler) Read(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	value, err := query.Run(r.Context(), h.rt.Queries, orgUsersReadQuery, h.rt.boundQuery(r.Context(), b, orgUsersReadQuery), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (User, error) {
@@ -474,6 +485,17 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)
 	var persisted User
+	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, command.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		answerWaitFailure(w, r, err)
+		return
+	}
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersUpdateCommand, req, decodeOrgUsers, func(ctx context.Context, user User, ch *command.Handle[struct{}]) (idempotency.Response, error) {
 		// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor
 		// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).
@@ -580,6 +602,17 @@ func (h *OrgUsersHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, nil, id)
+	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, command.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		answerWaitFailure(w, r, err)
+		return
+	}
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersDeleteCommand, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {
 		// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor
 		// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).
@@ -706,7 +739,7 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, orgUsersListQuery, h.rt.boundQuery(r.Context(), b, orgUsersListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (orgUsersPage, error) {
@@ -814,6 +847,17 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, id)
 	var persisted User
+	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, command.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		answerWaitFailure(w, r, err)
+		return
+	}
 	result, err := command.Run(r.Context(), h.rt.Commands, orgUsersPatchCommand, req, decodeOrgUsersPatch, func(ctx context.Context, patch OrgUsersPatchRequest, ch *command.Handle[struct{}]) (idempotency.Response, error) {
 		// Each other ancestor of the path, from the top ancestor down: it exists in the tenant and is of the ancestor
 		// above it. Its link holds only its key and that field, and decides no permission (ST-SUP-RC20-OC24).

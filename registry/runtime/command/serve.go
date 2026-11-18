@@ -122,10 +122,15 @@ type Outcome struct {
 	Status int
 	Code   string
 	Audit  audit.Outcome
-	// Field and Reason are, for ErrInvalid, the declared field that the refusal names and its fixed reason; they hold
-	// no value of the request.
+	// Field and Reason are, for ErrInvalid, the declared field that the refusal names and its fixed reason, and Field
+	// is, for a conflict of a unique key, the declared fields of the key (ST-SUP-RP10-LC48); they hold no value of the
+	// request.
 	Field, Reason string
 }
+
+// ReasonUnique is the fixed reason of a conflict of a unique key: another row has the same value of the fields of the
+// key, which the conflict names (ST-SUP-RP10-LC48).
+const ReasonUnique = "another row has the same value of the unique key"
 
 // ErrUndecided is the error of a command whose permission the decision port could not decide now, such as for some
 // seconds after a schema write; OutcomeOf answers it 503 undecided, with Retry-After (ST-SUP-Q140).
@@ -165,7 +170,12 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 	}
 	code := ErrorCode(err)
 	if code == audit.ErrorCodeConflict {
-		return Outcome{Status: http.StatusConflict, Code: code, Audit: audit.OutcomeFailed}
+		// A unique violation of a declared key names the fields of the key, never a value (ST-SUP-RP10-LC48).
+		o := Outcome{Status: http.StatusConflict, Code: code, Audit: audit.OutcomeFailed, Field: UniqueKey(err)}
+		if o.Field != "" {
+			o.Reason = ReasonUnique
+		}
+		return o
 	}
 	if code == ErrorCodeInternal && (errors.Is(err, ErrUndecided) || authz.Transient(err)) {
 		// A decision that the provider could not make now, such as for some seconds after a schema write, is 503
@@ -334,6 +344,13 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
+		// A command after the caller's own write waits for its revocation before its decision (ST-SUP-RP10-LC47).
+		if err := rt.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+			if httpStatus, code, ok := awaitAnswer(r.Context(), err); ok {
+				rt.writeProblem(w, httpStatus, "", code)
+			}
+			return
+		}
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
 			Resource: s.Resource(request), RequestID: NewID(), ActorIP: remoteIP(r.RemoteAddr),
 			UserAgent: r.UserAgent(), Retention: s.Retention}
@@ -393,6 +410,10 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 				return request, ErrBadRequest
 			}
 			return request, nil
+		}
+		// A command after the caller's own write waits for its revocation before its decision (ST-SUP-RP10-LC47).
+		if err := rt.AwaitRevocationRPC(ctx, b.Tenant, b.Principal); err != nil {
+			return none, awaitStatus(ctx, err)
 		}
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
 			Resource: s.Resource(request), RequestID: NewID(), Retention: s.Retention}

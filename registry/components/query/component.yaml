@@ -1,10 +1,13 @@
+# Version 1.7.0 refuses a route on a stream query, which is served over gRPC only (ST-DECL-INV73, walkthrough 12,
+# W12-B2), and names the repository of an entity with the plural of the table names, such as GetEntryEntries, with
+# the old name as a deprecated function for one release (walkthrough 12, W12-B5).
 # Version 1.6.0 gives each problem of a query the type of its code under the problem base, and registers the
 # optional extra key of the list cursors (ST-SUP-RC33-OC12, ST-SUP-RP11-LC23).
 # Version 1.4.0 answers a get query on a key that is not a UUID as a missing row, 404 over HTTP and NotFound over
 # gRPC, before any statement or decision (walkthrough 10, B4; ST-SUP-RC33-OC05).
 kind: component
 name: query
-version: 1.6.0
+version: 1.7.0
 stage: ga
 output_namespace: queries
 

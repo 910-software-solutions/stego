@@ -76,6 +76,9 @@ var OrganizationEntity = command.Must(command.NewEntity(command.EntitySpec[Organ
 		"name":                            "name",
 		"description":                     "description",
 	},
+	Unique: map[string]string{
+		"organizations_name_key": "name",
+	},
 	Relations: []string{"owner", "viewer"},
 }))
 
@@ -160,6 +163,9 @@ var UserEntity = command.Must(command.NewEntity(command.EntitySpec[User]{
 		"role":                     "role",
 		"org_id":                   "org_id",
 		"metadata":                 "metadata",
+	},
+	Unique: map[string]string{
+		"users_email_key": "email",
 	},
 	Parent: []command.Reference[User]{
 		{Entity: "Organization", ResourceType: "organization", ID: func(v User) string { return v.OrgID }, Permission: "edit", Relation: "organization"},

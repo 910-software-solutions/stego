@@ -12,6 +12,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/capability"
+	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -332,8 +333,15 @@ func renderQueryContract(w *writer, q *queryModel) {
 		w.p("func %s() *query.Query { return %s }\n", q.goName, q.queryVar())
 	}
 	for _, e := range q.reads {
-		w.p("// %s%s is the repository of %s through a handle of %s.", q.goName, e.value.GoType+"s", e.value.Entity.Name, name)
-		w.p("func %s%ss(h *%sHandle) (*Repository[%s], error) { return query.Repo(h, %s) }\n", q.goName, e.value.GoType, q.goName, e.value.GoType, e.variable)
+		repo := q.goName + postgresadapter.Plural(e.value.GoType)
+		w.p("// %s is the repository of %s through a handle of %s.", repo, e.value.Entity.Name, name)
+		w.p("func %s(h *%sHandle) (*Repository[%s], error) { return query.Repo(h, %s) }\n", repo, q.goName, e.value.GoType, e.variable)
+		if old := q.goName + e.value.GoType + "s"; old != repo {
+			// The name of releases before walkthrough 12 (W12-B5) stays one release, so a fill that calls it still
+			// builds.
+			w.p("// %s is %s.\n//\n// Deprecated: use %s, whose plural is the one of the table names.", old, repo, repo)
+			w.p("func %s(h *%sHandle) (*Repository[%s], error) { return %s(h) }\n", old, q.goName, e.value.GoType, repo)
+		}
 	}
 	if q.kind == streamKind {
 		e := q.sent()
@@ -556,7 +564,7 @@ func renderGet(w *writer, m *model, q *queryModel) {
 	if q.decide != nil {
 		w.p("if err := decide.Decide%s(ctx, h, req.%s); err != nil {\nreturn nil, err\n}", q.goName, q.memberGo)
 	} else {
-		w.p("repo, err := %s.%s%ss(h)\nif err != nil {\nreturn nil, err\n}", m.pkg, q.goName, e.value.GoType)
+		w.p("repo, err := %s.%s%s(h)\nif err != nil {\nreturn nil, err\n}", m.pkg, q.goName, postgresadapter.Plural(e.value.GoType))
 		w.p("if _, err := repo.Get(ctx, req.%s); err != nil {\nreturn nil, err\n}", q.memberGo)
 	}
 	w.p("return %s.Fill(ctx, req, h)\n}\n", q.fillAlias)

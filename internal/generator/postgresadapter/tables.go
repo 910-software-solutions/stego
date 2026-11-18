@@ -337,6 +337,19 @@ func uniqueName(table string, columns []string) string {
 
 func searchName(table, column string) string { return sqlName(table, column, "search") }
 
+// UniqueIndexes gives the unique indexes of the declared keys of entity, by the name that the migration gives each
+// index, with the columns of its key after the tenant column: each unique field and each unique_composite group
+// (uniqueKeys with no upsert key). The command generator names the fields of a key that a unique violation broke from
+// it (ST-SUP-RC32-OC22, ST-SUP-RP10-LC48).
+func UniqueIndexes(entity types.Entity) map[string][]string {
+	keys := uniqueKeys(entity, nil)
+	indexes := make(map[string][]string, len(keys))
+	for _, columns := range keys {
+		indexes[uniqueName(tableName(entity.Name), columns)] = columns
+	}
+	return indexes
+}
+
 // tableModels gives the model of each table of the declaration, in the order of tableOrder.
 func tableModels(ctx gen.Context) ([]tableModel, error) {
 	ordered, err := tableOrder(ctx.Entities)

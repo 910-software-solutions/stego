@@ -28,7 +28,7 @@ var methodName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0
 // grpc-application component declares; a Method is given only when that component is active (facts.GRPCMethods is
 // not nil), and no two commands or queries name the same Method. Each fault names the method. When the component set
 // did not resolve (facts.ComponentsUnresolved), it gives no fault for a missing component: the resolution fault names
-// the cause.
+// the cause. A query whose Method is a server stream declares no route (ST-DECL-INV73).
 func validateGRPCMethods(service *types.ServiceDeclaration, facts Facts) []ValidationError {
 	type operation struct {
 		kind, name, path, method string
@@ -78,6 +78,15 @@ func validateGRPCMethods(service *types.ServiceDeclaration, facts Facts) []Valid
 			continue
 		}
 		first[op.method] = fmt.Sprintf("%s %q", op.kind, op.name)
+	}
+	// A stream query is served over gRPC only (ST-SUP-RC33-OC08), so a route of it would be served by no handler
+	// (walkthrough 12, W12-B2): it declares none.
+	for i, q := range service.Queries {
+		if q.Route == "" || q.Method == "" || facts.GRPCMethods[q.Method] != MethodServerStream {
+			continue
+		}
+		faults = append(faults, ValidationError{Category: "query", Rule: "query-stream-route", Path: queryPath(i) + ".route", Found: q.Route,
+			Message: fmt.Sprintf("query %q has the route %q and the gRPC method %s, which is a server stream; a stream is served over gRPC only, so remove the route. To list over HTTP, declare a second query with a route and a unary method or no method", q.Name, q.Route, q.Method)})
 	}
 	return faults
 }

@@ -141,6 +141,17 @@ func (h *UserActivityHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, "")
 	var persisted ActivityEntry
+	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, command.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		answerWaitFailure(w, r, err)
+		return
+	}
 	result, err := command.Run(r.Context(), h.rt.Commands, userActivityCreateCommand, req, decodeUserActivity, func(ctx context.Context, activityentry ActivityEntry, ch *command.Handle[struct{}]) (idempotency.Response, error) {
 		id, err := uuid.NewV7()
 		if err != nil {
@@ -230,7 +241,7 @@ func (h *UserActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, userActivityListQuery, h.rt.boundQuery(r.Context(), b, userActivityListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (userActivityPage, error) {

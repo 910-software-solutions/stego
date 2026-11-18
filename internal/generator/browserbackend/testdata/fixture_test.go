@@ -330,7 +330,8 @@ type fixture struct {
 	// (ST-SUP-RC02-OC58); secondPaths are the paths that it got.
 	second      *httptest.Server
 	secondPaths []string
-	// hold, when set, keeps each read with Authz-Revocation-After at the API, as a pending revocation does, until it
+	// hold, when set, keeps each request with Authz-Revocation-After and a wait other than wait=0 at the API, as a
+	// pending revocation does, until it
 	// is closed; held gets one value for each read that it keeps. revocationLocation, when set, is the
 	// Authz-Revocation-Location that the API answers.
 	hold, held         chan struct{}
@@ -349,7 +350,7 @@ func setup(t *testing.T) *fixture {
 		status := f.status
 		hold, held, revocationLocation := f.hold, f.held, f.revocationLocation
 		f.mu.Unlock()
-		if hold != nil && r.Header.Get("Authz-Revocation-After") != "" {
+		if hold != nil && r.Header.Get("Authz-Revocation-After") != "" && r.Header.Get("Prefer") != "wait=0" {
 			held <- struct{}{}
 			<-hold
 		}
