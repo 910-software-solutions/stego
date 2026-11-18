@@ -1151,6 +1151,9 @@ func renderRuntimeHandler(ctx gen.Context, c *runtimeCollection, dataImport, slo
 	if c.ops[types.OpRead] || c.ops[types.OpList] {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/query\"\n")
 	}
+	if w.hasSecret() {
+		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/sealed\"\n")
+	}
 	w.f("\n\tdata %q\n", dataImport)
 	if len(c.slots) > 0 {
 		w.f("\tslots %q\n", slotsImportPath)
@@ -1546,9 +1549,33 @@ func (w *runtimeHandlerWriter) hasJSON() bool {
 	return false
 }
 
+// hasSecret tells whether the entity has a field of sensitivity secret, whose row value is of the sealing runtime
+// (ST-SUP-RC20-OC48).
+func (w *runtimeHandlerWriter) hasSecret() bool {
+	for _, f := range w.c.entity.Fields {
+		if f.Secret() {
+			return true
+		}
+	}
+	return false
+}
+
+// converts tells whether the API value and the row value differ in a field, so they convert field by field.
+func (w *runtimeHandlerWriter) converts() bool { return w.hasJSON() || w.hasSecret() }
+
+// kept gives the row value of the API value expr of a write over the loaded row from: a secret field that the
+// request leaves out or gives empty keeps its stored value, because no client can read it to send it back
+// (ST-SUP-RC20-OC48).
+func (w *runtimeHandlerWriter) kept(expr, from string) string {
+	if !w.hasSecret() {
+		return w.toData(expr)
+	}
+	return w.c.camel + "KeepSecrets(" + w.toData(expr) + ", " + from + ".Value())"
+}
+
 // toData gives the expression of the command runtime's row value of the API value expr.
 func (w *runtimeHandlerWriter) toData(expr string) string {
-	if w.hasJSON() {
+	if w.converts() {
 		return w.c.camel + "ToData(" + expr + ")"
 	}
 	return "data." + w.c.entity.Name + "(" + expr + ")"
@@ -1556,7 +1583,7 @@ func (w *runtimeHandlerWriter) toData(expr string) string {
 
 // fromData gives the expression of the API value of the command runtime's row value expr.
 func (w *runtimeHandlerWriter) fromData(expr string) string {
-	if w.hasJSON() {
+	if w.converts() {
 		return w.c.camel + "FromData(" + expr + ")"
 	}
 	return w.c.entity.Name + "(" + expr + ")"
@@ -1566,10 +1593,25 @@ func (w *runtimeHandlerWriter) fromData(expr string) string {
 // command runtime's row value. An optional jsonb field that is not set is nil in both, so it is NULL in its column
 // and absent from a response.
 func (w *runtimeHandlerWriter) converters() {
-	if !w.hasJSON() {
+	if !w.converts() {
 		return
 	}
 	c, e := w.c, w.c.entity
+	if w.hasSecret() {
+		w.f("// %sText gives the text of an optional secret of a request, or empty when it is not set.\n", c.camel)
+		w.f("func %sText(v *string) string {\n\tif v == nil {\n\t\treturn \"\"\n\t}\n\treturn *v\n}\n\n", c.camel)
+		w.f("// %sJSONText gives the JSON text of an optional secret jsonb of a request, or empty when it is not set.\n", c.camel)
+		w.f("func %sJSONText(v *json.RawMessage) string {\n\tif v == nil {\n\t\treturn \"\"\n\t}\n\treturn string(*v)\n}\n\n", c.camel)
+		w.f("// %sKeepSecrets gives next with each secret field that it does not set taken from stored: a write keeps the\n// stored secret when the request leaves it out or gives it empty (ST-SUP-RC20-OC48).\n", c.camel)
+		w.f("func %sKeepSecrets(next, stored data.%s) data.%s {\n", c.camel, e.Name, e.Name)
+		for _, f := range e.Fields {
+			if f.Secret() {
+				name := toPascalCase(f.Name)
+				w.f("\tif !next.%s.IsSet() {\n\t\tnext.%s = stored.%s\n\t}\n", name, name, name)
+			}
+		}
+		w.f("\treturn next\n}\n\n")
+	}
 	for _, f := range e.Fields {
 		if f.Type == types.FieldTypeJsonb && f.Optional {
 			w.f("// %sJSON gives the API value of an optional jsonb column: nil when the column is NULL.\n", c.camel)
@@ -1582,6 +1624,26 @@ func (w *runtimeHandlerWriter) converters() {
 	field := func(f types.Field, to bool) string {
 		name := toPascalCase(f.Name)
 		switch {
+		case f.Secret() && !to && (f.Optional || f.Type == types.FieldTypeJsonb):
+			// No API value of a row holds a secret (ST-SUP-RC20-OC48).
+			return "nil"
+		case f.Secret() && !to:
+			return `""`
+		case f.Secret():
+			text := "v." + name
+			switch {
+			case f.Type == types.FieldTypeJsonb && f.Optional:
+				// A readable secret jsonb is sealed as its JSON text.
+				text = c.camel + "JSONText(v." + name + ")"
+			case f.Type == types.FieldTypeJsonb:
+				text = "string(v." + name + ")"
+			case f.Optional:
+				text = c.camel + "Text(v." + name + ")"
+			}
+			if f.CompareOnly {
+				return "sealed.ComparedOf(" + text + ")"
+			}
+			return "sealed.SecretOf(" + text + ")"
 		case f.Type != types.FieldTypeJsonb:
 			return "v." + name
 		case f.Optional && to:
@@ -2045,7 +2107,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.forceScope("stored." + toPascalCase(c.scope))
 	w.before(types.OpUpdate, nil)
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
+	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpdate, "persisted", "updated", nil)
 	w.respond("http.StatusOK", "persisted")
@@ -2243,7 +2305,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	w.populateUpdate()
 	w.forceScope("scope")
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
+	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpsert, "persisted", "updated", nil)
 	w.respond("http.StatusOK", "persisted")
@@ -2312,7 +2374,7 @@ func (w *runtimeHandlerWriter) patch() {
 		}
 	}
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.toData(c.lower))
+	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpPatch, "persisted", "updated", fields)
 	w.respond("http.StatusOK", "persisted")

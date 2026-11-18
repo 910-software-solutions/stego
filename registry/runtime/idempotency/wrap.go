@@ -83,6 +83,9 @@ type Request struct {
 	Principal   string
 	Key         string
 	Fingerprint string
+	// Matches, when it is not nil, tells whether a stored fingerprint is the fingerprint of this request, such as a
+	// keyed fingerprint of an earlier key of a key ring (ST-SUP-RP16-LC05); nil compares the two texts.
+	Matches func(stored string) bool
 	// Retention is how long a completed key is kept; zero is DefaultRetention.
 	Retention time.Duration
 	// Clock gives the current time; nil is time.Now.
@@ -268,7 +271,7 @@ func existing(ctx context.Context, tx Tx, req Request) (Result, error) {
 	if status != "completed" {
 		return inProgress(), nil
 	}
-	if fingerprint != req.Fingerprint {
+	if !req.sameFingerprint(fingerprint) {
 		return Result{Response: Response{Status: http.StatusUnprocessableEntity}, Problem: ProblemReused}, nil
 	}
 	h, err := decodeHeader(header)
@@ -309,6 +312,14 @@ func sqlState(err error) string {
 		return coded.SQLState()
 	}
 	return ""
+}
+
+// sameFingerprint tells whether a stored fingerprint is the fingerprint of the request.
+func (req Request) sameFingerprint(stored string) bool {
+	if req.Matches != nil {
+		return req.Matches(stored)
+	}
+	return stored == req.Fingerprint
 }
 
 func (req Request) check() error {

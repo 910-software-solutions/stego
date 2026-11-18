@@ -27,6 +27,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -115,6 +116,9 @@ type Config struct {
 	// a message: RunConsumer runs no fill before that tuple is there, and tries the message again with the back-off
 	// of the outbox (ST-SUP-RC35-OC18). Nil checks no tuple: a schema with no definition tenant has no worker tuple.
 	WorkerTuples WorkerTupleReader
+	// Ring is the key ring of the secret fields (ST-SUP-RP10-LC44): it seals each readable secret that a write
+	// stores and opens each one that a read of the handle scans. Nil refuses an entity with a readable secret.
+	Ring *sealed.Ring
 }
 
 // TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
@@ -214,6 +218,13 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	}
 	if cfg.AuditSettings.Level == "" {
 		cfg.AuditSettings.Level = audit.LevelChange
+	}
+	// An entity with a readable secret needs the key ring; the check comes before any entity registers, so a refused
+	// runtime registers none (ST-SUP-RP10-LC44).
+	for _, e := range cfg.Entities {
+		if s, ok := e.(interface{ sealedEntity() bool }); ok && s.sealedEntity() && cfg.Ring == nil {
+			return nil, fmt.Errorf("command: the entity %s has a readable secret field, and the runtime has no key ring", e.entityName())
+		}
 	}
 	rt := &Runtime{cfg: cfg, slots: &slotSeal{entities: map[Declared]bool{}}}
 	step, err := manifest.SchemaStepValue(cfg.SchemaSteps)
@@ -670,9 +681,9 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 		wrapped.Response, err = handler(ctx)
 		wrapped.Commit = err == nil && !transient(wrapped.Response)
 	} else {
-		wrapped, err = idempotency.Wrap(ctx, wrapTx{s: s}, idempotency.Request{Tenant: req.Tenant.ID(),
+		wrapped, err = idempotency.Wrap(ctx, wrapTx{s: s}, rt.keyed(idempotency.Request{Tenant: req.Tenant.ID(),
 			Principal: req.Principal.Subject().String(), Key: req.Key, Fingerprint: req.Fingerprint,
-			Retention: req.Retention}, handler)
+			Retention: req.Retention}), handler)
 	}
 	var failure *fillFailure
 	switch {

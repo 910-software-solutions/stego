@@ -39,6 +39,7 @@
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/project/fills/apply-note-replies/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/project/fills/get-order-summary/fill.go"}
 {"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/project/fills/sync-partner-orders/fill.go"}
+{"record_id":"ST-GEN-DS03-SV","file":"internal/compiler/testdata/runtime_wiring/project/fills/verify-order/fill.go"}
 {"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_access.go"}
 {"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_context.go"}
 {"record_id":"ST-GEN-DS04-SV","file":"internal/compiler/architecture_flows.go"}
@@ -55,6 +56,7 @@
 {"record_id":"ST-GEN-QRY03-H","file":"internal/compiler/namespace.go"}
 {"record_id":"ST-GEN-QRY03-H","file":"internal/compiler/source.go"}
 {"record_id":"ST-SUP-RC01-G20","file":"internal/generator/postgresadapter/runtime_access.go.tmpl"}
+{"record_id":"ST-SUP-RC01-G20","file":"internal/generator/postgresadapter/sealed_columns.go"}
 {"record_id":"ST-SUP-RC01-G22","file":"internal/generator/postgresadapter/schema_drop.go"}
 {"record_id":"ST-SUP-RC01-G22","file":"internal/generator/postgresadapter/schema_relax.go"}
 {"record_id":"ST-SUP-RC18-G01","file":"internal/generator/outbox/runtime.go"}

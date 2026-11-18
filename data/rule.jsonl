@@ -31,6 +31,7 @@
 {"id":"ST-DECL-INV07-RL","title":"declaration.validateFieldTypes","invariant_id":"ST-DECL-INV07","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV08-RL","title":"parser.checkNodes","invariant_id":"ST-DECL-INV08","file":"internal/parser/strict.go"}
 {"id":"ST-DECL-INV09-RL","title":"declaration.validateCollectionReferences","invariant_id":"ST-DECL-INV09","file":"internal/declaration/validate.go"}
+{"id":"ST-DECL-INV101-RL","title":"declaration.validateSecretFields","invariant_id":"ST-DECL-INV101","file":"internal/declaration/secret.go"}
 {"id":"ST-DECL-INV13-RL","title":"declaration.validateFieldDefaults","invariant_id":"ST-DECL-INV13","file":"internal/declaration/validate.go"}
 {"id":"ST-DECL-INV17-RL","title":"gen.ValidateGoImportNamespace","invariant_id":"ST-DECL-INV17","file":"internal/gen/go_namespace.go"}
 {"id":"ST-DECL-INV18-RL","title":"declaration.validateDefaultsLeft","invariant_id":"ST-DECL-INV18","file":"internal/declaration/reach.go"}

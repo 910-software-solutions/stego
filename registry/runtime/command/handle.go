@@ -273,6 +273,9 @@ type EntitySpec[T any] struct {
 	// service's schema: a delete of a row clears each of them on the row's resource, whatever wrote the tuple
 	// (ST-SUP-Q118). The handle is bound with them, but a fill relates only its own relations.
 	Relations []string
+	// Sealed is true when the entity has a readable secret field, which Values gives as SealAt and Scan reads into
+	// OpenAt: a runtime with no key ring refuses the entity (ST-SUP-RP10-LC44).
+	Sealed bool
 	// Tenant is true when the schema gives ResourceType the relation tenant of the subject type tenant: a create then
 	// touches the tuple <resource type>:<row>#tenant@tenant:<tenant resource ID> (authz.TenantResource), so a
 	// permission such as sync = tenant->worker_<name> reaches the rows of that tenant only. Only the runtime writes
@@ -574,6 +577,9 @@ func (e *Entity[T]) register(rt *Runtime) error {
 
 // Name is the entity's name.
 func (e *Entity[T]) Name() string { return e.spec.Name }
+
+// sealedEntity tells whether the entity has a readable secret field, which needs the key ring.
+func (e *Entity[T]) sealedEntity() bool { return e.spec.Sealed }
 
 // NewEntity checks the declaration of one entity and makes its repository declaration. It refuses a missing name,
 // statement or function, a statement that does not take the tenant as $1, a locked read without its lock clause,
@@ -1583,6 +1589,10 @@ func (s *state) close() {
 // fail records the error of a statement: a conflict (ST-SUP-RP10-LC25) or an internal error, which the state keeps,
 // so every later method and Run see it. It holds no database text.
 func (s *state) fail(ctx context.Context, step string, err error) error {
+	// A sealed value that does not open is an internal error of the runtime, not of a statement (ST-SUP-RP10-LC44).
+	if sealedFault(err) {
+		return s.breakWith(err)
+	}
 	code := sqlState(err)
 	if isConflict(ctx, err) {
 		if s.conflict == nil {
@@ -1664,7 +1674,7 @@ func (e *scanError) Unwrap() error { return e.err }
 // scanFailed marks err of a Scan of an entity, which is not sql.ErrNoRows, as a scanError when it has no SQLSTATE: an
 // error of the statement itself, which a row read gives at its Scan, keeps its SQLSTATE.
 func scanFailed(err error) error {
-	if err == nil || sqlState(err) != "" || errors.Is(err, sql.ErrNoRows) {
+	if err == nil || sqlState(err) != "" || errors.Is(err, sql.ErrNoRows) || sealedFault(err) {
 		return err
 	}
 	return &scanError{err: err}
@@ -1825,7 +1835,7 @@ func (r *Repository[T]) read(ctx context.Context, id string, lock lockMode, pare
 	var meta Meta
 	err := sql.ErrNoRows
 	if e.spec.ValidID(id) {
-		value, meta, err = e.spec.Scan(s.queryRow(ctx, e.spec.Select, s.tenant.ID(), id))
+		value, meta, err = e.spec.Scan(s.opening(s.queryRow(ctx, e.spec.Select, s.tenant.ID(), id)))
 		err = scanFailed(err)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1876,7 +1886,7 @@ func lockOne[T any](ctx context.Context, s *state, e *Entity[T], statement, id s
 	if _, err := s.exec(ctx, "SAVEPOINT stego_command_lock"); err != nil {
 		return zero, Meta{}, s.fail(ctx, step, err)
 	}
-	value, meta, err := e.spec.Scan(s.queryRow(ctx, statement, s.tenant.ID(), id))
+	value, meta, err := e.spec.Scan(s.opening(s.queryRow(ctx, statement, s.tenant.ID(), id)))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := s.release(ctx, step); err != nil {
@@ -2184,7 +2194,7 @@ func (r *Repository[T]) scanAll(ctx context.Context, step, statement string, arg
 	defer rows.Close()
 	var out []scanned[T]
 	for rows.Next() {
-		value, meta, err := r.entity.spec.Scan(rows)
+		value, meta, err := r.entity.spec.Scan(s.opening(rows))
 		if err != nil {
 			return nil, s.fail(ctx, step, scanFailed(err))
 		}
@@ -2302,11 +2312,15 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	if err != nil {
 		return nil, err
 	}
-	row, err := s.lockedRow(ctx, "create "+e.spec.Name, e.spec.Insert, append([]any{s.tenant.ID()}, e.spec.Values(value)...)...)
+	values, err := s.sealArgs(ctx, e.spec.Values(value))
+	if err != nil {
+		return nil, s.breakWith(err)
+	}
+	row, err := s.lockedRow(ctx, "create "+e.spec.Name, e.spec.Insert, append([]any{s.tenant.ID()}, values...)...)
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(row)
+	stored, meta, err := e.spec.Scan(s.opening(row))
 	if err != nil {
 		return nil, r.failWrite(ctx, "create "+e.spec.Name, scanFailed(err))
 	}
@@ -2364,12 +2378,16 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 		}
 	}
 	step := "update " + e.spec.Name
+	values, err := s.sealArgs(ctx, e.spec.Values(value))
+	if err != nil {
+		return nil, s.breakWith(err)
+	}
 	row, err := s.lockedRow(ctx, step, e.spec.Update,
-		append([]any{s.tenant.ID(), from2.meta.ID, from2.meta.Version}, e.spec.Values(value)...)...)
+		append([]any{s.tenant.ID(), from2.meta.ID, from2.meta.Version}, values...)...)
 	if err != nil {
 		return nil, err
 	}
-	stored, meta, err := e.spec.Scan(row)
+	stored, meta, err := e.spec.Scan(s.opening(row))
 	err = scanFailed(err)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.conflict = &conflictError{text: "the version of a row of " + e.spec.Name + " moved"}

@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 )
 
 // The fixed names of the settings of the process environment (ST-SUP-RP14-LC01).
@@ -49,6 +50,9 @@ const (
 	// cursor and seals none: the new key before every replica has it, or the old key after a rotation
 	// (ST-SUP-RP11-LC23). It is optional.
 	ExtraCursorKeyFileSetting = "STEGO_QUERY_CURSOR_EXTRA_KEY_FILE"
+	// KeyRingFileSetting is the file of the key ring of the secret fields (ST-SUP-RP16-LC02), which the api, the worker
+	// and the controller modes read, and the migration job never reads (ST-SUP-RP14-LC12).
+	KeyRingFileSetting = "STEGO_SECRET_KEY_RING_FILE"
 	// VersionSetting is the version of the release, which each audit row carries.
 	VersionSetting = "STEGO_SERVICE_VERSION"
 )
@@ -105,6 +109,9 @@ type Settings struct {
 	ExtraCursorKey []byte
 	// ServiceVersion is the version of the release, or empty.
 	ServiceVersion string
+	// Ring is the key ring of the secret fields, which ReadKeyRing reads for a service with a readable secret field,
+	// or nil (ST-SUP-RP14-LC12).
+	Ring *sealed.Ring
 }
 
 // MigrationSettings are the settings of the migration job, which ReadMigrationSettings reads.
@@ -152,6 +159,8 @@ func settingComponent(variable, auth string) string {
 		return "spicedb-authz"
 	case CursorKeyFileSetting, ExtraCursorKeyFileSetting:
 		return "query"
+	case KeyRingFileSetting:
+		return "command"
 	}
 	return ""
 }
@@ -291,6 +300,29 @@ func readSpiceDB() (SpiceDB, error) {
 		return SpiceDB{}, settingError(SpiceDBInsecureLoopbackSetting, "must be 0 or 1")
 	}
 	return s, nil
+}
+
+// ReadKeyRing reads the key ring of the secret fields from the file of KeyRingFileSetting, with the checks of
+// settingFile and of sealed.ParseRing. The generated code of a service with a readable secret field calls it for each
+// process that runs the api, the worker or the controller mode, and the migration job never calls it. A missing or
+// malformed setting is a *SettingError of the component command that names the variable, and never a key
+// (ST-SUP-RP14-LC12).
+func ReadKeyRing() (*sealed.Ring, error) {
+	name, err := required(KeyRingFileSetting)
+	if err != nil {
+		return nil, err
+	}
+	data, err := settingFile(KeyRingFileSetting, name)
+	if err != nil {
+		return nil, err
+	}
+	ring, err := sealed.ParseRing(data)
+	clear(data)
+	if err != nil {
+		// The error of the ring names a line number and never a key.
+		return nil, settingError(KeyRingFileSetting, "does not read as a key ring: "+strings.TrimPrefix(err.Error(), sealed.ErrRing.Error()+": "))
+	}
+	return ring, nil
 }
 
 // cursorKey reads the key of the list cursors from the file of CursorKeyFileSetting, with the checks of
