@@ -312,9 +312,10 @@ Each field of an entity is one item of `fields`:
 - `pii`: a personal value, such as an email. Answers hold it. The change
   events never hold it, and the audit rows redact it, unless the declaration
   sets `audit.pii` to `keep`. The runtime writes an audit row for each row of an
-  entity with a `pii` field that a fill reads. The idempotency store
-  holds the answers of the commands, and thus such a value, for 24 hours by
-  default (see
+  entity with a `pii` field that a fill reads. The idempotency store keeps
+  the answers of the commands, and thus such a value, for 24 hours by
+  default. Since runtime v0.138.0 it seals each stored answer of a service
+  with a `pii` field with the key ring (see
   [Idempotency](commands-queries-workers.md#idempotency)).
 - `secret`: a value that no answer, audit row, change event, log or query
   holds. The database stores it sealed. A secret is a `string` or a `jsonb`.
@@ -340,11 +341,16 @@ A `secret` field is readable, or it is compare-only:
 A service with a `secret` field, readable or compare-only, or a `pii` field
 needs the key ring of its secret fields, in the Secret
 `<service>-secret-key-ring`. The api, worker and controller modes do not start
-without it. Give the key ring also to a service that has only compare-only
-secrets: the runtime keys the fingerprints of the stored answers with it, so a
-reader of the database cannot try each PIN against a stored request. See
+without it (runtime v0.138.0). The runtime keys the fingerprints of the stored
+answers with the ring and seals the answers, so a reader of the database
+cannot try each PIN against a stored request or read a stored `pii` value. See
 [Day-2 operations](operations.md) for the key ring, its backup and its
 rotation.
+
+A readable secret that the base release stores in clear, such as a field that
+was `pii` before, or a secret field of a release before runtime v0.135.0,
+moves to its sealed column with a seal step over two releases: see [Seal
+steps](schema-changes.md#seal-steps).
 
 ### writable
 
@@ -384,10 +390,14 @@ can read the `api_key` of each wallet of the tenant, and change each wallet.
 A fault in such a fill can leak or change each secret. Do not let a broad
 worker, such as a report, write an entity with a secret field: put the secret
 in an entity of its own, which the worker does not write. A read-only access of
-a worker is an open question (ST-SUP-Q186). Do not put a secret in the response message of a
-command: the idempotency store keeps each answer of a command for the
-retention of its key (see
-[Idempotency](commands-queries-workers.md#idempotency)).
+a worker (`reads`) is decided (ST-SUP-Q186 (a)) and not built yet.
+
+Do not put a secret in the response message of a command: the idempotency
+store keeps each answer of a command for the retention of its key. Since
+runtime v0.138.0, a service with a `secret` or a `pii` field seals each stored
+answer with its key ring (see
+[Idempotency](commands-queries-workers.md#idempotency)), but the answer is still
+kept, and a reader of the answer gets the secret.
 
 A field with `writable: create` or `never` that is a secret is never compared:
 an update that gives it, also with the stored value, gets 400. An answer never
@@ -495,8 +505,8 @@ outside the fill, at the gateway or for each caller and wallet, and use a
 longer PIN where you can. A fill cannot count the wrong attempts itself: a
 refusal is an error of the fill, and the runtime commits nothing when the fill
 returns an error, so a counter that the fill writes before the refusal rolls
-back with it. A counter that a refusal can commit is an open question
-(ST-SUP-Q185).
+back with it. A declared counter of wrong attempts that a refusal commits is
+decided (ST-SUP-Q185 (a)) and not built yet.
 
 To set a new PIN, give a new Compared to the value and update the row. The
 fill of `change-pin` does this:
@@ -693,7 +703,8 @@ definition daily_total {
 
 No route and no declaration writes a relation of a person on the tenant
 resource: Provision writes the admins on the service-level resource, not on
-the tenant resource. Until STEGO gives a way (ST-SUP-Q183), an operator writes
+the tenant resource. Until the decided way is built (ST-SUP-Q183 (a): Provision relates the tenant
+resource to the service-level resource), an operator writes
 the grant in SpiceDB, on the tenant-qualified ID of the tenant resource. For
 the tenant `acme` and the user `dora` of the issuer
 `https://idp.example.test`:
@@ -786,8 +797,9 @@ type Change struct {
 The event holds no field value, also no `public` field, so that no `pii` or
 `secret` value leaves the service in an event. A worker handle has no network
 client, so the consuming fill cannot read the amount or the balance from the
-service `wallets`. Until STEGO gives a way to carry the state of a row
-(ST-SUP-Q184), a consumer can use only the ID and the action.
+service `wallets`. A declared projection of the fields that an event carries
+is decided (ST-SUP-Q184 (c)) and not built yet. Until then, a consumer can use
+only the ID and the action.
 
 ## Test a fill
 
