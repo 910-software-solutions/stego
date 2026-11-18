@@ -24,6 +24,13 @@ requirements:
     components:
       - spicedb-authz
   - kind: secret
+    name: user-management-kafka-client
+    keys:
+      - ca-crt
+      - password
+    components:
+      - kafka-producer
+  - kind: secret
     name: user-management-query-cursor
     keys:
       - key
@@ -982,6 +989,9 @@ environment:
     required: false
     description: A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots.
     secret: false
+    secret_source:
+      name: user-management-kafka-client
+      key: ca-crt
     read_by_mode: worker
   - name: STEGO_KAFKA_CLIENT_CERT_FILE
     read_by:
@@ -1016,6 +1026,9 @@ environment:
     required: false
     description: The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it.
     secret: false
+    secret_source:
+      name: user-management-kafka-client
+      key: password
     read_by_mode: worker
   - name: STEGO_KAFKA_SASL_MECHANISM
     read_by:

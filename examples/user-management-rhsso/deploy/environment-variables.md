@@ -229,6 +229,8 @@ alone reads a variable of the mode migrate; the serving Deployment never referen
 | Variable | Secret | Key | Read by |
 |---|---|---|---|
 | `DATABASE_URL` | `user-management-database` | `url` | the Deployment |
+| `STEGO_KAFKA_CA_FILE` | `user-management-kafka-client` | `ca-crt` | the Deployment of the worker mode only (mode worker) |
+| `STEGO_KAFKA_PASSWORD_FILE` | `user-management-kafka-client` | `password` | the Deployment of the worker mode only (mode worker) |
 | `STEGO_MIGRATION_DATABASE_URL` | `user-management-database-owner` | `url` | the migration Job only (mode migrate) |
 | `STEGO_QUERY_CURSOR_KEY_FILE` | `user-management-query-cursor` | `key` | the Deployment |
 | `STEGO_RELAY_DATABASE_URL` | `user-management-database-relay` | `url` | the Deployment of the worker mode only (mode worker) |
