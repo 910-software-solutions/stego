@@ -150,14 +150,19 @@ Secret holds the connection string of `<service>_migrator`.
 When Verify refuses the database, at startup or in the mode migrate, the
 failure record names the stage `database.schema`, the field `fault` (owner,
 login, table, column, constraint, index or grant) and the field `object` (the
-generated table, column, constraint or index). It holds no value, password or
-database error text. The stage `database.access` is kept for a connection that
+generated table, column, constraint or index). For the faults owner, login and
+grant, version 4.11.0 and later also names the field `remedy`, a fixed text that
+names the section [Move a browser-service database to the owner and migrator
+logins](../../../docs/upgrade.md#move-a-browser-service-database-to-the-owner-and-migrator-logins)
+of the upgrade guide. It holds no value, password or database error text. The stage `database.access` is kept for a connection that
 did not open or a login that could not be read.
 
 The generated `browser/schema.Bootstrap` function is also available to your own
 code. Version 2 requires a separate schema owner and runtime login. An older deployment
 that used the table owner as its runtime login must change its grants and table
-ownership before it uses this version. Startup rejects unsafe permissions.
+ownership before it uses this version. Startup rejects unsafe permissions. A
+database of a release before 4.6.0 has a LOGIN owner: move it with the steps of
+the upgrade guide (see above) before the first migration Job.
 
 With `postgres-client`, provision a database with `ManagedSchema: true`, then call
 `WithDatabaseOwner`. In its callback, pass the connection and `identity.User` to

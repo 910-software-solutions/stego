@@ -31,6 +31,22 @@ func (f *Fault) Is(target error) bool { return target == ErrSchema }
 func (f *Fault) FaultClass() string { return f.class }
 func (f *Fault) FaultObject() string { return f.object }
 
+// roleLayout is the remedy of a fault of the classes owner, login and grant: the database roles are not the layout
+// of browser-backend 4.6.0 and later, a NOLOGIN NOINHERIT owner role and a migration login in it, such as a database
+// that an older release made with a LOGIN owner (walkthrough 11, W11-B1).
+const roleLayout = "the database roles are not the layout of browser-backend 4.6.0 and later: a NOLOGIN NOINHERIT owner role, a migration login that is a member of it, and a NOINHERIT runtime login; do the steps of docs/upgrade.md#move-a-browser-service-database-to-the-owner-and-migrator-logins in the STEGO repository"
+
+// FaultRemedy gives the fixed text that tells the operator what to do, which the failure record names beside the
+// class (ST-SUP-RC02-OC57): the move to the role layout for the classes owner, login and grant, and empty for a
+// table that differs from the generated schema, which the check does not repair.
+func (f *Fault) FaultRemedy() string {
+ switch f.class {
+ case "owner", "login", "grant":
+  return roleLayout
+ }
+ return ""
+}
+
 func fault(class, object string) error { return &Fault{class: class, object: object} }
 
 const sessions = "public.stego_browser_sessions"

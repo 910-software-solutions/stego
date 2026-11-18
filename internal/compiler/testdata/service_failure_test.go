@@ -55,6 +55,46 @@ func TestFailureRecordFaultClass(t *testing.T) {
 	})
 }
 
+// remediedFailure is a classified failure that also names its remedy.
+type remediedFailure struct {
+	classifiedFailure
+	remedy string
+}
+
+func (f remediedFailure) FaultRemedy() string { return f.remedy }
+
+func TestFailureRecordRemedy(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC57-T03 The failure record names the remedy of a classified fault, a fixed text of printable ASCII, and drops any other", func(t *testing.T) {
+		const remedy = "do the steps of docs/upgrade.md#move-a-browser-service-database-to-the-owner-and-migrator-logins"
+		for _, c := range []struct {
+			cause      error
+			wantRemedy string
+		}{
+			{remediedFailure{classifiedFailure{"owner", "public.stego_browser_sessions"}, remedy}, remedy},
+			{remediedFailure{classifiedFailure{"owner", "public.stego_browser_sessions"}, remedy + "\nforged line"}, ""},
+			{remediedFailure{classifiedFailure{"owner", "public.stego_browser_sessions"}, "caf\u00e9"}, ""},
+			{remediedFailure{classifiedFailure{"owner", "public.stego_browser_sessions"}, strings.Repeat("a", 513)}, ""},
+			{remediedFailure{classifiedFailure{"table", "public.stego_browser_sessions"}, ""}, ""},
+			// A remedy with no valid class is dropped with the class, so the record never names a remedy alone.
+			{remediedFailure{classifiedFailure{"Owner", "x"}, remedy}, ""},
+		} {
+			var output bytes.Buffer
+			stegoReportFailure(&output, &stegoServiceFailure{stage: "database.schema", cause: c.cause})
+			var record map[string]any
+			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+				t.Fatal(e)
+			}
+			got, _ := record["remedy"].(string)
+			if got != c.wantRemedy {
+				t.Fatalf("the cause %#v gave the record %v, want the remedy %q", c.cause, record, c.wantRemedy)
+			}
+			if bytes.Count(output.Bytes(), []byte("\n")) != 1 {
+				t.Fatalf("the record is not one line: %q", output.String())
+			}
+		}
+	})
+}
+
 func TestFailureRecordCauseClass(t *testing.T) {
 	t.Run("ST-GEN-INV16-T a listen port that another process holds names the cause class address_in_use and no error text", func(t *testing.T) {
 		held, err := net.Listen("tcp", "127.0.0.1:0")
