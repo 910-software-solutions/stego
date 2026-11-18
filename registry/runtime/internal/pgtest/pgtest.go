@@ -31,10 +31,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -64,16 +64,55 @@ var (
 	mu        sync.Mutex
 	tool      string
 	container string
-	// reaped are the containers of other images that Reap took, which remove removes too.
+	// reaped are the containers of other images and the networks that Reap and ReapNetwork took, which remove
+	// removes too, the containers first.
 	reaped []reapedContainer
 )
 
-// reapedContainer is one container that Reap took: the path of its tool and its name.
-type reapedContainer struct{ path, name string }
+// The kinds of a reaped object.
+const (
+	kindContainer = "container"
+	kindNetwork   = "network"
+)
 
-// reaperScript waits while the test binary ($1) runs, then removes the container $3 with the tool $2. It polls
-// with kill -0, which sends no signal.
-const reaperScript = `while kill -0 "$1" 2>/dev/null; do sleep 1; done; "$2" rm --force "$3" >/dev/null 2>&1`
+// reapedContainer is one container or network that Reap or ReapNetwork took: its kind, the path of its tool, its
+// name, and its reaper, if one started.
+type reapedContainer struct {
+	kind, path, name string
+	reaper           *reaper
+}
+
+// reaperScript removes the object $3 of the kind $1 with the tool $2 when the test binary ends. It reads one line
+// from its standard input, a pipe whose write end only the test binary holds: the end of the binary on any path,
+// also a kill, closes the pipe and ends the read, so no PID is watched and a reused PID keeps no reaper alive. The
+// line done is a clean exit, after which Main removed the object itself: the reaper then ends at once. A network is
+// removed after its containers, so its removal is tried again for up to one minute.
+const reaperScript = `read -r line
+[ "$line" = done ] && exit 0
+if [ "$1" = network ]; then
+	i=0
+	while [ "$i" -lt 60 ]; do
+		"$2" network rm "$3" >/dev/null 2>&1 && exit 0
+		i=$((i + 1))
+		sleep 1
+	done
+	exit 1
+fi
+"$2" rm --force "$3" >/dev/null 2>&1
+`
+
+// reaper is one reaper process: the write end of the pipe that it reads, and a channel that closes when it ended.
+type reaper struct {
+	stop  *os.File
+	ended chan struct{}
+	pid   int
+}
+
+// done tells the reaper that the test binary removed its object, so it ends at once and removes nothing.
+func (r *reaper) done() {
+	_, _ = r.stop.WriteString("done\n")
+	_ = r.stop.Close()
+}
 
 // Reap makes sure that the container name, which the test binary started with the tool path, is removed when the
 // binary ends on any path: remove, which Main calls when the tests end and on SIGINT, removes it, and a reaper
@@ -81,23 +120,48 @@ const reaperScript = `while kill -0 "$1" 2>/dev/null; do sleep 1; done; "$2" rm 
 // container whose image has no time limit of its own, as the SpiceDB image, which holds no timeout program; such
 // containers leaked for days before (followups, 2026-11-17). A reaper that cannot start is reported on standard
 // error, and Main still removes the container.
-func Reap(path, name string) {
-	mu.Lock()
-	reaped = append(reaped, reapedContainer{path: path, name: name})
-	mu.Unlock()
-	if err := reap(os.Getpid(), path, name); err != nil {
-		fmt.Fprintf(os.Stderr, "pgtest: start the reaper of the container %s: %v\n", name, err)
+func Reap(path, name string) { take(kindContainer, path, name) }
+
+// ReapNetwork makes sure that the network name, which the test binary made with the tool path for its containers,
+// is removed when the binary ends on any path, as Reap does for a container: remove removes it after the containers,
+// and a reaper removes it when the binary is killed (security review of PR #417, L1).
+func ReapNetwork(path, name string) { take(kindNetwork, path, name) }
+
+// take records the object for remove and starts its reaper.
+func take(kind, path, name string) {
+	r, err := reap(kind, path, name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pgtest: start the reaper of the %s %s: %v\n", kind, name, err)
 	}
+	mu.Lock()
+	reaped = append(reaped, reapedContainer{kind: kind, path: path, name: name, reaper: r})
+	mu.Unlock()
 }
 
-// reap starts the reaper process that removes the container name with the tool path once the process pid ends.
-func reap(pid int, path, name string) error {
-	reaper := exec.Command("sh", "-c", reaperScript, "reaper", strconv.Itoa(pid), path, name)
-	if err := reaper.Start(); err != nil {
-		return err
+// reap starts the reaper process that removes the object name of the kind with the tool path once the test binary
+// ends. The reaper is in a process group of its own, so a kill of the group of the test binary, as an interrupt of
+// the terminal sends, does not take it too (security review of PR #417, L1).
+func reap(kind, path, name string) (*reaper, error) {
+	read, write, err := os.Pipe()
+	if err != nil {
+		return nil, err
 	}
-	go func() { _ = reaper.Wait() }()
-	return nil
+	cmd := exec.Command("sh", "-c", reaperScript, "reaper", kind, path, name)
+	cmd.Stdin = read
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		_ = read.Close()
+		_ = write.Close()
+		return nil, err
+	}
+	// Only the reaper holds the read end; only this process holds the write end, which no other child inherits.
+	_ = read.Close()
+	r := &reaper{stop: write, ended: make(chan struct{}), pid: cmd.Process.Pid}
+	go func() {
+		_ = cmd.Wait()
+		close(r.ended)
+	}()
+	return r, nil
 }
 
 // Main runs the tests of m, removes the container that a test started, if any, and each container that Reap took,
@@ -276,7 +340,8 @@ func run(path string) (string, error) {
 	return u.String(), nil
 }
 
-// remove removes the container, if one started. It is safe to call more than once.
+// remove removes the container, if one started, and each container and then each network that Reap and
+// ReapNetwork took, and stops their reapers. It is safe to call more than once.
 func remove() {
 	mu.Lock()
 	path, id := tool, container
@@ -284,12 +349,25 @@ func remove() {
 	others := reaped
 	reaped = nil
 	mu.Unlock()
-	for _, other := range others {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		if _, err := command(ctx, other.path, "rm", "--force", other.name); err != nil {
-			fmt.Fprintf(os.Stderr, "pgtest: remove the container %s: %v\n", other.name, err)
+	for _, kind := range []string{kindContainer, kindNetwork} {
+		for _, other := range others {
+			if other.kind != kind {
+				continue
+			}
+			args := []string{"rm", "--force", other.name}
+			if kind == kindNetwork {
+				args = []string{"network", "rm", other.name}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			if _, err := command(ctx, other.path, args...); err != nil {
+				fmt.Fprintf(os.Stderr, "pgtest: remove the %s %s: %v\n", kind, other.name, err)
+			}
+			cancel()
+			// The object is removed: its reaper ends now, and does not outlive a clean exit.
+			if other.reaper != nil {
+				other.reaper.done()
+			}
 		}
-		cancel()
 	}
 	if id == "" {
 		return

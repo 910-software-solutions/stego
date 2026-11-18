@@ -240,6 +240,9 @@ func startPostgresSpiceDB(t *testing.T, schema string) *spiceEnv {
 			s.err = fmt.Errorf("create the docker network: %v: %s", err, out)
 			return
 		}
+		// The network is removed after its containers also when the test binary is killed (security review of PR
+		// #417, L1).
+		pgtest.ReapNetwork("docker", s.network)
 		database := "stego-authz-spicedb-pg-" + hex.EncodeToString(suffix)
 		s.extra = append(s.extra, database)
 		if out, err := exec.Command("docker", "run", "-d", "--rm", "--name", database, "--network", s.network,
