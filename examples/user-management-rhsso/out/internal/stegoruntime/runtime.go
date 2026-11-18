@@ -239,8 +239,13 @@ func provisioning() *service.Provisioning {
 			p.ResourceType, p.Provision, p.ProvisionRoute = o.ResourceType, o.Permission, o.Route
 		case "retire":
 			p.Retire, p.RetireRoute = o.Permission, o.Route
+		case "list":
+			p.List = o.Permission
 		}
 	}
+	// The tenant check exempts the route of the tenant list, which answers 404 when the schema declares no
+	// list_tenants (ST-SUP-RC27-OC16).
+	p.ListRoute = "GET " + strings.TrimSuffix(basePath, "/") + "/stego/tenants"
 	return p
 }
 
@@ -345,6 +350,11 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 			rt.routes.Handle(o.Route, provision)
 		case "retire":
 			rt.routes.Handle(o.Route, retire)
+		case "list":
+			// The tenant list of the operator (ST-SUP-RC27-OC16).
+			if list := svc.TenantList(); list != nil {
+				rt.routes.Handle(o.Route, list)
+			}
 		}
 	}
 	return rt, nil
