@@ -1131,6 +1131,15 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		var required []string
 		for _, f := range e.Fields {
 			schema.Properties[f.Name] = fieldToOpenAPISchema(f)
+			if keptField(f) {
+				// A field that a collection write cannot change is readOnly in the entity schema, which only the
+				// responses use: the request check refuses a readOnly member with any value (ST-SUP-RC20-OC47).
+				// A secret is writeOnly, which keeps it out of each response, and a schema is never both.
+				property := schema.Properties[f.Name]
+				property.ReadOnly = !f.Secret()
+				property.Description = keptDescription(f, property.Description)
+				schema.Properties[f.Name] = property
+			}
 			// Scope fields are derived from URL path parameters, not the
 			// request body — exclude them from the required array.
 			// A secret is in no response, and an update that leaves it out keeps it (ST-SUP-RC20-OC48), so the
@@ -1152,8 +1161,31 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		}
 		implicitFields := entityImplicitFields[e.Name]
 		var createRequired []string
+		// The UpdateRequest schema of an entity with a field that a collection write cannot change holds that field
+		// as an optional member, not readOnly, which the body may leave out or give with its stored value, so a
+		// client that sends back a read row passes the request check (ST-SUP-RC20-OC47).
+		updateSchema := openAPISchema{
+			Type:       "object",
+			Properties: make(map[string]openAPISchema),
+		}
+		var updateRequired []string
 		for _, f := range e.Fields {
 			if isServerManaged(f) || scopeFields[f.Name] || implicitFields[f.Name] {
+				continue
+			}
+			updateSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
+			if keptField(f) {
+				// The request check writes the default of a member that the body leaves out into the body, which
+				// would then give a value other than the stored one: the member has no default here.
+				property := updateSchema.Properties[f.Name]
+				property.Description = keptUpdateDescription(f, property.Description)
+				property.Default = nil
+				updateSchema.Properties[f.Name] = property
+			} else if !f.Optional {
+				updateRequired = append(updateRequired, f.Name)
+			}
+			// The create-request schema leaves out a field with writable never: a create stores its default.
+			if f.Writable == types.WritableNever {
 				continue
 			}
 			createSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
@@ -1165,6 +1197,12 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 			createSchema.Required = createRequired
 		}
 		spec.Components.Schemas[e.Name+"CreateRequest"] = createSchema
+		if hasKeptField(e) {
+			if len(updateRequired) > 0 {
+				updateSchema.Required = updateRequired
+			}
+			spec.Components.Schemas[e.Name+"UpdateRequest"] = updateSchema
+		}
 	}
 
 	// Generate paths from collections.
@@ -1185,6 +1223,10 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 
 		collPascal := collectionToPascalCase(eb.Name)
 		createRef := "#/components/schemas/" + eb.Entity + "CreateRequest"
+		updateRef := createRef
+		if hasKeptField(entityMap[eb.Entity]) {
+			updateRef = "#/components/schemas/" + eb.Entity + "UpdateRequest"
+		}
 		for _, op := range eb.Operations {
 			tag := eb.Name
 			ref := "#/components/schemas/" + eb.Entity
@@ -1328,7 +1370,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 					}),
 					RequestBody: &openAPIRequestBody{
 						Required: true,
-						Content:  jsonContent(openAPISchema{Ref: createRef}),
+						Content:  jsonContent(openAPISchema{Ref: updateRef}),
 					},
 					Responses: map[string]openAPIResponse{
 						"200": {Description: "Updated", Content: jsonContent(responseSchema)},
@@ -1554,6 +1596,46 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 		s.Default = f.Default
 	}
 	return s
+}
+
+// keptField tells whether a collection write keeps the stored value of a field that the client otherwise sets: its
+// writable setting is create or never (ST-DECL-EN03). A server-managed field is never written by the client, so its
+// setting changes nothing.
+func keptField(f types.Field) bool { return f.Kept() && !isServerManaged(f) }
+
+// hasKeptField tells whether an entity has a field of keptField.
+func hasKeptField(e types.Entity) bool { return slices.ContainsFunc(e.Fields, keptField) }
+
+// keptDescription gives the description of a field of keptField in the entity schema: when the field may be set,
+// after the description of its type (ST-SUP-RC20-OC47).
+func keptDescription(f types.Field, typeDescription string) string {
+	when := "A create sets this field; after that only a command or a worker changes it, and a collection write cannot change it."
+	if f.Writable == types.WritableNever {
+		when = "Only a command or a worker sets this field; a create stores its default, and a collection write cannot change it."
+	}
+	if f.Secret() {
+		// A kept secret is never compared, so an update must leave it out, also empty (ST-SUP-RC20-OC44).
+		return joinDescription("A secret: no response gives it back.", when+" An update must leave it out.")
+	}
+	return joinDescription(typeDescription, when)
+}
+
+// joinDescription gives the description of a type and then the sentence when, each a sentence.
+func joinDescription(typeDescription, when string) string {
+	if typeDescription == "" {
+		return when
+	}
+	return strings.TrimSuffix(typeDescription, ".") + ". " + when
+}
+
+// keptUpdateDescription gives the description of a field of keptField in the update-request schema (ST-SUP-RC20-OC47).
+// A secret is never compared with the stored value, so the body must leave it out.
+func keptUpdateDescription(f types.Field, typeDescription string) string {
+	if f.Secret() {
+		// The update of a kept secret refuses each member that names it, also an empty one (ST-SUP-RC20-OC44).
+		return "A secret: a create sets it, and no response gives it back. An update cannot take this secret field: the body must leave it out."
+	}
+	return joinDescription(typeDescription, "An update cannot change this field: the body may leave it out or give its stored value.")
 }
 
 // isServerManaged returns true when a field's value is assigned by the server,

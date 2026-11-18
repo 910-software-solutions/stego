@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118163642-80e56b39d76b
+        module_version: v0.0.0-20261118171935-f77e0503d516
         vcs: git
-        revision: 80e56b39d76ba21ef67a9854c446170db9cfbf2b
+        revision: f77e0503d51654f2997157f2bfa4c563881a7c1c
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 77ae1b4e92019a80776ba617ceafda432c66e9f143332e9afde93ce85d435575
+    registry_content_sha256: 82412aed18434b0c0d842659676db58ee39aa2c1f881b270efad38088a5b649e
     components:
         audit-log:
             version: 1.2.0
@@ -74,8 +74,8 @@ last_applied:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
         rest-api:
-            version: 4.12.0
-            sha: cbc3d58b88033c8162adce98747df08d315c76800ce787ccf0a14a76c44ed9b7
+            version: 4.13.0
+            sha: 62c6d4be6a577f1a071ad818946e297aa3af264206d3f80b1bc70e225c2a9c20
         spicedb-authz:
             version: 1.4.0
             sha: bc44dfacc5b8c323ef4988fda14d223f7c66d02f30ffbe65ffdec2a094217010
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 771b2a26f27f87f32ab83474f57bd15e5394c77330ab5de36e7cd4787d35180e
-        architecture/index.html: 82d6c0165c12c1d9b724a0b1014d14c679dd8c30953f922fc132e2b1eaff84ea
+        architecture/architecture.json: e19e9e09386d0ae76b6e5f8c05425c238976b7f6c35f3bc1d13eec9981c892e6
+        architecture/index.html: 3bd478fe604982ffa7c05487a6cd7bba40c5a9379989a141491ffe4970f358c3
         deploy/base/deployment.yaml: ea22a1bda41f03346a2d2b2ffa2e321b33b2c803eb874cbbfae5611de163739d
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: bfe46a066e924e0abb43857063adbc1327caa7153b6ae1903f88d11b66c796a2
@@ -234,7 +234,7 @@ last_applied:
         deploy/platform-requirements.yaml: 7724068292bbca4dc9a0379c8817e944c5896e285c41a58bfc19720854950638
     archetype:
         name: rest-crud
-        version: 3.183.0
+        version: 3.184.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.137.0
