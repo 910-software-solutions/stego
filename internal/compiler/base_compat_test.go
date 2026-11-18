@@ -253,6 +253,32 @@ func TestBaseCompat(t *testing.T) {
 				t.Errorf("%s: want refused, got no fault", c.name)
 			}
 		}
+		// Walkthrough 14, W14-B3: a retype with no definition is refused with a fault that names the column, its two
+		// forms and the cause, and not with the two whole CREATE TABLE texts.
+		data := []byte(base)
+		noDefinition := strings.Replace(head("x"), `definition: "x", `, "", 1)
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: data, Record: recordFor(data)}, parseHead(t, noDefinition))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, fault := range check.Faults {
+			if fault.Rule != BaseCompatRule || !strings.Contains(fault.Message, "the column points is") {
+				continue
+			}
+			found = true
+			for _, want := range []string{`"points" integer NOT NULL DEFAULT 0`, "the retype user-points-retype gives no definition", "such as its default"} {
+				if !strings.Contains(fault.Message, want) {
+					t.Errorf("the fault of a retype with no definition does not say %q: %s", want, fault.Message)
+				}
+			}
+			if strings.Contains(fault.Message, "CREATE TABLE") {
+				t.Errorf("the fault of a retype with no definition gives the whole tables: %s", fault.Message)
+			}
+		}
+		if !found {
+			t.Errorf("a retype with no definition gives no fault that names the column points: %+v", check.Faults)
+		}
 	})
 
 	t.Run("ST-GEN-INV33-T A change of the indexes that a collection gives a base entity is refused, and a change that gives no index is accepted", func(t *testing.T) {

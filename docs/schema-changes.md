@@ -556,6 +556,23 @@ its type: a retype from `int64` to `string` changes the value `14` to `"14"`,
 and a retype from `string` to `int64` changes `"14"` to `14`. The OpenAPI
 contract of the release after the change gives the new type. Thus a client
 that reads the field must accept both types while the two releases run.
+
+A retype also breaks the writes of an old client. Each release checks the
+JSON type of the field in a request body by its own OpenAPI contract. Thus
+the new release refuses a write of the old type with 400, such as
+`value must be a string` for `14`, and the old release refuses a write of the
+new type, such as `value must be an integer` for `"14"`. A client that writes
+the field must send the type of the release that gets its request. Before
+the rollout, change each client so that it reads both types, and so that it
+writes the new type only to the new release. Or move the clients only after
+the old release stops.
+
+Give the field before the change in `definition` with each of its
+settings, such as `int64, default 0`, also when the conversion does not need
+a constraint. With no definition, the field before the change has its type
+alone, so `stego compat` finds a table that differs from the base. The fault
+names each column and constraint that differs, with its form in the base and
+in the head, and names the retype that gives no definition.
 Its values go to a new column,
 `<field>_<type>`, such as `rank_string`, which stays its column after the
 contract step. The expand step adds the column, nullable, its CHECK
