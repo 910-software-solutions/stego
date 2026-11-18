@@ -29,6 +29,7 @@ const sealsText = `CREATE TABLE IF NOT EXISTS stego_schema.seals (
 	token bigint NOT NULL DEFAULT 0,
 	created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp()
 );
+ALTER TABLE stego_schema.seals ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT pg_catalog.clock_timestamp();
 REVOKE ALL ON TABLE stego_schema.seals FROM PUBLIC;
 CREATE OR REPLACE FUNCTION stego_schema.seal_read(text)
  RETURNS TABLE (last_tenant text, last_id text, sealed_rows bigint, checked_rows bigint, started boolean, completed boolean, waiting boolean, stale boolean)

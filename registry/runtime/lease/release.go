@@ -149,8 +149,9 @@ func (b *Beat) ready(ctx context.Context) (bool, error) {
 // StartBeat reports the process as the release release, with the label version (STEGO_SERVICE_VERSION), on db, the
 // pool of the runtime role: once before it returns and then every ReleaseEvery (ST-SUP-RP09-LC14). The holder is 16
 // random bytes, so no other process can stop the report. A report that fails, such as on a database where no step
-// has made the table yet, is logged once with no error text of the database and tried again at the next time; it
-// never stops the process. On a database where no step has made the function the report reads only the catalog, so
+// has made the table yet, is logged once with no error text of the database and tried again at the next time; a later
+// report never stops the process, and the first one does when the catalog shows the function and its call fails, so
+// the process restarts and serves no write unreported (security re-review of PR #443, N2). On a database where no step has made the function the report reads only the catalog, so
 // PostgreSQL logs no error, and logs at the debug level only; once the catalog shows the function, it calls it. The label keeps its printable ASCII characters, at most 64.
 func StartBeat(ctx context.Context, db *sql.DB, release, version string) (*Beat, error) {
 	return startBeat(ctx, db, release, version, ReleaseEvery)
@@ -166,7 +167,11 @@ func startBeat(ctx context.Context, db *sql.DB, release, version string, every t
 	}
 	b := &Beat{db: db, holder: hex.EncodeToString(raw), release: release, version: label(version), every: every,
 		stop: make(chan struct{}), done: make(chan struct{})}
-	b.beat(ctx)
+	// A first report that fails while the function is there stops the start, so the process restarts and never
+	// serves a write unreported while a seal is open (security re-review of PR #443, N2).
+	if err := b.beat(ctx); err != nil {
+		return nil, fmt.Errorf("lease: the first release report of %s failed: %w", release, err)
+	}
 	go b.run()
 	return b, nil
 }
@@ -182,8 +187,9 @@ func label(version string) string {
 	return b.String()
 }
 
-// beat writes one report under a time limit of one interval.
-func (b *Beat) beat(parent context.Context) {
+// beat writes one report under a time limit of one interval. It gives the error of a report that failed while the
+// catalog shows the function, and nil when no step has made the function yet.
+func (b *Beat) beat(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), b.every)
 	defer cancel()
 	made, err := b.ready(ctx)
@@ -191,7 +197,7 @@ func (b *Beat) beat(parent context.Context) {
 		// No step has made the function yet: the database has had no rename at expand, and no contract step reads
 		// the reports. The report is a quiet no-op until a step makes it.
 		slog.Debug("lease: the release report has no function yet", "release", b.release)
-		return
+		return nil
 	}
 	if err == nil {
 		_, err = b.db.ExecContext(ctx, "SELECT stego_schema.release_beat($1, $2, $3, $4)", b.holder, b.release, b.version, int(b.every/time.Millisecond))
@@ -209,6 +215,10 @@ func (b *Beat) beat(parent context.Context) {
 		b.failing = false
 		slog.Info("lease: the release report works again", "release", b.release)
 	}
+	if err != nil && made {
+		return err
+	}
+	return nil
 }
 
 func (b *Beat) run() {
