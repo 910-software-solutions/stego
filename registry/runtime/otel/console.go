@@ -7,6 +7,7 @@ import (
 	"math"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +23,9 @@ const (
 	// ConsoleQueue is the most lines that wait for the console writer; a line that does not fit is dropped and
 	// counted (ConsoleDropped), and the record is never blocked.
 	ConsoleQueue = 256
-	// ConsoleLimit is the most lines of one event name that the console writes in one ConsoleWindow.
+	// ConsoleLimit is the most lines of one event name that the console writes in one ConsoleWindow, for the lines
+	// of severity WARN and, in a budget of their own, for the lines of severity ERROR or FATAL, so that many WARN
+	// lines of an event name never keep its ERROR lines off the console (security review of PR #421, I1).
 	ConsoleLimit = 10
 	// ConsoleWindow is the window of the rate limit of one event name. When it ends with lines of the event name
 	// dropped, the console writes one line with the event name and the count of the dropped lines.
@@ -64,7 +67,7 @@ type console struct {
 	once    sync.Once
 
 	// The state of the writer goroutine only.
-	windows map[string]*consoleWindow
+	windows map[consoleBudget]*consoleWindow
 	line    []byte
 }
 
@@ -75,6 +78,17 @@ type consoleLine struct {
 	event    string
 	message  string
 	attrs    []attribute.KeyValue
+}
+
+// consoleBudget is the key of one rate limit: an event name, and whether its lines are of severity ERROR or higher.
+type consoleBudget struct {
+	event  string
+	errors bool
+}
+
+// budgetOf gives the budget of a line of event of severity.
+func budgetOf(event string, severity otellog.Severity) consoleBudget {
+	return consoleBudget{event: event, errors: severity >= otellog.SeverityError}
 }
 
 // consoleWindow is the rate limit of one event name: when its window started, the lines written in it and the lines
@@ -91,7 +105,7 @@ type consoleWindow struct {
 func newConsole(out io.Writer, now func() time.Time, ticks <-chan time.Time, skip func(scope string) bool) *console {
 	c := &console{out: out, now: now, skip: skip, queue: make(chan consoleLine, ConsoleQueue),
 		flush: make(chan chan struct{}), stop: make(chan struct{}), done: make(chan struct{}),
-		windows: map[string]*consoleWindow{}}
+		windows: map[consoleBudget]*consoleWindow{}}
 	go c.run(ticks)
 	return c
 }
@@ -204,17 +218,19 @@ func (c *console) drain() {
 	}
 }
 
-// take writes the line of a record within the rate limit of its event name, and counts it as dropped over it.
+// take writes the line of a record within the rate limit of its event name and of its budget, WARN or ERROR and
+// higher, and counts it as dropped over it.
 func (c *console) take(line consoleLine) {
 	c.closeWindows(false)
-	w := c.windows[line.event]
+	budget := budgetOf(line.event, line.severity)
+	w := c.windows[budget]
 	if w == nil {
 		if len(c.windows) >= consoleNames {
 			c.dropped.Add(1)
 			return
 		}
 		w = &consoleWindow{start: c.now()}
-		c.windows[line.event] = w
+		c.windows[budget] = w
 	}
 	if w.written >= ConsoleLimit {
 		w.dropped++
@@ -225,24 +241,40 @@ func (c *console) take(line consoleLine) {
 }
 
 // closeWindows ends each window that ended by the clock, or each window when all is true, and writes one line with
-// the count of the dropped lines for each that dropped lines, in the order of the event names.
+// the count of the dropped lines for each that dropped lines, in the order of the event names, the WARN budget
+// first. The line of the ERROR budget has the severity ERROR.
 func (c *console) closeWindows(all bool) {
 	if len(c.windows) == 0 {
 		return
 	}
 	now := c.now()
-	var ended []string
-	for name, w := range c.windows {
+	var ended []consoleBudget
+	for budget, w := range c.windows {
 		if all || now.Sub(w.start) >= ConsoleWindow {
-			ended = append(ended, name)
+			ended = append(ended, budget)
 		}
 	}
-	slices.Sort(ended)
-	for _, name := range ended {
-		if dropped := c.windows[name].dropped; dropped > 0 {
-			c.write(c.droppedLine(c.line[:0], now, name, dropped))
+	slices.SortFunc(ended, func(a, b consoleBudget) int {
+		if a.event != b.event {
+			return strings.Compare(a.event, b.event)
 		}
-		delete(c.windows, name)
+		switch {
+		case a.errors == b.errors:
+			return 0
+		case a.errors:
+			return 1
+		}
+		return -1
+	})
+	for _, budget := range ended {
+		if dropped := c.windows[budget].dropped; dropped > 0 {
+			severity := otellog.SeverityWarn
+			if budget.errors {
+				severity = otellog.SeverityError
+			}
+			c.write(c.droppedLine(c.line[:0], now, budget.event, severity, dropped))
+		}
+		delete(c.windows, budget)
 	}
 }
 
@@ -274,10 +306,10 @@ func (c *console) recordLine(b []byte, line consoleLine) []byte {
 	return append(b, '}', '\n')
 }
 
-// droppedLine is the line of the lines of one event name that the rate limit dropped in one window: the event name
-// and their count.
-func (c *console) droppedLine(b []byte, at time.Time, event string, dropped uint64) []byte {
-	b = appendHead(b, at, otellog.SeverityWarn, event)
+// droppedLine is the line of the lines of one event name and budget that the rate limit dropped in one window: the
+// event name, the severity of the budget and their count.
+func (c *console) droppedLine(b []byte, at time.Time, event string, severity otellog.Severity, dropped uint64) []byte {
+	b = appendHead(b, at, severity, event)
 	b = append(b, `,"message":`...)
 	b = appendJSONText(b, droppedMessage)
 	b = append(b, `,"dropped":`...)

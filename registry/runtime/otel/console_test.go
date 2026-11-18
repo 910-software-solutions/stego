@@ -160,6 +160,55 @@ func TestConsole(t *testing.T) {
 			}
 		}
 	})
+	t.Run("ST-SUP-RP03-LC16-T01 The ERROR lines of an event name have a budget of their own, so a WARN burst keeps none off", func(t *testing.T) {
+		out := &lockedBuffer{}
+		clock := &consoleClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}
+		r := consoleRuntime(t, out, clock)
+		logger := r.LoggerProvider().Logger("github.com/jsell-rh/stego/registry/runtime/service")
+		// A burst of 4xx completions at WARN over the limit, then 5xx completions of the same event name at ERROR and
+		// FATAL (security review of PR #421, I1).
+		const warnings = ConsoleLimit + 5
+		for range warnings {
+			emitRecord(logger, otellog.SeverityWarn, "http.server.request", "a request completed", attribute.Int64("status", 404))
+		}
+		emitRecord(logger, otellog.SeverityError, "http.server.request", "a request failed", attribute.Int64("status", 500))
+		emitRecord(logger, otellog.SeverityFatal, "http.server.request", "a request failed", attribute.Int64("status", 503))
+		if err := r.console.ForceFlush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		severities := map[string]int{}
+		for _, line := range out.lines(t) {
+			severities[line["severity"].(string)]++
+		}
+		if severities["WARN"] != ConsoleLimit || severities["ERROR"] != 1 || severities["FATAL"] != 1 {
+			t.Fatalf("the console wrote %v, want %d WARN lines and the ERROR and FATAL lines after the WARN burst", severities, ConsoleLimit)
+		}
+		// The ERROR budget has its own limit, and its own count line, of the severity ERROR.
+		for range ConsoleLimit {
+			emitRecord(logger, otellog.SeverityError, "http.server.request", "a request failed", attribute.Int64("status", 500))
+		}
+		if err := r.console.ForceFlush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		clock.move(ConsoleWindow)
+		if err := r.console.ForceFlush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		var counts []map[string]any
+		errors := 0
+		for _, line := range out.lines(t) {
+			if _, ok := line["dropped"]; ok {
+				counts = append(counts, line)
+			} else if line["severity"] != "WARN" {
+				errors++
+			}
+		}
+		if errors != ConsoleLimit || len(counts) != 2 || counts[0]["severity"] != "WARN" || counts[0]["dropped"] != float64(warnings-ConsoleLimit) ||
+			counts[1]["severity"] != "ERROR" || counts[1]["dropped"] != float64(2) {
+			t.Fatalf("the console wrote %d ERROR and FATAL lines and the count lines %v, want %d and a WARN count of %d and an ERROR count of 2",
+				errors, counts, ConsoleLimit, warnings-ConsoleLimit)
+		}
+	})
 	t.Run("ST-SUP-RP03-LC16-T01 A full console queue drops the line, counts it, and never blocks the record", func(t *testing.T) {
 		out := &blockedWriter{release: make(chan struct{})}
 		clock := &consoleClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}
