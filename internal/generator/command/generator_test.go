@@ -3,6 +3,7 @@ package command
 import (
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -14,7 +15,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"go/format"
 	"strings"
 	"testing"
 
