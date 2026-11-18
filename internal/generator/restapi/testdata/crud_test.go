@@ -1680,6 +1680,33 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC50-T01 A create or an update that breaks a unique key answers 409 that names the key and no value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		const code = "m-jane.doe@example.com"
+		body := `{"title":"first","starts_at":"2026-12-01T10:00:00Z","code":"` + code + `"}`
+		first := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), body)
+		if first.status != http.StatusCreated {
+			t.Fatalf("the first create answered %d %s, want 201", first.status, first.body)
+		}
+		e.own(a, "meeting", first.member(t, "id"))
+		want := "the Meeting was not written: another Meeting has the same code, which must be unique"
+		second := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), body)
+		if second.status != http.StatusConflict || second.member(t, "detail") != want || strings.Contains(string(second.body), code) {
+			t.Fatalf("a second create with the same code answered %d %s, want 409 with %q and no value", second.status, second.body, want)
+		}
+		other := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), `{"title":"other","starts_at":"2026-12-01T10:00:00Z"}`)
+		if other.status != http.StatusCreated {
+			t.Fatalf("a create with no code answered %d %s, want 201", other.status, other.body)
+		}
+		id := other.member(t, "id")
+		e.own(a, "meeting", id)
+		updated := e.send(a, http.MethodPut, "/api/v1/meetings/"+id, "", body)
+		if updated.status != http.StatusConflict || updated.member(t, "detail") != want || strings.Contains(string(updated.body), code) {
+			t.Fatalf("an update to the same code answered %d %s, want 409 with %q and no value", updated.status, updated.body, want)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC37-T14 A create or an update that leaves out a field with a default stores the default", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())

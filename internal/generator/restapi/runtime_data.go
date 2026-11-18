@@ -890,6 +890,11 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 	case http.StatusNotFound:
 		handleError(w, r, missing(kind, req))
 	case http.StatusConflict:
+		if o.Field != "" {
+			// A unique violation names the fields of the key, never a value (ST-SUP-RC20-OC50, ST-SUP-RP10-LC48).
+			handleError(w, r, Conflict("the "+kind+" was not written: another "+kind+" has the same "+o.Field+", which must be unique"))
+			return
+		}
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
 	case http.StatusServiceUnavailable:
 		answerUndecided(w, r)

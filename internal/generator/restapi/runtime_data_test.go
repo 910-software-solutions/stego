@@ -93,7 +93,10 @@ func crudContext() gen.Context {
 			{Name: "noted_at", Type: types.FieldTypeTimestamp},
 			{Name: "state", Type: types.FieldTypeEnum, Values: []string{"planned", "held"}, Default: "planned"},
 			{Name: "seats", Type: types.FieldTypeInt32, Default: 8}, {Name: "rate", Type: types.FieldTypeDouble, Default: 1.5},
-			{Name: "remote", Type: types.FieldTypeBool, Default: true}},
+			{Name: "remote", Type: types.FieldTypeBool, Default: true},
+			// code is an optional unique key: a second row with the same code is a conflict that names it
+			// (ST-SUP-RC20-OC50).
+			{Name: "code", Type: types.FieldTypeString, Optional: true, Unique: true}},
 			EntityAuthorization: types.EntityAuthorization{ResourceType: "meeting", Permissions: permissions(types.OpUpdate, types.OpPatch), PublicReasons: reasons}},
 		// Label gives an optional implicit field with a read: the view holds it as a pointer, and a row whose
 		// implicit column is NULL is not found in the collection (ST-SUP-RC20-OC23, ST-SUP-Q128 (B)).
@@ -730,6 +733,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC37-T13 A list, a read and a write that the provider cannot decide now answer 503 with Retry-After, a refused provider 500, and the log names the cause",
 	"ST-SUP-RC20-OC37-T10 A NULL timestamp is absent from the answer, and each timestamp is answered in UTC",
 	"ST-SUP-RC20-OC37-T14 A create or an update that leaves out a field with a default stores the default",
+	"ST-SUP-RC20-OC50-T01 A create or an update that breaks a unique key answers 409 that names the key and no value",
 	"ST-SUP-RC20-OC37-T12 An optional field that is NULL is absent from the answer, and an empty or false value is answered",
 	"ST-SUP-RC28-OC01-T06 A secret jsonb field reaches neither the audit rows, the answer nor the stored response",
 	"ST-SUP-RC28-OC01-T07 A pii jsonb field is the redaction marker in the before, the after and the patch",

@@ -20,6 +20,7 @@ import (
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/generator/domainprobe"
+	"github.com/jsell-rh/stego/internal/generator/postgresadapter"
 	"github.com/jsell-rh/stego/internal/types"
 	"gopkg.in/yaml.v3"
 )
@@ -974,6 +975,50 @@ func TestRPCRevocation(t *testing.T) {
 		if n := strings.Count(handlers, "return command.ServeRPC(rt, "); n == 0 || strings.Contains(handlers, "grpc.SetHeader") {
 			t.Fatalf("the handlers call command.ServeRPC %d times and set metadata themselves %v, want each gRPC handler served by ServeRPC alone:\n%s",
 				n, strings.Contains(handlers, "grpc.SetHeader"), handlers)
+		}
+	})
+}
+
+func TestUniqueEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC22-T01 The generated entity names the declared fields of each unique index of its table", func(t *testing.T) {
+		member := types.Entity{Name: "Member", Fields: []types.Field{
+			{Name: "email", Type: types.FieldTypeString, Unique: true},
+			{Name: "team", Type: types.FieldTypeString, UniqueComposite: []string{"team", "handle"}},
+			{Name: "handle", Type: types.FieldTypeString, UniqueComposite: []string{"team", "handle"}},
+			{Name: "note", Type: types.FieldTypeString},
+		}}
+		p, err := planEntity(member, map[string]types.Entity{"Member": member}, "tenant_id", Relations{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := &writer{}
+		renderEntity(w, p, "tenant_id")
+		text := w.String()
+		for _, want := range []string{
+			"Unique: map[string]string{",
+			"\"members_email_key\": \"email\",",
+			"\"members_team_handle_key\": \"team, handle\",",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the entity Member does not hold %q:\n%s", want, text)
+			}
+		}
+		// The names are those of the migration of the postgres adapter.
+		for name := range postgresadapter.UniqueIndexes(member) {
+			if !strings.Contains(text, "\""+name+"\"") {
+				t.Errorf("the entity does not name the unique index %s of the migration:\n%s", name, text)
+			}
+		}
+		// An entity with no unique key gives no Unique.
+		plain := types.Entity{Name: "Note", Fields: []types.Field{{Name: "text", Type: types.FieldTypeString}}}
+		q, err := planEntity(plain, map[string]types.Entity{"Note": plain}, "tenant_id", Relations{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w = &writer{}
+		renderEntity(w, q, "tenant_id")
+		if strings.Contains(w.String(), "Unique:") {
+			t.Errorf("an entity with no unique key gives Unique:\n%s", w.String())
 		}
 	})
 }
