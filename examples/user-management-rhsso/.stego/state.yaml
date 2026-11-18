@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118080310-c57e96d97a71
+        module_version: v0.0.0-20261118083015-d3f54d798247
         vcs: git
-        revision: c57e96d97a71279e1b75f674c17d58425b14489a
+        revision: d3f54d7982479854d7328ceb0a09f51524a783b5
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: 591a6b161c59afd8d8e8ce6cb421386ab1313448d04fd7c004ae51c779746cd8
+    registry_content_sha256: ee9b6cf082d1d3e8d201f10da2c51682d9caa697c9731b5698be8de4c914403f
     components:
         audit-log:
             version: 1.2.0
@@ -56,8 +56,8 @@ last_applied:
             version: 1.1.0
             sha: 9336c79178caf803db7222bedd34244d99241ea4bbb3cf5298fd7e87029aad1d
         kafka-producer:
-            version: 3.2.0
-            sha: e205e17620bdcd7e81039d10aa35fdc2c9b48b8d74ef1b96ff774c504f73fae4
+            version: 3.3.0
+            sha: 9d91ce5afb9f27ad6018bcae44781e0b8cd095e80d389ca55c71590d689fe2e1
         otel-tracing:
             version: 1.19.0
             sha: 493f1a9b4c15574a0ad10f70ca302558d5d81541676353883275d0ca4ffd80ee
@@ -68,8 +68,8 @@ last_applied:
             version: 6.12.0
             sha: d571782d3a1bd9b8f3acfd3360999120e5dfc481df1613441739200590623a64
         query:
-            version: 1.3.0
-            sha: c9d82981e73b70264304530d85596c134ac9b1ec50e65065db30b403fc895145
+            version: 1.4.0
+            sha: 594b1ce55771f00fa099f91a923b8a8d08898bbba0f440e4c79e2e2b91ca512b
         rest-api:
             version: 4.6.0
             sha: f5fa0ee0fc1399752944fb3474052c6347604727be11e3452ad289fbcc78d586
@@ -195,8 +195,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 62f8db9fdad3543f46838a71faa13e045c0b7c4d26c55b768358d682948a566f
-        architecture/index.html: b68efb19f297cbbd53bb8997ceae202d7ecdd6425367edb0eef76d9251bf8a11
+        architecture/architecture.json: 7241d30ac202e6b16848326322fcb376ba55a90cbd4248a215fef1273504dc03
+        architecture/index.html: da1d638635457c519d05c61a763b354cd2efc3e1cb34fa19628586f42878712b
         deploy/base/deployment.yaml: 5cbdc12496fa941113f9373fd2683f1a5bc457fe9365859b3247c7ea00454f61
         deploy/base/kustomization.yaml: 85f6e6406f5dbe762f8cc35c9e2a0f740be5e20b7d2c522ec526a50dc094e721
         deploy/base/migration-job.yaml: 34c10f110cb068fe366eeb595e2d547bcb76fedab52624d7d4c2aef190b9aae8
@@ -210,15 +210,15 @@ last_applied:
         deploy/components/secret-files/kustomization.yaml: 17d9606eb43a3083fea20cf3ecf178c9dc1eb6369f5df7fb5af92f644c7c600d
         deploy/components/secret-files/mount-files.yaml: d7ce2a2f91934db433fd17d67e1b84900d42f1f20e2db3023d2ff8f3e284bb4f
         deploy/components/secret-files/mount-job-files.yaml: 507cd5f928cfa6f525551f1ddb0f04147eb42206ba3ad07e4fbca73bed72335c
-        deploy/components/secret-files/mount-worker-files.yaml: 6090123a94ed230405f9500286e6038e54be9f2c31309a47095614850af09956
+        deploy/components/secret-files/mount-worker-files.yaml: 180f44dc0c5c4f7eb15593264c25bee131c8fb7baae0a089d13b6629389ccf55
         deploy/components/secret-files/remove-env.yaml: a60c4392c97e190ccb6a164f0ccf5e79c018239ed2223baefcff29d4e17a3260
         deploy/components/secret-files/remove-job-env.yaml: 98b65ff2bf627d8045995774cc681980deec7385727835425167564fafb53f8d
-        deploy/components/secret-files/remove-worker-env.yaml: cc555d674c7317cd7ad7455bf16447ba5141469e4a262a6baef6833c078fd956
-        deploy/environment-variables.md: bdfc675f50e58e7a2f5eb39c98d1eb8752f2e1be6b228d5c82e0ccd4febdb8e8
-        deploy/platform-requirements.yaml: f609f607ffae3b15c6c145173ed4771fd5b4f1f1fe3a74e93938ed6e15d80e17
+        deploy/components/secret-files/remove-worker-env.yaml: fe304d46b66083fe6bde61a222f273fcce108d1dc9c253176d3da3ca08d54f77
+        deploy/environment-variables.md: 8786b91353ff36427df6f4ef9398ed824bb90258dd3711dafaf00dfffc320f64
+        deploy/platform-requirements.yaml: 52d30c92b257b0eef99ccc2bf645a5ec9f8fb66919aca82b3c04d92bd813df36
     archetype:
         name: rest-crud
-        version: 3.172.0
+        version: 3.173.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.132.0
