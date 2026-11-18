@@ -381,6 +381,17 @@ func answerUndecided(w http.ResponseWriter, r *http.Request) {
 	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
 }
 
+// answerWaitFailure answers a wait for a revocation that failed: a database that cannot serve the wait now is 503
+// with Retry-After, as command.Serve answers it, and every other failure 500 (security review of PR #440, I1).
+func answerWaitFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if query.Transient(err) {
+		w.Header().Set("Retry-After", query.RetryAfter())
+		handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the service cannot read the state of the revocation now; try again"))
+		return
+	}
+	handleError(w, r, InternalError("internal error"))
+}
+
 // writeResult writes the response that Run gives: the fill's response or the stored one of a replay.
 func writeResult(w http.ResponseWriter, result command.Result) {
 	for name, values := range result.Response.Header {

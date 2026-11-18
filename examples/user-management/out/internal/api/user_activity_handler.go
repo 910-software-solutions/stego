@@ -149,7 +149,7 @@ func (h *UserActivityHandler) Create(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	result, err := command.Run(r.Context(), h.rt.Commands, userActivityCreateCommand, req, decodeUserActivity, func(ctx context.Context, activityentry ActivityEntry, ch *command.Handle[struct{}]) (idempotency.Response, error) {
@@ -241,7 +241,7 @@ func (h *UserActivityHandler) List(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, userActivityListQuery, h.rt.boundQuery(r.Context(), b, userActivityListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (userActivityPage, error) {

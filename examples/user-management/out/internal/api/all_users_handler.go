@@ -126,7 +126,7 @@ func (h *AllUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, allUsersListQuery, h.rt.boundQuery(r.Context(), b, allUsersListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (allUsersPage, error) {

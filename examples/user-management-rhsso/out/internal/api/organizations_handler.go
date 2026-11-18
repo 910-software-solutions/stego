@@ -137,7 +137,7 @@ func (h *OrganizationsHandler) Create(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	result, err := command.Run(r.Context(), h.rt.Commands, organizationsCreateCommand, req, decodeOrganizations, func(ctx context.Context, organization Organization, ch *command.Handle[struct{}]) (idempotency.Response, error) {
@@ -220,7 +220,7 @@ func (h *OrganizationsHandler) Read(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	value, err := query.Run(r.Context(), h.rt.Queries, organizationsReadQuery, h.rt.boundQuery(r.Context(), b, organizationsReadQuery), id, func(ctx context.Context, id string, qh *query.Handle[struct{}]) (Organization, error) {
@@ -265,7 +265,7 @@ func (h *OrganizationsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	result, err := command.Run(r.Context(), h.rt.Commands, organizationsDeleteCommand, req, func([]byte) (struct{}, error) { return struct{}{}, nil }, func(ctx context.Context, _ struct{}, ch *command.Handle[struct{}]) (idempotency.Response, error) {
@@ -349,7 +349,7 @@ func (h *OrganizationsHandler) List(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handleError(w, r, InternalError("internal error"))
+		answerWaitFailure(w, r, err)
 		return
 	}
 	page, err := query.Run(r.Context(), h.rt.Queries, organizationsListQuery, h.rt.boundQuery(r.Context(), b, organizationsListQuery), query.ListRequest{Limit: limit, After: after, Order: order, Where: where}, func(ctx context.Context, request query.ListRequest, qh *query.Handle[struct{}]) (organizationsPage, error) {

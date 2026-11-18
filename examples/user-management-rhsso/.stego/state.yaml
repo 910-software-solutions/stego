@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118151227-7c2e9e319d18
+        module_version: v0.0.0-20261118154851-59cefbb9b3d5
         vcs: git
-        revision: 7c2e9e319d18e52245c41547cf36b332d98c442d
+        revision: 59cefbb9b3d5f28aa2c8d2e93afc5e11859f0a42
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -126,7 +126,7 @@ last_applied:
         health/health.go: 303258996e35b5a3dd592d8d7a2ec7b8a63067edf2dd8bc946f22bb7f7d3dbeb
         http_tls_open_other.go: 5fedad5901ff9caa0dabba0acf76935b8f07314f6dbb8cb9a81471e98b99706d
         http_tls_open_unix.go: 3865bc443b82e094d9a31fbcacaa4c2fefc3e8ec4c545c29702a38c3f3d1bef1
-        internal/api/all_users_handler.go: 8d79fed2ff29ad720adb3aa2aa2afc9a00e1b638a1fbaa9ae1f786d19293e5ae
+        internal/api/all_users_handler.go: c3191541c868786db436c464a9fb4cba4ff0cbca081d3342682b89dcad4a8d0e
         internal/api/cors.go: 5b7863e6f7fa7f104ffbc0f97418542b07bc428766642a1856de26eac9e1fc2c
         internal/api/data/entities.go: 39dc0251b12fd66a25c295c4860594fb345cf76cbf59e90e7bd6599b02aa0fa0
         internal/api/data/links.go: 92680df2e0cb956c0174060a07b161d63f810d91bea7ddfd37875d0360020240
@@ -134,11 +134,11 @@ last_applied:
         internal/api/discovery.go: 31cf4a80ece098d319dad61a8c861282481707c57deeaab8af29485c6ded4f85
         internal/api/errors.go: 8746d7f2437f9d6409c35b3ce25a67f3b71f5888ad3cdfe721b55663674f2ec7
         internal/api/openapi.json: 6d9ce47a93a1082fe2e8dfc96585d41e52b7fb422b20599d5b62612cafce87fd
-        internal/api/org_settings_handler.go: 6a1d0075794cf62370ce7f50c389907f0c7a4ea732007a3a666de9aea3748aad
-        internal/api/org_users_handler.go: b1453fc2d9ca7c7adc34c95d87e54abb40b46a16ad952c9969acb8fabbd3cc3c
-        internal/api/organizations_handler.go: 4b14f48eb9c7ac42fc0f4277a4e6cda66a1ebee3e288b1ff7cd374e6de1572ef
+        internal/api/org_settings_handler.go: 77a1e10416126462341016ab65e16ea089e2ee7add3c35d49443658aee56ae5e
+        internal/api/org_users_handler.go: 982dc77c1203ff9ae4672086d8abcb82fd2b5461f03afeacfe13be94eaddc580
+        internal/api/organizations_handler.go: 3b099077d81dc04d9e9bcedae4294b1a6f090a889fe15bb52c6a65d2114bc9d5
         internal/api/router.go: 015fe23fa351aba15bb5cfa5f7e5b0ada71215d6d50e4db74a5f73f0b07fe826
-        internal/api/runtime.go: d0d8a7e5a45b66c671db345e602adb5e1052a7cfe6900f298d226390015bc605
+        internal/api/runtime.go: b7dc6e6893dff111a370554d28ae02d8c65b5c66fd1202dedaa1ac8c2ca5a509
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: a18d0b5be27531bebccf58133dc6cb87198a44d7a7d694871557bfbf96d2f420
         internal/authz/authz.go: c0294e18f637f00e7907a5481a5968ef518182cbe2b813b335954b62a71cb144
