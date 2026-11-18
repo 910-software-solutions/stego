@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // keyRequest is one request that the key test server got.
@@ -72,7 +73,7 @@ func keySetup(t *testing.T, app Application) *keyFixture {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case action != "":
-			w.WriteHeader(map[string]int{"400": 400, "500": 500, "503": 503}[action])
+			w.WriteHeader(map[string]int{"400": 400, "409": 409, "500": 500, "503": 503}[action])
 		case r.Method == "POST":
 			w.WriteHeader(201)
 		case r.Method == "DELETE":
@@ -108,6 +109,10 @@ var structuredKey = regexp.MustCompile(`^"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[
 
 func TestWriteIdempotencyKeys(t *testing.T) {
 	t.Run("ST-SUP-RC04-OC31-T01 The emitted CLI sends a new key with each write and sends an uncertain write again one time with the same key", func(t *testing.T) {
+		// The wait before a second request is 1 s; the test makes it short.
+		previous := writeRetryWait
+		writeRetryWait = time.Millisecond
+		defer func() { writeRetryWait = previous }()
 		app := applyDefinition()
 		app.Commands = append(app.Commands, Command{Name: []string{"patch", "record"}, Method: "PATCH", Path: "/records/{id}", ID: true, Fields: []Field{{Flag: "name", Key: "name", Type: "string"}}, Success: []int{200}})
 		f := keySetup(t, app)
@@ -165,6 +170,12 @@ func TestWriteIdempotencyKeys(t *testing.T) {
 		check("kept create with 500 two times", keeps, []string{"500", "500"}, true, "POST POST", true, "create", "record", "--name", "first")
 		check("kept create with no answer two times", keeps, []string{"drop", "drop"}, true, "POST POST", true, "create", "record", "--name", "first")
 		check("kept patch with 503", keeps, []string{"503"}, false, "PATCH PATCH", true, "patch", "record", "one", "--name", "first")
+		// A second request that gets 409, as when the first one is still in its transaction, leaves the outcome
+		// unknown: the first write can still commit.
+		f.next("500", "409")
+		if err := run(keeps, "create", "record", "--name", "first"); err == nil || !strings.Contains(err.Error(), "outcome is unknown") || len(f.got()) != 2 {
+			t.Errorf("a create whose second request got 409 gave %v after %d requests, want the error that the outcome is unknown after 2", err, len(f.got()))
+		}
 		// A refused write, a read and a delete are never sent again, and a read and a delete carry no key.
 		check("kept create with 400", keeps, []string{"400"}, true, "POST", true, "create", "record", "--name", "first")
 		check("kept read with 500", keeps, []string{"500"}, true, "GET", false, "get", "record", "one")
@@ -188,6 +199,11 @@ func TestWriteIdempotencyKeys(t *testing.T) {
 		}
 		if len(writes) != 3 || writes[0].key != writes[1].key || writes[2].key == writes[0].key || !structuredKey.MatchString(writes[2].key) {
 			t.Errorf("the apply writes were %+v, want the first create two times with one key and the second with a new key", writes)
+		}
+		f.next("drop", "409")
+		results, _, err = runApplyTest(t, keeps, "apply", "-f", input, "-o", "json")
+		if err == nil || len(results) != 2 || results[0].Status != "unknown" || results[1].Status != "not_attempted" {
+			t.Errorf("the apply with a write whose second request got 409 gave %v %v, want unknown and not_attempted", results, err)
 		}
 		f.next("503", "503")
 		results, _, err = runApplyTest(t, keeps, "apply", "-f", input, "-o", "json")

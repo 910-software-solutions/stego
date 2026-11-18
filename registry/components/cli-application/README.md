@@ -45,7 +45,10 @@ Each POST and PATCH request has a new `Idempotency-Key` header: a structured
 string that holds a random UUID. A service that does not use the key ignores
 it. Set `IdempotentWrites` in `command.Application` only when the service keeps
 the key (the idempotency component). Then the CLI sends a write again one time,
-with the same key and body, after a transport failure or a 5xx answer. The
+with the same key and body, after a transport failure or a 5xx answer. It waits
+one second first, or follows a `Retry-After` of one to five seconds. When the
+second request gets no success, the outcome is unknown: the first request can
+still be in its transaction, as a 409 answer shows. The
 service gives the stored answer of a write that it did, so the write does not
 occur two times. The CLI does not send a GET, PUT, or DELETE again, and does
 not send a write again after any other answer. Without `IdempotentWrites`, the
