@@ -197,6 +197,9 @@ func TestGenerator(t *testing.T) {
 			}, []string{"get-order", "net/http"}},
 			"a stream that does not declare the read permission": {func(c *gen.Context) { c.Queries[index(*c, "watch-orders")].Permission = "browse" },
 				[]string{"watch-orders", "browse", "view"}},
+			// A stream query is served over gRPC only and declares no route (ST-DECL-INV73, walkthrough 12, W12-B2).
+			"a stream query with a route": {func(c *gen.Context) { c.Queries[index(*c, "watch-orders")].Route = "GET /orders/watch" },
+				[]string{"watch-orders", "GET /orders/watch", "served over gRPC only"}},
 			// A list query takes no path parameter, and the fault says so (walkthrough 5, U12).
 			"a list query with a path parameter": {func(c *gen.Context) { c.Queries[index(*c, "list-charges")].Route = "GET /shops/{shopId}/charges" },
 				[]string{"list-charges", "{shopId}", "names no resource member, so it is a list query, which takes no path parameter"}},

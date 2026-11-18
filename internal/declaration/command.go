@@ -108,14 +108,21 @@ type operationRoute struct {
 }
 
 // validateOperationRoutes checks that each command declares a route with POST and each query a route with GET, that
-// each route is a valid pattern under the base path, and that no two of them conflict (ST-DECL-INV47). The compile
-// check holds them against the routes of the active components too.
-func validateOperationRoutes(service *types.ServiceDeclaration) []ValidationError {
+// each route is a valid pattern under the base path, and that no two of them conflict (ST-DECL-INV47). A query whose
+// method is a server stream is served over gRPC only and declares no route: validateGRPCMethods refuses its route
+// (ST-DECL-INV73), so this check passes it by. The compile check holds them against the routes of the active
+// components too.
+func validateOperationRoutes(service *types.ServiceDeclaration, facts Facts) []ValidationError {
 	var routes []operationRoute
 	for i, command := range service.Commands {
 		routes = append(routes, operationRoute{"command", command.Name, commandPath(i) + ".route", command.Route})
 	}
+	streams := QueryStreams(service, facts)
 	for i, query := range service.Queries {
+		if streams[query.Name] || query.Route == "" && query.Method != "" && facts.GRPCMethods == nil && facts.ComponentsUnresolved {
+			// A stream query, or a query whose method is not known while the component set did not resolve.
+			continue
+		}
 		routes = append(routes, operationRoute{"query", query.Name, queryPath(i) + ".route", query.Route})
 	}
 	var faults []ValidationError
