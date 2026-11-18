@@ -25,11 +25,11 @@ func (failedVersionWriter) Write([]byte) (int, error) { return 0, errors.New("wr
 func TestVersion(t *testing.T) {
 	var out bytes.Buffer
 	t.Run("ST-DIS-UC09-R03-T01 The version command reports the current build identity", func(t *testing.T) {
-		if err := runVersion(nil, &out); err != nil || out.String() != "stego "+version+"\n" {
+		if err := runVersion(nil, &out, &bytes.Buffer{}); err != nil || out.String() != "stego "+version+"\n" {
 			t.Fatal(out.String(), err)
 		}
 		out.Reset()
-		if err := runVersion([]string{"--json"}, &out); err != nil {
+		if err := runVersion([]string{"--json"}, &out, &bytes.Buffer{}); err != nil {
 			t.Fatal(err)
 		}
 		var report struct {
@@ -42,13 +42,44 @@ func TestVersion(t *testing.T) {
 	})
 	for _, args := range [][]string{{"--json", "extra"}, {"invalid"}} {
 		out.Reset()
-		if err := runVersion(args, &out); err == nil || out.Len() != 0 {
+		if err := runVersion(args, &out, &bytes.Buffer{}); err == nil || out.Len() != 0 {
 			t.Fatal("invalid arguments accepted")
 		}
 	}
-	if err := runVersion([]string{"--json"}, failedVersionWriter{}); err == nil {
+	if err := runVersion([]string{"--json"}, failedVersionWriter{}, &bytes.Buffer{}); err == nil {
 		t.Fatal("write failure ignored")
 	}
+}
+
+func TestVersionNamesAMissingCommit(t *testing.T) {
+	t.Run("ST-DIS-UC09-R03-T03 A build that records no commit says why on standard error, and the output stays the identity alone", func(t *testing.T) {
+		unknown := buildidentity.Record{GoVersion: "go1.26.11", GOOS: "linux", GOARCH: "amd64", ModuleVersion: "(devel)", VCS: "unknown", Revision: "unknown", SourceState: "unknown"}
+		note := versionNote(unknown)
+		for _, want := range []string{"records no commit", "git worktree", "-buildvcs=true"} {
+			if !strings.Contains(note, want) {
+				t.Errorf("the note for a build with no commit does not say %q: %s", want, note)
+			}
+		}
+		stamped := unknown
+		stamped.VCS, stamped.Revision, stamped.SourceState = "git", "26aa92578ce11f9db782841cd8f435d9abad9faa", "clean"
+		if note := versionNote(stamped); note != "" {
+			t.Errorf("a build that records its commit gets a note: %s", note)
+		}
+		// The stego binary: standard output holds only the JSON identity, and standard error holds the note only
+		// when the identity names no commit.
+		stdout, stderr, err := runStegoEnv(t, nil, "version", "--json")
+		if err != nil {
+			t.Fatalf("stego version --json: %v\n%s", err, stderr)
+		}
+		var report compilerIdentity
+		decoder := json.NewDecoder(strings.NewReader(stdout))
+		if err := decoder.Decode(&report); err != nil || decoder.More() {
+			t.Fatalf("standard output is not the identity alone: %v\n%s", err, stdout)
+		}
+		if want := versionNote(report.Build); strings.TrimSpace(stderr) != want {
+			t.Fatalf("for the build %+v, standard error holds %q, want %q", report.Build, stderr, want)
+		}
+	})
 }
 
 func TestApplyRecordsTheIdentityTheCompilerReports(t *testing.T) {
