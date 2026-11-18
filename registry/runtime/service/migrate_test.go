@@ -2851,6 +2851,14 @@ func TestMigrateInbox(t *testing.T) {
 			has_table_privilege($2, 'stego_inbox.refused', 'INSERT')`, f.owner, f.worker).Scan(&owned, &insert); err != nil || !owned || !insert {
 			t.Fatalf("the table of the refused records is owned by the owner %t and writable by the worker %t (%v)", owned, insert, err)
 		}
+		// The worker role reads the tenant list in the write of each record, and does not write it (security review of
+		// PR #418, L1).
+		var reads, writes bool
+		if err := f.admin.QueryRow(`SELECT has_table_privilege($1, 'public.stego_tenants', 'SELECT'),
+			has_table_privilege($1, 'public.stego_tenants', 'INSERT') OR has_table_privilege($1, 'public.stego_tenants', 'UPDATE')`,
+			f.worker).Scan(&reads, &writes); err != nil || !reads || writes {
+			t.Fatalf("the worker role reads the tenant list %t and writes it %t (%v), want read only", reads, writes, err)
+		}
 		// A service with no subscription runs no such step.
 		s = &steps{backends: map[int]bool{}}
 		stepped = s.record(t)
