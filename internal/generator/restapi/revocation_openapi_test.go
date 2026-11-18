@@ -134,3 +134,25 @@ func TestRevocationDocument(t *testing.T) {
 		}
 	})
 }
+
+func TestRevocationDocumentWrites(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC49-T02 The OpenAPI document describes the revocation request headers of each write", func(t *testing.T) {
+		_, paths := revocationDocument(t)
+		const collection, item = "/api/todo/v1/todos", "/api/todo/v1/todos/{id}"
+		for _, write := range []struct{ path, method string }{{collection, "post"}, {item, "put"}, {item, "patch"}, {item, "delete"}} {
+			op := paths[write.path][write.method]
+			headers := map[string]bool{}
+			for _, p := range op.Parameters {
+				if p.In == "header" && !p.Required {
+					headers[p.Name] = true
+				}
+			}
+			if !headers["Authz-Revocation-After"] || !headers["Prefer"] {
+				t.Errorf("the %s %s takes the optional headers %v, want Authz-Revocation-After and Prefer", write.method, write.path, headers)
+			}
+			if _, ok := op.Responses["400"]; !ok {
+				t.Errorf("the %s %s has no 400 response for a bad Authz-Revocation-After", write.method, write.path)
+			}
+		}
+	})
+}

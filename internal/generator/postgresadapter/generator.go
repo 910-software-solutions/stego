@@ -1665,6 +1665,10 @@ func tableName(entityName string) string {
 	return pluralize(toSnakeCase(entityName))
 }
 
+// Plural gives the plural of a word by the rule of the table names (pluralize), such as Entries of Entry and Boxes of
+// Box: the query generator names the repository of an entity with it (walkthrough 12, W12-B5).
+func Plural(word string) string { return pluralize(word) }
+
 // pluralize applies basic English pluralization rules to a snake_case word.
 func pluralize(s string) string {
 	if s == "" {

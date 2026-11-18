@@ -386,7 +386,24 @@ curl -X POST https://<host>/api/inventory/v1/stego/tenants \
 ```
 
 Provision writes the grant `admin` of each person on the tenant-qualified ID,
-in its transaction. The
+in its transaction. The service serves these tenant routes under its base
+path:
+
+| Route | What it does | Permission on `<resource type>:<service name>` |
+|---|---|---|
+| `POST <base path>/stego/tenants` | Provision: adds the tenant, with its first admins and workers. | `provision` |
+| `POST <base path>/stego/tenants/{tenantId}/retire` | Retire: stops the tenant. The rows stay. | `retire` |
+| `GET <base path>/stego/tenants` | Lists the tenants, with `limit` and `cursor`. Served only when the schema declares `permission list_tenants`. | `list_tenants` |
+
+For example, to retire the tenant `acme`:
+
+```bash
+curl -X POST https://<host>/api/inventory/v1/stego/tenants/acme/retire \
+  -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -H 'Idempotency-Key: "retire-acme"'
+```
+
+The
 [rpc-service guide](../registry/archetypes/rpc-service/README.md#tenants-and-the-first-grant)
 gives the rules of `admins`, the operator's own grant and how to write later
 grants.
@@ -409,6 +426,16 @@ another caller, or in another tenant, is a new request.
 
 The runtime keeps each key for the time in `idempotency.retention`. The
 default is `24h`.
+
+To send the same answer again, the runtime keeps the whole answer of each
+key: its status, its headers and its body. The body holds the fields of the
+row, also a `pii` field, such as an email. Thus the table
+`idempotency_keys` holds that data in clear for the retention of the key, 24
+hours by default. A `secret` field is never in an answer, so it is never
+there. Protect the database and its backups as you protect the rows, and do
+not make the retention longer than your clients need. The Product owner
+decided that the runtime will seal the stored answers with the key ring of the
+secret fields (ST-SUP-Q182 (b)); until then, the answers are in clear.
 
 ### Refusals
 
@@ -598,6 +625,19 @@ For a list query:
   filters the rows only by values that the fill itself sets.
 - The runtime keeps only the rows on which the caller has the permission.
 - The request pages with `limit` and `cursor`. See [Paging](#paging).
+
+A list query whose `method` is a gRPC server stream, such as `rpc
+ListAccounts(ListAccountsRequest) returns (stream Account)`, is a **stream
+query**. It is served over gRPC only: the stream sends each row that the
+caller may read, and has no page. A stream query declares no `route`.
+Checking refuses a route on it: `query "list-accounts" has the route "GET
+/accounts" and the gRPC method billing.v1.Billing/ListAccounts, which is a
+server stream; a stream is served over gRPC only, so remove the route`. To
+list the same rows over HTTP, declare a second list query with a `route` and
+a unary method, or with no method. The Product owner decided that an HTTP
+stream waits until an HTTP client needs one (ST-SUP-RC33-OC08). A route that
+no handler serves would answer 404 or 405 with no fault, so checking refuses
+it.
 
 ### The fill of a query
 
@@ -809,6 +849,26 @@ func New() workers.FulfillOrdersFill {
   times. Make the fill safe for this: `fulfill-orders` does nothing for an
   order that is not `placed`.
 
+A worker writes rows through the repository of each entity in its `writes`,
+as a command does. To create a row with no parent, such as the local copy of
+an event of another service, give `Create` the value alone:
+
+```go
+accounts, err := workers.AccountRepository(h)
+if err != nil {
+	return err
+}
+_, err = accounts.Create(ctx, workers.Account{ProjectRef: e.ID, Plan: "free"})
+```
+
+The runtime decides that create on the tenant resource with the declared
+`permission` of the worker (ST-SUP-Q164). Thus the definition of the tenant in
+the schema must give that permission to the worker relation, such as
+`permission bill = worker_bill_projects`. Generation refuses a schema that
+does not. To create a row with a parent, give the loaded parent after the
+value, such as `charges.Create(ctx, charge, account)`, where `account` is a row
+that the fill read through its repository.
+
 An interval worker gets the time of the tick:
 
 ```go
@@ -913,6 +973,18 @@ same authentication as the other routes:
   discards it. The answer is 204, and the audit row
   `resolve-parked-message` is written in the same transaction.
 
+The destination decides which resolutions it accepts (ST-SUP-RP01-LC13):
+
+- An idempotent destination refuses `acted` with 409. To send such a message
+  again is safe, and `acted` would lose what the delivery writes. These
+  destinations are idempotent: `authz`, the audit sink, the change events, a
+  subscription that a worker consumes, and each destination of an effect whose
+  component declares it with `idempotent: true` in its setting
+  `destinations`. For them, correct the cause and send the message again with
+  `not_acted`, or use `discarded`. A destination with `idempotent: false`
+  accepts `acted`: use it when the receiver already did the work.
+- A destination that need not land refuses `discarded` with 409.
+
 The caller needs the permission `resolve` on `outbox_destination:<destination>`
 in its tenant. Declare the type in the authorization schema, as the schema of
 this page does:
@@ -946,8 +1018,8 @@ write `resolve = nil` either: then no operator can resolve a message.
 unless you apply its change in another way. The messages of `authz` are the
 relationship writes and deletes of SpiceDB. When you discard a message that
 removes an access, SpiceDB keeps that access: the revocation is never
-applied. Send the message again with `not_acted`, or remove the relationship
-in SpiceDB yourself and then resolve the message with `acted`.
+applied. Send the message again with `not_acted`. The destination `authz` is
+idempotent, so it refuses `acted`.
 
 ### Take the change events of another service
 
@@ -1013,7 +1085,23 @@ declared bound, never the value.
 When the table refuses a value that the check does not cover, the CHECK
 (SQLSTATE 23514), the NOT NULL (23502) or the foreign key (23503) of a
 declared field gives the same 400 with the field. A unique violation (23505)
-stays 409 `conflict`. A get query of a key that is not a UUID is a missing
+stays 409 `conflict`. When the violated index is a declared unique key, a
+`unique` field or a `unique_composite`, the answer names the fields of the key
+in `field` and never a value: the detail of a generated CRUD write is `the
+Organisation was not written: another Organisation has the same name, which
+must be unique`, and over gRPC the status `Aborted` carries a `BadRequest`
+detail with the fields. Any other conflict keeps the detail `the
+<Entity> changed during the request`.
+
+The 409 names the key. Thus a caller who may create or update the entity
+learns that a row with that value of the key exists in the tenant, also a row
+that the caller may not read. A unique violation told this before too, with no
+name of the key. When the existence of a value must not be known across
+parents, such as the name of a project in another team, do not make the field
+unique in the whole tenant. Make it unique under its parent with
+`unique_composite`, which holds the reference to the parent and the field,
+such as `{ name: name, type: string, unique_composite: [team_id, name] }`. Then
+the conflict tells only of the rows under the parent of the write. A get query of a key that is not a UUID is a missing
 row: 404, or `NotFound` over gRPC, with no statement.
 
 ### Outage answers
@@ -1041,12 +1129,54 @@ that the deadline of the call leaves. It answers the last state in the header
 metadata `authz-revocation`, and `unknown` for a revocation that is not yours.
 A bad value is `InvalidArgument`.
 
+### Write a child at once after its parent
+
+A create answers `Authz-Revocation: pending` and `Authz-Revocation-Location`
+until the relay writes its tuples to SpiceDB, often for less than one second.
+Until then, a write that is decided on the new row, such as the create of a
+child under it, gets 404. To create the child at once, send the
+`Authz-Revocation-Location` of the parent's create in the header
+`Authz-Revocation-After` of the child's create, and `Prefer: wait=N` when you
+want a shorter wait:
+
+```bash
+curl -X POST https://<host>/api/projects/v1/projects/$PROJECT/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: \"$KEY\"" \
+  -H "Authz-Revocation-After: $LOCATION" \
+  -d '{"title":"first task"}'
+```
+
+The write waits for that revocation before it decides, as a read does: at
+most N seconds, the wait cap (10 seconds) and half the time that the deadline
+leaves. Over gRPC, send the request metadata `authz-revocation-after`. Each
+generated CRUD write and each declared command takes it. The answer does not
+report the wait: its `Authz-Revocation` names the revocation of its own write.
+A revocation that is not yours, or one that is still pending at the end of the
+wait, does not fail the write: the write is then decided as with no header. A
+value that is not a revocation is 400, or `InvalidArgument` over gRPC. The
+browser proxy of a browser-service sends the header to the API as it is.
+
 A Provision that grants admins or workers answers `Authz-Revocation: pending`
 with no location. Send `Prefer: wait=N` with the Provision to wait for the
 grants. When the answer says `complete`, the first command of an admin is
 decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
+
+### Release notes for runtime v0.136.0
+
+- A command waits for the caller's revocation before it decides
+  (ST-SUP-RP10-LC47): `command.Serve` and `command.ServeRPC` read
+  `Authz-Revocation-After`, or the metadata `authz-revocation-after`, and wait
+  as a read does. New methods `command.Runtime.AwaitRevocation` and
+  `command.Runtime.AwaitRevocationRPC`, which the generated CRUD writes call
+  before `command.Run`. See [Write a child at once after its
+  parent](#write-a-child-at-once-after-its-parent).
+- A unique violation of a declared key names the fields of the key
+  (ST-SUP-RP10-LC48): `command.OutcomeOf` gives the fields in `Field` and the
+  reason `command.ReasonUnique`. New field `command.EntitySpec.Unique`, which the
+  generated code fills, and function `command.UniqueKey`.
 
 ### Release notes for runtime v0.134.0
 

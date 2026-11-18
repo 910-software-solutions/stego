@@ -50,7 +50,7 @@ func ValidateComposition(service *types.ServiceDeclaration, facts Facts) []Valid
 	faults = append(faults, validateQueryFill(service.Queries, facts)...)
 	faults = append(faults, validateGRPCMethods(service, facts)...)
 	faults = append(faults, validateGRPCServed(service, facts)...)
-	faults = append(faults, validateOperationRoutes(service)...)
+	faults = append(faults, validateOperationRoutes(service, facts)...)
 	faults = append(faults, validateOwnRoutes(service)...)
 	faults = append(faults, validateOperationRefusals(service)...)
 	faults = append(faults, validateCommandRetry(service.Commands)...)

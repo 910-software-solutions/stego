@@ -301,6 +301,11 @@ func (rt *Runtime) answerWrite(w http.ResponseWriter, r *http.Request, req comma
 	case http.StatusNotFound:
 		handleError(w, r, missing(kind, req))
 	case http.StatusConflict:
+		if o.Field != "" {
+			// A unique violation names the fields of the key, never a value (ST-SUP-RC20-OC50, ST-SUP-RP10-LC48).
+			handleError(w, r, Conflict("the "+kind+" was not written: another "+kind+" has the same "+o.Field+", which must be unique"))
+			return
+		}
 		handleError(w, r, Conflict("the "+kind+" changed during the request"))
 	case http.StatusServiceUnavailable:
 		answerUndecided(w, r)
@@ -374,6 +379,17 @@ func answerRead(w http.ResponseWriter, r *http.Request, kind, id string, err err
 func answerUndecided(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Retry-After", query.RetryAfter())
 	handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the authorization provider cannot decide the request now; try again"))
+}
+
+// answerWaitFailure answers a wait for a revocation that failed: a database that cannot serve the wait now is 503
+// with Retry-After, as command.Serve answers it, and every other failure 500 (security review of PR #440, I1).
+func answerWaitFailure(w http.ResponseWriter, r *http.Request, err error) {
+	if query.Transient(err) {
+		w.Header().Set("Retry-After", query.RetryAfter())
+		handleError(w, r, errorForStatus(http.StatusServiceUnavailable, "the service cannot read the state of the revocation now; try again"))
+		return
+	}
+	handleError(w, r, InternalError("internal error"))
 }
 
 // writeResult writes the response that Run gives: the fill's response or the stored one of a replay.

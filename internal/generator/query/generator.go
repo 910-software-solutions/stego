@@ -193,11 +193,13 @@ func plan(ctx gen.Context) (*model, error) {
 			return nil, fmt.Errorf("query: the queries %s and %s have the same Go name %s", other, decl.Name, q.goName)
 		}
 		goNames[q.goName] = decl.Name
-		route := q.method + " " + q.path
-		if other, used := routes[route]; used && q.kind != streamKind {
-			return nil, fmt.Errorf("query: the queries %s and %s have the same route %s", other, decl.Name, decl.Route)
+		if q.kind != streamKind {
+			route := q.method + " " + q.path
+			if other, used := routes[route]; used {
+				return nil, fmt.Errorf("query: the queries %s and %s have the same route %s", other, decl.Name, decl.Route)
+			}
+			routes[route] = decl.Name
 		}
-		routes[route] = decl.Name
 		m.queries = append(m.queries, q)
 	}
 	if err := checkRoutes(m.queries); err != nil {
@@ -244,12 +246,19 @@ func checkQuery(ctx gen.Context, decl types.Query, declared map[string]types.Ent
 		return nil, fmt.Errorf("query: the query name %q is not in lower kebab case", decl.Name)
 	}
 	q := &queryModel{decl: decl, goName: capability.MixedCase(decl.Name)}
-	method, route, ok := strings.Cut(strings.TrimSpace(decl.Route), " ")
-	route = strings.TrimSpace(route)
-	if !ok || method != "GET" || !strings.HasPrefix(route, "/") || strings.ContainsAny(route, " \t?#") {
-		return nil, refuse("has the route %q; a query route is GET and a path", decl.Route)
+	switch stream := ctx.QueryStreams[decl.Name]; {
+	case stream && decl.Route != "":
+		// A stream is served over gRPC only, so its route would be served by no handler (ST-DECL-INV73,
+		// walkthrough 12, W12-B2).
+		return nil, refuse("has the route %q and a server stream method; a stream query is served over gRPC only and declares no route", decl.Route)
+	case !stream:
+		method, route, ok := strings.Cut(strings.TrimSpace(decl.Route), " ")
+		route = strings.TrimSpace(route)
+		if !ok || method != "GET" || !strings.HasPrefix(route, "/") || strings.ContainsAny(route, " \t?#") {
+			return nil, refuse("has the route %q; a query route is GET and a path", decl.Route)
+		}
+		q.method, q.path = method, m.basePath+route
 	}
-	q.method, q.path = method, m.basePath+route
 	if len(decl.Reads) == 0 {
 		return nil, refuse("reads no entity")
 	}
@@ -313,7 +322,7 @@ func checkQuery(ctx gen.Context, decl types.Query, declared map[string]types.Ent
 		}
 		q.member, q.memberGo = decl.ResourceMember, memberGoName(decl.ResourceMember)
 	}
-	for _, p := range pathParameter.FindAllStringSubmatch(route, -1) {
+	for _, p := range pathParameter.FindAllStringSubmatch(strings.TrimPrefix(q.path, m.basePath), -1) {
 		if q.member == "" {
 			// A query with no resource member is a list of the rows that the caller may read (walkthrough 5, U12).
 			return nil, refuse("has the path parameter %s, but it names no resource member, so it is a list query, which takes no path parameter: remove %s from the route, or name the resource member of a get query of one row", p[0], p[0])

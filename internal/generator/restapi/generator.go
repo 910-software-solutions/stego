@@ -2972,8 +2972,9 @@ var revocationStates = []string{"pending", "complete", "parked", "failed", "expi
 
 // revocationHeaders adds the revocation headers to an operation of a collection, as ST-SUP-RC20-OC43 states them: a
 // get, a read or a list, takes the optional request headers Authz-Revocation-After and Prefer, answers 400 to a value
-// that is no revocation, and answers the state in Authz-Revocation; each write answers Authz-Revocation and
-// Authz-Revocation-Location on each success when it enqueued a tuple.
+// that is no revocation, and answers the state in Authz-Revocation; each write takes the same request headers and
+// 400 (ST-SUP-RC20-OC49), and answers Authz-Revocation and Authz-Revocation-Location on each success when it
+// enqueued a tuple.
 func revocationHeaders(method string, op openAPIOperation) openAPIOperation {
 	responses := make(map[string]openAPIResponse, len(op.Responses)+1)
 	for code, response := range op.Responses {
@@ -2996,15 +2997,19 @@ func revocationHeaders(method string, op openAPIOperation) openAPIOperation {
 		responses[code] = response
 	}
 	op.Responses = responses
-	if method == "get" {
-		op.Parameters = append(op.Parameters,
-			openAPIParam{Name: revocationAfterHeader, In: "header", Required: false,
-				Description: "The identity of the caller's own revocation, or its " + revocationLocationHeader + " path: the request waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then shows the write",
-				Schema:      openAPISchema{Type: "string"}},
-			openAPIParam{Name: "Prefer", In: "header", Required: false, Description: "wait=N: wait at most N seconds for the revocation (RFC 7240)", Schema: openAPISchema{Type: "string"}})
-		if _, ok := op.Responses["400"]; !ok {
-			op.Responses["400"] = openAPIResponse{Description: "Bad request: the " + revocationAfterHeader + " header is not the identity of a revocation, or the request is not valid"}
-		}
+	// A read or a list waits for the caller's revocation before it shows the write (ST-SUP-RC20-OC43), and a write
+	// before it decides, such as the create of a child after the create of its parent (ST-SUP-RC20-OC49).
+	description := "The identity of the caller's own revocation, or its " + revocationLocationHeader + " path: the request waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then shows the write"
+	if method != "get" {
+		description = "The identity of the caller's own revocation, or its " + revocationLocationHeader + " path, such as of the create of the parent: the write waits until the revocation is no longer pending, within Prefer: wait=N and the wait cap, and then decides on its tuples"
+	}
+	op.Parameters = append(op.Parameters,
+		openAPIParam{Name: revocationAfterHeader, In: "header", Required: false,
+			Description: description,
+			Schema:      openAPISchema{Type: "string"}},
+		openAPIParam{Name: "Prefer", In: "header", Required: false, Description: "wait=N: wait at most N seconds for the revocation (RFC 7240)", Schema: openAPISchema{Type: "string"}})
+	if _, ok := op.Responses["400"]; !ok {
+		op.Responses["400"] = openAPIResponse{Description: "Bad request: the " + revocationAfterHeader + " header is not the identity of a revocation, or the request is not valid"}
 	}
 	return op
 }

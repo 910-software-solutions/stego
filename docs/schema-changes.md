@@ -452,6 +452,15 @@ and neither is a require of a unique field, whose rows would all get the
 fill value. The contract step counts the rows with the old column set and
 the new one empty last, and waits while one is left.
 
+A retype changes the Go type of the field in each slot contract that holds the
+entity: the commands, the queries and the workers that read or write it. Thus
+the evidence of each such fill is stale after the retype, also when its code
+does not use the field. `stego validate` names each one, such as `fill
+"share-member" is stale ... the contract command.command changed after its
+evidence`. For each fill that it names, change the code when it reads or
+writes the field, run `stego test`, and sign the evidence again with `stego
+fill sign <fill>`. Do this in the same change as the retype.
+
 A require adds a required field with no default. Declare the value that
 each row there gets in `fill_value`:
 
