@@ -825,7 +825,9 @@ runtime refuses each read and write of the worker on those rows.
    tenant `acme`, and it gives nothing. This command gives the ID:
 
    ```bash
-   b=$(printf %s acme | base64 | tr '+/' '-_' | tr -d '=\n'); echo "tenant:$b/$b"
+   b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+   TENANT=acme
+   t=$(b64 "$TENANT"); echo "tenant:$t/$t"
    ```
 
    For a worker `record-orders` with the permission `record`, the type

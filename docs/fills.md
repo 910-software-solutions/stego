@@ -107,6 +107,7 @@ commands:
     fill: withdraw
     route: POST /wallets/{wallet_id}/withdrawals
     refusals:
+      - {name: invalid_amount, code: amount.invalid, status: 422}
       - {name: wrong_pin, code: pin.wrong, status: 403}
       - {name: short_balance, code: balance.short, status: 409}
   - name: transfer
@@ -336,9 +337,12 @@ A `secret` field is readable, or it is compare-only:
 | A fill can get the text | Yes, with `Reveal` | No. A fill can only check a value with `Matches`. |
 | Type | `string` or `jsonb` | `string` only |
 
-A service with a `secret` field needs the key ring of its secret fields, in the
-Secret `<service>-secret-key-ring`. The api, worker and controller modes do
-not start without it. See
+A service with a `secret` field, readable or compare-only, or a `pii` field
+needs the key ring of its secret fields, in the Secret
+`<service>-secret-key-ring`. The api, worker and controller modes do not start
+without it. Give the key ring also to a service that has only compare-only
+secrets: the runtime keys the fingerprints of the stored answers with it, so a
+reader of the database cannot try each PIN against a stored request. See
 [Day-2 operations](operations.md) for the key ring, its backup and its
 rotation.
 
@@ -372,7 +376,15 @@ writable: never` lets only the commands of the example change a balance.
 | A query fill | Never: the value of a query has no secret field. | Never. |
 
 No client can read a secret back. Only the fills of commands and workers can
-read a readable secret. Do not put a secret in the response message of a
+read a readable secret.
+
+A worker has no read-only access: to list the rows of an entity, it must
+declare the entity in `writes`. Thus the worker `sum-balances` of the example
+can read the `api_key` of each wallet of the tenant, and change each wallet.
+A fault in such a fill can leak or change each secret. Do not let a broad
+worker, such as a report, write an entity with a secret field: put the secret
+in an entity of its own, which the worker does not write. A read-only access of
+a worker is an open question (ST-SUP-Q186). Do not put a secret in the response message of a
 command: the idempotency store keeps each answer of a command for the
 retention of its key (see
 [Idempotency](commands-queries-workers.md#idempotency)).
@@ -417,12 +429,17 @@ waits.
 ### Check a compare-only secret
 
 The fill of `withdraw` checks the PIN of the request against the stored hash.
-A wrong PIN is a declared refusal:
+A wrong PIN is a declared refusal. A proto request has no bounds, so the
+amount can be 0 or below: the fill checks it first, before the PIN and the
+balance. Without that check, an amount of -1000 would add 1000 to the balance.
 
 ```go
 // Withdraw is the business rule of a withdrawal: the new balance, or a declared refusal. It reads no handle, so a
 // plain unit test proves it.
 func Withdraw(pinMatches bool, balance, amount int64) (int64, error) {
+	if amount < 1 {
+		return 0, commands.WithdrawInvalidAmount
+	}
 	if !pinMatches {
 		return 0, commands.WithdrawWrongPin
 	}
@@ -469,6 +486,16 @@ func New() commands.WithdrawFill {
 The fill reads the wallet with `GetForUpdate`, so no other command changes the
 balance before this transaction ends. The check runs before the balance check,
 so a wrong PIN tells nothing of the balance.
+
+A PIN of 4 digits has only 10,000 values, and the runtime does not limit the
+wrong attempts. A caller who may operate the wallet, such as with a stolen
+session, can try each value in some minutes. Thus limit the wrong attempts
+outside the fill, at the gateway or for each caller and wallet, and use a
+longer PIN where you can. A fill cannot count the wrong attempts itself: a
+refusal is an error of the fill, and the runtime commits nothing when the fill
+returns an error, so a counter that the fill writes before the refusal rolls
+back with it. A counter that a refusal can commit is an open question
+(ST-SUP-Q185).
 
 To set a new PIN, give a new Compared to the value and update the row. The
 fill of `change-pin` does this:
@@ -677,7 +704,14 @@ zed relationship create "tenant:$t/$t" auditor "user:$(b64 https://idp.example.t
 ```
 
 A grant on `tenant:acme` gives nothing. The ID of a user is the base64url of
-the issuer, a `|`, and the base64url of the `sub` claim.
+the issuer, a `|`, and the base64url of the `sub` claim. The issuer must be
+the `iss` claim of the token byte for byte: with another text, such as one
+with a `/` at the end, the grant names another user and gives nothing.
+
+The audit of the service does not see a grant that you write with `zed`.
+Record each such grant, who wrote it and why, in your own change log. To
+remove it, run `zed relationship delete` with the same three arguments. Retire
+of the tenant also removes it.
 
 In place of this, you can give the rows a parent that people can be granted
 on, such as a ledger row that a command on the service-level resource
@@ -720,7 +754,10 @@ The value of the Kafka record is this JSON object, and nothing else:
 The record has the headers `stego-event-id`, `stego-event-type` (the event
 kind, such as `wallets.wallet.updated`), `stego-event-action`,
 `stego-tenant` and `stego-idempotency-key`. Its key is `<tenant
-ID>\x1f<resource type>:<row ID>`.
+ID>\x1f<resource type>:<row ID>`. The header `stego-idempotency-key` is a
+SHA-256 over the tenant, the caller, the `Idempotency-Key` of the request and
+the event, and the audit row holds that key as the client sent it. Thus a client must
+never put a personal value, such as an email, in an `Idempotency-Key`.
 
 A worker that consumes the subscription of these events in another service
 gets this object as its message, and the event kind as its effect name:
@@ -782,6 +819,9 @@ func TestWithdraw(t *testing.T) {
 		{"all", true, 100, 100, 0, nil},
 		{"short", true, 100, 101, 0, commands.WithdrawShortBalance},
 		{"wrong pin", false, 100, 1, 0, commands.WithdrawWrongPin},
+		{"zero", true, 100, 0, 0, commands.WithdrawInvalidAmount},
+		{"below zero", true, 100, -1000, 0, commands.WithdrawInvalidAmount},
+		{"below zero, wrong pin", false, 100, -1, 0, commands.WithdrawInvalidAmount},
 	}
 	for _, c := range cases {
 		got, err := Withdraw(c.pin, c.balance, c.amount)
