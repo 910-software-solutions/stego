@@ -264,10 +264,12 @@ such as `Cookie`, `Origin`, `X-CSRF-Token` or `traceparent`.
 
 A read or a write with `Authz-Revocation-After` waits at most 4 seconds, one
 second less than the request timeout of the API prefix: the API prefix sends
-`wait=4` when the browser gives no wait or a longer one. At most 4 such requests run at
-one time for the whole service, shared among the APIs, so that they never
-take the capacity of the other requests. The next one gets 503 with
-`Retry-After: 1`.
+`wait=4` when the browser gives no wait or a longer one. At most 4 such
+requests wait at one time for the whole service, shared among the APIs, so
+that they never take the capacity of the other requests, and one session
+waits in at most one of them. A request past either limit is not refused: it
+goes to the API with `wait=0`, so it reads the state of the revocation once and
+does not wait.
 
 The API prefix returns to the browser only the API response headers
 `Content-Type`, `ETag`, `Retry-After`, `Idempotent-Replayed`,
