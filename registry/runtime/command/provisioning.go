@@ -1029,7 +1029,10 @@ func ServeTenantList(rt *Runtime, spec TenantListSpec) (http.Handler, error) {
 		next := ""
 		if more && len(entries) > 0 {
 			if next, err = spec.Cursors.CursorText(q, b.Tenant, b.Principal, query.KeyCursor(entries[len(entries)-1].ID)); err != nil {
-				rt.writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
+				// Each failed call after the allow is audited too (security review of PR #437, I6a).
+				o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+				outcome(o)
+				rt.writeProblem(w, o.Status, "", o.AnswerCode())
 				return
 			}
 		}
@@ -1043,7 +1046,9 @@ func ServeTenantList(rt *Runtime, spec TenantListSpec) (http.Handler, error) {
 		}
 		body, err := query.EncodePage(items, next)
 		if err != nil {
-			rt.writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
+			o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+			outcome(o)
+			rt.writeProblem(w, o.Status, "", o.AnswerCode())
 			return
 		}
 		outcome(Outcome{Status: http.StatusOK, Audit: audit.OutcomeOK})

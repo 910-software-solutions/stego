@@ -388,8 +388,8 @@ var errTenantDeleteMore = errors.New("authz: the delete of the tuples of the ten
 
 // deliverTenantDelete lands the delete of every relationship of one resource type of the retired tenant of the
 // delivery (ST-SUP-RC27-OC15): the payload's prefix must be the prefix of the outbox row's tenant; a type of which
-// the allow list holds no relation has no tuple to delete. Under the floor lock it deletes at most TenantDeleteCalls parts of TenantDeleteLimit, then
-// raises the floor with the marker; an attempt that leaves more is a transient refusal. It logs the type and the
+// the allow list holds no relation has no tuple to delete. With no lock it deletes at most TenantDeleteCalls parts of
+// TenantDeleteLimit, then raises the floor with the marker; an attempt that leaves more is a transient refusal. It logs the type and the
 // count of each attempt, and no resource ID and no subject.
 func (r *Relay) deliverTenantDelete(ctx context.Context, delivery outbox.Delivery, tuple Tuple) error {
 	if tuple.Resource.ID != TenantPrefix(delivery.Tenant) {
@@ -412,6 +412,42 @@ func (r *Relay) deliverTenantDelete(ctx context.Context, delivery outbox.Deliver
 	if !ok {
 		return outbox.PermanentRefusal(errors.New("authz: the relationships port deletes no prefix"))
 	}
+	// The deletes run with no lock of the floor row, so the relay deliveries of the other tenants do not wait for
+	// them; the tenant is retired, so the order of its deletes against the floor does not matter (security review of
+	// PR #437, L2).
+	var deleted uint64
+	var err error
+	more := true
+	for call := 0; call < r.deleteCalls && more; call++ {
+		var n uint64
+		if n, more, err = deleter.DeletePrefix(ctx, tuple.Resource.Type, tuple.Resource.ID, r.deleteLimit); err != nil {
+			r.logTenantDelete(ctx, tuple.Resource.Type, deleted, true)
+			if deleted > 0 {
+				// The parts that landed raise the floor before the attempt ends.
+				_ = r.raiseFloor(ctx, tuple.Resource.Type)
+			}
+			if IsRefused(err) {
+				return outbox.PermanentRefusal(fmt.Errorf("authz: the provider refused the delete of the tuples of %s: %w", tuple.Resource.Type, err))
+			}
+			return fmt.Errorf("authz: the delete of the tuples of %s failed: %w", tuple.Resource.Type, err)
+		}
+		deleted += n
+	}
+	r.logTenantDelete(ctx, tuple.Resource.Type, deleted, more)
+	// The floor is raised after the parts of each attempt, also of one that leaves more, so a read at the floor
+	// sees each delete that landed.
+	if err := r.raiseFloor(ctx, tuple.Resource.Type); err != nil {
+		return err
+	}
+	if more {
+		return outbox.TransientRefusal(errTenantDeleteMore)
+	}
+	return nil
+}
+
+// raiseFloor touches the marker under the lock of the floor row and raises the floor to its token, in a short
+// transaction of its own: the token is at least as fresh as each delete that landed before it.
+func (r *Relay) raiseFloor(ctx context.Context, resourceType string) error {
 	floorTx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fixed("authz: the floor transaction cannot begin", err)
@@ -421,29 +457,12 @@ func (r *Relay) deliverTenantDelete(ctx context.Context, delivery outbox.Deliver
 	if err := floorTx.QueryRowContext(ctx, "SELECT token FROM "+r.schema+".authz_floor WHERE only_row FOR UPDATE").Scan(&current); err != nil {
 		return fixed("authz: the floor row cannot be locked", err)
 	}
-	var deleted uint64
-	more := true
-	for call := 0; call < r.deleteCalls && more; call++ {
-		var n uint64
-		if n, more, err = deleter.DeletePrefix(ctx, tuple.Resource.Type, tuple.Resource.ID, r.deleteLimit); err != nil {
-			r.logTenantDelete(ctx, tuple.Resource.Type, deleted, true)
-			if IsRefused(err) {
-				return outbox.PermanentRefusal(fmt.Errorf("authz: the provider refused the delete of the tuples of %s: %w", tuple.Resource.Type, err))
-			}
-			return fmt.Errorf("authz: the delete of the tuples of %s failed: %w", tuple.Resource.Type, err)
-		}
-		deleted += n
-	}
-	r.logTenantDelete(ctx, tuple.Resource.Type, deleted, more)
-	if more {
-		return outbox.TransientRefusal(errTenantDeleteMore)
-	}
 	token, err := r.relationships.Write(ctx, []Tuple{r.marker}, nil, nil)
 	if err != nil {
-		return fmt.Errorf("authz: the marker after the delete of the tuples of %s failed: %w", tuple.Resource.Type, err)
+		return fmt.Errorf("authz: the marker after the delete of the tuples of %s failed: %w", resourceType, err)
 	}
 	if token.IsZero() {
-		return fmt.Errorf("authz: the provider gave no token for the delete of the tuples of %s", tuple.Resource.Type)
+		return fmt.Errorf("authz: the provider gave no token for the delete of the tuples of %s", resourceType)
 	}
 	if _, err := floorTx.ExecContext(ctx, "UPDATE "+r.schema+".authz_floor SET token = $1, sequence = sequence + 1 WHERE only_row",
 		token.Text()); err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -234,6 +235,20 @@ func TestProvisioning(t *testing.T) {
 		}
 		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND action = 'list-tenants' AND outcome = 'denied'`); n != 1 {
 			t.Fatalf("%d denied rows of list-tenants, want 1", n)
+		}
+		// A cursor that cannot be sealed after the allow is 500 internal, and audited as failed (security review of
+		// PR #437, I6a).
+		failing, err := ServeTenantList(rt, TenantListSpec{ResourceType: "service", Schema: "public", SubjectType: "user",
+			Active: active, Cursors: sealFails{cursors}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		list = failing
+		if status, body := get("op-1", "/stego/tenants?limit=1"); status != http.StatusInternalServerError || body["code"] != ErrorCodeInternal {
+			t.Fatalf("a cursor that is not sealed gave %d %v, want 500 internal", status, body)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND action = 'list-tenants' AND outcome = 'failed'`); n != 1 {
+			t.Fatalf("%d failed rows of list-tenants, want 1", n)
 		}
 	})
 
@@ -694,4 +709,11 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 		}
 	})
 
+}
+
+// sealFails is a cursor sealer that opens as the query runtime does and seals no cursor.
+type sealFails struct{ TenantCursors }
+
+func (sealFails) CursorText(*query.Query, tenant.Tenant, authz.Principal, query.Cursor) (string, error) {
+	return "", errors.New("query: the cursor was not sealed")
 }

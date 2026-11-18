@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -194,7 +196,24 @@ func TestFilteredDelete(t *testing.T) {
 	})
 	t.Run("ST-SUP-RC27-OC15-T01 The delete of a retired tenant, landed through the relay in bounded parts, removes the tuples of that tenant only", func(t *testing.T) {
 		env, db := newPG(t), startSpiceDB(t, fixtureSchema)
-		rt, relay := env.runtimeOf(t, db.provider, nil), env.relay(t, db.provider)
+		// Each delete call checks that the floor row is not locked, so the deliveries of the other tenants do not wait
+		// for the delete (security review of PR #437, L2), and counts the floor sequence it sees.
+		probe := &unlockedDeleter{SpiceDB: db.provider, check: func() error {
+			tx, err := env.admin.BeginTx(context.Background(), nil)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tx.Rollback() }()
+			// Another delivery may hold the lock for its short floor raise; the delete's own attempt held it for
+			// the whole delete before, which this wait never outlasts.
+			if _, err := tx.ExecContext(context.Background(), "SET LOCAL lock_timeout = '2s'"); err != nil {
+				return err
+			}
+			_, err = tx.ExecContext(context.Background(), "SELECT token FROM "+env.schema+".authz_floor WHERE only_row FOR UPDATE")
+			return err
+		}}
+		rt, relay := env.runtimeOf(t, db.provider, nil), env.relay(t, probe)
+		floorBefore := env.scalar(t, "SELECT sequence FROM "+env.schema+".authz_floor")
 		// Parts of 2 and 2 calls of an attempt: the 6 tuples of document need two attempts.
 		relay.deleteLimit, relay.deleteCalls = 2, 2
 		orderIn := func(tenantID, id string) Resource {
@@ -262,5 +281,40 @@ func TestFilteredDelete(t *testing.T) {
 		if token := env.scalar(t, "SELECT token FROM "+env.schema+".authz_floor"); strings.TrimSpace(token) == "" {
 			t.Error("the delete of the tenant did not raise the floor")
 		}
+		if probe.locked.Load() != 0 || probe.calls.Load() == 0 {
+			t.Errorf("%d of %d delete calls found the floor row locked, want none", probe.locked.Load(), probe.calls.Load())
+		}
+		// The floor rises after each attempt, also after the first attempt of document, which leaves more: two
+		// attempts of document, one of order, one of user.
+		if after := env.scalar(t, "SELECT sequence FROM "+env.schema+".authz_floor"); after == floorBefore {
+			t.Error("the floor sequence did not rise")
+		} else if a, b := mustInt(t, after), mustInt(t, floorBefore); a-b < 4 {
+			t.Errorf("the floor rose %d times, want at least 4: once after each attempt, also one that leaves more", a-b)
+		}
 	})
+}
+
+// unlockedDeleter is the SpiceDB adapter whose prefix delete first runs check, and counts the calls and the calls
+// that check refused.
+type unlockedDeleter struct {
+	*SpiceDB
+	check         func() error
+	calls, locked atomic.Int64
+}
+
+func (d *unlockedDeleter) DeletePrefix(ctx context.Context, resourceType, prefix string, limit uint32) (uint64, bool, error) {
+	d.calls.Add(1)
+	if d.check() != nil {
+		d.locked.Add(1)
+	}
+	return d.SpiceDB.DeletePrefix(ctx, resourceType, prefix, limit)
+}
+
+func mustInt(t *testing.T, text string) int {
+	t.Helper()
+	n, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

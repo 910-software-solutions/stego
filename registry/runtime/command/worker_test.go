@@ -1211,6 +1211,60 @@ func TestConsumers(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC18-T02 A failed read of the worker tuple is undecided, not missing, and a tuple missing for 15 minutes logs one warn line in each 15 minutes", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-wr', 'new')`)
+		defer clock.hold()()
+		tuples := &tupleReader{}
+		tuples.fail.Store(true)
+		// The tuple that the subtest before read as held is kept for HeldTupleAge: start with no kept tuple.
+		e.rt.heldTuplesMu.Lock()
+		e.rt.heldTuples = nil
+		e.rt.heldTuplesMu.Unlock()
+		e.rt.cfg.WorkerTuples = tuples
+		defer func() { e.rt.cfg.WorkerTuples = nil }()
+		var runs atomic.Int64
+		cases.Store("read", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			runs.Add(1)
+			return nil
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-wr", map[string]string{"case": "read"})
+		r := awaitRow(t, m, func(r row) bool { return r.attempts == 1 && r.state != "dispatching" })
+		if r.state != "pending" || r.code == WorkerTupleMissingCode || runs.Load() != 0 {
+			t.Fatalf("after a failed read the message is %s with %q and %d runs, want pending, not %s, and no run", r.state, r.code, runs.Load(), WorkerTupleMissingCode)
+		}
+		if got := e.consumed.causeList(from); len(got) == 0 || got[0] != "undecided/undecided" {
+			t.Fatalf("worker.run.failed sent %v, want undecided/undecided", got)
+		}
+		tuples.fail.Store(false)
+		tuples.held.Store(true)
+		clock.add(10 * time.Minute)
+		e.waitState(t, m, "done")
+
+		// The warn line of a tuple that stays missing: none before 15 minutes, one at 15, none 5 minutes later, one
+		// again 15 minutes after the first; none after the tuple was held.
+		warns := func() int {
+			n := 0
+			for _, r := range consumerLogs.all() {
+				if r.EventName() == WorkerTupleMissingEvent {
+					n++
+				}
+			}
+			return n
+		}
+		before := warns()
+		at := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		for _, c := range []struct {
+			after time.Duration
+			want  int
+		}{{0, 0}, {14 * time.Minute, 0}, {15 * time.Minute, 1}, {20 * time.Minute, 1}, {30 * time.Minute, 2}} {
+			e.rt.tupleMissing(e.ctx, "t9\x00w", "w", at.Add(c.after))
+			if got := warns() - before; got != c.want {
+				t.Fatalf("after %s missing, %d warn lines, want %d", c.after, got, c.want)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC06-T09 A write that breaks a foreign key in 5 attempts parks the message as poison", func(t *testing.T) {
 		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p6', 'new')`)
 		// The reservation of each run names an order that is not there, so its insert fails with SQLSTATE 23503 in
@@ -1908,6 +1962,7 @@ func TestWorkerNoParent(t *testing.T) {
 // tupleReader is a reader of SpiceDB whose worker tuple is held or not, and which keeps the last filter it read.
 type tupleReader struct {
 	held   atomic.Bool
+	fail   atomic.Bool
 	mu     sync.Mutex
 	filter authz.Filter
 }
@@ -1918,6 +1973,9 @@ func (r *tupleReader) Exists(_ context.Context, filter authz.Filter) (bool, erro
 	r.mu.Lock()
 	r.filter = filter
 	r.mu.Unlock()
+	if r.fail.Load() {
+		return false, errors.New("spicedb: connection refused")
+	}
 	return r.held.Load(), nil
 }
 

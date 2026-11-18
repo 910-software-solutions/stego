@@ -142,6 +142,9 @@ type Runtime struct {
 	// worker's tuple (ST-SUP-RC35-OC18).
 	heldTuplesMu sync.Mutex
 	heldTuples   map[string]time.Time
+	// missingSince and missingWarned keep, for each tenant and worker, since when its tuple is missing and when the
+	// last warn line of it came (security review of PR #437, L1).
+	missingSince, missingWarned map[string]time.Time
 	// recorder and beforeCommit are set only by the tests of the package: the statement recorder, and a step just
 	// before COMMIT.
 	recorder     func(query string, args []any)
