@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.173.0",
+    "archetype_version": "3.175.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -639,7 +639,7 @@
     {
       "id": "component:rest-api",
       "name": "rest-api",
-      "version": "4.6.0",
+      "version": "4.7.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Decodes the request of a collection operation and calls its command or query.",
@@ -738,7 +738,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "architecture"
         }
       }
@@ -879,7 +879,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "requires"
         }
       }
@@ -1009,7 +1009,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "provides"
         }
       }
@@ -1025,7 +1025,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "provides"
         }
       }
@@ -1061,7 +1061,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "requires"
         }
       }
@@ -1109,7 +1109,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.173.0",
+          "version": "3.175.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1123,7 +1123,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.173.0",
+          "version": "3.175.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1137,7 +1137,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.173.0",
+          "version": "3.175.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1151,7 +1151,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.173.0",
+          "version": "3.175.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -1165,7 +1165,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.173.0",
+          "version": "3.175.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1179,7 +1179,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.173.0",
+          "version": "3.175.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -1963,7 +1963,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2096,7 +2096,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2191,7 +2191,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2287,7 +2287,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2431,7 +2431,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2575,7 +2575,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2678,7 +2678,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2763,7 +2763,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2891,7 +2891,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2995,7 +2995,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3192,7 +3192,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3336,7 +3336,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3450,7 +3450,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3546,7 +3546,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3698,7 +3698,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3812,7 +3812,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3897,7 +3897,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -4003,7 +4003,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -4107,7 +4107,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -4312,7 +4312,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -4456,7 +4456,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -4597,7 +4597,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -4692,7 +4692,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -4788,7 +4788,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -5165,7 +5165,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "environment"
         }
       }
@@ -5184,7 +5184,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "environment"
         }
       }
@@ -5202,7 +5202,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "environment"
         }
       }
@@ -9307,7 +9307,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9322,7 +9322,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9337,7 +9337,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9352,7 +9352,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9367,7 +9367,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9382,7 +9382,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9397,7 +9397,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9412,7 +9412,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9427,7 +9427,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9442,7 +9442,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -9457,7 +9457,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
