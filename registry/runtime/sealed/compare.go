@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -29,13 +30,24 @@ const (
 	maxThreads = 4
 )
 
+// hashSlots bound the Argon2id hashes that run at one time: each takes 19 MiB, so parallel writes and checks of
+// compare-only secrets cannot exhaust the memory of a pod (security review of PR #441, L3).
+var hashSlots = make(chan struct{}, max(runtime.GOMAXPROCS(0), 1))
+
+// idKey is argon2.IDKey in one of the hash slots.
+func idKey(value, salt []byte, passes, memory uint32, threads uint8, size uint32) []byte {
+	hashSlots <- struct{}{}
+	defer func() { <-hashSlots }()
+	return argon2.IDKey(value, salt, passes, memory, threads, size)
+}
+
 // Hash gives the PHC string of the Argon2id hash of value, with a new random salt (ST-SUP-RP16-LC03).
 func Hash(value string) (string, error) {
 	salt := make([]byte, saltSize)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("sealed: no random salt: %w", err)
 	}
-	sum := argon2.IDKey([]byte(value), salt, hashTime, hashMemory, hashThreads, hashSize)
+	sum := idKey([]byte(value), salt, hashTime, hashMemory, hashThreads, hashSize)
 	b64 := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, hashMemory, hashTime, hashThreads,
 		b64.EncodeToString(salt), b64.EncodeToString(sum)), nil
@@ -49,7 +61,7 @@ func Matches(stored, value string) bool {
 	if !ok {
 		return false
 	}
-	got := argon2.IDKey([]byte(value), salt, passes, memory, threads, uint32(len(sum)))
+	got := idKey([]byte(value), salt, passes, memory, threads, uint32(len(sum)))
 	return subtle.ConstantTimeCompare(got, sum) == 1
 }
 

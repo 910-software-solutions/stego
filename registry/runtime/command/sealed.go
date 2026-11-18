@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
+	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -31,7 +33,8 @@ type hashArg struct {
 // SealAt gives the statement value of a readable secret of the column of the table, in the row of ID row: the
 // runtime seals it with the first key of the key ring before the statement, and a secret that is not set is NULL.
 func SealAt(table, column, row string, value sealed.Secret) any {
-	return sealArg{at: sealed.Place{Table: table, Column: column, Row: row}, value: value}
+	// The scan gives the ID in lower case, so the seal takes it in lower case too (security review of PR #441, L7).
+	return sealArg{at: sealed.Place{Table: table, Column: column, Row: strings.ToLower(row)}, value: value}
 }
 
 // HashOf gives the statement value of a compare-only secret: the runtime stores the Argon2id hash of a new text, the
@@ -178,7 +181,7 @@ func (o openingRow) Scan(dest ...any) error {
 		}
 		at := sealed.Place{Tenant: o.s.tenant.ID(), Table: target.table, Column: target.column}
 		if target.row != nil {
-			at.Row = *target.row
+			at.Row = strings.ToLower(*target.row)
 		}
 		ring := o.s.rt.cfg.Ring
 		if ring == nil {
@@ -194,21 +197,42 @@ func (o openingRow) Scan(dest ...any) error {
 	return nil
 }
 
+// keyed gives req with a keyed fingerprint when the runtime has a key ring: a body of a service with a secret field
+// can hold a secret, so the key table stores the HMAC of the fingerprint with a key that HKDF derives from the first
+// key of the ring, and a fingerprint of an earlier key of the ring still matches while the ring holds that key
+// (ST-SUP-RP16-LC05, security review of PR #441, M2). A runtime with no key ring is of a service with no secret
+// field, and keeps the plain fingerprint.
+func (rt *Runtime) keyed(req idempotency.Request) idempotency.Request {
+	ring := rt.cfg.Ring
+	if ring == nil || req.Fingerprint == "" {
+		return req
+	}
+	raw := req.Fingerprint
+	req.Fingerprint = ring.Fingerprint(raw)
+	req.Matches = func(stored string) bool { return ring.FingerprintMatches(stored, raw) }
+	return req
+}
+
 // ResealColumn is one sealed column that the re-seal job moves to the first key of the ring (ST-SUP-RP10-LC46): its
 // entity, table and column, and the generated statements of the job, which take the tenant as $1:
-//   - Select reads the ID text and the sealed value of at most $3 rows whose value does not start with the prefix $2
-//     of the first key, FOR UPDATE SKIP LOCKED;
-//   - Update sets the column of the row of ID $2 to $3 only while it holds $4;
-//   - Left counts the rows whose value does not start with $2.
+//   - Select reads the ID text and the sealed value of at most $3 rows after the ID $4, in ID order, whose value does
+//     not start with the prefix $2 of the first key, FOR UPDATE SKIP LOCKED: the job pages by the key and reads each
+//     row once in a run;
+//   - Update sets the column of the row of ID $2 to $3 only while it holds $4.
 type ResealColumn struct {
 	Entity, Table, Column string
-	Select, Update, Left  string
+	Select, Update        string
 }
 
 // ResealBatch is the most rows that one statement of the re-seal job reads.
 const ResealBatch = 100
 
-// ResealResult is what one run of the re-seal job did for one column over all tenants.
+// firstID is the ID before every UUID, where the pages of the re-seal job start.
+const firstID = "00000000-0000-0000-0000-000000000000"
+
+// ResealResult is what one run of the re-seal job did for one column over all tenants: the values that it moved to
+// the first key, and the values that it left on an earlier key because they do not open, such as of a key that the
+// ring no longer holds.
 type ResealResult struct {
 	Entity, Column string
 	Moved, Left    int64
@@ -233,7 +257,7 @@ func NewReseal(db *sql.DB, schema string, ring *sealed.Ring, columns []ResealCol
 		return nil, errors.New("command: the re-seal job needs the schema of the tenant list")
 	}
 	for _, c := range columns {
-		if c.Entity == "" || c.Table == "" || c.Column == "" || c.Select == "" || c.Update == "" || c.Left == "" {
+		if c.Entity == "" || c.Table == "" || c.Column == "" || c.Select == "" || c.Update == "" {
 			return nil, fmt.Errorf("command: the re-seal column %s.%s lacks a name or a statement", c.Entity, c.Column)
 		}
 	}
@@ -243,9 +267,10 @@ func NewReseal(db *sql.DB, schema string, ring *sealed.Ring, columns []ResealCol
 }
 
 // Run moves each sealed value of each column of each provisioned tenant that is not sealed with the first key of the
-// ring to it, in the transaction of its tenant, a batch at a time. It changes no other column, and writes no audit
-// row and no event, because the value does not change. It logs, for each column, the values that it moved and those
-// that are left on an earlier key, and never a value.
+// ring to it, in the transaction of its tenant, a page at a time in ID order. It changes no other column, and writes
+// no audit row and no event, because the value does not change. A value that does not open is logged with its
+// column and row, never a value, and left as it is, so one bad row does not stop the column (security review of PR
+// #441, L4). It logs, for each column, the values that it moved and those that are left on an earlier key.
 func (r *Reseal) Run(ctx context.Context) ([]ResealResult, error) {
 	tenants, err := r.tenants(ctx)
 	if err != nil {
@@ -273,40 +298,41 @@ func (r *Reseal) Run(ctx context.Context) ([]ResealResult, error) {
 	return results, errors.Join(failed...)
 }
 
-// tenantColumn moves the values of one column of one tenant, one batch per transaction, until no row is left or a
-// batch moves none, and counts the rows that are left.
+// tenantColumn moves the values of one column of one tenant, one page per transaction, until the last page, and
+// counts the values that it left because they do not open.
 func (r *Reseal) tenantColumn(ctx context.Context, t tenant.Tenant, c ResealColumn, prefix []byte) (moved, left int64, err error) {
+	last := firstID
 	for {
-		var read, written int64
+		var p page
 		err := tenant.Each(ctx, r.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, t tenant.Tenant) error {
 			var err error
-			read, written, err = r.batch(ctx, tx, t, c, prefix)
+			p, err = r.batch(ctx, tx, t, c, prefix, last)
 			return err
 		})
 		if err != nil {
-			return moved, 0, fmt.Errorf("command: the re-seal of the column %s of %s for the tenant %s: %w", c.Column, c.Entity, t.ID(), unwrapEach(err))
+			return moved, left, fmt.Errorf("command: the re-seal of the column %s of %s for the tenant %s: %w", c.Column, c.Entity, t.ID(), unwrapEach(err))
 		}
-		moved += written
-		// A full batch whose rows a command wrote in between moved none: the next batch reads them again.
-		if read < ResealBatch || written == 0 {
-			break
+		moved += p.written
+		left += p.skipped
+		if p.read < ResealBatch {
+			return moved, left, nil
 		}
+		last = p.last
 	}
-	err = tenant.Each(ctx, r.db, []tenant.Tenant{t}, func(ctx context.Context, tx tenant.Querier, t tenant.Tenant) error {
-		return tx.QueryRowContext(ctx, c.Left, t.ID(), prefix).Scan(&left)
-	})
-	if err != nil {
-		return moved, 0, fmt.Errorf("command: the count of the column %s of %s for the tenant %s: %w", c.Column, c.Entity, t.ID(), unwrapEach(err))
-	}
-	return moved, left, nil
 }
 
-// batch moves at most ResealBatch values of one column of one tenant in its transaction: it gives the rows that it
-// read and the rows that it wrote.
-func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, c ResealColumn, prefix []byte) (read, written int64, err error) {
-	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), prefix, ResealBatch)
+// page is what one batch of the re-seal job did: the rows that it read, wrote and skipped, and the last ID it read.
+type page struct {
+	read, written, skipped int64
+	last                   string
+}
+
+// batch moves at most ResealBatch values of one column of one tenant after the ID after, in its transaction.
+func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, c ResealColumn, prefix []byte, after string) (page, error) {
+	var p page
+	rows, err := tx.QueryContext(ctx, c.Select, t.ID(), prefix, ResealBatch, after)
 	if err != nil {
-		return 0, 0, err
+		return p, err
 	}
 	type found struct {
 		id    string
@@ -317,39 +343,43 @@ func (r *Reseal) batch(ctx context.Context, tx tenant.Querier, t tenant.Tenant, 
 		var f found
 		if err := rows.Scan(&f.id, &f.value); err != nil {
 			rows.Close()
-			return 0, 0, err
+			return p, err
 		}
 		all = append(all, f)
 	}
 	if err := rows.Close(); err != nil {
-		return 0, 0, err
+		return p, err
 	}
 	if err := rows.Err(); err != nil {
-		return 0, 0, err
+		return p, err
 	}
-	read = int64(len(all))
+	p.read = int64(len(all))
 	for _, f := range all {
+		p.last = f.id
 		at := sealed.Place{Tenant: t.ID(), Table: c.Table, Column: c.Column, Row: f.id}
 		plain, err := r.ring.Open(f.value, at)
 		if err != nil {
-			return read, written, err
+			// The error names the column and the row, never a value.
+			slog.WarnContext(ctx, "command: re-seal skips a value that does not open", "entity", c.Entity, "error", err.Error())
+			p.skipped++
+			continue
 		}
 		again, err := r.ring.Seal(plain, at)
 		clear(plain)
 		if err != nil {
-			return read, written, err
+			return p, err
 		}
 		res, err := tx.ExecContext(ctx, c.Update, t.ID(), f.id, again, f.value)
 		if err != nil {
-			return read, written, err
+			return p, err
 		}
 		n, err := res.RowsAffected()
 		if err != nil {
-			return read, written, err
+			return p, err
 		}
-		written += n
+		p.written += n
 	}
-	return read, written, nil
+	return p, nil
 }
 
 // unwrapEach gives the error of the one tenant of a tenant.EachError.

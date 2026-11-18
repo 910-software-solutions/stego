@@ -77,7 +77,24 @@ func validateSecretFields(service *types.ServiceDeclaration) []ValidationError {
 			}
 		}
 	}
+	// The seal of a value binds its column, so a rename or a retype of a secret field, which copies the stored bytes to
+	// a new column, would leave each value unable to open (security review of PR #441, M3).
+	for k, change := range service.SchemaChanges {
+		if change.Kind != "rename" && change.Kind != "retype" {
+			continue
+		}
+		if f, ok := secretField(service, change.Entity, change.Field); ok {
+			faults = append(faults, ValidationError{Category: "field-type", Rule: "secret-field", Path: fmt.Sprintf("schema_changes[%d].kind", k),
+				Message: fmt.Sprintf("the schema change %q is a %s of the secret field %q of the entity %q; a sealed value is bound to its column, so a secret field is never renamed or retyped (ST-DECL-INV101)", change.ID, change.Kind, f.Name, change.Entity)})
+		}
+	}
 	for _, c := range service.Collections {
+		for field := range c.Implicit {
+			if f, ok := secretField(service, c.Entity, field); ok {
+				faults = append(faults, ValidationError{Category: "field-type", Rule: "secret-field", Path: "collections." + c.Name + ".implicit",
+					Message: fmt.Sprintf("the collection %q gives the secret field %q of the entity %q an implicit value, which puts a secret in clear in the declaration (ST-DECL-INV101)", c.Name, f.Name, c.Entity)})
+			}
+		}
 		for _, key := range c.UpsertKey {
 			if f, ok := secretField(service, c.Entity, key); ok {
 				faults = append(faults, ValidationError{Category: "field-type", Rule: "secret-field", Path: "collections." + c.Name + ".upsert_key",

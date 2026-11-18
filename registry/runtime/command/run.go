@@ -681,9 +681,9 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 		wrapped.Response, err = handler(ctx)
 		wrapped.Commit = err == nil && !transient(wrapped.Response)
 	} else {
-		wrapped, err = idempotency.Wrap(ctx, wrapTx{s: s}, idempotency.Request{Tenant: req.Tenant.ID(),
+		wrapped, err = idempotency.Wrap(ctx, wrapTx{s: s}, rt.keyed(idempotency.Request{Tenant: req.Tenant.ID(),
 			Principal: req.Principal.Subject().String(), Key: req.Key, Fingerprint: req.Fingerprint,
-			Retention: req.Retention}, handler)
+			Retention: req.Retention}), handler)
 	}
 	var failure *fillFailure
 	switch {

@@ -223,9 +223,22 @@ func TestValues(t *testing.T) {
 			Ptr   *Secret
 		}
 		value := row{Token: s, PIN: c, Ptr: &s}
+		// fmt and slog reach a value through an unexported field without its methods (security review of PR #441,
+		// M1): the wrapper holds the row, a stored hash and the secrets in unexported fields.
+		type wrapper struct {
+			inner  row
+			hashed Compared
+			list   []Secret
+		}
+		hashed, err := Hash(text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrapped := wrapper{inner: value, hashed: ComparedHash(hashed), list: []Secret{s}}
 		var out []string
 		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%X", "%d", "%T"} {
-			out = append(out, fmt.Sprintf(verb, value), fmt.Sprintf(verb, s), fmt.Sprintf(verb, c))
+			out = append(out, fmt.Sprintf(verb, value), fmt.Sprintf(verb, s), fmt.Sprintf(verb, c), fmt.Sprintf(verb, wrapped),
+				fmt.Sprintf(verb, &wrapped), fmt.Errorf("save "+verb, wrapped).Error())
 		}
 		out = append(out, s.String(), c.String(), fmt.Sprint(s, c), fmt.Sprintln(&s, &c))
 		encoded, err := json.Marshal(map[string]any{"row": value, "secret": s, "compared": c, "key": map[Secret]int{s: 1}})
@@ -235,12 +248,12 @@ func TestValues(t *testing.T) {
 		out = append(out, string(encoded))
 		var logged bytes.Buffer
 		for _, h := range []slog.Handler{slog.NewJSONHandler(&logged, nil), slog.NewTextHandler(&logged, nil)} {
-			slog.New(h).Info("write", "token", s, "pin", c, "row", value)
+			slog.New(h).Info("write", "token", s, "pin", c, "row", value, "wrapped", wrapped)
 		}
 		out = append(out, logged.String())
 		hex := fmt.Sprintf("%x", text)
 		for _, o := range out {
-			if strings.Contains(o, text) || strings.Contains(strings.ToLower(o), hex) {
+			if strings.Contains(o, text) || strings.Contains(strings.ToLower(o), hex) || strings.Contains(o, "$argon2id$") {
 				t.Fatalf("an output holds the secret: %s", o)
 			}
 		}
@@ -250,6 +263,33 @@ func TestValues(t *testing.T) {
 		var back row
 		if err := json.Unmarshal([]byte(`{"Token":"x","PIN":"y"}`), &back); !errors.Is(err, ErrDecode) {
 			t.Fatalf("a JSON decode of a secret gave %v, want ErrDecode", err)
+		}
+	})
+}
+
+func TestFingerprint(t *testing.T) {
+	t.Run("ST-SUP-RP16-LC05-T01 A keyed fingerprint matches with the key of its time and tells nothing of the body", func(t *testing.T) {
+		oldKey, newKey := testKey(t), testKey(t)
+		old := testRing(t, "1 "+oldKey)
+		raw := "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a"
+		keyed := old.Fingerprint(raw)
+		if !strings.HasPrefix(keyed, "k1:") || strings.Contains(keyed, raw) || len(keyed) != len("k1:")+64 {
+			t.Fatalf("the keyed fingerprint is %q, want k1: and an HMAC", keyed)
+		}
+		if old.Fingerprint(raw) != keyed || !old.FingerprintMatches(keyed, raw) || old.FingerprintMatches(keyed, raw+"0") {
+			t.Fatal("the keyed fingerprint is not stable, or matches another fingerprint")
+		}
+		rotated := testRing(t, "2 "+newKey, "1 "+oldKey)
+		if !rotated.FingerprintMatches(keyed, raw) || !strings.HasPrefix(rotated.Fingerprint(raw), "k2:") {
+			t.Fatal("the rotated ring does not match a fingerprint of the old key, or does not key with its first key")
+		}
+		if testRing(t, "2 "+newKey).FingerprintMatches(keyed, raw) || testRing(t, "1 "+newKey).FingerprintMatches(keyed, raw) {
+			t.Fatal("a ring without the old key matches its fingerprint")
+		}
+		for _, bad := range []string{raw, "", "k1", "kx:" + keyed[3:], "k9:" + keyed[3:], "1:" + keyed[3:]} {
+			if rotated.FingerprintMatches(bad, raw) {
+				t.Errorf("the stored fingerprint %q matches", bad)
+			}
 		}
 	})
 }

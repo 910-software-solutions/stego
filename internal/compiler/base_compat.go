@@ -640,12 +640,16 @@ type fieldShape struct {
 	Default         any
 	Values          []string
 	To              string
+	// Secret and CompareOnly are the stored form of a secret field: sealed bytes, or an Argon2id hash (decision
+	// ST-DECL-Q44), so a change of either changes what the column holds.
+	Secret, CompareOnly bool
 }
 
 func shapeOf(field types.Field) fieldShape {
 	return fieldShape{Type: field.Type, MinLength: field.MinLength, MaxLength: field.MaxLength, Min: field.Min, Max: field.Max,
 		Unique: field.Unique, UniqueComposite: field.UniqueComposite, UniqueWhenLive: field.UniqueWhenLive,
-		Optional: field.Optional, Default: field.Default, Values: field.Values, To: field.To}
+		Optional: field.Optional, Default: field.Default, Values: field.Values, To: field.To,
+		Secret: field.Secret(), CompareOnly: field.Secret() && field.CompareOnly}
 }
 
 // storedEntity is the stored shape of one entity: its fields in the order of the declaration, the declared
@@ -912,6 +916,13 @@ func fieldFaults(base, head *storedEntity) []BaseFault {
 				continue
 			}
 		} else if reflect.DeepEqual(field.Shape, now.Shape) {
+			continue
+		}
+		if field.Shape.Secret != now.Shape.Secret || field.Shape.CompareOnly != now.Shape.CompareOnly {
+			// The column of a secret holds its sealed bytes or its hash: a move between the clear, sealed and hashed
+			// forms rewrites each row, which only the schema change kind seal will do (ST-SUP-RC01-OC49, security
+			// review of PR #441, L1).
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: head.Name, Field: field.Name, Message: fmt.Sprintf("the head changes the secret form of %s.%s (sensitivity secret or compare_only), which changes what its column holds; that needs the schema change kind seal (ST-SUP-RC01-OC49), which generation does not carry out yet, so keep the form that the base stores, or add a new secret field and drop this one", head.Name, field.Name)})
 			continue
 		}
 		if definition, ok := relaxDefinition(field.Shape, now.Shape); ok && !field.Loose && !now.Loose {

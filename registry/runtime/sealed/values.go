@@ -14,24 +14,36 @@ const Redacted = "[secret]"
 var ErrDecode = errors.New("sealed: a secret value is not decoded from JSON")
 
 // Secret is the value of a readable secret field: its text, or not set. Only Reveal gives its text; it gives [secret]
-// for each fmt verb, for String and for slog, and encodes as JSON null (ST-SUP-RP16-LC04).
-type Secret struct {
-	text string
-	set  bool
-}
+// for each fmt verb, for String and for slog, and encodes as JSON null (ST-SUP-RP16-LC04). The text is behind a
+// pointer to a string, so fmt and slog, which reach a value through an unexported field without its methods, print an
+// address and never the text, also for a verb that does not fit (security review of PR #441, M1). The text never
+// changes after SecretOf, so a copy of a Secret may share it.
+type Secret struct{ text *string }
 
 // SecretOf gives the Secret of text; an empty text gives a Secret that is not set.
-func SecretOf(text string) Secret { return Secret{text: text, set: text != ""} }
+func SecretOf(text string) Secret {
+	if text == "" {
+		return Secret{}
+	}
+	return Secret{text: &text}
+}
 
 // Reveal gives the text of the secret, or empty when it is not set.
-func (s Secret) Reveal() string { return s.text }
+func (s Secret) Reveal() string {
+	if s.text == nil {
+		return ""
+	}
+	return *s.text
+}
 
 // IsSet tells whether the secret has a text.
-func (s Secret) IsSet() bool { return s.set }
+func (s Secret) IsSet() bool { return s.text != nil }
 
 // Equal tells, in constant time for texts of one length, whether text is the secret. A secret that is not set is
 // equal to no text, so a fill can check a given value with no import of its own.
-func (s Secret) Equal(text string) bool { return s.set && text != "" && constantEqual(s.text, text) }
+func (s Secret) Equal(text string) bool {
+	return s.text != nil && text != "" && constantEqual(*s.text, text)
+}
 
 // String gives [secret].
 func (s Secret) String() string { return Redacted }
@@ -55,22 +67,30 @@ func (s Secret) MarshalText() ([]byte, error) { return []byte(Redacted), nil }
 func (s *Secret) UnmarshalJSON([]byte) error { return ErrDecode }
 
 // Compared is the value of a compare-only secret field: a new text that a write hashes, or the stored hash that a read
-// gave. It never gives a text: Matches checks a given value (ST-SUP-RP16-LC03, ST-SUP-RP16-LC04).
-type Compared struct {
-	// text is a new value that the next write hashes, and hash the stored Argon2id string; at most one is set.
-	text string
-	hash string
-}
+// gave. It never gives a text: Matches checks a given value (ST-SUP-RP16-LC03, ST-SUP-RP16-LC04). Its state is behind
+// pointers to strings, as the text of Secret is: text is a new value that the next write hashes, and hash the stored
+// Argon2id string; at most one is set.
+type Compared struct{ text, hash *string }
 
 // ComparedOf gives the Compared of a new text, which the next write stores as its hash; an empty text gives a
 // Compared that is not set.
-func ComparedOf(text string) Compared { return Compared{text: text} }
+func ComparedOf(text string) Compared {
+	if text == "" {
+		return Compared{}
+	}
+	return Compared{text: &text}
+}
 
 // ComparedHash gives the Compared of a stored hash, as a read of its column gives it.
-func ComparedHash(hash string) Compared { return Compared{hash: hash} }
+func ComparedHash(hash string) Compared {
+	if hash == "" {
+		return Compared{}
+	}
+	return Compared{hash: &hash}
+}
 
 // IsSet tells whether the value has a new text or a stored hash.
-func (c Compared) IsSet() bool { return c.text != "" || c.hash != "" }
+func (c Compared) IsSet() bool { return c.text != nil || c.hash != nil }
 
 // Matches tells whether value is the secret: against the stored hash in constant time, or against a new text that is
 // not stored yet, also in constant time. An empty value and a Compared that is not set match nothing.
@@ -78,10 +98,10 @@ func (c Compared) Matches(value string) bool {
 	switch {
 	case value == "":
 		return false
-	case c.hash != "":
-		return Matches(c.hash, value)
-	case c.text != "":
-		return constantEqual(c.text, value)
+	case c.hash != nil:
+		return Matches(*c.hash, value)
+	case c.text != nil:
+		return constantEqual(*c.text, value)
 	}
 	return false
 }
@@ -89,18 +109,21 @@ func (c Compared) Matches(value string) bool {
 // Check runs ok on a new text before its hash, such as the generated check of the declared length; a stored hash and
 // a value that is not set pass, because their text is not known. ok never gets a stored hash.
 func (c Compared) Check(ok func(text string) bool) bool {
-	if c.text == "" {
+	if c.text == nil {
 		return true
 	}
-	return ok(c.text)
+	return ok(*c.text)
 }
 
 // Stored gives the text that the column stores: the hash of a new text, the stored hash, or empty when not set.
 func (c Compared) Stored() (string, error) {
-	if c.text != "" {
-		return Hash(c.text)
+	switch {
+	case c.text != nil:
+		return Hash(*c.text)
+	case c.hash != nil:
+		return *c.hash, nil
 	}
-	return c.hash, nil
+	return "", nil
 }
 
 // String gives [secret].

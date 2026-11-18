@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hkdf"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
@@ -26,6 +28,9 @@ const maxRingFile = 1 << 20
 type Ring struct {
 	ids  []uint32
 	aead map[uint32]cipher.AEAD
+	// fingerprint holds, for each key ID, the key of the request fingerprints that HKDF derives from the key with its
+	// own label (Fingerprint).
+	fingerprint map[uint32][]byte
 }
 
 // ErrRing is the class of each error of a key ring file that does not read. The error names a line number and never a
@@ -63,7 +68,7 @@ func ReadRing(path string) (*Ring, error) {
 // refuses no key, a line of another form, a key ID twice and one key twice, naming the line and never a key
 // (ST-SUP-RP16-LC02).
 func ParseRing(data []byte) (*Ring, error) {
-	r := &Ring{aead: map[uint32]cipher.AEAD{}}
+	r := &Ring{aead: map[uint32]cipher.AEAD{}, fingerprint: map[uint32][]byte{}}
 	var keys [][]byte
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 4096), maxRingFile)
@@ -102,9 +107,14 @@ func ParseRing(data []byte) (*Ring, error) {
 		if err != nil {
 			return nil, ringError(line, "has a key that GCM does not take")
 		}
+		derived, err := hkdf.Key(sha256.New, key, nil, fingerprintLabel, sha256.Size)
+		if err != nil {
+			return nil, ringError(line, "has a key that HKDF does not take")
+		}
 		keys = append(keys, key)
 		r.ids = append(r.ids, uint32(id))
 		r.aead[uint32(id)] = aead
+		r.fingerprint[uint32(id)] = derived
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, ringError(line+1, "is longer than the file limit")

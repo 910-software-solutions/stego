@@ -380,9 +380,9 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	if err != nil {
 		return nil, err
 	}
-{{- if .Sealed}}
+{{- if .Secret}}
 	// The key ring of the secret fields, which each mode of this process reads and the migration job does not
-	// (ST-SUP-RP14-LC12).
+	// (ST-SUP-RP14-LC12); it also keys the fingerprints of the idempotency keys (ST-SUP-RP16-LC05).
 	if settings.Ring, err = service.ReadKeyRing(); err != nil {
 		return nil, err
 	}

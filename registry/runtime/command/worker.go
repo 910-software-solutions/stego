@@ -495,8 +495,8 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 	call := rt.cfg.Probes.Bind(ctx, d.Tenant.ID(), w.principal.Subject().String(), w.spec.Name)
 	defer call.Rollback()
 	h := &Handle[P]{st: s, probe: w.spec.Probe(call.Probe())}
-	wrapped, err := idempotency.Wrap(ctx, wrapTx{s: s}, idempotency.Request{Tenant: d.Tenant.ID(),
-		Principal: w.principal.Subject().String(), Key: message, Fingerprint: fingerprint},
+	wrapped, err := idempotency.Wrap(ctx, wrapTx{s: s}, rt.keyed(idempotency.Request{Tenant: d.Tenant.ID(),
+		Principal: w.principal.Subject().String(), Key: message, Fingerprint: fingerprint}),
 		func(ctx context.Context) (idempotency.Response, error) {
 			decoded, err := decode(bytes.Clone(d.Payload))
 			if err != nil {

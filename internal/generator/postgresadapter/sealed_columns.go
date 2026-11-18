@@ -31,9 +31,10 @@ func generateSealedColumns(ctx gen.Context) (gen.File, bool, error) {
 			// A value of another key does not start with the version and the key ID of the first key ($2).
 			older := fmt.Sprintf("%s = $1 AND %s IS NOT NULL AND substring(%s from 1 for 5) <> $2", tenant, column, column)
 			fmt.Fprintf(&b, "\t{Entity: %q, Table: %q, Column: %q,\n", entity.Name, tableName(entity.Name), field.ColumnName())
-			fmt.Fprintf(&b, "\t\tSelect: %q,\n", fmt.Sprintf("SELECT %s::text, %s FROM %s WHERE %s ORDER BY %s LIMIT $3 FOR UPDATE SKIP LOCKED", sqlIdentifier(keyColumn), column, table, older, sqlIdentifier(keyColumn)))
-			fmt.Fprintf(&b, "\t\tUpdate: %q,\n", fmt.Sprintf("UPDATE %s SET %s = $3 WHERE %s = $1 AND %s = $2::uuid AND %s = $4", table, column, tenant, sqlIdentifier(keyColumn), column))
-			fmt.Fprintf(&b, "\t\tLeft: %q},\n", fmt.Sprintf("SELECT count(*) FROM %s WHERE %s", table, older))
+			// The job pages by the key after $4, so each run reads each row once (security review of PR #441, L4).
+			key := sqlIdentifier(keyColumn)
+			fmt.Fprintf(&b, "\t\tSelect: %q,\n", fmt.Sprintf("SELECT %s::text, %s FROM %s WHERE %s AND %s > $4::uuid ORDER BY %s LIMIT $3 FOR UPDATE SKIP LOCKED", key, column, table, older, key, key))
+			fmt.Fprintf(&b, "\t\tUpdate: %q},\n", fmt.Sprintf("UPDATE %s SET %s = $3 WHERE %s = $1 AND %s = $2::uuid AND %s = $4", table, column, tenant, key, column))
 			count++
 		}
 	}

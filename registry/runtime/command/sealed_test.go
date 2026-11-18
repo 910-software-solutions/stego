@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -65,9 +66,8 @@ func vaultSpec() EntitySpec[vault] {
 
 // vaultReseal is the re-seal column of vault, as the PostgreSQL adapter gives it.
 var vaultReseal = []ResealColumn{{Entity: "Vault", Table: "vaults", Column: "token",
-	Select: "SELECT id, token FROM vaults WHERE tenant_id = $1 AND token IS NOT NULL AND substring(token from 1 for 5) <> $2 ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED",
-	Update: "UPDATE vaults SET token = $3 WHERE tenant_id = $1 AND id = $2 AND token = $4",
-	Left:   "SELECT count(*) FROM vaults WHERE tenant_id = $1 AND token IS NOT NULL AND substring(token from 1 for 5) <> $2"}}
+	Select: "SELECT id, token FROM vaults WHERE tenant_id = $1 AND token IS NOT NULL AND substring(token from 1 for 5) <> $2 AND id > $4 ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED",
+	Update: "UPDATE vaults SET token = $3 WHERE tenant_id = $1 AND id = $2 AND token = $4"}}
 
 func vaultEntity(t *testing.T) *Entity[vault] {
 	t.Helper()
@@ -85,6 +85,26 @@ type vaultEnv struct {
 	rt     *Runtime
 	cmd    *Command[testProbe]
 	reads  int
+	// printed are the fmt and slog forms of each loaded value that a read gave.
+	printed []string
+}
+
+// loadedPrints gives the fmt forms of a loaded value, alone and in an unexported field of a wrapper, and its slog text
+// and JSON forms, as a fill that logs it by mistake writes them (security review of PR #441, M1).
+func loadedPrints(l Loaded[vault]) []string {
+	type wrapper struct {
+		loaded Loaded[vault]
+		value  vault
+	}
+	w := wrapper{loaded: l, value: l.Value()}
+	var out []string
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		out = append(out, fmt.Sprintf(verb, l), fmt.Sprintf(verb, w), fmt.Errorf("verify "+verb, w).Error())
+	}
+	var b bytes.Buffer
+	slog.New(slog.NewTextHandler(&b, nil)).Info("read", "loaded", l, "wrapped", w, "value", l.Value())
+	slog.New(slog.NewJSONHandler(&b, nil)).Info("read", "loaded", l, "wrapped", w, "value", l.Value())
+	return append(out, b.String())
 }
 
 func newVaultEnv(t *testing.T, ring *sealed.Ring) *vaultEnv {
@@ -127,6 +147,7 @@ func (v *vaultEnv) read(rt *Runtime, tenantID, id string) (vault, error) {
 			return idempotency.Response{}, err
 		}
 		got = l.Value()
+		v.printed = append(v.printed, loadedPrints(l)...)
 		return ok, nil
 	})
 	return got, err
@@ -190,6 +211,13 @@ func TestSealedFields(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		// An ID in upper case is sealed at its lower-case form, which the scan gives (security review of PR #441, L7).
+		if err := v.write("org-a", "k-upper", func(ctx context.Context, r *Repository[vault]) error {
+			_, err := r.Create(ctx, vault{ID: "UPPER-ID", Label: "upper", Token: sealed.SecretOf("upper-token")})
+			return err
+		}); err != nil {
+			t.Fatalf("a create with an ID in upper case gave %v", err)
+		}
 		if err := v.write("org-b", "k3", func(ctx context.Context, r *Repository[vault]) error {
 			_, err := r.Create(ctx, vault{ID: "v1", Label: "of b", Token: sealed.SecretOf("b-token")})
 			return err
@@ -212,6 +240,14 @@ func TestSealedFields(t *testing.T) {
 		}
 		if got.Token.Reveal() != token || !got.PIN.Matches(pin) || got.PIN.Matches("4712") || got.PIN.Matches("") {
 			t.Fatal("the read does not give back the readable secret, or the compare-only check is wrong")
+		}
+		for _, p := range v.printed {
+			if strings.Contains(p, token) || strings.Contains(p, "$argon2id$") {
+				t.Fatalf("a loaded value prints a secret or its hash: %s", p)
+			}
+		}
+		if !strings.Contains(v.printed[0], "loaded Vault v1") {
+			t.Fatalf("a loaded value prints %q, want its entity and ID", v.printed[0])
 		}
 		// An update of another field keeps the hash and seals the token again, at the same place.
 		if err := v.write("org-a", "k4", func(ctx context.Context, r *Repository[vault]) error {
@@ -286,9 +322,29 @@ func TestSealedFields(t *testing.T) {
 		versions := v.count(`SELECT sum(version) FROM vaults`)
 		rotated := vaultRing(t, "2 "+newKey, "1 "+oldKey)
 		rt := v.runtime(func(c *Config) { c.Ring = rotated })
+		// The key table holds keyed fingerprints of the key 1, and a request again with the key of an earlier write
+		// replays on the rotated runtime, whose first key is 2 (ST-SUP-RP16-LC05).
+		if n := v.count(`SELECT count(*) FROM idempotency_keys WHERE fingerprint NOT LIKE 'k1:%'`); n != 0 {
+			t.Fatalf("%d key rows hold a fingerprint that is not keyed with the key 1", n)
+		}
+		replay, err := v.runOn(rt, v.cmd, v.request("org-a", u7(t), "r0", `{}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			return idempotency.Response{}, errors.New("the fill ran again")
+		})
+		if err != nil || !replay.Replayed {
+			t.Fatalf("a request again with an earlier key on the rotated runtime gave %+v, %v, want a replay", replay, err)
+		}
+		changed, err := v.runOn(rt, v.cmd, v.request("org-a", u7(t), "r0", `{"other":true}`), func(ctx context.Context, h *Handle[testProbe]) (idempotency.Response, error) {
+			return idempotency.Response{}, errors.New("the fill ran again")
+		})
+		if err != nil || changed.Problem != idempotency.ProblemReused {
+			t.Fatalf("a request again with an earlier key and another body gave %+v, %v, want the key reused problem", changed, err)
+		}
 		if got, err := v.read(rt, "org-a", "v000"); err != nil || got.Token.Reveal() != token+"-000" {
 			t.Fatalf("an old value does not read after the rotation: %v", err)
 		}
+		// The first row in ID order holds the value of another row, which does not open at its place: the job logs and
+		// skips it, and moves each row after it (security review of PR #441, L4).
+		v.exec(`UPDATE vaults SET token = (SELECT token FROM vaults WHERE tenant_id = 'org-a' AND id = 'v002') WHERE tenant_id = 'org-a' AND id = 'v000'`)
 		job, err := NewReseal(v.pool, "unused", rotated, vaultReseal)
 		if err != nil {
 			t.Fatal(err)
@@ -300,17 +356,17 @@ func TestSealedFields(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(results) != 1 || results[0].Moved != rows || results[0].Left != 0 {
-			t.Fatalf("the re-seal job gave %+v, want %d moved and none left", results, rows)
+		if len(results) != 1 || results[0].Moved != rows-1 || results[0].Left != 1 {
+			t.Fatalf("the re-seal job gave %+v, want %d moved and the bad row left", results, rows-1)
 		}
-		if n := v.count(`SELECT count(*) FROM vaults WHERE substring(token from 1 for 5) <> $1`, sealed.Prefix(2)); n != 0 {
-			t.Fatalf("%d values are not sealed with the key 2", n)
+		if n := v.count(`SELECT count(*) FROM vaults WHERE substring(token from 1 for 5) <> $1`, sealed.Prefix(2)); n != 1 {
+			t.Fatalf("%d values are not sealed with the key 2, want only the bad row", n)
 		}
 		if v.count(`SELECT sum(version) FROM vaults`) != versions {
 			t.Fatal("the re-seal job changed the version of a row")
 		}
 		onlyNew := v.runtime(func(c *Config) { c.Ring = vaultRing(t, "2 "+newKey) })
-		for i := range rows {
+		for i := 1; i < rows; i++ {
 			tn := "org-a"
 			if i%2 == 1 {
 				tn = "org-b"
@@ -319,7 +375,7 @@ func TestSealedFields(t *testing.T) {
 				t.Fatalf("the value %d does not read with the new key alone: %v", i, err)
 			}
 		}
-		if again, err := job.Run(v.ctx); err != nil || again[0].Moved != 0 || again[0].Left != 0 {
+		if again, err := job.Run(v.ctx); err != nil || again[0].Moved != 0 || again[0].Left != 1 {
 			t.Fatalf("a second run gave %+v, %v", again, err)
 		}
 		v.noValueAnywhere(token)
