@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/jsell-rh/stego/internal/buildidentity"
@@ -74,7 +76,7 @@ func recordOne(check compiler.FillCheck, name string, run TestRun, build buildid
 	}
 	if err := run(dir); err != nil {
 		result.Failed = true
-		result.Reason = fmt.Sprintf("its tests failed: %v", err)
+		result.Reason = fmt.Sprintf("its tests failed: %v", err) + scaffoldTestCause(dir)
 		return result
 	}
 	after, err := CurrentState(dir, f, check)
@@ -104,6 +106,29 @@ func recordOne(check compiler.FillCheck, name string, run TestRun, build buildid
 	}
 	result.Passed = &FillTestsPassed{FillName: name, FillDigest: evidence.FillDigest, ContractDigest: evidence.ContractDigest}
 	return result
+}
+
+// scaffoldTestCause names the likely cause of failed tests of the fill in dir: a test file that still names
+// ErrNotImplemented, as the test that an older stego fill create wrote for the unfinished fill does. When the author
+// writes the fill and removes ErrNotImplemented, that test no longer compiles; when the fill keeps it, the test fails
+// (walkthrough 11, W11-B7). It gives the empty text when no test file of the folder names it.
+func scaffoldTestCause(dir string) string {
+	tests, err := filepath.Glob(filepath.Join(dir, "*_test.go"))
+	if err != nil {
+		return ""
+	}
+	var named []string
+	for _, test := range tests {
+		data, err := os.ReadFile(test)
+		if err == nil && strings.Contains(string(data), "ErrNotImplemented") {
+			named = append(named, filepath.Base(test))
+		}
+	}
+	if len(named) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; %s still expects ErrNotImplemented, as the test that an older stego fill create wrote for the unfinished fill: "+
+		"replace it with the tests of what the fill does (see docs/upgrade.md#write-the-tests-of-your-fills)", strings.Join(named, ", "))
 }
 
 // testEvent is one event of the report of go test -json.

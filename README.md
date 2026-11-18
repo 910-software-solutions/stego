@@ -446,8 +446,12 @@ against an older contract than the revision holds. `stego test` passes only
 reads no Go environment file, and records evidence only when at least one
 test of the fill ran and passed.
 
-Each unfinished fill returns `ErrNotImplemented`, and its test expects that
-error. Change the test when you write the fill.
+Each unfinished fill returns `ErrNotImplemented`, and its test passes while
+the fill refuses each call. When you write the fill, the test fails and tells
+you to replace it with the tests of what the fill does. The test compares the
+text of the refusal, not the variable, so it compiles when you remove the
+variable. For an older scaffold test, see [the upgrade
+guide](docs/upgrade.md#write-the-tests-of-your-fills).
 
 **Upgrade:** before this release, STEGO did not qualify the fills of commands,
 queries and workers. Now plan and apply refuse each such fill that has no

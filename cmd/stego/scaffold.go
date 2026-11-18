@@ -220,9 +220,15 @@ func capabilityFillSource(kind, owner, packageName, contract string, every bool)
 		// The test of a command or query fill names the request type of the contract.
 		testImports += fmt.Sprintf("\n%s %q\n", alias, contract)
 	}
-	testSource, err := format.Source([]byte(fmt.Sprintf("package %[1]s\n\nimport (\n\"context\"\n\"errors\"\n\"testing\"\n%[2]s)\n\n"+
-		"// TestFill holds the unfinished fill to its refusal. Change it when the fill is written.\nfunc TestFill(t *testing.T) {\n%[3]s\nif !errors.Is(err, ErrNotImplemented) {\nt.Fatalf(\"the unfinished fill gave %%v, want ErrNotImplemented\", err)\n}\n}\n",
-		packageName, testImports, call)))
+	// The test compares the text of the refusal, not the variable ErrNotImplemented, so it still compiles when the
+	// author writes the fill and removes the variable; it then fails with a message that says to replace it
+	// (walkthrough 11, W11-B7).
+	testSource, err := format.Source([]byte(fmt.Sprintf("package %[1]s\n\nimport (\n\"context\"\n\"testing\"\n%[2]s)\n\n"+
+		"// unfinished is the refusal of the fill that stego fill create wrote.\nconst unfinished = %[4]q\n\n"+
+		"// TestFill passes while the fill is the one that stego fill create wrote, which refuses each call. When you write\n"+
+		"// the fill, this test fails: replace it with the tests of what the fill does.\nfunc TestFill(t *testing.T) {\n%[3]s\n"+
+		"if err == nil || err.Error() != unfinished {\nt.Fatalf(\"the fill is written, and this test is the one that stego fill create wrote for the unfinished fill: replace it in fill_test.go with the tests of what the fill does (the fill gave %%v)\", err)\n}\n}\n",
+		packageName, testImports, call, owner+": the fill is not implemented")))
 	if err != nil {
 		return nil, nil, fmt.Errorf("formatting the fill test: %w", err)
 	}

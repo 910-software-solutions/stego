@@ -1213,8 +1213,9 @@ the slot `worker.worker`.
    ```
 
    The new fill exports `New`, or `Fill` for a query, and returns
-   `ErrNotImplemented`. Its test expects that error. Change the test when you
-   write the fill. Fill create refuses a fill that no command, query or worker
+   `ErrNotImplemented`. Its test passes while the fill refuses each call. When
+   you write the fill, the test fails and tells you to replace it with the
+   tests of what the fill does. Fill create refuses a fill that no command, query or worker
    of `service.yaml` names, and a fill that exists.
 
 3. Write the fill in `fills/place-order/fill.go`, and write its tests. Then
