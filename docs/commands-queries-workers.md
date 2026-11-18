@@ -712,8 +712,10 @@ A collection list and a list query page in different ways:
 | Next page | `cursor` | `cursor` |
 | Response | `items` and `next` | `items` and `next` |
 
-Each parameter name is exact. A collection list ignores `limit`, and a list
-query ignores `pageSize`. Give the `next` value of a response as the `cursor`
+Each parameter name is exact. A collection list reads only `pageSize`,
+`cursor`, `orderBy`, `fields` and `search`. It answers 400 for each other
+parameter, such as `limit` or `PageSize`, and the detail names the parameter
+(rest-api 4.14.0). A list query ignores `pageSize`. Give the `next` value of a response as the `cursor`
 of the next request. A cursor is valid only for the same list, tenant and
 caller. Another cursor gives 400.
 

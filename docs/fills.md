@@ -391,9 +391,10 @@ retention of its key (see
 
 A field with `writable: create` or `never` that is a secret is never compared:
 an update that gives it, also with the stored value, gets 400. An answer never
-holds the value of a secret, but an older rest-api gives a required secret as
-an empty member, such as `"api_key": ""`. Thus a client that sends back a row
-that it read must leave out each secret member.
+holds a secret: since rest-api 4.14.0 it leaves out the member of each secret
+field. An older rest-api gives a required secret as an empty member, such as
+`"api_key": ""`. A client that sends back a row that it read must leave out
+each secret member.
 
 ### sealed.Secret
 
