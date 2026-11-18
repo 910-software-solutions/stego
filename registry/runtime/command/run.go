@@ -27,6 +27,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -115,6 +116,9 @@ type Config struct {
 	// a message: RunConsumer runs no fill before that tuple is there, and tries the message again with the back-off
 	// of the outbox (ST-SUP-RC35-OC18). Nil checks no tuple: a schema with no definition tenant has no worker tuple.
 	WorkerTuples WorkerTupleReader
+	// Ring is the key ring of the secret fields (ST-SUP-RP10-LC44): it seals each readable secret that a write
+	// stores and opens each one that a read of the handle scans. Nil refuses an entity with a readable secret.
+	Ring *sealed.Ring
 }
 
 // TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
