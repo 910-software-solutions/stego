@@ -686,8 +686,10 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 	if err != nil {
 		return Result{}, made, internalf("the decided tenant was not built")
 	}
-	keyRequest := idempotency.Request{Tenant: target.ID(), Principal: req.Principal.Subject().String(), Key: req.Key,
-		Fingerprint: req.Fingerprint, Retention: req.Retention}
+	// A runtime with a key ring keys the fingerprint and seals the answer, as for each other command (ST-SUP-RP16-LC05,
+	// ST-SUP-RP07-LC13; security review of PR #443, I5): the Wrap and the Replay of the change take the same request.
+	keyRequest := rt.keyed(idempotency.Request{Tenant: target.ID(), Principal: req.Principal.Subject().String(), Key: req.Key,
+		Fingerprint: req.Fingerprint, Retention: req.Retention})
 	// The undeclared worker relations are read before the transaction, so no call to SpiceDB holds it open. A
 	// schema with no definition tenant has none. A failed read never fails the Retire: it still deletes the tuples of
 	// its declared workers and retires the tenant, and only the extra deletes are left to the reconcile, with one
