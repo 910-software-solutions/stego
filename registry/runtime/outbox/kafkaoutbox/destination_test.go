@@ -379,6 +379,51 @@ func TestDelivery(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP01-LC31-T07 In a broker outage each attempt logs broker-unavailable, and the destination fails after attempts in a row", func(t *testing.T) {
+		topic := topicName("unavailable")
+		e.broker.CreateTopic(t, topic, 1)
+		logs := &topicRecorder{}
+		d, err := New(e.plain(topic), logs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		failing := d.Registration().Failing
+		if failing == nil {
+			t.Fatal("the registration of the destination has no Failing")
+		}
+		if err, _ := deliver(t, d, 20*time.Second); err != nil || failing() != "" {
+			t.Fatalf("a delivery before the outage gave %v and the failing class %q", err, failing())
+		}
+		e.broker.Plain.Down()
+		defer e.broker.Plain.Up()
+		for attempt := 1; attempt <= FailingAfter; attempt++ {
+			if failing() != "" {
+				t.Fatalf("after %d failed attempts the destination fails with %q, want it to fail only after %d", attempt-1, failing(), FailingAfter)
+			}
+			if err, _ := deliver(t, d, 20*time.Second); err == nil || outbox.IsPermanent(err) {
+				t.Fatalf("a delivery in the outage gave %v, want an error that is not permanent", err)
+			}
+		}
+		if failing() != FailureUnavailable {
+			t.Fatalf("after %d failed attempts the destination fails with %q, want %s", FailingAfter, failing(), FailureUnavailable)
+		}
+		got := logs.got()
+		if len(got) != FailingAfter {
+			t.Fatalf("the outage logged %v, want %d events kafka.delivery_failed", got, FailingAfter)
+		}
+		for _, event := range got {
+			if event != FailureUnavailable+"  " {
+				t.Fatalf("the outage logged %q, want the class %s and no other attribute", event, FailureUnavailable)
+			}
+		}
+		// The first delivery that the broker acknowledges clears it.
+		e.broker.Plain.Up()
+		if err, _ := deliver(t, d, 30*time.Second); err != nil || failing() != "" {
+			t.Fatalf("a delivery after the outage gave %v and the failing class %q, want none", err, failing())
+		}
+	})
+
 	t.Run("ST-SUP-RP01-LC31-T02 A send again after a lost answer carries the same event ID", func(t *testing.T) {
 		topic := topicName("resend")
 		e.broker.CreateTopic(t, topic, 1)
@@ -556,5 +601,48 @@ func TestSecurity(t *testing.T) {
 			t.Fatalf("a send after the token file changed: %v", err)
 		}
 		expect(t)
+	})
+}
+
+func TestFailingExpiry(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC31-T07 The failing state of the destination ends after FailingExpiry with no new failed attempt", func(t *testing.T) {
+		d, err := New(Settings{Brokers: []string{"127.0.0.1:9"}, InsecureLoopback: true}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer d.Close()
+		at := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		d.now = func() time.Time { return at }
+		for range FailingAfter {
+			d.count(FailureUnavailable)
+		}
+		if got := d.Failing(); got != FailureUnavailable {
+			t.Fatalf("after %d failed attempts Failing gives %q, want %s", FailingAfter, got, FailureUnavailable)
+		}
+		// Another replica delivered the backlog: this one gets no message, and the state ends after the expiry
+		// (security review of PR #429, L1).
+		at = at.Add(FailingExpiry - time.Second)
+		if got := d.Failing(); got != FailureUnavailable {
+			t.Fatalf("before the expiry Failing gives %q, want %s", got, FailureUnavailable)
+		}
+		at = at.Add(time.Second)
+		if got := d.Failing(); got != "" {
+			t.Fatalf("at the expiry Failing gives %q, want empty", got)
+		}
+		// A failure after the expiry starts a new count.
+		d.count(FailureUnavailable)
+		if got := d.Failing(); got != "" {
+			t.Fatalf("one failure after the expiry gives %q, want empty", got)
+		}
+		for range FailingAfter - 1 {
+			d.count(FailureUnavailable)
+		}
+		if got := d.Failing(); got != FailureUnavailable {
+			t.Fatalf("a new run of failures gives %q, want %s", got, FailureUnavailable)
+		}
+		d.count("")
+		if got := d.Failing(); got != "" {
+			t.Fatalf("an acknowledged attempt leaves %q, want empty", got)
+		}
 	})
 }

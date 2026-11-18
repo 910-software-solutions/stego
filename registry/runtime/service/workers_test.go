@@ -105,7 +105,7 @@ func workerParts(sink audit.Sink, notify *deliveries) WorkerParts {
 		},
 		NewRelay: func(ctx context.Context, db *sql.DB, relationships authz.Relationships, w *outbox.Worker,
 			meter metric.MeterProvider, logger otellog.LoggerProvider) (*authz.Relay, error) {
-			relay, err := authz.NewRelay(authz.RelayConfig{Name: "authz-relay", Relationships: relationships, DB: db,
+			relay, err := authz.NewRelay(authz.RelayConfig{Name: "authz-relay", Relations: relayRelations, Relationships: relationships, DB: db,
 				Schema: "public", Owners: map[string]authz.Owner{"order": {Table: "orders", Key: "id"}}, Meter: meter, Logger: logger})
 			if err != nil {
 				return nil, err
@@ -430,3 +430,7 @@ func TestWorkers(t *testing.T) {
 		}
 	})
 }
+
+// relayRelations are the relations that the relay of the tests may write: those of spiceSchema.
+var relayRelations = []authz.Relation{{ResourceType: "order", Name: "owner"}, {ResourceType: "service", Name: "operator"},
+	{ResourceType: "outbox_destination", Name: "operator"}}

@@ -18,6 +18,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/modes"
+	"github.com/jsell-rh/stego/registry/runtime/outbox"
 )
 
 // parkedService is a service of the fixture with SpiceDB, with the parked-message routes on a router behind its
@@ -41,6 +42,11 @@ func newParkedService(t *testing.T, selection modes.Selection) *parkedService {
 	}
 	// user:ops may resolve the messages of billing in the tenant t1 only (ST-SUP-RP01-LC17).
 	relate(t, endpoint, key, "outbox_destination", "billing", "operator", personOf(t, "ops"))
+	// And of shipping, which the release declares idempotent, of loose, which need not land, and of ledger, which the
+	// release does not declare.
+	for _, destination := range []string{"shipping", "loose", "ledger"} {
+		relate(t, endpoint, key, "outbox_destination", destination, "operator", personOf(t, "ops"))
+	}
 	if _, err := f.admin.Exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('t1'), ('t2')`); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +54,10 @@ func newParkedService(t *testing.T, selection modes.Selection) *parkedService {
 	settings := Settings{DatabaseURL: f.runtimeURL(), Issuer: "https://issuer.example", Audience: "todo",
 		KeysFile: writeFile(t, "keys.json", authntest.Document(signing.JWK())), SpiceDB: spice,
 		CursorKey: []byte(strings.Repeat("k", 32)), ServiceVersion: "1.0.0"}
-	svc, err := New(context.Background(), settings, parts(nil, nil))
+	declared := parts(nil, nil)
+	declared.Destinations = []outbox.Rules{{Name: "billing", MustLand: true}, {Name: "shipping", MustLand: true, Idempotent: true},
+		{Name: "loose"}}
+	svc, err := New(context.Background(), settings, declared)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +81,17 @@ func personOf(t *testing.T, sub string) string {
 // park writes one parked message of destination in tenant as the relay leaves it, and gives its ID.
 func (s *parkedService) park(t *testing.T, tenantID, destination string, mustLand bool) uuid.UUID {
 	t.Helper()
+	return s.parkRow(t, tenantID, destination, mustLand, false)
+}
+
+// parkRow writes one parked message as park does, with the idempotent flag of its row.
+func (s *parkedService) parkRow(t *testing.T, tenantID, destination string, mustLand, idempotent bool) uuid.UUID {
+	t.Helper()
 	id := uuid.Must(uuid.NewV7())
 	if _, err := s.f.admin.Exec(`INSERT INTO stego_outbox.messages (id, tenant_id, destination, resource_key, kind, payload,
-		outgoing_key, state, created_at, available_at, attempts, must_land, failure_code, parked_from, parked_at)
+		outgoing_key, state, created_at, available_at, attempts, must_land, idempotent, failure_code, parked_from, parked_at)
 		VALUES ($1::uuid, $2, $3, 'invoice:i-1', 'invoice.sent', '{"secret":"payload-value"}'::bytea, $5, 'parked',
-		now() - interval '1 hour', now(), 5, $4, 'refused', 'dispatching', now())`, id, tenantID, destination, mustLand, id.String()); err != nil {
+		now() - interval '1 hour', now(), 5, $4, $6, 'refused', 'dispatching', now())`, id, tenantID, destination, mustLand, id.String(), idempotent); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -237,6 +252,61 @@ func TestParkedRoutes(t *testing.T) {
 		check("a refused outcome", http.StatusConflict, status, body)
 		if err := s.f.admin.QueryRow(`SELECT state FROM stego_outbox.messages WHERE id = $1`, loose).Scan(&state); err != nil || state != "parked" {
 			t.Fatalf("the message of the refused outcome is %q, want parked: %v", state, err)
+		}
+	})
+	t.Run("ST-SUP-RP14-LC10-T01 A resolve takes the stricter of the row and the declared rules, and refuses an undeclared destination", func(t *testing.T) {
+		s := newParkedService(t, modes.Selection{modes.API})
+		resolve := func(destination string, id uuid.UUID, resolution string) int {
+			t.Helper()
+			status, body := s.call(t, "t1", "ops", http.MethodPost, parkedBase+"/stego/outbox/"+destination+"/parked/"+id.String()+":resolve",
+				`{"resolution":"`+resolution+`"}`)
+			noLeak(t, body)
+			return status
+		}
+		parked := func(id uuid.UUID) {
+			t.Helper()
+			var state string
+			if err := s.f.admin.QueryRow(`SELECT state FROM stego_outbox.messages WHERE id = $1`, id).Scan(&state); err != nil || state != "parked" {
+				t.Fatalf("the message of a refused resolve is %q, want parked: %v", state, err)
+			}
+		}
+		// An older row of shipping that is not idempotent: the release declares shipping idempotent, so acted is
+		// refused, and not acted is accepted.
+		older := s.parkRow(t, "t1", "shipping", true, false)
+		if status := resolve("shipping", older, "acted"); status != http.StatusConflict {
+			t.Fatalf("acted of an older row of an idempotent destination got %d, want 409", status)
+		}
+		parked(older)
+		if status := resolve("shipping", older, "not_acted"); status != http.StatusNoContent {
+			t.Fatalf("not acted of an older row of an idempotent destination got %d, want 204", status)
+		}
+		// An older row of loose that must land: the release declares that loose need not land, so discarded is
+		// refused.
+		landed := s.parkRow(t, "t1", "loose", true, false)
+		if status := resolve("loose", landed, "discarded"); status != http.StatusConflict {
+			t.Fatalf("discarded of an older row of a destination that need not land got %d, want 409", status)
+		}
+		parked(landed)
+		// A row of billing that is idempotent stays idempotent, though the release declares billing not idempotent.
+		row := s.parkRow(t, "t1", "billing", true, true)
+		if status := resolve("billing", row, "acted"); status != http.StatusConflict {
+			t.Fatalf("acted of an idempotent row got %d, want 409", status)
+		}
+		parked(row)
+		if status := resolve("billing", row, "discarded"); status != http.StatusNoContent {
+			t.Fatalf("discarded of a row that must land of a destination that must land got %d, want 204", status)
+		}
+		// A destination that the release does not declare refuses every outcome, with one answer for every ID: a
+		// missing message gets the same 409 as a parked one (security review of PR #429, L4).
+		if status := resolve("ledger", uuid.Must(uuid.NewV7()), "not_acted"); status != http.StatusConflict {
+			t.Fatalf("a missing message of an undeclared destination got %d, want 409 as a parked one", status)
+		}
+		for _, resolution := range []string{"acted", "not_acted", "discarded"} {
+			undeclared := s.parkRow(t, "t1", "ledger", true, false)
+			if status := resolve("ledger", undeclared, resolution); status != http.StatusConflict {
+				t.Fatalf("%s of a message of an undeclared destination got %d, want 409", resolution, status)
+			}
+			parked(undeclared)
 		}
 	})
 }

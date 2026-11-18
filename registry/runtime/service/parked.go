@@ -57,8 +57,8 @@ const maxResolveBody = 1024
 const parkedQuery = "stego.outbox.parked:"
 
 // parked serves the parked-message routes of the api mode (ST-SUP-RP14-LC09, ST-SUP-RP14-LC10): the resolver with
-// the decision port of the authorization runtime, the audit writer of the service and the state hook of the relay's
-// destination, on the pool of the runtime role.
+// the decision port of the authorization runtime, the audit writer of the service, the declared rules of the
+// destinations of the service and the state hook of the relay's destination, on the pool of the runtime role.
 type parked struct {
 	svc      *Service
 	resolver *outbox.Resolver
@@ -68,7 +68,8 @@ func newParked(svc *Service) (*parked, error) {
 	auditor := &resolveAuditor{writer: svc.writer, settings: svc.parts.AuditSettings, service: svc.parts.Service,
 		version: svc.version, declaration: svc.parts.DeclarationVersion}
 	hooks := map[string]outbox.StateHook{authz.DestinationName: svc.authz.StateHook(svc.telemetry.LoggerProvider())}
-	resolver, err := outbox.NewResolver(svc.queue, svc.authz, auditor, hooks)
+	declared := append([]outbox.Rules{authz.Rules()}, svc.parts.Destinations...)
+	resolver, err := outbox.NewDeclaredResolver(svc.queue, svc.authz, auditor, declared, hooks)
 	if err != nil {
 		return nil, err
 	}

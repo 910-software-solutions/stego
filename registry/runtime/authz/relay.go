@@ -54,6 +54,10 @@ type RelayConfig struct {
 	// Marker is the fixed marker relationship that the relay TOUCHes to raise the floor. The zero Tuple is
 	// DefaultMarker.
 	Marker Tuple
+	// Relations are the relations of the authorization schema of the service that the relay may write: an allow
+	// list, so a delivered tuple of another relation is refused for good and never reaches the provider (security
+	// review of PR #421, I3). The relation of the floor marker is the relay's own and is not one of them.
+	Relations []Relation
 	// Owners maps a resource type to the table of its rows. A tuple of a resource type with no owner, such as a
 	// group, stores its token on no row.
 	Owners map[string]Owner
@@ -92,6 +96,7 @@ type Relay struct {
 	db            *sql.DB
 	schema        string
 	owners        map[string]ownerTable
+	relations     map[Relation]bool
 	marker        Tuple
 	bound         time.Duration
 
@@ -109,8 +114,9 @@ type Relay struct {
 	afterFloor func() error
 }
 
-// NewRelay returns the relay of cfg. It refuses a configuration that lacks a part, and a delivery alert bound that
-// is not positive.
+// NewRelay returns the relay of cfg. It refuses a configuration that lacks a part, such as the allow list of the
+// relations, a relation that is not a valid name or that is the relation of the floor marker, and a delivery alert
+// bound that is not positive.
 func NewRelay(cfg RelayConfig, options ...RelayOption) (*Relay, error) {
 	principal, err := System(cfg.Name)
 	if err != nil {
@@ -154,8 +160,24 @@ func NewRelay(cfg RelayConfig, options ...RelayOption) (*Relay, error) {
 	if err := marker.valid(); err != nil {
 		return nil, err
 	}
+	if len(cfg.Relations) == 0 {
+		return nil, errors.New("authz: the relay has no allow list of the relations it may write")
+	}
+	relations := make(map[Relation]bool, len(cfg.Relations))
+	for _, relation := range cfg.Relations {
+		if err := validType("resource", relation.ResourceType); err != nil {
+			return nil, err
+		}
+		if err := validType("relation", relation.Name); err != nil {
+			return nil, err
+		}
+		if relation.ResourceType == marker.Resource.Type && relation.Name == marker.Relation {
+			return nil, fmt.Errorf("authz: the allow list of the relay holds %s, the relation of the floor marker", relation)
+		}
+		relations[relation] = true
+	}
 	r := &Relay{principal: principal, relationships: cfg.Relationships, db: cfg.DB, schema: schema, owners: owners,
-		marker: marker, bound: DefaultAlertBound}
+		relations: relations, marker: marker, bound: DefaultAlertBound}
 	for _, option := range options {
 		if option == nil {
 			continue
@@ -198,7 +220,14 @@ func (r *Relay) AlertBound() time.Duration { return r.bound }
 // Destination returns the registration of the relay on the outbox worker (ST-SUP-RP06-LC06, ST-SUP-RP01-LC25): the
 // destination authz, idempotent and must land, with Deliver as its handler and Hook as its state hook.
 func (r *Relay) Destination() outbox.Destination {
-	return outbox.Destination{Name: DestinationName, Idempotent: true, MustLand: true, Handler: r.Deliver, StateHook: r.Hook}
+	rules := Rules()
+	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: r.Deliver, StateHook: r.Hook}
+}
+
+// Rules returns the declared rules of the destination authz, idempotent and must land, which the resolver of a
+// process that does not deliver applies (security review of PR #421, L3).
+func Rules() outbox.Rules {
+	return outbox.Rules{Name: DestinationName, Idempotent: true, MustLand: true}
 }
 
 // Hook is the relay's state hook (ST-SUP-RP06-LC18): in tx, the transaction of the outbox in which a message of the
@@ -307,6 +336,11 @@ func (r *Relay) Deliver(ctx context.Context, tx *sql.Tx, delivery outbox.Deliver
 		return outbox.PermanentRefusal(err)
 	}
 	tuple := message.Tuple.tuple()
+	// Only a relation of the allow list is written: a staged tuple of an undeclared relation, or of the floor
+	// marker, is refused for good and never reaches the provider (security review of PR #421, I3).
+	if !r.relations[Relation{ResourceType: tuple.Resource.Type, Name: tuple.Relation}] {
+		return outbox.PermanentRefusal(fmt.Errorf("authz: the relation %s of the tuple is not one that the relay may write", tuple.Resource.Type+"#"+tuple.Relation))
+	}
 	// Every resource ID of the tuple names the tenant of the outbox row, which the staging transaction wrote from its
 	// own tenant; a tuple of another tenant, or one that is not tenant-qualified, is never written (ST-SUP-RP06-LC22).
 	// The filtered delete of a relation has no subject.

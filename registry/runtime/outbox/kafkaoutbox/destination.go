@@ -95,7 +95,23 @@ const (
 	// FailureTopicRefused is a broker's refusal of the topic of a record: the event also names the topic and the
 	// reason, ReasonUnknownTopic or ReasonTopicNotAuthorized, and holds no part of the message.
 	FailureTopicRefused = "topic-refused"
+	// FailureUnavailable is an attempt that no broker answered, so the record was not sent, with no other class, as in
+	// a broker outage (walkthrough 9).
+	FailureUnavailable = "broker-unavailable"
+	// FailureUnknownOutcome is an attempt whose outcome is not known, with no other class: the broker may hold the
+	// record. It counts for Failing and has no event.
+	FailureUnknownOutcome = "outcome-unknown"
 )
+
+// FailingAfter is the number of attempts in a row that fail at the broker after which Failing gives the failure
+// class, as kafkainbox.DefaultFailingAfter is for the sessions of the inbox.
+const FailingAfter = 5
+
+// FailingExpiry is the age of the last failed attempt after which Failing gives empty again, with no new failure:
+// two times the longest backoff of the outbox worker by default (outbox.DefaultWorkerConfig, 5 minutes). In an
+// outage each message is tried again within one backoff, so the state stays; when another replica delivered the
+// backlog and this one gets no message, the state ends (security review of PR #429, L1).
+const FailingExpiry = 10 * time.Minute
 
 // The reasons of the failure class FailureTopicRefused.
 const (
@@ -133,6 +149,12 @@ type Destination struct {
 	mu      sync.Mutex
 	session *session
 	closed  bool
+	// failures is the count of the attempts in a row that failed at the broker, class the class of the last and
+	// failedAt its time; now is the clock of failedAt, which a test sets.
+	failures int
+	class    string
+	failedAt time.Time
+	now      func() time.Time
 }
 
 type session struct {
@@ -198,7 +220,7 @@ func New(s Settings, logs otellog.LoggerProvider) (*Destination, error) {
 		// The key hash of the Java client, so one entity's events go to one partition whatever client reads them.
 		kgo.RecordPartitioner(kgo.StickyKeyPartitioner(nil)),
 	)
-	d := &Destination{options: options, topic: s.Topic}
+	d := &Destination{options: options, topic: s.Topic, now: time.Now}
 	if logs != nil {
 		d.logger = logs.Logger("github.com/jsell-rh/stego/registry/runtime/outbox/kafkaoutbox")
 		if s.InsecureLoopback {
@@ -356,7 +378,47 @@ func tlsConfig(s Settings) (*tls.Config, error) {
 // by the event ID, not must land, so a message whose attempts are exhausted is parked as on every other destination,
 // with Deliver as its handler.
 func (d *Destination) Registration() outbox.Destination {
-	return outbox.Destination{Name: DestinationName, Idempotent: true, Handler: d.Deliver}
+	rules := Rules()
+	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: d.Deliver,
+		Failing: d.Failing}
+}
+
+// Failing gives the failure class of the last attempt when FailingAfter attempts in a row failed at the broker, such
+// as broker-unavailable in a broker outage, or empty. The readiness of the worker mode names it, so a worker that
+// cannot publish is not ready (ST-SUP-RP09-LC05, walkthrough 9). An attempt that the broker acknowledged clears it,
+// and so does FailingExpiry with no new failed attempt; a record that the destination or the broker refuses for
+// itself does not count.
+func (d *Destination) Failing() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.failures >= FailingAfter && d.now().Sub(d.failedAt) < FailingExpiry {
+		return d.class
+	}
+	return ""
+}
+
+// count follows the attempts in a row that fail at the broker: class is the class of a failed attempt, or empty for
+// an attempt that the broker acknowledged.
+func (d *Destination) count(class string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if class == "" {
+		d.failures, d.class = 0, ""
+		return
+	}
+	now := d.now()
+	// A failure after the state expired starts a new count.
+	if d.failures > 0 && now.Sub(d.failedAt) >= FailingExpiry {
+		d.failures = 0
+	}
+	d.failures++
+	d.class, d.failedAt = class, now
+}
+
+// Rules returns the declared rules of the destination kafka, idempotent and not must land, which the resolver of a
+// process that does not deliver applies (security review of PR #421, L3).
+func Rules() outbox.Rules {
+	return outbox.Rules{Name: DestinationName, Idempotent: true}
 }
 
 // Deliver is the outbox handler of the Kafka destination (ST-SUP-RP01-LC30, ST-SUP-RP01-LC31). It publishes the
@@ -371,9 +433,18 @@ func (d *Destination) Deliver(ctx context.Context, _ *sql.Tx, delivery outbox.De
 	if err != nil {
 		return outbox.PermanentRefusal(err)
 	}
+	err, class := d.deliver(ctx, record)
+	if !outbox.IsPermanent(err) {
+		d.count(class)
+	}
+	return err
+}
+
+// deliver publishes record, and gives the class of an attempt that failed at the broker, or empty.
+func (d *Destination) deliver(ctx context.Context, record *kgo.Record) (error, string) {
 	s, err := d.acquire()
 	if err != nil {
-		return outbox.NotSent(err)
+		return outbox.NotSent(err), ""
 	}
 	// A class that a connection of an earlier attempt left is not this attempt's.
 	s.connects.take()
@@ -381,8 +452,12 @@ func (d *Destination) Deliver(ctx context.Context, _ *sql.Tx, delivery outbox.De
 		// No record was sent. A broker that does not answer may hold a connection the client must not use again.
 		d.invalidate(s)
 		fixed, class := failure(err)
+		if class == "" {
+			// No broker answered: the event names the outage, so the console shows it (walkthrough 9).
+			class = FailureUnavailable
+		}
 		d.failed(ctx, class)
-		return outbox.NotSent(fixed)
+		return outbox.NotSent(fixed), class
 	}
 	result := make(chan error, 1)
 	s.client.Produce(ctx, record, func(_ *kgo.Record, err error) { result <- err })
@@ -393,7 +468,7 @@ func (d *Destination) Deliver(ctx context.Context, _ *sql.Tx, delivery outbox.De
 		// client is closed, which fails it, and a new attempt starts with a new client.
 		d.invalidate(s)
 		if err = <-result; err == nil {
-			return nil
+			return nil, ""
 		}
 		// A connection of the produce that failed its TLS handshake or its SASL authentication is retried until the
 		// attempt ends; its class is that of the hook. The outcome stays not known.
@@ -403,9 +478,9 @@ func (d *Destination) Deliver(ctx context.Context, _ *sql.Tx, delivery outbox.De
 		}
 		if fixed := classError(class); fixed != nil {
 			d.failed(context.WithoutCancel(ctx), class)
-			return fixed
+			return fixed, class
 		}
-		return ctx.Err()
+		return ctx.Err(), FailureUnknownOutcome
 	}
 	return d.outcome(s, record.Topic, err)
 }
@@ -428,21 +503,21 @@ func classError(class string) error {
 // outcome marks the error of a produce. A broker's refusal of the batch means the record is not in the log: it is
 // transient, or permanent for a record the broker can never take. A refusal after the append, a request timeout and
 // every other error leave the outcome not known.
-func (d *Destination) outcome(s *session, topic string, err error) error {
+func (d *Destination) outcome(s *session, topic string, err error) (error, string) {
 	if err == nil {
-		return nil
+		return nil, ""
 	}
 	if errors.Is(err, kerr.SaslAuthenticationFailed) {
 		// The broker refused the authentication of a connection before it took the record.
 		s.connects.take()
 		d.failed(context.Background(), FailureSASL)
-		return outbox.TransientRefusal(errSASL)
+		return outbox.TransientRefusal(errSASL), FailureSASL
 	}
 	if refusal, ok := errors.AsType[*kerr.Error](err); ok {
 		switch refusal {
 		case kerr.NotEnoughReplicasAfterAppend, kerr.RequestTimedOut:
 			d.invalidate(s)
-			return errors.New("kafkaoutbox: the broker may hold the record: " + refusal.Message)
+			return errors.New("kafkaoutbox: the broker may hold the record: " + refusal.Message), FailureUnknownOutcome
 		case kerr.UnknownTopicOrPartition, kerr.TopicAuthorizationFailed:
 			// The topic is not there, or the service may not write to it: the platform must make the topic or
 			// grant it, so the event names the topic and the reason, and the outbox tries again after its backoff.
@@ -451,11 +526,11 @@ func (d *Destination) outcome(s *session, topic string, err error) error {
 				reason = ReasonTopicNotAuthorized
 			}
 			d.topicFailed(context.Background(), topic, reason)
-			return outbox.TransientRefusal(errors.New("kafkaoutbox: the broker refused the topic " + topic + ": " + reason))
+			return outbox.TransientRefusal(errors.New("kafkaoutbox: the broker refused the topic " + topic + ": " + reason)), FailureTopicRefused
 		case kerr.MessageTooLarge, kerr.RecordListTooLarge, kerr.InvalidRecord, kerr.CorruptMessage, kerr.InvalidTopicException:
-			return outbox.PermanentRefusal(errors.New("kafkaoutbox: the broker can never take the record: " + refusal.Message))
+			return outbox.PermanentRefusal(errors.New("kafkaoutbox: the broker can never take the record: " + refusal.Message)), ""
 		default:
-			return outbox.TransientRefusal(errors.New("kafkaoutbox: the broker refused the record: " + refusal.Message))
+			return outbox.TransientRefusal(errors.New("kafkaoutbox: the broker refused the record: " + refusal.Message)), ""
 		}
 	}
 	d.invalidate(s)
@@ -465,9 +540,9 @@ func (d *Destination) outcome(s *session, topic string, err error) error {
 	}
 	if fixed := classError(class); fixed != nil {
 		d.failed(context.Background(), class)
-		return fixed
+		return fixed, class
 	}
-	return errUnknownOutcome
+	return errUnknownOutcome, FailureUnknownOutcome
 }
 
 // failed emits the event kafka.delivery_failed for a failure of a named class: the class, and nothing else.

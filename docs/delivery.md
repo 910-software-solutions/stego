@@ -72,6 +72,11 @@ Deployments:
   `worker: not ready: the component inbox-order-changes stopped`. No traffic goes to the worker Deployment, so
   its readiness removes nothing from a Service. It shows a stopped worker in `kubectl get pods` and in the
   `Available` condition, and a new release whose worker cannot start does not complete its rollout.
+- `/readyz/modes` also answers 503 while a destination of the outbox fails each delivery in a row. The Kafka
+  destination fails after 5 attempts in a row that fail at the broker, such as in a broker outage:
+  `worker: not ready: the destination kafka fails: broker-unavailable`. Each such attempt also writes the log
+  line `kafka.delivery_failed` with the failure class. The first delivery that the broker acknowledges makes the
+  worker ready again.
 - Each Deployment has the environment entries of the variables that its modes read. A variable that only the
   worker mode reads (`read_by_mode: worker` in the platform requirements), such as `STEGO_WORKER_DATABASE_URL`,
   `STEGO_RELAY_DATABASE_URL`, the audit sink settings and the Kafka settings, is only in the worker Deployment.

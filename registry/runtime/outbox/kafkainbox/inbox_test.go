@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,9 +74,11 @@ const rolePassword = "kafkainbox-test"
 // records, a runtime role and a worker role, and the local Kafka broker.
 type env struct {
 	admin, runtime, worker *sql.DB
-	queue                  *outbox.Queue
-	broker                 *kafkatest.Broker
-	producer               *kgo.Client
+	// workerRole is the name of the worker role.
+	workerRole string
+	queue      *outbox.Queue
+	broker     *kafkatest.Broker
+	producer   *kgo.Client
 }
 
 func newEnv(t *testing.T) *env {
@@ -125,7 +128,9 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	for _, text := range []string{queueText, listText, refusedText,
-		"GRANT USAGE ON SCHEMA public TO " + roles[0]} {
+		"GRANT USAGE ON SCHEMA public TO " + roles[0],
+		// The worker role reads the tenant list in the write of each record, as the step kafka_inbox grants.
+		"GRANT SELECT ON public.stego_tenants TO " + roles[1]} {
 		if _, err := admin.ExecContext(ctx, text); err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +148,7 @@ func newEnv(t *testing.T) *env {
 		t.Cleanup(func() { _ = db.Close() })
 		return db
 	}
-	e := &env{admin: admin, runtime: open(roles[0]), worker: open(roles[1]), broker: broker}
+	e := &env{admin: admin, runtime: open(roles[0]), worker: open(roles[1]), workerRole: roles[1], broker: broker}
 	if e.queue, err = outbox.New(e.worker, outbox.Options{}); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +266,7 @@ func (e *env) inbox(t *testing.T, topic, group string, retention time.Duration) 
 	in, err := New(Config{Subscription: sub, Queue: e.queue, DB: e.worker, Retention: retention,
 		Settings: Settings{Connection: kafkaoutbox.Settings{Brokers: []string{e.broker.Plain.Addr()}, InsecureLoopback: true},
 			Topic: topic, Group: group},
-		Tenants: e.lookup(t), Logs: testLogs{t: t}, Options: debugOptions()})
+		Tenants: e.lookup(t), TenantSchema: "public", Logs: testLogs{t: t}, Options: debugOptions()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,6 +427,67 @@ func TestInbox(t *testing.T) {
 		}
 		if a, b := MessageID(sub.Name, "acme", events[0].eventID), MessageID(sub.Name, "other", events[0].eventID); a == b {
 			t.Fatal("one event ID gives one message ID for two tenants")
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC35-T05 A record whose tenant a Retire retires after the lookup is refused, and its write waits for the Retire", func(t *testing.T) {
+		ctx := context.Background()
+		// A lookup that is stale: it read stale as active before a Retire of it.
+		e.provision(t, "stale", true)
+		topic := e.topic(t, 1, "86400000")
+		e.produce(t, topic, change("stale", "orders.order.created", "s-1"))
+		in := e.inbox(t, topic, "group-stale", week)
+		in.tenants = func(ctx context.Context, id string) (tenant.Tenant, Listing, error) {
+			return requested(t, id, tenant.ProvisionAction), Active, nil
+		}
+		e.run(t, in, topic, "group-stale", 1)
+		if n := e.count(t, "SELECT count(*) FROM stego_inbox.refused WHERE topic = $1 AND reason = $2", topic, ReasonRetiredTenant); n != 1 {
+			t.Fatalf("the record of a tenant retired after the lookup gave %d refused rows, want 1", n)
+		}
+
+		// A Retire that runs while the record is read: the write waits for the Retire to commit, then refuses.
+		e.provision(t, "late", false)
+		entered, release, retired := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+		go func() {
+			retired <- tenant.Retire(ctx, e.runtime, "public", requested(t, "late", tenant.RetireAction), []tenant.Hook{
+				func(context.Context, tenant.Querier, tenant.Tenant) error { close(entered); <-release; return nil }})
+		}()
+		<-entered
+		topic = e.topic(t, 1, "86400000")
+		late := change("late", "orders.order.created", "l-1")
+		e.produce(t, topic, late)
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		go func() { done <- e.inbox(t, topic, "group-late", week).Run(runCtx) }()
+		// The write waits on the lock of the tenant list, which the Retire holds; a write that does not wait commits
+		// the offset first.
+		for {
+			if e.committed(t, topic, "group-late") > 0 {
+				close(release)
+				cancel()
+				t.Fatal("the inbox wrote the record of a tenant while a Retire of it ran")
+			}
+			if e.count(t, "SELECT count(*) FROM pg_catalog.pg_locks WHERE locktype = 'advisory' AND NOT granted") > 0 {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		close(release)
+		if err := <-retired; err != nil {
+			t.Fatal(err)
+		}
+		for e.committed(t, topic, "group-late") < 1 {
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		if n := e.count(t, "SELECT count(*) FROM stego_outbox.messages WHERE id = $1", MessageID(sub.Name, "late", late.eventID)); n != 0 {
+			t.Fatal("the record of a tenant retired while it was read is in the outbox")
+		}
+		if n := e.count(t, "SELECT count(*) FROM stego_inbox.refused WHERE topic = $1 AND reason = $2", topic, ReasonRetiredTenant); n != 1 {
+			t.Fatalf("the record of a tenant retired while it was read gave %d refused rows, want 1", n)
 		}
 	})
 
@@ -633,6 +699,58 @@ func TestInbox(t *testing.T) {
 		if _, err := e.runtime.ExecContext(ctx, "SELECT 1 FROM stego_inbox.refused"); err == nil {
 			t.Fatal("the runtime role read the refused records")
 		}
+		// A table of an earlier release holds the unnamed CHECK of a shorter list of reasons: the migration drops it
+		// and adds the CHECK of this list, by its name, and a run again changes nothing (security review of PR #418b, N2).
+		if _, err := e.admin.ExecContext(ctx, `ALTER TABLE stego_inbox.refused DROP CONSTRAINT `+reasonsCheck()+`;
+			ALTER TABLE stego_inbox.refused ADD CONSTRAINT refused_reason_check CHECK (reason IN ('unknown-tenant', 'bad-kind')) NOT VALID`); err != nil {
+			t.Fatal(err)
+		}
+		insert := func(offset int, reason string) error {
+			_, err := e.admin.ExecContext(ctx, `INSERT INTO stego_inbox.refused (subscription, topic, partition, record_offset, reason)
+				VALUES ('order-changes', 'check-topic', 0, $1, $2)`, offset, reason)
+			return err
+		}
+		if err := insert(1, ReasonEventIDReused); err == nil {
+			t.Fatal("the CHECK of the earlier list took a reason that it does not hold")
+		}
+		migration, err := Migration(e.workerRole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oid := func() (oids []string) {
+			rows, err := e.admin.QueryContext(ctx, `SELECT conname || ':' || oid::text FROM pg_catalog.pg_constraint
+				WHERE conrelid = 'stego_inbox.refused'::regclass AND contype = 'c' AND conname LIKE 'refused_reason%' ORDER BY conname`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var o string
+				if err := rows.Scan(&o); err != nil {
+					t.Fatal(err)
+				}
+				oids = append(oids, o)
+			}
+			return oids
+		}
+		for range 2 {
+			if _, err := e.admin.ExecContext(ctx, migration); err != nil {
+				t.Fatal(err)
+			}
+		}
+		after := oid()
+		if len(after) != 1 || !strings.HasPrefix(after[0], reasonsCheck()+":") {
+			t.Fatalf("after the migration the reasons CHECKs are %v, want only %s", after, reasonsCheck())
+		}
+		if err := insert(1, ReasonEventIDReused); err != nil {
+			t.Fatalf("the CHECK of this list refused the reason %s: %v", ReasonEventIDReused, err)
+		}
+		if err := insert(2, "no-such-reason"); err == nil {
+			t.Fatal("the CHECK of this list took a reason that is not one of its reasons")
+		}
+		if _, err := e.admin.ExecContext(ctx, migration); err != nil || !slices.Equal(oid(), after) {
+			t.Fatalf("a run again changed the CHECK: %v, %v (%v)", oid(), after, err)
+		}
 		text, err := Migration(strings.TrimPrefix("x", "x") + "ki_worker_again")
 		if err != nil || !strings.Contains(text, "GRANT SELECT, INSERT, DELETE ON TABLE stego_inbox.refused") {
 			t.Fatalf("Migration gave %v", err)
@@ -697,12 +815,12 @@ func TestSubscription(t *testing.T) {
 			{Service: "a", Name: "b", Source: "orders", Worker: "w", Events: []string{"orders.order.created", "orders.order.created"}},
 			{Service: "A", Name: "b", Source: "orders", Worker: "w", Events: []string{"orders.order.created"}},
 		} {
-			if _, err := New(Config{Subscription: s, Settings: settings, Queue: queue, DB: db, Tenants: lookup, Retention: time.Hour}); err == nil {
+			if _, err := New(Config{Subscription: s, Settings: settings, Queue: queue, DB: db, Tenants: lookup, TenantSchema: "public", Retention: time.Hour}); err == nil {
 				t.Fatalf("New took the subscription %+v", s)
 			}
 		}
 		good := Subscription{Service: "a", Name: "b", Source: "orders", Worker: "w", Events: []string{"orders.order.created"}}
-		in, err := New(Config{Subscription: good, Settings: settings, Queue: queue, DB: db, Tenants: lookup, Retention: time.Hour})
+		in, err := New(Config{Subscription: good, Settings: settings, Queue: queue, DB: db, Tenants: lookup, TenantSchema: "public", Retention: time.Hour})
 		if err != nil || in.Name() != "inbox-b" {
 			t.Fatalf("New gave %v", err)
 		}
@@ -827,7 +945,7 @@ func TestFailing(t *testing.T) {
 		reader := sdkmetric.NewManualReader()
 		meter := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 		name := "orders-" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
-		in, err := New(Config{Subscription: sub, Queue: e.queue, DB: e.worker, Retention: 7 * 24 * time.Hour, Tenants: e.lookup(t),
+		in, err := New(Config{Subscription: sub, Queue: e.queue, DB: e.worker, Retention: 7 * 24 * time.Hour, Tenants: e.lookup(t), TenantSchema: "public",
 			Settings: Settings{Connection: kafkaoutbox.Settings{Brokers: []string{e.broker.Plain.Addr()}, InsecureLoopback: true},
 				Topic: name, Group: "group-failing"}, Meter: meter, FailingAfter: 2})
 		if err != nil {

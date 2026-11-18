@@ -736,19 +736,32 @@ func (w *Worker) resolve(ctx context.Context, tx *sql.Tx, request ResolveRequest
 	if w.auditor == nil {
 		return errors.New("outbox: the worker has no auditor, so it refuses every resolution")
 	}
-	// The worker resolves by the registration of the destination on it.
-	rules := func(destination string, _ resolveRow) (resolveRules, error) {
+	// A destination that is not registered on this worker is refused before the message is read.
+	admit := func(destination string) error {
+		w.mu.Lock()
+		_, ok := w.destinations[destination]
+		w.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("outbox: the destination %s is not registered on this worker", destination)
+		}
+		return nil
+	}
+	// The worker resolves by the stricter of the row and the registration of the destination on it, as the
+	// resolver does (security review of PR #421, L3).
+	rules := func(destination string, row resolveRow) (resolveRules, error) {
 		reg, ok := w.destinations[destination]
 		if !ok {
 			return resolveRules{}, fmt.Errorf("outbox: the destination %s is not registered on this worker", destination)
 		}
-		return resolveRules{mustLand: reg.MustLand, idempotent: reg.Idempotent, hook: reg.StateHook}, nil
+		rules, err := stricter(destination, row, Rules{Name: reg.Name, MustLand: reg.MustLand, Idempotent: reg.Idempotent}, true)
+		rules.hook = reg.StateHook
+		return rules, err
 	}
 	hookFailed := func(ctx context.Context, destination string) {
 		w.hookFailures.Add(1)
 		w.metrics.hookFailed(ctx, destination)
 	}
-	seconds, to, err := resolveCore(ctx, tx, request, w.decider, w.auditor, w.queue.now(), rules, hookFailed)
+	seconds, to, err := resolveCore(ctx, tx, request, w.decider, w.auditor, w.queue.now(), admit, rules, hookFailed)
 	if err != nil {
 		return err
 	}
@@ -781,7 +794,7 @@ type resolveRules struct {
 // rules gives for the destination, changes the state through the relay function resolve, runs the state hook and
 // writes the audit row last. It gives the age of the message in seconds and its new state.
 func resolveCore(ctx context.Context, tx *sql.Tx, request ResolveRequest, decider Decider, auditor Auditor, now any,
-	rules func(destination string, row resolveRow) (resolveRules, error), hookFailed func(ctx context.Context, destination string)) (float64, State, error) {
+	admit func(destination string) error, rules func(destination string, row resolveRow) (resolveRules, error), hookFailed func(ctx context.Context, destination string)) (float64, State, error) {
 	subject, ok := seal.SubjectOf(request.Principal)
 	if !ok || !validText(subject, MaxKeyBytes) {
 		return 0, "", errors.New("outbox: a resolution needs a principal of the authorization runtime")
@@ -808,6 +821,10 @@ func resolveCore(ctx context.Context, tx *sql.Tx, request ResolveRequest, decide
 	}
 	if !allowed {
 		return 0, "", ErrNotAllowed
+	}
+	// After the allow and before the read: a destination that admit refuses gets one answer for every ID.
+	if err := admit(destination); err != nil {
+		return 0, "", err
 	}
 	var state, group string
 	var row resolveRow

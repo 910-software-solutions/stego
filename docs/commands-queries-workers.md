@@ -965,6 +965,36 @@ cause classes are:
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
 
+### Release notes for runtime v0.132.0
+
+- New function `outbox.NewDeclaredResolver` takes the declared rules of each
+  destination (`outbox.Rules`); `outbox.NewResolver` is deprecated. A resolution takes the stricter of the row and the
+  declared rules, and a message of a destination that the release does not
+  declare answers 409. `service.Parts` has the new field `Destinations`, which
+  generated code sets. New functions `authz.Rules`, `auditoutbox.Rules` and
+  `kafkaoutbox.Rules`.
+- The Kafka inbox reads the tenant again in the transaction of each record,
+  under the lock of the tenant list (new function `tenant.HoldList`), so a
+  record of a tenant that a Retire retired after the lookup is refused as
+  `retired-tenant`. `kafkainbox.Config` and `service.InboxEnv` have the new
+  field `TenantSchema`. The step `kafka_inbox` grants the worker role SELECT
+  on the tenant list.
+- The console of the log provider keeps a rate-limit budget of its own for
+  the lines of severity ERROR and FATAL. The probe console holds the built-in
+  worker events, such as `worker.run.failed`, to the same rate limit.
+- `authz.RelayConfig` has the new field `Relations`, the allow list of the
+  relations that the relay writes; `NewRelay` refuses no list. Generated code
+  sets it from the authorization schema.
+- An attempt of the Kafka destination that no broker answers logs
+  `kafka.delivery_failed` with the class `broker-unavailable`. After 5 such
+  attempts in a row, `/readyz/modes` of the worker mode answers 503 with
+  `the destination kafka fails: broker-unavailable`. `outbox.Destination` has
+  the new field `Failing`, and `outbox.Worker` the new function `Failing`.
+- A Retire deletes the tuples of the admin relation of the tenant.
+- The migration of the refused records of the Kafka inbox replaces the CHECK
+  of the reasons when the list of reasons changes.
+- New function `pgtest.ReapNetwork` (test support).
+
 ### Release notes for runtime v0.131.0
 
 - The log provider of the telemetry runtime writes each record at the level

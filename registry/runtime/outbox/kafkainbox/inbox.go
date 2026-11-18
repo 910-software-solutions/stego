@@ -178,8 +178,10 @@ type Config struct {
 	// transaction of each record and writes the refused records.
 	Queue *outbox.Queue
 	DB    *sql.DB
-	// Tenants looks up the tenant of each record in the tenant list.
-	Tenants Lookup
+	// Tenants looks up the tenant of each record in the tenant list, and TenantSchema is the schema of that list,
+	// which the write transaction of each record reads again under the lock of the tenant list (tenant.HoldList).
+	Tenants      Lookup
+	TenantSchema string
 	// Retention is the done retention of the outbox worker: the time that the inbox keeps the ID of a record that it
 	// wrote. The topic's retention must not be longer (ST-SUP-RP01-LC35).
 	Retention time.Duration
@@ -200,6 +202,7 @@ type Inbox struct {
 	queue     *outbox.Queue
 	db        *sql.DB
 	tenants   Lookup
+	schema    string
 	retention time.Duration
 	principal string
 	options   []kgo.Opt
@@ -235,8 +238,8 @@ func New(c Config) (*Inbox, error) {
 	if err := c.Subscription.check(); err != nil {
 		return nil, err
 	}
-	if c.Queue == nil || c.DB == nil || c.Tenants == nil || c.Retention <= 0 {
-		return nil, errors.New("kafkainbox: the inbox needs the queue, the worker role's database, the tenant list and the done retention")
+	if c.Queue == nil || c.DB == nil || c.Tenants == nil || c.TenantSchema == "" || c.Retention <= 0 {
+		return nil, errors.New("kafkainbox: the inbox needs the queue, the worker role's database, the tenant list with its schema and the done retention")
 	}
 	if err := c.Settings.Check(); err != nil {
 		return nil, err
@@ -264,7 +267,7 @@ func New(c Config) (*Inbox, error) {
 		kgo.FetchMaxPartitionBytes(kafkaoutbox.MaxReadBytes),
 	)
 	in := &Inbox{sub: c.Subscription, settings: c.Settings, queue: c.Queue, db: c.DB, tenants: c.Tenants,
-		retention: c.Retention, principal: principal.Subject().String(), options: append(options, c.Options...),
+		schema: c.TenantSchema, retention: c.Retention, principal: principal.Subject().String(), options: append(options, c.Options...),
 		failingAfter: c.FailingAfter, backoff: backoff, now: time.Now, alerts: map[string]*alertState{}}
 	if in.failingAfter <= 0 {
 		in.failingAfter = DefaultFailingAfter
@@ -632,6 +635,9 @@ func (in *Inbox) take(ctx context.Context, record *kgo.Record) error {
 		return in.refuse(ctx, record, checked, ReasonNotOutboxMessage)
 	}
 	received, err := in.write(ctx, t, message)
+	if errors.Is(err, errRetiredSince) {
+		return in.refuse(ctx, record, checked, ReasonRetiredTenant)
+	}
 	if err != nil {
 		return fmt.Errorf("%w: %w", errDatabase, err)
 	}
@@ -648,15 +654,31 @@ func (in *Inbox) take(ctx context.Context, record *kgo.Record) error {
 	return nil
 }
 
-// write writes message in a transaction of the tenant t and commits it (ST-SUP-RP01-LC35).
+// errRetiredSince is the error of a write whose tenant was retired after the lookup of the record.
+var errRetiredSince = errors.New("kafkainbox: the tenant was retired after the lookup")
+
+// write writes message in a transaction of the tenant t and commits it (ST-SUP-RP01-LC35). The transaction first
+// takes the lock of the tenant list for t and reads again that t is active, so a record never lands after a Retire
+// of t committed (security review of PR #418, L1); a tenant retired since the lookup is errRetiredSince.
 func (in *Inbox) write(ctx context.Context, t tenant.Tenant, message outbox.Message) (outbox.Received, error) {
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
-	tx, err := tenant.Begin(ctx, in.db, t, nil)
+	// READ COMMITTED: each statement reads what committed before it, so the read after the lock sees the Retire.
+	tx, err := tenant.Begin(ctx, in.db, t, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := tenant.HoldList(ctx, tx, t); err != nil {
+		return 0, err
+	}
+	active, err := tenant.ActiveIn(ctx, tx, in.schema, t)
+	if err != nil {
+		return 0, err
+	}
+	if !active {
+		return 0, errRetiredSince
+	}
 	received, err := in.queue.Receive(ctx, tx, message)
 	if err != nil {
 		return 0, err
