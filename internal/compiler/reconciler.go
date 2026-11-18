@@ -1036,7 +1036,8 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 		if err := checkSettingDefaults(component, settings); err != nil {
 			return nil, err
 		}
-		stated := ComponentNeeds{Component: name, Needs: component.Needs, Variables: readVariables(declaredModeVariables(component.Variables(), svcDecl.Modes), imported), Settings: settings}
+		variables := readVariables(declaredModeVariables(component.Variables(), svcDecl.Modes), imported)
+		stated := ComponentNeeds{Component: name, Needs: readNeeds(component.Needs, component.Variables(), variables), Variables: variables, Settings: settings}
 		if declarer, ok := generators[name].(gen.VariableDeclarer); ok {
 			declared, err := declarer.DeclaredVariables(contexts[name])
 			if err != nil {
@@ -1059,6 +1060,20 @@ func requirementsFiles(write RequirementsWriter, svcDecl *types.ServiceDeclarati
 func readVariables(variables []registry.EnvironmentVariable, imported map[string]bool) []registry.EnvironmentVariable {
 	return slices.DeleteFunc(slices.Clone(variables), func(variable registry.EnvironmentVariable) bool {
 		return variable.ReadWith != "" && !imported[variable.ReadWith]
+	})
+}
+
+// readNeeds gives the needs of a component that the generated service has: each need, but a secret need that only
+// variables that the service does not read name as their secret source, such as the key ring of the secret fields of a
+// service with none (ST-SUP-RC32-OC21).
+func readNeeds(needs []registry.Need, all, read []registry.EnvironmentVariable) []registry.Need {
+	named := func(list []registry.EnvironmentVariable, need string) bool {
+		return slices.ContainsFunc(list, func(v registry.EnvironmentVariable) bool {
+			return v.SecretSource != nil && v.SecretSource.Name == need
+		})
+	}
+	return slices.DeleteFunc(slices.Clone(needs), func(n registry.Need) bool {
+		return named(all, n.Name) && !named(read, n.Name)
 	})
 }
 

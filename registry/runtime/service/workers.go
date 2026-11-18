@@ -47,7 +47,11 @@ const (
 	ControllerName   = "controller-lease"
 	AnchorJobName    = "audit-anchor"
 	MaintainJobName  = "audit-maintain"
+	ResealJobName    = "reseal"
 )
+
+// ResealInterval is the interval of the re-seal job of the secret fields in the controller mode (ST-SUP-RP14-LC12).
+const ResealInterval = 10 * time.Minute
 
 // ControllerLease is the name of the controller lease, under which the jobs of the controller mode run: one replica
 // holds it at a time (ST-SUP-RP09-LC13). The migration job makes its row (ST-SUP-RP14-LC03).
@@ -497,6 +501,19 @@ func (svc *Service) workerReconcile() (*command.WorkerReconcile, error) {
 	return command.NewWorkerReconcile(svc.tenants.rt, svc.parts.Workers.TenantSchema, svc.parts.WorkerNames, svc.provider, svc.parts.Release)
 }
 
+// resealJob gives the re-seal job of the readable secret fields of the service, or nil for a service with none
+// (ST-SUP-RP14-LC12).
+func (svc *Service) resealJob() (*command.Reseal, error) {
+	p := svc.parts
+	if len(p.Reseal) == 0 {
+		return nil, nil
+	}
+	if p.Workers.TenantSchema == "" {
+		return nil, errors.New("service: the re-seal job of the secret fields needs the schema of the tenant list")
+	}
+	return command.NewReseal(svc.pool, p.Workers.TenantSchema, svc.ring, p.Reseal)
+}
+
 // startController builds the audit jobs, the reconcile of the worker tuples and the controller lease loop that runs
 // them.
 func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Component, error) {
@@ -505,7 +522,11 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 	if err != nil {
 		return nil, err
 	}
-	if p.AuditJobs == nil && reconcile == nil {
+	reseal, err := svc.resealJob()
+	if err != nil {
+		return nil, err
+	}
+	if p.AuditJobs == nil && reconcile == nil && reseal == nil {
 		return nil, nil
 	}
 	if p.AuditJobs != nil && (p.AnchorPeriod <= 0 || p.TenantSchema == "") {
@@ -553,6 +574,14 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 				_, err := reconcile.Run(ctx, fencer)
 				return err
 			}})
+	}
+	if reseal != nil {
+		// The re-seal job moves each sealed value to the first key of the ring, so an earlier key can go after a
+		// rotation (ST-SUP-RP10-LC46).
+		jobs = append(jobs, lease.Job{Name: ResealJobName, Interval: ResealInterval, Run: func(ctx context.Context, _ *lease.Held) error {
+			_, err := reseal.Run(ctx)
+			return err
+		}})
 	}
 	if w.periodic, err = lease.NewPeriodic(lease.PeriodicConfig{Lease: leaseOf, Retry: client.RetryEvery(), Jobs: jobs}); err != nil {
 		return nil, err

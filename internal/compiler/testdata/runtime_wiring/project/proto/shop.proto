@@ -12,3 +12,16 @@ message AddNoteRequest {
 message AddNoteResponse {
   string note_id = 1;
 }
+
+// VerifyOrderRequest is the request of verify-order: a token and a PIN to check against the secrets of the order.
+message VerifyOrderRequest {
+  string order_id = 1;
+  string token = 2;
+  string pin = 3;
+}
+
+// VerifyOrderResponse is the response of verify-order: whether each value is the secret of the order.
+message VerifyOrderResponse {
+  bool token_ok = 1;
+  bool pin_ok = 2;
+}

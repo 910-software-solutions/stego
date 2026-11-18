@@ -35,3 +35,28 @@ func TestReadWithVariables(t *testing.T) {
 		}
 	})
 }
+
+func TestKeyRingNeed(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC21-T02 A service with no secret field gets no key ring variable and no key ring need", func(t *testing.T) {
+		pin := registry.RuntimePin{Module: "github.com/jsell-rh/stego/registry/runtime", Version: "v0.137.0", Sum: "h1:a"}
+		source := &registry.SecretSource{Name: "{service}-secret-key-ring", Key: "key-ring"}
+		variables := []registry.EnvironmentVariable{{Name: "STEGO_MODE"}, {Name: "STEGO_SECRET_KEY_RING_FILE", Type: "path", SecretSource: source, ReadWith: "sealed"}}
+		needs := []registry.Need{{Kind: "secret", Name: "{service}-secret-key-ring", Keys: []string{"key-ring"}}, {Kind: "secret", Name: "{service}-other", Keys: []string{"k"}}}
+		plain := []gen.File{{Path: "internal/api/data/entities.go", Content: []byte("package data\n\nimport \"github.com/jsell-rh/stego/registry/runtime/command\"\n")}}
+		sealed := append(slices.Clone(plain), gen.File{Path: "internal/api/data/vault.go", Content: []byte("package data\n\nimport \"github.com/jsell-rh/stego/registry/runtime/sealed\"\n")})
+		for _, c := range []struct {
+			name  string
+			files []gen.File
+			want  int
+		}{{"no secret field", plain, 1}, {"a secret field", sealed, 2}} {
+			read := readVariables(variables, runtimePackages(c.files, pin))
+			got := readNeeds(needs, variables, read)
+			if len(read) != c.want || len(got) != c.want {
+				t.Errorf("a service with %s lists %d variables and %d needs, want %d of each", c.name, len(read), len(got), c.want)
+			}
+			if c.want == 1 && (got[0].Name != "{service}-other" || read[0].Name != "STEGO_MODE") {
+				t.Errorf("a service with no secret field keeps %v and %v", read, got)
+			}
+		}
+	})
+}

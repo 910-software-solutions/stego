@@ -29,6 +29,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -105,6 +106,9 @@ type Parts struct {
 	// stricter of these rules and the rules of the row of a parked message, and refuses a message of a destination
 	// that they do not name (ST-SUP-RP14-LC10, security review of PR #421, L3).
 	Destinations []outbox.Rules
+	// Reseal are the readable secret fields of the entities of the service, which the controller mode moves to the
+	// first key of the key ring of Settings (ST-SUP-RP10-LC46, ST-SUP-RP14-LC12). A service with one needs the key ring.
+	Reseal []command.ResealColumn
 	// Provisioning is the declared tenant provisioning of a pooled service, or nil for a service that declares none
 	// (ST-DECL-EN27). With it, New serves Provision and Retire (TenantRoutes), and Middleware and Authenticate refuse
 	// a request of a tenant that the tenant list in Workers.TenantSchema does not hold as active (ST-SUP-RC27-OC09,
@@ -147,7 +151,9 @@ func (p Parts) Identity() tenant.ReleaseIdentity {
 
 // Service holds the runtime library objects of one running service, which New gives.
 type Service struct {
-	parts         Parts
+	parts Parts
+	// ring is the key ring of the secret fields, or nil (ST-SUP-RP14-LC12).
+	ring          *sealed.Ring
 	provider      *authz.SpiceDB
 	pool, auditDB *sql.DB
 	keys          *authn.KeySet
@@ -274,7 +280,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
-		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType}
+		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring}
+	if len(p.Reseal) > 0 && s.Ring == nil {
+		return nil, settingError(KeyRingFileSetting, "is not read: the service has a readable secret field and no key ring")
+	}
+	svc.ring = s.Ring
 	var gate *tenant.Gate
 	if p.Provisioning != nil {
 		if p.Workers.TenantSchema == "" {

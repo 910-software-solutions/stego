@@ -7,6 +7,11 @@
 // command.Loaded[Reservation], which no composite literal and no conversion from another type can make.
 package loaded
 
+import (
+	"fmt"
+	"log/slog"
+)
+
 // Ref is what a handle keeps of a loaded value besides its field values: the handle state and the entity that made
 // it, which the handle compares by identity, and the row's ID, resource type, version, authorization token text
 // and the lock that its read took.
@@ -47,6 +52,21 @@ func (v *Value[T]) Value() T {
 	}
 	return v.value
 }
+
+// String gives the entity name and the row ID, and no field value: a loaded value that a fill logs or puts in an error
+// by mistake tells no secret and no pii (ST-SUP-RP16-LC04, security review of PR #441, M1).
+func (v *Value[T]) String() string {
+	if v == nil {
+		return "<nil loaded value>"
+	}
+	return "loaded " + v.ref.EntityName + " " + v.ref.ID
+}
+
+// Format writes String for each verb.
+func (v *Value[T]) Format(f fmt.State, _ rune) { _, _ = f.Write([]byte(v.String())) }
+
+// LogValue gives String to slog.
+func (v *Value[T]) LogValue() slog.Value { return slog.StringValue(v.String()) }
 
 // ID returns the ID of the row; a nil value gives the empty ID.
 func (v *Value[T]) ID() string {

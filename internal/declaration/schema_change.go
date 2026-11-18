@@ -80,6 +80,13 @@ func validateSchemaChangeKind(changes []types.SchemaChange) []ValidationError {
 			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".id", Found: change.ID, Message: fmt.Sprintf("the schema change ID %q is used twice; no change can use the ID of another", change.ID)})
 		}
 		seen[change.ID] = true
+		if change.Kind == "seal" {
+			// The kind seal is in the specification (ST-DECL-EN21, ST-SUP-RC01-OC49), and generation does not carry
+			// it out yet: a field that the base stores in clear cannot become secret yet (decision ST-DECL-Q44).
+			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind,
+				Message: fmt.Sprintf("schema change %q has the kind seal, which generation does not carry out yet; a field that the base stores in clear cannot become secret yet", change.ID)})
+			continue
+		}
 		if !contains(schemaChangeKinds, change.Kind) {
 			faults = append(faults, ValidationError{Category: "schema-change", Rule: "schema-change-kind", Path: path + ".kind", Found: change.Kind, Allowed: schemaChangeKinds, Message: fmt.Sprintf("schema change %q has the kind %q; its kind must be add, rename, retype, require, drop, unique or relax", change.ID, change.Kind)})
 			continue

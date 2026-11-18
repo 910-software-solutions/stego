@@ -510,7 +510,15 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC35-OC13-T01 Provisioning a tenant writes one tuple for each worker in that tenant only",
 	"ST-SUP-RC27-OC13-T01 Provision gives each first administrator the admin relation in the new tenant only, which the relay writes to SpiceDB",
 	"ST-SUP-RC35-OC13-T06 The reconcile at start gives a tenant of an earlier release each worker's tuple and deletes the tuple of a removed worker",
+	"ST-SUP-RC20-OC48-T01 A secret field is written by a request, never answered, and kept by a write that leaves it out",
+	"ST-SUP-RC32-OC20-T01 A command fill reads a readable secret and checks a compare-only one",
+	"ST-SUP-RP10-LC44-T03 A sealed value copied to another order does not open in the generated service",
+	"ST-SUP-RP10-LC46-T02 After a key rotation the generated controller moves each sealed value to the new key",
 }
+
+// secretStoredCheck is the check of the generated service that proves that a secret field is never stored in clear
+// (ST-DECL-UC05-R06, decision ST-DECL-Q44).
+const secretStoredCheck = "ST-DECL-UC05-R06-T02 A secret field is never stored"
 
 // The checks of the generated service that prove the UC requirements of the tenant provisioning (ST-DECL-UC10),
 // which TestRuntimeWiring runs after those of wiringCheckIDs.
@@ -538,11 +546,14 @@ func TestRuntimeWiring(t *testing.T) {
 	stego := stegoBinary(t)
 	p := newWiringProject(t, stego, runtimeArchetype)
 	p.applyWithAfterSlot()
-	check, err := os.ReadFile(filepath.Join(wiringFixture, "check", "wiring_test.go"))
-	if err != nil {
-		t.Fatal(err)
+	// The check is the files of testdata/runtime_wiring/check: the wiring checks and the checks of the secret fields.
+	for _, name := range []string{"wiring_test.go", "secret_test.go"} {
+		check, err := os.ReadFile(filepath.Join(wiringFixture, "check", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.write("out/wiringcheck/"+name, string(check))
 	}
-	p.write("out/wiringcheck/wiring_test.go", string(check))
 	p.useLocalRuntime()
 	p.goCommand("mod", "tidy")
 	p.goCommand("vet", "./out/...")
@@ -564,6 +575,25 @@ func TestRuntimeWiring(t *testing.T) {
 			if strings.HasSuffix(dep, "/kafkatest") || strings.HasSuffix(dep, "/pgtest") || strings.HasSuffix(dep, "/authntest") {
 				t.Errorf("the generated service links the test support %s", dep)
 			}
+		}
+	})
+	t.Run("ST-SUP-RC32-OC21-T01 The key ring of the secret fields reaches the api and worker pods only", func(t *testing.T) {
+		requirements := p.read("deploy/platform-requirements.yaml")
+		if !strings.Contains(requirements, "wiring-shop-secret-key-ring") || !strings.Contains(requirements, "STEGO_SECRET_KEY_RING_FILE") {
+			t.Fatalf("the platform requirements do not list the key ring and its variable:\n%s", requirements)
+		}
+		for _, file := range []string{"deploy/base/deployment.yaml", "deploy/base/worker-deployment.yaml"} {
+			if !strings.Contains(p.read(file), "STEGO_SECRET_KEY_RING_FILE") {
+				t.Errorf("%s does not wire STEGO_SECRET_KEY_RING_FILE", file)
+			}
+		}
+		for _, file := range []string{"deploy/components/secret-files/mount-files.yaml", "deploy/components/secret-files/mount-worker-files.yaml"} {
+			if !strings.Contains(p.read(file), "secretName: wiring-shop-secret-key-ring") {
+				t.Errorf("%s does not mount the key ring", file)
+			}
+		}
+		if job := p.read("deploy/base/migration-job.yaml"); strings.Contains(job, "SECRET_KEY_RING") || strings.Contains(job, "secret-key-ring") {
+			t.Error("the migration Job reads the key ring")
 		}
 	})
 	// A service on the runtime data path needs all three modes: declared modes without worker and controller are
@@ -609,6 +639,7 @@ func TestRuntimeWiring(t *testing.T) {
 	t.Run(provisionGated, func(t *testing.T) { passed(t, provisionGated) })
 	t.Run(provisionWorkers, func(t *testing.T) { passed(t, provisionWorkers) })
 	t.Run(modesCheck, func(t *testing.T) { passed(t, modesCheck) })
+	t.Run(secretStoredCheck, func(t *testing.T) { passed(t, secretStoredCheck) })
 }
 
 // modesCheck is the check of the generated service that starts the binary with no mode option, with --mode api and

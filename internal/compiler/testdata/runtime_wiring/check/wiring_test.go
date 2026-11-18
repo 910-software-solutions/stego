@@ -99,6 +99,10 @@ type service struct {
 	restart func(t *testing.T)
 	// restartWith stops the service process and starts it again with the arguments given, such as --mode api.
 	restartWith func(t *testing.T, args ...string)
+	// ring is the key ring file of the secret fields that each start gives the service, and ringDir the folder of
+	// the key ring files of the test, which lives as long as the whole check (ST-SUP-RP14-LC12). firstKey is the
+	// throwaway key of the first ring.
+	ring, ringDir, firstKey string
 }
 
 // runResult is the outcome of one run of the binary.
@@ -330,6 +334,9 @@ func start(t *testing.T) *service {
 	_, _ = rand.Read(cursor)
 	keys := writeFile(t, "keys.json", authntest.Document(s.key.JWK()))
 	cursorFile := writeFile(t, "cursor.key", cursor)
+	// A throwaway key ring of one key, in a folder of the test that the test removes (ST-SUP-RP14-LC12).
+	s.ringDir, s.firstKey = t.TempDir(), throwawayKey(t)
+	s.ring = s.writeRing(t, "ring-1", "1 "+s.firstKey)
 	port := freePort(t)
 	s.base = "http://127.0.0.1:" + port
 	s.broker = kafkatest.Start(t)
@@ -341,7 +348,7 @@ func start(t *testing.T) *service {
 			"PORT="+port, "DATABASE_URL="+withTLS(u, stegoruntime.RuntimeRole, mode, ca), "STEGO_AUTHN_KEYS_FILE="+keys,
 			"STEGO_WORKER_DATABASE_URL="+withTLS(u, stegoruntime.WorkerRole, mode, ca),
 			"STEGO_RELAY_DATABASE_URL="+withTLS(u, stegoruntime.RelayRole, mode, ca),
-			"STEGO_QUERY_CURSOR_KEY_FILE="+cursorFile, "STEGO_SERVICE_VERSION=1.0.0")
+			"STEGO_QUERY_CURSOR_KEY_FILE="+cursorFile, "STEGO_SERVICE_VERSION=1.0.0", "STEGO_SECRET_KEY_RING_FILE="+s.ring)
 	}
 	// A service with TLS that does not verify the server does not start.
 	s.weakStart = run(binary, serviceEnv("disable"))
@@ -1729,6 +1736,8 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 			time.Sleep(200 * time.Millisecond)
 		}
 	})
+
+	secretChecks(t, s, owner)
 
 	t.Run("ST-GEN-INV26-T The assembler wires each declared mode as a named set in one binary that a repeatable mode flag selects", func(t *testing.T) {
 		s.t = t

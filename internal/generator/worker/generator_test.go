@@ -562,11 +562,12 @@ func TestRootCreateSchema(t *testing.T) {
 
 func TestContractRuntimeImports(t *testing.T) {
 	t.Run("ST-SUP-RC35-OC03-T04 The worker contract imports exactly the runtime packages that the generator gives the fill check, for each declaration", func(t *testing.T) {
-		// The entity Order has no pii field; the second case adds one, and the third a secret field.
+		// The entity Order has no pii field; the second case adds one, and the third a secret field, whose type is of the
+		// sealing runtime (ST-SUP-RC32-OC20).
 		for _, c := range []struct {
 			name, sensitivity string
 			want              int
-		}{{"no pii field", "", 1}, {"a written entity with a pii field", "pii", 2}, {"a written entity with a secret field", "secret", 2}} {
+		}{{"no pii field", "", 1}, {"a written entity with a pii field", "pii", 2}, {"a written entity with a secret field", "secret", 3}} {
 			ctx := workerContext(workerSlot)
 			if c.sensitivity != "" {
 				ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "email", Type: "string", Sensitivity: c.sensitivity})
