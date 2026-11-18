@@ -344,6 +344,107 @@ or gets a default, are not built yet; generation refuses them and names the
 reason. A table that another live table refers to cannot be dropped: remove
 the reference first.
 
+## Seal steps
+
+A seal moves a field that the base stores in clear to its sealed column, when
+the head declares it `sensitivity: secret` (decision ST-DECL-Q44). A field
+that is secret from its first release is sealed from the start and needs no
+seal. A seal runs in two releases, as Rails `support_unencrypted_data` with a
+backfill and the encrypted attributes of GitLab do: the release with the
+expand step writes the value in clear and sealed, the controller seals each
+row, and a later release with the contract step drops the clear column.
+
+```yaml
+entities:
+  - name: Member
+    fields:
+      - { name: email, type: string, max_length: 255, sensitivity: secret }
+schema_changes:
+  - {id: member-email-seal, kind: seal, entity: Member, field: email, from: pii}
+schema_history:
+  - {change: member-email-seal, phase: expand}
+```
+
+`from` is the sensitivity of the field in the base: `public`, `pii`, or no
+`from` when the field had none. Give `from: secret` for a field that the base
+already declared `sensitivity: secret` and that a release before runtime
+v0.135.0 (postgres-adapter 6.13.0) stored in clear; see [Seal the secret
+fields of a release before runtime v0.135.0](upgrade.md#seal-the-secret-fields-of-a-release-before-runtime-v01350). A seal is only of a
+readable secret: a `compare_only` field needs a hash, and a seal does not make
+one. No other schema change may name a sealed field, and a field has one seal
+only. Keep the other attributes of the field as the base has them: the
+baseline with the seal undone is the field in clear, so `001_initial` stays
+the same.
+
+### The expand step
+
+The expand migration adds the column `<column>_sealed`, nullable `bytea` with
+no default, and changes nothing else. The schema check of the release before
+accepts the new column. The migration also makes the table of the release
+reports, `stego_schema.releases`, and the seal checkpoint of the change in
+`stego_schema.seals`.
+
+While the step is open:
+
+- The release of the step writes each value twice: in clear in the old column,
+  which the release before reads, and sealed in `<column>_sealed`. So you can
+  roll back to the release before, and it reads each value that the new
+  release wrote. **The value stays in clear in the old column until the
+  contract step.**
+- A read takes the clear value when the two columns differ, because only a
+  release before writes the clear column alone.
+- The controller runs the seal job each 10 minutes, under the lease
+  `stego.backfill.<change ID>`. It reads 100 rows at a time in ID order, in
+  the transaction of each tenant, seals each row whose sealed value is not
+  set, seals again each row whose sealed value is not the clear value, and
+  moves its checkpoint in the same transaction. A stop loses no work, and the
+  next run goes on from the checkpoint. The job changes no version and writes
+  no audit row and no event. It logs the rows that it sealed and checked, and
+  no value.
+- The job starts a pass only while no process of a release before the step
+  reports itself. A database cannot seal a value, because it has no key, so a
+  write of a release before after a pass can leave a sealed value older than
+  its clear value. When a release before reports itself after the start of a
+  pass, the pass starts again. Its report stays in `stego_schema.releases`
+  while the seal is open, also after a clean stop.
+
+The service needs its key ring: the api, worker and controller modes read
+`STEGO_SECRET_KEY_RING_FILE` (see [Rotate and back up the key ring of the
+secret fields](operations.md#rotate-and-back-up-the-key-ring-of-the-secret-fields)).
+The service must run the controller mode, or checking refuses the seal.
+
+### The contract step of a seal
+
+Declare the contract step in a later release, after the seal job completed a
+pass and no release before runs:
+
+```yaml
+schema_history:
+  - {change: member-email-seal, phase: expand}
+  - {change: member-email-seal, phase: contract}
+```
+
+The contract migration refuses, changes no schema and writes no ledger row:
+
+- while a process of a release before the expand step reports itself;
+- while the seal job has not completed a pass, or a release before reported
+  itself after the start of the last pass;
+- while a row of a tenant of the tenant list has a clear value and no sealed
+  value.
+
+Each refusal names the change and the remedy: run the release of the expand
+step, with its controller, until the seal job completes a pass. Then the
+migration adds the CHECK `<table>_<column>_sealed_complete` NOT VALID and
+validates it, which reads every row, also a row of a tenant that the list
+does not hold. For a required field it makes the sealed column NOT NULL. Then,
+in one transaction that checks the step again, it drops the CHECK and the
+clear column, which drops its CHECK and its indexes, and deletes the seal
+checkpoint. Each statement takes a short lock, with the lock timeout and the
+retries of the other contract steps, and a run again after a failure part
+way goes on. After the contract the field is in `<column>_sealed` alone. The
+release of the expand step needs the clear column, so do not go back to it
+after the contract.
+
 ## The migrations of the steps
 
 `001_initial` holds the tables of the first release: the declaration with
