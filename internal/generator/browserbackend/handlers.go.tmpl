@@ -183,6 +183,10 @@ func preferWait(prefer string,waiting bool)string{
 var forwardedResponseHeaders=[...]string{"Content-Type","ETag","Retry-After","Idempotent-Replayed","Authz-Revocation","Preference-Applied"}
 func(b *Backend)proxy(w http.ResponseWriter,r *http.Request){
  switch r.Method{case "GET","HEAD","POST","PUT","PATCH","DELETE":default:w.Header().Set("Allow","GET, HEAD, POST, PUT, PATCH, DELETE");failure(w,405);return}
+ // A ; in a path segment (a matrix parameter, or the ..; of a servlet container) and a percent sign after the decode
+ // (a double encoding such as %252e) mean another path to a lenient upstream than to this proxy, so no such path
+ // reaches an API (security review of PR #424).
+ if strings.ContainsAny(r.URL.Path,";%"){failure(w,400);return}
  if len(r.Header.Values("Authorization"))!=0{failure(w,400);return}
  id:=cookieID(r,SessionCookie)
  if r.Method!="GET"&&r.Method!="HEAD"{value,_,_,err:=b.store.read(r.Context(),id);if err!=nil{sessionError(w,err);return};if value.Kind!="active"||{{if .LocalApplication}}!b.applicationCSRF(r){{else}}!b.csrf(r,value){{end}}{failure(w,403);return}}
