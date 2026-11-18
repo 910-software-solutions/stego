@@ -631,11 +631,37 @@ func commitResolvedModules(ctx context.Context, input ReconcilerInput, resolve M
 			plan.Files = append(plan.Files, PlannedFile{Path: name, Action: action})
 		}
 	}
+	if err := recordResolvedModules(plan, resolved); err != nil {
+		return err
+	}
 	relative, err := outputRelative(plan.projectDir, plan.outDir)
 	if err != nil {
 		return err
 	}
 	return commitTransaction(project, plan.projectDir, plan, relative, fault)
+}
+
+// recordResolvedModules makes the record that resolution writes name go.mod and go.sum as resolution writes them,
+// not as the plan found them before resolution. So an apply of the same sources after stego deps, also in a fresh
+// clone of the committed project, finds the module files that the record names and leaves the record as it is
+// (walkthrough 9, rank 3).
+func recordResolvedModules(plan *Plan, resolved map[string][]byte) error {
+	if plan.NewState == nil || plan.NewState.LastApplied == nil || plan.NewState.LastApplied.Inputs == nil {
+		return nil
+	}
+	manifest := plan.NewState.LastApplied.Inputs
+	for _, name := range []string{"go.mod", "go.sum"} {
+		mode := defaultOutputMode()
+		if before := plan.snapshots[name]; before.Exists {
+			mode = before.Mode.Perm()
+		}
+		manifest.Files[name] = InputFile{Exists: true, SHA256: HashBytes(resolved[name]), Mode: uint32(mode)}
+	}
+	if err := manifest.validateFields(); err != nil {
+		return err
+	}
+	manifest.SHA256 = manifest.digest()
+	return nil
 }
 
 // checkResolvedFills holds the fills that the declaration names to the fill rules with the resolved module file at

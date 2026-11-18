@@ -121,6 +121,40 @@ func TestDependenciesChangeModuleFilesOnlyOnSuccess(t *testing.T) {
 	})
 }
 
+func TestDependenciesRecordTheResolvedModules(t *testing.T) {
+	t.Run("ST-BLD-UC01-R01-T04 The record that resolution writes names go.mod and go.sum as resolved, so a later apply of the same sources leaves the record as it is", func(t *testing.T) {
+		dependencyProject(t)
+		original, originalSums := moduleFiles(t)
+		mustRun(t, runDependencies)
+		resolved, resolvedSums := moduleFiles(t)
+		if resolved == original && resolvedSums == originalSums {
+			t.Fatal("the fixture resolves to the same module files; the test shows nothing")
+		}
+		state, err := compiler.LoadState(".stego/state.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, data := range map[string]string{"go.mod": resolved, "go.sum": resolvedSums} {
+			if recorded := state.LastApplied.Inputs.Files[name]; !recorded.Exists || recorded.SHA256 != compiler.HashBytes([]byte(data)) {
+				t.Errorf("the record names %s with the digest %s, not that of the resolved file", name, recorded.SHA256)
+			}
+		}
+		// An apply of the same sources, as in a fresh clone of the committed project, changes no record.
+		record, err := os.ReadFile(".stego/state.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustRun(t, runApply)
+		after, err := os.ReadFile(".stego/state.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(after) != string(record) {
+			t.Fatalf("an apply after stego deps changed the record:\n--- after deps\n%s\n--- after apply\n%s", record, after)
+		}
+	})
+}
+
 func TestDependenciesFollowTheCapturedSource(t *testing.T) {
 	t.Run("ST-BLD-UC01-R02-T01 A saved overlay flag and ambient GOFLAGS cannot change what resolution reads", func(t *testing.T) {
 		dependencyProject(t)
