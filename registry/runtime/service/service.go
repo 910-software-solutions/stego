@@ -113,6 +113,10 @@ type Parts struct {
 	// under the backfill lease of each change (ST-SUP-RP10-LC50, ST-SUP-RP14-LC12). A service with one needs the key
 	// ring.
 	Seal []command.SealColumn
+	// KeyRing tells that an entity of the service has a secret field, readable or compare-only, or a pii field: the
+	// key ring keys the idempotency fingerprints, which a request body with a secret or pii field needs, and seals
+	// the stored answers, so New refuses to start without it (ST-SUP-RP14-LC12; security review of PR #444, M1).
+	KeyRing bool
 	// Provisioning is the declared tenant provisioning of a pooled service, or nil for a service that declares none
 	// (ST-DECL-EN27). With it, New serves Provision and Retire (TenantRoutes), and Middleware and Authenticate refuse
 	// a request of a tenant that the tenant list in Workers.TenantSchema does not hold as active (ST-SUP-RC27-OC09,
@@ -285,8 +289,8 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
 		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType, Ring: s.Ring}
-	if (len(p.Reseal) > 0 || len(p.Seal) > 0) && s.Ring == nil {
-		return nil, settingError(KeyRingFileSetting, "is not read: the service has a readable secret field and no key ring")
+	if err := ringNeeded(p, s.Ring); err != nil {
+		return nil, err
 	}
 	svc.ring = s.Ring
 	var gate *tenant.Gate
@@ -766,4 +770,15 @@ func extraKeys(key []byte) [][]byte {
 		return nil
 	}
 	return [][]byte{key}
+}
+
+// ringNeeded refuses a service with a secret field, readable or compare-only, or a pii field, and no key ring: with
+// no ring the idempotency store keeps an unkeyed SHA-256 fingerprint of each request body, which a reader of the
+// database can test with guessed values of a short secret such as a PIN, and an answer in clear (ST-SUP-RP14-LC12;
+// security review of PR #444, M1).
+func ringNeeded(p Parts, ring *sealed.Ring) error {
+	if ring == nil && (p.KeyRing || len(p.Reseal) > 0 || len(p.Seal) > 0) {
+		return settingError(KeyRingFileSetting, "is not read: the service has a secret or a pii field and no key ring")
+	}
+	return nil
 }

@@ -7,6 +7,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/jsell-rh/stego/registry/runtime/command"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 )
 
 func TestKeyRing(t *testing.T) {
@@ -47,6 +50,28 @@ func TestKeyRing(t *testing.T) {
 			if StartStage(err) != "service.start.setting.command."+KeyRingFileSetting {
 				t.Errorf("%s gave the stage %s", name, StartStage(err))
 			}
+		}
+	})
+}
+
+func TestKeyRingNeeded(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC12-T03 A service with a compare-only secret or a pii field and no key ring does not start", func(t *testing.T) {
+		ring, err := sealed.ParseRing([]byte("1 " + base64.StdEncoding.EncodeToString(make([]byte, 32)) + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, p := range map[string]Parts{"a secret or pii field": {KeyRing: true}, "a readable secret": {Reseal: []command.ResealColumn{{}}}, "an open seal": {Seal: []command.SealColumn{{}}}} {
+			err := ringNeeded(p, nil)
+			var setting *SettingError
+			if !errors.As(err, &setting) || setting.Variable != KeyRingFileSetting || StartStage(err) != "service.start.setting.command."+KeyRingFileSetting {
+				t.Errorf("%s with no key ring gives %v, want a setting error of %s", name, err, KeyRingFileSetting)
+			}
+			if err := ringNeeded(p, ring); err != nil {
+				t.Errorf("%s with a key ring gives %v", name, err)
+			}
+		}
+		if err := ringNeeded(Parts{}, nil); err != nil {
+			t.Errorf("a service with no secret and no pii field and no key ring gives %v", err)
 		}
 	})
 }
