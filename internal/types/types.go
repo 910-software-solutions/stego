@@ -101,6 +101,10 @@ type Field struct {
 	// manage it (ST-SUP-RC20-OC17), and the generated code checks that it is an RFC 3339 time and keeps it in UTC.
 	// Omitted means server-managed. The Product owner decided ST-DECL-Q16 on 2026-11-14.
 	ClientSet bool `yaml:"client_set,omitempty" json:"ClientSet,omitempty"`
+	// Writable is always, create or never: which collection writes may set the field (ST-DECL-EN03, ST-DECL-Q45
+	// (a)). create lets only a create set it; never lets no collection write set it, and a create stores its
+	// default. Omitted means always. A command or a worker may change the field in each case.
+	Writable string `yaml:"writable,omitempty" json:"Writable,omitempty"`
 	// Column is the stored column of the field when it is not Name: generation names a renamed field in the API by
 	// its name before its first rename, and stores it in the column of its declared name (ST-GEN-UC12-R04). The
 	// declaration never sets it.
@@ -120,6 +124,21 @@ var ServerTimestampNames = map[string]bool{"created_at": true, "updated_at": tru
 func (f Field) ClientSetTime() bool {
 	return f.ClientSet && f.Type == FieldTypeTimestamp && !f.Computed && !ServerTimestampNames[f.Name]
 }
+
+// The values of the writable setting of a field (ST-DECL-EN03).
+const (
+	WritableAlways = "always"
+	WritableCreate = "create"
+	WritableNever  = "never"
+)
+
+// WritableValues are the values of the writable setting of a field, in the order a fault lists them.
+var WritableValues = []string{WritableAlways, WritableCreate, WritableNever}
+
+// Kept tells whether a collection write keeps the stored value of the field: its writable setting is create or
+// never, so an update, an upsert of a stored row and a patch refuse another value (ST-SUP-RC20-OC44 to
+// ST-SUP-RC20-OC46).
+func (f Field) Kept() bool { return f.Writable == WritableCreate || f.Writable == WritableNever }
 
 // Secret tells whether the field is of the sensitivity secret (ST-DECL-EN03).
 func (f Field) Secret() bool { return f.Sensitivity == "secret" }
