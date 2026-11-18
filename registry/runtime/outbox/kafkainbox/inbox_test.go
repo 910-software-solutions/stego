@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,9 +74,11 @@ const rolePassword = "kafkainbox-test"
 // records, a runtime role and a worker role, and the local Kafka broker.
 type env struct {
 	admin, runtime, worker *sql.DB
-	queue                  *outbox.Queue
-	broker                 *kafkatest.Broker
-	producer               *kgo.Client
+	// workerRole is the name of the worker role.
+	workerRole string
+	queue      *outbox.Queue
+	broker     *kafkatest.Broker
+	producer   *kgo.Client
 }
 
 func newEnv(t *testing.T) *env {
@@ -145,7 +148,7 @@ func newEnv(t *testing.T) *env {
 		t.Cleanup(func() { _ = db.Close() })
 		return db
 	}
-	e := &env{admin: admin, runtime: open(roles[0]), worker: open(roles[1]), broker: broker}
+	e := &env{admin: admin, runtime: open(roles[0]), worker: open(roles[1]), workerRole: roles[1], broker: broker}
 	if e.queue, err = outbox.New(e.worker, outbox.Options{}); err != nil {
 		t.Fatal(err)
 	}
@@ -695,6 +698,58 @@ func TestInbox(t *testing.T) {
 		}
 		if _, err := e.runtime.ExecContext(ctx, "SELECT 1 FROM stego_inbox.refused"); err == nil {
 			t.Fatal("the runtime role read the refused records")
+		}
+		// A table of an earlier release holds the unnamed CHECK of a shorter list of reasons: the migration drops it
+		// and adds the CHECK of this list, by its name, and a run again changes nothing (security review of PR #418b, N2).
+		if _, err := e.admin.ExecContext(ctx, `ALTER TABLE stego_inbox.refused DROP CONSTRAINT `+reasonsCheck()+`;
+			ALTER TABLE stego_inbox.refused ADD CONSTRAINT refused_reason_check CHECK (reason IN ('unknown-tenant', 'bad-kind')) NOT VALID`); err != nil {
+			t.Fatal(err)
+		}
+		insert := func(offset int, reason string) error {
+			_, err := e.admin.ExecContext(ctx, `INSERT INTO stego_inbox.refused (subscription, topic, partition, record_offset, reason)
+				VALUES ('order-changes', 'check-topic', 0, $1, $2)`, offset, reason)
+			return err
+		}
+		if err := insert(1, ReasonEventIDReused); err == nil {
+			t.Fatal("the CHECK of the earlier list took a reason that it does not hold")
+		}
+		migration, err := Migration(e.workerRole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		oid := func() (oids []string) {
+			rows, err := e.admin.QueryContext(ctx, `SELECT conname || ':' || oid::text FROM pg_catalog.pg_constraint
+				WHERE conrelid = 'stego_inbox.refused'::regclass AND contype = 'c' AND conname LIKE 'refused_reason%' ORDER BY conname`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var o string
+				if err := rows.Scan(&o); err != nil {
+					t.Fatal(err)
+				}
+				oids = append(oids, o)
+			}
+			return oids
+		}
+		for range 2 {
+			if _, err := e.admin.ExecContext(ctx, migration); err != nil {
+				t.Fatal(err)
+			}
+		}
+		after := oid()
+		if len(after) != 1 || !strings.HasPrefix(after[0], reasonsCheck()+":") {
+			t.Fatalf("after the migration the reasons CHECKs are %v, want only %s", after, reasonsCheck())
+		}
+		if err := insert(1, ReasonEventIDReused); err != nil {
+			t.Fatalf("the CHECK of this list refused the reason %s: %v", ReasonEventIDReused, err)
+		}
+		if err := insert(2, "no-such-reason"); err == nil {
+			t.Fatal("the CHECK of this list took a reason that is not one of its reasons")
+		}
+		if _, err := e.admin.ExecContext(ctx, migration); err != nil || !slices.Equal(oid(), after) {
+			t.Fatalf("a run again changed the CHECK: %v, %v (%v)", oid(), after, err)
 		}
 		text, err := Migration(strings.TrimPrefix("x", "x") + "ki_worker_again")
 		if err != nil || !strings.Contains(text, "GRANT SELECT, INSERT, DELETE ON TABLE stego_inbox.refused") {
