@@ -1,3 +1,5 @@
+# Version 4.10.0 takes a secret field in a request and gives it in no response, marks it writeOnly in the OpenAPI
+# document, and keeps the stored secret when a write leaves it out (ST-SUP-RC20-OC48, decision ST-DECL-Q44).
 # The rest-api component serves each declared collection on the runtime data path, the one data path
 # (ST-SUP-RC20-OC39): each collection operation is one generated command or query of the command and query
 # components, which a service with collections must therefore have. Version 4.0.0 removed the handlers of the store
@@ -14,7 +16,7 @@
 # a scoped collection whose body names another parent in the scope field than the path (walkthrough 8, step 30).
 kind: component
 name: rest-api
-version: 4.8.0
+version: 4.10.0
 stage: ga
 output_namespace: internal/api
 

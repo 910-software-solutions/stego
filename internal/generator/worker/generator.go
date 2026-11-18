@@ -51,10 +51,15 @@ func ContractRuntimeImports(entities []types.Entity, workers []types.Worker) []s
 	for _, w := range workers {
 		writes = append(writes, w.Writes...)
 	}
+	var out []string
 	if command.WritesSensitive(entities, writes) {
-		return []string{"github.com/jsell-rh/stego/registry/runtime/audit", "github.com/jsell-rh/stego/registry/runtime/command"}
+		out = append(out, "github.com/jsell-rh/stego/registry/runtime/audit")
 	}
-	return []string{"github.com/jsell-rh/stego/registry/runtime/command"}
+	out = append(out, "github.com/jsell-rh/stego/registry/runtime/command")
+	if command.WritesSecret(entities, writes) {
+		out = append(out, "github.com/jsell-rh/stego/registry/runtime/sealed")
+	}
+	return out
 }
 
 // The grammars of the declared names that the generated code holds.

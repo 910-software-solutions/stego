@@ -1133,7 +1133,9 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 			schema.Properties[f.Name] = fieldToOpenAPISchema(f)
 			// Scope fields are derived from URL path parameters, not the
 			// request body — exclude them from the required array.
-			if !f.Optional && !f.Computed && !scopeFields[f.Name] {
+			// A secret is in no response, and an update that leaves it out keeps it (ST-SUP-RC20-OC48), so the
+			// schema of the entity does not require it; the create request does.
+			if !f.Optional && !f.Computed && !scopeFields[f.Name] && !f.Secret() {
 				required = append(required, f.Name)
 			}
 		}
@@ -1525,6 +1527,11 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 	}
 	if f.Computed {
 		s.ReadOnly = true
+	}
+	if f.Secret() {
+		// A request sets a secret, and no response gives it back (ST-SUP-RC20-OC48).
+		s.WriteOnly = true
+		s.Description = "A secret: a request sets it, and no response gives it back. An update that leaves it out, or gives it empty, keeps the stored value."
 	}
 	// Propagate string constraint attributes.
 	if f.MinLength != nil {
@@ -1969,6 +1976,7 @@ type openAPISchema struct {
 	Ref         string                   `json:"$ref,omitempty"`
 	Enum        []string                 `json:"enum,omitempty"`
 	ReadOnly    bool                     `json:"readOnly,omitempty"`
+	WriteOnly   bool                     `json:"writeOnly,omitempty"`
 	MinLength   *int                     `json:"minLength,omitempty"`
 	MaxLength   *int                     `json:"maxLength,omitempty"`
 	Pattern     string                   `json:"pattern,omitempty"`

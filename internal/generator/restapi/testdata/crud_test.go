@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	_ "embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,6 +46,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/jsell-rh/stego/registry/runtime/sealed"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 
 	"example.com/crud/out/api"
@@ -444,9 +446,14 @@ func (e *env) start(dsn, endpoint, spiceKey string) {
 
 	settings := audit.Settings{Level: audit.LevelChange}
 	probes := probe.NewRecorder(nil)
+	// A throwaway key ring of the secret fields of Customer, in memory only (ST-SUP-RP16-LC02).
+	ringKey := make([]byte, 32)
+	_, _ = rand.Read(ringKey)
+	ring, err := sealed.ParseRing([]byte("1 " + base64.StdEncoding.EncodeToString(ringKey)))
+	must(t, err)
 	commands, err := command.New(e.ctx, command.Config{DB: pool, AuditDB: auditDB, Outbox: queue, Authz: az, Audit: writer,
 		AuditSettings: settings, Service: "crud", ServiceVersion: "1.0.0", DeclarationVersion: "d1",
-		Entities: api.Entities(), Probes: probes})
+		Entities: api.Entities(), Probes: probes, Ring: ring})
 	must(t, err)
 	cursorKey := make([]byte, query.MinCursorKey)
 	_, _ = rand.Read(cursorKey)
@@ -1878,8 +1885,10 @@ func TestCrud(t *testing.T) {
 		if n := e.count(`SELECT count(*) FROM idempotency_keys WHERE tenant_id = $1 AND key = $2 AND status = 'completed' AND position(convert_to($3, 'UTF8') in coalesce(response_body, '')) = 0 AND position(convert_to('vault', 'UTF8') in coalesce(response_body, '')) = 0`, a.tenant.ID(), key, first); n != 1 {
 			t.Errorf("%d completed key rows whose stored response holds no secret jsonb field, want 1", n)
 		}
-		if n := e.count(`SELECT count(*) FROM customers WHERE id = $1::uuid AND vault->>'pin' = $2`, id, second); n != 1 {
-			t.Errorf("%d source rows that hold the secret jsonb value it was given, want 1", n)
+		// The source row holds the secret jsonb sealed, never in clear (decision ST-DECL-Q44).
+		if n := e.count(`SELECT count(*) FROM customers WHERE id = $1::uuid AND substring(vault from 1 for 1) = '\x01'::bytea
+ AND position(convert_to($2, 'UTF8') in vault) = 0 AND position(convert_to($3, 'UTF8') in vault) = 0`, id, first, second); n != 1 {
+			t.Errorf("%d source rows that hold the secret jsonb sealed and not in clear, want 1", n)
 		}
 	})
 
@@ -2962,10 +2971,11 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		if n < 2 {
 			t.Errorf("%d audit rows of the tenant, want the create and the update rows", n)
 		}
-		var stored string
+		// The source row holds the secret sealed, never in clear (decision ST-DECL-Q44).
+		var stored []byte
 		must(t, e.admin.QueryRowContext(e.ctx, `SELECT api_token FROM customers WHERE id = $1::uuid`, id).Scan(&stored))
-		if stored != second {
-			t.Errorf("the source row holds %q, want the secret it was given", stored)
+		if len(stored) == 0 || stored[0] != 1 || strings.Contains(string(stored), first) || strings.Contains(string(stored), second) {
+			t.Errorf("the source row does not hold the secret sealed, or holds it in clear")
 		}
 	})
 }

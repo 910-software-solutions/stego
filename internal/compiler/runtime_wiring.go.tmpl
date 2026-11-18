@@ -273,6 +273,10 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 {{- if .Provisioning}}
 		Provisioning: provisioning(),
 {{- end}}
+{{- if .Sealed}}
+		// The readable secret fields, which the controller moves to the first key of the key ring (ST-SUP-RP10-LC46).
+		Reseal: svcstorage.ResealColumns,
+{{- end}}
 		// The declared rules of the destinations that the outbox worker registers, which the resolver of the api mode
 		// applies to a parked message (ST-SUP-RP14-LC10).
 		Destinations: destinations(),
@@ -376,6 +380,13 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	if err != nil {
 		return nil, err
 	}
+{{- if .Sealed}}
+	// The key ring of the secret fields, which each mode of this process reads and the migration job does not
+	// (ST-SUP-RP14-LC12).
+	if settings.Ring, err = service.ReadKeyRing(); err != nil {
+		return nil, err
+	}
+{{- end}}
 	var workerSettings service.WorkerSettings
 	if selection.Has(modes.Worker) {
 		if workerSettings, err = service.ReadWorkerSettings(true); err != nil {

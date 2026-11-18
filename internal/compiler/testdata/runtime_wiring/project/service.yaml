@@ -47,6 +47,9 @@ entities:
     fields:
       - {name: sku, type: string}
       - {name: qty, type: int32}
+      # A readable secret, sealed at rest, and a compare-only secret, stored as its hash (ST-DECL-Q44).
+      - {name: api_token, type: string, sensitivity: secret, optional: true, min_length: 8}
+      - {name: pin, type: string, sensitivity: secret, compare_only: true, optional: true, min_length: 4}
   - name: Note
     resource_type: note
     permissions: {read: view}
@@ -59,7 +62,7 @@ collections:
   orders:
     entity: Order
     operations: [create, read, list, patch, delete]
-    patchable: [qty]
+    patchable: [qty, api_token]
 commands:
   - name: add-note
     writes: [Note, Order]
@@ -70,6 +73,15 @@ commands:
     fill: add-note
     effects:
       - {destination: note-replies, name: note-added}
+  # The fill reads the readable secret of the order and checks the compare-only one, as only the code of the service
+  # may (ST-SUP-RP10-LC45).
+  - name: verify-order
+    writes: [Order]
+    resource_type: order
+    permission: view
+    resource_member: orderId
+    route: POST /orders/{orderId}/verify
+    fill: verify-order
 queries:
   - name: get-order-summary
     reads: [Order]

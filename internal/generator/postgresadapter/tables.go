@@ -121,6 +121,14 @@ func sqlName(parts ...string) string {
 // columnType gives the PostgreSQL type of a declared field. A reference holds the key of the row it refers to,
 // which is a uuid.
 func columnType(field types.Field) (string, error) {
+	// A secret column holds the sealed bytes of a readable secret, or the Argon2id string of a compare-only one, and
+	// never the value (ST-SUP-RC01-OC48).
+	if field.Secret() && (field.Type == types.FieldTypeString || field.Type == types.FieldTypeJsonb) {
+		if field.CompareOnly {
+			return "text", nil
+		}
+		return "bytea", nil
+	}
 	switch field.Type {
 	case types.FieldTypeString:
 		if field.MaxLength != nil {
@@ -208,6 +216,11 @@ type checkItem struct{ source, deparsed string }
 // numeric bounds, the finite value of a bounded float, and the declared values of an enum. A pattern stays with
 // request validation, because PostgreSQL's regular expressions are not the RE2 expressions that the API checks.
 func columnChecks(field types.Field, typ string) []checkItem {
+	// The stored form of a secret is not its value: the command runtime checks the declared constraints on the value
+	// before it seals it (ST-SUP-RC01-OC48).
+	if field.Secret() {
+		return nil
+	}
 	column := sqlIdentifier(field.ColumnName())
 	ref := deparsedName(field.ColumnName())
 	var checks []checkItem
@@ -853,6 +866,11 @@ func generateRuntimeData(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 		return nil, nil, err
 	}
 	files = append(files, migrateFile, schemaFile, opener, access, schemaManifest)
+	if sealed, ok, err := generateSealedColumns(ctx); err != nil {
+		return nil, nil, err
+	} else if ok {
+		files = append(files, sealed)
+	}
 	// The migration job of the runtime wiring runs the ledger (service.Migrate), so the wiring has no call after
 	// the database opens.
 	wiring := &gen.Wiring{
