@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"go/format"
 	"strings"
 	"testing"
 
@@ -890,6 +891,84 @@ func TestWithinEntities(t *testing.T) {
 		}
 		if strings.Contains(project, "Within") || strings.Contains(project, "Referrers") {
 			t.Errorf("the entity Project declares a within that no reference holds:\n%s", project)
+		}
+	})
+}
+
+func TestFieldCheckEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC18-T01 The generated entity gives the declared constraints of its fields as Check and the field of each constraint as Constraints", func(t *testing.T) {
+		two, forty, ten := 2, 40, 10
+		zero, top := 0.0, 150.0
+		project := types.Entity{Name: "Project", Fields: []types.Field{{Name: "title", Type: types.FieldTypeString}}}
+		patient := types.Entity{Name: "Patient", Fields: []types.Field{
+			{Name: "name", Type: types.FieldTypeString, MinLength: &two, MaxLength: &forty, Pattern: `^[A-Za-z ]+$`},
+			{Name: "nick", Type: types.FieldTypeString, MaxLength: &ten, Optional: true},
+			{Name: "age", Type: types.FieldTypeInt32, Min: &zero, Max: &top},
+			{Name: "status", Type: types.FieldTypeEnum, Values: []string{"open", "closed"}},
+			{Name: "project_id", Type: types.FieldTypeRef, To: "Project"},
+			{Name: "note", Type: types.FieldTypeString},
+		}}
+		byName := map[string]types.Entity{"Project": project, "Patient": patient}
+		p, err := planEntity(patient, byName, "tenant_id", Relations{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := &writer{}
+		renderEntity(w, p, "tenant_id")
+		text := w.String()
+		for _, want := range []string{
+			"var patternPatientName = command.MustPattern(\"^[A-Za-z ]+$\")",
+			"Check: func(v Patient) (string, string, bool) {",
+			"if !command.MinLength(v.Name, 2) {\n\t\t\treturn \"name\", \"shorter than min_length 2\", false",
+			"if !command.MaxLength(v.Name, 40) {",
+			"if !patternPatientName.MatchString(v.Name) {",
+			"if v.Nick != nil {\n\t\t\tif !command.MaxLength(*v.Nick, 10) {",
+			"if float64(v.Age) < 0 {\n\t\t\treturn \"age\", \"less than min 0\", false",
+			"if float64(v.Age) > 150 {",
+			"if !command.OneOf(v.Status, \"open\", \"closed\") {",
+			"Constraints: map[string]string{",
+			"\"patients_name_check\": \"name\",",
+			"\"patients_age_check\": \"age\",",
+			"\"patients_status_check\": \"status\",",
+			"\"patients_project_id_fkey\": \"project_id\",",
+			"\"note\": \"note\",",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the entity Patient does not hold %q:\n%s", want, text)
+			}
+		}
+		// A field with no constraint has no rule, and the pattern of a field has no CHECK of the table.
+		if strings.Contains(text, "v.Note)") || strings.Contains(text, "patients_note_check") {
+			t.Errorf("the entity gives a rule or a CHECK for note, which declares no constraint:\n%s", text)
+		}
+		if _, err := format.Source([]byte("package commands\n\n" + text)); err != nil {
+			t.Fatalf("the entity is not valid Go: %v", err)
+		}
+		// An entity with no constraint gives no Check; a pattern that is not RE2 is refused.
+		if w := (&writer{}); true {
+			q, err := planEntity(project, byName, "tenant_id", Relations{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			renderEntity(w, q, "tenant_id")
+			if strings.Contains(w.String(), "Check:") {
+				t.Errorf("an entity with no constraint gives a Check:\n%s", w.String())
+			}
+		}
+		bad := patient
+		bad.Fields = []types.Field{{Name: "code", Type: types.FieldTypeString, Pattern: `(?<=a)b`}}
+		if _, err := planEntity(bad, map[string]types.Entity{"Patient": bad}, "tenant_id", Relations{}); err == nil || !strings.Contains(err.Error(), "RE2") {
+			t.Fatalf("a pattern that is not RE2 gave %v, want a refusal", err)
+		}
+	})
+}
+
+func TestRPCRevocation(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC17-T01 The gRPC handler of each command serves it through the runtime's ServeRPC, which answers the revocation metadata", func(t *testing.T) {
+		handlers := string(generated(t, commandContext(t, declaration(t), commandSlot))["commands/handlers/handlers.go"])
+		if n := strings.Count(handlers, "return command.ServeRPC(rt, "); n == 0 || strings.Contains(handlers, "grpc.SetHeader") {
+			t.Fatalf("the handlers call command.ServeRPC %d times and set metadata themselves %v, want each gRPC handler served by ServeRPC alone:\n%s",
+				n, strings.Contains(handlers, "grpc.SetHeader"), handlers)
 		}
 	})
 }

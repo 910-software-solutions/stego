@@ -322,3 +322,20 @@ func TestContractRuntimeImports(t *testing.T) {
 		}
 	})
 }
+
+func TestStreamRuntime(t *testing.T) {
+	t.Run("ST-SUP-RC33-OC11-T01 The stream handler gives the query runtime to ServeStream, and each entity checks the form of its key", func(t *testing.T) {
+		files := generated(t, shopContext(t))
+		source := strings.Join(strings.Fields(string(files["queries/serve/serve.go"])), " ")
+		var all strings.Builder
+		for _, text := range files {
+			all.Write(text)
+		}
+		if !strings.Contains(source, "return query.ServeStream(query.StreamRPC[") || !strings.Contains(source, "Runtime: h.cfg.Runtime, })") {
+			t.Fatalf("the stream handler does not give the runtime to ServeStream:\n%s", source)
+		}
+		if !strings.Contains(strings.Join(strings.Fields(all.String()), " "), "ValidID: query.ValidUUID,") {
+			t.Fatal("the entity declarations do not check the form of the key")
+		}
+	})
+}
