@@ -420,6 +420,10 @@ func TestUnavailableAnswer(t *testing.T) {
 				t.Fatalf("%s over HTTP gave %d %v %s, want 503 with Retry-After and no error text", name, w.Code, w.Header(), w.Body)
 			}
 		}
+		// A database error during the wait of a gRPC query is Unavailable too (security review of PR #434, I4).
+		if st := status.Convert(awaitError(context.Background(), refused)); st.Code() != codes.Unavailable || st.Message() != ErrorCodeUnavailable {
+			t.Fatalf("a refused connection during the gRPC wait gave %v, want Unavailable", st)
+		}
 		// An undecided read keeps its own message, and a statement that the server refuses stays 500 internal.
 		if status, code := answerOf(&undecidedError{transient: true}, nil); status != http.StatusServiceUnavailable || code != "" {
 			t.Fatalf("an undecided read gave %d %q, want 503 with no code", status, code)

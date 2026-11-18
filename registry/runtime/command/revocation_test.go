@@ -997,6 +997,62 @@ func TestRevocationCancel(t *testing.T) {
 	})
 }
 
+func TestProvisionWaitLimit(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC41-T02 One principal holds at most MaxProvisionWaits Provision waits over all the tenants it provisions", func(t *testing.T) {
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 10*time.Second, 0, 0, clock)
+		migration, err := tenant.Migration("public", r.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.exec(migration)
+		h, err := ServeTenant(r.rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",
+			Schema: "public", SubjectType: "user", AdminRelation: "admin", TrustedIssuers: []string{"https://issuer.example"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		send := func(id string) <-chan *httptest.ResponseRecorder {
+			answers := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				request := httptest.NewRequestWithContext(r.identity["u-7@t1"], http.MethodPost, "/stego/tenants",
+					strings.NewReader(`{"tenant_id":"`+id+`","admins":[{"subject":"a-1"}]}`))
+				request.Header.Set("Idempotency-Key", `"k-lc41-t02-`+id+`"`)
+				request.Header.Set("Prefer", "wait=5")
+				answer := httptest.NewRecorder()
+				h.ServeHTTP(answer, request)
+				answers <- answer
+			}()
+			return answers
+		}
+		var waiting []<-chan *httptest.ResponseRecorder
+		for i := range MaxProvisionWaits {
+			answers := send(fmt.Sprintf("w%d", i))
+			waiting = append(waiting, answers)
+			select {
+			case <-clock.bounds:
+			case a := <-answers:
+				t.Fatalf("Provision %d answered %d %v before it waited", i, a.Code, a.Header())
+			}
+			clock.polled(t, nil)
+		}
+		// One more Provision of the same principal, of another tenant, answers pending at once and does not wait.
+		select {
+		case a := <-send("w-over"):
+			if a.Code != http.StatusCreated || a.Header().Get(authz.RevocationHeader) != "pending" || a.Header().Get("Preference-Applied") != "" {
+				t.Fatalf("the Provision over the limit answered %d %v, want 201 pending with no Preference-Applied", a.Code, a.Header())
+			}
+		case b := <-clock.bounds:
+			t.Fatalf("the Provision over the limit waits with a bound of %s", b.d)
+		}
+		clock.advance(5 * time.Second)
+		for _, answers := range waiting {
+			if a := <-answers; a.Header().Get("Preference-Applied") != "wait=5" {
+				t.Fatalf("a waiting Provision answered %v, want wait=5", a.Header())
+			}
+		}
+	})
+}
+
 func TestProvisionRevocation(t *testing.T) {
 	t.Run("ST-SUP-RP10-LC41-T01 Provision answers the revocation of its grants pending, waits for it with Prefer, and a replay does not wait", func(t *testing.T) {
 		provision := func(r *revocationEnv) func(key, body, prefer string) *httptest.ResponseRecorder {

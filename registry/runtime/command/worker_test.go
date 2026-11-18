@@ -1827,10 +1827,34 @@ func TestWorkerNoParent(t *testing.T) {
 		if e.count(`SELECT count(*) FROM orders WHERE id = 'o-denied'`) != 0 {
 			t.Fatal("the denied root create wrote its row")
 		}
-		// ErrNoParent stays for the API, and its class stays a fixed cause of the run log.
+		// ErrNoParent keeps a fixed cause class of the run log.
 		if causeOf(fmt.Errorf("fill: %w", &noParentError{entity: "Order"})) != "create_without_parent" ||
 			!slices.Contains(probe.WorkerCauses, "create_without_parent") {
 			t.Fatal("ErrNoParent has no fixed cause class")
+		}
+	})
+	t.Run("ST-SUP-RP10-LC17-T05 A worker's create that sets a reference to an entity with a resource type and gives no parent is refused, with no decision on the tenant", func(t *testing.T) {
+		e := newEnv(t)
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-2', 'new')`)
+		w := e.worker("import-reservations", "sync", nil, e.typedRes)
+		// The tenant allows everything, so a fallback to the tenant decision would write the row.
+		e.decision.setAllow(func(string, string, string) bool { return true })
+		e.decision.taken()
+		err := RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+			_, err := repo(t, h, e.typedRes).Create(ctx, reservation{ID: "r-orphan", OrderID: "o-2", SKU: "s"})
+			return err
+		}))
+		entity, ok := NoParentEntity(err)
+		if !errors.Is(err, ErrNoParent) || !ok || entity != "TypedRes" || causeOf(err) != "create_without_parent" {
+			t.Fatalf("the create under o-2 with no parent gave %v (entity %q), want ErrNoParent for TypedRes", err, entity)
+		}
+		for _, d := range e.decision.taken() {
+			if strings.HasPrefix(d.Resource, "tenant:") {
+				t.Fatalf("the refused create was decided on %s", d.Resource)
+			}
+		}
+		if e.count(`SELECT count(*) FROM reservations WHERE id = 'r-orphan'`) != 0 {
+			t.Fatal("the create with no parent wrote its row under o-2")
 		}
 	})
 }

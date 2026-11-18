@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"regexp"
@@ -613,6 +614,10 @@ func MinLength(value string, n int) bool { return utf8.RuneCountInString(value) 
 
 // MaxLength reports whether value has at most n characters (Unicode code points), the declared max_length of a field.
 func MaxLength(value string, n int) bool { return utf8.RuneCountInString(value) <= n }
+
+// Finite reports whether value is a finite number: not NaN and not an infinity. A float field with a declared min or
+// max must be finite, as the CHECK of its table holds.
+func Finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
 // OneOf reports whether value is one of the declared values of an enum field.
 func OneOf(value string, values ...string) bool { return slices.Contains(values, value) }

@@ -158,13 +158,18 @@ func awaitStream[P any](ctx context.Context, rt *Runtime, b Bound[P]) error {
 
 // awaitError is the gRPC status of an error of AwaitWriteRPC: InvalidArgument bad_request for a bad value, the status
 // of the context for a call that its client cancelled or whose deadline passed, with no internal code (review of PR
-// #428, L1), and Internal for every other error.
+// #428, L1), Unavailable for a database that cannot serve now, and Internal for every other error.
 func awaitError(ctx context.Context, err error) error {
 	switch {
 	case errors.Is(err, ErrBadRequest):
 		return status.Error(codes.InvalidArgument, "bad_request")
 	case ctx.Err() != nil:
 		return status.FromContextError(ctx.Err()).Err()
+	case tenant.Unavailable(err):
+		// The database could not serve a read of the wait now: the client may try again (security review of PR
+		// #434, I4).
+		otel.SetErrorCode(ctx, ErrorCodeUnavailable)
+		return status.Error(codes.Unavailable, ErrorCodeUnavailable)
 	}
 	return internal(ctx)
 }

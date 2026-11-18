@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -129,6 +130,10 @@ type Runtime struct {
 	outcomeFailures atomic.Int64
 	// unlistedOutcomes counts the provisioning outcomes of callers whose tenant is not active, which write no row.
 	unlistedOutcomes atomic.Int64
+	// provisionWaitMu and provisionWaits count the Provision waits of each principal, over all the tenants that it
+	// provisions, so one provisioner cannot hold the waiter places of all (security review of PR #434, L1).
+	provisionWaitMu sync.Mutex
+	provisionWaits  map[string]int
 	// recorder and beforeCommit are set only by the tests of the package: the statement recorder, and a step just
 	// before COMMIT.
 	recorder     func(query string, args []any)

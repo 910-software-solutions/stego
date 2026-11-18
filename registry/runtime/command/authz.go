@@ -134,7 +134,29 @@ func (s *state) decisionError(ctx context.Context, step string, err error) error
 		slog.WarnContext(ctx, "command: the authorization provider could not decide", "step", step, "cause", cause,
 			"transient", authz.Transient(err), "held_back", held)
 	}
+	if authz.Transient(err) {
+		// A provider that could not decide now, such as one past the decision time limit, ends the call: no later
+		// decision of the same run is tried, so a provider that does not answer holds the transaction for one time
+		// limit only, not one for each decision (security review of PR #434, L2). The answer stays 503 undecided.
+		return s.breakWith(&undecidedBreak{step: step, cause: err})
+	}
 	return fmt.Errorf("command: %s: %w", step, err)
+}
+
+// undecidedBreak is the break of a call at a decision that the provider could not make now: it matches ErrInternal,
+// so the handle ends the call, and it unwraps to the provider error, so authz.Transient and OutcomeOf still answer it
+// 503 undecided. Its text names the step and no text of the provider.
+type undecidedBreak struct {
+	step  string
+	cause error
+}
+
+func (e *undecidedBreak) Error() string {
+	return "command: " + e.step + ": the provider could not decide now"
+}
+func (e *undecidedBreak) Unwrap() error { return e.cause }
+func (e *undecidedBreak) Is(target error) bool {
+	return target == ErrInternal || target == ErrUndecided
 }
 
 // decideRead decides the read of one row of an entity with a resource type. A command decides the entity's read

@@ -401,6 +401,10 @@ func renderCheck(w *writer, e *entity) {
 		}
 		switch base {
 		case "int32", "int64", "float32", "float64":
+			if (base == "float32" || base == "float64") && (d.Min != nil || d.Max != nil) {
+				// A bounded float is finite, as the table CHECK holds (security review of PR #434, I3).
+				rs = append(rs, rule{fmt.Sprintf("!command.Finite(float64(%s))", value), "is not a finite number"})
+			}
 			if d.Min != nil {
 				rs = append(rs, rule{fmt.Sprintf("float64(%s) < %s", value, strconv.FormatFloat(*d.Min, 'g', -1, 64)), "less than min " + strconv.FormatFloat(*d.Min, 'g', -1, 64)})
 			}

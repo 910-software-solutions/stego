@@ -43,10 +43,10 @@ var (
 	// hold (ST-SUP-RP10-LC05, ST-SUP-Q118). Once a handle meets one, every later method returns it, Run commits
 	// nothing and runs the fill no more, and OutcomeOf answers it with 400 and the code invalid, naming the field.
 	ErrInvalid = errors.New("command: invalid value")
-	// ErrNoParent was the error of a worker's create of a row of an entity with a resource type that names no
-	// parent to decide on. Since ST-SUP-Q164 (b) such a create is decided on the tenant resource, and no call gives
-	// this error; it stays so the API of the module stays compatible (ST-STD-RUNTIME-R03), and the run log still
-	// names it create_without_parent with the entity.
+	// ErrNoParent is the error of a worker's create of a row whose value sets a reference to an entity with a
+	// resource type while the call gives no loaded parent to decide on (ST-SUP-RP10-LC17): the run log names its
+	// cause create_without_parent and the entity. A create that sets no such reference is decided on the tenant
+	// resource (ST-SUP-Q164 (b)).
 	ErrNoParent = errors.New("command: a worker's create needs the parent resource to decide on")
 	// ErrUnavailable matches every internal error of a database that cannot serve now, such as a refused or lost
 	// connection or a server that shuts down (tenant.Unavailable). OutcomeOf answers it with 503 and the code
@@ -2234,6 +2234,18 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 		return nil, err
 	}
 	if s.mode != modeCommand && e.spec.ResourceType != "" && len(rows) == 0 {
+		// A value that sets a reference to an entity with a resource type has a parent, which must be given and
+		// decided: a create with no loaded parent for it is refused, so no row is written under a parent that no
+		// one decided on (ST-SUP-RP10-LC17; security review of PR #434, M1).
+		for _, ref := range refs {
+			if ref.resourceType != "" {
+				if ok, held := statementLog.Allow(s.action + "/create_without_parent/" + e.spec.Name); ok {
+					slog.WarnContext(ctx, "command: a worker's create sets a reference and gives no parent to decide on", "action", s.action,
+						"entity", e.spec.Name, "cause", "create_without_parent", "held_back", held)
+				}
+				return nil, &noParentError{entity: e.spec.Name}
+			}
+		}
 		// A worker's create with no parent is decided on the tenant resource of the run, with the worker's permission
 		// and, in a consumer, a second time with the staging principal (ST-SUP-RP10-LC17, ST-SUP-Q164 (b)).
 		if err := s.decideWrite(ctx, authz.TenantType, e.spec.Name, s.tenant.ID(), ""); err != nil {

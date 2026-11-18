@@ -904,6 +904,7 @@ func TestFieldCheckEmission(t *testing.T) {
 			{Name: "name", Type: types.FieldTypeString, MinLength: &two, MaxLength: &forty, Pattern: `^[A-Za-z ]+$`},
 			{Name: "nick", Type: types.FieldTypeString, MaxLength: &ten, Optional: true},
 			{Name: "age", Type: types.FieldTypeInt32, Min: &zero, Max: &top},
+			{Name: "score", Type: types.FieldTypeDouble, Min: &zero},
 			{Name: "status", Type: types.FieldTypeEnum, Values: []string{"open", "closed"}},
 			{Name: "project_id", Type: types.FieldTypeRef, To: "Project"},
 			{Name: "note", Type: types.FieldTypeString},
@@ -925,6 +926,7 @@ func TestFieldCheckEmission(t *testing.T) {
 			"if v.Nick != nil {\n\t\t\tif !command.MaxLength(*v.Nick, 10) {",
 			"if float64(v.Age) < 0 {\n\t\t\treturn \"age\", \"less than min 0\", false",
 			"if float64(v.Age) > 150 {",
+			"if !command.Finite(float64(v.Score)) {\n\t\t\treturn \"score\", \"is not a finite number\", false",
 			"if !command.OneOf(v.Status, \"open\", \"closed\") {",
 			"Constraints: map[string]string{",
 			"\"patients_name_check\": \"name\",",
@@ -938,6 +940,9 @@ func TestFieldCheckEmission(t *testing.T) {
 			}
 		}
 		// A field with no constraint has no rule, and the pattern of a field has no CHECK of the table.
+		if strings.Contains(text, "command.Finite(float64(v.Age))") {
+			t.Errorf("the entity checks an integer for a finite value:\n%s", text)
+		}
 		if strings.Contains(text, "v.Note)") || strings.Contains(text, "patients_note_check") {
 			t.Errorf("the entity gives a rule or a CHECK for note, which declares no constraint:\n%s", text)
 		}

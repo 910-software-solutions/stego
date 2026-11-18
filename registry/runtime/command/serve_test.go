@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -446,6 +447,49 @@ func TestInvalidRPC(t *testing.T) {
 		// An outcome with no field has no detail.
 		if st := status.Convert(OutcomeOf(ErrDenied).RPCStatus()); st.Code() != codes.NotFound || len(st.Details()) != 0 {
 			t.Fatalf("a deny gave %v with %d details, want NotFound with none", st, len(st.Details()))
+		}
+	})
+}
+
+func TestTransientEndsRun(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC25-T03 A decision that the provider cannot make now ends the command run: no later decision is tried, and the answer is 503 undecided", func(t *testing.T) {
+		e := newEnv(t)
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-a', 'new'), ('t1', 'o-b', 'new')`)
+		cmd := e.command("read-two", nil, e.orders)
+		calls := 0
+		e.decision.setFail(func(string) error {
+			calls++
+			// The error of a provider call that ran past the decision time limit.
+			return context.DeadlineExceeded
+		})
+		var second error
+		_, err := e.run(cmd, e.request("t1", u7(t), "k-lc25-t03", `{}`), fillOf(func(ctx context.Context, h *Handle[testProbe]) error {
+			r := repo(t, h, e.orders)
+			_, first := r.Get(ctx, "o-a")
+			_, second = r.Get(ctx, "o-b")
+			return first
+		}))
+		if calls != 1 {
+			t.Fatalf("the provider was called %d times, want once: the run ends at the first transient error", calls)
+		}
+		if second == nil || !errors.Is(second, ErrInternal) {
+			t.Fatalf("the second read gave %v, want the broken call", second)
+		}
+		if o := OutcomeOf(err); o.Status != http.StatusServiceUnavailable || o.Code != audit.ErrorCodeUndecided || RPCCode(o.Status) != codes.Unavailable {
+			t.Fatalf("the run gave %v and the outcome %+v, want 503 undecided", err, o)
+		}
+	})
+}
+
+func TestFinite(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC42-T04 Finite refuses NaN and both infinities, which the generated Check of a bounded float uses", func(t *testing.T) {
+		for _, v := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			if Finite(v) {
+				t.Fatalf("Finite(%v) is true", v)
+			}
+		}
+		if !Finite(0) || !Finite(-1.5) || !Finite(math.MaxFloat64) {
+			t.Fatal("Finite refuses a finite number")
 		}
 	})
 }

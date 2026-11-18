@@ -500,7 +500,8 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		// With Prefer: wait=N, a Provision waits for the revocation of its grants after the commit, so the client
 		// knows when the first command of an administrator is decided at a floor that holds the grant
 		// (ST-SUP-RP10-LC41; walkthrough 10, B6). A replay does not wait.
-		if wait, ok := authz.PreferWait(r.Header); ok && wait > 0 && made.made {
+		if wait, ok := authz.PreferWait(r.Header); ok && wait > 0 && made.made && rt.startProvisionWait(b.Principal) {
+			defer rt.endProvisionWait(b.Principal)
 			status, allowed, err := rt.cfg.Authz.WaitFor(r.Context(), made.tenant, b.Principal, made.revocation.ID(), wait)
 			if err == nil {
 				w.Header().Set(authz.RevocationHeader, string(status.State))
@@ -513,6 +514,35 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		w.WriteHeader(result.Response.Status)
 		_, _ = w.Write(result.Response.Body)
 	}), nil
+}
+
+// MaxProvisionWaits is the most Provision waits of one principal at one time, over all the tenants that it provisions:
+// a Provision over it answers its revocation pending at once and does not wait (security review of PR #434, L1).
+const MaxProvisionWaits = authz.DefaultPrincipalWaiters
+
+// startProvisionWait takes a place of the Provision waits of principal p, and tells whether it took one.
+func (rt *Runtime) startProvisionWait(p authz.Principal) bool {
+	rt.provisionWaitMu.Lock()
+	defer rt.provisionWaitMu.Unlock()
+	if rt.provisionWaits == nil {
+		rt.provisionWaits = map[string]int{}
+	}
+	key := p.Subject().String()
+	if rt.provisionWaits[key] >= MaxProvisionWaits {
+		return false
+	}
+	rt.provisionWaits[key]++
+	return true
+}
+
+// endProvisionWait gives back the place that startProvisionWait took for p.
+func (rt *Runtime) endProvisionWait(p authz.Principal) {
+	rt.provisionWaitMu.Lock()
+	defer rt.provisionWaitMu.Unlock()
+	key := p.Subject().String()
+	if rt.provisionWaits[key]--; rt.provisionWaits[key] <= 0 {
+		delete(rt.provisionWaits, key)
+	}
 }
 
 // callerListed tells whether the outcome row of a denied or failed call goes into the chain of the caller's tenant
