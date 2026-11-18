@@ -259,7 +259,7 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		}
 		key, err := idempotency.KeyFrom(r.Header, s.KeyRequired)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, idempotency.ProblemMissing, "")
+			writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
@@ -299,7 +299,7 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		case failed != nil:
 			writeFieldProblem(w, failed.Status, "", failed.AnswerCode(), failed.Field)
 		case result.Problem != "":
-			writeProblem(w, result.Response.Status, result.Problem, "")
+			writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
 		default:
 			for name, values := range result.Response.Header {
 				w.Header()[name] = values

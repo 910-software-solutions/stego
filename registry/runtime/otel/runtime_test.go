@@ -317,10 +317,11 @@ func TestWithoutCollector(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, phase := range []string{"open", "closed"} {
-			if r.provider != nil || r.connection != nil || r.meter != nil || r.logs != nil || r.spans != nil {
+			// The logger provider has only the console, which opens no connection (ST-SUP-RP03-LC16).
+			if r.provider != nil || r.connection != nil || r.meter != nil || r.spans != nil || r.console == nil {
 				t.Fatalf("%s: a provider or a connection exists without a collector", phase)
 			}
-			if r.TracerProvider() != nil || r.MeterProvider() != nil || r.LoggerProvider() != nil || r.CollectorSet() || r.Service() != "records" || r.Instance() == "" {
+			if r.TracerProvider() != nil || r.MeterProvider() != nil || r.CollectorSet() || r.Service() != "records" || r.Instance() == "" {
 				t.Fatalf("%s: the accessors do not tell that telemetry is absent", phase)
 			}
 			next := &countingHandler{}

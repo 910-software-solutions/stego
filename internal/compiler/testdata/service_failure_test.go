@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,29 @@ func TestFailureRecordFaultClass(t *testing.T) {
 			if fault != c.wantFault || object != c.wantObject || record["stage"] != "database.schema" {
 				t.Fatalf("the cause %q %q gave the record %v, want the fault %q and the object %q", c.cause.class, c.cause.object, record, c.wantFault, c.wantObject)
 			}
+		}
+	})
+}
+
+func TestFailureRecordCauseClass(t *testing.T) {
+	t.Run("ST-GEN-INV16-T a listen port that another process holds names the cause class address_in_use and no error text", func(t *testing.T) {
+		held, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer held.Close()
+		_, cause := net.Listen("tcp", held.Addr().String())
+		if cause == nil {
+			t.Fatal("a second listen on a held port was taken")
+		}
+		var output bytes.Buffer
+		stegoReportFailure(&output, &stegoServiceFailure{stage: "http.listen", cause: cause})
+		var record map[string]any
+		if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+			t.Fatal(e)
+		}
+		if record["stage"] != "http.listen" || record["cause"] != "address_in_use" || strings.Contains(output.String(), held.Addr().String()) {
+			t.Fatalf("a held listen port gave the record %v, want the stage http.listen and the cause address_in_use with no address", record)
 		}
 	})
 }

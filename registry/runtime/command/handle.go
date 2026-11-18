@@ -269,6 +269,10 @@ type Reference[T any] struct {
 	// within; both entities read it through their EntitySpec.Within. Key is the name of the composite foreign key
 	// that holds the same rule in the database (ST-SUP-RP10-LC37, ST-SUP-RC01-OC46).
 	Field, Within, Key string
+	// Check is the name of the CHECK that holds the within field set while the reference is set, for a within field
+	// that may be NULL (ST-SUP-RC01-OC46), or empty. A write that it refuses (SQLSTATE 23514) is ErrInvalid naming the
+	// reference, as a write that Key refuses is.
+	Check string
 }
 
 // Referrer is the composite foreign key of a reference of another entity to this one that is held within a field
@@ -664,10 +668,21 @@ type ListValue struct {
 	// Key tells that the parameter holds the key of a row, such as a reference: the handle checks it with the key
 	// check of the entity and gives an empty list for a value that the check refuses (ST-SUP-RP10-LC38).
 	Key bool
+	// KeyOf is the kind of key of the entity whose key the parameter holds, such as the referenced entity of a
+	// reference field: KeyUUID checks it with ValidUUID. Empty takes the key check of the listed entity, as code of a
+	// runtime before v0.131.0 has it (security review of PR #416, sec-416b). It is a kind, not a function, so
+	// ListValue stays comparable (ST-STD-RUNTIME-R03).
+	KeyOf KeyKind
 	// Parent is the entity of the parent row of a list over a child entity, such as Order: the fill gives that loaded
 	// row through With, and the handle decides on it before it reads a row and binds its ID (ST-SUP-RP10-LC38).
 	Parent string
 }
+
+// KeyKind is the kind of key of an entity, which a key parameter of a list is checked by.
+type KeyKind string
+
+// KeyUUID is the key of an entity whose keys are UUIDs, as every generated entity has: ValidUUID checks it.
+const KeyUUID KeyKind = "uuid"
 
 // List is one checked list of an entity, or that list with its parameters bound (With).
 type List[T any] struct {
@@ -692,6 +707,53 @@ type AnyList interface {
 	listName() string
 	listBound() bool
 	listNil() bool
+	// listHeld gives the list that the handle looks up and the copy of its declaration that the handle holds it to.
+	listHeld() (AnyList, listCopy)
+}
+
+// listCopy is a copy of the declaration of a list: its entity, its name, its statements and its values. The handle
+// takes a declared list only while it still has this declaration, so a fill that overwrites the list through its
+// pointer, such as *commands.PlaceOrderOfOrder = *command.Must(command.NewList(...)), gets a list that the handle
+// refuses (security review of PR #421, L1).
+type listCopy struct {
+	entity           Declared
+	name, read, lock string
+	values           []ListValue
+}
+
+func (c listCopy) same(o listCopy) bool {
+	return c.entity == o.entity && c.name == o.name && c.read == o.read && c.lock == o.lock && slices.Equal(c.values, o.values)
+}
+
+func (l *List[T]) listCopy() listCopy {
+	return listCopy{entity: l.entity, name: l.spec.Name, read: l.spec.Read, lock: l.spec.Lock, values: slices.Clone(l.spec.Values.all())}
+}
+
+func (l *List[T]) listHeld() (AnyList, listCopy) { return l, l.listCopy() }
+
+// heldList is a declared list with the copy of its declaration that Snapshot took.
+type heldList struct {
+	AnyList
+	held listCopy
+}
+
+func (h heldList) listHeld() (AnyList, listCopy) { return h.AnyList, h.held }
+
+// Snapshot gives the declared lists for CommandSpec.Lists or WorkerSpec.Lists, each with a copy of its declaration
+// taken now. The generated contract package calls it when it starts, before the init of any fill runs, so a fill
+// that later overwrites a list through its pointer gets a list that the handle refuses (ST-SUP-RP10-LC38, security
+// review of PR #421, L1). A nil list stays nil, and the spec refuses it.
+func Snapshot(lists ...AnyList) []AnyList {
+	out := make([]AnyList, len(lists))
+	for i, l := range lists {
+		if l == nil || l.listNil() {
+			out[i] = l
+			continue
+		}
+		list, held := l.listHeld()
+		out[i] = heldList{AnyList: list, held: held}
+	}
+	return out
 }
 
 func (l *List[T]) listEntity() Declared { return l.entity }
@@ -798,8 +860,8 @@ func NewList[T any](e *Entity[T], spec ListSpec) (*List[T], error) {
 
 // checkLists gives the lists that the command or worker owner declares, by list. It refuses a nil list, a list with
 // bound parameters, which is not the declared list, and a list of an entity that the owner does not write.
-func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[AnyList]bool, error) {
-	out := make(map[AnyList]bool, len(lists))
+func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[AnyList]listCopy, error) {
+	out := make(map[AnyList]listCopy, len(lists))
 	for _, l := range lists {
 		if l == nil || l.listNil() {
 			return nil, fmt.Errorf("command: %s declares a nil list", owner)
@@ -810,7 +872,8 @@ func checkLists(owner string, lists []AnyList, writes map[Declared]bool) (map[An
 		if !writes[l.listEntity()] {
 			return nil, fmt.Errorf("command: %s declares the list %s of %s, which it does not write", owner, l.listName(), l.listEntity().entityName())
 		}
-		out[l] = true
+		list, held := l.listHeld()
+		out[list] = held
 	}
 	return out, nil
 }
@@ -1138,12 +1201,22 @@ func (r *Repository[T]) checkWithin(value T, ref reference, p rowRef) error {
 
 // failWrite is fail for the row statement of a create or an update of the entity: a foreign key violation (SQLSTATE
 // 23503) of the composite key of a reference held within a field, from a race or from a write of the referenced
-// row, is ErrInvalid naming the reference, never an internal error and never a run again (ST-SUP-RP10-LC37). The
+// row, and a violation (SQLSTATE 23514) of the CHECK of its within field, is ErrInvalid naming the reference, never an
+// internal error and never a run again (ST-SUP-RP10-LC37). The
 // key of a reference of this entity names the reference; the key of a reference of another entity to this one
 // names the field of this entity that it is held within.
 func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) error {
 	s, e := r.st, r.entity
 	var pg *pgconn.PgError
+	// A CHECK of the within field (SQLSTATE 23514) refuses a set reference with no within field, as from a worker
+	// that writes the row outside the collection of the scope (ST-SUP-RC01-OC46).
+	if sqlState(err) == "23514" && errors.As(err, &pg) && pg.ConstraintName != "" {
+		for _, ref := range e.spec.Parent {
+			if ref.Within != "" && ref.Check == pg.ConstraintName {
+				return s.breakWith(&invalidError{field: ref.Field, reason: reasonWithin(ref.Within)})
+			}
+		}
+	}
 	if sqlState(err) == "23503" && errors.As(err, &pg) && pg.ConstraintName != "" {
 		for _, ref := range e.spec.Parent {
 			if ref.Key == pg.ConstraintName {
@@ -1301,7 +1374,7 @@ type state struct {
 	writes            map[Declared]bool
 	destinations      map[string]Destination
 	// lists are the lists that the command or the worker declares, which its handle takes only (ST-SUP-RP10-LC38).
-	lists map[AnyList]bool
+	lists map[AnyList]listCopy
 	// runTime is the time of the run that a list value RunTime binds: the due tick of a worker run, the start of a
 	// command attempt or the start of a consumer run.
 	runTime time.Time
@@ -1846,7 +1919,7 @@ func (r *Repository[T]) ListForUpdate(ctx context.Context, l *List[T], parent Re
 // entity: the list then has no row and runs no statement. bound is the parent row, or nil.
 func (r *Repository[T]) listArgs(ctx context.Context, l *List[T], args []any) (values []any, bound Ref, empty bool, err error) {
 	s := r.st
-	if !s.lists[l.root()] {
+	if held, ok := s.lists[AnyList(l.root())]; !ok || !held.same(l.root().listCopy()) {
 		kind, place := "command", "command contract"
 		if s.mode == modeWorker || s.mode == modeConsumer {
 			kind, place = "worker", "worker contract"
@@ -1895,7 +1968,7 @@ func (r *Repository[T]) listArgs(ctx context.Context, l *List[T], args []any) (v
 		case v.Param != "":
 			values[i] = l.binding.params[next]
 			next++
-			if v.Key && !r.validKey(values[i]) {
+			if v.Key && !r.validKey(v.KeyOf, values[i]) {
 				empty = true
 			}
 		default:
@@ -1922,9 +1995,13 @@ func (r *Repository[T]) decideListParent(ctx context.Context, l *List[T], parent
 	return s.breakWith(internalf("the list %s of %s takes a parent row of %s, which the entity does not refer to", l.spec.Name, e.spec.Name, parent))
 }
 
-// validKey checks a key parameter with the key check of the entity: a string, or a pointer to one that is set.
-func (r *Repository[T]) validKey(value any) bool {
+// validKey checks a key parameter with the key check of the kind of key of the entity whose key it holds, or else
+// the key check of the listed entity: a string, or a pointer to one that is set.
+func (r *Repository[T]) validKey(kind KeyKind, value any) bool {
 	valid := r.entity.spec.ValidID
+	if kind == KeyUUID {
+		valid = ValidUUID
+	}
 	if valid == nil {
 		return true
 	}

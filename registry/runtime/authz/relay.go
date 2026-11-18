@@ -206,25 +206,63 @@ func (r *Relay) Destination() outbox.Destination {
 // revocation's record only when the message is in that state, and on the last done tuple stores the floor as it
 // reads it in tx. An error rolls the state change back.
 func (r *Relay) Hook(ctx context.Context, tx *sql.Tx, change outbox.StateChange) error {
-	if tx == nil {
-		return errors.New("authz: the state hook has no transaction")
-	}
-	if change.Destination != DestinationName {
-		return errors.New("authz: the state hook got a message of another destination")
-	}
-	revocation, err := uuid.Parse(change.Group)
+	counted, err := revocationState(ctx, tx, r.schema, change)
 	if err != nil {
-		return errors.New("authz: the message names no revocation")
-	}
-	var counted bool
-	if err := tx.QueryRowContext(ctx, "SELECT "+r.schema+".authz_revocation_state($1::uuid, $2::uuid, $3::text)",
-		change.ID, revocation, string(change.State)).Scan(&counted); err != nil {
-		return fixed("authz: the revocation record cannot be changed", err)
+		return err
 	}
 	if !counted {
 		r.uncounted(ctx, change.State)
 	}
 	return nil
+}
+
+// revocationState calls the function authz_revocation_state of schema in tx for the state change of one message of
+// the relay, and tells whether the function counted it on the revocation's record (ST-SUP-RP06-LC18).
+func revocationState(ctx context.Context, tx *sql.Tx, schema string, change outbox.StateChange) (bool, error) {
+	if tx == nil {
+		return false, errors.New("authz: the state hook has no transaction")
+	}
+	if change.Destination != DestinationName {
+		return false, errors.New("authz: the state hook got a message of another destination")
+	}
+	revocation, err := uuid.Parse(change.Group)
+	if err != nil {
+		return false, errors.New("authz: the message names no revocation")
+	}
+	var counted bool
+	if err := tx.QueryRowContext(ctx, "SELECT "+schema+".authz_revocation_state($1::uuid, $2::uuid, $3::text)",
+		change.ID, revocation, string(change.State)).Scan(&counted); err != nil {
+		return false, fixed("authz: the revocation record cannot be changed", err)
+	}
+	return counted, nil
+}
+
+// StateHook is the state hook of the relay's destination for a process that resolves a parked message of the relay
+// and does not run the relay, such as the api mode, which serves the resolve route of an operator
+// (ST-SUP-RP14-LC10): in the caller's transaction it counts the state change on the revocation's record as Hook
+// does (ST-SUP-RP06-LC18). A change that the function does not count raises the event authz.revocation.uncounted
+// through logs, which may be nil.
+func (r *Runtime) StateHook(logs otellog.LoggerProvider) outbox.StateHook {
+	var logger otellog.Logger
+	if logs != nil {
+		logger = logs.Logger(instrumentation)
+	}
+	return func(ctx context.Context, tx *sql.Tx, change outbox.StateChange) error {
+		counted, err := revocationState(ctx, tx, r.schema, change)
+		if err != nil {
+			return err
+		}
+		if !counted && logger != nil {
+			var record otellog.Record
+			record.SetEventName("authz.revocation.uncounted")
+			record.SetSeverity(otellog.SeverityWarn)
+			record.SetSeverityText("WARN")
+			record.SetBody(attribute.StringValue("a state change of an authz message is not counted on its revocation"))
+			record.AddAttributes(attribute.String("destination", DestinationName), attribute.String("state", string(change.State)))
+			logger.Emit(ctx, record)
+		}
+		return nil
+	}
 }
 
 // UncountedChanges returns the number of state changes that the state function did not count.
