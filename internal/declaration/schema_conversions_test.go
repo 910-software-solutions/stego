@@ -126,8 +126,14 @@ func TestSchemaConversions(t *testing.T) {
 			SchemaChanges: []types.SchemaChange{{ID: "todo-priority-retype", Kind: "retype", Entity: "Todo", Field: "priority", From: "int32", Conversion: "integer_to_int64", InverseConversion: "int64_to_integer"}},
 			SchemaHistory: []types.SchemaStep{{Change: "todo-priority-retype", Phase: "expand"}}}
 		faults := ValidateSchemaConversions(service, conversions, true)
-		if len(faults) != 1 || !strings.Contains(faults[0].Message, "the change gives no definition") || !strings.Contains(faults[0].Message, `give the field before the change in definition, such as definition: "int32, min 0, max 100"`) {
-			t.Fatalf("checking gives %v, want one fault that names the definition to give", faults)
+		if len(faults) != 1 || !strings.Contains(faults[0].Message, "the retype of Todo.priority gives no definition, so the field before the change is taken as int32 with no min and no max, and the field after the change has min 0 and max 100") ||
+			!strings.Contains(faults[0].Message, `give the field before the change in definition, such as definition: "int32, min 0, max 100"`) || faults[0].Path != "schema_changes[0].definition" {
+			t.Fatalf("checking gives %v, want one fault at the definition that names the definition to give", faults)
+		}
+		// The fault does not say that the bounds differ, which they do not in the declaration (walkthrough 8 and 9,
+		// B9).
+		if strings.Contains(faults[0].Message, "bounds min and max") {
+			t.Fatalf("the fault of a missing definition speaks of the bounds: %s", faults[0].Message)
 		}
 		// With the definition, the retype passes.
 		service.SchemaChanges[0].Definition = "int32, min 0, max 100"

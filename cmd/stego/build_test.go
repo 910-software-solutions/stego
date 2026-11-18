@@ -1300,7 +1300,7 @@ func TestCheckBuildFillsGeneratedTree(t *testing.T) {
 			t.Fatal(err)
 		}
 		err := checkBuildFills(dir)
-		if err == nil || !strings.Contains(err.Error(), "the generated package out/internal/api holds stub.s, which is not a Go file") {
+		if err == nil || !strings.Contains(err.Error(), `the generated package "out/internal/api" holds "stub.s", which is not a Go file`) {
 			t.Fatalf("the source check gave %v, want a refusal of out/internal/api/stub.s", err)
 		}
 	})

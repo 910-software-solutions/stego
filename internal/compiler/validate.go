@@ -228,6 +228,9 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 			if err != nil {
 				return nil, fmt.Errorf("checking the bound fills: %w", err)
 			}
+			var contractFaults []ValidationError
+			faults, contractFaults = contractFailureFaults(check, faults, svcDecl.Archetype, result.Errors)
+			result.Errors = append(result.Errors, contractFaults...)
 			for _, fault := range faults {
 				checked := ValidationError{Category: "fill", Rule: fault.Rule, Path: fault.Path, Found: fault.Found, Message: fault.Message}
 				if fault.Unproved && input.WarnUnproved {
@@ -249,7 +252,7 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 		checked.CheckOnly = true
 		resolved, err := prepareComponents(checked, source, baselineNames, components)
 		if err != nil {
-			result.Errors = append(result.Errors, ValidationError{Category: "generator", Rule: "generator-input", Path: "archetype", Found: svcDecl.Archetype, Message: err.Error()})
+			result.Errors = append(result.Errors, generatorInputFault(err, svcDecl.Archetype))
 		} else {
 			source.Resolved = resolved
 			result.Errors = append(result.Errors, validateOperationRoutes(svcDecl, resolved.HTTPRoutes)...)
@@ -258,6 +261,72 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 	}
 	return result, nil
 }
+
+// generatorInputFault gives the fault of a generator's inputs. When a generator names the setting and the value
+// (gen.InputFault), the fault names them, at the path of the setting under overrides; else it names the archetype
+// (walkthrough 9, rank 3).
+func generatorInputFault(err error, archetype string) ValidationError {
+	fault := ValidationError{Category: "generator", Rule: "generator-input", Path: "archetype", Found: archetype, Message: err.Error()}
+	var setting *gen.InputFault
+	if errors.As(err, &setting) && setting.Component != "" {
+		fault.Path, fault.Found = "overrides."+setting.Component, setting.Found
+		if setting.Setting != "" {
+			fault.Path += "." + setting.Setting
+		}
+	}
+	return fault
+}
+
+// contractFailureFaults gives a fault that the plan of the fills' contract stops at once, at the top level, and not
+// inside the fault of each fill whose contract digest that plan gives (walkthrough 8 and 9, rank 3): a linked out/, a
+// schema change that generation does not carry out yet, or a fault that the generators find, such as a proto message
+// with the name of an entity. It gives the fill faults with no fault that holds that error, and the top-level faults
+// to add. When validation refused the plan, the top-level faults are its faults that seen does not hold yet, so that
+// validate does not repeat a fault that it gives already.
+func contractFailureFaults(check FillCheck, faults []FillFault, archetype string, seen []ValidationError) ([]FillFault, []ValidationError) {
+	if check.contractFailure == nil {
+		return faults, nil
+	}
+	failure := check.contractFailure()
+	if failure == nil {
+		return faults, nil
+	}
+	text := failure.Error()
+	var kept []FillFault
+	dropped := false
+	for _, fault := range faults {
+		if fault.Rule == "fill-qualified" && strings.Contains(fault.Message, text) {
+			dropped = true
+			continue
+		}
+		kept = append(kept, fault)
+	}
+	if !dropped {
+		return faults, nil
+	}
+	var refused *ValidationFailure
+	if !errors.As(failure, &refused) {
+		return kept, []ValidationError{{Category: "generator", Rule: "fill-contract", Path: "archetype", Found: archetype,
+			Message: "the contract of the fills of the commands, queries and workers cannot be generated, so no fill of them is checked: " + text}}
+	}
+	have := map[faultKey]bool{}
+	for _, e := range seen {
+		have[validationKey(e)] = true
+	}
+	var top []ValidationError
+	for _, e := range refused.Result.Errors {
+		if key := validationKey(e); !have[key] {
+			have[key] = true
+			top = append(top, e)
+		}
+	}
+	return kept, top
+}
+
+// faultKey is the part of a fault that tells two faults apart: its rule, its path and its text.
+type faultKey struct{ rule, path, message string }
+
+func validationKey(e ValidationError) faultKey { return faultKey{e.Rule, e.Path, e.Message} }
 
 func validateGeneratorGoVersion(name string, generator gen.Generator, target string) []ValidationError {
 	requirement, ok := generator.(gen.GoVersionRequirement)
@@ -683,7 +752,7 @@ func fillCheck(input ReconcilerInput, svcDecl *types.ServiceDeclaration, reg *re
 		}
 	}
 	check.Bindings = append(check.Bindings, capabilityBindings(svcDecl)...)
-	check.CapabilityContract = capabilityContracts(input, components)
+	check.CapabilityContract, check.contractFailure = capabilityContracts(input, components)
 	return check
 }
 
@@ -740,10 +809,10 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 				continue
 			}
 			if !entry.Type().IsRegular() {
-				return nil, fmt.Errorf("the contract package %s holds %s, which is not a regular file; go build would compile it, so stego build refuses it", folder, name)
+				return nil, fmt.Errorf("the contract package %q holds %q, which is not a regular file; go build would compile it, so stego build refuses it", folder, name)
 			}
 			if buildsWithGo(name) {
-				return nil, fmt.Errorf("the contract package %s holds %s, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, name)
+				return nil, fmt.Errorf("the contract package %q holds %q, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, name)
 			}
 			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				continue
@@ -805,10 +874,10 @@ func checkGeneratedTree(projectDir string) error {
 			return nil
 		}
 		if !entry.Type().IsRegular() {
-			return fmt.Errorf("the generated package %s holds %s, which is not a regular file; go build would compile it, so stego build refuses it", folder, base)
+			return fmt.Errorf("the generated package %q holds %q, which is not a regular file; go build would compile it, so stego build refuses it", folder, base)
 		}
 		if buildsWithGo(base) {
-			return fmt.Errorf("the generated package %s holds %s, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, base)
+			return fmt.Errorf("the generated package %q holds %q, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, base)
 		}
 		return nil
 	})
@@ -856,10 +925,17 @@ func capabilityBindings(svcDecl *types.ServiceDeclaration) []FillBinding {
 // capabilityContracts gives the function of FillCheck.CapabilityContract for the declaration: it makes the plan once,
 // as apply makes it, with no fill check, and gives the generated Go files, not test files, of the contract package of
 // the component, which the fill of each of its commands, queries or workers imports, by their paths in the project.
-func capabilityContracts(input ReconcilerInput, components map[string]*registry.Component) func(component string) (map[string][]byte, error) {
+// The second function gives the error of that plan, nil when the plan was not made or was made.
+func capabilityContracts(input ReconcilerInput, components map[string]*registry.Component) (func(component string) (map[string][]byte, error), func() error) {
 	var once sync.Once
 	var plan *Plan
 	var planErr error
+	var mu sync.Mutex
+	failure := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		return planErr
+	}
 	return func(component string) (map[string][]byte, error) {
 		c := components[component]
 		if c == nil || c.OutputNamespace == "" {
@@ -874,10 +950,13 @@ func capabilityContracts(input ReconcilerInput, components map[string]*registry.
 			planned.CheckOnly = false
 			// This plan only gives the contract of the fills and is never written; it checks no fill.
 			planned.WarnUnproved = false
-			plan, planErr = Reconcile(planned)
+			made, err := Reconcile(planned)
+			mu.Lock()
+			plan, planErr = made, err
+			mu.Unlock()
 		})
-		if planErr != nil {
-			return nil, fmt.Errorf("the contract cannot be generated: %w", planErr)
+		if err := failure(); err != nil {
+			return nil, fmt.Errorf("the contract cannot be generated: %w", err)
 		}
 		relative := "out"
 		if input.OutDir != "" {
@@ -897,7 +976,7 @@ func capabilityContracts(input ReconcilerInput, components map[string]*registry.
 			return nil, fmt.Errorf("the plan writes no Go file into %s, the contract package of %s", folder, component)
 		}
 		return files, nil
-	}
+	}, failure
 }
 
 // validateLanguage checks that the service declaration's language matches the
