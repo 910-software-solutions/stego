@@ -305,6 +305,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// A consumer attempt that does not commit writes one warn log line (ST-SUP-RC35-OC06).
 		workers := config
 		workers.Logger = svc.telemetry.LoggerProvider()
+		if p.Provisioning != nil && p.declaresTenant() && svc.provider != nil {
+			// A consumer runs no fill before the tuple of its worker is in SpiceDB, which Provision and the reconcile
+			// of the controller write (ST-SUP-RC35-OC18).
+			workers.WorkerTuples = svc.provider
+		}
 		if svc.workers, err = command.New(ctx, workers); err != nil {
 			return nil, err
 		}

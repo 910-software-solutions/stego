@@ -288,6 +288,63 @@ func (rt *Runtime) activeTenant(ctx context.Context, t tenant.Tenant) error {
 	return nil
 }
 
+// WorkerTupleMissingCode is the failure code of a consumed message whose worker's own tuple SpiceDB does not hold yet,
+// such as for a subscription that a new release adds, before its controller writes the tuple (ST-SUP-RC35-OC18).
+const WorkerTupleMissingCode = "worker-tuple-missing"
+
+// HeldTupleAge is the most time that RunConsumer keeps that SpiceDB holds the tuple of a worker in a tenant.
+const HeldTupleAge = time.Minute
+
+// errWorkerTupleMissing matches the transient refusal of a consumed message whose worker's tuple is not in SpiceDB.
+var errWorkerTupleMissing = errors.New("command: the tuple of the consuming worker on the tenant of the message is not in SpiceDB")
+
+// workerTupleHeld checks, before any fill, that SpiceDB holds the tuple tenant:<t>#worker_<name>@service_account:
+// <name> of the consuming worker, at full consistency (ST-SUP-RC35-OC18). A tuple that is missing, or a read that
+// fails, is a transient refusal with the failure code worker-tuple-missing, which the poison count does not count:
+// the outbox tries the message again with its back-off, and the fill never runs with lists that the missing tuple
+// empties. It keeps that the tuple is held for at most HeldTupleAge, and never that it is missing. With no
+// Config.WorkerTuples it checks nothing.
+func (rt *Runtime) workerTupleHeld(ctx context.Context, t tenant.Tenant, worker string) error {
+	reader := rt.cfg.WorkerTuples
+	if reader == nil {
+		return nil
+	}
+	cacheKey := t.ID() + "\x00" + worker
+	now := rt.clock().Now()
+	rt.heldTuplesMu.Lock()
+	at, ok := rt.heldTuples[cacheKey]
+	rt.heldTuplesMu.Unlock()
+	if ok && now.Sub(at) < HeldTupleAge && !now.Before(at) {
+		return nil
+	}
+	missing := outbox.WithFailureCode(outbox.TransientRefusal(errWorkerTupleMissing), WorkerTupleMissingCode)
+	resource, err := authz.TenantResource(t)
+	if err != nil {
+		return missing
+	}
+	subject, err := authz.ServiceAccount(worker)
+	if err != nil {
+		return missing
+	}
+	held, err := reader.Exists(ctx, authz.FilterOf(authz.Tuple{Resource: resource, Relation: WorkerTenantRelation(worker), Subject: subject}))
+	if err != nil || !held {
+		return missing
+	}
+	rt.heldTuplesMu.Lock()
+	if rt.heldTuples == nil {
+		rt.heldTuples = map[string]time.Time{}
+	}
+	if len(rt.heldTuples) >= maxHeldTuples {
+		clear(rt.heldTuples)
+	}
+	rt.heldTuples[cacheKey] = now
+	rt.heldTuplesMu.Unlock()
+	return nil
+}
+
+// maxHeldTuples bounds the memory of the held tuples: when it is full, it starts again empty.
+const maxHeldTuples = 10000
+
 // errTenantList is the transient refusal of a consumed message whose tenant list was not read.
 var errTenantList = internalf("the tenant list was not read")
 
@@ -342,6 +399,9 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		}
 	}()
 	if err := rt.activeTenant(ctx, d.Tenant); err != nil {
+		return err
+	}
+	if err := rt.workerTupleHeld(ctx, d.Tenant, w.spec.Name); err != nil {
 		return err
 	}
 	if err := rt.markStep(ctx, tx); err != nil {
@@ -524,6 +584,9 @@ func consumerOutcome(err error) (probe.WorkerOutcome, string) {
 		return probe.WorkerRefused, "declared_refusal"
 	case errors.As(err, &denied) && denied.staging:
 		return probe.WorkerDenied, "staging_denied"
+	case errors.Is(err, errWorkerTupleMissing):
+		// Not counted for poison: a later attempt runs when the controller wrote the tuple (ST-SUP-RC35-OC18).
+		return probe.WorkerUndecided, "worker_tuple_missing"
 	case errors.Is(err, errTenantNotActive) || errors.Is(err, errTenantList):
 		if outbox.IsPermanent(err) {
 			return probe.WorkerRefused, "tenant"

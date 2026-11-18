@@ -111,6 +111,10 @@ type Config struct {
 	// hold as active with a permanent refusal before the fill, so the outbox parks it (ST-SUP-RC27-OC12). Nil checks
 	// no tenant: a service with no provisioning may have an empty list.
 	Tenants TenantList
+	// WorkerTuples, when it is not nil, reads whether SpiceDB holds the tuple of a consuming worker on the tenant of
+	// a message: RunConsumer runs no fill before that tuple is there, and tries the message again with the back-off
+	// of the outbox (ST-SUP-RC35-OC18). Nil checks no tuple: a schema with no definition tenant has no worker tuple.
+	WorkerTuples WorkerTupleReader
 }
 
 // TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
@@ -134,6 +138,10 @@ type Runtime struct {
 	// provisions, so one provisioner cannot hold the waiter places of all (security review of PR #434, L1).
 	provisionWaitMu sync.Mutex
 	provisionWaits  map[string]int
+	// heldTuples keeps, for each tenant and consuming worker, when RunConsumer last read that SpiceDB holds the
+	// worker's tuple (ST-SUP-RC35-OC18).
+	heldTuplesMu sync.Mutex
+	heldTuples   map[string]time.Time
 	// recorder and beforeCommit are set only by the tests of the package: the statement recorder, and a step just
 	// before COMMIT.
 	recorder     func(query string, args []any)

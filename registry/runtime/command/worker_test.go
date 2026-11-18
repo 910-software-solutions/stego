@@ -1165,6 +1165,52 @@ func TestConsumers(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC18-T01 A consumer whose worker tuple is missing parks nothing and runs the message after the tuple is written", func(t *testing.T) {
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-wt', 'new')`)
+		defer clock.hold()()
+		tuples := &tupleReader{}
+		e.rt.cfg.WorkerTuples = tuples
+		defer func() { e.rt.cfg.WorkerTuples = nil }()
+		var runs atomic.Int64
+		cases.Store("tuple", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			runs.Add(1)
+			// As the fill of walkthrough 11: with the tuple missing, its list would be empty and it would fail.
+			return errors.New("the tenant has no team")
+		})
+		from := len(e.consumed.causeList(0))
+		m := e.stage("t1", "o-wt", map[string]string{"case": "tuple"})
+		const tries = 2*PoisonAttempts + 1
+		for i := 1; i <= tries; i++ {
+			r := awaitRow(t, m, func(r row) bool { return r.attempts == i && r.state != "dispatching" })
+			if r.state != "pending" || r.code != WorkerTupleMissingCode {
+				t.Fatalf("after attempt %d the message is %s with %q, want pending with %q", i, r.state, r.code, WorkerTupleMissingCode)
+			}
+			clock.add(10 * time.Minute)
+		}
+		if runs.Load() != 0 {
+			t.Fatalf("the fill ran %d times with the tuple missing, want 0", runs.Load())
+		}
+		if got := e.consumed.causeList(from); len(got) < tries || got[0] != "undecided/worker_tuple_missing" {
+			t.Fatalf("worker.run.failed sent %v, want undecided/worker_tuple_missing for each attempt", got)
+		}
+		filter := tuples.last()
+		if filter.ResourceType != "tenant" || filter.Relation != "worker_apply_partner_replies" ||
+			filter.SubjectType != "service_account" || filter.SubjectID != "apply-partner-replies" {
+			t.Fatalf("the read names %+v, want the tuple of the worker apply-partner-replies on its tenant", filter)
+		}
+		// The controller writes the tuple: the next attempt runs the fill once, and the message is done.
+		tuples.held.Store(true)
+		cases.Store("tuple", func(ctx context.Context, _ map[string]string, h *Handle[testProbe]) error {
+			runs.Add(1)
+			return nil
+		})
+		clock.add(10 * time.Minute)
+		e.waitState(t, m, "done")
+		if runs.Load() != 1 {
+			t.Fatalf("the fill ran %d times after the tuple was written, want 1", runs.Load())
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC06-T09 A write that breaks a foreign key in 5 attempts parks the message as poison", func(t *testing.T) {
 		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-p6', 'new')`)
 		// The reservation of each run names an order that is not there, so its insert fails with SQLSTATE 23503 in
@@ -1857,4 +1903,26 @@ func TestWorkerNoParent(t *testing.T) {
 			t.Fatal("the create with no parent wrote its row under o-2")
 		}
 	})
+}
+
+// tupleReader is a reader of SpiceDB whose worker tuple is held or not, and which keeps the last filter it read.
+type tupleReader struct {
+	held   atomic.Bool
+	mu     sync.Mutex
+	filter authz.Filter
+}
+
+func (r *tupleReader) RelationsOf(context.Context, string) ([]string, error) { return nil, nil }
+
+func (r *tupleReader) Exists(_ context.Context, filter authz.Filter) (bool, error) {
+	r.mu.Lock()
+	r.filter = filter
+	r.mu.Unlock()
+	return r.held.Load(), nil
+}
+
+func (r *tupleReader) last() authz.Filter {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.filter
 }
