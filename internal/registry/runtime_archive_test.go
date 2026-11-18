@@ -3,8 +3,11 @@ package registry
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/rand"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -73,6 +76,48 @@ func TestRuntimeArchiveOneCopy(t *testing.T) {
 		// A zip with no go.mod is refused.
 		if _, err := runtimeArchiveOf(zipOf([2]string{prefix + "money/money.go", "package money\n"}), prefix+"go.mod"); err == nil || !strings.Contains(err.Error(), "no go.mod") {
 			t.Fatalf("a zip with no go.mod gave %v, want a refusal", err)
+		}
+	})
+	t.Run("ST-STD-RUNTIME-R04-T05 The runtime archive refuses a folder whose module zip is larger than its limit", func(t *testing.T) {
+		const version = "v0.1.0"
+		folder := filepath.Join(t.TempDir(), "runtime")
+		if err := os.MkdirAll(folder, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Random bytes do not compress, so the zip is larger than 8 KiB.
+		noise := make([]byte, 8<<10)
+		if _, err := rand.Read(noise); err != nil {
+			t.Fatal(err)
+		}
+		for name, data := range map[string][]byte{"go.mod": []byte("module " + RuntimeModule + "\n\ngo 1.26\n"), "noise.go": []byte("package runtime\n\nconst noise = " + strconv.Quote(string(noise)) + "\n")} {
+			if err := os.WriteFile(filepath.Join(folder, name), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The limit of 64 MiB takes the zip; its size is the smallest limit that takes it.
+		whole := filepath.Join(t.TempDir(), "whole.zip")
+		if _, err := WriteRuntimeArchive(folder, RuntimeModule, version, whole); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(whole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		size := int(info.Size())
+		if MaxRuntimeArchive != 64<<20 || size <= 8<<10 {
+			t.Fatalf("the limit is %d and the zip %d bytes, want 64 MiB and more than 8 KiB", MaxRuntimeArchive, size)
+		}
+		exact := filepath.Join(t.TempDir(), "exact.zip")
+		if _, err := writeRuntimeArchive(folder, RuntimeModule, version, exact, size); err != nil {
+			t.Fatalf("a limit of the size of the zip refused it: %v", err)
+		}
+		// One byte less is refused, and no zip file is written.
+		short := filepath.Join(t.TempDir(), "short.zip")
+		if _, err := writeRuntimeArchive(folder, RuntimeModule, version, short, size-1); !errors.Is(err, ErrRuntimeArchiveSize) {
+			t.Fatalf("a zip of %d bytes with a limit of %d gave %v, want ErrRuntimeArchiveSize", size, size-1, err)
+		}
+		if _, err := os.Lstat(short); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("a refused zip left the file %s (%v)", short, err)
 		}
 	})
 }
