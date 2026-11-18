@@ -308,15 +308,19 @@ fault `the head stores <Entity>.<field> sealed, which the base stores in
 clear`, and its suggested change is a seal `with from: secret`. The check reads
 the version of postgres-adapter in `.stego/state.yaml` of the base.
 
-1. Make the Secret `<service>-secret-key-ring` before you deploy. See [The key
+1. If the running release is before runtime v0.120.0 (postgres-adapter
+   6.4.0), first deploy a release with runtime v0.120.0 or later and no new
+   schema step. Its processes report themselves, which the seal needs: `stego
+   compat` refuses the seal over an older release.
+2. Make the Secret `<service>-secret-key-ring` before you deploy. See [The key
    ring](operations.md#the-key-ring). `stego env check` names it when it is
    not there.
-2. Change each fill that reads or writes the secret field. Its Go type is
+3. Change each fill that reads or writes the secret field. Its Go type is
    `sealed.Secret` (package `github.com/jsell-rh/stego/registry/runtime/sealed`):
    read its text with `v.ApiKey.Reveal()`, and make a value with
    `sealed.SecretOf(text)`. A `Secret` prints and logs as `[secret]` and
    encodes as JSON `null`, so a log line does not hold the value.
-3. Declare a seal step with `from: secret` for each secret field, and keep the
+4. Declare a seal step with `from: secret` for each secret field, and keep the
    field as it is:
 
    ```yaml
@@ -329,13 +333,14 @@ the version of postgres-adapter in `.stego/state.yaml` of the base.
    The first migration `001_initial` stays the one of the running release.
    Run `stego compat --base <tag>` and `stego plan --base <tag>`: they accept
    the release.
-4. Deploy the release. The migration Job adds the column `api_key_sealed`, and
+5. Deploy the release. The migration Job adds the column `api_key_sealed`, and
    the release before goes on with the clear column while the Deployments
    roll. The new release writes both columns. The controller seals each row
    when no pod of the release before runs. See [Seal steps](schema-changes.md#seal-steps).
    You can go back to the release before in this phase: it reads the clear
    column, and the seal job checks each row again later.
-5. In a later release, declare the contract step of each seal. Its migration
+6. In the next release, declare the contract step of each seal. Until then the
+   clear column holds the secret, also in each backup that you take. Its migration
    refuses until the seal job completed a pass after the last pod of the
    release before stopped. Then it drops the clear column. After it, you cannot
    go back to a release before the expand step.

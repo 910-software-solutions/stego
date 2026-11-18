@@ -411,6 +411,14 @@ While the step is open:
   pass, the pass starts again. Its report stays in `stego_schema.releases`
   while the seal is open, also after a clean stop.
 
+The release before must report itself: its processes write
+`stego_schema.releases` from runtime v0.120.0 (postgres-adapter 6.4.0). Over an
+older release, or a base record with no pin, `stego compat` and `stego plan`
+refuse a new seal: first deploy a release with runtime v0.120.0 or later and no
+new schema step, then declare the seal. The first pass also waits 3 minutes
+after the expand step, so that each running process of the release before
+reports itself first.
+
 The service needs its key ring: the api, worker and controller modes read
 `STEGO_SECRET_KEY_RING_FILE` (see [Rotate and back up the key ring of the
 secret fields](operations.md#rotate-and-back-up-the-key-ring-of-the-secret-fields)).
@@ -418,8 +426,11 @@ The service must run the controller mode, or checking refuses the seal.
 
 ### The contract step of a seal
 
-Declare the contract step in a later release, after the seal job completed a
-pass and no release before runs:
+Declare the contract step in the next release, after the seal job completed a
+pass and no release before runs. Until then the clear column holds the secret
+in the table, in the WAL and in each backup that you take, so keep the open
+window short: `stego plan` warns of a seal that is open since a release
+before.
 
 ```yaml
 schema_history:
@@ -436,7 +447,9 @@ The contract migration refuses, changes no schema and writes no ledger row:
   value.
 
 Each refusal names the change and the remedy: run the release of the expand
-step, with its controller, until the seal job completes a pass. Then the
+step, with its controller, until the seal job completes a pass. A row of a
+tenant that the tenant list does not hold is never sealed: the refusal names
+it, and you provision the tenant or remove its rows. Then the
 migration adds the CHECK `<table>_<column>_sealed_complete` NOT VALID and
 validates it, which reads every row, also a row of a tenant that the list
 does not hold. For a required field it makes the sealed column NOT NULL. Then,
