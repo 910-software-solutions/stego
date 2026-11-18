@@ -598,6 +598,13 @@ go test ./internal/assure -run TestOwnTree -update-docs
 
 ## Release notes
 
+To move a running service to a newer release, follow [the upgrade
+guide](docs/upgrade.md). It gives the procedure, the release notes of each
+change that needs an action from you, such as a new Secret or the move of a
+browser-service database to its new roles, and the steps of each action. For
+the work after the upgrade, such as the rotation of a password or a key and a
+restore from a backup, see [Day-2 operations](docs/operations.md).
+
 ### Nested routes: a grant on the deepest resource is enough; check your schema
 
 Before this release, a route of a scoped collection also decided the read
