@@ -124,7 +124,7 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
  for i,p:=range plans{
   if err:=ctx.Err();err!=nil{if outErr:=writeApply(destination,format,results);outErr!=nil{return outErr};return err}
   if p.method=="UNCHANGED"{results[i].Status="unchanged";continue}
-  response,requestErr:=transport.Do(ctx,p.method,p.path,headers,p.payload)
+  response,requestErr:=send(ctx,app,transport,p.method,p.path,headers,p.payload)
   outcomeErr:=requestErr;results[i].Status="unknown"
   if requestErr==nil{
    if p.method=="POST"&&len(p.resource.ImmutableIdentity)>0&&response.StatusCode==409{

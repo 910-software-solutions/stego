@@ -1,7 +1,9 @@
 kind: component
 name: cli-application
-# Version 1.10.0 gives one apply lookup a time limit of 60 s for all its pages, and refuses a list whose total at
-# its end is larger than the values found (security review of PR #445, L-1 and I-1).
+# Version 1.10.0 sends a new Idempotency-Key with each POST and PATCH, and sends an uncertain write again one time
+# with the same key when the application states that its service keeps the key (ST-SUP-RC04-OC31, ST-SUP-Q187).
+# It also gives one apply lookup a time limit of 60 s for all its pages, and refuses a list whose total at its end
+# is larger than the values found (security review of PR #445, L-1 and I-1).
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
