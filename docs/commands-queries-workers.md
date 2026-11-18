@@ -1214,6 +1214,31 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
+### Release notes for runtime v0.140.0
+
+- A worker can declare `reads: [Entity]`. Its fill gets a read-only
+  repository `<Entity>Reader`, of the new type `command.Reader`, with `Get` and
+  `List` only, and values `<Entity>View` with no secret field
+  (ST-SUP-RP10-LC53, ST-SUP-RC35-OC19, decision ST-SUP-Q186 (a)). New field
+  `command.WorkerSpec.Reads`, new field `command.EntitySpec.ReadOnly`, new
+  function `command.ReadRepo` and new field
+  `service.WorkerParts.ConsumerReadTables`, which the generated code fills. The
+  migration job gives the worker role only `SELECT` on such a table of a
+  consuming worker.
+- A field with `attempts: {counts: <field>, limit: N}` counts the wrong checks
+  of a compare-only secret. `Matches` gives `false` at the limit and for a row
+  that the handle did not lock, and the runtime commits the count also after a
+  refusal rolls back the command (ST-SUP-RP10-LC54, decision ST-SUP-Q185 (a)).
+  New `command.CounterSpec`, `command.NewCounter`, `command.CountedAt`,
+  `sealed.Counter` and `sealed.CountedBy`. See [Limit the wrong
+  attempts](fills.md#limit-the-wrong-attempts).
+- An entity with `events: {fields: [...]}` puts the declared fields of the row,
+  as `data`, and their version, as `data_version`, in each change event
+  (ST-SUP-RP10-LC55, decision ST-SUP-Q184 (c)). New fields
+  `command.EntitySpec.EventData` and `EventVersion`, and the functions
+  `command.EventValue` and `command.JSONValue`. See [The fields of a change
+  event](fills.md#the-fields-of-a-change-event).
+
 ### Release notes for runtime v0.139.0
 
 - A fill that returns `command.ErrNotFound` answers 404 with the code
