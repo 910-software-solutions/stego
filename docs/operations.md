@@ -26,6 +26,7 @@ migration Job is `<service>-migrate-<release>`.
 | `<service>-kafka-client` | `password`, `ca-crt` | the SCRAM password of the Kafka user, and the CA of the brokers | `<service>-worker` |
 | `<service>-query-cursor` | `key` | the key of the list cursors | `<service>` (the api mode only) |
 | `<service>-spicedb` | `preshared-key` | the key of SpiceDB | `<service>`, `<service>-worker`, the migration Job |
+| `<service>-secret-key-ring` | `key-ring` | the key ring of the secret fields, only for a service with a secret field | `<service>`, `<service>-worker` |
 
 A browser service has one Deployment, `<service>`, which reads the key `url`
 of `<service>-database`. Its migration Job reads `<service>-database-owner`.
@@ -297,6 +298,111 @@ cursor. Write each client so that it starts a list again when a cursor gets
 between two pages.
 
 From runtime v0.134.0, use the three rollouts above instead.
+
+## Rotate and back up the key ring of the secret fields
+
+From runtime v0.135.0, the service seals each readable secret field (a field
+with `sensitivity: secret`) with AES-256-GCM before it writes the row. The
+column holds the sealed bytes, never the value. A compare-only secret field
+(`compare_only: true`) holds an Argon2id hash, which no key opens.
+
+**If you lose every key of the key ring, you lose each readable secret
+field. Nothing can bring the values back.** A backup of the database without
+the key ring holds no secret that you can read. Keep the key ring in a
+backup of its own, apart from the database backup.
+
+### The key ring
+
+The Secret `<service>-secret-key-ring` holds the key `key-ring`: a text file
+with one key on each line, in the form `<key ID> <key>`. The key ID is a
+number from 1 to 4294967295. The key is the base64 of exactly 32 random
+bytes. Lines that start with `#` and empty lines are comments. The first key
+seals each new value. Each key of the file opens a value that it sealed.
+
+The api, worker and controller modes read the file at start, from
+`STEGO_SECRET_KEY_RING_FILE`. They do not start without it. The migration Job
+does not read it. Mount the file with the Component `secret-files`, which
+gives it the mode 0400 (see [Secrets as files](delivery.md#secrets-as-files)).
+A process refuses a file that a group or other users can read.
+
+Make the first key ring in a file that only you can read, write it into the
+Secret, and remove the file:
+
+```sh
+(umask 077; printf '1 %s\n' "$(head -c 32 /dev/urandom | base64 -w0)" > key-ring)
+kubectl create secret generic -n <namespace> <service>-secret-key-ring --from-file=key-ring=key-ring \
+  --dry-run=client -o yaml | kubectl apply --server-side --force-conflicts -f -
+```
+
+Then put a copy of `key-ring` in your secret store or your encrypted backup
+before you remove it with `shred -u key-ring`.
+
+### Back up the key ring
+
+- Back up the key ring each time you change it, before the first rollout of
+  the change. Keep each old copy until no backup of the database that needs
+  it is left.
+- Keep the key ring apart from the database backup: in a secret store, or in
+  an encrypted backup with other access. If the same backup holds both, a
+  person who gets the backup gets the secrets.
+- At a restore of the database, give the service a key ring that holds each
+  key of the rows of the restored dump. A ring of today holds them when no
+  rotation removed a key after the time of the dump. Otherwise, add the old
+  key from its backup copy, after the first key.
+
+### Rotate the key ring
+
+Rotate the key at least once a year, at once after a leak of the key ring,
+and before one key seals about 4 billion values. Do these steps in this
+order:
+
+1. Make a new key with a new key ID, and put it first in the file. Keep the
+   old key after it:
+
+   ```text
+   2 <new key>
+   1 <old key>
+   ```
+
+   Back up the new file. Write it into the Secret as above.
+2. Restart both Deployments, which read the key ring:
+
+   ```sh
+   kubectl rollout restart -n <namespace> deployment/<service> deployment/<service>-worker
+   ```
+
+   Each new pod seals with the new key and opens the values of both keys.
+   An old pod that still runs during the rollout opens only the values of the
+   old key. A read of a new value on an old pod fails with 500 until the
+   rollout completes. Pause the writes of secret fields during the rollout
+   if a 500 is not acceptable.
+3. Wait for the re-seal job. The controller mode runs it at start and then
+   each 10 minutes. It seals each value of an earlier key again with the
+   first key, in batches of 100 rows for each tenant. It does not change the
+   version of a row, and it writes no audit row and no event. Each run logs
+   one line for each secret column, with no value:
+
+   ```text
+   command: re-seal of a secret column entity=Order column=api_token moved=1200 left=0 first_key=2
+   ```
+
+   Wait until each column logs `left=0` in a run.
+4. Remove the old key from the file, back up the file, write it into the
+   Secret, and restart both Deployments again.
+
+Why this order: until step 4, each pod holds the old key, so each value
+reads. The job moves each value before you remove its key. If you remove a
+key too early, a read of a value of that key fails with 500, and the job
+logs the column and the row that do not open. Put the old key back to repair
+it.
+
+### When the key ring leaked
+
+Rotate the key ring as above at once. Then think about which values a person
+with the old key could read: each readable secret field that the old key
+sealed, in each backup of the database since that key was first in the ring.
+Change those secrets where they are used, for example the tokens of a
+partner. A compare-only secret is a hash, and the key ring does not open it.
 
 ## Restore from a backup
 
