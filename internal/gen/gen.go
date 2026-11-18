@@ -114,6 +114,22 @@ type ProbeDeclarer interface {
 	Probes(ctx Context) (Probes, error)
 }
 
+// InputFault is a fault of one setting of a component: the setting, by its path under the component's settings,
+// such as apis[1].prefix, the value found there, and the fault in a sentence. A generator gives it so that checking
+// names the setting and the value, and not only the archetype (walkthrough 9, rank 3).
+type InputFault struct {
+	// Component is the component whose setting it is.
+	Component string
+	// Setting is the path of the setting under the component's settings; empty for the settings as a whole.
+	Setting string
+	// Found is the value found at the setting; empty when the setting is not there.
+	Found string
+	// Message is the fault in a sentence for a person.
+	Message string
+}
+
+func (f *InputFault) Error() string { return f.Message }
+
 // InputProvider declares source files before generation. The compiler reads
 // each file once and checks its snapshot again before it applies output.
 type InputProvider interface {

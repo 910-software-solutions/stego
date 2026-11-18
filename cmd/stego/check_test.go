@@ -293,3 +293,40 @@ func acceptedReport(t *testing.T) string {
 	}
 	return want
 }
+
+func TestBrowserSettingFaults(t *testing.T) {
+	t.Parallel()
+	t.Run("ST-SUP-RC02-OC58-T03 A refused browser-backend setting is named by its path under overrides and the value found, not by the archetype", func(t *testing.T) {
+		project, run := initialized(t, "browser-service")
+		if run.code != 0 {
+			t.Fatalf("stego init --archetype browser-service: exit %d: %s", run.code, run.stderr)
+		}
+		declared, err := os.ReadFile(filepath.Join(project, "service.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct{ apis, path, found string }{
+			{"[{name: fulfilment, prefix: /api/fulfilment/v1}, {name: billing, prefix: /api/fulfilment/v1/bills}]", "overrides.browser-backend.apis[1].prefix", "/api/fulfilment/v1/bills"},
+			{"[{name: fulfilment, prefix: /api/fulfilment/v1}, {name: fulfilment, prefix: /api/billing/v1}]", "overrides.browser-backend.apis[1].name", "fulfilment"},
+		} {
+			service := strings.Replace(string(declared), "  browser-backend:\n", "  browser-backend:\n    apis: "+c.apis+"\n", 1)
+			if service == string(declared) {
+				t.Fatalf("the scaffold has no overrides of browser-backend:\n%s", declared)
+			}
+			putFile(t, project, "service.yaml", service)
+			document, run := validateJSON(t, project)
+			var named []declaration.ValidationError
+			for _, fault := range document.Faults {
+				if fault.Rule == "generator-input" {
+					named = append(named, fault)
+				}
+			}
+			if run.code == 0 || len(named) != 1 || named[0].Path != c.path || named[0].Found != c.found {
+				t.Fatalf("%s: want one generator-input fault at %s that found %q:\n%s", c.apis, c.path, c.found, run.stdout)
+			}
+			if _, value := resolvePath(t, []byte(service), c.path); value == nil || value.Value != c.found {
+				t.Fatalf("%s: the fault path %s does not lead to the value %q in the declaration", c.apis, c.path, c.found)
+			}
+		}
+	})
+}

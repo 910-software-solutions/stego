@@ -252,7 +252,7 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 		checked.CheckOnly = true
 		resolved, err := prepareComponents(checked, source, baselineNames, components)
 		if err != nil {
-			result.Errors = append(result.Errors, ValidationError{Category: "generator", Rule: "generator-input", Path: "archetype", Found: svcDecl.Archetype, Message: err.Error()})
+			result.Errors = append(result.Errors, generatorInputFault(err, svcDecl.Archetype))
 		} else {
 			source.Resolved = resolved
 			result.Errors = append(result.Errors, validateOperationRoutes(svcDecl, resolved.HTTPRoutes)...)
@@ -260,6 +260,21 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 		}
 	}
 	return result, nil
+}
+
+// generatorInputFault gives the fault of a generator's inputs. When a generator names the setting and the value
+// (gen.InputFault), the fault names them, at the path of the setting under overrides; else it names the archetype
+// (walkthrough 9, rank 3).
+func generatorInputFault(err error, archetype string) ValidationError {
+	fault := ValidationError{Category: "generator", Rule: "generator-input", Path: "archetype", Found: archetype, Message: err.Error()}
+	var setting *gen.InputFault
+	if errors.As(err, &setting) && setting.Component != "" {
+		fault.Path, fault.Found = "overrides."+setting.Component, setting.Found
+		if setting.Setting != "" {
+			fault.Path += "." + setting.Setting
+		}
+	}
+	return fault
 }
 
 // contractFailureFaults gives a fault that the plan of the fills' contract stops at once, at the top level, and not
