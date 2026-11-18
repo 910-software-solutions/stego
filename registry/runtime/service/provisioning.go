@@ -287,7 +287,11 @@ func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) ht
 func writeTenantProblem(w http.ResponseWriter, httpStatus int, base, code string) {
 	// The type is the type of the code under the declared problem base, never the bare base (ST-SUP-RC27-OC17).
 	body := "{\"type\":" + strconv.Quote(authn.ProblemTypeOf(base, httpStatus, code)) + ",\"title\":" + strconv.Quote(http.StatusText(httpStatus)) +
-		",\"status\":" + strconv.Itoa(httpStatus) + ",\"code\":" + strconv.Quote(code) + "}"
+		",\"status\":" + strconv.Itoa(httpStatus)
+	if code != "" {
+		body += ",\"code\":" + strconv.Quote(code)
+	}
+	body += "}"
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
