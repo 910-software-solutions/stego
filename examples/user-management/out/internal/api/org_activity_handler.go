@@ -141,6 +141,17 @@ func (h *OrgActivityHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	req := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, "")
 	var persisted ActivityEntry
+	if err := h.rt.Commands.AwaitRevocation(r, b.Tenant, b.Principal); err != nil {
+		if errors.Is(err, command.ErrBadRequest) {
+			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
+			return
+		}
+		if r.Context().Err() != nil {
+			return
+		}
+		handleError(w, r, InternalError("internal error"))
+		return
+	}
 	result, err := command.Run(r.Context(), h.rt.Commands, orgActivityCreateCommand, req, decodeOrgActivity, func(ctx context.Context, activityentry ActivityEntry, ch *command.Handle[struct{}]) (idempotency.Response, error) {
 		id, err := uuid.NewV7()
 		if err != nil {
