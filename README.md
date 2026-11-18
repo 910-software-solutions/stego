@@ -277,7 +277,7 @@ scope: its list gives each row that the caller may view, from all parents.
 The path of a scoped collection names the parent of a create, an update or an
 upsert. A body may leave the scope field out, or give the value of the path. A
 body that gives another value gets a 400 validation problem that names the
-field (rest-api 4.7.0), and the request changes nothing. An update does not
+field (rest-api 4.8.0), and the request changes nothing. An update does not
 move a row to another parent.
 
 Put the SpiceDB schema at `authz/schema.zed`:
