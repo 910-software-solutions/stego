@@ -323,7 +323,14 @@ The api, worker and controller modes read the file at start, from
 `STEGO_SECRET_KEY_RING_FILE`. They do not start without it. The migration Job
 does not read it. Mount the file with the Component `secret-files`, which
 gives it the mode 0400 (see [Secrets as files](delivery.md#secrets-as-files)).
-A process refuses a file that a group or other users can read.
+A process refuses a file that others can read or that a group or others can
+write. A file that the group can read, such as 0440 or 0640 for an `fsGroup`,
+is accepted.
+
+The key ring also keys the fingerprints of the idempotency keys of the
+service, because a request body can hold a secret. The table
+`idempotency_keys` holds an HMAC of each fingerprint with a key that is
+derived from the first key, and no plain hash of the body.
 
 Make the first key ring in a file that only you can read, write it into the
 Secret, and remove the file:
@@ -353,48 +360,63 @@ before you remove it with `shred -u key-ring`.
 ### Rotate the key ring
 
 Rotate the key at least once a year, at once after a leak of the key ring,
-and before one key seals about 4 billion values. Do these steps in this
-order:
+and before one key seals about 4 billion values. Do the rotation in three
+phases, in this order. In each phase, write the file into the Secret, back
+it up, and restart both Deployments, which read the key ring:
 
-1. Make a new key with a new key ID, and put it first in the file. Keep the
-   old key after it:
+```sh
+kubectl rollout restart -n <namespace> deployment/<service> deployment/<service>-worker
+```
+
+Wait until both rollouts complete before you start the next phase.
+
+1. Add the new key, with a new key ID, as the second key. Keep the old key
+   first:
+
+   ```text
+   1 <old key>
+   2 <new key>
+   ```
+
+   Each pod still seals with the old key, and each pod can now open the
+   values of both keys.
+2. Put the new key first:
 
    ```text
    2 <new key>
    1 <old key>
    ```
 
-   Back up the new file. Write it into the Secret as above.
-2. Restart both Deployments, which read the key ring:
-
-   ```sh
-   kubectl rollout restart -n <namespace> deployment/<service> deployment/<service>-worker
-   ```
-
-   Each new pod seals with the new key and opens the values of both keys.
-   An old pod that still runs during the rollout opens only the values of the
-   old key. A read of a new value on an old pod fails with 500 until the
-   rollout completes. Pause the writes of secret fields during the rollout
-   if a 500 is not acceptable.
-3. Wait for the re-seal job. The controller mode runs it at start and then
-   each 10 minutes. It seals each value of an earlier key again with the
-   first key, in batches of 100 rows for each tenant. It does not change the
-   version of a row, and it writes no audit row and no event. Each run logs
-   one line for each secret column, with no value:
+   Each new pod seals with the new key. An old pod that still runs during
+   this rollout opens these values too, because it got the new key in phase
+   1. The controller runs the re-seal job at start and then each 10 minutes.
+   It seals each value of an earlier key again with the first key, in pages
+   of 100 rows for each tenant. It does not change the version of a row, and
+   it writes no audit row and no event. Each run logs one line for each
+   secret column, with no value:
 
    ```text
    command: re-seal of a secret column entity=Order column=api_token moved=1200 left=0 first_key=2
    ```
 
-   Wait until each column logs `left=0` in a run.
-4. Remove the old key from the file, back up the file, write it into the
-   Secret, and restart both Deployments again.
+   A value that does not open, for example of a key that the ring no longer
+   holds, is logged with its column and row and left as it is; it counts in
+   `left`.
+3. Remove the old key when both of these are true:
+   - each column logged `left=0` in a run after phase 2;
+   - the idempotency retention of the service (24 hours when the declaration
+     gives none) has passed since phase 2. An idempotency key of that time
+     holds a fingerprint of the old key, and a retry with that key needs the
+     old key to match it.
 
-Why this order: until step 4, each pod holds the old key, so each value
-reads. The job moves each value before you remove its key. If you remove a
-key too early, a read of a value of that key fails with 500, and the job
-logs the column and the row that do not open. Put the old key back to repair
-it.
+Why this order: in each phase, each pod that runs opens each value that any
+other pod seals, so no read fails during a rollout. The job moves each value
+before you remove its key. If you remove a key too early, a read of a value of
+that key fails with 500, and the job logs the column and the row that do not
+open. Put the old key back to repair it.
+
+A secret field cannot be renamed or retyped, because each sealed value is
+bound to its column. Checking refuses such a schema change (ST-DECL-INV101).
 
 ### When the key ring leaked
 
