@@ -560,7 +560,10 @@ func onRuntimePath(declaration string) string {
 func runtimeSchema(declaration string) string {
 	// The service-level resource of the tenant provisioning of runtimeHeader (ST-DECL-INV78).
 	schema := "definition user {}\n\ndefinition service {\n\trelation operator: user\n\tpermission provision = operator\n\tpermission retire = operator\n}\n"
-	seen := map[string]bool{"user": true, "service": true}
+	// The operators who resolve a parked outbox message, which a declaration with durable-events needs
+	// (ST-SUP-RC29-OC20).
+	schema += "\ndefinition outbox_destination {\n\trelation operator: user\n\tpermission resolve = operator\n}\n"
+	seen := map[string]bool{"user": true, "service": true, "outbox_destination": true}
 	for _, match := range regexp.MustCompile(`resource_type: *([a-z][a-z0-9_]*)`).FindAllStringSubmatch(declaration, -1) {
 		if seen[match[1]] {
 			continue

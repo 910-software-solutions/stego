@@ -283,7 +283,16 @@ definition todo {
 	permission view = owner + viewer
 	permission edit = owner
 }
+
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
 ```
+
+The type `outbox_destination` is the resource on which an operator resolves a
+parked outbox message (ST-SUP-RC29-OC20). Checking refuses a schema without it.
+Give `resolve` to the operators only.
 
 A denied operation answers 404, the same answer as a missing row, also when the
 caller may read the row. For example, a viewer who reads a todo with 200 gets 404

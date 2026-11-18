@@ -894,6 +894,25 @@ each message. A message that the tenant does not hold gets 404. A message that
 is not parked, or a resolution that the destination refuses, gets 409. Another
 body gets 400.
 
+Checking refuses a declaration that binds authorization when its schema does
+not define `outbox_destination` with the permission `resolve`, also when the
+declaration binds no mixin: the runtime serves these routes in each service on
+the runtime data path. Checking also refuses a `resolve` that reaches a
+wildcard subject such as `user:*`, and an entity with the resource type
+`outbox_destination`.
+
+Give `resolve` to the operators only. Checking cannot see a `resolve` that
+reaches each member of a tenant, such as through a relation that every member
+holds. Such a member can send a parked message again or discard it. Do not
+write `resolve = nil` either: then no operator can resolve a message.
+
+**Warning:** Do not discard a parked message of the destination `authz`
+unless you apply its change in another way. The messages of `authz` are the
+relationship writes and deletes of SpiceDB. When you discard a message that
+removes an access, SpiceDB keeps that access: the revocation is never
+applied. Send the message again with `not_acted`, or remove the relationship
+in SpiceDB yourself and then resolve the message with `acted`.
+
 ### Take the change events of another service
 
 A worker can consume the change events of another service through a
