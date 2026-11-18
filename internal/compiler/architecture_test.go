@@ -28,6 +28,12 @@ import (
 // wildcard, and two recursions (group#member through itself, and folder#view through parent->view).
 const archFixtureSchema = `definition user {}
 
+// The operators who resolve a parked outbox message (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
 caveat ip_allowed(ip ipaddress, cidr string) {
 	ip.in_cidr(cidr)
 }

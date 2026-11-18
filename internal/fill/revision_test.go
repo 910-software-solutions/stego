@@ -149,13 +149,14 @@ func TestRevisionFaultsContractFolder(t *testing.T) {
 
 func TestRevisionFaultsGeneratedTree(t *testing.T) {
 	t.Run("ST-EXT-UC02-R02-T11 stego build refuses a package under out, at any depth, that holds a file go build takes that is not a Go file, or a link", func(t *testing.T) {
-		faults := func(dir string, service *types.ServiceDeclaration) string {
+		// stego build checks the generated folder once, before the fills (compiler.CheckGeneratedTree), with the output
+		// folder that the generation state names.
+		faults := func(dir string, _ *types.ServiceDeclaration) string {
 			t.Helper()
-			found, err := RevisionFaults(dir, []string{"place-order"}, compiler.RevisionFillCheck(dir, "example.com/inventory", service))
-			if err != nil {
-				t.Fatal(err)
+			if err := compiler.CheckGeneratedTree(dir, "out"); err != nil {
+				return err.Error()
 			}
-			return strings.Join(found, "\n")
+			return ""
 		}
 		write := func(t *testing.T, dir, name, text string) {
 			t.Helper()
@@ -172,7 +173,7 @@ func TestRevisionFaultsGeneratedTree(t *testing.T) {
 		dir, service := revisionProject(t, "command.command")
 		write(t, dir, "out/commands/handlers/handlers.go", "package handlers\n")
 		write(t, dir, "out/cmd/server/main.go", "package main\n")
-		if got := faults(dir, service); !strings.Contains(got, "signed against an older contract") || strings.Contains(got, "generated package") {
+		if got := faults(dir, service); got != "" {
 			t.Fatalf("the build refused the Go files of the generated packages: %q", got)
 		}
 
@@ -207,6 +208,29 @@ func TestRevisionFaultsGeneratedTree(t *testing.T) {
 		}
 		if got := faults(dir, service); !strings.Contains(got, "the generated package out/cmd holds server, which is not a regular file") {
 			t.Fatalf("the build did not refuse the linked handler folder: %q", got)
+		}
+
+		// An out folder that is a link is refused (sec-420 INFO-3).
+		dir, _ = revisionProject(t, "command.command")
+		linked := t.TempDir()
+		write(t, linked, "main.go", "package main\n")
+		if err := os.RemoveAll(filepath.Join(dir, "out")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(linked, filepath.Join(dir, "out")); err != nil {
+			t.Fatal(err)
+		}
+		if got := faults(dir, nil); !strings.Contains(got, "the generated folder out is not a folder") {
+			t.Fatalf("the build did not refuse the linked out folder: %q", got)
+		}
+	})
+	t.Run("ST-EXT-UC02-R02-T11 stego build refuses a generation state whose output folder is not out", func(t *testing.T) {
+		dir, _ := revisionProject(t, "command.command")
+		for _, outputDir := range []string{"gen", "out/sub", ""} {
+			err := compiler.CheckGeneratedTree(dir, outputDir)
+			if err == nil || !strings.Contains(err.Error(), "output folder \""+outputDir+"\"") {
+				t.Errorf("the output folder %q gave %v, want a refusal that names it", outputDir, err)
+			}
 		}
 	})
 }
