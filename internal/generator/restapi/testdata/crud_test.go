@@ -3316,6 +3316,42 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC48-T04 No answer holds a member of a secret field, also not of a required one", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		// noSecret fails when the object holds a member of the required secret api_token or the optional secret vault.
+		noSecret := func(what string, object map[string]any) {
+			t.Helper()
+			for _, name := range []string{"api_token", "vault"} {
+				if _, ok := object[name]; ok {
+					t.Errorf("%s holds the member %s of a secret field: %v", what, name, object)
+				}
+			}
+		}
+		created := e.send(a, http.MethodPost, "/api/v1/customers", "k-"+uuid.NewString(), `{"name":"Sam","api_token":"tok-1","plan":"free","vault":{"pin":"4321"}}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		noSecret("the create answer", created.object(t))
+		id := created.member(t, "id")
+		e.own(a, "customer", id)
+		noSecret("the read answer", e.send(a, http.MethodGet, "/api/v1/customers/"+id, "", "").object(t))
+		updated := e.send(a, http.MethodPut, "/api/v1/customers/"+id, "", `{"name":"Sam","plan":"pro"}`)
+		if updated.status != http.StatusOK {
+			t.Fatalf("the update answered %d %s, want 200", updated.status, updated.body)
+		}
+		noSecret("the update answer", updated.object(t))
+		list := e.send(a, http.MethodGet, "/api/v1/customers", "", "")
+		items, _ := list.object(t)["items"].([]any)
+		if len(items) == 0 {
+			t.Fatalf("the list answered %d %s, want the customer", list.status, list.body)
+		}
+		for _, item := range items {
+			object, _ := item.(map[string]any)
+			noSecret("a list item", object)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC45-T03 An upsert by a caller who may not write under the parent gets the same 404 whether a row of the key exists or not", func(t *testing.T) {
 		e := service(t)
 		tn := newTenant()
