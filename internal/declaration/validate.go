@@ -996,6 +996,17 @@ func validateCollectionReferences(collections []types.Collection, entities []typ
 						Message:  fmt.Sprintf("collection %q: upsert_key field %q is computed — computed fields cannot be used as upsert keys", c.Name, keyField),
 					})
 				}
+				// An optional key field binds NULL, which equals no row, and the
+				// unique key admits two rows with NULL there (ST-DECL-INV99).
+				if f, ok := entityFieldMap[keyField]; ok && f.Optional {
+					errs = append(errs, ValidationError{
+						Category: "collection",
+						Rule:     "upsert-key",
+						Path:     fmt.Sprintf("%s.upsert_key[%d]", collectionPath(c.Name), ki),
+						Found:    keyField,
+						Message:  fmt.Sprintf("collection %q: upsert_key field %q is optional — each upsert key field must be required, because an empty field matches no row and each such upsert would insert a new row", c.Name, keyField),
+					})
+				}
 			}
 		}
 

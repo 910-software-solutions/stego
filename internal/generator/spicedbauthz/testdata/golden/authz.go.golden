@@ -26,6 +26,12 @@ import (
 // job writes it to the provider with WriteSchema (ST-SUP-RC29-OC23); generation never does (ST-SUP-RC29-OC13).
 const Schema = `definition user {}
 
+// The operators who resolve a parked outbox message (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
 definition service_account {}
 
 definition document {
@@ -56,7 +62,7 @@ definition stego_floor {
 
 // Definitions are the definitions of Schema. After the migration job writes Schema, it waits until SpiceDB
 // serves each of them, so the release does not start while a read of a new resource type fails (ST-SUP-Q140).
-var Definitions = []string{"document", "project", "service", "service_account", "stego_floor", "user"}
+var Definitions = []string{"document", "outbox_destination", "project", "service", "service_account", "stego_floor", "user"}
 
 // Relations are the relations of Schema but that of the floor marker: the allow list of the relay, which refuses
 // a delivered tuple of any other relation (ST-SUP-RP06-LC06).
