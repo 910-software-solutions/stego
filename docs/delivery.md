@@ -362,11 +362,21 @@ credential and the key of SpiceDB. With the shipped registry, these are:
 | `STEGO_HTTP_TLS_CERT`, `STEGO_HTTP_TLS_KEY` | the same | `<service>-tls`, `tls-crt` and `tls-key` (browser-backend) |
 | `STEGO_BROWSER_CLIENT_SECRET_FILE`, `STEGO_BROWSER_SESSION_KEY_FILE` | the same | `<service>-browser`, `client-secret` and `session-keys` |
 | `STEGO_GRPC_TLS_CERT`, `STEGO_GRPC_TLS_KEY` | the same | `<service>-grpc-tls`, `tls-crt` and `tls-key` |
+| `STEGO_KAFKA_PASSWORD_FILE`, `STEGO_KAFKA_CA_FILE` (the worker Deployment only) | the same | `<service>-kafka-client`, `password` and `ca-crt` (kafka-producer, kafka-consumer) |
 
 The Component writes a row only when the service has that variable and states that secret need. It does not
-switch a credential file that has no secret source, such as `STEGO_KAFKA_PASSWORD_FILE`,
-`STEGO_AUDIT_SINK_TOKEN_FILE` or `STEGO_OTEL_TOKEN_FILE`: the base wires its path from the ConfigMap, and the
-overlay mounts the file.
+switch a credential file that has no secret source, such as `STEGO_KAFKA_TOKEN_FILE`,
+`STEGO_KAFKA_CLIENT_CERT_FILE`, `STEGO_AUDIT_SINK_TOKEN_FILE` or `STEGO_OTEL_TOKEN_FILE`: the base wires its path
+from the ConfigMap, and the overlay mounts the file.
+
+A service with `kafka-producer` or `kafka-consumer` states the secret need `<service>-kafka-client` with the keys
+`password`, the SCRAM-SHA-512 password of the service's Kafka user, and `ca-crt`, the PEM certificate authorities of
+the brokers. Only the worker mode reads them, so only the worker Deployment references the Secret, and the API pod
+holds no Kafka credential. `stego env check` refuses an environment file that does not supply this Secret. Set
+`STEGO_KAFKA_SASL_MECHANISM=SCRAM-SHA-512` and `STEGO_KAFKA_USERNAME` in the ConfigMap. A cluster that uses mutual
+TLS or OAUTHBEARER in place of SCRAM must not set a password file, because the worker does not start with a password
+file and no SCRAM mechanism: in the overlay, remove the entry `STEGO_KAFKA_PASSWORD_FILE` and the key `password` from
+the worker patch of the Component, and mount the client certificate or the token file.
 
 With the Component, a missing Secret or a missing key stops the pod before the container starts. The kubelet cannot
 mount the volume, so the pod stays in `ContainerCreating` (not `CreateContainerConfigError`), and the kubelet writes

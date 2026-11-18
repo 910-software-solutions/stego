@@ -4,9 +4,12 @@
 # checks each record, and writes each record that it takes into the outbox for the worker that consumes the
 # subscription, with an ID that a redelivery gives again (ST-SUP-RP01-LC35 to ST-SUP-RP01-LC38). The connection
 # settings are the STEGO_KAFKA_ settings of the Kafka destination.
+# Version 0.3.0 gives the SCRAM password file and the certificate authority file a secret source: the secret need
+# {service}-kafka-client with the keys ca-crt and password, which the worker Deployment mounts through the
+# Component secret-files (walkthrough 10, N1; ST-DLV-Q19).
 kind: component
 name: kafka-consumer
-version: 0.2.0
+version: 0.3.0
 stage: alpha
 sunset: 2027-05-31
 output_namespace: internal/subscriptions
@@ -64,6 +67,7 @@ environment:
     required: false
     description: "A PEM file of certificate authorities that the worker adds to the system roots. When it has no value, the worker uses the system roots."
     secret: false
+    secret_source: {name: "{service}-kafka-client", key: ca-crt}
     example: "/etc/stego/kafka/ca.crt"
   - name: STEGO_KAFKA_CLIENT_CERT_FILE
     read_by_mode: worker
@@ -107,6 +111,7 @@ environment:
     required: false
     description: "The file of the SCRAM password. The mechanism SCRAM-SHA-512 needs it."
     secret: false
+    secret_source: {name: "{service}-kafka-client", key: password}
     example: "/etc/stego/kafka/password"
   - name: STEGO_KAFKA_TOKEN_FILE
     read_by_mode: worker
@@ -166,3 +171,6 @@ environment:
 needs:
   - {kind: topic, name: "{service}-subscription", variable: STEGO_KAFKA_CONSUMER_TOPIC, access: read}
   - {kind: egress, name: "{service}-kafka", port: 9093}
+  # The SCRAM password of the service's Kafka user and the certificate authorities of the brokers, which only the
+  # worker mode reads (walkthrough 10, N1; ST-DLV-Q19).
+  - {kind: secret, name: "{service}-kafka-client", keys: [ca-crt, password]}
