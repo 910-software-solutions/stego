@@ -69,7 +69,7 @@ func newParked(svc *Service) (*parked, error) {
 		version: svc.version, declaration: svc.parts.DeclarationVersion}
 	hooks := map[string]outbox.StateHook{authz.DestinationName: svc.authz.StateHook(svc.telemetry.LoggerProvider())}
 	declared := append([]outbox.Rules{authz.Rules()}, svc.parts.Destinations...)
-	resolver, err := outbox.NewResolver(svc.queue, svc.authz, auditor, declared, hooks)
+	resolver, err := outbox.NewDeclaredResolver(svc.queue, svc.authz, auditor, declared, hooks)
 	if err != nil {
 		return nil, err
 	}

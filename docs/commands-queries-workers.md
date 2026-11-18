@@ -946,8 +946,8 @@ SQLSTATE class in each 10 seconds, with the number of lines that it held back.
 
 ### Release notes for runtime v0.132.0
 
-- `outbox.NewResolver` takes the declared rules of each destination
-  (`outbox.Rules`). A resolution takes the stricter of the row and the
+- New function `outbox.NewDeclaredResolver` takes the declared rules of each
+  destination (`outbox.Rules`); `outbox.NewResolver` is deprecated. A resolution takes the stricter of the row and the
   declared rules, and a message of a destination that the release does not
   declare answers 409. `service.Parts` has the new field `Destinations`, which
   generated code sets. New functions `authz.Rules`, `auditoutbox.Rules` and

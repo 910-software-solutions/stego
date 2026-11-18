@@ -36,11 +36,23 @@ type Rules struct {
 	Idempotent bool
 }
 
-// NewResolver returns the resolver on queue with the decision port decider, the auditor auditor, the declared rules
-// of each destination of the release and the state hook of each destination that has one, by name. It refuses a
-// missing part, a rule whose name is not a label or is declared twice, and a hook of a destination that the rules do
-// not declare.
-func NewResolver(queue *Queue, decider Decider, auditor Auditor, declared []Rules, hooks map[string]StateHook) (*Resolver, error) {
+// NewResolver returns the resolver on queue with the decision port decider, the auditor auditor and the state hook of
+// each destination that has one, by name, which resolves by the rules of the row alone, as before v0.132.0.
+//
+// Deprecated: use NewDeclaredResolver, which also applies the declared rules and refuses an undeclared destination.
+func NewResolver(queue *Queue, decider Decider, auditor Auditor, hooks map[string]StateHook) (*Resolver, error) {
+	return newResolver(queue, decider, auditor, nil, hooks, false)
+}
+
+// NewDeclaredResolver returns the resolver on queue with the decision port decider, the auditor auditor, the declared
+// rules of each destination of the release and the state hook of each destination that has one, by name. It refuses
+// a missing part, a rule whose name is not a label or is declared twice, and a hook of a destination that the rules
+// do not declare.
+func NewDeclaredResolver(queue *Queue, decider Decider, auditor Auditor, declared []Rules, hooks map[string]StateHook) (*Resolver, error) {
+	return newResolver(queue, decider, auditor, declared, hooks, true)
+}
+
+func newResolver(queue *Queue, decider Decider, auditor Auditor, declared []Rules, hooks map[string]StateHook, checked bool) (*Resolver, error) {
 	switch {
 	case queue == nil || queue.db == nil:
 		return nil, errors.New("outbox: the resolver needs a queue")
@@ -64,10 +76,13 @@ func NewResolver(queue *Queue, decider Decider, auditor Auditor, declared []Rule
 		if !labelPattern.MatchString(name) || hook == nil {
 			return nil, errors.New("outbox: a state hook of the resolver needs a label name and a function")
 		}
-		if _, ok := rules[name]; !ok {
+		if _, ok := rules[name]; checked && !ok {
 			return nil, fmt.Errorf("outbox: the resolver gets a state hook of %s, which the rules do not declare", name)
 		}
 		own[name] = hook
+	}
+	if !checked {
+		rules = nil
 	}
 	return &Resolver{queue: queue, decider: decider, auditor: auditor, declared: rules, hooks: own}, nil
 }
@@ -85,6 +100,10 @@ func stricter(destination string, row resolveRow, declared Rules, ok bool) (reso
 func (r *Resolver) Resolve(ctx context.Context, tx *sql.Tx, request ResolveRequest) error {
 	rules := func(destination string, row resolveRow) (resolveRules, error) {
 		declared, ok := r.declared[destination]
+		if r.declared == nil {
+			// A resolver of NewResolver: the rules of the row alone.
+			declared, ok = Rules{Name: destination, MustLand: row.mustLand, Idempotent: row.idempotent}, true
+		}
 		rules, err := stricter(destination, row, declared, ok)
 		rules.hook = r.hooks[destination]
 		return rules, err
