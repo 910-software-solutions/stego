@@ -399,6 +399,21 @@ type FillReader func(path string) (collection string, err error)
 // component.slot. The compiler owns this port and Extending's fill package implements it (ST-STD-CODE-R03).
 type FillSlotReader func(path string) (slot string, err error)
 
+// checkBuiltFolder refuses, before plan, apply and deps, a folder out that holds a file that go build would put in
+// the binary and that the generated Go files do not show, such as a .s or a .syso file, or a link: stego build
+// refuses it (checkGeneratedTree), so the runs before it refuse it too, and the author learns of it at the first one
+// (walkthrough 8 and 9, rank 3). A project with no out folder, as a fresh clone, has nothing to refuse; a linked out
+// is refused where the plan reads the project.
+func checkBuiltFolder(projectDir string) error {
+	if info, err := os.Lstat(filepath.Join(projectDir, "out")); err != nil || !info.IsDir() {
+		return nil
+	}
+	if err := checkGeneratedTree(projectDir); err != nil {
+		return fmt.Errorf("%w; remove it, as plan, apply and deps refuse it too", err)
+	}
+	return nil
+}
+
 // ValidationFailure is the error of Reconcile when validation refuses the declaration: it holds the faults, so that
 // the check of the fills, which makes a plan for the contract of the fills, gives each fault once at the top level.
 type ValidationFailure struct {
@@ -418,6 +433,11 @@ func Reconcile(input ReconcilerInput) (*Plan, error) {
 	}
 	if err := checkPendingProject(input.ProjectDir); err != nil {
 		return nil, err
+	}
+	if !input.CheckOnly {
+		if err := checkBuiltFolder(input.ProjectDir); err != nil {
+			return nil, err
+		}
 	}
 	source, err := loadCompilationSource(input)
 	if err != nil {
