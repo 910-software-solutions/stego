@@ -64,6 +64,10 @@ Deployments:
 | `<service>` | `deploy/base/deployment.yaml` | `--mode=api` | `/readyz` | The Service selects it. |
 | `<service>-worker` | `deploy/base/worker-deployment.yaml` | `--mode=worker`, `--mode=controller` | `/readyz/modes` | No Service selects it, and it has no container port. |
 
+- Each Deployment runs as a ServiceAccount of its own name: `<service>` in `deploy/base/service-account.yaml`, and
+  `<service>-worker` in `deploy/base/worker-service-account.yaml`. Thus a token or an audit line of a worker pod
+  does not name the identity of the API, and a platform can grant each one apart. A cluster permission states no
+  mode, so the RoleBinding of the base binds both ServiceAccounts.
 - The liveness probe of each one is `/livez`. It answers 200 while the process runs, and it reads no database
   and no broker, so an outage of a dependency does not restart a pod.
 - `/readyz` tells whether the pod can take requests of the API. It does not read the worker and controller
