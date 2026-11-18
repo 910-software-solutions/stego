@@ -354,7 +354,45 @@ func CheckAuthorization(service *types.ServiceDeclaration, project fs.FS) []Vali
 	faults = append(faults, validateWrittenRelations(service, schema)...)
 	faults = append(faults, validateSystemPrincipal(service, schema)...)
 	faults = append(faults, checkProvisioningSchema(service, schema)...)
+	faults = append(faults, checkOutboxDestination(service, schema)...)
 	return faults
+}
+
+// OutboxDestinationType and OutboxResolvePermission are the resource type and the permission on which the outbox
+// decides the resolve of a parked message: resolve on outbox_destination:<destination> (ST-SUP-RC29-OC20).
+const (
+	OutboxDestinationType   = "outbox_destination"
+	OutboxResolvePermission = "resolve"
+)
+
+// checkOutboxDestination checks that a service that binds durable-events, or its alias event-publisher, has a schema
+// that declares the resource type outbox_destination with the permission resolve (ST-SUP-RC29-OC20). Without it the
+// parked-message routes decide on a type the provider does not know, and answer 500. A resolve that reaches a
+// wildcard subject is refused too: anyone could then send a parked message again or discard it, also a revocation
+// of the destination authz.
+func checkOutboxDestination(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
+	at := slices.IndexFunc(service.Mixins, func(mixin string) bool { return mixin == mixinDurableEvents || mixin == mixinEventPublisher })
+	if at < 0 {
+		return nil
+	}
+	fault := ValidationError{Category: "authorization", Rule: "outbox-resolve", Path: "authorization.schema_path", Found: schema.Path}
+	mixin := service.Mixins[at]
+	switch {
+	case !schema.Defines(OutboxDestinationType):
+		fault.Allowed = []string{OutboxDestinationType}
+		fault.Message = fmt.Sprintf("the declaration binds the mixin %s, but the schema %s does not define the resource type %s; the outbox decides the resolve of a parked message on the permission %s of %s:<destination>, so define %s with the permission %s",
+			mixin, schema.Path, OutboxDestinationType, OutboxResolvePermission, OutboxDestinationType, OutboxDestinationType, OutboxResolvePermission)
+	case !schema.declaresPermission(OutboxDestinationType, OutboxResolvePermission):
+		fault.Allowed = []string{OutboxResolvePermission}
+		fault.Message = fmt.Sprintf("the declaration binds the mixin %s, but the resource type %s of the schema %s has no permission %s; the outbox decides the resolve of a parked message on it, so add the permission %s",
+			mixin, OutboxDestinationType, schema.Path, OutboxResolvePermission, OutboxResolvePermission)
+	case schema.reachesWildcard(OutboxDestinationType, OutboxResolvePermission):
+		fault.Message = fmt.Sprintf("the permission %s of the resource type %s reaches a wildcard subject of the schema %s, so anyone could resolve a parked message; give it to the operators only",
+			OutboxResolvePermission, OutboxDestinationType, schema.Path)
+	default:
+		return nil
+	}
+	return []ValidationError{fault}
 }
 
 // readAuthzSchema reads and compiles the schema at the path in the project folder. It gives no schema and no fault

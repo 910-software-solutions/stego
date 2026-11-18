@@ -327,3 +327,32 @@ func withoutAuthorizationParts(t *testing.T, service string) string {
 	}
 	return strings.Join(kept, "\n")
 }
+
+func TestOutboxDestination(t *testing.T) {
+	const t01 = "ST-SUP-RC29-OC20-T01 A schema without the outbox resolve permission is refused"
+	service, schema := td03Files(t)
+	durable := service + "mixins:\n  - durable-events\n"
+	const destination = "\ndefinition outbox_destination {\n\trelation operator: user\n\tpermission resolve = operator\n}\n"
+	t.Run(t01+": durable-events with outbox_destination and resolve is accepted", func(t *testing.T) {
+		expectAccepted(t, checkTD03(t, durable, schema+destination))
+	})
+	t.Run(t01+": no durable-events needs no outbox_destination", func(t *testing.T) {
+		expectAccepted(t, checkTD03(t, service, schema))
+	})
+	for _, c := range []struct {
+		name, service, schema string
+		texts                 []string
+	}{
+		{"no outbox_destination type", durable, schema, []string{"outbox_destination", "resolve", "durable-events", "authz/schema.zed"}},
+		{"the alias event-publisher and no outbox_destination type", service + "mixins:\n  - event-publisher\n", schema, []string{"outbox_destination", "resolve", "event-publisher"}},
+		{"an outbox_destination with no resolve permission", durable, schema + "\ndefinition outbox_destination {\n\trelation operator: user\n\tpermission view = operator\n}\n", []string{"outbox_destination", "resolve", "no permission"}},
+		{"a resolve that reaches user:*", durable, schema + "\ndefinition outbox_destination {\n\trelation anyone: user:*\n\tpermission resolve = anyone\n}\n", []string{"outbox_destination", "resolve", "wildcard"}},
+	} {
+		t.Run(t01+": "+c.name, func(t *testing.T) {
+			fault := expectOneFault(t, checkTD03(t, c.service, c.schema), "outbox-resolve", c.texts...)
+			if fault.Path != "authorization.schema_path" {
+				t.Errorf("want the fault at authorization.schema_path, got %+v", fault)
+			}
+		})
+	}
+}
