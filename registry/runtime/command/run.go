@@ -219,6 +219,13 @@ func New(ctx context.Context, cfg Config) (*Runtime, error) {
 	if cfg.AuditSettings.Level == "" {
 		cfg.AuditSettings.Level = audit.LevelChange
 	}
+	// An entity with a readable secret needs the key ring; the check comes before any entity registers, so a refused
+	// runtime registers none (ST-SUP-RP10-LC44).
+	for _, e := range cfg.Entities {
+		if s, ok := e.(interface{ sealedEntity() bool }); ok && s.sealedEntity() && cfg.Ring == nil {
+			return nil, fmt.Errorf("command: the entity %s has a readable secret field, and the runtime has no key ring", e.entityName())
+		}
+	}
 	rt := &Runtime{cfg: cfg, slots: &slotSeal{entities: map[Declared]bool{}}}
 	step, err := manifest.SchemaStepValue(cfg.SchemaSteps)
 	if err != nil {

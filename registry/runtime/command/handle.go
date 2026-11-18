@@ -563,15 +563,15 @@ func (e *Entity[T]) register(rt *Runtime) error {
 	if e.owner != nil && e.owner != rt {
 		return fmt.Errorf("command: the entity %s is registered with another runtime", e.spec.Name)
 	}
-	if e.spec.Sealed && rt.cfg.Ring == nil {
-		return fmt.Errorf("command: the entity %s has a readable secret field, and the runtime has no key ring", e.spec.Name)
-	}
 	e.owner = rt
 	return nil
 }
 
 // Name is the entity's name.
 func (e *Entity[T]) Name() string { return e.spec.Name }
+
+// sealedEntity tells whether the entity has a readable secret field, which needs the key ring.
+func (e *Entity[T]) sealedEntity() bool { return e.spec.Sealed }
 
 // NewEntity checks the declaration of one entity and makes its repository declaration. It refuses a missing name,
 // statement or function, a statement that does not take the tenant as $1, a locked read without its lock clause,
