@@ -594,3 +594,58 @@ func TestResolveRegistryCapturedConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveRegistryOverrideOfConfiguredFolder(t *testing.T) {
+	t.Run("ST-SUP-UC02-R05-T05 An override that names the one configured registry folder gives no warning, and any other override is warned of", func(t *testing.T) {
+		project := t.TempDir()
+		configured := filepath.Join(project, "registry")
+		other := filepath.Join(project, "other-registry")
+		for _, dir := range []string{configured, other, filepath.Join(project, ".stego")} {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		link := filepath.Join(project, "registry-link")
+		if err := os.Symlink(configured, link); err != nil {
+			t.Fatal(err)
+		}
+		resolve := func(config, override string) string {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(project, ".stego", "config.yaml"), []byte(config), 0644); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("STEGO_REGISTRY", override)
+			var stderr bytes.Buffer
+			result, err := registry.ResolveRegistry(registry.ResolveOptions{ProjectDir: project, Stderr: &stderr})
+			if err != nil {
+				t.Fatalf("ResolveRegistry() error: %v", err)
+			}
+			if result.Dir != override || !result.EnvOverride {
+				t.Fatalf("the override %s resolved to %s (override %v)", override, result.Dir, result.EnvOverride)
+			}
+			return stderr.String()
+		}
+		one := "registry:\n  - url: " + configured + "\n    ref: local\n"
+		relative := "registry:\n  - url: registry\n    ref: local\n"
+		for name, c := range map[string]struct{ config, override string }{
+			"the configured folder":              {one, configured},
+			"the configured folder, relative":    {relative, configured},
+			"a link to the configured folder":    {one, link},
+			"the configured folder with a slash": {one, configured + "/"},
+		} {
+			if warning := resolve(c.config, c.override); warning != "" {
+				t.Errorf("%s: an override that replaces nothing was warned of: %q", name, warning)
+			}
+		}
+		for name, c := range map[string]struct{ config, override string }{
+			"another folder":     {one, other},
+			"a second source":    {one + "  - url: " + other + "\n    ref: local\n", configured},
+			"a subfolder":        {"registry:\n  - url: " + project + "\n    ref: local\n    path: registry\n", configured},
+			"a config with none": {"registry: []\n", configured},
+		} {
+			if warning := resolve(c.config, c.override); !strings.Contains(warning, "configured registry sources are not used") {
+				t.Errorf("%s: the override was not warned of: %q", name, warning)
+			}
+		}
+	})
+}

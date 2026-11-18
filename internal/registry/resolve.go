@@ -59,7 +59,12 @@ func ResolveRegistry(opts ResolveOptions) (*ResolveResult, error) {
 
 	// 1. Check STEGO_REGISTRY env var override.
 	if envReg := os.Getenv("STEGO_REGISTRY"); envReg != "" {
-		fmt.Fprintf(stderr, "WARNING: using STEGO_REGISTRY override: %s (config.yaml registry settings ignored: the configured registry sources are not used)\n", envReg)
+		// An override that names the one plain folder that config.yaml configures replaces nothing, so it gives no
+		// warning: stego init writes the folder of STEGO_REGISTRY there, and the README keeps the variable set
+		// (ST-SUP-UC02-R05, walkthrough 6 U5).
+		if !namesConfiguredFolder(opts, envReg) {
+			fmt.Fprintf(stderr, "WARNING: using STEGO_REGISTRY override: %s (config.yaml registry settings ignored: the configured registry sources are not used)\n", envReg)
+		}
 		return &ResolveResult{
 			Dir:         envReg,
 			Dirs:        []string{envReg},
@@ -135,6 +140,37 @@ func ResolveRegistry(opts ResolveOptions) (*ResolveResult, error) {
 		result.Ref = fmt.Sprintf("%x", sha256.Sum256(encoded))
 	}
 	return result, nil
+}
+
+// namesConfiguredFolder reports whether config.yaml of the project configures exactly one registry source, a plain
+// local folder with no subfolder and no vendored copy, and that folder is the folder dir. A config that cannot be
+// read, a source in version control and a second source each give false, so the override is warned of.
+func namesConfiguredFolder(opts ResolveOptions, dir string) bool {
+	var cfg *RegistryConfig
+	var err error
+	configPath := filepath.Join(opts.ProjectDir, ".stego", "config.yaml")
+	if opts.ConfigData == nil {
+		cfg, err = LoadConfig(configPath)
+	} else {
+		cfg, err = ParseConfig(opts.ConfigData, configPath)
+	}
+	if err != nil || cfg == nil || len(cfg.Registry) != 1 {
+		return false
+	}
+	src := cfg.Registry[0]
+	local := src.URL
+	if !filepath.IsAbs(local) {
+		local = filepath.Join(opts.ProjectDir, local)
+	}
+	if src.Path != "" || src.Vendor != "" || !isPlainDirectorySource(src.URL, local) {
+		return false
+	}
+	configured, err := os.Stat(local)
+	if err != nil {
+		return false
+	}
+	override, err := os.Stat(dir)
+	return err == nil && os.SameFile(configured, override)
 }
 
 // sourceName names a source by its location, its subfolder and its pin, so
