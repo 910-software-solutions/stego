@@ -9,12 +9,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -443,28 +445,47 @@ func remoteIP(addr string) string {
 // listParameters are the query parameters that a list reads, by their exact names (ST-SUP-RC20-OC51).
 var listParameters = map[string]bool{"pageSize": true, "cursor": true, "orderBy": true, "fields": true, "search": true}
 
+// listQuery parses the query string of a list once, and gives its values and the detail of a 400, or "" when the list
+// reads each parameter (ST-SUP-RC20-OC51). A query string that does not parse, such as one with a ';', a bad escape or
+// more parameters than the url package takes, is refused: r.URL.Query() would drop the bad part or give no values,
+// and the list would then read a page that the request did not ask for.
+func listQuery(r *http.Request) (url.Values, string) {
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return nil, "the query string is not valid"
+	}
+	return values, unreadParameters(values)
+}
+
 // unreadParameters gives the detail of the 400 of a list request whose query string holds a parameter that the list
 // does not read, or "" when the list reads each one (ST-SUP-RC20-OC51). It names each such parameter once, in byte
-// order, at most 10 of them, each cut to its first 64 bytes, and quotes no value. For limit it says that pageSize sets
-// the page size.
+// order, at most 10 of them, each cut to at most its first 64 bytes on a character boundary, and quotes no value.
+// Two names that are the same after the cut are named once. For limit it says that pageSize sets the page size.
 func unreadParameters(parameters map[string][]string) string {
 	var names []string
+	limit := false
 	for name := range parameters {
-		if !listParameters[name] {
-			names = append(names, name)
+		if listParameters[name] {
+			continue
 		}
+		limit = limit || name == "limit"
+		if len(name) > 64 {
+			cut := 64
+			for cut > 0 && !utf8.RuneStart(name[cut]) {
+				cut--
+			}
+			name = name[:cut]
+		}
+		names = append(names, name)
 	}
 	if len(names) == 0 {
 		return ""
 	}
 	slices.Sort(names)
-	limit := slices.Contains(names, "limit")
+	names = slices.Compact(names)
 	more := max(len(names)-10, 0)
 	names = names[:len(names)-more]
 	for i, name := range names {
-		if len(name) > 64 {
-			name = name[:64]
-		}
 		names[i] = strconv.Quote(name)
 	}
 	detail := "the list does not read the query parameter " + strings.Join(names, ", ")

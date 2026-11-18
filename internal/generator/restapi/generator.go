@@ -668,7 +668,8 @@ func generateErrors(ns string, serviceName string, errorTypeBase string) (gen.Fi
 
 	// handleError function.
 	fmt.Fprintf(&buf, "// handleError serializes a ServiceError as an RFC 9457 Problem Details\n")
-	fmt.Fprintf(&buf, "// JSON response with Content-Type application/problem+json.\n")
+	fmt.Fprintf(&buf, "// JSON response with Content-Type application/problem+json, and with X-Content-Type-Options nosniff, so a\n")
+	fmt.Fprintf(&buf, "// client does not read the answer as another type.\n")
 	fmt.Fprintf(&buf, "func handleError(w http.ResponseWriter, r *http.Request, svcErr *ServiceError) {\n")
 	fmt.Fprintf(&buf, "\tsvcErr.Instance = r.URL.Path\n")
 	fmt.Fprintf(&buf, "\tsvcErr.Timestamp = time.Now().UTC().Format(time.RFC3339)\n")
@@ -679,6 +680,7 @@ func generateErrors(ns string, serviceName string, errorTypeBase string) (gen.Fi
 	fmt.Fprintf(&buf, "\t\t}\n")
 	fmt.Fprintf(&buf, "\t}\n")
 	fmt.Fprintf(&buf, "\tw.Header().Set(\"Content-Type\", \"application/problem+json\")\n")
+	fmt.Fprintf(&buf, "\tw.Header().Set(\"X-Content-Type-Options\", \"nosniff\")\n")
 	fmt.Fprintf(&buf, "\tw.WriteHeader(svcErr.Status)\n")
 	fmt.Fprintf(&buf, "\tjson.NewEncoder(w).Encode(svcErr)\n")
 	fmt.Fprintf(&buf, "}\n\n")

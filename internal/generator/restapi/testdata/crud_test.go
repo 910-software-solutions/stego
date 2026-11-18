@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -20,9 +21,11 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -3360,6 +3363,39 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 			object, _ := item.(map[string]any)
 			noSecret("a list item", object)
 		}
+		// A replay of the create gives the stored answer, which holds no secret either (security review of PR #442,
+		// I2).
+		key := "k-" + uuid.NewString()
+		body := `{"name":"Kim","api_token":"tok-2","plan":"free","vault":{"pin":"8765"}}`
+		first := e.send(a, http.MethodPost, "/api/v1/customers", key, body)
+		replay := e.send(a, http.MethodPost, "/api/v1/customers", key, body)
+		if first.status != http.StatusCreated || replay.status != http.StatusCreated || replay.header.Get(idempotency.ReplayedHeader) != "true" {
+			t.Fatalf("the create and its replay answered %d and %d (replayed %q), want 201 and the replayed 201", first.status, replay.status, replay.header.Get(idempotency.ReplayedHeader))
+		}
+		noSecret("the replayed create answer", replay.object(t))
+		// An upsert that inserts and a patch answer the ticket with no member of its secret pin or of its
+		// compare-only secret recovery.
+		ticketSecret := func(what string, r reply) {
+			t.Helper()
+			for _, name := range []string{"pin", "recovery"} {
+				if _, ok := r.object(t)[name]; ok {
+					t.Errorf("%s holds the member %s of a secret field: %s", what, name, r.body)
+				}
+			}
+		}
+		folder := e.create(a, "folders", "folder", `{"name":"secrets"}`)
+		upserted := e.send(a, http.MethodPut, "/api/v1/tickets", "", `{"folder_id":"`+folder+`","code":"sec-1","title":"t","sku":"s1","pin":"2468"}`)
+		if upserted.status != http.StatusCreated && upserted.status != http.StatusOK {
+			t.Fatalf("the upsert answered %d %s, want 200 or 201", upserted.status, upserted.body)
+		}
+		ticketSecret("the upsert answer", upserted)
+		ticket := upserted.member(t, "id")
+		e.own(a, "ticket", ticket)
+		patched := e.send(a, http.MethodPatch, "/api/v1/tickets/"+ticket, "k-"+uuid.NewString(), `{"title":"t2"}`)
+		if patched.status != http.StatusOK {
+			t.Fatalf("the patch answered %d %s, want 200", patched.status, patched.body)
+		}
+		ticketSecret("the patch answer", patched)
 	})
 
 	t.Run("ST-SUP-RC20-OC51-T01 A list refuses a query parameter that it does not read, names it, and quotes no value", func(t *testing.T) {
@@ -3398,9 +3434,107 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 				t.Errorf("a list with limit answered the detail %q, want it to name pageSize", got)
 			}
 		}
+		// A query string that does not parse is refused, not read in part: a ';', a bad escape, and more parameters
+		// than the url package takes, which r.URL.Query() gives as no parameter at all (security review of PR #442, L1).
+		var past strings.Builder
+		past.WriteString("pageSize=1")
+		for range 10001 {
+			past.WriteString("&k=1")
+		}
+		for _, query := range []string{"a;pageSize=1", "%zz=1&pageSize=1", past.String()} {
+			r := e.send(a, http.MethodGet, "/api/v1/todos?"+query, "", "")
+			if got := detail(r); r.status != http.StatusBadRequest || got != "the query string is not valid" || r.header.Get("X-Content-Type-Options") != "nosniff" {
+				t.Errorf("a list with the query string %.30s (%d bytes) answered %d %q, want 400 with nosniff that the query string is not valid", query, len(query), r.status, got)
+			}
+		}
 		// The parameters that the list reads are taken.
 		if r := e.send(a, http.MethodGet, "/api/v1/todos?pageSize=1&orderBy=title&fields=title&search=&cursor=", "", ""); r.status != http.StatusOK {
 			t.Errorf("a list with only the parameters that it reads answered %d %s, want 200", r.status, r.body)
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC23-T06 The emitted apply command finds a resource through the list of a generated service", func(t *testing.T) {
+		e := service(t)
+		program := os.Getenv("STEGO_TEST_CLI")
+		if program == "" {
+			t.Fatal("the check needs STEGO_TEST_CLI, the generated CLI program: a missing result is not a pass")
+		}
+		a := e.as("cli-1", newTenant())
+		// The CLI calls only an HTTPS URL, so the service gets a TLS front with the same handler. The test service
+		// requires an Idempotency-Key on a create, and the CLI sends none (its HTTP client refuses the header, because
+		// it does not retry), so the front gives each POST a key of its own. A lookup is a GET, which the front does
+		// not change.
+		var gets atomic.Int32
+		front := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && r.Header.Get("Idempotency-Key") == "" {
+				r.Header.Set("Idempotency-Key", `"cli-`+uuid.NewString()+`"`)
+			}
+			if r.Method == http.MethodGet {
+				gets.Add(1)
+			}
+			e.server.Config.Handler.ServeHTTP(w, r)
+		}))
+		defer front.Close()
+		dir := t.TempDir()
+		// The CLI keeps its configuration only in a folder that no other user can write.
+		must(t, os.Chmod(dir, 0o700))
+		ca, token, config := dir+"/ca.pem", dir+"/token", dir+"/config.json"
+		must(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: front.Certificate().Raw}), 0o600))
+		must(t, os.WriteFile(token, []byte(a.token), 0o600))
+		cli := func(args ...string) (string, error) {
+			t.Helper()
+			cmd := exec.Command(program, args...)
+			cmd.Env = append(os.Environ(), "CRUD_CLI_CONFIG="+config)
+			var stdout, stderr strings.Builder
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			err := cmd.Run()
+			if err != nil {
+				err = fmt.Errorf("%w: %s", err, stderr.String())
+			}
+			return stdout.String(), err
+		}
+		if out, err := cli("login", "--url", front.URL, "--token-file", token, "--ca-file", ca); err != nil {
+			t.Fatalf("the CLI login failed: %v %s", err, out)
+		}
+		apply := func(name string) ([]map[string]string, error) {
+			t.Helper()
+			file := dir + "/" + name + ".yaml"
+			must(t, os.WriteFile(file, []byte("apiVersion: crud/v1\nkind: Folder\nmetadata: {name: label}\nspec: {name: "+name+"}\n"), 0o600))
+			out, err := cli("apply", "-f", file, "-o", "json")
+			var results []map[string]string
+			if out != "" {
+				must(t, json.Unmarshal([]byte(out), &results))
+			}
+			return results, err
+		}
+		folders := func(name string) int {
+			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
+		}
+		// A new name: the lookup lists no folder, so the CLI creates one.
+		results, err := apply("alpha")
+		if err != nil || len(results) != 1 || results[0]["status"] != "created" || results[0]["id"] == "" {
+			t.Fatalf("the first apply of alpha gave %v %v, want the status created with an ID", results, err)
+		}
+		if gets.Load() == 0 {
+			t.Error("the apply of alpha listed no folder before its create")
+		}
+		e.own(a, "folder", results[0]["id"])
+		// The same name again: the lookup lists the folder, so the CLI writes nothing.
+		again, err := apply("alpha")
+		if err != nil || len(again) != 1 || again[0]["status"] != "unchanged" || again[0]["id"] != results[0]["id"] {
+			t.Errorf("the second apply of alpha gave %v %v, want the status unchanged with the ID %s", again, err, results[0]["id"])
+		}
+		if n := folders("alpha"); n != 1 {
+			t.Errorf("%d folders alpha after two applies, want 1", n)
+		}
+		// Two folders of one name: the lookup lists both, so the CLI stops before any write.
+		e.create(a, "folders", "folder", `{"name":"twin"}`)
+		e.create(a, "folders", "folder", `{"name":"twin"}`)
+		if results, err := apply("twin"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Errorf("the apply of an ambiguous name gave %v %v, want the error that the identity is ambiguous", results, err)
+		}
+		if n := folders("twin"); n != 2 {
+			t.Errorf("%d folders twin after the ambiguous apply, want 2", n)
 		}
 	})
 
