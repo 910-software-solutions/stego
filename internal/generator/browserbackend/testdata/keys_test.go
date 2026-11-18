@@ -73,7 +73,8 @@ func TestSessionKeyFault(t *testing.T) {
 			"count": `{"version":1,"keys":[]}`, "duplicate": string(keyRing(t, a, a)),
 		}
 		for class, raw := range cases {
-			_, err := sessionKeys([]byte(raw))
+			keys, err := sessionKeys([]byte(raw))
+			require(t, keys == nil, "the key fault "+class+" returned the keys that it decoded before the fault")
 			var fault interface{ FaultClass() string; FaultObject() string; FaultRemedy() string }
 			require(t, errors.As(err, &fault) && errors.Is(err, errSessionKeys), "the key fault "+class+" has no class")
 			require(t, fault.FaultClass() == class && fault.FaultObject() == "stego_browser_session_key_file", "the key fault "+class+" names "+fault.FaultClass())
