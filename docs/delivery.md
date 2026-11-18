@@ -375,8 +375,15 @@ the brokers. Only the worker mode reads them, so only the worker Deployment refe
 holds no Kafka credential. `stego env check` refuses an environment file that does not supply this Secret. Set
 `STEGO_KAFKA_SASL_MECHANISM=SCRAM-SHA-512` and `STEGO_KAFKA_USERNAME` in the ConfigMap. A cluster that uses mutual
 TLS or OAUTHBEARER in place of SCRAM must not set a password file, because the worker does not start with a password
-file and no SCRAM mechanism: in the overlay, remove the entry `STEGO_KAFKA_PASSWORD_FILE` and the key `password` from
-the worker patch of the Component, and mount the client certificate or the token file.
+file and no SCRAM mechanism. In the overlay, remove the entry `STEGO_KAFKA_PASSWORD_FILE` and the item `password`
+from the worker patch of the Component, and mount the client certificate or the token file. Do not put a
+placeholder password in the Secret to satisfy the check: a stored value that no process should read is a credential
+that can leak, and the worker refuses it at start. `stego env check` still names the key `password` of the secret
+need; accept that one finding for such a cluster.
+
+Use the Component `secret-files` in each production overlay. Without it, each secret is an environment variable of
+the pod, which `kubectl describe`, a crash dump and each child process can read; with it, each secret is a file of
+the mode 0400 that only the process reads.
 
 With the Component, a missing Secret or a missing key stops the pod before the container starts. The kubelet cannot
 mount the volume, so the pod stays in `ContainerCreating` (not `CreateContainerConfigError`), and the kubelet writes
