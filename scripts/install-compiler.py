@@ -20,7 +20,7 @@ spec = importlib.util.spec_from_file_location(
 verification = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(verification)
 CheckError = verification.CheckError
-ASSETS = {verification.BINARY: 64 << 20, "build.json": 1 << 20,
+ASSETS = {verification.BINARY: 128 << 20, "build.json": 1 << 20,
           "SHA256SUMS": 1024, "provenance.jsonl": 4 << 20}
 API = "repos/" + verification.REPOSITORY + "/releases/"
 

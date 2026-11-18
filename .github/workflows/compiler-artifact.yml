@@ -110,7 +110,7 @@ jobs:
           import hashlib, os, re, stat
           from pathlib import Path
           root = Path(os.environ['RUNNER_TEMP']) / 'compiler-artifact'
-          for key, name, limit in [('BINARY_SHA256', 'stego-linux-amd64', 64 << 20), ('RECORD_SHA256', 'build.json', 1 << 20)]:
+          for key, name, limit in [('BINARY_SHA256', 'stego-linux-amd64', 128 << 20), ('RECORD_SHA256', 'build.json', 1 << 20)]:
               expected = os.environ[key]
               if not re.fullmatch('[0-9a-f]{64}', expected):
                   raise SystemExit('The build job did not supply a valid digest')
