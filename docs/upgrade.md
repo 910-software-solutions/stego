@@ -117,7 +117,7 @@ in this order:
 
    ```sql
    -- As a database administrator, connected to any database of the server:
-   ALTER ROLE <service>_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+   ALTER ROLE <service>_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD NULL;
    ALTER ROLE <service>_runtime LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
    CREATE ROLE <service>_migrator LOGIN IN ROLE <service>_owner;
    ALTER DATABASE <service> OWNER TO <service>_owner;
@@ -146,13 +146,17 @@ in this order:
 
 4. Make sure that the layout has no other membership and no other grant. Each
    of these queries must give no row. Run them connected to the database
-   `<service>`. For each row of the first query, run `REVOKE <role> FROM
-   <member>`. For each row of the second query, run `REVOKE ALL ON DATABASE
-   <service> FROM <grantee>`:
+   `<service>`. For each row of the first two queries, run `REVOKE <role> FROM
+   <member>`. For each row of the third query, run `REVOKE ALL ON DATABASE
+   <service> FROM <grantee>`. The second query is important after the move:
+   a login that got the old LOGIN owner, such as a CI or DBA login, can still
+   take the owner role and read or drop the session table:
 
    ```sql
-   -- The memberships of the owner role and the runtime login:
+   -- The roles that the owner role and the runtime login are members of:
    SELECT g.rolname AS role, m.rolname AS member FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles m ON m.oid = a.member WHERE m.rolname IN ('<service>_owner', '<service>_runtime');
+   -- The members of the owner role and the runtime login, other than the migration login:
+   SELECT g.rolname AS role, m.rolname AS member FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles m ON m.oid = a.member WHERE g.rolname IN ('<service>_owner', '<service>_runtime') AND m.rolname <> '<service>_migrator';
    -- The grants on the database to a role that is not the owner role or the runtime login:
    SELECT a.grantee, a.privilege_type FROM pg_catalog.pg_database d CROSS JOIN pg_catalog.aclexplode(d.datacl) a WHERE d.datname = '<service>' AND a.grantee NOT IN (SELECT oid FROM pg_catalog.pg_roles WHERE rolname IN ('<service>_owner', '<service>_runtime'));
    ```
@@ -165,6 +169,11 @@ in this order:
 6. Run the migration Job of the new release. It exits 0 when the layout is
    correct. The Job runs at each release, and a second run changes nothing.
 7. Deploy the new release.
+
+`PASSWORD NULL` removes the old password of the owner role, so a later
+`ALTER ROLE ... LOGIN` cannot bring it back. The migration Job also refuses
+an owner role with a member other than the migration login, and a runtime
+login with a member, with the fault `owner` or `login`.
 
 When the Job still stops, its failure record names the fault class. See the
 list of what the check needs in the README of the component
@@ -228,8 +237,9 @@ that the worker needs:
   there;
 - the Vault Kubernetes auth role, whose `bound_service_account_names` must
   name `<service>-worker`;
-- on OpenShift, each SCC that you gave to `<service>` with `oc adm policy
-  add-scc-to-user`;
+- on OpenShift, an SCC that you gave to `<service>` with `oc adm policy
+  add-scc-to-user`. Give the worker only the SCCs that it needs. Do not copy a
+  broad SCC that only the API needs;
 - each RoleBinding or ClusterRoleBinding that your platform made for
   `<service>`.
 
@@ -299,20 +309,24 @@ Do these steps:
    the last pod of the release before stopped. Then the controller of the new
    release holds the lease, and it wrote the tuples.
 5. In each tenant, list the parked messages of the destination of the
-   subscription. The destination has the name of the subscription:
+   subscription. The destination has the name of the subscription. Do not put
+   the token on the command line, where `ps` and the shell history show it.
+   Write the header into a file that only you can read (curl 7.55 or later):
 
    ```sh
-   curl -sS -H "Authorization: Bearer $TOKEN" "https://<host><base path>/stego/outbox/<subscription>/parked"
+   (umask 077; printf 'Authorization: Bearer %s\n' "$(cat <file of the token>)" > auth-header)
+   curl -sS -H @auth-header "https://<host><base path>/stego/outbox/<subscription>/parked"
    ```
 
-6. Send each parked message again:
+6. Send each parked message again, then remove the header file:
 
    ```sh
-   curl -sS -H "Authorization: Bearer $TOKEN" "https://<host><base path>/stego/outbox/<subscription>/parked" |
+   curl -sS -H @auth-header "https://<host><base path>/stego/outbox/<subscription>/parked" |
      jq -r '.items[].id' | while read -r id; do
-       curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+       curl -sS -X POST -H @auth-header -H 'Content-Type: application/json' \
          -d '{"resolution": "not_acted"}' "https://<host><base path>/stego/outbox/<subscription>/parked/$id:resolve"
      done
+   shred -u auth-header
    ```
 
    Do this again while the list has a `next` cursor. The caller needs the

@@ -24,7 +24,7 @@ migration Job is `<service>-migrate-<release>`.
 | `<service>-database-relay` | `url` | the connection string of the relay login | `<service>-worker` |
 | `<service>-database-owner` | `url` | the connection string of the migration login | the migration Job |
 | `<service>-kafka-client` | `password`, `ca-crt` | the SCRAM password of the Kafka user, and the CA of the brokers | `<service>-worker` |
-| `<service>-query-cursor` | `key` | the key of the list cursors | `<service>`, `<service>-worker` |
+| `<service>-query-cursor` | `key` | the key of the list cursors | `<service>` (the api mode only) |
 | `<service>-spicedb` | `preshared-key` | the key of SpiceDB | `<service>`, `<service>-worker`, the migration Job |
 
 A browser service has one Deployment, `<service>`, which reads the key `url`
@@ -95,12 +95,18 @@ only workload that holds the Kafka credential.
 The method of two users, with no window:
 
 1. Make a second user for the service, such as `orders-b` for `orders`, with
-   a new password:
+   a new password. Do not put the password on the command line, where `ps` and
+   the shell history show it. Write the setting into a file that only you can
+   read, give the file to `kafka-configs.sh`, and then remove the file:
 
    ```sh
+   (umask 077; printf 'SCRAM-SHA-512=[password=%s]\n' "$(cat <file of the new password>)" > scram.properties)
    kafka-configs.sh --bootstrap-server <broker> --command-config <admin properties> --alter \
-     --add-config 'SCRAM-SHA-512=[password=<new password>]' --entity-type users --entity-name orders-b
+     --add-config-file scram.properties --entity-type users --entity-name orders-b
+   shred -u scram.properties
    ```
+
+   With Strimzi, change the `KafkaUser` resource in place of this command.
 
 2. Give the second user the same ACLs as the first. List them with
    `kafka-acls.sh --list --principal User:orders`, and add each one for
@@ -132,10 +138,33 @@ the second user, and both users are valid. Only after the last old pod stopped
 does step 5 remove the first user.
 
 The method "change, then roll" with one user: set the new password with
-`kafka-configs.sh --alter --add-config`, write it into the Secret, and restart
+`kafka-configs.sh --alter --add-config-file`, as in step 1, write it into the Secret, and restart
 the worker Deployment at once. The running worker keeps its session. A worker
 pod that starts with the old password cannot send or read events until it has
 the new value.
+
+## When a credential leaked
+
+A rotation does not close the sessions that are open. PostgreSQL keeps each
+connection that authenticated with the old password, and Kafka keeps each
+session of the old password or the removed user. A person who has the leaked
+credential and an open connection keeps it after the rotation, with no end
+time. Thus, when a credential leaked, do these steps after the rotation:
+
+1. When the rollout is complete, close each connection of the login that
+   started before the rollout. As a database administrator:
+
+   ```sql
+   SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity WHERE usename = '<login>' AND backend_start < '<time of the end of the rollout>';
+   ```
+
+   The service opens new connections with the new password. To stop each use
+   of the login at once, run `ALTER ROLE <login> NOLOGIN` first, and `ALTER ROLE
+   <login> LOGIN` after the rotation.
+2. For Kafka, make sure that each broker sets `connections.max.reauth.ms`, such
+   as 3600000. Then a session must authenticate again within that time, and a
+   session of a removed credential ends. If the brokers do not set it, do a
+   rolling restart of the brokers after the rotation.
 
 ## Rotate the OIDC signing key
 
@@ -177,13 +206,23 @@ Why this order:
   Step 4 makes sure that no valid token is of the old key.
 
 A pod accepts a token of a removed key until its copy is 5 minutes old and a
-request loads the key set again. Thus a removal is not a revocation. When the
-old key leaked, remove it from the key set, and then restart the Deployments,
-so that each pod loads the key set at start:
+request loads the key set again, and up to 15 minutes when the loads fail.
+Thus a removal is not a revocation. When a key leaked:
 
-```sh
-kubectl rollout restart -n <namespace> deployment/<service>
-```
+1. When the leaked key is the key that signs now, publish a new key and sign
+   with it at once (steps 1 to 3 with no wait), so that the removal does not
+   stop the new tokens.
+2. Remove the leaked key from the key set.
+3. Restart each Deployment that verifies tokens, so that each pod loads the key
+   set at start. The worker pods serve the same routes as the API pods, so
+   restart them too:
+
+   ```sh
+   kubectl rollout restart -n <namespace> deployment/<service> deployment/<service>-worker
+   ```
+
+   A browser service loads the key set again only on an unknown key ID, so
+   restart its Deployment `<service>` too.
 
 When the service reads the key set from the file `STEGO_AUTHN_KEYS_FILE`, it
 reads the file only at start. Restart the pods after step 1 and after step 5.
@@ -196,17 +235,23 @@ A list gives a cursor for its next page. The cursor is sealed with the key of
 
 Do these steps:
 
-1. Make a new key of at least 32 random bytes, and write it into the key `key`
-   of `<service>-query-cursor`:
+1. Make a new key of at least 32 random bytes in a file that only you can
+   read, write it into the key `key` of `<service>-query-cursor`, and remove
+   the file:
 
    ```sh
-   head -c 32 /dev/urandom > cursor-key
+   (umask 077; head -c 32 /dev/urandom > cursor-key)
+   kubectl create secret generic -n <namespace> <service>-query-cursor --from-file=key=cursor-key \
+     --dry-run=client -o yaml | kubectl apply -f -
+   shred -u cursor-key
    ```
 
-2. Restart the two Deployments:
+   When a secret operator makes the Secret, write the key into its source
+   instead.
+2. Restart the api Deployment, which reads the key:
 
    ```sh
-   kubectl rollout restart -n <namespace> deployment/<service> deployment/<service>-worker
+   kubectl rollout restart -n <namespace> deployment/<service>
    ```
 
 During the restart, a cursor of an old pod can go to a new pod, and the reverse.
@@ -222,14 +267,19 @@ first key seals each cursor and each key opens a cursor.
 
 ### What the backup must hold
 
-Back up two things. Keep them as secrets, because they hold password
-verifiers and data:
+Back up two things. Keep them encrypted, as secrets, because they hold the
+roles and the data of the service:
 
-- The roles of the server, once and after each change of a role:
+- The roles of the server, once and after each change of a role, with no
+  password. A password in the file would bring back an old password at a
+  restore, also one that you changed after a leak:
 
   ```sh
-  pg_dumpall --roles-only --file=roles.sql
+  (umask 077; pg_dumpall --roles-only --no-role-passwords --file=roles.sql)
   ```
+
+  Encrypt the file at rest, for example with your backup tool or with `age` or
+  `gpg`, and remove the clear file.
 
 - The database of the service. Write down the time at which the dump starts.
   The dump holds the data of that time, `T0`:
@@ -253,16 +303,22 @@ Do these steps in this order:
    kubectl scale -n <namespace> deployment/<service> deployment/<service>-worker --replicas=0
    ```
 
-2. On a new server, make the roles first:
+2. Only when you restore on a new, empty server: make the roles first, and
+   stop at the first error. Then give each login its password from its current
+   Secret with `\password <login>` in `psql`, or do [Rotate a database
+   password](#rotate-a-database-password) for each login:
 
    ```sh
-   psql --file=roles.sql postgres
+   psql -v ON_ERROR_STOP=1 --file=roles.sql postgres
    ```
 
-3. Move the damaged database aside, then restore the archive with `--create`:
+   Do not run `roles.sql` on a server that still runs: the roles are there, and
+   the file would change their memberships back to the time of the backup.
+3. Restore the archive with `--create`. On the same server, first move the
+   damaged database aside. On a new server, the database is not there:
 
    ```sh
-   psql -c 'ALTER DATABASE <service> RENAME TO <service>_damaged' postgres
+   psql -v ON_ERROR_STOP=1 -c 'ALTER DATABASE <service> RENAME TO <service>_damaged' postgres
    pg_restore --create --exit-on-error --dbname=postgres <service>.dump
    ```
 
@@ -276,9 +332,22 @@ Do these steps in this order:
    migrates the database to the release.
 5. For each subscription of the service, set the offsets of its consumer group
    to one minute before `T0` (see below).
-6. Start the service: scale the two Deployments back, or start the sync of
-   Argo CD again.
-7. Do the checks below for the outbox, SpiceDB and the audit sink.
+6. List the messages of the destination `authz` that are not done, and review
+   each one before the service starts (see [The outbox](#the-outbox)).
+7. For a browser service, delete the sessions, so that each user logs in
+   again. The restored table holds the sessions of `T0`, also the sessions that
+   a user logged out of, or that you ended, after `T0`:
+
+   ```sql
+   -- Connected to the database <service>, as the owner role:
+   DELETE FROM public.stego_browser_sessions;
+   ```
+
+8. Start the worker Deployment only. Its relay sends the messages of step 6.
+   When none of them is pending, remove each relationship that you wrote down
+   in step 6 (see [The outbox](#the-outbox)).
+9. Start the api Deployment: scale it back, or start the sync of Argo CD again.
+10. Do the checks below for the outbox, SpiceDB and the audit sink.
 
 ### The offsets of a consumer group
 
@@ -301,9 +370,28 @@ days, so an overlap of one minute is safe.
 
 ### The outbox
 
-- A message that was pending at `T0` and that the relay sent after `T0` goes
-  again. A consumer of the event writes nothing new, for the reason above. A
-  write or a delete of a SpiceDB relationship gives the same result again.
+- An event that was pending at `T0` and that the relay sent after `T0` goes
+  again. A consumer of the event writes nothing new, for the reason above.
+- A message of the destination `authz` that was pending at `T0` goes to
+  SpiceDB again. Its write has no precondition. Thus, when a grant was pending
+  at `T0`, the relay wrote it after `T0`, and a person then removed it, the
+  message writes the grant again: the removal is lost, and an access that you
+  removed comes back. Before the service starts (step 6), list these messages:
+
+  ```sql
+  -- Connected to the restored database <service>, as a database administrator:
+  SELECT id, tenant_id, created_at, convert_from(payload, 'UTF8') AS change FROM stego_outbox.messages WHERE destination = 'authz' AND state <> 'done' ORDER BY sequence;
+  ```
+
+  Each `change` names the operation and the relationship. For each one,
+  compare it with SpiceDB (`zed relationship read`) and with the audit sink,
+  which holds the commands after `T0`. Write down each write (`touch`) of a
+  grant that a command removed after `T0`. In step 8, after the relay sent the
+  messages and before the API starts, remove each such relationship again with
+  `zed relationship delete`, and check the result with `zed permission check`.
+  The API is still stopped, so no request uses the grant in that time. STEGO
+  has no tool that discards a pending message while the service is stopped;
+  the question ST-SUP-Q181 asks for one.
 - An event of a write after `T0` is in the topic, and the consumers applied
   it, but the source no longer holds the write. STEGO has no tool that finds
   these events. To find them, read the topic of the service from `T0`. The key
