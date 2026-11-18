@@ -2,10 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +22,7 @@ func (privateFailure) Error() string { panic("error formatting exposed private d
 
 type classifiedFailure struct{ class, object string }
 
-func (classifiedFailure) Error() string        { panic("error formatting exposed private data") }
+func (classifiedFailure) Error() string         { panic("error formatting exposed private data") }
 func (f classifiedFailure) FaultClass() string  { return f.class }
 func (f classifiedFailure) FaultObject() string { return f.object }
 
@@ -69,6 +74,75 @@ func TestFailureRecordCauseClass(t *testing.T) {
 		}
 		if record["stage"] != "http.listen" || record["cause"] != "address_in_use" || strings.Contains(output.String(), held.Addr().String()) {
 			t.Fatalf("a held listen port gave the record %v, want the stage http.listen and the cause address_in_use with no address", record)
+		}
+	})
+}
+
+// sqlFailure is a cause of the database with its SQLSTATE, as pgconn.PgError gives it, whose text holds a secret.
+type sqlFailure struct{ code string }
+
+func (sqlFailure) Error() string      { panic("error formatting exposed private data") }
+func (f sqlFailure) SQLState() string { return f.code }
+
+func TestFailureRecordDatabaseCause(t *testing.T) {
+	t.Run("ST-GEN-INV16-T a failed step of the migration job or the start names the cause class and the SQLSTATE and no error text", func(t *testing.T) {
+		for _, c := range []struct {
+			code, cause, sqlstate string
+		}{
+			{"55P03", "lock_timeout", "55P03"}, {"57014", "statement_timeout", "57014"}, {"40P01", "deadlock", "40P01"},
+			{"42501", "not_granted", "42501"}, {"28P01", "authentication_failed", "28P01"}, {"08006", "connection_failed", "08006"},
+			{"3D000", "database_not_found", "3D000"}, {"23505", "constraint_violation", "23505"}, {"42P01", "schema", "42P01"},
+			{"XX000", "database", "XX000"}, {"55p03", "", ""}, {"password=secret", "", ""}, {"", "", ""},
+		} {
+			var output bytes.Buffer
+			// The migration job wraps the cause of a step, as service.StepError does.
+			cause := fmt.Errorf("migrate: tables: %w", sqlFailure{c.code})
+			stegoReportFailure(&output, &stegoServiceFailure{stage: "migrate.tables", cause: cause})
+			var record map[string]any
+			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+				t.Fatal(e)
+			}
+			got, _ := record["cause"].(string)
+			sqlstate, _ := record["sqlstate"].(string)
+			if record["stage"] != "migrate.tables" || got != c.cause || sqlstate != c.sqlstate || strings.Contains(output.String(), "secret") {
+				t.Fatalf("the SQLSTATE %q gave the record %v, want the cause %q and the sqlstate %q", c.code, record, c.cause, c.sqlstate)
+			}
+		}
+	})
+	t.Run("ST-GEN-INV16-T a start step that a network, a file or a certificate refused names the cause class and no error text", func(t *testing.T) {
+		held, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		address := held.Addr().String()
+		held.Close()
+		_, refused := net.Dial("tcp", address)
+		if refused == nil {
+			t.Fatal("a dial of a closed port was taken")
+		}
+		_, missing := os.Open(filepath.Join(t.TempDir(), "upstream-ca.pem"))
+		for _, c := range []struct {
+			cause error
+			want  string
+		}{
+			{refused, "connection_refused"},
+			{&net.DNSError{Err: "no such host", Name: "upstream.invalid", IsNotFound: true}, "name_not_resolved"},
+			{fmt.Errorf("client: %w", missing), "file_not_found"},
+			{x509.UnknownAuthorityError{}, "certificate_refused"},
+			{fmt.Errorf("discovery: %w", context.DeadlineExceeded), "timeout"},
+			{privateFailure{}, ""},
+		} {
+			var output bytes.Buffer
+			stegoReportFailure(&output, &stegoServiceFailure{stage: "browser.upstream", cause: c.cause})
+			var record map[string]any
+			if e := json.Unmarshal(output.Bytes(), &record); e != nil {
+				t.Fatal(e)
+			}
+			got, _ := record["cause"].(string)
+			if record["stage"] != "browser.upstream" || got != c.want || strings.Contains(output.String(), "upstream.invalid") ||
+				strings.Contains(output.String(), address) || strings.Contains(output.String(), "upstream-ca.pem") {
+				t.Fatalf("the cause %T gave the record %v, want the cause class %q with no error text", c.cause, record, c.want)
+			}
 		}
 	})
 }
