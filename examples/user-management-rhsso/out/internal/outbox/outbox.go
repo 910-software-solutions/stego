@@ -18,6 +18,12 @@ import (
 // Destinations are the names of the destinations of the service, each registered on the worker by NewWorker.
 var Destinations = []string{"audit-sink", "kafka"}
 
+// Rules gives the declared rules of each destination of Destinations, must land and idempotent, which the resolver of
+// the api mode applies to a parked message (ST-SUP-RP14-LC10).
+func Rules() []outbox.Rules {
+	return []outbox.Rules{auditoutbox.Rules(), kafkaoutbox.Rules()}
+}
+
 // PayloadLimits gives the payload limit of each destination of the service that sets one of its own; a
 // destination it does not name takes outbox.MaxPayloadBytes (ST-SUP-RC18-OC02).
 func PayloadLimits() map[string]int {

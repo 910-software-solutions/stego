@@ -66,6 +66,10 @@ definition stego_floor {
 // serves each of them, so the release does not start while a read of a new resource type fails (ST-SUP-Q140).
 var Definitions = []string{"member", "org_setting", "organization", "service", "stego_floor", "user"}
 
+// Relations are the relations of Schema but that of the floor marker: the allow list of the relay, which refuses
+// a delivered tuple of any other relation (ST-SUP-RP06-LC06).
+var Relations = []stegoauthz.Relation{{ResourceType: "member", Name: "organization"}, {ResourceType: "member", Name: "owner"}, {ResourceType: "org_setting", Name: "organization"}, {ResourceType: "organization", Name: "owner"}, {ResourceType: "organization", Name: "viewer"}, {ResourceType: "service", Name: "operator"}}
+
 // DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.
 const DatabaseSchema = "public"
 
@@ -205,7 +209,7 @@ func NewRuntime(db *sql.DB, provider stegoauthz.Decision, queue *outbox.Queue, m
 // ST-SUP-RP01-LC25). db is the relay role's pool, and relationships the provider's relationships port, which only
 // the relay holds (ST-SUP-RC29-OC08).
 func NewRelay(ctx context.Context, db *sql.DB, relationships stegoauthz.Relationships, worker *outbox.Worker, meter metric.MeterProvider, logger otellog.LoggerProvider) (*stegoauthz.Relay, error) {
-	relay, err := stegoauthz.NewRelay(stegoauthz.RelayConfig{Name: RelayName, Relationships: relationships, DB: db,
+	relay, err := stegoauthz.NewRelay(stegoauthz.RelayConfig{Name: RelayName, Relations: Relations, Relationships: relationships, DB: db,
 		Schema: DatabaseSchema, Owners: Owners, Meter: meter, Logger: logger}, stegoauthz.WithAlertBound(AlertBound))
 	if err != nil {
 		return nil, err
