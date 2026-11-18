@@ -301,7 +301,7 @@ From runtime v0.134.0, use the three rollouts above instead.
 
 ## Rotate and back up the key ring of the secret fields
 
-From runtime v0.135.0, the service seals each readable secret field (a field
+From runtime v0.137.0, the service seals each readable secret field (a field
 with `sensitivity: secret`) with AES-256-GCM before it writes the row. The
 column holds the sealed bytes, never the value. A compare-only secret field
 (`compare_only: true`) holds an Argon2id hash, which no key opens.
@@ -396,18 +396,29 @@ Wait until both rollouts complete before you start the next phase.
    secret column, with no value:
 
    ```text
-   command: re-seal of a secret column entity=Order column=api_token moved=1200 left=0 first_key=2
+   command: re-seal of a secret column entity=Order column=api_token moved=1200 left=0 failed=0 first_key=2
    ```
 
-   A value that does not open, for example of a key that the ring no longer
-   holds, is logged with its column and row and left as it is; it counts in
-   `left`.
-3. Remove the old key when both of these are true:
-   - each column logged `left=0` in a run after phase 2;
+   `left` is the number of values that are still on an earlier key at the
+   end of the run, from a count that takes no lock. A row that a command held
+   locked while the run passed it, and a row that a pod of the old ring wrote
+   during the run, count in `left` until a later run moves it. `failed` is
+   the number of those values that do not open, for example of a key that the
+   ring no longer holds. The run logs the first three such rows with their
+   column and row, and then one count for the column and the tenant.
+3. Remove the old key only when both of these are true:
+   - each column logged `left=0` in one complete run that started after both
+     rollouts of phase 2 completed. A run that started earlier can miss
+     values that an old pod wrote;
    - the idempotency retention of the service (24 hours when the declaration
      gives none) has passed since phase 2. An idempotency key of that time
      holds a fingerprint of the old key, and a retry with that key needs the
      old key to match it.
+
+   **Never remove a key while a run logs `left` above 0 for a column.** Each
+   such value needs a key of the ring to open. Find why it stays: a value with
+   `failed` above 0 needs its key back, or a write of a new value through the
+   service.
 
 Why this order: in each phase, each pod that runs opens each value that any
 other pod seals, so no read fails during a rollout. The job moves each value
