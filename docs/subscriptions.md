@@ -66,7 +66,11 @@ worker runs once for each event.
   It writes only the entities that it declares. A fill error that occurs 5
   times in a row parks the message as poison (see [A failed run of a consuming worker](commands-queries-workers.md#a-failed-run-of-a-consuming-worker)).
 - The payload of a change event holds only the entity, the action and the row
-  ID. To read the row, call the API of the source service.
+  ID, such as `{"entity":"Order","action":"created","id":"0193..."}`, and no
+  field value. The fill gets the event kind, such as `orders.order.created`,
+  as its effect name. A worker handle has no network client, so the fill
+  cannot read the row from the source service. See [Change
+  events](fills.md#change-events) in the developer reference of fills.
 - The key of each change event record is
   `<tenant ID>\x1f<resource type>:<row ID>`: the tenant, the unit separator
   (byte 0x1f), then the resource type of the entity (the entity name when it

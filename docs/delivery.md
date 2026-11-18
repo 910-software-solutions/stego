@@ -413,6 +413,7 @@ credential and the key of SpiceDB. With the shipped registry, these are:
 | `STEGO_RELAY_DATABASE_URL_FILE` | `STEGO_RELAY_DATABASE_URL` | `<service>-database-relay`, `url` |
 | `STEGO_SPICEDB_KEY_FILE` (the Deployment and the Job) | `STEGO_SPICEDB_KEY_FILE` | `<service>-spicedb`, `preshared-key` |
 | `STEGO_QUERY_CURSOR_KEY_FILE` | `STEGO_QUERY_CURSOR_KEY_FILE` | `<service>-query-cursor`, `key` |
+| `STEGO_SECRET_KEY_RING_FILE` (the Deployments only, for a service with a `secret` field) | `STEGO_SECRET_KEY_RING_FILE` | `<service>-secret-key-ring`, `key-ring` |
 | `STEGO_HTTP_TLS_CERT`, `STEGO_HTTP_TLS_KEY` | the same | `<service>-tls`, `tls-crt` and `tls-key` (browser-backend) |
 | `STEGO_BROWSER_CLIENT_SECRET_FILE`, `STEGO_BROWSER_SESSION_KEY_FILE` | the same | `<service>-browser`, `client-secret` and `session-keys` |
 | `STEGO_GRPC_TLS_CERT`, `STEGO_GRPC_TLS_KEY` | the same | `<service>-grpc-tls`, `tls-crt` and `tls-key` |
