@@ -4,9 +4,12 @@
 # Version 6.14.0 carries out the seal step: at expand the sealed column <column>_sealed beside the clear one, the
 # release reports and the seal checkpoint, the seal job statements, and at contract the check of each row and the drop
 # of the clear column (ST-SUP-RC01-OC49, ST-SUP-RC01-OC50, decision ST-DECL-Q44).
+# Version 6.15.0 refuses a changed body of an applied migration with a fault that names the migration, the two
+# digests and the remedy, and gives the digest of each migration to the start check of the service runtime
+# (ST-SUP-RC01-OC51, ST-SUP-RP14-LC13).
 kind: component
 name: postgres-adapter
-version: 6.14.0
+version: 6.15.0
 stage: ga
 output_namespace: internal/storage
 

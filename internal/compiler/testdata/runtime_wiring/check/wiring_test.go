@@ -1542,6 +1542,7 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		s.provisioned(t, id)
 		resource := s.tenantResource(t, id)
 		want := []string{
+			s.serviceTuple(t, id),
 			"tenant:" + resource + "#worker_apply_note_replies@service_account:apply-note-replies",
 			"tenant:" + resource + "#worker_sync_partner_orders@service_account:sync-partner-orders",
 		}
@@ -1584,6 +1585,44 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		}
 		if got := s.relations(t, "service", qualified, "admin"); !slices.Equal(got, want) {
 			t.Fatalf("the refused replay changed the admins: %v", got)
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC18-T01 Provision relates the tenant resource to the service-level resource, so the first administrators read the rows of the tenant", func(t *testing.T) {
+		s.t = t
+		id, other := "org-svc-"+short(), "org-svc-o-"+short()
+		sub, stranger := "carol-"+short(), "dave-"+short()
+		carol := s.as(sub, id)
+		for _, p := range []struct{ tenantID, admin string }{{id, sub}, {other, stranger}} {
+			body, err := json.Marshal(map[string]any{"tenant_id": p.tenantID, "admins": []map[string]string{{"subject": p.admin}}})
+			must(t, err)
+			if got := s.send(&s.operator, http.MethodPost, "/stego/tenants", "k-"+uuid.NewString(), string(body)); got.status != http.StatusCreated {
+				t.Fatalf("the provision of %s answered %d %s, want 201", p.tenantID, got.status, got.body)
+			}
+		}
+		resource := s.tenantResource(t, id)
+		want := []string{s.serviceTuple(t, id)}
+		if got := s.awaitRelation(t, "tenant", resource, "service", want); !slices.Equal(got, want) {
+			t.Fatalf("SpiceDB holds %v on the tenant resource of %s, want %v", got, id, want)
+		}
+		// An order relates only to its tenant (ST-SUP-Q132), as a row that a worker makes with no parent: the first
+		// administrator of the tenant reads it through tenant->auditor_view, and the administrator of another tenant
+		// does not.
+		created := s.send(&carol, http.MethodPost, "/orders", "k-"+uuid.NewString(), `{"sku":"audit","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create in %s answered %d %s, want 201", id, created.status, created.body)
+		}
+		order, err := authz.ResourceID(carol.tenant, created.member(t, "id"))
+		must(t, err)
+		s.awaitUserPermission(t, "order", order, "tenant_view", carol.subject, true)
+		strangerSubject := s.as(stranger, other).subject
+		s.awaitUserPermission(t, "order", order, "tenant_view", strangerSubject, false)
+		// A Retire deletes the tuple with the other tuples of the tenant.
+		if got := s.retire(&s.operator, id, "k-"+uuid.NewString()); got.status != http.StatusOK {
+			t.Fatalf("the retire of %s answered %d %s, want 200", id, got.status, got.body)
+		}
+		if got := s.awaitRelation(t, "tenant", resource, "service", nil); len(got) != 0 {
+			t.Fatalf("SpiceDB still holds the service tuple of the retired tenant: %v", got)
 		}
 	})
 
@@ -1638,9 +1677,10 @@ BEGIN RAISE EXCEPTION 'the check refuses this commit'; END $f$`,
 		s.awaitPermission(t, "order", r2, "tenant_apply", "apply-note-replies", false)
 		s.awaitPermission(t, "order", r1, "tenant_sync", "sync-partner-orders", true)
 		if got := s.awaitTuples(t, s.tenantResource(t, first), []string{
+			s.serviceTuple(t, first),
 			"tenant:" + s.tenantResource(t, first) + "#worker_apply_note_replies@service_account:apply-note-replies",
 			"tenant:" + s.tenantResource(t, first) + "#worker_sync_partner_orders@service_account:sync-partner-orders",
-		}); len(got) != 2 {
+		}); len(got) != 3 {
 			t.Fatalf("the retire of %s changed the tuples of %s: %v", second, first, got)
 		}
 		// No tuple of the workers has a wildcard subject or resource.
@@ -1868,6 +1908,36 @@ func (s *service) awaitRelation(t *testing.T, resourceType, resourceID, relation
 		if polls%50 == 0 {
 			t.Logf("after %d reads, SpiceDB holds on %s:%s#%s:\n%s\nwant:\n%s", polls, resourceType, resourceID, relation,
 				strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// serviceTuple is the tuple that relates the tenant resource of the tenant tenantID to the service-level resource of
+// that tenant, which Provision writes (ST-SUP-RC27-OC18).
+func (s *service) serviceTuple(t *testing.T, tenantID string) string {
+	t.Helper()
+	qualified, err := authz.ResourceID(s.as("u-resource", tenantID).tenant, serviceName)
+	must(t, err)
+	return "tenant:" + s.tenantResource(t, tenantID) + "#service@service:" + qualified
+}
+
+// awaitUserPermission waits until SpiceDB answers, fully consistent, the permission of the user subject on the
+// resource as allowed says. It has no deadline of its own.
+func (s *service) awaitUserPermission(t *testing.T, resourceType, resourceID, permission, subject string, allowed bool) {
+	t.Helper()
+	want := v1.CheckPermissionResponse_PERMISSIONSHIP_NO_PERMISSION
+	if allowed {
+		want = v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
+	}
+	for {
+		answer, err := v1.NewPermissionsServiceClient(s.spice).CheckPermission(s.ctx, &v1.CheckPermissionRequest{
+			Consistency: &v1.Consistency{Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true}},
+			Resource:    &v1.ObjectReference{ObjectType: resourceType, ObjectId: resourceID}, Permission: permission,
+			Subject: &v1.SubjectReference{Object: &v1.ObjectReference{ObjectType: "user", ObjectId: subject}}})
+		must(t, err)
+		if answer.GetPermissionship() == want {
+			return
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

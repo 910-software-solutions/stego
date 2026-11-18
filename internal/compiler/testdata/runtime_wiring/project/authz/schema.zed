@@ -12,6 +12,10 @@ definition tenant {
 	// A worker that creates an order with no parent is decided on the tenant resource with its permission
 	// (ST-SUP-RP10-LC17, ST-SUP-RC35-OC17).
 	permission sync = worker_sync_partner_orders + worker_apply_note_replies
+	// Provision relates the tenant resource to the service-level resource of the tenant, so the first administrators
+	// read each row that relates to the tenant, such as a row that a worker makes with no parent (ST-SUP-RC27-OC18).
+	relation service: service
+	permission auditor_view = service->admin
 }
 
 definition service {
@@ -35,6 +39,7 @@ definition order {
 	permission sync = syncer
 	permission tenant_sync = tenant->worker_sync_partner_orders
 	permission tenant_apply = tenant->worker_apply_note_replies
+	permission tenant_view = tenant->auditor_view
 }
 
 definition note {

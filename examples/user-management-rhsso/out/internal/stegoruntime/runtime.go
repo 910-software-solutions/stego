@@ -179,6 +179,9 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 		Service: Service, DeclarationVersion: DeclarationVersion, SubjectType: subjectType, TenantClaim: tenantClaim,
 		// The open changes with a sync trigger, which the writer marker of each write names (ST-SUP-RC01-OC23).
 		SchemaSteps: svcstorage.SchemaSteps, Release: svcstorage.SchemaRelease,
+		// The start refuses a database whose ledger holds another body of a migration of the release
+		// (ST-SUP-RP14-LC13).
+		Migrations:  svcstorage.MigrationDigests(),
 		ProblemType: problemType, ProblemCode: problemCode, TenantConfig: svcstorage.TenantConfig,
 		NewQueue:   func(db *sql.DB) (*outbox.Queue, error) { return svcoutbox.NewQueue(db, nil) },
 		AuditQueue: func(q *outbox.Queue) (audit.Enqueuer, error) { return svcoutbox.AuditQueue(q) },
@@ -192,6 +195,9 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 		// The definitions of the authorization schema: only one with the definition tenant has worker relations
 		// (ST-SUP-RC35-OC13).
 		Definitions: svcauthz.Definitions,
+		// The relations of the authorization schema: a relation service of the type tenant makes Provision relate the
+		// tenant resource to the service-level resource of the tenant (ST-SUP-RC27-OC18).
+		Relations: svcauthz.Relations,
 		// The grants of the runtime role that the migration job gives, which the manifest checks on the entity
 		// tables (ST-SUP-RP14-LC06).
 		Grants: grants,

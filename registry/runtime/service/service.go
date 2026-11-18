@@ -50,6 +50,10 @@ type Parts struct {
 	// of the release under it in the database until Close, so that the contract step of a schema change refuses
 	// while a release that does not know the change runs (lease.StartBeat, ST-SUP-RP09-LC14). Empty reports nothing.
 	Release string
+	// Migrations are the ledger digests of the migrations of this release by name, the SHA-256 of each body, which
+	// the generated code gives (MigrationDigests of the adapter). New refuses a database whose ledger row of one of
+	// these names holds another digest (ST-SUP-RP14-LC13); nil checks no digest.
+	Migrations map[string]string
 	// SubjectType is the subject type of the schema that a verified identity maps to, and TenantClaim the dotted path
 	// of the claim that names the caller's tenant.
 	SubjectType, TenantClaim string
@@ -79,6 +83,10 @@ type Parts struct {
 	// definition tenant has worker relations: without it, no reconcile of the worker tuples runs and a Retire reads
 	// no undeclared worker relation (ST-SUP-RC35-OC13, security re-review of PR #379, H1).
 	Definitions []string
+	// Relations are the relations of the authorization schema of the service. The relation service of the type tenant
+	// makes Provision relate the tenant resource to the service-level resource of the tenant, and Retire delete it
+	// (ST-SUP-RC27-OC18, ST-SUP-RP10-LC52).
+	Relations []authz.Relation
 	// Workers are the parts of the worker and controller modes, which Start runs (ST-SUP-RP14-LC04).
 	Workers WorkerParts
 	// OwnerRole is the owner role of the service, which the migration job runs as and which must own each table of
@@ -215,7 +223,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	// Job of the release: the process stops, and starts again until the Job is done (ST-SUP-RP14-LC07). The check
 	// runs before the release report, so a process that stops never reports its release.
 	if p.Release != "" {
-		if err := checkRelease(ctx, svc.pool, p.Service, p.Release); err != nil {
+		if err := checkRelease(ctx, svc.pool, p.Service, p.Release, p.Migrations); err != nil {
 			return nil, err
 		}
 	}
@@ -383,7 +391,7 @@ var ErrMigrationPending = errors.New("the migration Job of this release has not 
 // release can start first: it stops, and Kubernetes starts it again until the Job is done. The refusal names the
 // ledger, the migration and what to do, on a log line of the level error and in its error, because the failure record
 // of the process names the stage only. Neither holds a value of a setting.
-func checkRelease(ctx context.Context, db *sql.DB, service, release string) error {
+func checkRelease(ctx context.Context, db *sql.DB, service, release string, digests map[string]string) error {
 	// The catalog alone tells whether the ledger is there and readable, so that no name resolution in a schema
 	// without USAGE fails the read.
 	var present, readable bool
@@ -402,7 +410,7 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 	var state string
 	switch {
 	case applied:
-		return nil
+		return checkDigests(ctx, db, release, digests)
 	case !present:
 		state = "is not in the database, so no migration Job has run on it"
 	case !readable:
@@ -415,6 +423,43 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 		LedgerTable, state, service)
 	slog.ErrorContext(ctx, "service: "+text, "migration", release, "ledger", LedgerTable, "stage", "service.start.migration")
 	return fmt.Errorf("service: %w: %s", ErrMigrationPending, text)
+}
+
+// ErrMigrationChanged is the refusal of a start on a database whose migration ledger holds another body of a
+// migration of the release (ST-SUP-RP14-LC13).
+var ErrMigrationChanged = errors.New("the ledger holds another body of a migration of this release")
+
+// checkDigests reads, as the runtime role, the ledger row of each migration of digests and refuses a row whose
+// digest is not the digest of this release (ST-SUP-RP14-LC13). A row of a name that digests does not give, such as
+// a step of a later release, passes. The refusal names the migration and the two digests, no part of a body, and
+// the remedy, on a log line of the level error and in its error; New writes nothing before it.
+func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[string]string) error {
+	if len(digests) == 0 {
+		return nil
+	}
+	// The ledger holds one row for each applied migration, so the check reads them all.
+	rows, err := db.QueryContext(ctx, "SELECT version, digest FROM "+LedgerTable)
+	if err != nil {
+		return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, digest string
+		if err := rows.Scan(&name, &digest); err != nil {
+			return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
+		}
+		if want, ok := digests[name]; ok && digest != want {
+			text := fmt.Sprintf("the migration ledger %s holds the digest %q for the migration %s, and this release gives the digest %q for its body. "+
+				"The body of an applied migration never changes, so a change comes as a new schema step: deploy the release that applied it, "+
+				"or a release that keeps its body and brings the change in a new schema step; nothing repairs the digest", LedgerTable, digest, name, want)
+			slog.ErrorContext(ctx, "service: "+text, "migration", name, "ledger", LedgerTable, "stage", "service.start.migration")
+			return fmt.Errorf("service: %w: %s", ErrMigrationChanged, text)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
+	}
+	return nil
 }
 
 // MaxLoggedFaults is the most faults of the schema manifest check that the start of a service logs, each on its own
@@ -657,7 +702,7 @@ func StartStage(err error) string {
 		return "service.start.database"
 	case errors.Is(err, manifest.ErrNotSatisfied):
 		return "service.start.schema_manifest"
-	case errors.Is(err, ErrMigrationPending):
+	case errors.Is(err, ErrMigrationPending) || errors.Is(err, ErrMigrationChanged):
 		return "service.start.migration"
 	case errors.Is(err, authn.ErrDiscovery):
 		return "service.start.authn.discovery"

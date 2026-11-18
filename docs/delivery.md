@@ -342,7 +342,11 @@ The serving process checks the order at start: it reads the migration ledger `st
 the ledger does not hold the last migration of its release, the process stops with the stage
 `service.start.migration` and an error line that names the ledger and the migration, and says to run the migration
 Job of the release and to wait until it completes. The pod restarts, with the back-off of Kubernetes, until the Job
-is done, and then starts. To wait in a script, after the two commands:
+is done, and then starts. The process also stops at the stage `service.start.migration` when the ledger holds another
+digest of the body of a migration of its release: the error line names the migration and the two digests. The body of
+an applied migration never changes, and nothing repairs a digest. The migration Job refuses the same database at its
+ledger check, with the same fault. `stego plan`, `stego apply` and `stego compat` refuse such a release before it is
+made (ST-GEN-INV38): keep the body, and bring the change in a new schema step. To wait in a script, after the two commands:
 
 ```sh
 kubectl wait -n <namespace> --for=condition=complete job -l app.kubernetes.io/component=migration,app.kubernetes.io/name=<service> --timeout=2h
