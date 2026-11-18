@@ -206,12 +206,11 @@ func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) ht
 	})
 }
 
-// writeTenantProblem writes the problem response (RFC 9457) of a refused tenant, with the fixed code only.
-func writeTenantProblem(w http.ResponseWriter, httpStatus int, problemType, code string) {
-	if problemType == "" {
-		problemType = "about:blank"
-	}
-	body := "{\"type\":" + strconv.Quote(problemType) + ",\"title\":" + strconv.Quote(http.StatusText(httpStatus)) +
+// writeTenantProblem writes the problem response (RFC 9457) of a refused tenant, with the fixed code only, for the
+// declared problem base.
+func writeTenantProblem(w http.ResponseWriter, httpStatus int, base, code string) {
+	// The type is the type of the code under the declared problem base, never the bare base (ST-SUP-RC27-OC17).
+	body := "{\"type\":" + strconv.Quote(authn.ProblemTypeOf(base, httpStatus, code)) + ",\"title\":" + strconv.Quote(http.StatusText(httpStatus)) +
 		",\"status\":" + strconv.Itoa(httpStatus) + ",\"code\":" + strconv.Quote(code) + "}"
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/problem+json")

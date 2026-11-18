@@ -415,7 +415,7 @@ func TestUnavailableAnswer(t *testing.T) {
 			}
 			w := httptest.NewRecorder()
 			status, code := answerOf(err, nil)
-			writeCodedProblem(w, status, code)
+			(*Runtime)(nil).writeCodedProblem(w, status, code)
 			if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" || strings.Contains(w.Body.String(), "refused") {
 				t.Fatalf("%s over HTTP gave %d %v %s, want 503 with Retry-After and no error text", name, w.Code, w.Header(), w.Body)
 			}
@@ -508,6 +508,48 @@ func TestCursorKeyRing(t *testing.T) {
 			if _, err := New(cfg); err == nil {
 				t.Errorf("New took %s", name)
 			}
+		}
+	})
+}
+
+func TestProblemForm(t *testing.T) {
+	t.Run("ST-SUP-RC33-OC12-T01 A query problem has the type of its code under the problem base, and about:blank with no base", func(t *testing.T) {
+		const base = "https://errors.example.test/orders/"
+		e := newEnv(t)
+		rt, err := New(Config{DB: e.db, Service: "orders", CursorKey: testCursorKey, ProblemBase: base})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			status int
+			code   string
+			want   string
+		}{
+			{http.StatusNotFound, "", base + "not-found"},
+			{http.StatusBadRequest, "", base + "bad-request"},
+			{http.StatusInternalServerError, ErrorCodeInternal, base + "internal"},
+			{http.StatusServiceUnavailable, ErrorCodeUnavailable, base + "unavailable"},
+			{http.StatusConflict, "order.closed", base + "order-closed"},
+		} {
+			w := httptest.NewRecorder()
+			rt.writeCodedProblem(w, c.status, c.code)
+			var p map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["type"] != c.want || w.Code != c.status {
+				t.Errorf("the problem %d %q has %v, want the type %s", c.status, c.code, p, c.want)
+			}
+			for member := range p {
+				if member != strings.ToLower(member) {
+					t.Errorf("the problem member %q is not snake_case", member)
+				}
+			}
+		}
+		w := httptest.NewRecorder()
+		(*Runtime)(nil).writeProblem(w, http.StatusNotFound)
+		if !strings.Contains(w.Body.String(), `"type":"about:blank"`) {
+			t.Errorf("with no base the problem is %s, want the type about:blank", w.Body)
 		}
 	})
 }

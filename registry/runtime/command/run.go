@@ -976,10 +976,14 @@ func (rt *Runtime) markStep(ctx context.Context, tx *sql.Tx) error {
 }
 
 // problemType gives the problem type URI of the problem name under the problem base of the service
-// (ST-SUP-RC30-OC02), the bare name with no base, and "" for no name.
+// (ST-SUP-RC30-OC02), about:blank with no base (ST-SUP-RC32-OC19), and "" for no name.
 func (rt *Runtime) problemType(name string) string {
-	if name == "" || rt == nil || rt.cfg.ProblemBase == "" {
+	if name == "" {
 		return name
+	}
+	if rt == nil || rt.cfg.ProblemBase == "" {
+		// With no problem base, the type is about:blank, never a bare word (ST-SUP-RC32-OC19).
+		return "about:blank"
 	}
 	return rt.cfg.ProblemBase + name
 }

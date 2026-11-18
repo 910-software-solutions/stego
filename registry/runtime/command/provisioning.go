@@ -454,31 +454,31 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
-			writeProblem(w, http.StatusMethodNotAllowed, "", "")
+			rt.writeProblem(w, http.StatusMethodNotAllowed, "", "")
 			return
 		}
 		b, err := BindIdentity(r.Context(), spec.SubjectType)
 		if err != nil {
-			writeProblem(w, http.StatusUnauthorized, "", "")
+			rt.writeProblem(w, http.StatusUnauthorized, "", "")
 			return
 		}
 		key, err := idempotency.KeyFrom(r.Header, true)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
+			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxTenantBody))
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		id, named, err := requestedTenant(spec.Action, r, body)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		if err := tenant.ValidID(id); err != nil {
-			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, TenantIDField)
+			rt.writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, TenantIDField)
 			return
 		}
 		var callerIssuer string
@@ -492,7 +492,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		}
 		fingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
@@ -500,7 +500,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 			Retention: spec.Retention}
 		result, made, err := runTenantOf(r.Context(), rt, spec, req, admins)
 		if errors.Is(err, errAdmins) {
-			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
+			rt.writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
 			return
 		}
 		if err != nil {
@@ -510,11 +510,11 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 			} else {
 				rt.unlistedOutcome(r.Context(), spec.command(), o)
 			}
-			writeProblem(w, o.Status, "", o.AnswerCode())
+			rt.writeProblem(w, o.Status, "", o.AnswerCode())
 			return
 		}
 		if result.Problem != "" {
-			writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
+			rt.writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
 			return
 		}
 		for name, values := range result.Response.Header {

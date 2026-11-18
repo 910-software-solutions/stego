@@ -815,10 +815,9 @@ func (h *Handlers) awaitWrite(next http.Handler) http.Handler {
 		}
 		if err := h.cfg.Runtime.AwaitWrite(w, r, t, p); err != nil {
 			w.Header().Set("Cache-Control", "no-store")
-			w.Header().Set("Content-Type", "application/problem+json")
 			if errors.Is(err, query.ErrBadRequest) {
-				w.WriteHeader(http.StatusBadRequest)
-				_, _ = w.Write([]byte(` + "`" + `{"type":"about:blank","title":"the request is not valid","status":400}` + "`" + `))
+				// The one problem form of the service (ST-SUP-RC33-OC12).
+				h.cfg.Runtime.WriteProblem(w, http.StatusBadRequest, "")
 				return
 			}
 			if r.Context().Err() != nil {
@@ -828,8 +827,7 @@ func (h *Handlers) awaitWrite(next http.Handler) http.Handler {
 			}
 			// The completion log of the request holds the fixed code, never the error text (ST-SUP-RP03-LC12).
 			otel.SetErrorCode(r.Context(), query.ErrorCodeInternal)
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(` + "`" + `{"type":"about:blank","title":"the query failed","status":500,"code":"internal"}` + "`" + `))
+			h.cfg.Runtime.WriteProblem(w, http.StatusInternalServerError, query.ErrorCodeInternal)
 			return
 		}
 		next.ServeHTTP(w, r)

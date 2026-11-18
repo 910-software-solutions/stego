@@ -173,6 +173,34 @@ func TestTenantGate(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC27-OC17-T01 The problems of the tenant check have the type of their code under the problem base", func(t *testing.T) {
+		const base = "https://errors.example.test/orders/"
+		for _, c := range []struct {
+			status int
+			code   string
+			want   string
+		}{
+			{http.StatusForbidden, tenant.ErrNotProvisionedCode, base + "tenant-not-provisioned"},
+			{http.StatusServiceUnavailable, "unavailable", base + "unavailable"},
+			{http.StatusInternalServerError, "internal", base + "internal"},
+		} {
+			w := httptest.NewRecorder()
+			writeTenantProblem(w, c.status, base, c.code)
+			var p map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["type"] != c.want || p["code"] != c.code || w.Code != c.status {
+				t.Errorf("the tenant problem %d %s is %v, want the type %s, never the bare base", c.status, c.code, p, c.want)
+			}
+		}
+		w := httptest.NewRecorder()
+		writeTenantProblem(w, http.StatusForbidden, "", tenant.ErrNotProvisionedCode)
+		if !strings.Contains(w.Body.String(), `"type":"about:blank"`) {
+			t.Errorf("with no base the tenant problem is %s, want the type about:blank", w.Body)
+		}
+	})
+
 	t.Run("ST-SUP-RC27-OC11-T06 A verified token with no valid tenant claim is refused as not provisioned", func(t *testing.T) {
 		tp := gateFixture(t)
 		signing := authntest.NewKey(t, "k1")

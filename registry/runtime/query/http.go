@@ -99,12 +99,12 @@ func Serve[Req, Res, P any](rt *Runtime, s HTTP[Req, Res, P]) (http.Handler, err
 		}
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
-			writeProblem(w, http.StatusMethodNotAllowed)
+			rt.writeProblem(w, http.StatusMethodNotAllowed)
 			return
 		}
 		b, err := s.Bind(r)
 		if err != nil {
-			writeProblem(w, http.StatusUnauthorized)
+			rt.writeProblem(w, http.StatusUnauthorized)
 			return
 		}
 		// The probe call ends here when no Run takes it.
@@ -118,13 +118,13 @@ func Serve[Req, Res, P any](rt *Runtime, s HTTP[Req, Res, P]) (http.Handler, err
 		var after Cursor
 		if s.Next != nil {
 			if after, err = rt.ParseCursor(s.Query, b.Tenant, b.Principal, r.URL.Query().Get(CursorParameter)); err != nil {
-				writeProblem(w, http.StatusBadRequest)
+				rt.writeProblem(w, http.StatusBadRequest)
 				return
 			}
 		}
 		req, err := s.Decode(r, after)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest)
+			rt.writeProblem(w, http.StatusBadRequest)
 			return
 		}
 		ran = true
@@ -133,19 +133,19 @@ func Serve[Req, Res, P any](rt *Runtime, s HTTP[Req, Res, P]) (http.Handler, err
 			status, code := answerOf(err, s.Refusal)
 			// The completion log of the request holds the fixed code, never the error text (ST-SUP-RP03-LC12).
 			otel.SetErrorCode(r.Context(), code)
-			writeCodedProblem(w, status, code)
+			rt.writeCodedProblem(w, status, code)
 			return
 		}
 		next := ""
 		if s.Next != nil {
 			if next, err = rt.CursorText(s.Query, b.Tenant, b.Principal, s.Next(res)); err != nil {
-				writeProblem(w, http.StatusInternalServerError)
+				rt.writeProblem(w, http.StatusInternalServerError)
 				return
 			}
 		}
 		body, err := s.Encode(res, next)
 		if err != nil {
-			writeProblem(w, http.StatusInternalServerError)
+			rt.writeProblem(w, http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -193,11 +193,19 @@ func answerOf(err error, refusal func(error) (int, string, bool)) (int, string) 
 	return status, code
 }
 
-// writeProblem writes the problem response of status.
-func writeProblem(w http.ResponseWriter, status int) { writeCodedProblem(w, status, "") }
+// WriteProblem writes the problem response of status with the fixed code, when there is one, in the one problem form
+// of the service (ST-SUP-RC33-OC12), for a handler of the generated code around the query runtime, such as the wait
+// for the caller's write. It holds no error text.
+func (rt *Runtime) WriteProblem(w http.ResponseWriter, status int, code string) { rt.writeCodedProblem(w, status, code) }
 
-// writeCodedProblem writes the problem response of status with the fixed code, when there is one.
-func writeCodedProblem(w http.ResponseWriter, status int, code string) {
+// writeProblem writes the problem response of status.
+func (rt *Runtime) writeProblem(w http.ResponseWriter, status int) {
+	rt.writeCodedProblem(w, status, "")
+}
+
+// writeCodedProblem writes the problem response of status with the fixed code, when there is one. Its type is the
+// type of the code under the declared problem base (ST-SUP-RC33-OC12); a nil runtime has no base.
+func (rt *Runtime) writeCodedProblem(w http.ResponseWriter, status int, code string) {
 	if status == http.StatusServiceUnavailable {
 		// A 503 is a read that the provider could not decide now; the client may try again (ST-SUP-Q140).
 		w.Header().Set("Retry-After", RetryAfter())
@@ -206,7 +214,11 @@ func writeCodedProblem(w http.ResponseWriter, status int, code string) {
 	if title == "" {
 		title = http.StatusText(status)
 	}
-	body, _ := json.Marshal(problem{Type: "about:blank", Title: title, Status: status, Code: code})
+	base := ""
+	if rt != nil {
+		base = rt.problemBase
+	}
+	body, _ := json.Marshal(problem{Type: authn.ProblemTypeOf(base, status, code), Title: title, Status: status, Code: code})
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)

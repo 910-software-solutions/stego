@@ -47,6 +47,9 @@ type Config struct {
 	// or the last key after a rotation (ST-SUP-RP11-LC23). Each holds at least MinCursorKey bytes and differs from
 	// CursorKey; they need CursorKey.
 	ExtraCursorKeys [][]byte
+	// ProblemBase is the declared problem base of the service, error_type_base: the type of each problem response is
+	// the type of its code under it (ST-SUP-RC33-OC12). Empty gives about:blank.
+	ProblemBase string
 	// Meter, when it is not nil, records the metric query.list.over_bound: the count of ordered lists of an entity of
 	// small expected cardinality whose resource search gave more than MaxSearchKeys keys, by entity
 	// (ST-SUP-RP11-LC20). Nil records no metric.
@@ -66,6 +69,8 @@ type Runtime struct {
 	overBound metric.Int64Counter
 
 	cursorAEAD cipher.AEAD
+	// problemBase is Config.ProblemBase.
+	problemBase string
 	// openAEADs are the AEADs that open a cursor: of CursorKey first, then of each extra key (ST-SUP-RP11-LC23).
 	openAEADs []cipher.AEAD
 
@@ -116,7 +121,7 @@ func New(cfg Config) (*Runtime, error) {
 		return nil, errors.New("query: a cursor key needs the service name")
 	}
 	rt := &Runtime{db: cfg.DB, auditDB: cfg.AuditDB, audit: cfg.Audit, settings: cfg.AuditSettings, authz: cfg.Authz,
-		service: cfg.Service}
+		service: cfg.Service, problemBase: cfg.ProblemBase}
 	if cfg.Meter != nil {
 		counter, err := cfg.Meter.Meter(instrumentation).Int64Counter("query.list.over_bound",
 			metric.WithDescription("The ordered lists of an entity of small expected cardinality whose resource search gave more keys than the bound, by entity."))
