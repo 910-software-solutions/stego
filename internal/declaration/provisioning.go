@@ -106,7 +106,8 @@ func checkProvisioningSchema(service *types.ServiceDeclaration, schema *AuthzSch
 	var faults []ValidationError
 	// The resource of the provisioning has a definition of its own: one that is a subject type, or the resource
 	// type of an entity, would share its IDs with principals or with tenant data (security review of PR 253, L1).
-	if provisioning.ResourceType == service.Authorization.SubjectFromIdentity || schema.grants(provisioning.ResourceType) || declaredResourceTypes(service.Entities)[provisioning.ResourceType] {
+	// The relation service of the type tenant admits it as the subject that Provision writes (ST-DECL-INV103).
+	if provisioning.ResourceType == service.Authorization.SubjectFromIdentity || schema.grantsBut(provisioning.ResourceType, tenantType, tenantServiceRelation) || declaredResourceTypes(service.Entities)[provisioning.ResourceType] {
 		faults = append(faults, ValidationError{Category: "authorization", Rule: "tenant-provisioning", Path: path + ".resource_type", Found: provisioning.ResourceType,
 			Message: fmt.Sprintf("the tenant provisioning names the resource type %q, which is a subject type or the resource type of an entity; give the service-level resource a definition of its own, such as service", provisioning.ResourceType)})
 	}
@@ -130,6 +131,33 @@ func checkProvisioningSchema(service *types.ServiceDeclaration, schema *AuthzSch
 	}
 	return append(faults, checkAdminRelation(service, schema, definition)...)
 }
+
+// checkTenantServiceRelation holds the relation service of the type tenant to the tenant provisioning
+// (ST-DECL-INV103): Provision writes it with the service-level resource of the tenant as subject (ST-SUP-RC27-OC18),
+// so the declaration declares a tenant provisioning and the relation admits its resource type and no other subject
+// type. A schema with no such relation passes.
+func checkTenantServiceRelation(service *types.ServiceDeclaration, schema *AuthzSchema) []ValidationError {
+	definition, ok := schema.definitions[tenantType]
+	if !ok || !hasRelation(definition, tenantServiceRelation) {
+		return nil
+	}
+	const found = tenantType + "#" + tenantServiceRelation
+	fault := func(path, format string, args ...any) []ValidationError {
+		return []ValidationError{{Category: "authorization", Rule: "tenant-provisioning", Path: path, Found: found, Message: fmt.Sprintf(format, args...)}}
+	}
+	if !statedPooled(service) || service.Tenancy.Provisioning == nil || service.Tenancy.Provisioning.ResourceType == "" {
+		return fault("tenancy.provisioning", "the schema %s declares the relation %s of the type %s, which Provision writes, and the declaration declares no tenant provisioning; declare tenancy.provisioning, or remove the relation", schema.Path, tenantServiceRelation, tenantType)
+	}
+	resourceType := service.Tenancy.Provisioning.ResourceType
+	if subjects := definition.relations[tenantServiceRelation]; len(subjects) != 1 || subjects[0] != resourceType {
+		return fault("tenancy.provisioning.resource_type", "the relation %s of the type %s in the schema %s admits %s; Provision writes it with the service-level resource of the tenant as subject, so declare it as relation %s: %s and admit no other subject type", tenantServiceRelation, tenantType, schema.Path, strings.Join(subjects, " | "), tenantServiceRelation, resourceType)
+	}
+	return nil
+}
+
+// tenantServiceRelation is the relation of the type tenant that relates the tenant resource to the service-level
+// resource of the tenant (ST-SUP-RC27-OC18).
+const tenantServiceRelation = "service"
 
 // listTenantsPermission is the permission of the service-level resource type that decides the tenant list of the
 // operator (ST-SUP-RC27-OC16).

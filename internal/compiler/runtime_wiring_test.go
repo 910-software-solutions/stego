@@ -511,6 +511,7 @@ var wiringCheckIDs = []string{
 	"ST-SUP-RC35-OC14-T02 The writes of a worker send the change events of their rows to Kafka",
 	"ST-SUP-RC35-OC13-T01 Provisioning a tenant writes one tuple for each worker in that tenant only",
 	"ST-SUP-RC27-OC13-T01 Provision gives each first administrator the admin relation in the new tenant only, which the relay writes to SpiceDB",
+	"ST-SUP-RC27-OC18-T01 Provision relates the tenant resource to the service-level resource, so the first administrators read the rows of the tenant",
 	"ST-SUP-RC35-OC13-T06 The reconcile at start gives a tenant of an earlier release each worker's tuple and deletes the tuple of a removed worker",
 	"ST-SUP-RC20-OC48-T01 A secret field is written by a request, never answered, and kept by a write that leaves it out",
 	"ST-SUP-RC32-OC20-T01 A command fill reads a readable secret and checks a compare-only one",

@@ -805,6 +805,51 @@ func (f *provisioningFixture) tuples(t *testing.T, tenantID string) []string {
 }
 
 func TestProvisioningRelations(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC52-T01 A Provision with the service relation relates the tenant resource to the service-level resource of the tenant, and a Retire deletes it", func(t *testing.T) {
+		f := newProvisioningFixture(t, nil, TenantSpec{ServiceRelation: true})
+		org := mustTenant(t, "org-s")
+		tenantResource, err := authz.TenantResource(org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceResource, err := authz.NewResource(org, "service", "orders")
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := tenantResource.String() + "#service@" + serviceResource.String()
+		if status, body := f.send("/stego/tenants", "k-s1", `{"tenant_id":"org-s"}`); status != http.StatusCreated {
+			t.Fatalf("the Provision answered %d %s", status, body)
+		}
+		if got := f.tuples(t, "org-s"); !slices.Contains(got, "touch "+want) {
+			t.Fatalf("the Provision staged %v, want the touch of %s", got, want)
+		}
+		if strings.Contains(want, "@service:orders") {
+			t.Fatalf("the tuple %s names the unqualified service-level resource", want)
+		}
+		// A replay of the key stages nothing again.
+		before := len(f.tuples(t, "org-s"))
+		if status, _ := f.send("/stego/tenants", "k-s1", `{"tenant_id":"org-s"}`); status != http.StatusCreated || len(f.tuples(t, "org-s")) != before {
+			t.Fatalf("the replay answered %d and staged %d tuples more", status, len(f.tuples(t, "org-s"))-before)
+		}
+		if status, body := f.send("/stego/tenants/org-s/retire", "k-s2", `{}`); status != http.StatusOK {
+			t.Fatalf("the Retire answered %d %s", status, body)
+		}
+		if got := f.tuples(t, "org-s"); !slices.Contains(got, "delete "+want) {
+			t.Fatalf("the Retire staged %v, want the delete of %s", got, want)
+		}
+
+		// A schema with no relation service of the type tenant gets no such tuple.
+		plain := newProvisioningFixture(t, nil, TenantSpec{})
+		if status, body := plain.send("/stego/tenants", "k-p1", `{"tenant_id":"org-p"}`); status != http.StatusCreated {
+			t.Fatalf("the Provision answered %d %s", status, body)
+		}
+		for _, tuple := range plain.tuples(t, "org-p") {
+			if strings.Contains(tuple, "#service@") {
+				t.Fatalf("a Provision with no service relation staged %s", tuple)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RP16-LC05-T02 A Provision and a Retire of a runtime with a key ring store a keyed fingerprint and a sealed answer, and replay it", func(t *testing.T) {
 		ring := vaultRing(t, "1 "+throwawayKey(t))
 		f := newProvisioningFixture(t, func(c *Config) { c.Ring = ring }, TenantSpec{})

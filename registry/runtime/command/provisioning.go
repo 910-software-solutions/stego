@@ -105,7 +105,17 @@ type TenantSpec struct {
 	// of the schema but the subject type, service_account and ResourceType. A Retire stages, for each, the delete of
 	// every relationship of the retired tenant, so no tuple of its rows stays in SpiceDB (ST-SUP-RC27-OC15).
 	TenantTypes []string
+	// ServiceRelation states that the schema declares the relation service on the type tenant. A Provision then
+	// stages the tuple tenant:<tenant resource ID>#service@<ResourceType>:<tenant-qualified service name>, which
+	// relates the tenant resource of the new tenant to its service-level resource, and a Retire stages its delete, so
+	// the schema decides who reads a row that relates only to the tenant resource (ST-SUP-RC27-OC18,
+	// ST-SUP-RP10-LC52).
+	ServiceRelation bool
 }
+
+// TenantServiceRelation is the relation of the type tenant that relates the tenant resource to the service-level
+// resource of the same tenant (ST-SUP-RC27-OC18).
+const TenantServiceRelation = "service"
 
 // The members of the body of a Provision that name the first administrators, and their bounds (ST-SUP-RC27-OC13).
 const (
@@ -247,6 +257,46 @@ func unrelateTenant(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.T
 		if _, err := handle.UnrelateTenant(ctx, resourceType); err != nil {
 			return fmt.Errorf("command: the delete of the tuples of %s of the retired tenant was not staged: %w", resourceType, err)
 		}
+	}
+	return nil
+}
+
+// serviceTuple gives the tuple that relates the tenant resource of t to the tenant-qualified service-level resource of
+// t: tenant:<tenant resource ID>#service@<resource type>:<base64url tenant>/<base64url service>, never the
+// unqualified service-level resource of the whole service (ST-SUP-RC27-OC18).
+func (s TenantSpec) serviceTuple(t tenant.Tenant, service string) (authz.Tuple, error) {
+	resource, err := authz.TenantResource(t)
+	if err != nil {
+		return authz.Tuple{}, err
+	}
+	of, err := authz.NewResource(t, s.ResourceType, service)
+	if err != nil {
+		return authz.Tuple{}, err
+	}
+	return authz.Tuple{Resource: resource, Relation: TenantServiceRelation, Subject: authz.Subject{Type: of.Type, ID: of.ID}}, nil
+}
+
+// relateService stages, when the spec states the service relation, a touch of the service tuple of t for a Provision
+// and its delete for a Retire, through an authorization handle bound to the caller in the transaction tx of the
+// change, joined to the revocation of the transaction (ST-SUP-RP10-LC52).
+func relateService(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx, req Request, t tenant.Tenant) error {
+	if !spec.ServiceRelation {
+		return nil
+	}
+	tuple, err := spec.serviceTuple(t, rt.cfg.Service)
+	if err != nil {
+		return fmt.Errorf("command: the service tuple of the tenant was not built: %w", err)
+	}
+	handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, []authz.Relation{{ResourceType: tuple.Resource.Type, Name: tuple.Relation}})
+	if err != nil {
+		return fmt.Errorf("command: the authorization handle of the service tuple was not bound: %w", err)
+	}
+	write := handle.Relate
+	if spec.Action == tenant.RetireAction {
+		write = handle.Unrelate
+	}
+	if _, err := write(ctx, tuple); err != nil {
+		return fmt.Errorf("command: the tuple %s#%s of the tenant was not staged: %w", tuple.Resource.Type, tuple.Relation, err)
 	}
 	return nil
 }
@@ -744,6 +794,11 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 				return idempotency.Response{}, err
 			}
 			if err := unrelateUndeclared(ctx, rt, spec, tx, req, t, undeclared); err != nil {
+				return idempotency.Response{}, err
+			}
+			// The tenant resource reaches the service-level resource of the tenant, so the schema decides who reads a
+			// row that a worker made with no parent (ST-SUP-RC27-OC18).
+			if err := relateService(ctx, rt, spec, tx, req, t); err != nil {
 				return idempotency.Response{}, err
 			}
 			// A Retire deletes the tuples of the rows of the tenant, which stay in the database (ST-SUP-RC27-OC15).

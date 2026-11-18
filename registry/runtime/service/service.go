@@ -79,6 +79,10 @@ type Parts struct {
 	// definition tenant has worker relations: without it, no reconcile of the worker tuples runs and a Retire reads
 	// no undeclared worker relation (ST-SUP-RC35-OC13, security re-review of PR #379, H1).
 	Definitions []string
+	// Relations are the relations of the authorization schema of the service. The relation service of the type tenant
+	// makes Provision relate the tenant resource to the service-level resource of the tenant, and Retire delete it
+	// (ST-SUP-RC27-OC18, ST-SUP-RP10-LC52).
+	Relations []authz.Relation
 	// Workers are the parts of the worker and controller modes, which Start runs (ST-SUP-RP14-LC04).
 	Workers WorkerParts
 	// OwnerRole is the owner role of the service, which the migration job runs as and which must own each table of
