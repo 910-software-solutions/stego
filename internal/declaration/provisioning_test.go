@@ -74,6 +74,19 @@ func TestTenantProvisioning(t *testing.T) {
 			}
 		})
 	}
+	t.Run("ST-SUP-RC27-OC16-T03 A list_tenants that reaches a wildcard is refused, and one of the operator is accepted", func(t *testing.T) {
+		own := "definition service {\n\trelation operator: user\n\tpermission provision = operator\n\tpermission retire = operator\n}\n"
+		listed := strings.Replace(schema, own, "definition service {\n\trelation operator: user\n\trelation anyone: user:*\n\tpermission provision = operator\n\tpermission retire = operator\n\tpermission list_tenants = operator\n}\n", 1)
+		if listed == schema {
+			t.Fatal("the schema of TD03 holds no definition service")
+		}
+		expectAccepted(t, checkTD03(t, service, listed))
+		public := strings.Replace(listed, "permission list_tenants = operator", "permission list_tenants = operator + anyone", 1)
+		fault := expectOneFault(t, checkTD03(t, service, public), "tenant-provisioning", "list_tenants", "wildcard", "never public")
+		if fault.Path != "tenancy.provisioning.resource_type" {
+			t.Errorf("want the fault at tenancy.provisioning.resource_type, got %+v", fault)
+		}
+	})
 	t.Run(inv78+": a wildcard that an exclusion takes away, or that only one side of an intersection reaches, is not public", func(t *testing.T) {
 		definition := "definition service {\n\trelation operator: user\n\trelation anyone: user:*\n\trelation banned: user:*\n\tpermission provision = operator & anyone\n\tpermission retire = operator - banned\n}\n"
 		widened := strings.Replace(schema, "definition service {\n\trelation operator: user\n\tpermission provision = operator\n\tpermission retire = operator\n}\n", definition, 1)

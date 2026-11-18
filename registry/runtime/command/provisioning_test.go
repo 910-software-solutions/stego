@@ -1,6 +1,10 @@
 package command
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,6 +18,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/query"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -134,6 +139,101 @@ func TestProvisioning(t *testing.T) {
 		}
 		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'org-a' AND outcome = 'denied' AND action = $1`, ProvisionCommand); n != 1 || rt.UnlistedOutcomes() != 2 {
 			t.Fatalf("the denied call of bob left %d denied rows in org-a and the counter at %d, want one row and 2", n, rt.UnlistedOutcomes())
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC16-T01 The operator lists the tenants in pages with a cursor, a deny is 404, and each call is audited", func(t *testing.T) {
+		e := newEnv(t)
+		migration, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(migration)
+		rt := e.runtime(func(c *Config) { c.Entities = nil })
+		cursors, err := query.New(query.Config{DB: rt.cfg.DB, Service: "orders", CursorKey: bytes.Repeat([]byte{'k'}, query.MinCursorKey)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The caller's tenant ops is active, so each call writes its audit row in the chain of ops.
+		for _, id := range []string{"ops", "org-a", "org-b", "org-c"} {
+			e.exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('` + id + `')`)
+		}
+		e.exec(`UPDATE public.stego_tenants SET retired_at = now() WHERE tenant_id = 'org-b'`)
+		active := func(_ context.Context, t tenant.Tenant) (bool, error) { return t.ID() != "org-b", nil }
+		list, err := ServeTenantList(rt, TenantListSpec{ResourceType: "service", Schema: "public", SubjectType: "user",
+			Active: active, Cursors: cursors})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		tokenOf := func(subject string) string {
+			claims := authntest.Claims("https://issuer.example", "orders", subject, time.Now())
+			claims["tenant"] = "ops"
+			return authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		}
+		var decided []string
+		e.decision.setAllow(func(subject, action, resource string) bool {
+			decided = append(decided, action+" "+resource)
+			// The subject ID of a person ends with the base64url form of the sub claim: b3AtMQ for op-1.
+			return action == ListTenantsPermission && resource == "UNQUALIFIED service:orders" && strings.HasSuffix(subject, "|b3AtMQ")
+		})
+		defer e.decision.setAllow(nil)
+		get := func(subject, target string) (int, map[string]any) {
+			r := httptest.NewRequest(http.MethodGet, target, nil)
+			r.Header.Set("Authorization", "Bearer "+tokenOf(subject))
+			w := httptest.NewRecorder()
+			verifier.Middleware(list).ServeHTTP(w, r)
+			var body map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &body)
+			return w.Code, body
+		}
+		ids := func(body map[string]any) []string {
+			var out []string
+			items, _ := body["items"].([]any)
+			for _, item := range items {
+				m := item.(map[string]any)
+				out = append(out, fmt.Sprint(m["tenant_id"], " ", m["state"], " ", m["retired_at"] != nil, " ", m["provisioned_at"] != nil))
+			}
+			return out
+		}
+		status, first := get("op-1", "/stego/tenants?limit=2")
+		if status != http.StatusOK || !slices.Equal(ids(first), []string{"ops active false true", "org-a active false true"}) || first["next"] == nil {
+			t.Fatalf("the first page is %d %v, want ops and org-a with a cursor", status, first)
+		}
+		status, second := get("op-1", "/stego/tenants?limit=2&cursor="+first["next"].(string))
+		if status != http.StatusOK || !slices.Equal(ids(second), []string{"org-b retired true true", "org-c active false true"}) || second["next"] != nil {
+			t.Fatalf("the second page is %d %v, want org-b retired and org-c, with no cursor", status, second)
+		}
+		// The cursor of op-1 does not open for another principal, and a bad limit is 400.
+		if status, body := get("op-2", "/stego/tenants?cursor="+first["next"].(string)); status != http.StatusBadRequest || body["code"] != ErrorCodeInvalid {
+			t.Fatalf("the cursor of another principal gave %d %v, want 400 invalid", status, body)
+		}
+		if status, _ := get("op-1", "/stego/tenants?limit=0"); status != http.StatusBadRequest {
+			t.Fatalf("limit 0 gave %d, want 400", status)
+		}
+		// A caller without list_tenants gets 404 denied, and reads no list.
+		if status, body := get("op-2", "/stego/tenants"); status != http.StatusNotFound || body["code"] != ErrorCodeDenied || body["items"] != nil {
+			t.Fatalf("a caller without list_tenants got %d %v, want 404 denied", status, body)
+		}
+		if !slices.Contains(decided, "list_tenants UNQUALIFIED service:orders") {
+			t.Fatalf("the decisions were %v, want list_tenants on service:orders", decided)
+		}
+		// Each allowed call writes ok, the deny writes denied, in the chain of the caller's tenant.
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND action = 'list-tenants' AND outcome = 'ok'`); n != 2 {
+			t.Fatalf("%d ok rows of list-tenants, want 2", n)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND action = 'list-tenants' AND outcome = 'denied'`); n != 1 {
+			t.Fatalf("%d denied rows of list-tenants, want 1", n)
 		}
 	})
 

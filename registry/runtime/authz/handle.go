@@ -586,6 +586,32 @@ func (h *Handle) DecideTenantPermission(ctx context.Context, action tenant.Reque
 	return tenantDecision{DecisionMark: seal.NewDecisionMark(tenantID, string(action))}, true, nil
 }
 
+// DecideService decides permission on the service-level resource resource at the floor, for a request that names no
+// tenant, such as the tenant list of an operator (ST-SUP-RC27-OC16). resource is of ServiceResource, whose ID is not
+// tenant-qualified; it refuses one whose ID is with ErrQualifiedService. It tells whether the permission is allowed.
+func (h *Handle) DecideService(ctx context.Context, permission string, resource Resource) (bool, error) {
+	if err := validType("permission", permission); err != nil {
+		return false, err
+	}
+	if err := resource.service(); err != nil {
+		return false, err
+	}
+	floor, err := h.floor(ctx)
+	if err != nil {
+		return false, err
+	}
+	result, err := h.runtime.port.evaluateService(ctx, EvaluationRequest{
+		Subject:     h.principal.subject,
+		Action:      Action{Name: permission},
+		Resource:    resource,
+		Consistency: atFloor(floor, Token{}),
+	}, Token{})
+	if err != nil {
+		return false, err
+	}
+	return result.Allowed, nil
+}
+
 // Revocation names the one revocation of a transaction: every tuple that the transaction enqueues joins it, touch
 // or delete, through any handle bound to the transaction (ST-SUP-RP06-LC12). Its identity is known before the
 // commit.

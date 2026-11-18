@@ -333,6 +333,15 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		Meter: svc.telemetry.MeterProvider()}); err != nil {
 		return nil, err
 	}
+	// The tenant list of the operator, when the schema declares list_tenants (ST-SUP-RC27-OC16); its cursor is sealed
+	// as the query cursors are.
+	if svc.tenants != nil && p.Provisioning.List != "" {
+		if svc.tenants.list, err = command.ServeTenantList(svc.tenants.rt, command.TenantListSpec{
+			ResourceType: p.Provisioning.ResourceType, Schema: p.Workers.TenantSchema, SubjectType: p.SubjectType,
+			Active: svc.tenants.gate.Active, Cursors: svc.queries}); err != nil {
+			return nil, err
+		}
+	}
 	// The parked-message list and resolve of an operator, which the generated code serves in the api mode only
 	// (ST-SUP-RP14-LC09, ST-SUP-RP14-LC10).
 	svc.version = s.ServiceVersion

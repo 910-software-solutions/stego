@@ -29,6 +29,10 @@ type Provisioning struct {
 	// AdminRelation is the declared relation of ResourceType that Provision gives each first administrator of a new
 	// tenant, or "" when the provisioning declares none (ST-SUP-RC27-OC13, ST-DECL-EN27).
 	AdminRelation string
+	// List is the permission list_tenants of ResourceType when the schema declares it, and ListRoute GET <base
+	// path>/stego/tenants, the tenant list of the operator; with no List, the service serves no tenant list
+	// (ST-SUP-RC27-OC16).
+	List, ListRoute string
 }
 
 // The path of the provisioning routes after the base path.
@@ -49,18 +53,26 @@ func (p *Provisioning) check() error {
 		p.RetireRoute != p.ProvisionRoute+RetireTailPath || strings.ContainsAny(base, " {}") {
 		return fmt.Errorf("service: the provisioning routes must be POST <base path>%s and POST <base path>%s%s", TenantsPath, TenantsPath, RetireTailPath)
 	}
+	if p.ListRoute != "" && p.ListRoute != "GET "+base {
+		return fmt.Errorf("service: the route of the tenant list must be GET <base path>%s", TenantsPath)
+	}
+	if p.List != "" && p.ListRoute == "" {
+		return errors.New("service: the tenant list needs its route")
+	}
 	return nil
 }
 
 // tenantProvisioning is what New makes of the declared provisioning: the gate of the tenant list, the routes that
 // the gate lets through, and the handlers of Provision and Retire.
 type tenantProvisioning struct {
-	gate        *tenant.Gate
-	exempt      *http.ServeMux
-	marker      *exemptRoute
-	patterns    map[string]bool
-	provision   http.Handler
-	retire      http.Handler
+	gate      *tenant.Gate
+	exempt    *http.ServeMux
+	marker    *exemptRoute
+	patterns  map[string]bool
+	provision http.Handler
+	retire    http.Handler
+	// list is the tenant list of the operator, or nil when the schema declares no list_tenants (ST-SUP-RC27-OC16).
+	list        http.Handler
 	problemType string
 	// rt is the command runtime of Provision and Retire, on which the controller mode reconciles the worker tuples
 	// (ST-SUP-RC35-OC13).
@@ -81,6 +93,12 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	tp.marker = &exemptRoute{}
 	tp.exempt.Handle(p.ProvisionRoute, tp.marker)
 	tp.exempt.Handle(p.RetireRoute, tp.marker)
+	if p.ListRoute != "" {
+		// The tenant list is decided on the service-level resource as Provision and Retire are, so the tenant check
+		// exempts it too (ST-SUP-RC27-OC16).
+		tp.patterns[p.ListRoute] = true
+		tp.exempt.Handle(p.ListRoute, tp.marker)
+	}
 	// Provision writes the tuple of each declared worker's relation on the new tenant, and Retire deletes it
 	// (ST-SUP-RC35-OC13).
 	spec := command.TenantSpec{ResourceType: p.ResourceType, Schema: schema, SubjectType: svc.parts.SubjectType,
@@ -217,6 +235,16 @@ func writeTenantProblem(w http.ResponseWriter, httpStatus int, base, code string
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(httpStatus)
 	_, _ = io.WriteString(w, body)
+}
+
+// TenantList gives the handler of the tenant list of the operator, GET <base path>/stego/tenants, which the
+// generated code registers at the route of its entry of the operation-to-permission table, or nil for a service whose
+// schema declares no list_tenants (ST-SUP-RC27-OC16).
+func (svc *Service) TenantList() http.Handler {
+	if svc.tenants == nil || svc.tenants.list == nil {
+		return nil
+	}
+	return svc.tenants.list
 }
 
 // TenantRoutes gives the handlers of Provision and Retire, which the generated code registers at the routes of their
