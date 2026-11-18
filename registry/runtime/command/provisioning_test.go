@@ -137,6 +137,86 @@ func TestProvisioning(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC27-OC15-T02 Retire stages the delete of the tuples of each tenant type of the retired tenant, and Provision stages none", func(t *testing.T) {
+		e := newEnv(t)
+		migration, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(migration)
+		rt := e.runtime(func(c *Config) { c.Entities = nil })
+		mux := http.NewServeMux()
+		for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+			"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+			h, err := ServeTenant(rt, TenantSpec{Action: action, ResourceType: "service", Permission: string(action), Schema: "public",
+				SubjectType: "user", TenantTypes: []string{"order", "tenant"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux.Handle(route, h)
+		}
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+		claims["tenant"] = "ops"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+		defer e.decision.setAllow(nil)
+		send := func(path, key, body string) int {
+			r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("Idempotency-Key", `"`+key+`"`)
+			w := httptest.NewRecorder()
+			verifier.Middleware(mux).ServeHTTP(w, r)
+			return w.Code
+		}
+		staged := func(tenantID string) []string {
+			rows, err := e.admin.QueryContext(e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
+ (p->'tuple'->>'relation') || ' ' || resource_key FROM (SELECT convert_from(payload, 'UTF8')::jsonb AS p, resource_key, created_at, id
+ FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'authz') m ORDER BY created_at, id`, tenantID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var out []string
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					t.Fatal(err)
+				}
+				out = append(out, line)
+			}
+			return out
+		}
+		if got := send("/stego/tenants", "k-org-x", `{"tenant_id":"org-x"}`); got != http.StatusCreated {
+			t.Fatalf("the provision of org-x answered %d, want 201", got)
+		}
+		if got := staged("org-x"); len(got) != 0 {
+			t.Fatalf("the provision staged %v, want no delete", got)
+		}
+		if got := send("/stego/tenants/org-x/retire", "k-retire-org-x", ""); got != http.StatusOK {
+			t.Fatalf("the retire of org-x answered %d, want 200", got)
+		}
+		prefix := authz.TenantPrefix(mustTenant(t, "org-x"))
+		want := []string{"delete_tenant order:" + prefix + "# order:", "delete_tenant tenant:" + prefix + "# tenant:"}
+		if got := staged("org-x"); !slices.Equal(got, want) {
+			t.Fatalf("the retire of org-x staged %v, want %v", got, want)
+		}
+		// The replay of the retire stages no second delete.
+		if got := send("/stego/tenants/org-x/retire", "k-retire-org-x", ""); got != http.StatusOK || len(staged("org-x")) != 2 {
+			t.Fatalf("the replay of the retire answered %d and staged %v", got, staged("org-x"))
+		}
+	})
+
 	t.Run("ST-SUP-RC35-OC13-T03 Provision stages one tuple for each worker in its tenant, a replay stages none, and Retire deletes them", func(t *testing.T) {
 		e := newEnv(t)
 		migration, err := tenant.Migration("public", e.roles[0])

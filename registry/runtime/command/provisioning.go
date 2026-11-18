@@ -100,6 +100,10 @@ type TenantSpec struct {
 	// whose issuer is not one of them, so no grant waits for a person whom no trusted issuer can name
 	// (ST-SUP-RC27-OC13, security review of PR #414, L1). With an admin relation, it holds at least one issuer.
 	TrustedIssuers []string
+	// TenantTypes are the resource types whose resource IDs are tenant-qualified (ST-SUP-RP06-LC22): each definition
+	// of the schema but the subject type, service_account and ResourceType. A Retire stages, for each, the delete of
+	// every relationship of the retired tenant, so no tuple of its rows stays in SpiceDB (ST-SUP-RC27-OC15).
+	TenantTypes []string
 }
 
 // The members of the body of a Provision that name the first administrators, and their bounds (ST-SUP-RC27-OC13).
@@ -223,6 +227,25 @@ func unrelateAdmins(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.T
 	}
 	if _, err := handle.UnrelateAll(ctx, resource, spec.AdminRelation); err != nil {
 		return fmt.Errorf("command: the delete of the admin relation %s#%s of the retired tenant was not staged: %w", spec.ResourceType, spec.AdminRelation, err)
+	}
+	return nil
+}
+
+// unrelateTenant stages, for a Retire of t, the delete of every relationship of each type of TenantTypes whose
+// resource ID is of t, through an authorization handle bound to the caller in the transaction tx of the Retire; the
+// relay deletes them in bounded parts (ST-SUP-RC27-OC15).
+func unrelateTenant(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx, req Request, t tenant.Tenant) error {
+	if spec.Action != tenant.RetireAction || len(spec.TenantTypes) == 0 {
+		return nil
+	}
+	handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, nil)
+	if err != nil {
+		return fmt.Errorf("command: the authorization handle of the tuples of the tenant was not bound: %w", err)
+	}
+	for _, resourceType := range spec.TenantTypes {
+		if _, err := handle.UnrelateTenant(ctx, resourceType); err != nil {
+			return fmt.Errorf("command: the delete of the tuples of %s of the retired tenant was not staged: %w", resourceType, err)
+		}
 	}
 	return nil
 }
@@ -718,6 +741,10 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 				return idempotency.Response{}, err
 			}
 			if err := unrelateUndeclared(ctx, rt, spec, tx, req, t, undeclared); err != nil {
+				return idempotency.Response{}, err
+			}
+			// A Retire deletes the tuples of the rows of the tenant, which stay in the database (ST-SUP-RC27-OC15).
+			if err := unrelateTenant(ctx, rt, spec, tx, req, t); err != nil {
 				return idempotency.Response{}, err
 			}
 			response, err := tenantResponse(spec.Action, t.ID())

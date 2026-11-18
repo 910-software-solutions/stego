@@ -89,6 +89,13 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 		// A Retire also deletes the tuples of undeclared workers, under the fence of the release identity row.
 		spec.Reader = svc.provider
 	}
+	// A Retire deletes the tuples of each tenant-qualified type of the schema (ST-SUP-RC27-OC15).
+	for _, definition := range svc.parts.Definitions {
+		if definition != svc.parts.SubjectType && definition != authz.ServiceAccountType && definition != p.ResourceType &&
+			definition != authz.DefaultMarker.Resource.Type {
+			spec.TenantTypes = append(spec.TenantTypes, definition)
+		}
+	}
 	var err error
 	spec.Action, spec.Permission, spec.AdminRelation = tenant.ProvisionAction, p.Provision, p.AdminRelation
 	if p.AdminRelation != "" {
