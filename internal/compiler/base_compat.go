@@ -1469,7 +1469,10 @@ func createDifference(before, after postgresadapter.BaselineTable, changes []typ
 		}
 		named := false
 		for key := range fields {
-			named = named || key == "column "+name || strings.HasPrefix(key, "constraint "+table+"_"+name+"_")
+			for _, suffix := range []string{"check", "fkey", "key", "not_null", "complete"} {
+				named = named || key == "constraint "+table+"_"+name+"_"+suffix
+			}
+			named = named || key == "column "+name
 		}
 		if !named {
 			continue

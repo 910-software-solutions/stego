@@ -829,12 +829,13 @@ as `log.Fatal` and `slog.SetDefault`; and `time.AfterFunc` and
 `_test.go`, is not built into the service, so it can import any module of
 `go.mod`.
 
-Thus a fill cannot import `crypto/subtle` to compare two secret values. To
-check a value against a secret, use `sealed.Compared` of a compare-only field
-(see [Check a compare-only secret](#check-a-compare-only-secret)). To compare
-two values that the fill has, compare the SHA-256 digests of the two values
-with `crypto/sha256`: the time of the compare then tells nothing of the
-values.
+Thus a fill cannot import `crypto/subtle` to compare two secret values.
+Prefer a compare-only field and `sealed.Compared` (see [Check a compare-only
+secret](#check-a-compare-only-secret)): it checks a value against the stored
+hash with no timing leak. When the fill must compare two values that it has,
+compare their SHA-256 digests with `crypto/sha256`. Then the time of the
+compare does not show the values, but it can show how much of the two
+digests is the same.
 
 ## Change events
 

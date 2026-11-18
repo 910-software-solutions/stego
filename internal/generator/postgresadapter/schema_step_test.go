@@ -383,12 +383,12 @@ func TestSchemaSteps(t *testing.T) {
 			t.Fatalf("the contract of a rename of a field with a default: %v", err)
 		}
 		contract := generated(t, files, "boards/migrations/step_0002_board-title-rename_contract.sql")
-		first := "COMMENT ON COLUMN public.\"boards\".\"heading\" IS 'stego relax step_0001_board-title-rename_expand\ndefault ''untitled''::character varying(40)';\n" +
-			"ALTER TABLE public.\"boards\" ALTER COLUMN \"heading\" SET DEFAULT 'untitled';\n"
+		first := "ALTER TABLE public.\"boards\" ALTER COLUMN \"heading\" SET DEFAULT 'untitled';\n" +
+			"COMMENT ON COLUMN public.\"boards\".\"heading\" IS 'stego relax step_0001_board-title-rename_expand\ndefault ''untitled''::character varying(40)';\n"
 		if !strings.HasPrefix(contract, first) {
 			t.Errorf("the contract migration of a field with a default is\n%s\nwant it to start with\n%s", contract, first)
 		}
-		if migrate := generated(t, files, "boards/migrate.go"); !strings.Contains(migrate, `When: "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'public.\"boards\"'::pg_catalog.regclass AND a.attname = 'heading' AND NOT a.attisdropped)", Long: false, Guard: false, Also: []string{"ALTER TABLE public.\"boards\" ALTER COLUMN \"heading\" SET DEFAULT 'untitled'"}}`) {
+		if migrate := generated(t, files, "boards/migrate.go"); !strings.Contains(migrate, `{SQL: "ALTER TABLE public.\"boards\" ALTER COLUMN \"heading\" SET DEFAULT 'untitled'", When: "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'public.\"boards\"'::pg_catalog.regclass AND a.attname = 'heading' AND NOT a.attisdropped)", Long: false, Guard: false, Also: []string{"COMMENT ON COLUMN public.\"boards\".\"heading\" IS 'stego relax step_0001_board-title-rename_expand\ndefault ''untitled''::character varying(40)'"}}`) {
 			t.Errorf("migrate.go does not give the default with its comment while the column has none:\n%s", migrate)
 		}
 		if manifest := generated(t, files, "boards/schema_manifest.go"); !strings.Contains(manifest, `{Name: "heading", Type: "character varying(40)", NotNull: true, Default: "'untitled'::character varying(40)"}`) {

@@ -846,13 +846,11 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 	}
 	add := func(s contractStatement) { out.statements = append(out.statements, s) }
 	if u.defaultClause != "" {
-		// The comment comes first in the transaction, so no session of the release of the change sees the default
-		// without it.
 		comment := RelaxComment(expand, "", false, u.manifestDefault, nil)
-		add(contractStatement{sql: fmt.Sprintf("COMMENT ON COLUMN %s.%s IS %s", table, sqlIdentifier(u.name), sqlString(comment)),
+		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET%s", table, sqlIdentifier(u.name), u.defaultClause),
 			when: "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = " +
 				regclass + " AND a.attname = " + sqlString(u.name) + " AND NOT a.attisdropped)",
-			also: []string{fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET%s", table, sqlIdentifier(u.name), u.defaultClause)}})
+			also: []string{fmt.Sprintf("COMMENT ON COLUMN %s.%s IS %s", table, sqlIdentifier(u.name), sqlString(comment))}})
 	}
 	if u.notNull {
 		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s IS NOT NULL) NOT VALID", table, sqlIdentifier(notNull), sqlIdentifier(u.name)),
