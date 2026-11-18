@@ -482,8 +482,16 @@ func TestInbox(t *testing.T) {
 				ev.value = `{"entity":"Order","action":"created","id":"v-4","id":"v-3"}`
 				return ev
 			}(), ReasonKindMismatch},
-			{func() event { ev := change("acme", "orders.order.created", "v-5"); ev.resourceKey = "Bad Type:v-5"; return ev }(), ReasonKeyMismatch},
-			{func() event { ev := change("acme", "orders.order.created", "v-6"); ev.resourceKey = "order:x:v-6"; return ev }(), ReasonKeyMismatch},
+			{func() event {
+				ev := change("acme", "orders.order.created", "v-5")
+				ev.resourceKey = "Bad Type:v-5"
+				return ev
+			}(), ReasonKeyMismatch},
+			{func() event {
+				ev := change("acme", "orders.order.created", "v-6")
+				ev.resourceKey = "order:x:v-6"
+				return ev
+			}(), ReasonKeyMismatch},
 		}
 		var events []event
 		for _, c := range cases {
