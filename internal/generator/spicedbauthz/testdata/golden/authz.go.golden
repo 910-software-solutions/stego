@@ -66,7 +66,7 @@ var Definitions = []string{"document", "outbox_destination", "project", "service
 
 // Relations are the relations of Schema but that of the floor marker: the allow list of the relay, which refuses
 // a delivered tuple of any other relation (ST-SUP-RP06-LC06).
-var Relations = []stegoauthz.Relation{{ResourceType: "document", Name: "owner"}, {ResourceType: "document", Name: "viewer"}, {ResourceType: "project", Name: "owner"}, {ResourceType: "service", Name: "creator"}, {ResourceType: "service", Name: "operator"}}
+var Relations = []stegoauthz.Relation{{ResourceType: "document", Name: "owner"}, {ResourceType: "document", Name: "viewer"}, {ResourceType: "outbox_destination", Name: "operator"}, {ResourceType: "project", Name: "owner"}, {ResourceType: "service", Name: "creator"}, {ResourceType: "service", Name: "operator"}}
 
 // DatabaseSchema is the SQL schema of the protected tables and of the authorization tables.
 const DatabaseSchema = "public"
