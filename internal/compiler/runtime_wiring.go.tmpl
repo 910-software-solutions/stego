@@ -197,6 +197,11 @@ func checkConsumerTopic() error {
 	return nil
 }
 {{- end}}
+{{- if .API}}
+
+// afterSlotsRules are the rules of the destination of the after slots of the collections: idempotent and must land.
+var afterSlotsRules = outbox.Rules{Name: api.AfterSlotsDestination, Idempotent: true, MustLand: true}
+{{- end}}
 
 // parts are what varies with the declaration of the service, which service.New takes. The outbox worker gets the
 // destinations of the service's components{{if .API}} and the after slots of the collections (ST-SUP-RC20-OC34){{end}}.
@@ -230,8 +235,8 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 {{- if .API}}
 				// An after slot runs only for an active tenant: the message of a retired tenant is parked before its
 				// fill (ST-SUP-RC27-OC12).
-				if err := w.Register(outbox.Destination{Name: api.AfterSlotsDestination, Idempotent: true, MustLand: true,
-					ActiveTenants: true, Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
+				if err := w.Register(outbox.Destination{Name: afterSlotsRules.Name, Idempotent: afterSlotsRules.Idempotent,
+					MustLand: afterSlotsRules.MustLand, ActiveTenants: true, Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
 					return nil, err
 				}
 {{- end}}
@@ -268,7 +273,24 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 {{- if .Provisioning}}
 		Provisioning: provisioning(),
 {{- end}}
+		// The declared rules of the destinations that the outbox worker registers, which the resolver of the api mode
+		// applies to a parked message (ST-SUP-RP14-LC10).
+		Destinations: destinations(),
 	}
+}
+
+// destinations gives the declared rules of each destination that the outbox worker of the service registers: those
+// of the components{{if .API}} and of the after slots of the collections{{end}}{{if .Consumers}} and of the consumed destinations of the workers{{end}}.
+// The runtime adds those of authz itself.
+func destinations() []outbox.Rules {
+	rules := svcoutbox.Rules()
+{{- if .API}}
+	rules = append(rules, afterSlotsRules)
+{{- end}}
+{{- if .Consumers}}
+	rules = append(rules, workerrunners.ConsumedRules()...)
+{{- end}}
+	return rules
 }
 {{- if .Provisioning}}
 

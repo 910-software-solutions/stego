@@ -97,8 +97,9 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	if tp.provision, err = command.ServeTenant(rt, spec); err != nil {
 		return nil, err
 	}
-	// A Retire takes no admins (ST-SUP-RC27-OC13).
-	spec.Action, spec.Permission, spec.AdminRelation = tenant.RetireAction, p.Retire, ""
+	// A Retire takes no admins (ST-SUP-RC27-OC13), and deletes the tuples of the admin relation of the tenant
+	// (security review of PR #414, L4).
+	spec.Action, spec.Permission = tenant.RetireAction, p.Retire
 	if tp.retire, err = command.ServeTenant(rt, spec); err != nil {
 		return nil, err
 	}

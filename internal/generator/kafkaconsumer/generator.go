@@ -95,7 +95,7 @@ func (g *Generator) Generate(ctx gen.Context) ([]gen.File, *gen.Wiring, error) {
 	b.WriteString("}}\n\n")
 	b.WriteString("// Inbox gives the Kafka inbox of the subscription with the settings of the process environment, for the worker\n// mode (ST-SUP-RP01-LC38). A setting that it refuses names the variable and no value.\n")
 	b.WriteString("func Inbox(env service.InboxEnv) (*kafkainbox.Inbox, error) {\n\tsettings, err := kafkainbox.ReadSettings(Subscription.Service, Subscription.Name)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n")
-	b.WriteString("\treturn kafkainbox.New(kafkainbox.Config{Subscription: Subscription, Settings: settings, Queue: env.Queue, DB: env.DB,\n\t\tTenants: env.Tenants, Retention: env.Retention, Logs: env.Logs, Meter: env.Meter})\n}\n\n")
+	b.WriteString("\treturn kafkainbox.New(kafkainbox.Config{Subscription: Subscription, Settings: settings, Queue: env.Queue, DB: env.DB,\n\t\tTenants: env.Tenants, TenantSchema: env.TenantSchema, Retention: env.Retention, Logs: env.Logs, Meter: env.Meter})\n}\n\n")
 	b.WriteString("// Migration gives the migration text of the table of the refused records for the worker role (ST-SUP-RP01-LC37).\nfunc Migration(workerRole string) (string, error) { return kafkainbox.Migration(workerRole) }\n")
 	source, err := format.Source(b.Bytes())
 	if err != nil {

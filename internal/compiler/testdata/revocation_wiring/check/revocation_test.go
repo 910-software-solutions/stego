@@ -1012,6 +1012,40 @@ func TestRevocationWiring(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC33-OC10-T01 A declared query that names the caller's write waits for it and shows it", func(t *testing.T) {
+		id, created := s.create(t, bob, "k-oc10-1")
+		path := location(t, created)
+		card := basePath + "/documents/" + id + "/card"
+		// With no header the query waits for nothing and does not see the create before the relay delivers it.
+		plain := s.do(t, &bob, http.MethodGet, card, "", "Prefer", "wait=5")
+		if plain.code != http.StatusNotFound || len(plain.header.Values(authz.RevocationHeader)) != 0 {
+			t.Fatalf("a query before the delivery with no %s answered %d %v, want 404 with no %s", authz.RevocationAfterHeader, plain.code, plain.header, authz.RevocationHeader)
+		}
+		stopped := make(chan func(), 1)
+		go func() { time.Sleep(300 * time.Millisecond); stopped <- s.startRelay(t) }()
+		r := s.do(t, &bob, http.MethodGet, card, "", authz.RevocationAfterHeader, path, "Prefer", "wait=5")
+		defer (<-stopped)()
+		if r.code != http.StatusOK || r.header.Get(authz.RevocationHeader) != "complete" || !strings.Contains(string(r.body), id) ||
+			r.header.Get("Cache-Control") != "no-store" {
+			t.Fatalf("a query with %s answered %d %v %s, want 200 complete and no-store with the document", authz.RevocationAfterHeader, r.code, r.header, r.body)
+		}
+		// A revocation that is not the caller's is unknown, and a value that is no identity, or two values, are a bad
+		// request that reaches no fill.
+		if r := s.do(t, &bob, http.MethodGet, card, "", authz.RevocationAfterHeader, paths["t1/"+alice.subject]); r.code != http.StatusOK || r.header.Get(authz.RevocationHeader) != "unknown" {
+			t.Fatalf("a query with alice's revocation answered %d %v, want 200 unknown", r.code, r.header)
+		}
+		for _, bad := range [][]string{{authz.RevocationAfterHeader, "not-an-id"}, {authz.RevocationAfterHeader, path, authz.RevocationAfterHeader, path}} {
+			r := s.do(t, &bob, http.MethodGet, card, "", bad...)
+			if r.code != http.StatusBadRequest || r.header.Get("Content-Type") != "application/problem+json" || strings.Contains(string(r.body), id) {
+				t.Fatalf("a query with the bad headers %q answered %d %v %s, want a 400 problem", bad, r.code, r.header, r.body)
+			}
+		}
+		// A request with no credential is 401 and answers no state of the revocation.
+		if r := s.do(t, nil, http.MethodGet, card, "", authz.RevocationAfterHeader, path, "Prefer", "wait=5"); r.code != http.StatusUnauthorized || len(r.header.Values(authz.RevocationHeader)) != 0 {
+			t.Fatalf("a query with no credential answered %d %v, want 401 with no %s", r.code, r.header, authz.RevocationHeader)
+		}
+	})
+
 	t.Run("ST-SUP-RC20-OC42-T02 A wait does not open a denied row, and reads and the status route share the waiter limit", func(t *testing.T) {
 		stop := s.startRelay(t)
 		denied, created := s.create(t, alice, "k-oc42-2a")

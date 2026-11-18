@@ -275,6 +275,26 @@ func ActiveIn(ctx context.Context, q Querier, schema string, t Tenant) (bool, er
 	return active, nil
 }
 
+// listLock is the transaction lock of one tenant of the tenant list. Provision and Retire hold it alone (%s is
+// empty) before they change the tenant list; a writer for the tenant that must not write after a Retire of it
+// holds it shared (%s is _shared) with HoldList, so it waits for a Retire that runs and reads ActiveIn after that
+// Retire committed (security review of PR #418, L1).
+const listLock = `SELECT pg_catalog.pg_advisory_xact_lock%s(pg_catalog.hashtextextended('stego.tenant-list:' || $1, 0))`
+
+// HoldList takes, through q, an open transaction of READ COMMITTED, the shared lock of the entry of t in the tenant
+// list until the transaction ends. A Retire of t that runs ends first, and a Retire of t that starts later waits for
+// the transaction. A later ActiveIn in the transaction so reads the tenant list after each Retire of t that came
+// first, and the transaction never writes for a tenant that was retired before it commits.
+func HoldList(ctx context.Context, q Querier, t Tenant) error {
+	if t.IsZero() {
+		return ErrZero
+	}
+	if _, err := q.ExecContext(ctx, fmt.Sprintf(listLock, "_shared"), t.ID()); err != nil {
+		return fmt.Errorf("tenant: take the lock of the tenant list for %s: %w", t.ID(), err)
+	}
+	return nil
+}
+
 // Hook is the work that the generated code registers for a tenant's provisioning or retirement. It runs in the
 // transaction that writes the tenant list, with that tenant set, so its writes commit with the change of the tenant
 // list or not at all. It gets the transaction as a Querier, so it cannot commit; Provision and Retire commit.
@@ -307,6 +327,12 @@ func change(ctx context.Context, db *sql.DB, schema string, t Tenant, hooks []Ho
 	tx, err := Begin(ctx, db, t, nil)
 	if err != nil {
 		return err
+	}
+	// The lock that HoldList takes shared: a writer that holds it ends before the change, and one that comes later
+	// reads the tenant list after the commit.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(listLock, ""), t.id); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("tenant: take the lock of the tenant list for %s: %w", t.id, err)
 	}
 	var changed bool
 	if err := tx.QueryRowContext(ctx, statement, t.id).Scan(&changed); err != nil {

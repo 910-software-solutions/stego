@@ -47,6 +47,9 @@ type Destination struct {
 	// read of the list sends the message back to pending (ST-SUP-RC27-OC12). With no WorkerConfig.Tenants it checks
 	// nothing.
 	ActiveTenants bool
+	// Failing, when set, gives the fixed failure class of the destination while it fails each delivery in a row, or
+	// empty. The readiness of the worker mode names it (Worker.Failing), as it names a Kafka inbox that fails.
+	Failing func() string
 }
 
 // TenantList tells whether a tenant is an active tenant of the tenant list, as tenant.Gate does.
@@ -261,6 +264,28 @@ type Registration struct {
 	MustLand   bool
 	HasLookup  bool
 	SettleTime time.Duration
+}
+
+// Failing names the first registered destination, in name order, whose Failing gives a failure class, with that
+// class, such as "the destination kafka fails: broker-unavailable", or gives empty while none fails.
+func (w *Worker) Failing() string {
+	w.mu.Lock()
+	names := make([]string, 0, len(w.destinations))
+	failing := map[string]func() string{}
+	for name, d := range w.destinations {
+		if d.Failing != nil {
+			names = append(names, name)
+			failing[name] = d.Failing
+		}
+	}
+	w.mu.Unlock()
+	slices.Sort(names)
+	for _, name := range names {
+		if class := failing[name](); class != "" {
+			return "the destination " + name + " fails: " + class
+		}
+	}
+	return ""
 }
 
 // Registrations lists the registered destinations.

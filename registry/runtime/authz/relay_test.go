@@ -96,7 +96,7 @@ func alertRelay(t *testing.T) (*Relay, func() (metric, events int64)) {
 	meter := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	logs := &logRecorder{}
 	logger := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logs)))
-	relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: &fakeRelationships{}, DB: fakeDB(t),
+	relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: &fakeRelationships{}, DB: fakeDB(t),
 		Schema: "public", Meter: meter, Logger: logger})
 	if err != nil {
 		t.Fatal(err)
@@ -291,6 +291,46 @@ func TestRelay(t *testing.T) {
 		run(t, worker)
 		id := env.enqueueRaw(t, "t1", "document:1", "authz.touch", []byte(`{"v":1,"op":"create"}`), uuid.NewString())
 		env.waitState(t, id, outbox.Parked)
+	})
+
+	t.Run("ST-SUP-RP06-LC06-T06 The relay parks a tuple of a relation that is not on its allow list, and writes nothing", func(t *testing.T) {
+		env := newPG(t)
+		fake := &fakeRelationships{}
+		worker := env.newWorker(t, env.relay(t, fake), nil)
+		run(t, worker)
+		// document#editor is not on the allow list, nor is the relation of the floor marker (security review of PR
+		// #421, I3).
+		undeclared := env.enqueue(t, "t1", OperationTouch, Tuple{Resource: doc("1"), Relation: "editor", Subject: user("mallory")})
+		marker := env.enqueue(t, "t1", OperationTouch, Tuple{Resource: Resource{Type: DefaultMarker.Resource.Type, ID: qualify("t1", "m")},
+			Relation: DefaultMarker.Relation, Subject: Subject{Type: DefaultMarker.Subject.Type, ID: qualify("t1", "m")}})
+		// Each on a resource key of its own: the outbox delivers one key in order, and a parked entry holds its key.
+		removed := env.enqueue(t, "t1", OperationDeleteRelation, Tuple{Resource: doc("2"), Relation: "editor"})
+		for _, id := range []uuid.UUID{undeclared, marker, removed} {
+			env.waitState(t, id, outbox.Parked)
+		}
+		declared := env.enqueue(t, "t1", OperationTouch, Tuple{Resource: doc("3"), Relation: "viewer", Subject: user("bob")})
+		env.waitState(t, declared, outbox.Done)
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		for _, batch := range fake.touches {
+			for _, touch := range batch {
+				if touch.Relation == "editor" || touch.Resource.ID == qualify("t1", "m") {
+					t.Fatalf("the provider got the tuple %s of a relation that is not on the allow list", touch.Name())
+				}
+			}
+		}
+		for _, batch := range fake.deletes {
+			if len(batch) > 0 {
+				t.Fatalf("the provider got the deletes %v of a relation that is not on the allow list", batch)
+			}
+		}
+		// NewRelay refuses no allow list, a relation that is not a name and the relation of the floor marker.
+		for name, relations := range map[string][]Relation{"no allow list": nil, "a relation that is not a name": {{ResourceType: "document", Name: "Viewer"}},
+			"the floor marker": {{ResourceType: DefaultMarker.Resource.Type, Name: DefaultMarker.Relation}}} {
+			if _, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: relations, Relationships: &fakeRelationships{}, DB: fakeDB(t), Schema: "public"}); err == nil {
+				t.Errorf("NewRelay took %s", name)
+			}
+		}
 	})
 
 	t.Run("ST-SUP-RP06-LC13-T01 The relay raises the floor to the head it reads under the floor lock", func(t *testing.T) {
@@ -534,7 +574,7 @@ func TestRelay(t *testing.T) {
 	})
 
 	t.Run("ST-SUP-RP06-LC16-T01 The delivery alert bound defaults to 5 seconds and refuses a bound that is not positive", func(t *testing.T) {
-		config := RelayConfig{Name: "authz-relay", Relationships: &fakeRelationships{}, DB: fakeDB(t), Schema: "public"}
+		config := RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: &fakeRelationships{}, DB: fakeDB(t), Schema: "public"}
 		relay, err := NewRelay(config)
 		if err != nil {
 			t.Fatal(err)
@@ -1091,7 +1131,7 @@ func TestTenantResources(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: probe, DB: env.relayDB, Schema: env.schema,
+		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: probe, DB: env.relayDB, Schema: env.schema,
 			Owners: map[string]Owner{"order": {Table: "orders", Key: "id"}}})
 		if err != nil {
 			t.Fatal(err)
@@ -1323,7 +1363,7 @@ func TestTenantResources(t *testing.T) {
 		// The relay refuses a tuple whose resource or subject set names another tenant than the outbox row, so the
 		// outbox parks it, and writes nothing.
 		relationships := &fakeRelationships{}
-		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: relationships, DB: fakeDB(t), Schema: "public"})
+		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: relationships, DB: fakeDB(t), Schema: "public"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1565,7 +1605,7 @@ func TestTenantResources(t *testing.T) {
 		}
 		// A tuple on it that reaches the outbox all the same, written by hand, is refused by the relay and parked.
 		relationships := &fakeRelationships{}
-		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relationships: relationships, DB: fakeDB(t), Schema: "public"})
+		relay, err := NewRelay(RelayConfig{Name: "authz-relay", Relations: testRelations, Relationships: relationships, DB: fakeDB(t), Schema: "public"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1584,3 +1624,9 @@ func TestTenantResources(t *testing.T) {
 		}
 	})
 }
+
+// testRelations are the relations that the relays of the tests may write.
+var testRelations = []Relation{{ResourceType: "document", Name: "viewer"}, {ResourceType: "document", Name: "banned"},
+	{ResourceType: "document", Name: "owner"}, {ResourceType: "document", Name: "parent"}, {ResourceType: "order", Name: "viewer"},
+	{ResourceType: "order", Name: "parent"}, {ResourceType: "order", Name: "tenant"}, {ResourceType: "group", Name: "member"},
+	{ResourceType: "user", Name: "delegate"}, {ResourceType: "service", Name: "operator"}, {ResourceType: "report", Name: "viewer"}}

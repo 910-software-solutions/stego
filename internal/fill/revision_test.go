@@ -3,6 +3,7 @@ package fill
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -69,7 +70,7 @@ func TestRevisionFaultsCapabilityFill(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(dir, "out", "commands", "linked.go")); err != nil {
 			t.Fatal(err)
 		}
-		if got := faults(dir, service); !strings.Contains(got, "out/commands holds linked.go, which is not a regular file") {
+		if got := faults(dir, service); !strings.Contains(got, `"out/commands" holds "linked.go", which is not a regular file`) {
 			t.Fatalf("the build did not refuse the linked contract file: %q", got)
 		}
 
@@ -105,7 +106,7 @@ func TestRevisionFaultsContractFolder(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "out", "commands", name), []byte("x\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			want := "out/commands holds " + name + ", which is not a Go file"
+			want := `"out/commands" holds "` + name + `", which is not a Go file`
 			if got := faults(dir, service); !strings.Contains(got, want) {
 				t.Fatalf("the build did not refuse %s: %q", name, got)
 			}
@@ -128,7 +129,7 @@ func TestRevisionFaultsContractFolder(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(dir, "out", "commands", "notes.txt")); err != nil {
 			t.Fatal(err)
 		}
-		if got := faults(dir, service); !strings.Contains(got, "out/commands holds notes.txt, which is not a regular file") {
+		if got := faults(dir, service); !strings.Contains(got, `"out/commands" holds "notes.txt", which is not a regular file`) {
 			t.Fatalf("the build did not refuse the linked file: %q", got)
 		}
 
@@ -182,7 +183,7 @@ func TestRevisionFaultsGeneratedTree(t *testing.T) {
 		for _, name := range []string{"out/commands/handlers/stub.s", "out/commands/handlers/blob.syso", "out/queries/handlers/glue.c", "out/cmd/server/glue.h"} {
 			dir, service := revisionProject(t, "command.command")
 			write(t, dir, name, "x\n")
-			want := "the generated package " + filepath.ToSlash(filepath.Dir(name)) + " holds " + filepath.Base(name) + ", which is not a Go file"
+			want := "the generated package " + strconv.Quote(filepath.ToSlash(filepath.Dir(name))) + " holds " + strconv.Quote(filepath.Base(name)) + ", which is not a Go file"
 			if got := faults(dir, service); !strings.Contains(got, want) {
 				t.Fatalf("the build did not refuse %s: %q", name, got)
 			}
@@ -198,7 +199,7 @@ func TestRevisionFaultsGeneratedTree(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(dir, "out", "commands", "handlers", "fills.go")); err != nil {
 			t.Fatal(err)
 		}
-		if got := faults(dir, service); !strings.Contains(got, "the generated package out/commands/handlers holds fills.go, which is not a regular file") {
+		if got := faults(dir, service); !strings.Contains(got, `the generated package "out/commands/handlers" holds "fills.go", which is not a regular file`) {
 			t.Fatalf("the build did not refuse the linked handler file: %q", got)
 		}
 		dir, service = revisionProject(t, "command.command")
@@ -206,7 +207,7 @@ func TestRevisionFaultsGeneratedTree(t *testing.T) {
 		if err := os.Symlink(filepath.Dir(outside), filepath.Join(dir, "out", "cmd", "server")); err != nil {
 			t.Fatal(err)
 		}
-		if got := faults(dir, service); !strings.Contains(got, "the generated package out/cmd holds server, which is not a regular file") {
+		if got := faults(dir, service); !strings.Contains(got, `the generated package "out/cmd" holds "server", which is not a regular file`) {
 			t.Fatalf("the build did not refuse the linked handler folder: %q", got)
 		}
 

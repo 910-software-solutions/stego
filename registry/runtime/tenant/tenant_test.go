@@ -500,6 +500,7 @@ func TestTenantIdentity(t *testing.T) {
 			"Provision": func() error { return Provision(ctx, db, "public", zero, nil) },
 			"Commit":    func() error { return Commit(ctx, nil, zero) },
 			"ActiveIn":  func() error { _, err := ActiveIn(ctx, db, "public", zero); return err },
+			"HoldList":  func() error { return HoldList(ctx, db, zero) },
 			"Retire":    func() error { return Retire(ctx, db, "public", zero, nil) },
 			"Gate.Active": func() error {
 				gate, err := NewGate(db, "public", MaxGateAge)

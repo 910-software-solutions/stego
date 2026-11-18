@@ -17,9 +17,12 @@ import (
 
 // The import paths of the runtime library that the generated code uses.
 const (
-	queryImport = "github.com/jsell-rh/stego/registry/runtime/query"
-	auditImport = "github.com/jsell-rh/stego/registry/runtime/audit"
-	authnImport = "github.com/jsell-rh/stego/registry/runtime/authn"
+	queryImport  = "github.com/jsell-rh/stego/registry/runtime/query"
+	auditImport  = "github.com/jsell-rh/stego/registry/runtime/audit"
+	authnImport  = "github.com/jsell-rh/stego/registry/runtime/authn"
+	authzImport  = "github.com/jsell-rh/stego/registry/runtime/authz"
+	otelImport   = "github.com/jsell-rh/stego/registry/runtime/otel"
+	tenantImport = "github.com/jsell-rh/stego/registry/runtime/tenant"
 	// commandImport gives ValidUUID, the check of the key form of every entity (ST-SUP-RP10-LC33).
 	commandImport = "github.com/jsell-rh/stego/registry/runtime/command"
 	protoImport   = "google.golang.org/protobuf/proto"
@@ -417,11 +420,23 @@ func renderServe(m *model) []byte {
 	if hasRPC {
 		w.p("\n%q", protoImport)
 	}
-	w.p("\n%q", authnImport)
-	if hasGet {
-		w.p("%q", commandImport)
+	imports := []string{authnImport}
+	if hasHTTP {
+		imports = append(imports, authzImport)
 	}
-	w.p("%q\n)\n", queryImport)
+	if hasGet {
+		imports = append(imports, commandImport)
+	}
+	if hasHTTP {
+		imports = append(imports, otelImport, queryImport, tenantImport)
+	} else {
+		imports = append(imports, queryImport)
+	}
+	w.p("")
+	for _, path := range imports {
+		w.p("%q", path)
+	}
+	w.p(")\n")
 	w.raw(`// Config is what the query handlers need.
 type Config struct {
 	// Runtime runs each query fill in a READ ONLY transaction of the caller's tenant. A list query needs its cursor
@@ -463,14 +478,18 @@ type Handlers struct {
 	}
 	w.p("return h, nil\n}\n")
 	w.p("// Routes mounts the handler of each get and list query at its route, behind the verifier: a request whose token")
-	w.p("// the verifier refuses is answered 401 and reaches no transaction and no fill.")
+	w.p("// the verifier refuses is answered 401 and reaches no transaction and no fill. Each handler waits first for the")
+	w.p("// revocation that the request names in Authz-Revocation-After (ST-SUP-RC33-OC10).")
 	w.p("func (h *Handlers) Routes(mux *http.ServeMux) {")
 	for _, q := range m.queries {
 		if q.kind != streamKind {
-			w.p("mux.Handle(%q, h.cfg.Verifier.Middleware(h.%s))", q.method+" "+q.path, capability.LowerFirst(q.goName))
+			w.p("mux.Handle(%q, h.cfg.Verifier.Middleware(h.awaitWrite(h.%s)))", q.method+" "+q.path, capability.LowerFirst(q.goName))
 		}
 	}
 	w.p("}\n")
+	if hasHTTP {
+		w.raw(awaitWriteSource)
+	}
 	for _, q := range m.queries {
 		switch q.kind {
 		case getKind:
@@ -763,3 +782,48 @@ func must[T any](v T, err error) T {
 	}
 	return source, nil
 }
+
+// awaitWriteSource is the wait of the HTTP handlers of the get and list queries (ST-SUP-RC33-OC10, ST-SUP-RP11-LC21):
+// the same call of AwaitWrite as the read and list handlers of the rest-api component (ST-SUP-RC20-OC41,
+// ST-SUP-RC20-OC42), before the handler binds the call and opens its read.
+const awaitWriteSource = `// awaitWrite waits, after the verifier and before next binds the call and opens its read, for the revocation of the
+// caller's own write that the request names in Authz-Revocation-After, at most the wait of Prefer: wait=N and the
+// wait cap, through AwaitWrite of the query runtime (ST-SUP-RP11-LC21, ST-SUP-RC33-OC10). It answers the state in
+// Authz-Revocation, a value that is not the identity of a revocation with 400, and any other failure with 500. A
+// request with no verified identity goes to next, which answers it 401.
+func (h *Handlers) awaitWrite(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id, ok := authn.FromContext(r.Context())
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		t, err := tenant.New(tenant.Claim(id))
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		p, err := authz.Person(h.cfg.SubjectType, id)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if err := h.cfg.Runtime.AwaitWrite(w, r, t, p); err != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "application/problem+json")
+			if errors.Is(err, query.ErrBadRequest) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(` + "`" + `{"type":"about:blank","title":"the request is not valid","status":400}` + "`" + `))
+				return
+			}
+			// The completion log of the request holds the fixed code, never the error text (ST-SUP-RP03-LC12).
+			otel.SetErrorCode(r.Context(), query.ErrorCodeInternal)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(` + "`" + `{"type":"about:blank","title":"the query failed","status":500,"code":"internal"}` + "`" + `))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+`

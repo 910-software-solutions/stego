@@ -106,6 +106,34 @@ names the inbox and a fixed failure class, such as
 1. A session that reads the topic again clears both. In Kubernetes, the worker
 Deployment of the base is then not ready.
 
+## Order of provision and start
+
+A consuming worker acts only in a tenant that its own service knows, and on rows that exist. Thus, when you start a
+chain of services, such as orders, then fulfilment, which consumes orders, then billing, which consumes
+fulfilment, do these steps:
+
+1. Run the migration Job of each service.
+2. Start the api and worker Deployments of each service. Start the worker Deployment before you provision a tenant
+   (see [The api Deployment needs the worker Deployment](delivery.md#the-api-deployment-needs-the-worker-deployment)).
+3. Provision each tenant in each service of the chain before the source service sends events of that tenant. Start
+   with the consumer at the end of the chain, then go back to the source. An event of a tenant that the consumer
+   does not know is refused with `unknown-tenant`, and it does not come again until you reset the offset.
+4. Write the rows that the worker needs before the source sends the events that use them. For example, when the
+   fill of `ship-orders` needs a Shipment of the tenant, create it first.
+
+When the fill fails on an event, such as when a row that it needs does not exist, the worker tries again. After 5
+failures in a row it parks the message (see [A failed run of a consuming
+worker](commands-queries-workers.md#a-failed-run-of-a-consuming-worker)). A parked message holds back each later
+message of the same destination, tenant and resource key. The resource key of a change event is
+`<resource type>:<row ID>` of the source row, so each later event of the same source row waits, also when its fill
+could run now. The events of other rows continue. The later events wait until you resolve the parked message:
+
+- `not_acted` sends it again. Use it when you corrected the cause, such as when you created the missing row.
+- `acted` or `discarded` releases the later events without a new run of the parked one.
+
+Thus a wrong start order can hold back many events. Do the steps above in order, and look at the parked list of
+each consuming destination after the first start.
+
 ## Access to the topic
 
 The inbox trusts the header `stego-tenant` only because the platform lets

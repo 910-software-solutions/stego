@@ -65,6 +65,16 @@ type settings struct {
 var publicPath = regexp.MustCompile(`^/[A-Za-z0-9_./{}-]*$`)
 var scopeName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$`)
 
+// fault gives the fault of the browser-backend setting at setting, with the value found there, so that checking
+// names the setting and the value (gen.InputFault). A value that is not there is found as nothing.
+func fault(setting string, found any, format string, args ...any) error {
+	f := &gen.InputFault{Component: "browser-backend", Setting: setting, Message: fmt.Sprintf(format, args...)}
+	if found != nil {
+		f.Found = fmt.Sprint(found)
+	}
+	return f
+}
+
 func (g *Generator) config(values map[string]any) (settings, error) {
 	var s settings
 	if g.LocalApplicationPort != 0 && (g.LocalApplicationPort < 1024 || g.LocalApplicationPort > 65535) {
@@ -72,28 +82,28 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 	}
 	for key := range values {
 		if key != "dynamic_styles" && key != "additional_scopes" && key != "telemetry_service_name" && key != "asset_bundle" && key != "api_prefix" && key != "routes" && key != "assets" && key != "roles_claim" && key != "logout_scope" && key != "apis" {
-			return s, fmt.Errorf("unknown browser-backend setting %q", key)
+			return s, fault(key, key, "unknown browser-backend setting %q", key)
 		}
 	}
 	if value, present := values["dynamic_styles"]; present {
 		var ok bool
 		s.DynamicStyles, ok = value.(bool)
 		if !ok {
-			return s, fmt.Errorf("browser dynamic_styles requires a boolean")
+			return s, fault("dynamic_styles", value, "browser dynamic_styles requires a boolean")
 		}
 	}
 	s.OAuthScope = "openid"
 	if value, present := values["additional_scopes"]; present {
 		entries, ok := value.([]any)
 		if !ok || len(entries) > 7 {
-			return s, fmt.Errorf("browser additional_scopes requires zero through seven scopes")
+			return s, fault("additional_scopes", value, "browser additional_scopes requires zero through seven scopes")
 		}
 		seen := map[string]bool{"openid": true, "offline_access": true}
 		var scopes []string
-		for _, raw := range entries {
+		for i, raw := range entries {
 			scope, ok := raw.(string)
 			if !ok || !scopeName.MatchString(scope) || seen[scope] {
-				return s, fmt.Errorf("invalid, duplicate, or unsupported browser scope")
+				return s, fault(fmt.Sprintf("additional_scopes[%d]", i), raw, "invalid, duplicate, or unsupported browser scope")
 			}
 			seen[scope] = true
 			scopes = append(scopes, scope)
@@ -107,7 +117,7 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 		var ok bool
 		s.TelemetryService, ok = value.(string)
 		if !ok || !regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`).MatchString(s.TelemetryService) {
-			return s, fmt.Errorf("invalid browser telemetry service name")
+			return s, fault("telemetry_service_name", value, "invalid browser telemetry service name")
 		}
 	}
 	s.Prefix, _ = values["api_prefix"].(string)
@@ -116,7 +126,7 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 		var ok bool
 		s.LogoutScope, ok = value.(string)
 		if !ok || (s.LogoutScope != "console" && s.LogoutScope != "identity_provider") {
-			return s, fmt.Errorf("browser logout_scope must be console or identity_provider")
+			return s, fault("logout_scope", value, "browser logout_scope must be console or identity_provider")
 		}
 	}
 	s.RolesClaim = "roles"
@@ -124,35 +134,35 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 		var ok bool
 		s.RolesClaim, ok = value.(string)
 		if !ok || !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,3}$`).MatchString(s.RolesClaim) || len(s.RolesClaim) > 128 {
-			return s, fmt.Errorf("invalid browser roles_claim")
+			return s, fault("roles_claim", value, "invalid browser roles_claim")
 		}
 	}
 	if !canonicalPath(s.Prefix) || s.Prefix == "/" || strings.ContainsAny(s.Prefix, "{}") || reservedPath(s.Prefix) {
-		return s, fmt.Errorf("browser-backend requires a distinct canonical api_prefix")
+		return s, fault("api_prefix", values["api_prefix"], "browser-backend requires a distinct canonical api_prefix")
 	}
 	if err := g.apis(values, &s); err != nil {
 		return s, err
 	}
 	routes, ok := values["routes"].([]any)
 	if !ok || len(routes) == 0 || len(routes) > 64 {
-		return s, fmt.Errorf("browser-backend requires one through 64 routes")
+		return s, fault("routes", values["routes"], "browser-backend requires one through 64 routes")
 	}
 	seen := map[string]bool{}
-	for _, raw := range routes {
+	for i, raw := range routes {
 		route, ok := raw.(string)
 		if !ok || !canonicalPath(route) || reservedPath(route) || s.underAPI(route) || strings.HasPrefix(route, "/assets") || seen[route] {
-			return s, fmt.Errorf("invalid or duplicate browser route")
+			return s, fault(fmt.Sprintf("routes[%d]", i), raw, "invalid or duplicate browser route")
 		}
 		for _, segment := range strings.Split(route, "/") {
 			if strings.ContainsAny(segment, "{}") && segment != "{id}" {
-				return s, fmt.Errorf("browser routes permit only the {id} parameter")
+				return s, fault(fmt.Sprintf("routes[%d]", i), raw, "browser routes permit only the {id} parameter")
 			}
 		}
 		seen[route] = true
 		s.Routes = append(s.Routes, route)
 	}
 	if !seen["/"] {
-		return s, fmt.Errorf("browser routes must include /")
+		return s, fault("routes", values["routes"], "browser routes must include /")
 	}
 	_, hasAssets := values["assets"]
 	_, hasBundle := values["asset_bundle"]
@@ -166,7 +176,7 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 	if raw, present := values["asset_bundle"]; present {
 		bundle, ok := raw.(string)
 		if !ok || gen.ValidatePath(bundle) != nil || bundle == "" || path.Ext(bundle) != ".zip" {
-			return s, fmt.Errorf("browser asset_bundle requires a relative ZIP path")
+			return s, fault("asset_bundle", raw, "browser asset_bundle requires a relative ZIP path")
 		}
 		if _, present := values["assets"]; present {
 			return s, fmt.Errorf("browser assets and asset_bundle are mutually exclusive")
@@ -177,30 +187,31 @@ func (g *Generator) config(values map[string]any) (settings, error) {
 	}
 	entries, ok := values["assets"].([]any)
 	if !ok || len(entries) == 0 || len(entries) > 128 {
-		return s, fmt.Errorf("browser-backend requires one through 128 assets")
+		return s, fault("assets", values["assets"], "browser-backend requires one through 128 assets")
 	}
 	seen = map[string]bool{}
-	for _, raw := range entries {
+	for i, raw := range entries {
+		at := fmt.Sprintf("assets[%d]", i)
 		entry, ok := raw.(map[string]any)
 		if !ok || len(entry) != 2 {
-			return s, fmt.Errorf("browser asset requires source and path")
+			return s, fault(at, raw, "browser asset requires source and path")
 		}
 		source, ok := entry["source"].(string)
 		target, targetOK := entry["path"].(string)
 		if !ok || !targetOK || len(source) > 256 || source == "" || path.IsAbs(source) || path.Clean(source) != source || source == ".." || strings.HasPrefix(source, "../") || strings.ContainsAny(source, "\\\x00\r\n") || !canonicalPath(target) || strings.ContainsAny(target, "{}") || seen[target] {
-			return s, fmt.Errorf("invalid browser asset")
+			return s, fault(at, raw, "invalid browser asset")
 		}
 		if target != "/index.html" && !strings.HasPrefix(target, "/assets/") {
-			return s, fmt.Errorf("browser assets must use /index.html or /assets/")
+			return s, fault(at+".path", target, "browser assets must use /index.html or /assets/")
 		}
 		switch path.Ext(target) {
 		case ".html":
 			if target != "/index.html" {
-				return s, fmt.Errorf("only index.html is supported")
+				return s, fault(at+".path", target, "only index.html is supported")
 			}
 		case ".js", ".css", ".svg", ".png", ".ico", ".woff2", ".ttf":
 		default:
-			return s, fmt.Errorf("unsupported browser asset type")
+			return s, fault(at+".path", target, "unsupported browser asset type")
 		}
 		seen[target] = true
 		s.Assets = append(s.Assets, asset{Source: source, Path: target})
@@ -223,7 +234,7 @@ func (g *Generator) apis(values map[string]any, s *settings) error {
 	}
 	entries, ok := raw.([]any)
 	if !ok || len(entries) == 0 || len(entries) > MaxAPIs {
-		return fmt.Errorf("browser-backend apis requires one through %d entries", MaxAPIs)
+		return fault("apis", raw, "browser-backend apis requires one through %d entries", MaxAPIs)
 	}
 	if g.LocalApplicationPort != 0 {
 		return fmt.Errorf("browser-backend apis is not available with a local application")
@@ -233,19 +244,19 @@ func (g *Generator) apis(values map[string]any, s *settings) error {
 	for i, item := range entries {
 		entry, ok := item.(map[string]any)
 		if !ok || len(entry) != 2 {
-			return fmt.Errorf("browser-backend apis[%d] requires exactly name and prefix", i)
+			return fault(fmt.Sprintf("apis[%d]", i), item, "browser-backend apis[%d] requires exactly name and prefix", i)
 		}
 		name, nameOK := entry["name"].(string)
 		prefix, prefixOK := entry["prefix"].(string)
 		if !nameOK || len(name) > 32 || !apiName.MatchString(name) || names[name] {
-			return fmt.Errorf("browser-backend apis[%d].name must be a unique name in lower case with hyphens, of at most 32 characters", i)
+			return fault(fmt.Sprintf("apis[%d].name", i), entry["name"], "browser-backend apis[%d].name must be a unique name in lower case with hyphens, of at most 32 characters", i)
 		}
 		if !prefixOK || !canonicalPath(prefix) || prefix == "/" || strings.ContainsAny(prefix, "{}") || reservedPath(prefix) {
-			return fmt.Errorf("browser-backend apis[%d].prefix requires a distinct canonical path", i)
+			return fault(fmt.Sprintf("apis[%d].prefix", i), entry["prefix"], "browser-backend apis[%d].prefix requires a distinct canonical path", i)
 		}
 		for _, other := range prefixes {
 			if segmentPrefix(prefix, other) || segmentPrefix(other, prefix) {
-				return fmt.Errorf("browser-backend apis[%d].prefix %s overlaps the API prefix %s", i, prefix, other)
+				return fault(fmt.Sprintf("apis[%d].prefix", i), prefix, "browser-backend apis[%d].prefix %s overlaps the API prefix %s", i, prefix, other)
 			}
 		}
 		names[name] = true

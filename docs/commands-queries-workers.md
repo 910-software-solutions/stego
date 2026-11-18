@@ -633,6 +633,27 @@ The request of a get query has one field for the member: `req.OrderID` for
 `orderId`. The response of a get query is any value that the handler can
 write as JSON.
 
+### An optional field in a command and in a query
+
+The Go type of an optional field is not the same in the two packages:
+
+- In `out/commands`, an optional field that is not bytes or jsonb is a
+  pointer, such as `*string`. A command writes the row, so `nil` sets the
+  column to NULL, and a pointer to `""` sets it to the empty text.
+- In `out/queries`, the value that a fill reads has the field as a value,
+  such as `string`. A NULL column gives the zero value: `""`, `0` or `false`.
+
+Thus a command fill uses `v.Carrier != nil` and `*v.Carrier`, and a query
+fill uses `v.Carrier` with no `*`. Do not copy the code that reads a field from
+a command fill into a query fill.
+
+The rest-api handlers read the type `<Entity>View`, in which an optional field
+is a pointer, so an answer leaves out a NULL field (decision ST-SUP-Q128,
+option B). The value that a query fill reads did not change, so no fill had to
+change. Thus a query fill cannot tell NULL from the zero value. A pointer in
+the query value needs a major version of each archetype that has a query
+(ST-SUP-Q128, option A), and it is not built.
+
 ## Paging
 
 A collection list and a list query page in different ways:
@@ -851,7 +872,9 @@ counted: an error of the fill, a row that is not there, an invalid value, a
 refused resource, a unique violation and a panic. A provider that cannot decide
 now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
-outbox, and a person can send it again or discard it.
+outbox, and a person can send it again or discard it. Until a person resolves
+it, a parked message holds back each later message of the same destination,
+tenant and resource key, so the later events of the same row wait.
 
 The log line and the alert of a parked message are also written to standard
 output as one JSON line each, also when no OpenTelemetry collector is set. The
@@ -962,6 +985,36 @@ cause classes are:
 
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
+
+### Release notes for runtime v0.132.0
+
+- New function `outbox.NewDeclaredResolver` takes the declared rules of each
+  destination (`outbox.Rules`); `outbox.NewResolver` is deprecated. A resolution takes the stricter of the row and the
+  declared rules, and a message of a destination that the release does not
+  declare answers 409. `service.Parts` has the new field `Destinations`, which
+  generated code sets. New functions `authz.Rules`, `auditoutbox.Rules` and
+  `kafkaoutbox.Rules`.
+- The Kafka inbox reads the tenant again in the transaction of each record,
+  under the lock of the tenant list (new function `tenant.HoldList`), so a
+  record of a tenant that a Retire retired after the lookup is refused as
+  `retired-tenant`. `kafkainbox.Config` and `service.InboxEnv` have the new
+  field `TenantSchema`. The step `kafka_inbox` grants the worker role SELECT
+  on the tenant list.
+- The console of the log provider keeps a rate-limit budget of its own for
+  the lines of severity ERROR and FATAL. The probe console holds the built-in
+  worker events, such as `worker.run.failed`, to the same rate limit.
+- `authz.RelayConfig` has the new field `Relations`, the allow list of the
+  relations that the relay writes; `NewRelay` refuses no list. Generated code
+  sets it from the authorization schema.
+- An attempt of the Kafka destination that no broker answers logs
+  `kafka.delivery_failed` with the class `broker-unavailable`. After 5 such
+  attempts in a row, `/readyz/modes` of the worker mode answers 503 with
+  `the destination kafka fails: broker-unavailable`. `outbox.Destination` has
+  the new field `Failing`, and `outbox.Worker` the new function `Failing`.
+- A Retire deletes the tuples of the admin relation of the tenant.
+- The migration of the refused records of the Kafka inbox replaces the CHECK
+  of the reasons when the list of reasons changes.
+- New function `pgtest.ReapNetwork` (test support).
 
 ### Release notes for runtime v0.131.0
 

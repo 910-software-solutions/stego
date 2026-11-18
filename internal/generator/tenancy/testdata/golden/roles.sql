@@ -1,3 +1,4 @@
+BEGIN;
 DO $$
 DECLARE
 	v_role text;

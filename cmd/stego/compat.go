@@ -397,12 +397,19 @@ type baseGate struct {
 
 // baseRemedy gives what the author does about the faults of the base check: declare the schema changes that it names
 // when a fault names one, or else correct each fault as its text says, as a base that was changed without stego apply
-// needs no schema change (walkthrough 7, rank 3).
+// needs no schema change (walkthrough 7, rank 3). A base whose declaration is not the one its record names is often
+// a branch that holds a declaration committed before apply, while the version that runs is a release tag: the remedy
+// then also names --base <release tag> (walkthrough 8 and 9, rank 3).
 func baseRemedy(check compiler.BaseCheck) string {
+	record := false
 	for _, fault := range check.Faults {
 		if len(fault.Declare) > 0 {
 			return "declare the schema changes that it names"
 		}
+		record = record || fault.Rule == compiler.BaseRecordRule
+	}
+	if record {
+		return fmt.Sprintf("correct each fault as its text says; or, if the version that runs is a release tag and not %s, name that tag with --base <release tag>", check.BaseRef)
 	}
 	return "correct each fault as its text says"
 }

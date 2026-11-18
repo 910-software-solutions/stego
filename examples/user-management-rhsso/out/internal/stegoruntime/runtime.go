@@ -169,6 +169,9 @@ func checkKafkaTopic() error {
 	return nil
 }
 
+// afterSlotsRules are the rules of the destination of the after slots of the collections: idempotent and must land.
+var afterSlotsRules = outbox.Rules{Name: api.AfterSlotsDestination, Idempotent: true, MustLand: true}
+
 // parts are what varies with the declaration of the service, which service.New takes. The outbox worker gets the
 // destinations of the service's components and the after slots of the collections (ST-SUP-RC20-OC34).
 func parts(afterSlots *api.AfterSlots) service.Parts {
@@ -200,8 +203,8 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 				}
 				// An after slot runs only for an active tenant: the message of a retired tenant is parked before its
 				// fill (ST-SUP-RC27-OC12).
-				if err := w.Register(outbox.Destination{Name: api.AfterSlotsDestination, Idempotent: true, MustLand: true,
-					ActiveTenants: true, Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
+				if err := w.Register(outbox.Destination{Name: afterSlotsRules.Name, Idempotent: afterSlotsRules.Idempotent,
+					MustLand: afterSlotsRules.MustLand, ActiveTenants: true, Handler: func(ctx context.Context, _ *sql.Tx, d outbox.Delivery) error { return afterSlots.Deliver(ctx, d) }}); err != nil {
 					return nil, err
 				}
 				return w, nil
@@ -211,7 +214,19 @@ func parts(afterSlots *api.AfterSlots) service.Parts {
 		},
 		Collections:  api.Entities(),
 		Provisioning: provisioning(),
+		// The declared rules of the destinations that the outbox worker registers, which the resolver of the api mode
+		// applies to a parked message (ST-SUP-RP14-LC10).
+		Destinations: destinations(),
 	}
+}
+
+// destinations gives the declared rules of each destination that the outbox worker of the service registers: those
+// of the components and of the after slots of the collections.
+// The runtime adds those of authz itself.
+func destinations() []outbox.Rules {
+	rules := svcoutbox.Rules()
+	rules = append(rules, afterSlotsRules)
+	return rules
 }
 
 // provisioning gives the declared tenant provisioning from the entries of Provision and Retire in the

@@ -232,7 +232,8 @@ func purgeRole(runtime string) string {
 // the owner, runtime, worker and relay roles of this service, so a role of another service in the same cluster
 // cannot connect to its database. PostgreSQL checks CONNECT only when a session starts, so the text commits the
 // revoke, with a COMMIT of its own, and then refuses to go on while a session of a role that is not a role of this
-// service, nor a superuser, is open in the database, other than its own; the refusal names how many and no role,
+// service, nor a superuser, is open in the database, other than its own (the first part opens with BEGIN, so psql
+// with autocommit gives no warning at the COMMIT, walkthrough 9, rank 3); the refusal names how many and no role,
 // and the text runs again once they are closed. It terminates no session. The owner may create in the database and in the schema public, and may grant
 // CREATE on public, which the idempotency migration gives the purge role only while it makes the purge function; the
 // public role may not create in public, so the runtime role gets only the grants of the database access contract. It
@@ -257,6 +258,10 @@ func roleMigration(runtime, owner, worker, relay, purge, outboxRelay string) str
 	// database that is not a database of this service (one where this text gave the owner CREATE), can log in where
 	// the service makes it NOLOGIN, or is a member of a role that this text does not grant it, is another service's
 	// or someone else's, and the text stops before it changes anything.
+	// The first part is a transaction of its own, which the COMMIT below ends: so the text gives no warning when psql
+	// runs it one statement at a time with autocommit, and an implicit block of one simple query (as Exec sends it)
+	// becomes this transaction.
+	text.WriteString("BEGIN;\n")
 	text.WriteString("DO $$\nDECLARE\n\tv_role text;\n\tv_login boolean;\n\tv_fault text;\n\tv_members text;\n\t" +
 		"v_migration text := NULLIF(pg_catalog.current_setting('" + MigrationLoginSetting + "', true), '');\nBEGIN\n")
 	fmt.Fprintf(&text, "\tFOR v_role, v_login IN VALUES ('%s', true), ('%s', true), ('%s', true), ('%s', true), ('%s', false), ('%s', false) LOOP\n", owner, runtime, worker, relay, purge, outboxRelay)

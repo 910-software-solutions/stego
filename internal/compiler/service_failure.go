@@ -44,14 +44,57 @@ func stegoFaultName(value string) bool {
  return true
 }
 
-// stegoCauseClass gives the fixed class of a cause of the operating system that a start meets, such as a listen port
-// that another process holds, and empty for any other cause. It never holds the text of the cause (walkthrough 8,
-// W8-B5).
+// stegoSQLState gives the SQLSTATE of a cause of the database, such as 55P03, when it has the form of one: five
+// characters of 0-9 and A-Z. Any other cause gives empty.
+func stegoSQLState(err error) string {
+ var coded interface{ SQLState() string }
+ if !errors.As(err, &coded) { return "" }
+ code := coded.SQLState()
+ if len(code) != 5 { return "" }
+ for i := 0; i < len(code); i++ {
+  if c := code[i]; !(c >= '0' && c <= '9' || c >= 'A' && c <= 'Z') { return "" }
+ }
+ return code
+}
+
+// stegoCauseClass gives the fixed class of a cause that a start or the migration job meets: of the database by its
+// SQLSTATE, such as lock_timeout for 55P03 (#423), of the operating system, such as a listen port that another
+// process holds (walkthrough 8, W8-B5), of the network, of a file and of a certificate; and empty for any other
+// cause. It never holds the text of the cause.
 func stegoCauseClass(err error) string {
+ if code := stegoSQLState(err); code != "" {
+  switch {
+  case code == "55P03": return "lock_timeout"
+  case code == "57014": return "statement_timeout"
+  case code == "40P01": return "deadlock"
+  case code == "40001": return "serialization_failure"
+  case code == "42501": return "not_granted"
+  case code == "53300": return "too_many_connections"
+  case code == "57P03": return "database_starting"
+  case code == "3D000": return "database_not_found"
+  case code[:2] == "28": return "authentication_failed"
+  case code[:2] == "08": return "connection_failed"
+  case code[:2] == "53": return "insufficient_resources"
+  case code[:2] == "23": return "constraint_violation"
+  case code[:2] == "42": return "schema"
+  }
+  return "database"
+ }
+ var dns *net.DNSError
+ var unknownAuthority x509.UnknownAuthorityError
+ var invalid x509.CertificateInvalidError
+ var hostname x509.HostnameError
  switch {
  case errors.Is(err, syscall.EADDRINUSE): return "address_in_use"
  case errors.Is(err, syscall.EADDRNOTAVAIL): return "address_not_available"
- case errors.Is(err, syscall.EACCES): return "permission_denied"
+ case errors.Is(err, syscall.ECONNREFUSED): return "connection_refused"
+ case errors.Is(err, syscall.ECONNRESET): return "connection_reset"
+ case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH): return "network_unreachable"
+ case errors.Is(err, syscall.EACCES), errors.Is(err, fs.ErrPermission): return "permission_denied"
+ case errors.As(err, &dns): return "name_not_resolved"
+ case errors.As(err, &unknownAuthority), errors.As(err, &invalid), errors.As(err, &hostname): return "certificate_refused"
+ case errors.Is(err, context.DeadlineExceeded), errors.Is(err, os.ErrDeadlineExceeded): return "timeout"
+ case errors.Is(err, fs.ErrNotExist): return "file_not_found"
  }
  return ""
 }
@@ -82,7 +125,8 @@ func stegoReportFailure(output io.Writer, err error) {
   Fault string ` + "`json:\"fault,omitempty\"`" + `
   Object string ` + "`json:\"object,omitempty\"`" + `
   Cause string ` + "`json:\"cause,omitempty\"`" + `
- }{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object, stegoCauseClass(err)}
+  SQLState string ` + "`json:\"sqlstate,omitempty\"`" + `
+ }{time.Now().UTC().Format(time.RFC3339Nano), "ERROR", "service.failed", "Service failed", stage, tasks, abortedTasks, modes, fault, object, stegoCauseClass(err), stegoSQLState(err)}
  done := make(chan struct{})
  go func() {
   defer close(done)

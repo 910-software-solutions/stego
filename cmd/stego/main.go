@@ -86,7 +86,7 @@ func main() {
 	case "assets":
 		err = runAssets(os.Args[2:])
 	case "version":
-		err = runVersion(os.Args[2:], os.Stdout)
+		err = runVersion(os.Args[2:], os.Stdout, os.Stderr)
 	case "init":
 		err = runInit(os.Args[2:])
 	case "plan":
@@ -1460,14 +1460,33 @@ func slotDefNames(slots []registry.SlotDefinition) []string {
 	return names
 }
 
-// runVersion preserves the short version form and supplies a structured record.
-func runVersion(args []string, output io.Writer) error {
-	if len(args) == 0 {
-		_, err := fmt.Fprintln(output, "stego", version)
-		return err
-	}
-	if len(args) != 1 || args[0] != "--json" {
+// runVersion preserves the short version form and supplies a structured record. When the build records no commit,
+// it tells why on notes, standard error, so that the output stays the identity alone (walkthrough 9, rank 3).
+func runVersion(args []string, output, notes io.Writer) error {
+	if len(args) > 1 || len(args) == 1 && args[0] != "--json" {
 		return fmt.Errorf("usage: stego version [--json]")
 	}
-	return json.NewEncoder(output).Encode(currentIdentity(version))
+	identity := currentIdentity(version)
+	var err error
+	if len(args) == 0 {
+		_, err = fmt.Fprintln(output, "stego", version)
+	} else {
+		err = json.NewEncoder(output).Encode(identity)
+	}
+	if err != nil {
+		return err
+	}
+	if note := versionNote(identity.Build); note != "" {
+		_, _ = fmt.Fprintln(notes, note)
+	}
+	return nil
+}
+
+// versionNote tells why a build identity names no commit, or gives "" when it names one. The Go toolchain records
+// the commit only when it finds a .git folder: in a git worktree .git is a file, and -buildvcs=false records none.
+func versionNote(build buildidentity.Record) string {
+	if build.VCS != "unknown" {
+		return ""
+	}
+	return "note: this build records no commit (vcs unknown), so the version dev names no source. go build records the commit only in a clone, where .git is a folder; in a git worktree .git is a file. Build from a clone with -buildvcs=true to record it."
 }

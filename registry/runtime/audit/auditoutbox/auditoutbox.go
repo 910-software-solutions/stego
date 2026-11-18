@@ -96,7 +96,14 @@ func NewSink(d *audit.Destination) (*Sink, error) {
 // Destination returns the registration of the audit sink on the outbox worker, in the form of
 // authz.Relay.Destination: the destination audit-sink, idempotent and must land, with Deliver as its handler.
 func (s *Sink) Destination() outbox.Destination {
-	return outbox.Destination{Name: audit.SinkDestination, Idempotent: true, MustLand: true, Handler: s.Deliver}
+	rules := Rules()
+	return outbox.Destination{Name: rules.Name, Idempotent: rules.Idempotent, MustLand: rules.MustLand, Handler: s.Deliver}
+}
+
+// Rules returns the declared rules of the destination audit-sink, idempotent and must land, which the resolver of a
+// process that does not deliver applies (security review of PR #421, L3).
+func Rules() outbox.Rules {
+	return outbox.Rules{Name: audit.SinkDestination, Idempotent: true, MustLand: true}
 }
 
 // Deliver is the outbox handler of the audit sink. It refuses for good, so the outbox parks the message, a payload

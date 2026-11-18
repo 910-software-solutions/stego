@@ -316,7 +316,7 @@ func (r *revocationEnv) create(who, key, id string, fill func(ctx context.Contex
 // startRelay runs the relay of the delivered port in an outbox worker of the worker role until the test ends.
 func (r *revocationEnv) startRelay() {
 	r.t.Helper()
-	relay, err := authz.NewRelay(authz.RelayConfig{Name: "authz-relay", Relationships: r.port,
+	relay, err := authz.NewRelay(authz.RelayConfig{Name: "authz-relay", Relations: relayRelations, Relationships: r.port,
 		DB: r.openPool(r.dsn(r.roles[2])), Schema: "authz"})
 	if err != nil {
 		r.t.Fatal(err)
@@ -750,3 +750,7 @@ func TestReadYourWrites(t *testing.T) {
 		}
 	})
 }
+
+// relayRelations are the relations that the relay of the tests may write: those of the orders.
+var relayRelations = []authz.Relation{{ResourceType: "order", Name: "owner"}, {ResourceType: "order", Name: "customer"},
+	{ResourceType: "order", Name: "product"}, {ResourceType: "order", Name: "tenant"}}

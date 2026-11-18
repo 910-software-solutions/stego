@@ -8,7 +8,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
@@ -170,6 +172,84 @@ func TestProbeBuiltins(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP12-LC21-T02 The console writes a built-in worker event at most at the rate limit, and counts the rest", func(t *testing.T) {
+		clearEnvironment(t)
+		builtins, err := NewBuiltins([]string{"ship-orders"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stdout := &lines{}
+		r, err := start(newTelemetry(t), builtins, "off", stdout)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clock := &handClock{at: time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)}
+		r.console.mu.Lock()
+		r.console.now = clock.now
+		r.console.mu.Unlock()
+		count := func(event string) (lines, dropped int) {
+			for _, line := range stdout.everything() {
+				if strings.Contains(line, `"event.name":"`+event+`"`) {
+					if strings.Contains(line, `"dropped":`) {
+						dropped++
+					} else {
+						lines++
+					}
+				}
+			}
+			return lines, dropped
+		}
+		wait := func(event string, want int) {
+			t.Helper()
+			for n, _ := count(event); n < want; n, _ = count(event) {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		// A failing consumer sends worker.run.failed for each run (walkthrough 9: 123 lines in a few seconds).
+		worker := r.Worker("ship-orders")
+		const burst = otel.ConsoleLimit + 5
+		for range burst {
+			worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+		}
+		// worker.tick.failed has a budget of its own; its line comes after the burst in the one queue.
+		worker.TickFailed(context.Background())
+		wait("worker.tick.failed", 1)
+		// A service event is never held.
+		for range burst {
+			r.Service(context.Background(), ServiceReady)
+		}
+		wait("service.ready", burst)
+		if n, dropped := count("worker.run.failed"); n != otel.ConsoleLimit || dropped != 0 {
+			t.Fatalf("the burst gave %d lines and %d count lines, want the limit %d and no count line yet", n, dropped, otel.ConsoleLimit)
+		}
+		// The window ends: the next line of the event writes the count of the dropped lines first, as ERROR.
+		clock.move(otel.ConsoleWindow)
+		worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+		wait("worker.run.failed", otel.ConsoleLimit+1)
+		var countLine map[string]any
+		for _, line := range stdout.everything() {
+			if strings.Contains(line, `"dropped":`) {
+				if err := json.Unmarshal([]byte(line), &countLine); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if countLine["event.name"] != "worker.run.failed" || countLine["dropped"] != float64(burst-otel.ConsoleLimit) || countLine["severity"] != "ERROR" {
+			t.Fatalf("the count line is %v, want worker.run.failed, ERROR and %d dropped", countLine, burst-otel.ConsoleLimit)
+		}
+		// The stop ends each window: a burst after it is counted before the last line.
+		for range burst {
+			worker.RunFailedCause(context.Background(), WorkerRolledBack, "fill_error")
+		}
+		if err := r.Close(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got := stdout.everything()
+		if n, dropped := count("worker.run.failed"); n != 2*otel.ConsoleLimit || dropped != 2 || !strings.Contains(got[len(got)-1], `"event.name":"telemetry.runtime.stopped"`) {
+			t.Fatalf("after the stop the console holds %d lines and %d count lines of worker.run.failed, want %d and 2 before telemetry.runtime.stopped", n, dropped, 2*otel.ConsoleLimit)
+		}
+	})
+
 	t.Run("ST-SUP-RP12-LC23-T01 The schema backfill observations are built in and their names are reserved", func(t *testing.T) {
 		builtins, err := NewBuiltins(nil, []SchemaChange{{ID: "user-email-rename", Open: true}, {ID: "orders-retype", Open: false}})
 		if err != nil {
@@ -206,4 +286,22 @@ func TestProbeBuiltins(t *testing.T) {
 			}
 		}
 	})
+}
+
+// handClock is the clock of the rate limit of a test, which the test moves.
+type handClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (c *handClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *handClock) move(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
 }
