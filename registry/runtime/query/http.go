@@ -196,7 +196,9 @@ func answerOf(err error, refusal func(error) (int, string, bool)) (int, string) 
 // WriteProblem writes the problem response of status with the fixed code, when there is one, in the one problem form
 // of the service (ST-SUP-RC33-OC12), for a handler of the generated code around the query runtime, such as the wait
 // for the caller's write. It holds no error text.
-func (rt *Runtime) WriteProblem(w http.ResponseWriter, status int, code string) { rt.writeCodedProblem(w, status, code) }
+func (rt *Runtime) WriteProblem(w http.ResponseWriter, status int, code string) {
+	rt.writeCodedProblem(w, status, code)
+}
 
 // writeProblem writes the problem response of status.
 func (rt *Runtime) writeProblem(w http.ResponseWriter, status int) {
