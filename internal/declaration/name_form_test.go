@@ -38,6 +38,7 @@ func TestNameForms(t *testing.T) {
 			{"a service name that starts with a hyphen", "name: todo-svc", "name: -todo", "name", "-todo"},
 			{"a service name that starts with a digit", "name: todo-svc", "name: \"001\"", "name", "001"},
 			{"a service name that ends with a hyphen", "name: todo-svc", "name: todo-", "name", "todo-"},
+			{"a service name that ends with -worker", "name: todo-svc", "name: todo-worker", "name", "todo-worker"},
 			{"an entity name with a backtick", "  - name: Todo", "  - name: \"To`do\"", "entities[0].name", "To`do"},
 			{"an entity name in lower case", "  - name: Todo", "  - name: todo", "entities[0].name", "todo"},
 			{"a field name with a semicolon", "{name: title,", `{name: "ti;tle",`, "entities[0].fields[0].name", "ti;tle"},
@@ -55,6 +56,12 @@ func TestNameForms(t *testing.T) {
 		}
 		if faults := nameFaults(t, "", ""); len(faults) != 0 {
 			t.Errorf("TD02 got name-form faults: %+v", faults)
+		}
+		// Only the end -worker is refused: a name that holds worker elsewhere is a service name.
+		for _, name := range []string{"worker", "worker-svc", "todo-workers"} {
+			if faults := nameFaults(t, "name: todo-svc", "name: "+name); len(faults) != 0 {
+				t.Errorf("%s got name-form faults: %+v", name, faults)
+			}
 		}
 	})
 }
