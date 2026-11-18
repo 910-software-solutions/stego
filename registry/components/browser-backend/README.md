@@ -147,6 +147,20 @@ The check needs these details, which PostgreSQL does not give by default:
   the owner role. A grant to it gives `fault: grant`.
 - The migration login is INHERIT, the default, so that it can connect as a
   member of the owner role.
+- The owner role has one member, the migration login, the migration login has
+  no member, and the runtime login has no member (version 4.12.0 and later).
+  Another member could take the role and read or drop the session table, so
+  the check refuses it with `fault: owner` or `fault: login`. The check counts
+  only a membership with INHERIT or SET. On PostgreSQL 16 and later, an
+  administrator that is not a superuser, such as the master user of a managed
+  server, gets a membership WITH ADMIN OPTION only in each role that it makes;
+  the check accepts it, and you must not revoke it, because the administrator
+  needs it to change a password. Such an administrator cannot make a database
+  that a role owns unless it can take that role: run
+  `GRANT <service>_owner TO <admin> WITH SET TRUE, INHERIT FALSE` before
+  `CREATE DATABASE`, run the grants of the database and of the schema `public`
+  after `SET ROLE <service>_owner` in one session, and then run
+  `REVOKE <service>_owner FROM <admin>`.
 
 The Job takes `STEGO_RUNTIME_DATABASE_ROLE=<service>_runtime`, and the owner
 Secret holds the connection string of `<service>_migrator`.
@@ -154,14 +168,19 @@ Secret holds the connection string of `<service>_migrator`.
 When Verify refuses the database, at startup or in the mode migrate, the
 failure record names the stage `database.schema`, the field `fault` (owner,
 login, table, column, constraint, index or grant) and the field `object` (the
-generated table, column, constraint or index). It holds no value, password or
-database error text. The stage `database.access` is kept for a connection that
+generated table, column, constraint or index). For the faults owner, login and
+grant, version 4.12.0 and later also names the field `remedy`, a fixed text that
+names the section [Move a browser-service database to the owner and migrator
+logins](../../../docs/upgrade.md#move-a-browser-service-database-to-the-owner-and-migrator-logins)
+of the upgrade guide. It holds no value, password or database error text. The stage `database.access` is kept for a connection that
 did not open or a login that could not be read.
 
 The generated `browser/schema.Bootstrap` function is also available to your own
 code. Version 2 requires a separate schema owner and runtime login. An older deployment
 that used the table owner as its runtime login must change its grants and table
-ownership before it uses this version. Startup rejects unsafe permissions.
+ownership before it uses this version. Startup rejects unsafe permissions. A
+database of a release before 4.6.0 has a LOGIN owner: move it with the steps of
+the upgrade guide (see above) before the first migration Job.
 
 With `postgres-client`, provision a database with `ManagedSchema: true`, then call
 `WithDatabaseOwner`. In its callback, pass the connection and `identity.User` to

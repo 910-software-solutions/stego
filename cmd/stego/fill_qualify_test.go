@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -526,6 +527,41 @@ func TestFillQualification(t *testing.T) {
 		}
 		if p.manifest(t, "untested-fill-2").Evidence == nil {
 			t.Fatal("stego test wrote no evidence for untested-fill-2")
+		}
+	})
+
+	t.Run("ST-EXT-UC02-R01-T06 A failed fill test that still names ErrNotImplemented gets the cause and the section of the upgrade guide", func(t *testing.T) {
+		p := newFillProject(t)
+		// The test that an older stego fill create wrote, after the author wrote the fill and removed the variable:
+		// it no longer compiles (walkthrough 11, W11-B7).
+		pkg := regexp.MustCompile(`(?m)^package (\w+)$`).FindSubmatch(p.read(t, "fills/untested-fill/policy_test.go"))
+		if pkg == nil {
+			t.Fatal("the test of untested-fill has no package clause")
+		}
+		p.write(t, "fills/untested-fill/fill_test.go", "package "+string(pkg[1])+"\n\nimport (\n\t\"errors\"\n\t\"testing\"\n)\n\n"+
+			"func TestFill(t *testing.T) {\n\tif !errors.Is(nil, ErrNotImplemented) {\n\t\tt.Fatal(\"the unfinished fill gave nil, want ErrNotImplemented\")\n\t}\n}\n")
+		p.replace(t, "fills/untested-fill-2/policy_test.go", "if err != nil", "if true")
+		stdout, stderr, err := p.stego(t, "no-key", "test")
+		if err == nil {
+			t.Fatalf("stego test passed with a test that does not compile:\n%s\n%s", stdout, stderr)
+		}
+		const cause = "fill_test.go still expects ErrNotImplemented"
+		const section = "docs/upgrade.md#write-the-tests-of-your-fills"
+		var first, second string
+		for _, line := range strings.Split(stdout+stderr, "\n") {
+			switch {
+			case strings.HasPrefix(line, "fill untested-fill:"):
+				first = line
+			case strings.HasPrefix(line, "fill untested-fill-2:"):
+				second = line
+			}
+		}
+		if !strings.Contains(first, cause) || !strings.Contains(first, section) {
+			t.Fatalf("stego test does not name the cause and the section for untested-fill: %q\n%s\n%s", first, stdout, stderr)
+		}
+		// A fill whose test fails for another reason gets no such cause.
+		if second == "" || strings.Contains(second, "ErrNotImplemented") {
+			t.Fatalf("stego test gives the line %q for untested-fill-2, want its failure with no ErrNotImplemented cause", second)
 		}
 	})
 
