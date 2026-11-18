@@ -424,3 +424,59 @@ func TestChildLists(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkerRootCreate proves ST-SUP-RP10-LC17-T03: checking warns for each entity that a worker writes and cannot
+// create with no parent resource, and gives no warning for an entity whose create always has a parent.
+func TestWorkerRootCreate(t *testing.T) {
+	ref := func(name, to string, optional bool) types.Field {
+		return types.Field{Name: name, Type: types.FieldTypeRef, To: to, Optional: optional}
+	}
+	service := func(writes ...string) *types.ServiceDeclaration {
+		return &types.ServiceDeclaration{
+			Authorization: &types.Authorization{Provider: "spicedb"},
+			Entities: []types.Entity{
+				{Name: "Roster", EntityAuthorization: types.EntityAuthorization{ResourceType: "roster"}, Fields: []types.Field{{Name: "label", Type: types.FieldTypeString}}},
+				{Name: "PatientCard", EntityAuthorization: types.EntityAuthorization{ResourceType: "patient_card"}, Fields: []types.Field{ref("roster_id", "Roster", true), {Name: "patient_ref", Type: types.FieldTypeString}}},
+				{Name: "Visit", EntityAuthorization: types.EntityAuthorization{ResourceType: "visit"}, Fields: []types.Field{ref("roster_id", "Roster", false)}},
+				{Name: "Note", Fields: []types.Field{ref("visit_id", "Visit", false)}},
+			},
+			Workers: []types.Worker{{Name: "track-patients", Trigger: "consumes patient-changes", Writes: writes, ResourceType: "patient_card", Permission: "track"}},
+		}
+	}
+	t.Run("ST-SUP-RP10-LC17-T03 a worker that writes a root entity is warned, with the entity and the cause", func(t *testing.T) {
+		warnings := RootCreateWarnings(service("Roster"))
+		if len(warnings) != 1 || warnings[0].Rule != "worker-root-create" || warnings[0].Path != "workers[0].writes" || warnings[0].Found != "Roster" {
+			t.Fatalf("warnings = %+v, want one worker-root-create warning for Roster", warnings)
+		}
+		for _, want := range []string{`worker "track-patients"`, "Roster", "roster", "ST-SUP-RP10-LC17", "fill_error", "no reference to an entity with a resource type", "ST-SUP-Q164"} {
+			if !strings.Contains(warnings[0].Message, want) {
+				t.Errorf("message %q does not hold %q", warnings[0].Message, want)
+			}
+		}
+	})
+	t.Run("ST-SUP-RP10-LC17-T03 an entity whose only reference is optional is warned, with the reference to set", func(t *testing.T) {
+		warnings := RootCreateWarnings(service("PatientCard"))
+		if len(warnings) != 1 || warnings[0].Found != "PatientCard" || !strings.Contains(warnings[0].Message, "sets roster_id") {
+			t.Fatalf("warnings = %+v, want one warning for PatientCard that names roster_id", warnings)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC17-T03 an entity with a required reference and a child entity are not warned", func(t *testing.T) {
+		if warnings := RootCreateWarnings(service("Visit", "Note")); len(warnings) != 0 {
+			t.Fatalf("warnings = %+v, want none", warnings)
+		}
+	})
+	t.Run("ST-SUP-RP10-LC17-T03 a service with no authorization is not warned, and Warnings gives the warning", func(t *testing.T) {
+		open := service("Roster")
+		open.Authorization = nil
+		if warnings := RootCreateWarnings(open); len(warnings) != 0 {
+			t.Fatalf("warnings = %+v, want none", warnings)
+		}
+		found := false
+		for _, w := range Warnings(service("Roster", "Visit")) {
+			found = found || w.Rule == "worker-root-create"
+		}
+		if !found {
+			t.Fatal("Warnings gives no worker-root-create warning")
+		}
+	})
+}

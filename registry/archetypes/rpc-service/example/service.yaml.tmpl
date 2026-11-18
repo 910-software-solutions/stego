@@ -20,8 +20,11 @@ audit:
 overrides:
   postgres-adapter:
     schema_generation: tables-v1
+  # The messages are in proto/messages.proto and the service in proto/service.proto, because the command component
+  # reads only a proto file with no service: a command lists proto/messages.proto under command.proto_files.
   grpc-application:
     proto_files:
+      - {path: proto/messages.proto, import_path: greeter/v1/messages.proto}
       - {path: proto/service.proto, import_path: greeter/v1/service.proto}
 entities:
   - name: Greeting

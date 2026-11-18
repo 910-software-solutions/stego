@@ -431,7 +431,12 @@ before the change, with its constraints, in `definition`, such as
 `string, pattern ^[0-9]{1,9}$`; a pattern is the last item, as it can hold
 a comma.
 
-The field keeps its name in the API. Its values go to a new column,
+The field keeps its name in the API, but its JSON type in the API changes with
+its type: a retype from `int64` to `string` changes the value `14` to `"14"`,
+and a retype from `string` to `int64` changes `"14"` to `14`. The OpenAPI
+contract of the release after the change gives the new type. Thus a client
+that reads the field must accept both types while the two releases run.
+Its values go to a new column,
 `<field>_<type>`, such as `rank_string`, which stays its column after the
 contract step. The expand step adds the column, nullable, its CHECK
 `NOT VALID` and its indexes, and then the sync trigger, which converts each

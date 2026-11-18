@@ -730,6 +730,28 @@ func TestService(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC33-OC05-T05 A get query answers a key that is not a UUID 404, with no read of the row and no decision", func(t *testing.T) {
+		_, missing := s.get(t, user, "/orders/"+o9)
+		calls := getorder.Calls()
+		evals, _, _ := s.rec.count()
+		s.wire.take()
+		for _, key := range []string{"not-a-uuid", "1", strings.ToUpper(o1) + "0"} {
+			status, body := s.get(t, user, "/orders/"+url.PathEscape(key))
+			if status != http.StatusNotFound || !bytes.Equal(body, missing) {
+				t.Fatalf("get-order of %q: %d %s, want 404 with the body of a missing row %s", key, status, body, missing)
+			}
+		}
+		if got := getorder.Calls() - calls; got != 0 {
+			t.Fatalf("the fill ran %d times for a key that is not a UUID, want never", got)
+		}
+		if after, _, _ := s.rec.count(); after != evals {
+			t.Fatalf("a key that is not a UUID made %d decisions, want none", after-evals)
+		}
+		if slices.ContainsFunc(s.wire.take(), func(text string) bool { return selectOrders.MatchString(text) }) {
+			t.Fatal("a key that is not a UUID reached a read of orders, want no statement on the row")
+		}
+	})
+
 	t.Run("ST-SUP-RC33-OC07-T01 A query fill's error text reaches no response, audit row or completion log", func(t *testing.T) {
 		lastCode := func() string {
 			s.codesMu.Lock()

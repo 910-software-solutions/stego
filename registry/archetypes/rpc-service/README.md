@@ -16,7 +16,9 @@ through queries.
 
    Init writes `go.mod` with that module path, and each later command reads
    it from there. The scaffold holds one query, `get-greeting`, its fill and the fill's test,
-   one proto file and the schema `authz/schema.zed`.
+   two proto files and the schema `authz/schema.zed`: `proto/messages.proto`
+   holds the request and response messages, and `proto/service.proto` holds the
+   gRPC service, which imports them.
 
 2. Check the declaration:
 
@@ -171,6 +173,18 @@ commands:
     route: POST /shipments
     method: fulfilment.v1.Fulfilment/CreateShipment
     fill: create-shipment
+```
+
+A command reads its request and response messages from a proto file with no
+service, so put them in `proto/messages.proto` and list that file under the
+setting `proto_files` of the component `command` too; add the method to the
+service in `proto/service.proto`:
+
+```yaml
+overrides:
+  command:
+    proto_files:
+      - {path: proto/messages.proto, import_path: greeter/v1/messages.proto}
 ```
 
 The runtime decides `create_shipment` on

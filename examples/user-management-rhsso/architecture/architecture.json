@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.175.0",
+    "archetype_version": "3.173.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -70,7 +70,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "needs"
         }
       }
@@ -144,7 +144,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "needs"
         }
       }
@@ -269,7 +269,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "needs"
         }
       }
@@ -344,7 +344,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "needs"
         }
       }
@@ -463,7 +463,7 @@
     {
       "id": "component:kafka-producer",
       "name": "kafka-producer",
-      "version": "3.2.0",
+      "version": "3.3.0",
       "stage": "ga",
       "layer": "outside call",
       "flow_part": "Publishes each change message of the outbox to Kafka.",
@@ -486,7 +486,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "architecture"
         }
       }
@@ -572,7 +572,7 @@
     {
       "id": "component:query",
       "name": "query",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared query for the caller and gives back its rows.",
@@ -595,7 +595,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "architecture"
         }
       }
@@ -603,7 +603,7 @@
     {
       "id": "component:rest-api",
       "name": "rest-api",
-      "version": "4.7.0",
+      "version": "4.6.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Decodes the request of a collection operation and calls its command or query.",
@@ -702,7 +702,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "architecture"
         }
       }
@@ -869,7 +869,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "requires"
         }
       }
@@ -967,7 +967,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "provides"
         }
       }
@@ -999,7 +999,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "provides"
         }
       }
@@ -1015,7 +1015,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "provides"
         }
       }
@@ -1031,7 +1031,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "provides"
         }
       }
@@ -1051,7 +1051,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "requires"
         }
       }
@@ -1099,7 +1099,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.175.0",
+          "version": "3.173.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1113,7 +1113,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.175.0",
+          "version": "3.173.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1127,7 +1127,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.175.0",
+          "version": "3.173.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1150,7 +1150,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.175.0",
+          "version": "3.173.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1768,7 +1768,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -1912,7 +1912,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2056,7 +2056,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2123,7 +2123,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "architecture"
             }
           }
@@ -2159,7 +2159,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2244,7 +2244,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2333,7 +2333,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "architecture"
             }
           }
@@ -2361,7 +2361,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2465,7 +2465,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2543,7 +2543,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "architecture"
             }
           }
@@ -2662,7 +2662,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2806,7 +2806,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -2884,7 +2884,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "architecture"
             }
           }
@@ -2920,7 +2920,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3016,7 +3016,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3168,7 +3168,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3246,7 +3246,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "architecture"
             }
           }
@@ -3282,7 +3282,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3367,7 +3367,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3445,7 +3445,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "architecture"
             }
           }
@@ -3473,7 +3473,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3577,7 +3577,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3644,7 +3644,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "architecture"
             }
           }
@@ -3763,7 +3763,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -3907,7 +3907,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "architecture"
             }
           }
@@ -4003,7 +4003,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "needs"
         }
       }
@@ -4103,7 +4103,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "needs"
         }
       }
@@ -4210,6 +4210,23 @@
       }
     },
     {
+      "id": "need:secret.user-management-kafka-client",
+      "kind": "secret",
+      "name": "user-management-kafka-client",
+      "shape": "keys ca-crt, password",
+      "stated_by": [
+        "component:kafka-producer"
+      ],
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "kafka-producer",
+          "version": "3.3.0",
+          "field": "needs"
+        }
+      }
+    },
+    {
       "id": "need:secret.user-management-query-cursor",
       "kind": "secret",
       "name": "user-management-query-cursor",
@@ -4221,7 +4238,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "needs"
         }
       }
@@ -4254,7 +4271,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "needs"
         }
       }
@@ -4294,7 +4311,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "environment"
         }
       }
@@ -4313,7 +4330,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "environment"
         }
       }
@@ -4331,7 +4348,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.7.0",
+          "version": "4.6.0",
           "field": "environment"
         }
       }
@@ -6277,7 +6294,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6295,7 +6312,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6313,7 +6330,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6331,7 +6348,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6349,7 +6366,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6367,7 +6384,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6385,7 +6402,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6404,7 +6421,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6422,7 +6439,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6440,7 +6457,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6458,7 +6475,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6476,7 +6493,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6494,7 +6511,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6512,7 +6529,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6530,7 +6547,7 @@
         "registry": {
           "part": "component",
           "name": "kafka-producer",
-          "version": "3.2.0",
+          "version": "3.3.0",
           "field": "environment"
         }
       }
@@ -6640,7 +6657,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -8348,7 +8365,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8363,7 +8380,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8378,7 +8395,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8393,7 +8410,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8408,7 +8425,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8423,7 +8440,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8438,7 +8455,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8453,7 +8470,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8468,7 +8485,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8483,7 +8500,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -8498,7 +8515,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.7.0",
+              "version": "4.6.0",
               "field": "environment"
             }
           }
@@ -13583,7 +13600,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13598,7 +13615,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13613,7 +13630,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13628,7 +13645,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13643,7 +13660,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13658,7 +13675,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13673,7 +13690,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13688,7 +13705,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13703,7 +13720,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13718,7 +13735,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13733,7 +13750,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13748,7 +13765,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13763,7 +13780,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13778,7 +13795,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13793,7 +13810,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13808,7 +13825,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13823,7 +13840,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13838,7 +13855,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13853,7 +13870,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13868,7 +13885,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13883,7 +13900,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13898,7 +13915,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13913,7 +13930,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13928,7 +13945,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13943,7 +13960,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13958,7 +13975,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13973,7 +13990,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -13988,7 +14005,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14003,7 +14020,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14018,7 +14035,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14033,7 +14050,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14048,7 +14065,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14063,7 +14080,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14078,7 +14095,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14093,7 +14110,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14108,7 +14125,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14123,7 +14140,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14138,7 +14155,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14153,7 +14170,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14168,7 +14185,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14183,7 +14200,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14198,7 +14215,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14213,7 +14230,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14228,7 +14245,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14243,7 +14260,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14258,7 +14275,7 @@
             "registry": {
               "part": "component",
               "name": "kafka-producer",
-              "version": "3.2.0",
+              "version": "3.3.0",
               "field": "environment"
             }
           }
@@ -14528,7 +14545,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14543,7 +14560,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14558,7 +14575,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }

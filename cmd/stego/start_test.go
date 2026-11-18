@@ -427,7 +427,7 @@ func keysOf(values map[string]any) []string {
 // exampleArchetypes are the archetypes of the fixture registry whose scaffold holds example content, with the files
 // of that content beside the declaration.
 var exampleArchetypes = map[string][]string{
-	"rpc-service":     {"authz/schema.zed", "fills/get-greeting/fill.go", "fills/get-greeting/fill.yaml", "fills/get-greeting/fill_test.go", "proto/service.proto"},
+	"rpc-service":     {"authz/schema.zed", "fills/get-greeting/fill.go", "fills/get-greeting/fill.yaml", "fills/get-greeting/fill_test.go", "proto/messages.proto", "proto/service.proto"},
 	"browser-service": {"ui/index.html"},
 }
 
@@ -695,7 +695,7 @@ func TestArchetypeScaffolds(t *testing.T) {
 				}
 			}
 			if archetype == "rpc-service" && len(cuts) != len(files)+4 {
-				t.Fatalf("rpc-service: want each file, and the service, the two messages and the method of the proto file, got %d parts", len(cuts))
+				t.Fatalf("rpc-service: want each file, and the two messages of proto/messages.proto and the service and the method of proto/service.proto, got %d parts", len(cuts))
 			}
 			// The parts of the declaration text: each key, and each setting of a component.
 			text, err := os.ReadFile(filepath.Join(scaffold, "service.yaml"))
