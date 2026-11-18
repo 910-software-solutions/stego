@@ -309,7 +309,9 @@ func defaultSuits(f types.Field) bool {
 // The forms of the declared names (ST-DECL-INV86): a generator writes these names into Go, SQL, proto, YAML and
 // JSON, so the declaration holds them to a form that no output can read as code, whatever components are active.
 var (
-	serviceNameForm    = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+	// A service name is also the name of its Kubernetes Service, a DNS-1035 label: it starts with a letter and does
+	// not end with a hyphen (ST-DECL-Q43).
+	serviceNameForm    = regexp.MustCompile(`^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	collectionNameForm = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
 	entityNameForm     = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,62}$`)
 	fieldNameForm      = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)

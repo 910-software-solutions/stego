@@ -644,3 +644,21 @@ func TestCapturedApplicationGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestDatabaseLoginNameLength(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC56-T04 A service name whose database logins are longer than 63 bytes is refused, naming the login", func(t *testing.T) {
+		ctx := fixture()
+		// A name of 54 bytes gives the login <service>_migrator of 63 bytes, the most PostgreSQL holds.
+		ctx.ServiceName = "a-" + strings.Repeat("b", 52)
+		if err := new(Generator).ValidateContext(ctx); err != nil {
+			t.Errorf("a service name of 54 bytes is refused: %v", err)
+		}
+		ctx.ServiceName = "a-" + strings.Repeat("b", 53)
+		if err := new(Generator).ValidateContext(ctx); err == nil || !strings.Contains(err.Error(), "a_"+strings.Repeat("b", 53)+"_migrator, which is longer than the 63 bytes") {
+			t.Errorf("a service name of 55 bytes is not refused with its login: %v", err)
+		}
+		if _, _, err := new(Generator).Generate(ctx); err == nil {
+			t.Error("Generate takes a service name of 55 bytes")
+		}
+	})
+}

@@ -162,8 +162,8 @@ func readModule(root *os.Root) ([]byte, error) {
 	return data, nil
 }
 
-// ProjectModuleSettings uses the existing module unless the user gives an
-// explicit setting. It rejects conflicting module names before generation.
+// ProjectModuleSettings gives the module of the project's go.mod, which stego init writes, and refuses a given
+// name that differs from it before generation. Only a project with no go.mod takes the given name or the default.
 func ProjectModuleSettings(projectDir, name, goVersion string) (string, string, error) {
 	root, err := os.OpenRoot(projectDir)
 	if err != nil {
@@ -183,7 +183,7 @@ func ProjectModuleSettings(projectDir, name, goVersion string) (string, string, 
 			return "", "", fmt.Errorf("go.mod has no module directive")
 		}
 		if name != "" && name != file.Module.Mod.Path {
-			return "", "", fmt.Errorf("STEGO_MODULE %q conflicts with project module %q", name, file.Module.Mod.Path)
+			return "", "", fmt.Errorf("the module %q (--module of stego init, or STEGO_MODULE) conflicts with the module %q of go.mod, which is the source of the module", name, file.Module.Mod.Path)
 		}
 		name = file.Module.Mod.Path
 		if goVersion == "" && file.Go != nil {

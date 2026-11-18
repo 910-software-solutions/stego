@@ -642,3 +642,25 @@ func TestWithinKeys(t *testing.T) {
 		}
 	})
 }
+
+func TestNamesApart(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC46-T06 A field whose foreign key takes the name of the composite key of a within is refused at generation, naming both", func(t *testing.T) {
+		// The field sprint_id_within is a reference, so its plain foreign key is tickets_sprint_id_within_fkey: the
+		// name of the composite key of the within on sprint_id.
+		clash := withinFresh("withinclash", "withinclashtenancy")
+		clash.Entities[2].Fields = append(clash.Entities[2].Fields, types.Field{Name: "sprint_id_within", Type: types.FieldTypeRef, To: "Sprint", Optional: true})
+		_, _, err := new(postgresadapter.Generator).Generate(clash)
+		if err == nil || !strings.Contains(err.Error(), "are both tickets_sprint_id_within_fkey") || !strings.Contains(err.Error(), "(tenant_id, sprint_id_within)") ||
+			!strings.Contains(err.Error(), "(tenant_id, project_id, sprint_id)") {
+			t.Errorf("a field whose key takes the name of the within key gives %v", err)
+		}
+		// The within key keeps its name, so a database that holds it needs no rename.
+		fresh, _, err := new(postgresadapter.Generator).Generate(withinFresh("withinkept", "withinkepttenancy"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if initial := generated(t, fresh, "withinkept/migrations/001_initial.sql"); !strings.Contains(initial, `CONSTRAINT "tickets_sprint_id_within_fkey"`) {
+			t.Errorf("the within key lost its name:\n%s", initial)
+		}
+	})
+}
