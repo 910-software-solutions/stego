@@ -1091,7 +1091,17 @@ in `field` and never a value: the detail of a generated CRUD write is `the
 Organisation was not written: another Organisation has the same name, which
 must be unique`, and over gRPC the status `Aborted` carries a `BadRequest`
 detail with the fields. Any other conflict keeps the detail `the
-<Entity> changed during the request`. A get query of a key that is not a UUID is a missing
+<Entity> changed during the request`.
+
+The 409 names the key. Thus a caller who may create or update the entity
+learns that a row with that value of the key exists in the tenant, also a row
+that the caller may not read. A unique violation told this before too, with no
+name of the key. When the existence of a value must not be known across
+parents, such as the name of a project in another team, do not make the field
+unique in the whole tenant. Make it unique under its parent with
+`unique_composite`, which holds the reference to the parent and the field,
+such as `{ name: name, type: string, unique_composite: [team_id, name] }`. Then
+the conflict tells only of the rows under the parent of the write. A get query of a key that is not a UUID is a missing
 row: 404, or `NotFound` over gRPC, with no statement.
 
 ### Outage answers
