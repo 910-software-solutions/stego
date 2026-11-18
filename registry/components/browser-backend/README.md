@@ -54,7 +54,11 @@ comma-separated list of `name=origin`, such as
   A path with an encoded slash gets 400. The router of the service sends a
   path with a `.` or `..` segment, or an empty segment, to its clean form
   with 307 before the backend reads it, so such a path reaches no API; the
-  backend refuses it with 400 when it gets one.
+  backend refuses it with 400 when it gets one. From version 4.11.0, an API
+  path with a `;` in a segment (such as `..;`) or a `%` after the decode (a
+  double encoding, such as `%252e`) or bytes that are not UTF-8 after the
+  decode (such as the overlong dot `%C0%AE`) also gets 400, because a
+  lenient API server can read such a path as another path.
 - A `Location` of an answer must be under the prefix of the same API, with no
   `.` or `..` segment, plain or encoded, and no other encoded character.
 - Each API has a bounded client of its own, and its own share of the 16
@@ -144,7 +148,7 @@ The check needs these details, which PostgreSQL does not give by default:
 - The migration login is INHERIT, the default, so that it can connect as a
   member of the owner role.
 - The owner role has one member, the migration login, the migration login has
-  no member, and the runtime login has no member (version 4.11.0 and later).
+  no member, and the runtime login has no member (version 4.12.0 and later).
   Another member could take the role and read or drop the session table, so
   the check refuses it with `fault: owner` or `fault: login`. The check counts
   only a membership with INHERIT or SET. On PostgreSQL 16 and later, an
@@ -165,7 +169,7 @@ When Verify refuses the database, at startup or in the mode migrate, the
 failure record names the stage `database.schema`, the field `fault` (owner,
 login, table, column, constraint, index or grant) and the field `object` (the
 generated table, column, constraint or index). For the faults owner, login and
-grant, version 4.11.0 and later also names the field `remedy`, a fixed text that
+grant, version 4.12.0 and later also names the field `remedy`, a fixed text that
 names the section [Move a browser-service database to the owner and migrator
 logins](../../../docs/upgrade.md#move-a-browser-service-database-to-the-owner-and-migrator-logins)
 of the upgrade guide. It holds no value, password or database error text. The stage `database.access` is kept for a connection that

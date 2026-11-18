@@ -76,8 +76,8 @@ archetype does not have the change.
 | 3.160.0 | 1.161.0 | 1.163.0 | `stego init` writes `go.mod`, and each later command reads the module path from it. `STEGO_MODULE` has no effect. | [Remove STEGO_MODULE](#remove-stego_module) |
 | 3.169.0 | 1.169.0 | - | The base has two Deployments: `<service>` runs the api mode, and `<service>-worker` runs the worker and controller modes. Both hold `DATABASE_URL`. | Remove an overlay patch of `STEGO_MODE` (see [Probes and modes](delivery.md#probes-and-modes)). Roll both Deployments after each change of a database password ([Rotate a database password](operations.md#rotate-a-database-password)). |
 | 3.173.0 | 1.175.0 | - | kafka-producer 3.3.0 and kafka-consumer 0.3.0 read the Kafka password and the CA file from the Secret `<service>-kafka-client`. | [Make the Secret of the Kafka client](#make-the-secret-of-the-kafka-client) |
-| the release whose base holds `deploy/base/worker-service-account.yaml` | the same | - | The worker Deployment runs as the ServiceAccount `<service>-worker`, not `<service>`. | [Give the worker ServiceAccount its grants](#give-the-worker-serviceaccount-its-grants) |
-| 3.177.0 | 1.179.0 | 1.180.0 | `stego fill create` writes a test that does not name `ErrNotImplemented`. `stego test` names the cause when an old scaffold test still expects it. | [Write the tests of your fills](#write-the-tests-of-your-fills) |
+| 3.176.0 | 1.178.0 | - | The worker Deployment runs as the ServiceAccount `<service>-worker`, not `<service>`. | [Give the worker ServiceAccount its grants](#give-the-worker-serviceaccount-its-grants) |
+| 3.179.0 | 1.181.0 | 1.182.0 | `stego fill create` writes a test that does not name `ErrNotImplemented`. `stego test` names the cause when an old scaffold test still expects it. | [Write the tests of your fills](#write-the-tests-of-your-fills) |
 | runtime v0.134.0 | runtime v0.134.0 | - | A new consumer waits for its worker tuple, so a new subscription no longer parks its backlog. The refresh age of the OIDC key set is the `max-age` of the issuer. A second cursor key can open cursors. A route that does not exist answers 404. A retire removes the tuples of the rows of the tenant. A message that an older runtime counted toward poison keeps its count. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service), [Rotate the OIDC signing key](operations.md#rotate-the-oidc-signing-key), [Rotate the cursor key](operations.md#rotate-the-cursor-key). Before the upgrade, resolve each parked message of a consuming worker (see [See and resolve the parked messages](commands-queries-workers.md#see-and-resolve-the-parked-messages)): a message that the older runtime almost parked can park soon after the upgrade. |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
@@ -242,7 +242,8 @@ grant that you made outside the base for the ServiceAccount `<service>` does
 not apply to it.
 
 Before you apply the first release whose base holds
-`deploy/base/worker-service-account.yaml`, give `<service>-worker` each grant
+`deploy/base/worker-service-account.yaml` (rest-crud 3.176.0, rpc-service
+1.178.0), give `<service>-worker` each grant
 that the worker needs:
 
 - a workload identity annotation, such as `eks.amazonaws.com/role-arn` or
