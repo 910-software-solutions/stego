@@ -11,7 +11,9 @@ A release of STEGO is a commit of this repository. The archetypes
 release notes below name the first archetype versions that hold each change.
 The version of an archetype is in `registry/archetypes/<archetype>/archetype.yaml`,
 and `.stego/state.yaml` of your project records the versions that your last
-`stego apply` used.
+`stego apply` used. Some notes name a version of the STEGO runtime library
+instead. Your service uses the version that the line
+`github.com/jsell-rh/stego/registry/runtime` of its `go.mod` names.
 
 ## The procedure
 
@@ -76,6 +78,7 @@ archetype does not have the change.
 | 3.173.0 | 1.175.0 | - | kafka-producer 3.3.0 and kafka-consumer 0.3.0 read the Kafka password and the CA file from the Secret `<service>-kafka-client`. | [Make the Secret of the Kafka client](#make-the-secret-of-the-kafka-client) |
 | the release whose base holds `deploy/base/worker-service-account.yaml` | the same | - | The worker Deployment runs as the ServiceAccount `<service>-worker`, not `<service>`. | [Give the worker ServiceAccount its grants](#give-the-worker-serviceaccount-its-grants) |
 | 3.177.0 | 1.179.0 | 1.180.0 | `stego fill create` writes a test that does not name `ErrNotImplemented`. `stego test` names the cause when an old scaffold test still expects it. | [Write the tests of your fills](#write-the-tests-of-your-fills) |
+| runtime v0.134.0 | runtime v0.134.0 | - | A new consumer waits for its worker tuple, so a new subscription no longer parks its backlog. The refresh age of the OIDC key set is the `max-age` of the issuer. A second cursor key can open cursors. A route that does not exist answers 404. A retire removes the tuples of the rows of the tenant. A message that an older runtime counted toward poison keeps its count. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service), [Rotate the OIDC signing key](operations.md#rotate-the-oidc-signing-key), [Rotate the cursor key](operations.md#rotate-the-cursor-key). Before the upgrade, resolve each parked message of a consuming worker (see [See and resolve the parked messages](commands-queries-workers.md#see-and-resolve-the-parked-messages)): a message that the older runtime almost parked can park soon after the upgrade. |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -293,15 +296,22 @@ worker, starts a new consumer group. The group reads the topic from its
 first record that Kafka still holds. Thus the worker gets the backlog of the
 topic at its first start.
 
-Why the backlog can park: the worker acts with its own service account. Its
-grant in each tenant is a tuple that the controller writes. The controller
-of the new release writes the tuples only when it holds the controller lease
-and its release is the release of the last migration Job. In a rolling update,
-the pod of the release before holds the lease until it stops. Thus the new
-worker can run before its tuple is in SpiceDB. Each such run is refused, and
-after 5 refused runs in a row the worker parks the message. This takes a few
-seconds. A parked message holds back each later event of the same source row.
-No event is lost.
+The worker acts with its own service account. Its grant in each tenant is a
+tuple that the controller writes. The controller of the new release writes
+the tuples only when it holds the controller lease and its release is the
+release of the last migration Job. In a rolling update, the pod of the release
+before holds the lease until it stops. Thus the new worker can run before its
+tuple is in SpiceDB.
+
+- From runtime v0.134.0: the worker checks its tuple before each run. While
+  the tuple is not there, the message stays pending with the failure code
+  `worker-tuple-missing`, and the runtime does not count it toward poison.
+  The backlog is applied when the controller of the new release has written
+  the tuples. Do steps 1 to 3 below. Steps 4 to 7 are not necessary.
+- Before runtime v0.134.0: each such run is refused, and after 5 refused runs
+  in a row the worker parks the message. This takes a few seconds. A parked
+  message holds back each later event of the same source row. No event is
+  lost. Do all the steps below.
 
 Do these steps:
 
@@ -317,7 +327,7 @@ Do these steps:
    ```
 
 3. Deploy the release.
-4. Wait until the worker applies a new event of the source, or 2 minutes after
+4. Before runtime v0.134.0 only: wait until the worker applies a new event of the source, or 2 minutes after
    the last pod of the release before stopped. Then the controller of the new
    release holds the lease, and it wrote the tuples.
 5. In each tenant, list the parked messages of the destination of the
@@ -349,6 +359,6 @@ Do these steps:
    cause, such as a row that the fill needs and that does not exist. Correct
    the cause, then send it again.
 
-A runtime change that removes steps 4 to 7 is planned: the migration Job
-writes the worker tuples, and a refused run of a worker whose tuple is not
-there yet is not counted for the poison bound.
+From runtime v0.134.0, look at the parked list once after the first start
+all the same: a message that parks has another cause, such as a row that the
+fill needs and that does not exist.

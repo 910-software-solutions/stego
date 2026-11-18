@@ -176,9 +176,18 @@ key set, and it loads the key set again in these cases:
 - A token names a key ID (`kid`) that the copy does not hold. The pod loads the
   key set before it answers. It loads at most once in 30 seconds (the
   cooldown). A token of an unknown key in the cooldown gets 401.
-- The copy is older than 5 minutes. The next request still uses the copy, and it
-  starts a load in the background.
-- When no load succeeded in 15 minutes, the pod refuses each token.
+- From runtime v0.134.0: the refresh age of the copy is the `max-age` of the
+  `Cache-Control` header of the key set, bounded to 1 to 5 minutes, and 5
+  minutes when the issuer sends none. From half the refresh age, a request
+  starts a load in the background. At the refresh age, a token of a known key
+  waits for the load. Thus a removed key stops within the refresh age, plus
+  the load timeout of 5 seconds.
+- Before runtime v0.134.0: when the copy is older than 5 minutes, the next
+  request still uses the copy, and it starts a load in the background. When
+  no load succeeded in 15 minutes, the pod refuses each token.
+
+The runtime version of your service is in the line
+`github.com/jsell-rh/stego/registry/runtime` of its `go.mod`.
 
 A browser service loads the key set of the issuer again when a token names an
 unknown key ID.
@@ -189,9 +198,11 @@ Do the steps in this order (OpenID Connect Core 1.0, section 10.1.1, and RFC
 1. Publish the new key in the key set of the issuer, beside the old key. Do
    not sign with it yet.
 2. Wait until each replica and each cache of the issuer serves the new key
-   set. Then wait at least 30 seconds more. We recommend 6 minutes: then each
-   pod that gets requests has a copy with the new key, and no request waits for
-   a load.
+   set. Then wait the refresh age: from runtime v0.134.0, the `max-age` of
+   the key set (5 minutes when the issuer sends none); before it, 6 minutes.
+   Then each pod that gets requests has a copy with the new key, and no
+   request waits for a load. A token of an unknown key, also one that a
+   stranger sends, starts the cooldown, so do not wait less.
 3. Sign the new tokens with the new key.
 4. Keep the old key in the key set until each token that it signed has
    expired: the longest lifetime of an access token of the issuer, plus 60
@@ -206,9 +217,11 @@ Why this order:
 - A token of the old key that comes after you remove the key is refused.
   Step 4 makes sure that no valid token is of the old key.
 
-A pod accepts a token of a removed key until its copy is 5 minutes old and a
-request loads the key set again, and up to 15 minutes when the loads fail.
-Thus a removal is not a revocation. When a key leaked:
+A pod accepts a token of a removed key until its copy reaches the refresh age:
+from runtime v0.134.0, at most the `max-age` of the key set plus 5 seconds;
+before it, until the copy is 5 minutes old and a request loads the key set
+again, and up to 15 minutes when the loads fail. Thus a removal is not a
+revocation. When a key leaked:
 
 1. When the leaked key is the key that signs now, publish a new key and sign
    with it at once (steps 1 to 3 with no wait), so that the removal does not
@@ -231,10 +244,32 @@ reads the file only at start. Restart the pods after step 1 and after step 5.
 ## Rotate the cursor key
 
 A list gives a cursor for its next page. The cursor is sealed with the key of
-`<service>-query-cursor`. A pod refuses a cursor that another key sealed, with
-400 and the detail `the cursor is not valid`. Each pod has one key.
+`<service>-query-cursor`. A pod refuses a cursor that no key of the pod
+opens, with 400 and the detail `the cursor is not valid`.
 
-Do these steps:
+### From runtime v0.134.0: three rollouts, with no 400
+
+The api mode also reads the optional variable
+`STEGO_QUERY_CURSOR_EXTRA_KEY_FILE`: a file of a second key, which opens
+cursors and seals none. It is a plain path variable with no secret source,
+so mount the file yourself, for example from a second key of the same
+Secret, and set the variable in the ConfigMap. Make each key as in step 1 of
+the next section. Then do three rollouts of the api Deployment, and wait for
+each one to complete:
+
+1. Give the new key as the extra key. Each pod then opens the cursors of both
+   keys and seals with the old key.
+2. Give the new key as the key, and the old key as the extra key. Each pod
+   seals with the new key and still opens the cursors of the old key.
+3. When no client holds a cursor of the old key, for example one hour later,
+   remove the extra key and its variable.
+
+Why this order: in each rollout, the old pods and the new pods open the
+cursors that the other pods seal, so no client gets 400.
+
+### Before runtime v0.134.0: change, then roll
+
+Each pod has one key. Do these steps:
 
 1. Make a new key of at least 32 random bytes in a file that only you can
    read, write it into the key `key` of `<service>-query-cursor`, and remove
@@ -261,8 +296,7 @@ cursor. Write each client so that it starts a list again when a cursor gets
 400. A list is not a snapshot, so a client must also accept rows that change
 between two pages.
 
-A runtime change that removes the 400 is planned: a list of keys, where the
-first key seals each cursor and each key opens a cursor.
+From runtime v0.134.0, use the three rollouts above instead.
 
 ## Restore from a backup
 
