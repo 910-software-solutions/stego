@@ -3,10 +3,14 @@ package probe
 import (
 	"context"
 	"io"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 )
 
 // format is the console form of declared observations.
@@ -31,10 +35,35 @@ type consoleSink struct {
 	service  string
 	instance string
 	line     []byte
+	// now is the clock of the rate limit of the built-in events, and windows the window of each event name and
+	// budget, both under mu.
+	now     func() time.Time
+	windows map[budget]*window
 }
 
+// budget is the key of one rate limit of the built-in events: the event name, and whether it is of severity ERROR,
+// which has a budget of its own, as on the console of the log provider (otel.ConsoleLimit).
+type budget struct {
+	event  string
+	errors bool
+}
+
+// window is the rate limit of one budget: when its window started, the lines written in it and the lines dropped.
+type window struct {
+	start   time.Time
+	written int
+	dropped uint64
+}
+
+// limitedNames is the most budgets that the rate limit follows at one time; the built-in event names are fixed, so
+// it is only a bound.
+const limitedNames = 64
+
+// droppedMessage is the message of the line that counts the dropped lines of one built-in event name.
+const droppedMessage = "the console dropped lines of this event name in the last window of its rate limit"
+
 func newConsoleSink(out io.Writer, f format, service, instance string) *consoleSink {
-	s := &consoleSink{out: out, format: f, service: service, instance: instance}
+	s := &consoleSink{out: out, format: f, service: service, instance: instance, now: time.Now, windows: map[budget]*window{}}
 	s.queue = newQueue(s.write)
 	s.builtins = newBoundedQueue(BuiltinQueueLimit, s.write)
 	return s
@@ -70,6 +99,13 @@ func (s *consoleSink) drain(ctx context.Context, stopped *record) bool {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// Each window ends at the stop: the count lines of the dropped built-in events come before the last line.
+		s.mu.Lock()
+		err := s.closeWindows(true)
+		s.mu.Unlock()
+		if err != nil {
+			s.builtins.failed.Add(1)
+		}
 		if !safeWrite(s.write, stopped) {
 			s.builtins.failed.Add(1)
 		}
@@ -90,16 +126,118 @@ func (s *consoleSink) formatOf(r *record) format {
 	return s.format
 }
 
-// write writes the line of one record in one write call. The two queues share the buffer and the writer.
+// limited tells whether the rate limit holds the line of a record: a built-in worker event of severity WARN or
+// higher, such as worker.run.failed, which a failing worker sends for each run (walkthrough 9). A built-in service
+// event is always written (ST-SUP-RP12-LC22), and a counter and a declared observation are not held.
+func limited(r *record) bool {
+	return r.obs.class == workerClass && r.obs.kind == Event && r.obs.severity >= Warn
+}
+
+// admit closes the windows that ended and tells whether the line of r is within the rate limit of its event name and
+// budget: at most otel.ConsoleLimit lines in one otel.ConsoleWindow, for the WARN lines and for the ERROR lines each.
+// A line over it is counted, and the window writes the count when it ends.
+func (s *consoleSink) admit(r *record) (bool, error) {
+	err := s.closeWindows(false)
+	if !limited(r) {
+		return true, err
+	}
+	key := budget{event: r.obs.signal, errors: r.obs.severity >= Error}
+	w := s.windows[key]
+	if w == nil {
+		if len(s.windows) >= limitedNames {
+			return false, err
+		}
+		w = &window{start: s.now()}
+		s.windows[key] = w
+	}
+	if w.written >= otel.ConsoleLimit {
+		w.dropped++
+		return false, err
+	}
+	w.written++
+	return true, err
+}
+
+// closeWindows ends each window that ended by the clock, or each window when all is true, and writes one line with
+// the count of the dropped lines for each that dropped lines, in the order of the event names, the WARN budget first.
+func (s *consoleSink) closeWindows(all bool) error {
+	if len(s.windows) == 0 {
+		return nil
+	}
+	now := s.now()
+	var ended []budget
+	for key, w := range s.windows {
+		if all || now.Sub(w.start) >= otel.ConsoleWindow {
+			ended = append(ended, key)
+		}
+	}
+	slices.SortFunc(ended, func(a, b budget) int {
+		if c := strings.Compare(a.event, b.event); c != 0 {
+			return c
+		}
+		switch {
+		case a.errors == b.errors:
+			return 0
+		case a.errors:
+			return 1
+		}
+		return -1
+	})
+	var failed error
+	for _, key := range ended {
+		if dropped := s.windows[key].dropped; dropped > 0 {
+			severity := Warn
+			if key.errors {
+				severity = Error
+			}
+			s.line = s.droppedLine(s.line[:0], now, key.event, severity, dropped)
+			if _, err := s.out.Write(s.line); err != nil {
+				failed = err
+			}
+		}
+		delete(s.windows, key)
+	}
+	return failed
+}
+
+// droppedLine is the JSON line of the lines of one built-in event name and budget that the rate limit dropped in one
+// window: the timestamp, the severity of the budget, the service name, the instance identity, the event name, the
+// message and the count.
+func (s *consoleSink) droppedLine(b []byte, at time.Time, event string, severity Severity, dropped uint64) []byte {
+	b = append(b, `{"timestamp":`...)
+	b = appendJSONString(b, at.UTC().Format(time.RFC3339Nano))
+	b = append(b, `,"severity":`...)
+	b = appendJSONString(b, severity.String())
+	b = append(b, `,"service.name":`...)
+	b = appendJSONString(b, s.service)
+	b = append(b, `,"service.instance.id":`...)
+	b = appendJSONString(b, s.instance)
+	b = append(b, `,"event.name":`...)
+	b = appendJSONString(b, event)
+	b = append(b, `,"message":`...)
+	b = appendJSONString(b, droppedMessage)
+	b = append(b, `,"dropped":`...)
+	b = strconv.AppendUint(b, dropped, 10)
+	return append(b, '}', '\n')
+}
+
+// write writes the line of one record in one write call, within the rate limit of the built-in events. The two
+// queues share the buffer and the writer.
 func (s *consoleSink) write(r *record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ok, err := s.admit(r)
+	if !ok {
+		return err
+	}
 	if s.formatOf(r) == formatLogfmt {
 		s.line = s.logfmt(s.line[:0], r)
 	} else {
 		s.line = s.json(s.line[:0], r)
 	}
-	_, err := s.out.Write(s.line)
+	if _, werr := s.out.Write(s.line); werr != nil {
+		return werr
+	}
 	return err
 }
 
