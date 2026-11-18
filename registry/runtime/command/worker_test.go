@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1787,6 +1788,73 @@ func TestCommandLists(t *testing.T) {
 		}
 		if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), "SELECT") {
 			t.Fatalf("the log holds a value or a statement:\n%s", logs.String())
+		}
+	})
+}
+
+func TestWorkerNoParent(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC17-T04 A worker's create of a row with a resource type and no parent is decided on the tenant resource, and a deny writes nothing", func(t *testing.T) {
+		e := newEnv(t)
+		w := e.worker("import-orders", "sync", nil, e.orders)
+		create := func(id string) error {
+			return RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+				_, err := repo(t, h, e.orders).Create(ctx, order{ID: id, Status: "new"})
+				return err
+			}))
+		}
+		// The worker's permission on the tenant resource of the run allows the create.
+		e.decision.setAllow(func(subject, action, resource string) bool { return action == "sync" && resource == "tenant:t1" })
+		e.decision.taken()
+		if err := create("o-root"); err != nil {
+			t.Fatalf("the root create allowed on the tenant resource gave %v", err)
+		}
+		var decided []string
+		for _, d := range e.decision.taken() {
+			decided = append(decided, d.Subject+" "+d.Action+" "+d.Resource)
+		}
+		if !slices.Contains(decided, "service_account:import-orders sync tenant:t1") {
+			t.Fatalf("the root create was decided as %v, want the worker's permission sync on tenant:t1", decided)
+		}
+		if e.count(`SELECT count(*) FROM orders WHERE id = 'o-root'`) != 1 {
+			t.Fatal("the allowed root create wrote no row")
+		}
+		// A deny on the tenant resource is the refused error, and writes nothing.
+		e.decision.setAllow(func(string, string, string) bool { return false })
+		err := create("o-denied")
+		if !errors.Is(err, ErrRefused) || errors.Is(err, ErrNoParent) || causeOf(err) != "refused" {
+			t.Fatalf("the denied root create gave %v (cause %s), want the refused error", err, causeOf(err))
+		}
+		if e.count(`SELECT count(*) FROM orders WHERE id = 'o-denied'`) != 0 {
+			t.Fatal("the denied root create wrote its row")
+		}
+		// ErrNoParent keeps a fixed cause class of the run log.
+		if causeOf(fmt.Errorf("fill: %w", &noParentError{entity: "Order"})) != "create_without_parent" ||
+			!slices.Contains(probe.WorkerCauses, "create_without_parent") {
+			t.Fatal("ErrNoParent has no fixed cause class")
+		}
+	})
+	t.Run("ST-SUP-RP10-LC17-T05 A worker's create that sets a reference to an entity with a resource type and gives no parent is refused, with no decision on the tenant", func(t *testing.T) {
+		e := newEnv(t)
+		e.exec(`INSERT INTO orders (tenant_id, id, status) VALUES ('t1', 'o-2', 'new')`)
+		w := e.worker("import-reservations", "sync", nil, e.typedRes)
+		// The tenant allows everything, so a fallback to the tenant decision would write the row.
+		e.decision.setAllow(func(string, string, string) bool { return true })
+		e.decision.taken()
+		err := RunWorker(e.ctx, e.rt, w, tick, mustTenant(t, "t1"), nil, tickFill(func(ctx context.Context, h *Handle[testProbe]) error {
+			_, err := repo(t, h, e.typedRes).Create(ctx, reservation{ID: "r-orphan", OrderID: "o-2", SKU: "s"})
+			return err
+		}))
+		entity, ok := NoParentEntity(err)
+		if !errors.Is(err, ErrNoParent) || !ok || entity != "TypedRes" || causeOf(err) != "create_without_parent" {
+			t.Fatalf("the create under o-2 with no parent gave %v (entity %q), want ErrNoParent for TypedRes", err, entity)
+		}
+		for _, d := range e.decision.taken() {
+			if strings.HasPrefix(d.Resource, "tenant:") {
+				t.Fatalf("the refused create was decided on %s", d.Resource)
+			}
+		}
+		if e.count(`SELECT count(*) FROM reservations WHERE id = 'r-orphan'`) != 0 {
+			t.Fatal("the create with no parent wrote its row under o-2")
 		}
 	})
 }

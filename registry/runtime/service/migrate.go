@@ -22,6 +22,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/jsell-rh/stego/registry/runtime/outbox/kafkainbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
@@ -45,6 +46,7 @@ const (
 	StepAuditTables         = "audit_tables"
 	StepAuditSink           = "audit_sink"
 	StepInbox               = "kafka_inbox"
+	StepInboxValidate       = "kafka_inbox_validate"
 	StepIdempotencyKeys     = "idempotency_keys"
 	StepAuthorizationTables = "authorization_tables"
 	StepRuntimeGrants       = "runtime_grants"
@@ -355,6 +357,15 @@ func Migrate(parent context.Context, s MigrationSettings, m Migration) error {
 		}
 		if err := step(t.name, func() error { return textStep(ctx, conn, m.OwnerRole, t.name, t.text) }); err != nil {
 			return err
+		}
+		if t.name == StepInbox {
+			// The CHECK of the reasons that the inbox text adds NOT VALID is validated in a transaction of its own,
+			// which holds no ACCESS EXCLUSIVE lock while it reads the rows (security review of PR #429, L2).
+			if err := step(StepInboxValidate, func() error {
+				return textStep(ctx, conn, m.OwnerRole, StepInboxValidate, kafkainbox.ValidateMigration())
+			}); err != nil {
+				return err
+			}
 		}
 		if t.name == StepOutboxQueue {
 			if err := step(StepOutboxSequence, func() error { return checkOutboxSequence(ctx, conn, m.OwnerRole, m.OutboxRelayRole) }); err != nil {

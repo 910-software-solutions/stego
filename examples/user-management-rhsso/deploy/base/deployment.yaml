@@ -290,6 +290,7 @@ spec:
                 configMapKeyRef:
                   key: STEGO_QUERY_CURSOR_KEY_FILE
                   name: user-management-config
+                  optional: true
             - name: STEGO_SERVICE_VERSION
               valueFrom:
                 configMapKeyRef:

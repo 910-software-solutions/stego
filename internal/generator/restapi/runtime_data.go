@@ -2336,8 +2336,9 @@ func (w *runtimeHandlerWriter) read() {
 
 // awaitWrite emits the call of AwaitWrite of a read or a list (ST-SUP-RP11-LC21): a value that is not the identity
 // of a revocation is 400, and any other failure is 500.
+// A client that went away during the wait gets no answer and no internal error code (review of PR #428, L1).
 func (w *runtimeHandlerWriter) awaitWrite() {
-	w.f("\tif err := h.rt.Queries.AwaitWrite(w, r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, query.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
+	w.f("\tif err := h.rt.Queries.AwaitWrite(w, r, b.Tenant, b.Principal); err != nil {\n\t\tif errors.Is(err, query.ErrBadRequest) {\n\t\t\thandleError(w, r, BadRequest(\"the Authz-Revocation-After header is not the identity of a revocation\"))\n\t\t\treturn\n\t\t}\n\t\tif r.Context().Err() != nil {\n\t\t\treturn\n\t\t}\n\t\thandleError(w, r, InternalError(\"internal error\"))\n\t\treturn\n\t}\n")
 }
 
 func (w *runtimeHandlerWriter) list() {

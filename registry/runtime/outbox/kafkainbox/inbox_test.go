@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"slices"
@@ -759,6 +760,118 @@ func TestInbox(t *testing.T) {
 			t.Fatal("Migration took a role name that is not a lower-case SQL name")
 		}
 	})
+
+	t.Run("ST-SUP-RP01-LC37-T03 The migration adds the CHECK of the reasons NOT VALID, and its validation runs in a transaction of its own", func(t *testing.T) {
+		ctx := context.Background()
+		// A table of an earlier release holds the CHECK of an earlier list, and a row of one of its reasons.
+		if _, err := e.admin.ExecContext(ctx, `DELETE FROM stego_inbox.refused;
+			ALTER TABLE stego_inbox.refused DROP CONSTRAINT IF EXISTS `+reasonsCheck()+`;
+			ALTER TABLE stego_inbox.refused DROP CONSTRAINT IF EXISTS refused_reason_check;
+			ALTER TABLE stego_inbox.refused ADD CONSTRAINT refused_reason_check CHECK (reason IN ('unknown-tenant', 'bad-kind'));
+			INSERT INTO stego_inbox.refused (subscription, topic, partition, record_offset, reason)
+			VALUES ('order-changes', 'validate-topic', 0, 1, 'bad-kind')`); err != nil {
+			t.Fatal(err)
+		}
+		valid := func() (names []string) {
+			rows, err := e.admin.QueryContext(ctx, `SELECT conname || ':' || convalidated::text FROM pg_catalog.pg_constraint
+				WHERE conrelid = 'stego_inbox.refused'::regclass AND contype = 'c' AND conname LIKE 'refused_reason%' ORDER BY conname`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var n string
+				if err := rows.Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				names = append(names, n)
+			}
+			return names
+		}
+		migration, err := Migration(e.workerRole)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(migration, "VALIDATE") {
+			t.Fatal("the text of Migration validates the CHECK in the transaction of its ADD, which holds an ACCESS EXCLUSIVE lock while it reads the rows")
+		}
+		// The text of Migration runs in one transaction, as the step kafka_inbox of the job runs it.
+		tx, err := e.admin.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tx.ExecContext(ctx, migration); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := valid(), []string{reasonsCheck() + ":false"}; !slices.Equal(got, want) {
+			t.Fatalf("after the text of Migration the reasons CHECKs are %v, want %v", got, want)
+		}
+		// The validation is a statement of its own: it holds only SHARE UPDATE EXCLUSIVE, so a write of the running
+		// release goes on while it reads the rows.
+		validate := ValidateMigration()
+		if strings.Contains(validate, "ADD CONSTRAINT") || strings.Contains(validate, "DROP CONSTRAINT") {
+			t.Fatal("ValidateMigration changes the CHECK; it must only validate it")
+		}
+		vtx, err := e.admin.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := vtx.ExecContext(ctx, validate); err != nil {
+			_ = vtx.Rollback()
+			t.Fatal(err)
+		}
+		var exclusive bool
+		if err := vtx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+			WHERE pid = pg_catalog.pg_backend_pid() AND relation = 'stego_inbox.refused'::regclass AND mode = 'AccessExclusiveLock')`).Scan(&exclusive); err != nil || exclusive {
+			_ = vtx.Rollback()
+			t.Fatalf("the validation holds an ACCESS EXCLUSIVE lock on the table: %t (%v)", exclusive, err)
+		}
+		if err := vtx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := valid(), []string{reasonsCheck() + ":true"}; !slices.Equal(got, want) {
+			t.Fatalf("after ValidateMigration the reasons CHECKs are %v, want %v", got, want)
+		}
+		// A run again of both takes no lock and changes nothing.
+		for _, text := range []string{migration, validate} {
+			if _, err := e.admin.ExecContext(ctx, text); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got, want := valid(), []string{reasonsCheck() + ":true"}; !slices.Equal(got, want) {
+			t.Fatalf("a run again gave the reasons CHECKs %v, want %v", got, want)
+		}
+	})
+}
+
+// releasedReasons are the reasons of the refused records, in their order, as the runtime releases them. A new reason
+// is appended here and to reasons; no reason is removed or moved.
+var releasedReasons = []string{"missing-header", "bad-event-id", "bad-kind", "foreign-kind", "bad-content-type",
+	"too-large", "not-json", "bad-tenant", "key-mismatch", "unknown-tenant", "retired-tenant", "bad-resource-key",
+	"duplicate-header", "not-outbox-message", "event-id-reused", "kind-mismatch"}
+
+func TestRefusedReasons(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC37-T04 The list of the reasons of a refused record only grows", func(t *testing.T) {
+		// The migration validates the CHECK of the list on the rows of each earlier release: a removed reason would
+		// refuse a row that holds it and stop the migration job (security review of PR #429, L2).
+		if len(reasons) < len(releasedReasons) || !slices.Equal(reasons[:len(releasedReasons)], releasedReasons) {
+			t.Fatalf("the reasons %v do not start with the released reasons %v: append a new reason, and remove or move none", reasons, releasedReasons)
+		}
+		seen := map[string]bool{}
+		for _, r := range reasons {
+			if seen[r] {
+				t.Fatalf("the reason %s is in the list twice", r)
+			}
+			seen[r] = true
+		}
+		if extra := reasons[len(releasedReasons):]; len(extra) > 0 {
+			t.Fatalf("the reasons %v are not in releasedReasons: append them there too", extra)
+		}
+	})
 }
 
 func TestSettings(t *testing.T) {
@@ -939,6 +1052,30 @@ func TestAlerts(t *testing.T) {
 	})
 }
 
+func TestFailureClass(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC36-T05 The failure class names the operation that failed at the broker, and no error text", func(t *testing.T) {
+		secret := errors.New("dial tcp 10.0.0.7:9093: the topic secret-orders refused alice")
+		cases := []struct {
+			err  error
+			want string
+		}{
+			{&opError{op: opDescribeConfigs, err: kerr.TopicAuthorizationFailed}, "broker:TOPIC_AUTHORIZATION_FAILED (describe-configs)"},
+			{&opError{op: opFetch, err: fmt.Errorf("fetch of a partition: %w", kerr.TopicAuthorizationFailed)}, "broker:TOPIC_AUTHORIZATION_FAILED (fetch)"},
+			{&opError{op: opFetch, err: kerr.GroupAuthorizationFailed}, "broker:GROUP_AUTHORIZATION_FAILED (fetch)"},
+			{&opError{op: opCommit, err: fmt.Errorf("%w: %w", errCommit, kerr.GroupAuthorizationFailed)}, "broker:GROUP_AUTHORIZATION_FAILED (commit)"},
+			{&opError{op: opCommit, err: fmt.Errorf("%w: %w", errCommit, secret)}, "broker (commit)"},
+			{&opError{op: opDescribeConfigs, err: secret}, "broker (describe-configs)"},
+			{fmt.Errorf("%w: %w", errDatabase, secret), "database"},
+			{secret, "broker"},
+		}
+		for _, c := range cases {
+			if got := failureClass(c.err); got != c.want {
+				t.Errorf("the class of %v is %q, want %q", c.err, got, c.want)
+			}
+		}
+	})
+}
+
 func TestFailing(t *testing.T) {
 	t.Run("ST-SUP-RP01-LC36-T04 Sessions that fail in a row make the inbox report its failure class and the gauge 1, and a session that reads clears both", func(t *testing.T) {
 		e := newEnv(t)
@@ -983,7 +1120,7 @@ func TestFailing(t *testing.T) {
 		for in.Failing() == "" {
 			time.Sleep(20 * time.Millisecond)
 		}
-		if class := in.Failing(); class != "broker:UNKNOWN_TOPIC_OR_PARTITION" || gauge() != 1 {
+		if class := in.Failing(); class != "broker:UNKNOWN_TOPIC_OR_PARTITION (describe-configs)" || gauge() != 1 {
 			t.Fatalf("the failing inbox gives the class %q and the gauge %d", class, gauge())
 		}
 		e.topicNamed(t, name)

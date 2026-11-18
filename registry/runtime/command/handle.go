@@ -43,6 +43,15 @@ var (
 	// hold (ST-SUP-RP10-LC05, ST-SUP-Q118). Once a handle meets one, every later method returns it, Run commits
 	// nothing and runs the fill no more, and OutcomeOf answers it with 400 and the code invalid, naming the field.
 	ErrInvalid = errors.New("command: invalid value")
+	// ErrNoParent is the error of a worker's create of a row whose value sets a reference to an entity with a
+	// resource type while the call gives no loaded parent to decide on (ST-SUP-RP10-LC17): the run log names its
+	// cause create_without_parent and the entity. A create that sets no such reference is decided on the tenant
+	// resource (ST-SUP-Q164 (b)).
+	ErrNoParent = errors.New("command: a worker's create needs the parent resource to decide on")
+	// ErrUnavailable matches every internal error of a database that cannot serve now, such as a refused or lost
+	// connection or a server that shuts down (tenant.Unavailable). OutcomeOf answers it with 503 and the code
+	// unavailable, with Retry-After, and Unavailable over gRPC, so the client tries again later (walkthrough 10, B7).
+	ErrUnavailable = errors.New("command: the database cannot serve now")
 )
 
 // invalidError is a refusal of a field's value: it matches ErrInvalid and names the declared field and a fixed
@@ -67,17 +76,42 @@ const (
 //
 // data is true for a statement that fails on the values of the row, such as for a foreign key or a check (SQLSTATE
 // classes 22 and 23): a consumer counts it for the poison bound with the cause class data.
+//
+// unavailable is true for a database that cannot serve now (tenant.Unavailable): it matches ErrUnavailable too.
 type internalError struct {
-	text      string
-	statement bool
-	data      bool
+	text        string
+	statement   bool
+	data        bool
+	unavailable bool
 }
 
-func (e *internalError) Error() string        { return "command: internal error: " + e.text }
-func (e *internalError) Is(target error) bool { return target == ErrInternal }
+func (e *internalError) Error() string { return "command: internal error: " + e.text }
+func (e *internalError) Is(target error) bool {
+	return target == ErrInternal || (e.unavailable && target == ErrUnavailable)
+}
+
+// unavailablef is the internal error of a step that failed because the database cannot serve now.
+func unavailablef(format string, args ...any) error {
+	return &internalError{text: fmt.Sprintf(format, args...), statement: true, unavailable: true}
+}
 
 func internalf(format string, args ...any) error {
 	return &internalError{text: fmt.Sprintf(format, args...)}
+}
+
+// noParentError is ErrNoParent for the entity that it names, a declared name.
+type noParentError struct{ entity string }
+
+func (e *noParentError) Error() string        { return ErrNoParent.Error() + ": " + e.entity }
+func (e *noParentError) Is(target error) bool { return target == ErrNoParent }
+
+// NoParentEntity gives the entity of an ErrNoParent in err, and false when err is not one.
+func NoParentEntity(err error) (string, bool) {
+	var noParent *noParentError
+	if errors.As(err, &noParent) {
+		return noParent.entity, true
+	}
+	return "", false
 }
 
 // conflictError is a conflict: it matches ErrConflict and names the step and the SQLSTATE, never a database text.
@@ -198,6 +232,18 @@ type EntitySpec[T any] struct {
 	// ValidID is the generated check of a key: it reports whether id has the form of the entity's key type, such as a
 	// uuid, so a malformed key is not found after the same decision and never fails a statement.
 	ValidID func(id string) bool
+	// Check is the generated check of the declared constraints of the entity's fields: min_length, max_length,
+	// pattern, min, max and the values of an enum, of an optional field only when it is set. It gives the declared
+	// name of the first field whose value breaks one and a fixed reason, or ok. The reason never holds the value.
+	// Create and Update call it before any decision and any statement, and refuse a value that breaks one with
+	// ErrInvalid naming the field, which OutcomeOf answers 400 invalid, or InvalidArgument over gRPC (walkthrough 10,
+	// B4). Nil checks nothing: the table still refuses the value, as Constraints states.
+	Check func(value T) (field, reason string, ok bool)
+	// Constraints gives the declared field of each CHECK and foreign key of the entity's table, by the name of the
+	// constraint, and of each column, by the name of the column. A statement that a CHECK (SQLSTATE 23514), a NOT NULL
+	// (23502) or a foreign key (23503) refuses is ErrInvalid naming that field, so a value that Check does not cover
+	// is answered 400 and never 500 (walkthrough 10, B4).
+	Constraints map[string]string
 	// Parent is the list of the references of a row to the rows of other entities, which the generated code reads
 	// from a value, such as Order and value.OrderID, in the order that the declaration gives them; empty for an
 	// entity that has none. A create, a move and the work on a child take the loaded value of each reference that
@@ -1207,6 +1253,9 @@ func (r *Repository[T]) checkWithin(value T, ref reference, p rowRef) error {
 // names the field of this entity that it is held within.
 func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) error {
 	s, e := r.st, r.entity
+	if refused := r.failConstraint(err); refused != nil && !r.withinConstraint(err) {
+		return s.breakWith(refused)
+	}
 	var pg *pgconn.PgError
 	// A CHECK of the within field (SQLSTATE 23514) refuses a set reference with no within field, as from a worker
 	// that writes the row outside the collection of the scope (ST-SUP-RC01-OC46).
@@ -1230,6 +1279,76 @@ func (r *Repository[T]) failWrite(ctx context.Context, step string, err error) e
 		}
 	}
 	return s.fail(ctx, step, err)
+}
+
+// reasonConstraint is the fixed reason of a value that a CHECK, a NOT NULL or a foreign key of the entity's table
+// refused: the value breaks a constraint that the declaration gives the field.
+const reasonConstraint = "the value breaks a declared constraint of the field"
+
+// checkFields runs the generated Check of the declared constraints of the fields on value, before any decision and
+// any statement, and refuses a value that breaks one with ErrInvalid naming the field (walkthrough 10, B4).
+func (r *Repository[T]) checkFields(value T) error {
+	if r.entity.spec.Check == nil {
+		return nil
+	}
+	field, reason, ok := r.entity.spec.Check(value)
+	if ok {
+		return nil
+	}
+	if reason == "" {
+		reason = reasonConstraint
+	}
+	return r.st.breakWith(&invalidError{field: field, reason: reason})
+}
+
+// withinConstraint reports whether err is the violation of a key or a CHECK of a reference held within a field,
+// which failWrite answers with its own reason (ST-SUP-RP10-LC37).
+func (r *Repository[T]) withinConstraint(err error) bool {
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.ConstraintName == "" {
+		return false
+	}
+	for _, ref := range r.entity.spec.Parent {
+		if ref.Within != "" && (ref.Check == pg.ConstraintName || ref.Key == pg.ConstraintName) {
+			return true
+		}
+	}
+	for _, k := range r.entity.spec.Referrers {
+		if k.Key == pg.ConstraintName {
+			return true
+		}
+	}
+	return false
+}
+
+// failConstraint gives the ErrInvalid of a statement that a CHECK (SQLSTATE 23514), a NOT NULL (23502) or a foreign
+// key (23503) of the entity's table refused, naming the declared field that Constraints gives for the constraint, or
+// for the column of a NOT NULL; and nil for every other error and for a constraint that Constraints does not name. A unique violation (23505) stays a conflict. The log of the failed statement names its class, as fail
+// does for every statement (walkthrough 10, B4).
+func (r *Repository[T]) failConstraint(err error) error {
+	code := sqlState(err)
+	if code != "23514" && code != "23502" && code != "23503" {
+		return nil
+	}
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) {
+		return nil
+	}
+	constraints := r.entity.spec.Constraints
+	field := constraints[pg.ConstraintName]
+	if field == "" && code == "23502" {
+		field = constraints[pg.ColumnName]
+	}
+	if field == "" {
+		// A constraint that the declaration does not give a field, such as a key that a release added by hand,
+		// stays an internal error that names no field (ST-SUP-RP10-LC37).
+		return nil
+	}
+	if ok, held := statementLog.Allow(r.st.action + "/invalid/" + code[:2]); ok {
+		slog.Warn("command: a statement refused a value of a field", "action", r.st.action, "entity", r.entity.spec.Name,
+			"field", field, "cause", causeData, "sqlstate_class", code[:2], "held_back", held)
+	}
+	return &invalidError{field: field, reason: reasonConstraint}
 }
 
 // moved is one reference that an update moves: the referenced entity, its resource type, the relation, and the old
@@ -1457,7 +1576,8 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 		slog.ErrorContext(ctx, "command: a statement failed", "action", s.action, "step", step, "cause", cause,
 			"sqlstate_class", class, "held_back", held)
 	}
-	return s.breakWith(&internalError{text: fmt.Sprintf("the statement %s failed with SQLSTATE %q", step, code), statement: !data, data: data})
+	return s.breakWith(&internalError{text: fmt.Sprintf("the statement %s failed with SQLSTATE %q", step, code), statement: !data, data: data,
+		unavailable: !data && tenant.Unavailable(err)})
 }
 
 // statementLog holds back the log of a failed statement to one line for each action, cause class and SQLSTATE class
@@ -2104,6 +2224,9 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 	}
 	defer r.st.leave()
 	s, e := r.st, r.entity
+	if err := r.checkFields(value); err != nil {
+		return nil, err
+	}
 	parents = nonNil(parents)
 	refs := e.references(value)
 	rows, err := r.checkCreate(refs, parents)
@@ -2111,7 +2234,23 @@ func (r *Repository[T]) Create(ctx context.Context, value T, parents ...Ref) (Lo
 		return nil, err
 	}
 	if s.mode != modeCommand && e.spec.ResourceType != "" && len(rows) == 0 {
-		return nil, fmt.Errorf("command: a worker's create of %s needs the parent resource to decide on", e.spec.Name)
+		// A value that sets a reference to an entity with a resource type has a parent, which must be given and
+		// decided: a create with no loaded parent for it is refused, so no row is written under a parent that no
+		// one decided on (ST-SUP-RP10-LC17; security review of PR #434, M1).
+		for _, ref := range refs {
+			if ref.resourceType != "" {
+				if ok, held := statementLog.Allow(s.action + "/create_without_parent/" + e.spec.Name); ok {
+					slog.WarnContext(ctx, "command: a worker's create sets a reference and gives no parent to decide on", "action", s.action,
+						"entity", e.spec.Name, "cause", "create_without_parent", "held_back", held)
+				}
+				return nil, &noParentError{entity: e.spec.Name}
+			}
+		}
+		// A worker's create with no parent is decided on the tenant resource of the run, with the worker's permission
+		// and, in a consumer, a second time with the staging principal (ST-SUP-RP10-LC17, ST-SUP-Q164 (b)).
+		if err := s.decideWrite(ctx, authz.TenantType, e.spec.Name, s.tenant.ID(), ""); err != nil {
+			return nil, err
+		}
 	}
 	// A create decides on each row that the new row refers to, and an optional reference that is not set is not
 	// decided (ST-SUP-RP10-LC05, ST-SUP-RP10-LC17).
@@ -2171,6 +2310,9 @@ func (r *Repository[T]) Update(ctx context.Context, from Loaded[T], value T, par
 	s, e := r.st, r.entity
 	from2, err := r.check(from, "update")
 	if err != nil {
+		return nil, err
+	}
+	if err := r.checkFields(value); err != nil {
 		return nil, err
 	}
 	if e.spec.KeyChanged(from2.value, value) && from2.lock != lockDelete {

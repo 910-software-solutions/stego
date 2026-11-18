@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -170,8 +171,20 @@ func ReadSettings(stated Auth) (Settings, error) {
 	return s, ofComponent(err, stated)
 }
 
+// ReadModeSettings is ReadSettings for a process that runs api, true when it runs the api mode: only the api mode
+// serves the list queries, so only it reads the key of the list cursors from CursorKeyFileSetting, and a process with
+// no api mode, such as of the worker mode, needs no such file. Such a process gets a new random key, which seals no
+// cursor, because it serves no request of the service (core builder 19; ST-DLV-UC07-R06).
+func ReadModeSettings(stated Auth, api bool) (Settings, error) {
+	s, err := readSettingsOf(stated, api)
+	return s, ofComponent(err, stated)
+}
+
 // readSettings is ReadSettings before the auth provider of the declaration is set on a refused verifier setting.
-func readSettings(stated Auth) (Settings, error) {
+func readSettings(stated Auth) (Settings, error) { return readSettingsOf(stated, true) }
+
+// readSettingsOf is readSettings, which reads the key of the list cursors only when api is true.
+func readSettingsOf(stated Auth, api bool) (Settings, error) {
 	var s Settings
 	var err error
 	if s.DatabaseURL, err = connectionString(DatabaseURLSetting, DatabaseURLFileSetting); err != nil {
@@ -212,7 +225,12 @@ func readSettings(stated Auth) (Settings, error) {
 	if s.SpiceDB, err = readSpiceDB(); err != nil {
 		return Settings{}, err
 	}
-	if s.CursorKey, err = cursorKey(); err != nil {
+	if !api {
+		s.CursorKey = make([]byte, query.MinCursorKey)
+		if _, err := rand.Read(s.CursorKey); err != nil {
+			return Settings{}, err
+		}
+	} else if s.CursorKey, err = cursorKey(); err != nil {
 		return Settings{}, err
 	}
 	s.ServiceVersion = os.Getenv(VersionSetting)

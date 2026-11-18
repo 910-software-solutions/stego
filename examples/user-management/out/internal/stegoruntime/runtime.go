@@ -293,7 +293,8 @@ func NewService(ctx context.Context) (rt *Runtime, err error) {
 	if err != nil {
 		return nil, err
 	}
-	settings, err := service.ReadSettings(declared)
+	// Only the api mode reads the key of the list cursors (core builder 19).
+	settings, err := service.ReadModeSettings(declared, selection.Has(modes.API))
 	if err != nil {
 		return nil, err
 	}

@@ -503,7 +503,7 @@ func poisonStreak(d outbox.Delivery, err error) error {
 // and any other internal error stay transient, are not counted and start the count again (decision of the
 // orchestrator on the security review of PR #411, M1).
 var streakCauses = map[string]bool{"fill_error": true, "not_found": true, "invalid": true, "refused": true, "conflict": true,
-	"panic": true, "data": true}
+	"panic": true, "data": true, "create_without_parent": true}
 
 // consumerOutcome gives the fixed outcome and cause class of the error of a consumer run (ST-SUP-RC35-OC06).
 func consumerOutcome(err error) (probe.WorkerOutcome, string) {
@@ -549,6 +549,9 @@ func causeOf(err error) string {
 		return "deadline"
 	case errors.Is(err, lease.ErrFenced):
 		return "fenced"
+	case errors.Is(err, ErrNoParent):
+		// A worker's create with no parent to decide on (ST-SUP-RP10-LC17; walkthrough 10, B2).
+		return "create_without_parent"
 	case errors.Is(err, ErrInvalid):
 		return "invalid"
 	case errors.Is(err, ErrRefused):
@@ -595,6 +598,10 @@ func (rt *Runtime) consumerFailed(ctx context.Context, worker string, d outbox.D
 		record.AddAttributes(attribute.String("worker", worker), attribute.String("destination", d.Destination),
 			attribute.String("event_id", d.ID.String()), attribute.Int64("attempt", d.Attempts),
 			attribute.String("outcome", string(outcome)), attribute.String("cause", cause))
+		if entity, ok := NoParentEntity(err); ok {
+			// The declared name of the entity whose create had no parent, never a value (walkthrough 10, B2).
+			record.AddAttributes(attribute.String("entity", entity))
+		}
 		rt.logger.Emit(context.WithoutCancel(ctx), record)
 	}
 	return &runFailure{outcome: outcome, cause: cause, err: err}

@@ -475,7 +475,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
 			Resource: id, RequestID: NewID(), ActorIP: remoteIP(r.RemoteAddr), UserAgent: r.UserAgent(),
 			Retention: spec.Retention}
-		result, err := runTenant(r.Context(), rt, spec, req, admins)
+		result, made, err := runTenantOf(r.Context(), rt, spec, req, admins)
 		if errors.Is(err, errAdmins) {
 			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
 			return
@@ -497,10 +497,52 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		for name, values := range result.Response.Header {
 			w.Header()[name] = values
 		}
+		// With Prefer: wait=N, a Provision waits for the revocation of its grants after the commit, so the client
+		// knows when the first command of an administrator is decided at a floor that holds the grant
+		// (ST-SUP-RP10-LC41; walkthrough 10, B6). A replay does not wait.
+		if wait, ok := authz.PreferWait(r.Header); ok && wait > 0 && made.made && rt.startProvisionWait(b.Principal) {
+			defer rt.endProvisionWait(b.Principal)
+			status, allowed, err := rt.cfg.Authz.WaitFor(r.Context(), made.tenant, b.Principal, made.revocation.ID(), wait)
+			if err == nil {
+				w.Header().Set(authz.RevocationHeader, string(status.State))
+			}
+			if allowed > 0 {
+				w.Header().Set("Preference-Applied", "wait="+strconv.Itoa(int(allowed/time.Second)))
+			}
+		}
 		w.Header().Set("Content-Length", strconv.Itoa(len(result.Response.Body)))
 		w.WriteHeader(result.Response.Status)
 		_, _ = w.Write(result.Response.Body)
 	}), nil
+}
+
+// MaxProvisionWaits is the most Provision waits of one principal at one time, over all the tenants that it provisions:
+// a Provision over it answers its revocation pending at once and does not wait (security review of PR #434, L1).
+const MaxProvisionWaits = authz.DefaultPrincipalWaiters
+
+// startProvisionWait takes a place of the Provision waits of principal p, and tells whether it took one.
+func (rt *Runtime) startProvisionWait(p authz.Principal) bool {
+	rt.provisionWaitMu.Lock()
+	defer rt.provisionWaitMu.Unlock()
+	if rt.provisionWaits == nil {
+		rt.provisionWaits = map[string]int{}
+	}
+	key := p.Subject().String()
+	if rt.provisionWaits[key] >= MaxProvisionWaits {
+		return false
+	}
+	rt.provisionWaits[key]++
+	return true
+}
+
+// endProvisionWait gives back the place that startProvisionWait took for p.
+func (rt *Runtime) endProvisionWait(p authz.Principal) {
+	rt.provisionWaitMu.Lock()
+	defer rt.provisionWaitMu.Unlock()
+	key := p.Subject().String()
+	if rt.provisionWaits[key]--; rt.provisionWaits[key] <= 0 {
+		delete(rt.provisionWaits, key)
+	}
 }
 
 // callerListed tells whether the outcome row of a denied or failed call goes into the chain of the caller's tenant
@@ -592,17 +634,33 @@ func requestedTenant(action tenant.RequestAction, r *http.Request, body []byte) 
 // runTenant decides the request and changes the tenant list. It gives the answer to send, or the error whose
 // outcome the handler answers and audits.
 func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, adminsOf func() ([]authz.Subject, error)) (Result, error) {
+	result, _, err := runTenantOf(ctx, rt, spec, req, adminsOf)
+	return result, err
+}
+
+// tenantRevocation is the revocation of the transaction of a committed Provision or Retire, of the changed tenant and
+// the caller, which the answer may wait for (ST-SUP-RP10-LC41).
+type tenantRevocation struct {
+	tenant     tenant.Tenant
+	revocation authz.Revocation
+	made       bool
+}
+
+// runTenantOf is runTenant, and gives also the revocation of the transaction when the call committed and staged a
+// tuple; a replay gives none.
+func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, adminsOf func() ([]authz.Subject, error)) (Result, tenantRevocation, error) {
+	var made tenantRevocation
 	decision, err := decideTenant(ctx, rt, spec, req)
 	if err != nil {
-		return Result{}, err
+		return Result{}, made, err
 	}
 	admins, err := adminsOf()
 	if err != nil {
-		return Result{}, err
+		return Result{}, made, err
 	}
 	target, err := tenant.New(tenant.Requested(spec.Action, req.Resource, decision))
 	if err != nil {
-		return Result{}, internalf("the decided tenant was not built")
+		return Result{}, made, internalf("the decided tenant was not built")
 	}
 	keyRequest := idempotency.Request{Tenant: target.ID(), Principal: req.Principal.Subject().String(), Key: req.Key,
 		Fingerprint: req.Fingerprint, Retention: req.Retention}
@@ -662,7 +720,25 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, a
 			if err := unrelateUndeclared(ctx, rt, spec, tx, req, t, undeclared); err != nil {
 				return idempotency.Response{}, err
 			}
-			return tenantResponse(spec.Action, t.ID())
+			response, err := tenantResponse(spec.Action, t.ID())
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			// A Provision that staged a tuple answers its revocation, which the tenant runtime makes complete only
+			// after the relay lands it (ST-SUP-RP10-LC41; walkthrough 10, B6).
+			handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, nil)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			revocation, ok, err := handle.Current(ctx)
+			if err != nil {
+				return idempotency.Response{}, err
+			}
+			if ok && spec.Action == tenant.ProvisionAction {
+				response.Header.Set(authz.RevocationHeader, string(authz.RevocationPending))
+				made = tenantRevocation{tenant: t, revocation: revocation, made: true}
+			}
+			return response, nil
 		})
 		if err != nil {
 			return err
@@ -684,9 +760,9 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, a
 		if spec.Changed != nil {
 			spec.Changed(target.ID())
 		}
-		return result, nil
+		return result, made, nil
 	case errors.Is(err, errAnswered):
-		return result, nil
+		return result, tenantRevocation{}, nil
 	case errors.Is(err, unchanged):
 		// The list holds the change already: a request that is sent again gets the stored answer of its first call.
 		if errors.Is(err, tenant.ErrRetired) {
@@ -694,14 +770,14 @@ func runTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request, a
 		}
 		replayed, found, err := replayTenant(ctx, rt, target, keyRequest)
 		if err != nil {
-			return Result{}, internalf("the idempotency key of the request was not read")
+			return Result{}, made, internalf("the idempotency key of the request was not read")
 		}
 		if found {
-			return replayed, nil
+			return replayed, tenantRevocation{}, nil
 		}
-		return Result{}, &errTenantState{code: code}
+		return Result{}, made, &errTenantState{code: code}
 	}
-	return Result{}, internalf("the tenant list was not changed")
+	return Result{}, made, internalf("the tenant list was not changed")
 }
 
 // decideTenant decides the declared permission of the request on the service-level resource <resource type>:<service

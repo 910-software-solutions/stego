@@ -358,6 +358,59 @@ func TestAuthz(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP10-LC42-T02 A query read of a key that is not a UUID is a missing row, decided as one, with no statement", func(t *testing.T) {
+		e := newEnv(t)
+		const present = "0000000b-0000-7000-8000-000000000001"
+		e.insert(t, "INSERT INTO app.tickets (tenant_id, id) VALUES ('t1', $1)", present)
+		port := &fakeDecision{decide: func(authz.EvaluationRequest) bool { return true }}
+		rt := e.runtimeOf(t, port)
+		read := func(spec Spec, id string) (error, int) {
+			entity, err := NewEntity(spec, func(r Row) (Ticket, error) {
+				id, err := r.Text("id")
+				return Ticket{ID: id}, err
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := mustQuery(t, "ticket-detail", entity)
+			var got error
+			before := len(port.recorded())
+			_, err = Run(context.Background(), rt, q, bound(t, "t1", "user:u-7", "ticket-detail"), struct{}{},
+				func(ctx context.Context, _ struct{}, h *Handle[noProbe]) (struct{}, error) {
+					repo, err := Repo(h, entity)
+					if err != nil {
+						return struct{}{}, err
+					}
+					_, got = repo.Get(ctx, id)
+					return struct{}{}, nil
+				})
+			if err != nil && got == nil {
+				got = err
+			}
+			return got, len(port.recorded()) - before
+		}
+		spec := Spec{Name: "ticket", Schema: "app", Table: "tickets", Key: "id", Columns: []string{"id"},
+			ResourceType: "ticket", ReadPermission: "view", ListPermission: "view", ValidID: ValidUUID}
+		for _, id := range []string{"not-a-uuid", "1", strings.ToUpper(present) + "X", "' OR 1=1 --"} {
+			// The read runs no statement: a statement on the uuid column would fail the transaction (22P02), and the
+			// next read of the same fill would fail too.
+			if err, calls := read(spec, id); !errors.Is(err, ErrNotFound) || calls != 1 {
+				t.Fatalf("the key %q gave %v after %d decisions, want ErrNotFound after 1, as a missing row", id, err, calls)
+			}
+		}
+		if err, _ := read(spec, present); err != nil {
+			t.Fatalf("the present key gave %v", err)
+		}
+		if !ValidUUID(present) || !ValidUUID(strings.ToUpper(present)) || ValidUUID(present+"0") || ValidUUID("") {
+			t.Fatal("ValidUUID does not tell the form of a UUID")
+		}
+		// With no ValidID the statement runs, and the malformed key fails it, which is not a missing row.
+		spec.ValidID = nil
+		if err, _ := read(spec, "not-a-uuid"); errors.Is(err, ErrNotFound) || err == nil {
+			t.Fatalf("with no ValidID the key not-a-uuid gave %v, want the failed statement", err)
+		}
+	})
+
 	t.Run("ST-SUP-RP11-LC06-T03 An undecided read and list log the entity and a fixed cause once for each cause in each interval, and only a transient cause is Transient", func(t *testing.T) {
 		e := newEnv(t)
 		const row = "0000000a-0000-7000-8000-000000000011"

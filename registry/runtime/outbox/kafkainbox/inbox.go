@@ -402,19 +402,41 @@ func (in *Inbox) Run(ctx context.Context) error {
 	return nil
 }
 
-// failureClass gives the fixed class of a failure of a session, with no error text.
+// failureClass gives the fixed class of a failure of a session, with no error text. A failure of a request to the
+// broker names the operation that failed, describe-configs, fetch or commit, after the broker's code, such as
+// broker:TOPIC_AUTHORIZATION_FAILED (describe-configs), so an operator sees which ACL operation the user lacks
+// (walkthrough 10, W10-B1; ST-SUP-RP01-LC36).
 func failureClass(err error) string {
 	var kafkaErr *kerr.Error
+	var failed *opError
+	op := ""
+	if errors.As(err, &failed) {
+		op = " (" + failed.op + ")"
+	}
 	switch {
 	case errors.As(err, &kafkaErr):
-		return "broker:" + kafkaErr.Message
+		return "broker:" + kafkaErr.Message + op
 	case errors.Is(err, errDatabase):
 		return "database"
-	case errors.Is(err, errCommit):
-		return "commit"
 	}
-	return "broker"
+	return "broker" + op
 }
+
+// The operations of a session at the broker that a failure class names.
+const (
+	opDescribeConfigs = "describe-configs"
+	opFetch           = "fetch"
+	opCommit          = "commit"
+)
+
+// opError is a failure of one operation of a session at the broker. It names the operation and wraps the error.
+type opError struct {
+	op  string
+	err error
+}
+
+func (e *opError) Error() string { return "kafkainbox: " + e.op + ": " + e.err.Error() }
+func (e *opError) Unwrap() error { return e.err }
 
 var (
 	errDatabase = errors.New("kafkainbox: the database refused a write")
@@ -466,7 +488,7 @@ func (in *Inbox) session(ctx context.Context) error {
 			cancel()
 			if err != nil {
 				client.AllowRebalance()
-				return fmt.Errorf("%w: %w", errCommit, err)
+				return &opError{op: opCommit, err: fmt.Errorf("%w: %w", errCommit, err)}
 			}
 		}
 		client.AllowRebalance()
@@ -474,7 +496,7 @@ func (in *Inbox) session(ctx context.Context) error {
 			return failure
 		}
 		if fetchErr != nil {
-			return fetchErr
+			return &opError{op: opFetch, err: fetchErr}
 		}
 		if len(taken) > 0 {
 			in.reading()
@@ -504,14 +526,14 @@ func (in *Inbox) checkRetention(ctx context.Context, client *kgo.Client) error {
 	request.Resources = append(request.Resources, resource)
 	response, err := request.RequestWith(ctx, client)
 	if err != nil {
-		return err
+		return &opError{op: opDescribeConfigs, err: err}
 	}
 	if len(response.Resources) != 1 {
-		return errors.New("kafkainbox: the broker described no topic")
+		return &opError{op: opDescribeConfigs, err: errors.New("kafkainbox: the broker described no topic")}
 	}
 	described := response.Resources[0]
 	if err := kerr.ErrorForCode(described.ErrorCode); err != nil {
-		return err
+		return &opError{op: opDescribeConfigs, err: err}
 	}
 	ms, policy, err := topicRetention(described.Configs)
 	if err != nil {

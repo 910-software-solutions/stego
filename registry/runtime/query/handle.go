@@ -71,6 +71,31 @@ type Spec struct {
 	// the provider. Otherwise a list pages the table and filters each page with one batch evaluation
 	// (ST-SUP-RP11-LC07).
 	Search bool
+	// ValidID is the generated check of the form of a key, such as ValidUUID. Get runs no statement for a key that
+	// it refuses, decides it as a missing row, and answers ErrNotFound, so a malformed key never fails the read
+	// statement with 500 (walkthrough 10, B4). Nil checks no form.
+	ValidID func(id string) bool
+}
+
+// ValidUUID reports whether id has the form of a UUID: 36 characters, hexadecimal digits in either case and four
+// hyphens in their places. It is the ValidID of an entity whose key is a uuid.
+func ValidUUID(id string) bool {
+	if len(id) != 36 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case i == 8 || i == 13 || i == 18 || i == 23:
+			if c != '-' {
+				return false
+			}
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Row is one stored row as the generated load function reads it: the value of each column of the entity's Spec.
@@ -561,19 +586,26 @@ func (r *Repository[T]) Get(ctx context.Context, id string) (Loaded[T], error) {
 	}
 	defer c.life.leave()
 	e := &r.entity.e
-	rows, err := c.tx.QueryContext(ctx, "SELECT "+e.selectList+" FROM "+e.table+" WHERE "+TenantColumn+" = $1 AND "+
-		e.spec.Key+" = $2", c.tenant.ID(), id)
-	if err != nil {
-		return nil, fmt.Errorf("query: read %s: %w", e.spec.Name, err)
-	}
-	found, row, token, err := readOne(rows, e)
-	if err != nil {
-		return nil, err
+	var found bool
+	var row Row
+	var token authz.Token
+	// A key that does not have the form of the entity's key is a missing row: no statement reads it, and it is decided
+	// as a missing row is (walkthrough 10, B4).
+	if e.spec.ValidID == nil || e.spec.ValidID(id) {
+		rows, err := c.tx.QueryContext(ctx, "SELECT "+e.selectList+" FROM "+e.table+" WHERE "+TenantColumn+" = $1 AND "+
+			e.spec.Key+" = $2", c.tenant.ID(), id)
+		if err != nil {
+			return nil, fmt.Errorf("query: read %s: %w", e.spec.Name, err)
+		}
+		if found, row, token, err = readOne(rows, e); err != nil {
+			return nil, err
+		}
 	}
 	// A missing row is decided too, on the key the fill gave and a zero row token, so a missing row and a denied
 	// row cost the same calls; a row is decided on its stored key, not on the fill's form of it. A failure of the
 	// provider gives ErrUndecided either way (ST-SUP-RP11-LC06).
 	key := id
+	var err error
 	if found {
 		if key, err = row.Text(e.spec.Key); err != nil {
 			return nil, err

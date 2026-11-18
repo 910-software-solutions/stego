@@ -13,7 +13,7 @@
 # document (ST-SUP-RC20-OC43).
 kind: component
 name: rest-api
-version: 4.6.0
+version: 4.7.0
 stage: ga
 output_namespace: internal/api
 

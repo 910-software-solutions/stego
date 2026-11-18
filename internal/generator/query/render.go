@@ -211,6 +211,9 @@ func renderSpec(w *writer, e *entity, load string) {
 	}
 	w.p("var %s = must(query.NewEntity(query.Spec{Name: %q, Schema: \"public\", Table: %q, Key: \"id\",", e.variable, name, v.Table)
 	w.p("Columns: []string{%s},", strings.Join(columns, ", "))
+	// The key id is a uuid: a read of a key of another form runs no statement and is a missing row (walkthrough 10,
+	// B4).
+	w.p("ValidID: query.ValidUUID,")
 	if e.resourceType != "" {
 		w.p("ResourceType: %q, ReadPermission: %q, ListPermission: %q,", e.resourceType, e.readPermission, e.listPermission)
 	}
@@ -629,7 +632,8 @@ func renderRPC(w *writer, m *model, q *queryModel) {
 		w.p("func Serve%sStream[In any, Out proto.Message](h *Handlers, %snewOut func() Out) (func(context.Context, In, func(Out) error) error, error) {", q.goName, params)
 		w.p("if h == nil || newOut == nil {\nreturn nil, errors.New(\"serve: the stream handler of %s needs the handlers and the message\")\n}", q.decl.Name)
 		w.p("return query.ServeStream(query.StreamRPC[In, Out, %s, %s.%s, %s]{", req, m.pkg, e.value.GoType, q.probeType())
-		w.p("Bind: %s,\nDecode: %s,\nStream: h.Stream%s,\nNewMessage: newOut,\nRefusal: %s,\n})\n}\n", bind, decode, q.goName, refusal)
+		// The runtime waits for the revocation that the request metadata names before the read (ST-SUP-RC33-OC11).
+		w.p("Bind: %s,\nDecode: %s,\nStream: h.Stream%s,\nNewMessage: newOut,\nRefusal: %s,\nRuntime: h.cfg.Runtime,\n})\n}\n", bind, decode, q.goName, refusal)
 	}
 }
 
@@ -789,8 +793,9 @@ func must[T any](v T, err error) T {
 const awaitWriteSource = `// awaitWrite waits, after the verifier and before next binds the call and opens its read, for the revocation of the
 // caller's own write that the request names in Authz-Revocation-After, at most the wait of Prefer: wait=N and the
 // wait cap, through AwaitWrite of the query runtime (ST-SUP-RP11-LC21, ST-SUP-RC33-OC10). It answers the state in
-// Authz-Revocation, a value that is not the identity of a revocation with 400, and any other failure with 500. A
-// request with no verified identity goes to next, which answers it 401.
+// Authz-Revocation, a value that is not the identity of a revocation with 400, a client that went away during the
+// wait with nothing, and any other failure with 500. A request with no verified identity goes to next, which answers
+// it 401.
 func (h *Handlers) awaitWrite(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := authn.FromContext(r.Context())
@@ -814,6 +819,11 @@ func (h *Handlers) awaitWrite(next http.Handler) http.Handler {
 			if errors.Is(err, query.ErrBadRequest) {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(` + "`" + `{"type":"about:blank","title":"the request is not valid","status":400}` + "`" + `))
+				return
+			}
+			if r.Context().Err() != nil {
+				// The client went away during the wait: no one reads the answer, and it is no internal error of
+				// the service (review of PR #428, L1).
 				return
 			}
 			// The completion log of the request holds the fixed code, never the error text (ST-SUP-RP03-LC12).

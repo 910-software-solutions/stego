@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"go/token"
 	"maps"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	authzschema "github.com/jsell-rh/stego/internal/declaration"
@@ -229,6 +231,10 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 		if f.Computed {
 			return nil, fmt.Errorf("the field %s is computed, which a command cannot write", f.Name)
 		}
+		// The generated Check compiles the declared pattern once, with the RE2 syntax of Go (walkthrough 10, B4).
+		if _, err := regexp.Compile(f.Pattern); f.Pattern != "" && err != nil {
+			return nil, fmt.Errorf("the field %s has a pattern that is not an RE2 expression", f.Name)
+		}
 		ef := &entityField{decl: f, goName: mixedCase(f.Name), goType: goType, sensitivity: f.Sensitivity}
 		ef.slice = strings.HasPrefix(goType, "[]")
 		if f.Optional && !ef.slice {
@@ -353,6 +359,108 @@ func (e *entity) statements(tenantKey string) (selectRow, forUpdate, forDelete, 
 
 func quote(name string) string { return `"` + name + `"` }
 
+// patternVar is the name of the package-level variable of the compiled pattern of field f of entity e.
+func patternVar(e *entity, f *entityField) string {
+	return "pattern" + e.goName + f.goName
+}
+
+// renderCheck writes the Check of an entity, the declared constraints of its fields in field order: min_length,
+// max_length and pattern of a string, min and max of a number and the values of an enum, each of an optional field
+// only when it is set; and Constraints, the declared field of each CHECK and foreign key of the table by name and of
+// each column, so a value that the table refuses names its field (ST-SUP-RP10-LC02; walkthrough 10, B4). The reason
+// names the constraint and its declared bound, never the value.
+func renderCheck(w *writer, e *entity) {
+	type rule struct{ test, reason string }
+	var fields []string
+	rules := map[string][]rule{}
+	for _, f := range e.fields {
+		d := f.decl
+		value := "v." + f.goName
+		if f.pointer {
+			value = "*v." + f.goName
+		}
+		base := strings.TrimPrefix(f.goType, "*")
+		var rs []rule
+		if base == "string" {
+			if d.MinLength != nil {
+				rs = append(rs, rule{fmt.Sprintf("!command.MinLength(%s, %d)", value, *d.MinLength), fmt.Sprintf("shorter than min_length %d", *d.MinLength)})
+			}
+			if d.MaxLength != nil {
+				rs = append(rs, rule{fmt.Sprintf("!command.MaxLength(%s, %d)", value, *d.MaxLength), fmt.Sprintf("longer than max_length %d", *d.MaxLength)})
+			}
+			if d.Pattern != "" {
+				rs = append(rs, rule{fmt.Sprintf("!%s.MatchString(%s)", patternVar(e, f), value), "does not match the declared pattern"})
+			}
+			if d.Type == types.FieldTypeEnum && len(d.Values) > 0 {
+				quoted := make([]string, len(d.Values))
+				for i, v := range d.Values {
+					quoted[i] = fmt.Sprintf("%q", v)
+				}
+				rs = append(rs, rule{fmt.Sprintf("!command.OneOf(%s, %s)", value, strings.Join(quoted, ", ")), "is not one of the declared values"})
+			}
+		}
+		switch base {
+		case "int32", "int64", "float32", "float64":
+			if (base == "float32" || base == "float64") && (d.Min != nil || d.Max != nil) {
+				// A bounded float is finite, as the table CHECK holds (security review of PR #434, I3).
+				rs = append(rs, rule{fmt.Sprintf("!command.Finite(float64(%s))", value), "is not a finite number"})
+			}
+			if d.Min != nil {
+				rs = append(rs, rule{fmt.Sprintf("float64(%s) < %s", value, strconv.FormatFloat(*d.Min, 'g', -1, 64)), "less than min " + strconv.FormatFloat(*d.Min, 'g', -1, 64)})
+			}
+			if d.Max != nil {
+				rs = append(rs, rule{fmt.Sprintf("float64(%s) > %s", value, strconv.FormatFloat(*d.Max, 'g', -1, 64)), "more than max " + strconv.FormatFloat(*d.Max, 'g', -1, 64)})
+			}
+		}
+		if len(rs) > 0 {
+			fields = append(fields, f.goName)
+			rules[f.goName] = rs
+		}
+	}
+	if len(fields) > 0 {
+		w.f("\tCheck: func(v %s) (string, string, bool) {\n", e.goName)
+		for _, f := range e.fields {
+			rs := rules[f.goName]
+			if len(rs) == 0 {
+				continue
+			}
+			indent := "\t\t"
+			if f.pointer {
+				w.f("\t\tif v.%s != nil {\n", f.goName)
+				indent = "\t\t\t"
+			}
+			for _, r := range rs {
+				w.f("%sif %s {\n%s\treturn %q, %q, false\n%s}\n", indent, r.test, indent, f.decl.Name, r.reason, indent)
+			}
+			if f.pointer {
+				w.f("\t\t}\n")
+			}
+		}
+		w.f("\t\treturn \"\", \"\", true\n\t},\n")
+	}
+	w.f("\tConstraints: map[string]string{\n")
+	seen := map[string]bool{}
+	put := func(name, field string) {
+		if !seen[name] {
+			seen[name] = true
+			w.f("\t\t%q: %q,\n", name, field)
+		}
+	}
+	for _, f := range e.fields {
+		column := f.decl.ColumnName()
+		if len(rules[f.goName]) > 0 {
+			put(postgresadapter.CheckName(e.decl.Name, column), f.decl.Name)
+		}
+		if f.decl.Type == types.FieldTypeRef && f.decl.To != "" {
+			put(postgresadapter.ForeignKeyName(e.decl.Name, column), f.decl.Name)
+		}
+	}
+	for _, f := range e.fields {
+		put(f.decl.ColumnName(), f.decl.Name)
+	}
+	w.f("\t},\n")
+}
+
 // renderEntity writes the Go type, the repository declaration and the repository accessor of one entity.
 func renderEntity(w *writer, e *entity, tenantKey string) {
 	w.f("// %s is a row of the entity %s, as its command handle reads and writes it.\ntype %s struct {\n\tID string\n", e.goName, e.decl.Name, e.goName)
@@ -362,6 +470,11 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	w.f("}\n\n")
 	w.f("// Loaded%s is a loaded value of %s: only a read or a write through a command handle makes one.\ntype Loaded%s = command.Loaded[%s]\n\n", e.goName, e.decl.Name, e.goName, e.goName)
 	selectRow, forUpdate, forDelete, insert, update, remove := e.statements(tenantKey)
+	for _, f := range e.fields {
+		if f.decl.Pattern != "" && f.goType != "" && strings.TrimPrefix(f.goType, "*") == "string" {
+			w.f("// %s is the declared pattern of %s.%s.\nvar %s = command.MustPattern(%q)\n\n", patternVar(e, f), e.decl.Name, f.decl.Name, patternVar(e, f), f.decl.Pattern)
+		}
+	}
 	w.f("// %sEntity is the repository declaration of %s (ST-SUP-RP10-LC02).\n", e.goName, e.decl.Name)
 	w.f("var %sEntity = command.Must(command.NewEntity(command.EntitySpec[%s]{\n", e.goName, e.goName)
 	w.f("\tName: %q,\n", e.decl.Name)
@@ -450,6 +563,7 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 		w.f("\t\treturn v\n\t},\n")
 	}
 	w.f("\tValidID: command.ValidUUID,\n")
+	renderCheck(w, e)
 	if len(e.references) > 0 {
 		w.f("\tParent: []command.Reference[%s]{\n", e.goName)
 		for _, r := range e.references {
