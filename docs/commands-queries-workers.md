@@ -460,7 +460,11 @@ The contract has one value for each refusal, named with the command and the
 refusal: `commands.PlaceOrderShortStock` and `commands.PlaceOrderNotDraft`.
 The fill returns this value as its error. The handler then answers with the
 status and the code of the refusal. Any other error is 500 with the code
-`internal`, and the transaction is rolled back.
+`internal`, and the transaction is rolled back. This is also true for the
+error `command.ErrNotFound` that a read of the handle gives for a row that is
+not there or that the caller may not read: map it to a declared refusal, as
+[the developer reference of fills](fills.md#map-an-error-of-the-handle-to-a-refusal)
+shows.
 
 ### Effects
 
@@ -533,7 +537,8 @@ func New() commands.PlaceOrderFill {
 
 The handle gives a repository for each entity in `writes`, such as
 `commands.OrderRepository(h)`. It gives no database, no network client and no
-other entity.
+other entity. [The developer reference of fills](fills.md) gives each method of
+a repository and the decision that it makes.
 
 ### The lists of a command
 
@@ -716,8 +721,10 @@ A collection list and a list query page in different ways:
 | Next page | `cursor` | `cursor` |
 | Response | `items` and `next` | `items` and `next` |
 
-Each parameter name is exact. A collection list ignores `limit`, and a list
-query ignores `pageSize`. Give the `next` value of a response as the `cursor`
+Each parameter name is exact. A collection list reads only `pageSize`,
+`cursor`, `orderBy`, `fields` and `search`. It answers 400 for each other
+parameter, such as `limit` or `PageSize`, and the detail names the parameter
+(rest-api 4.14.0). A list query ignores `pageSize`. Give the `next` value of a response as the `cursor`
 of the next request. A cursor is valid only for the same list, tenant and
 caller. Another cursor gives 400.
 
@@ -819,9 +826,20 @@ runtime refuses each read and write of the worker on those rows.
    permission of the worker too. A row has no parent when its entity has a
    resource type and no required reference to an entity with a resource type,
    such as the local copy of an event of another service. The runtime decides
-   such a create on the tenant resource `tenant:<tenant>` with the permission
-   of the worker. A consuming worker also needs the permission of the stager
-   there.
+   such a create on the tenant resource with the permission of the worker. A
+   consuming worker also needs the permission of the stager there.
+
+   The SpiceDB ID of the tenant resource is tenant-qualified, as each other ID
+   of a tenant is: `tenant:<base64url of the tenant ID>/<base64url of the
+   tenant ID>`, with no padding. For the tenant `acme`, it is
+   `tenant:YWNtZQ/YWNtZQ`. A grant on `tenant:acme` is not a grant in the
+   tenant `acme`, and it gives nothing. This command gives the ID:
+
+   ```bash
+   b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+   TENANT=acme
+   t=$(b64 "$TENANT"); echo "tenant:$t/$t"
+   ```
 
    For a worker `record-orders` with the permission `record`, the type
    `tenant` holds `relation worker_record_orders: service_account` and
@@ -939,6 +957,14 @@ A declared list takes no filter values from the fill. A list with a parameter
 has a generated function `<Worker><List>With`, which takes each parameter as a
 typed Go value, in the order of the terms. A consuming worker can give a field
 of its message as a parameter.
+
+A list keeps only the rows on which the worker has its permission in SpiceDB
+(ST-SUP-RP10-LC17). Thus a row with no tuple is not in the list: a row that a
+person or a script wrote past the service, or a new row whose tuples the relay
+did not write yet. A worker that checks a rule over all the rows, such as a
+sum of the balances, does not see such a row. Write the rows only through the
+service. [The developer reference of fills](fills.md) gives the decision of
+each method of the handle.
 
 ### A failed run of a consuming worker
 
