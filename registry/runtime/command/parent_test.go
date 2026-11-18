@@ -299,6 +299,10 @@ type (
 // withinKey is the composite key of the sprint of a ticket, as the postgres-adapter names it (ST-SUP-RC01-OC46).
 const withinKey = "wtickets_sprint_id_within_fkey"
 
+// withinCheck is the CHECK of the optional within field of a ticket, as the postgres-adapter names it
+// (ST-SUP-RC01-OC46).
+const withinCheck = "wtickets_sprint_id_wcheck"
+
 // withinEntities makes the tables and the entities of the within test. The tables hold the composite key of the
 // sprint of a ticket, as the postgres-adapter emits it, so a write past the runtime check meets the key.
 func withinEntities(e *env) (*Entity[wProject], *Entity[wSprint], *Entity[wTicket]) {
@@ -372,7 +376,7 @@ func withinEntities(e *env) (*Entity[wProject], *Entity[wSprint], *Entity[wTicke
 	ticketSpec.Parent = []Reference[wTicket]{
 		{Entity: "WProject", ResourceType: "project", ID: func(v wTicket) string { return v.ProjectID }, Permission: "edit", Relation: "project"},
 		{Entity: "WSprint", ResourceType: "sprint", ID: func(v wTicket) string { return v.SprintID }, Permission: "edit", Relation: "sprint",
-			Field: "sprint_id", Within: "project_id", Key: withinKey},
+			Field: "sprint_id", Within: "project_id", Key: withinKey, Check: withinCheck},
 	}
 	ticketSpec.Within = map[string]func(wTicket) string{"project_id": func(v wTicket) string { return v.ProjectID }}
 	tickets, err := NewEntity(ticketSpec)
@@ -613,13 +617,17 @@ func TestWithin(t *testing.T) {
 		}
 		// A row statement of a ticket that the key refuses, as from a race or a worker that gave no parent, names the
 		// reference; a violation of another key stays internal.
+		// A violation of the CHECK of the within field names the reference too (wcheck, from fu8); a CHECK of
+		// another name stays internal.
 		cases := []struct {
-			name, key string
-			field     string
-		}{{"the key of the reference", withinKey, "sprint_id"}, {"another key", "wtickets_project_id_fkey", ""}}
+			name, code, key string
+			field           string
+		}{{"the key of the reference", "23503", withinKey, "sprint_id"}, {"another key", "23503", "wtickets_project_id_fkey", ""},
+			{"the check of the within field", "23514", withinCheck, "sprint_id"}, {"another check", "23514", "wtickets_name_check", ""},
+			{"the key name as a check", "23514", withinKey, ""}}
 		for _, c := range cases {
-			if err := run("k-lc37-t03-"+c.key, func(ctx context.Context, h *Handle[testProbe]) error {
-				return repo(t, h, tickets).failWrite(ctx, "create WTicket", &pgconn.PgError{Code: "23503", ConstraintName: c.key})
+			if err := run("k-lc37-t03-"+c.code+c.key, func(ctx context.Context, h *Handle[testProbe]) error {
+				return repo(t, h, tickets).failWrite(ctx, "create WTicket", &pgconn.PgError{Code: c.code, ConstraintName: c.key})
 			}); c.field != "" {
 				refusedOn(t, err, c.field)
 			} else if !errors.Is(err, ErrInternal) || errors.Is(err, ErrInvalid) {

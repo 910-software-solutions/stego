@@ -178,7 +178,7 @@ func TestCompat(t *testing.T) {
 			{"retype", noteFields("[{name: title, type: int32}]"), "title", []string{"retype title string a conversion and an inverse conversion"}},
 			{"require", noteFields("[{name: title, type: string}, {name: owner, type: string}]"), "owner", []string{"require owner  a fill value"}},
 			{"unique", smallServiceDeclaration + "invariants:\n  - {name: unique_title, kind: unique, on: Note, by: [title]}\n", "unique_title", []string{"unique unique_title  "}},
-			{"drop and add", noteFields("[{name: body, type: string, optional: true}]"), "title", []string{"drop title  the Definition string", "add body  "}},
+			{"drop and add", noteFields("[{name: body, type: string, optional: true}]"), "title", []string{"drop title  the Definition string, first", "add body  "}},
 		}
 		for _, head := range heads {
 			s.write(t, "service.yaml", head.declaration)

@@ -1,6 +1,7 @@
 package kafkainbox
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -50,6 +51,10 @@ const (
 	DefaultFailingAfter = 5
 	// pollWait bounds one poll, so a topic with no new record still shows that the inbox reads it.
 	pollWait = 5 * time.Second
+	// retentionRecheck is how often a session reads the retention and the cleanup policy of the topic again, so a
+	// topic that a person changes to a longer retention or to compaction stops the inbox without a new session, and
+	// a broker that no longer answers fails the session (security review of PR #418, N1).
+	retentionRecheck = time.Minute
 	// alertEvery is the shortest time between two warn events of one refusal reason.
 	alertEvery = 10 * time.Second
 )
@@ -213,6 +218,9 @@ type Inbox struct {
 	failures int
 	failing  string
 	alerts   map[string]*alertState
+	// attempts is the count of the sessions in a row since the inbox last read, which sets the backoff of the next
+	// session (security review of PR #418, N5).
+	attempts int
 }
 
 // alertState is the last warn event of one refusal reason and the refusals since it that sent none.
@@ -313,11 +321,21 @@ func (in *Inbox) sessionFailed(class string) {
 	}
 }
 
-// reading clears the failures: the session read the topic.
+// reading clears the failures and the backoff: the session read records of the topic, or the broker answered a check
+// of the topic. A poll that ends at its bound with no record does not count, as the client retries a lost broker
+// with no error (security review of PR #418, N1, N5).
 func (in *Inbox) reading() {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	in.failures, in.failing = 0, ""
+	in.failures, in.failing, in.attempts = 0, "", 0
+}
+
+// nextAttempt counts one more session since the inbox last read, and gives the count for the backoff.
+func (in *Inbox) nextAttempt() int {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	in.attempts++
+	return in.attempts
 }
 
 // Name is the name of the inbox among the components of the worker mode: inbox-<subscription>.
@@ -352,7 +370,6 @@ func (in *Inbox) Failed() string {
 // records whose offsets were not committed are read again and their second write is a no-op. A retention that
 // ErrRetention refuses stops Run with that error and the log event kafka.consumer.start_refused.
 func (in *Inbox) Run(ctx context.Context) error {
-	var attempt int
 	for ctx.Err() == nil {
 		err := in.session(ctx)
 		switch {
@@ -370,10 +387,9 @@ func (in *Inbox) Run(ctx context.Context) error {
 			in.sessionFailed(class)
 			in.emit(ctx, "kafka.consumer.failed", otellog.SeverityWarn, "the Kafka inbox failed and opens its client again",
 				attribute.String("failure", class))
-		default:
-			attempt = 0
 		}
-		attempt++
+		// A session that read before it failed, or ended clean, starts the backoff again (reading).
+		attempt := in.nextAttempt()
 		select {
 		case <-ctx.Done():
 			return nil
@@ -414,8 +430,11 @@ func (in *Inbox) session(ctx context.Context) error {
 	if err := in.checkRetention(ctx, client); err != nil {
 		return err
 	}
+	checked := in.now()
+	in.reading()
 	for {
-		// A poll that ends at its bound with no record still shows that the inbox reads the topic.
+		// A poll ends at its bound when no record comes; only records or a check that the broker answers show that
+		// the inbox reads the topic (N1).
 		pollCtx, cancelPoll := context.WithTimeout(ctx, pollWait)
 		fetches := client.PollRecords(pollCtx, MaxPoll)
 		cancelPoll()
@@ -454,7 +473,18 @@ func (in *Inbox) session(ctx context.Context) error {
 		if fetchErr != nil {
 			return fetchErr
 		}
-		in.reading()
+		if len(taken) > 0 {
+			in.reading()
+		}
+		// The retention and the policy of the topic are read again in the session; a broker that answers counts as
+		// read, so an idle topic stays ready, and one that does not answer fails the session (N1).
+		if in.now().Sub(checked) >= retentionRecheck {
+			if err := in.checkRetention(ctx, client); err != nil {
+				return err
+			}
+			checked = in.now()
+			in.reading()
+		}
 	}
 }
 
@@ -480,23 +510,9 @@ func (in *Inbox) checkRetention(ctx context.Context, client *kgo.Client) error {
 	if err := kerr.ErrorForCode(described.ErrorCode); err != nil {
 		return err
 	}
-	ms, policy, found := int64(0), "delete", false
-	for _, config := range described.Configs {
-		if config.Value == nil {
-			continue
-		}
-		switch config.Name {
-		case "retention.ms":
-			if ms, err = strconv.ParseInt(*config.Value, 10, 64); err != nil {
-				return errors.New("kafkainbox: the topic's retention.ms is not a number")
-			}
-			found = true
-		case "cleanup.policy":
-			policy = *config.Value
-		}
-	}
-	if !found {
-		return errors.New("kafkainbox: the broker gave no retention.ms of the topic")
+	ms, policy, err := topicRetention(described.Configs)
+	if err != nil {
+		return err
 	}
 	if err := RetentionFits(ms, policy, in.retention, in.settings.AcceptInfiniteRetention); err != nil {
 		return err
@@ -510,6 +526,37 @@ func (in *Inbox) checkRetention(ctx context.Context, client *kgo.Client) error {
 		})
 	}
 	return nil
+}
+
+// topicRetention reads the retention.ms and the cleanup.policy of a topic from the configs that the broker described,
+// and refuses a config that is missing or has no value, as the inbox cannot know what the broker keeps (security
+// review of PR #418, N3).
+func topicRetention(configs []kmsg.DescribeConfigsResponseResourceConfig) (int64, string, error) {
+	var ms int64
+	var policy string
+	var foundMS, foundPolicy bool
+	for _, config := range configs {
+		if config.Value == nil {
+			continue
+		}
+		switch config.Name {
+		case "retention.ms":
+			value, err := strconv.ParseInt(*config.Value, 10, 64)
+			if err != nil {
+				return 0, "", errors.New("kafkainbox: the topic's retention.ms is not a number")
+			}
+			ms, foundMS = value, true
+		case "cleanup.policy":
+			policy, foundPolicy = *config.Value, true
+		}
+	}
+	switch {
+	case !foundMS:
+		return 0, "", errors.New("kafkainbox: the broker gave no retention.ms of the topic")
+	case !foundPolicy:
+		return 0, "", errors.New("kafkainbox: the broker gave no cleanup.policy of the topic")
+	}
+	return ms, policy, nil
 }
 
 // compacted reports whether a cleanup.policy compacts the topic: compact, alone or with delete.
@@ -670,7 +717,8 @@ func (in *Inbox) check(record *kgo.Record) (checked, string) {
 	if len(record.Value) == 0 || !json.Valid(record.Value) {
 		return c, ReasonNotJSON
 	}
-	if !payloadOfKind(record.Value, kind) {
+	rowID, entity, ok := payloadOfKind(record.Value, kind)
+	if !ok {
 		return c, ReasonKindMismatch
 	}
 	keyTenant, resourceKey, found := strings.Cut(string(record.Key), kafkaoutbox.KeySeparator)
@@ -680,22 +728,80 @@ func (in *Inbox) check(record *kgo.Record) (checked, string) {
 	if len(resourceKey) < 1 || len(resourceKey) > 256 {
 		return c, ReasonBadResourceKey
 	}
+	// The key names the row of the payload: the resource key of a change event is exactly <type>:<row ID>, where the
+	// type is the resource type of the entity or, for an entity with none, the entity name (security review of PR
+	// #418, N4; of PR #421, L5).
+	keyType, keyID, found := strings.Cut(resourceKey, ":")
+	if !found || keyID != rowID || !typeOfEntity(keyType, entity) {
+		return c, ReasonKeyMismatch
+	}
 	c.resourceKey = resourceKey
 	return c, ""
 }
 
 // payloadOfKind reports whether payload is a change event of kind <source>.<entity>.<action>: an object whose entity,
 // in lower kebab case, and action are those of the kind, with a row ID (ST-SUP-RC20-OC40; security review of PR
-// #418, L6).
-func payloadOfKind(payload []byte, kind string) bool {
-	var event struct {
-		Entity, Action, ID string
-	}
+// #418, L6). It gives the row ID and the entity of the payload. It reads the members entity, action and id by their
+// exact names, and refuses a payload that holds one of them twice or in another case, such as ID beside id, which a
+// decoder of the fill could read in place of the member that the inbox checked (security review of PR #421, L5).
+func payloadOfKind(payload []byte, kind string) (id, entity string, ok bool) {
 	parts := strings.Split(kind, ".")
-	if len(parts) != 3 || json.Unmarshal(payload, &event) != nil || event.ID == "" {
-		return false
+	if len(parts) != 3 {
+		return "", "", false
 	}
-	return kebab(event.Entity) == parts[1] && event.Action == parts[2]
+	members, ok := eventMembers(payload)
+	if !ok || members["id"] == "" {
+		return "", "", false
+	}
+	return members["id"], members["entity"], kebab(members["entity"]) == parts[1] && members["action"] == parts[2]
+}
+
+// eventMembers reads the string members entity, action and id of the top-level object of payload by their exact
+// names. It refuses a payload that is not an object, and one that holds one of these members twice, in another case,
+// or with a value that is not a string.
+func eventMembers(payload []byte) (map[string]string, bool) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	if open, err := decoder.Token(); err != nil || open != json.Delim('{') {
+		return nil, false
+	}
+	members := map[string]string{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		name, isName := token.(string)
+		if err != nil || !isName {
+			return nil, false
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return nil, false
+		}
+		folded := strings.ToLower(name)
+		if folded != "entity" && folded != "action" && folded != "id" {
+			continue
+		}
+		if _, seen := members[folded]; seen || name != folded {
+			return nil, false
+		}
+		var text string
+		if err := json.Unmarshal(value, &text); err != nil {
+			return nil, false
+		}
+		members[folded] = text
+	}
+	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
+		return nil, false
+	}
+	return members, true
+}
+
+// resourceTypeName is the form of a declared resource type: a lower-case SQL name.
+var resourceTypeName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
+
+// typeOfEntity reports whether keyType can be the type of the resource key of a change event of entity: the entity
+// name, which the key holds for an entity with no resource type, or a name of the form of a resource type. The inbox
+// does not hold the resource types of the source's entities, so it binds the type to the entity by form only.
+func typeOfEntity(keyType, entity string) bool {
+	return keyType == entity || resourceTypeName.MatchString(keyType)
 }
 
 // kebab gives an entity name in lower kebab case, as the change event kind names it: a hyphen before each capital

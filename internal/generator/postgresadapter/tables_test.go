@@ -29,6 +29,9 @@ var tableStepsTests []byte
 //go:embed testdata/relax_steps_test.go
 var relaxStepsTests []byte
 
+//go:embed testdata/drop_steps_test.go
+var dropStepsTests []byte
+
 const tablesModule = "example.com/tables-check"
 
 // runtimeService gives the context of a pooled service on the runtime data path whose adapter writes to ns and
@@ -194,7 +197,9 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 		{boardRetypeContract("boardsrtc", "boardsrtctenancy"), "boardsrtc_access.json"},
 		{relaxBase("boardsrxbase", "boardsrxbasetenancy"), "boardsrxbase_access.json"}, {relaxHead("boardsrx", "boardsrxtenancy"), "boardsrx_access.json"},
 		{withinBase("withinbase", "withinbasetenancy"), "withinbase_access.json"}, {withinHead("within", "withintenancy"), "within_access.json"},
-		{withinFresh("withinfresh", "withinfreshtenancy"), "withinfresh_access.json"}} {
+		{withinFresh("withinfresh", "withinfreshtenancy"), "withinfresh_access.json"},
+		{dropBase("dropbase", "dropbasetenancy"), "dropbase_access.json"}, {dropHead("drop", "droptenancy"), "drop_access.json"},
+		{dropContract("dropc", "dropctenancy"), "dropc_access.json"}} {
 		// The adapter names the roles of the tenancy component in the migration of a step.
 		service.ctx.PeerConfigs = map[string]map[string]any{gen.TenancyComponent: roles}
 		files, wiring, err := new(postgresadapter.Generator).Generate(service.ctx)
@@ -220,11 +225,11 @@ func tableModule(t *testing.T) (map[string]bool, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.130.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
+	goMod := "module " + tablesModule + "\n\ngo 1.26.11\n\nrequire (\n github.com/google/uuid v1.6.0\n github.com/jackc/pgx/v5 v5.11.0\n github.com/jsell-rh/stego/registry/runtime v0.131.0\n)\n\nreplace github.com/jsell-rh/stego/registry/runtime => " + runtimeDir + "\n"
 	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for name, body := range map[string][]byte{"tables_test.go": tablesTests, "table_steps_test.go": tableStepsTests, "relax_steps_test.go": relaxStepsTests} {
+	for name, body := range map[string][]byte{"tables_test.go": tablesTests, "table_steps_test.go": tableStepsTests, "relax_steps_test.go": relaxStepsTests, "drop_steps_test.go": dropStepsTests} {
 		if err := os.WriteFile(filepath.Join(project, "check", name), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -517,6 +522,29 @@ func TestTables(t *testing.T) {
 		onRelax(t, "ST-SUP-RC01-OC45-T04")
 	})
 	t.Run("ST-SUP-RC01-OC44-T02 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC44-T02") })
+	// The cases of testdata/drop_steps_test.go run in the same generated module, under TestDropSteps.
+	onDrop := func(t *testing.T, id string) {
+		t.Helper()
+		if !database {
+			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
+				t.Fatal("PostgreSQL fixture is required")
+			}
+			t.Skip("PostgreSQL fixture is not configured")
+		}
+		passedIn(t, passed, log, "TestDropSteps", id)
+	}
+	t.Run("ST-SUP-RC01-OC34-T01 After a drop at expand the old column has a default and no NOT NULL", func(t *testing.T) {
+		onDrop(t, "ST-SUP-RC01-OC34-T01")
+	})
+	t.Run("ST-SUP-RC01-OC44-T03 The contract of a drop refuses while the release before reports itself, and then drops the column and the table", func(t *testing.T) {
+		onDrop(t, "ST-SUP-RC01-OC44-T03")
+	})
+	t.Run("ST-SUP-RC01-OC44-T04 A release before that reports itself while the contract of an entity drop waits for its lock leaves the table with its keys", func(t *testing.T) {
+		onDrop(t, "ST-SUP-RC01-OC44-T04")
+	})
+	t.Run("ST-SUP-RC01-OC47-T02 A database that the three releases migrated in turn and a new one get the same schema", func(t *testing.T) {
+		onDrop(t, "ST-SUP-RC01-OC47-T02")
+	})
 	t.Run("ST-SUP-RC01-OC39-T01 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC39-T01") })
 	t.Run("ST-SUP-RC01-OC24-T03 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T03") })
 	t.Run("ST-SUP-RC01-OC24-T04 on PostgreSQL", func(t *testing.T) { onPostgres(t, "ST-SUP-RC01-OC24-T04") })

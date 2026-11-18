@@ -1022,6 +1022,58 @@ func TestHandleWrites(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RP06-LC18-T01 The worker role records the revocation of a tuple that a worker relates, and a refused grant keeps its SQLSTATE", func(t *testing.T) {
+		// A worker writes in a transaction of the worker role, which is not a member of the runtime role: the
+		// migration job of the service gives a consuming worker the least grants of the runtime role on the floor and
+		// the revocation records (service.consumerGrants; walkthrough 8, W8-B1).
+		env := newPG(t)
+		for _, grant := range []string{"SELECT ON {s}.authz_floor", "INSERT (id, tenant_id, principal) ON {s}.authz_revocations",
+			"INSERT (message_id, revocation_id, tenant_id) ON {s}.authz_revocation_tuples"} {
+			if _, err := env.admin.ExecContext(ctx, "GRANT "+strings.ReplaceAll(grant, "{s}", env.schema)+" TO "+env.roles[1]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rt, err := New(Config{Provider: &recorder{}, DB: env.runtime, Schema: env.schema, Outbox: env.wqueue, Poll: 10 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		relate := func() error {
+			tx, err := tenant.Begin(ctx, env.workerDB, mustTenant(t, "t1"), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			worker, err := System("ship-orders")
+			if err != nil {
+				t.Fatal(err)
+			}
+			handle, err := rt.Bind(tx, mustTenant(t, "t1"), worker, []Relation{rel("document#viewer")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := handle.Relate(ctx, viewer); err != nil {
+				return err
+			}
+			return tenant.Commit(ctx, tx, mustTenant(t, "t1"))
+		}
+		if err := relate(); err != nil {
+			t.Fatalf("a relate of the worker role gave %v", err)
+		}
+		if got := env.scalar(t, "SELECT count(*) FROM {s}.authz_revocation_tuples"); got != "1" {
+			t.Fatalf("the worker's relate recorded %s tuple rows, want 1", got)
+		}
+		// Without the grant the error keeps SQLSTATE 42501, so the command runtime counts the cause not_granted and
+		// parks the message, and it holds no database text.
+		if _, err := env.admin.ExecContext(ctx, "REVOKE INSERT ON "+env.schema+".authz_revocations FROM "+env.roles[1]); err != nil {
+			t.Fatal(err)
+		}
+		err = relate()
+		var coded interface{ SQLState() string }
+		if !errors.As(err, &coded) || coded.SQLState() != "42501" || strings.Contains(err.Error(), "permission denied") {
+			t.Fatalf("a relate with no grant gave %v, want SQLSTATE 42501 and no database text", err)
+		}
+	})
+
 	t.Run("ST-SUP-RP06-LC09-T04 Relate enqueues a touch tuple in the transaction's outbox", func(t *testing.T) {
 		env := newPG(t)
 		rt := env.runtimeOf(t, &recorder{}, nil)

@@ -169,6 +169,161 @@ declare when you add `within` to a reference of a table with rows. A change or
 a removal of `within` has no step yet, so the check against the base refuses
 it.
 
+## Drop steps
+
+A drop removes a field or an entity in two releases (ST-GEN-Q47). The release
+with the expand step stops reading and writing the old column or table, and
+the release before it keeps running on the same database. A later release,
+with the contract step, drops the old column or table.
+
+### Drop a field
+
+Remove the field from the entity, and declare a drop with the field and its
+Definition. The Definition gives the field as the entity declared it, so that
+the first migration `001_initial` stays the same:
+
+```yaml
+entities:
+  - name: Product
+    fields:
+      - { name: name, type: string, max_length: 100 }
+      - { name: status, type: enum, values: [draft, active] }
+schema_changes:
+  - {id: product-legacy-note-drop, kind: drop, entity: Product, field: legacy_note, definition: "string, optional, max_length 200, after name"}
+schema_history:
+  - {change: product-legacy-note-drop, phase: expand}
+```
+
+The Definition starts with the type. Then it gives one item for each
+attribute that the field had, separated by commas:
+
+| Item | Means |
+|---|---|
+| `min_length N`, `max_length N` | the length limits of a string |
+| `min N`, `max N` | the limits of a number |
+| `values V1 V2 ...` | the values of an enum; an enum must have them |
+| `default D` | the default of the field |
+| `optional` | the field was optional |
+| `unique` | the field was unique |
+| `pii` or `secret` | the sensitivity of the field |
+| `after F` or `first` | the place of the field: after the field `F`, or the first field |
+| `pattern P` | the pattern; it comes last, because a pattern can hold a comma |
+
+The place is required. Give the field before it in the entity, as the entity
+is at the step of the drop: a field that an earlier step dropped is not
+there. An item that the Definition does not name, the field did not have.
+`stego compat` names the Definition to declare when a field of the base is
+gone: for example, `the Definition string, max_length 200, optional, after
+name`. When you drop more than one field of an entity, declare the drops in
+the order that `stego compat` names them: then each place is right. When the Definition does not give the field back exactly, the first
+migration of the head is not the one of the base, and `stego compat` refuses
+it.
+
+The expand migration keeps the old column, its CHECK and its indexes:
+
+- For a required field, it drops the NOT NULL of the column. When the field
+  had no default, it gives the column the `fill_value` of the drop as its
+  DEFAULT, or else the zero value of the type (the empty string, 0 or
+  false). So each row that the new release writes has a value that the
+  release before can read. When the zero value does not suit the field, as for
+  an enum, a `min_length` or a `min` above 0, checking refuses the drop until
+  you give a `fill_value` that suits. A timestamp, a jsonb or a bytes field
+  has no zero value, so it needs a `fill_value`.
+- For an optional field, it sets a DEFAULT only from a `fill_value`, because
+  NULL is a value of the old field.
+- It marks the column with the relaxed form of the change (as a relax step
+  does), so that the schema check of the release before accepts the column.
+  This needs the runtime library v0.108.0 or later in the release before.
+- It makes the table of the release reports, `stego_schema.releases`.
+
+Each statement takes a short lock and reads no row.
+
+### Remove an entity
+
+Keep the entity and the collections over it as they are, and add
+`dropped_by` with the ID of a drop that names the entity and no field:
+
+```yaml
+entities:
+  - name: Promotion
+    dropped_by: promotion-drop
+    resource_type: promotion
+    fields:
+      - { name: product_id, type: ref, to: Product }
+      - { name: percent_off, type: int32, min: 1, max: 90 }
+schema_changes:
+  - {id: promotion-drop, kind: drop, entity: Promotion}
+schema_history:
+  - {change: promotion-drop, phase: expand}
+```
+
+A drop of an entity takes no Definition and no `fill_value`. From the expand
+step, STEGO generates no API, no client, no repository, no handler and no
+schema manifest entry for the entity and its collections. Nothing else of the
+declaration may name it: no reference, command, query, worker, subscription
+or invariant. The declaration keeps it, so that the first migration, the add
+step that made its table and the contract step come from the declaration
+alone. The expand migration changes no table and makes only the table of the
+release reports.
+
+Keep the definition of the resource type in your `schema.zed`, with the
+relations of its references. The release before still writes its
+relationships, and SpiceDB refuses a schema that removes a definition with
+relationships. Checking refuses a schema that does not hold it. The
+relationships stay in SpiceDB while the entity stays declared (ST-SUP-RC29-OC25).
+
+### The contract step of a drop
+
+Put the contract step of the drop in a later release, after the release of
+its expand step:
+
+```yaml
+schema_history:
+  - {change: product-legacy-note-drop, phase: expand}
+  - {change: product-legacy-note-drop, phase: contract}
+```
+
+The migration first checks, in its own transaction, that no process of a
+release that does not know the expand migration of the drop runs, as the
+contract step of a rename does (see "Contract steps"). Such a release still
+reads the old column or table. When a process of it reports itself, the job
+exits non-zero, writes no ledger row, changes no schema and names the change,
+the expand migration and the version label of that release. Stop the release
+before, and run the job again.
+
+Then the step runs each statement in its own short transaction, under a lock
+timeout of 1 s, and again after a pause when a lock wait ends at that
+timeout, at most 10 times:
+
+- for a field, `ALTER TABLE ... DROP COLUMN IF EXISTS`, which also drops the
+  CHECK and the indexes of the column;
+- for an entity, first each foreign key of the table, the tenant key too,
+  each in its own transaction, and then `DROP TABLE IF EXISTS`. So no
+  statement holds the lock of a busy table that the dropped table refers to
+  and the lock of the dropped table at one time.
+
+Each statement first takes the lock of the table and then checks the running
+releases again in its transaction. So when a process of the release before
+reports itself during the step, the step stops and leaves the table with all
+its keys.
+
+A drop cannot be undone: the contract step deletes the values of the column or
+the rows of the table, and no step gives them back. Take a backup before you
+release it. The step counts a process of the release before as stopped when
+its last report is older than three of its report intervals: 30 s with the
+default interval of 10 s, and at most 180 s. A process that is still alive but
+cannot write its report for that time, for example during a database failover
+or on a paused node, does not stop the step. So stop and remove every pod of the
+release before (its Deployment or ReplicaSet) before you run the migration job
+of the contract step. A run that stops part way recovers on the next run,
+and the ledger row comes last. The release of the expand step keeps running
+before, during and after the contract step.
+
+Limits: a drop of a reference, and a drop of a unique field that is required
+or gets a default, are not built yet; generation refuses them and names the
+reason. A table that another live table refers to cannot be dropped: remove
+the reference first.
+
 ## The migrations of the steps
 
 `001_initial` holds the tables of the first release: the declaration with

@@ -266,6 +266,18 @@ func TestProvisioning(t *testing.T) {
 		if got := tuples("org-a"); len(got) != 2 {
 			t.Fatalf("the retire of org-b staged tuples in org-a: %v", got)
 		}
+		// A provision of a retired ID is refused with its own code, and one of an active ID with tenant.provisioned
+		// (walkthrough 8, K13).
+		for _, c := range []struct{ id, code string }{{"org-b", ErrorCodeRetired}, {"org-a", ErrorCodeProvisioned}} {
+			r := httptest.NewRequest(http.MethodPost, "/stego/tenants", strings.NewReader(`{"tenant_id":"`+c.id+`"}`))
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("Idempotency-Key", `"k-again-`+c.id+`"`)
+			w := httptest.NewRecorder()
+			verifier.Middleware(mux).ServeHTTP(w, r)
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"`+c.code+`"`) {
+				t.Fatalf("a provision of %s again answered %d %s, want 409 with the code %s", c.id, w.Code, w.Body.String(), c.code)
+			}
+		}
 		// Each tuple is joined to the revocation of its transaction, and none has a wildcard.
 		if n := e.count(`SELECT count(*) FROM authz.authz_revocation_tuples WHERE tenant_id IN ('org-a', 'org-b')`); n != 6 {
 			t.Fatalf("%d tuples of a revocation, want 6", n)

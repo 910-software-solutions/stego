@@ -160,6 +160,8 @@ type Service struct {
 	collections *command.Runtime
 	workers     *command.Runtime
 	queries     *query.Runtime
+	parked      *parked
+	version     string
 	beat        *lease.Beat
 	tenants     *tenantProvisioning
 }
@@ -267,7 +269,7 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	config := command.Config{DB: svc.pool, AuditDB: svc.auditDB, Authz: svc.authz, Audit: svc.writer, SchemaSteps: p.SchemaSteps,
 		AuditSettings: p.AuditSettings, Outbox: svc.queue, Probes: svc.probes, Service: p.Service,
-		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion}
+		ServiceVersion: s.ServiceVersion, DeclarationVersion: p.DeclarationVersion, ProblemBase: p.ProblemType}
 	var gate *tenant.Gate
 	if p.Provisioning != nil {
 		if p.Workers.TenantSchema == "" {
@@ -318,6 +320,12 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	if svc.queries, err = query.New(query.Config{DB: svc.pool, AuditDB: svc.auditDB, Audit: svc.writer,
 		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, CursorKey: s.CursorKey,
 		Meter: svc.telemetry.MeterProvider()}); err != nil {
+		return nil, err
+	}
+	// The parked-message list and resolve of an operator, which the generated code serves in the api mode only
+	// (ST-SUP-RP14-LC09, ST-SUP-RP14-LC10).
+	svc.version = s.ServiceVersion
+	if svc.parked, err = newParked(svc); err != nil {
 		return nil, err
 	}
 	return svc, nil
@@ -469,7 +477,7 @@ func joinedManifest(p Parts, runtimeRole string) (manifest.Manifest, error) {
 		for i := range want.Tables {
 			t := &want.Tables[i]
 			if t.CheckGrants && t.Schema == g.schema && t.Name == g.table && t.Name != "idempotency_keys" {
-				t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: g.privileges})
+				t.Grants = append(t.Grants, manifest.Grant{Role: p.WorkerRole, Privileges: g.privileges, Columns: g.columns})
 			}
 		}
 	}

@@ -226,6 +226,11 @@ definition tenant {
 	relation worker_fulfill_orders: service_account
 	relation worker_low_stock_scan: service_account
 }
+
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
 ```
 
 The messages of the commands are at `proto/inventory.proto`:
@@ -848,6 +853,45 @@ now, a conflict, a failed database statement, a timeout and a lost connection
 are not counted, and they start the count again. A parked message stays in the
 outbox, and a person can send it again or discard it.
 
+The log line and the alert of a parked message are also written to standard
+output as one JSON line each, also when no OpenTelemetry collector is set. The
+runtime writes each log record at the level warn or higher in this way, at most
+10 lines of one event name in each minute, and then one line with the event
+name and the number of lines that it dropped.
+
+### See and resolve the parked messages
+
+In the api mode, the service serves two routes for an operator, behind the
+same authentication as the other routes:
+
+- `GET <base path>/stego/outbox/{destination}/parked` lists the parked
+  messages of the destination in the tenant of the caller: the message ID, the
+  destination, the failure code, the attempt count and the times when the
+  message was made and parked. It never gives the payload. It pages with the
+  `limit` and `cursor` parameters, as the other lists do.
+- `POST <base path>/stego/outbox/{destination}/parked/{id}:resolve` with the
+  body `{"resolution": "not_acted"}` resolves one message. `not_acted` sends
+  it again with the same identity, `acted` marks it done, and `discarded`
+  discards it. The answer is 204, and the audit row
+  `resolve-parked-message` is written in the same transaction.
+
+The caller needs the permission `resolve` on `outbox_destination:<destination>`
+in its tenant. Declare the type in the authorization schema, as the schema of
+this page does:
+
+<!-- excerpt -->
+```zed
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+```
+
+A caller without the permission gets 403, the same for each destination and
+each message. A message that the tenant does not hold gets 404. A message that
+is not parked, or a resolution that the destination refuses, gets 409. Another
+body gets 400.
+
 ### Take the change events of another service
 
 A worker can consume the change events of another service through a
@@ -876,6 +920,9 @@ composite key (ST-SUP-RC01-OC46), so a race, a worker that gives no parent and
 a move of the referenced row are refused too: a move of a sprint to another
 project while a ticket of the first project refers to it gives 400 `invalid`
 with the field `project_id`.
+When the field that the reference is held within is optional, the database
+also holds a CHECK: a row that sets the reference and leaves that field empty
+gives 400 `invalid` with the field of the reference.
 
 ### A failed statement
 
@@ -896,6 +943,41 @@ cause classes are:
 
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
+
+### Release notes for runtime v0.131.0
+
+- The log provider of the telemetry runtime writes each record at the level
+  warn or higher as one JSON line on standard output, with or without an
+  OTLP endpoint (ST-SUP-RP03-LC16). `otel.Runtime.LoggerProvider` is no longer
+  nil without a collector. New functions `ConsoleDropped` and
+  `ConsoleFailures`.
+- New parked-message routes of the api mode (ST-SUP-RP14-LC09,
+  ST-SUP-RP14-LC10): `service.ParkedRoutes`, `Service.RegisterParked`,
+  `outbox.Resolver`, `outbox.Queue.Parked`, `outbox.ErrRefusedOutcome`,
+  `authz.Runtime.StateHook`, `query.KeyCursor` and `query.Cursor.Key`.
+- New function `command.Snapshot`: the generated contract package takes a
+  copy of each declared list when it starts, and the handle refuses a list
+  that a fill changed after that.
+- `command.ListValue` has the new field `KeyOf` (`command.KeyUUID`), and `command.Reference`
+  the new field `Check`. Generated code sets them; code that does not set them
+  needs no change.
+- The Kafka inbox reads the retention and the cleanup policy of its topic
+  again each minute, refuses a topic with no cleanup policy and a record whose
+  key names another row than its payload.
+- A worker can create a row that has a reference: the authorization
+  migration gives the worker role the same grants as the runtime role on the
+  revocation floor and records. A refused statement of the authorization
+  handle keeps its SQLSTATE, so a missing grant parks a consumed message
+  (cause `not_granted`) and does not retry it without end.
+- A provision of a retired tenant ID answers 409 with the code
+  `tenant.retired`; a provision of an active ID keeps `tenant.provisioned`.
+  New error `tenant.ErrRetired` and code `command.ErrorCodeRetired`.
+- The problem types `idempotency-key-missing`, `idempotency-key-in-progress`
+  and `idempotency-key-reused` of a command sit under the `error_type_base`
+  of the service. `command.Config` has the new field `ProblemBase`.
+- The readiness of the worker mode names the stage of a stopped Kafka inbox,
+  such as `the component inbox-order-changes stopped at the stage
+  kafka-consumer.retention`.
 
 ### Release notes for runtime v0.130.0
 

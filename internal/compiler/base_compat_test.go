@@ -624,3 +624,70 @@ func TestBaseRelaxLaterNoField(t *testing.T) {
 		}
 	})
 }
+
+func TestBaseDrop(t *testing.T) {
+	t.Run("ST-GEN-INV33-T A declared drop of a field or an entity of the base is accepted, and a drop that does not give back the base is refused", func(t *testing.T) {
+		t.Parallel()
+		td01 := string(userManagementBase(t))
+		description := "      - { name: description, type: string, optional: true, max_length: 1000 }\n"
+		noDescription := func(change string) string {
+			head := strings.Replace(td01, description, "", 1)
+			if change == "" {
+				return head
+			}
+			return withChanges(head, "  - "+change+"\n", "  - {change: organization-description-drop, phase: expand}\n")
+		}
+		activity := "  - name: ActivityEntry\n"
+		dropActivity := func(dropped bool) string {
+			head := td01
+			if dropped {
+				head = strings.Replace(td01, activity, activity+"    dropped_by: activity-entry-drop\n", 1)
+			} else {
+				start := strings.Index(head, activity)
+				end := strings.Index(head, "\ncollections:\n")
+				head = head[:start] + head[end+1:]
+				for _, name := range []string{"user-activity", "org-activity"} {
+					at := strings.Index(head, "  "+name+":\n")
+					next := strings.Index(head[at+1:], "\n\n")
+					head = head[:at] + head[at+1+next+2:]
+				}
+			}
+			return withChanges(head, "  - {id: activity-entry-drop, kind: drop, entity: ActivityEntry}\n", "  - {change: activity-entry-drop, phase: expand}\n")
+		}
+		cases := []struct {
+			name, head string
+			refused    bool
+			says       string
+		}{
+			{"a drop of the listed field Organization.description in its place", noDescription(
+				"{id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, max_length 1000, optional, after name\"}"), false, ""},
+			{"a drop of the entity ActivityEntry, kept with dropped_by", dropActivity(true), false, ""},
+			{"a drop whose Definition puts the field in another place", noDescription(
+				"{id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, max_length 1000, optional, first\"}"), true, "organizations"},
+			{"a drop whose Definition leaves out the max_length", noDescription(
+				"{id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, after name\"}"), true, "Organization.description"},
+			{"an undeclared removal of the field", noDescription(""), true, "the Definition string, max_length 1000, optional, after name"},
+			{"a removal of the entity ActivityEntry with no dropped_by", dropActivity(false), true, "dropped_by"},
+		}
+		for _, c := range cases {
+			base := []byte(td01)
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			var messages []string
+			for _, fault := range check.Faults {
+				messages = append(messages, fault.Rule+": "+fault.Message)
+				for _, change := range fault.Declare {
+					messages = append(messages, "declare: "+change.String())
+				}
+			}
+			switch {
+			case !c.refused && check.HasFaults():
+				t.Errorf("%s: refused: %v", c.name, messages)
+			case c.refused && !strings.Contains(strings.Join(messages, "\n"), c.says):
+				t.Errorf("%s: the faults %v do not say %q", c.name, messages, c.says)
+			}
+		}
+	})
+}

@@ -35,7 +35,7 @@ var orgSettingsUpsertCommand = mustCommand(command.NewCommand(command.CommandSpe
 // (ST-SUP-RC20-OC13). It is a list of the upsert command over the entity of this release, whose parameters the
 // handler binds (ST-SUP-RP10-LC38).
 var orgSettingsUpsertKey = command.Must(command.NewList(data.OrgSettingEntity, command.ListSpec{Name: "upsert-key", Read: "SELECT \"id\"::text, \"org_id\", \"key\", \"value\", \"generation\", \"version\", \"authz_token\" FROM public.\"org_settings\" WHERE \"tenant_id\" = $1 AND \"org_id\" = $3 AND \"key\" = $4 ORDER BY \"id\" LIMIT $2",
-	Values: command.DeclaredValues(command.ListValue{Param: "org_id", Key: true}, command.ListValue{Param: "key"})}))
+	Values: command.DeclaredValues(command.ListValue{Param: "org_id", Key: true, KeyOf: command.KeyUUID}, command.ListValue{Param: "key"})}))
 
 // orgSettingsSearchFields are the fields that a list search may name, with the kind of their values: the declared
 // fields that are not pii, secret or implicit, of a text, number or bool type (ST-SUP-RP11-LC20).

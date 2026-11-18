@@ -69,7 +69,7 @@ type Worker[P any] struct {
 	bound        []authz.Relation
 	own          map[authz.Relation]bool
 	changeEvents map[string]ChangeEvents
-	lists        map[AnyList]bool
+	lists        map[AnyList]listCopy
 }
 
 // NewWorker checks the declaration of one worker.

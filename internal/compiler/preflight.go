@@ -144,7 +144,7 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 	}
 	// A renamed field keeps its API name, the name before its first rename, and is stored in the column of its
 	// declared name (ST-GEN-UC12-R04).
-	entities, err := gen.StoredNames(svcDecl.Entities, svcDecl.Invariants, svcDecl.Collections, schemaChanges)
+	entities, dropped, err := storedEntities(svcDecl, schemaChanges)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +184,12 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			Subscriptions:   svcDecl.Subscriptions,
 			Destinations:    declaredDestinations(svcDecl, componentNames),
 			QueryStreams:    declaration.QueryStreams(svcDecl, facts),
+			// The entities with dropped_by and their collections only give back the stored shape of the steps
+			// before their drop (ST-GEN-Q47).
+			DroppedEntities:    dropped,
+			DroppedCollections: svcDecl.DroppedCollections,
+			EntityOrder:        svcDecl.EntityOrder,
+			CollectionOrder:    svcDecl.CollectionOrder,
 		}
 		var inputs []gen.InputFile
 		if schemaReader[compName] && svcDecl.Authorization != nil && svcDecl.Authorization.SchemaPath != "" {
@@ -387,4 +393,21 @@ func unemittedInvariants(invariants []types.DeclaredInvariant) error {
 	}
 	return fmt.Errorf("no generator emits a declared invariant yet, so the service would not enforce %s; remove the invariants until a component emits them (ST-STD-TXN-R17)",
 		strings.Join(names, ", "))
+}
+
+// storedEntities gives the live entities and the entities with dropped_by of the declaration with the stored names of
+// their fields (gen.StoredNames), read together, so that a rename names a field of either.
+func storedEntities(svcDecl *types.ServiceDeclaration, changes []types.SchemaChange) (live, dropped []types.Entity, err error) {
+	all, err := gen.StoredNames(svcDecl.AllEntities(), svcDecl.Invariants, svcDecl.AllCollections(), changes)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, entity := range all {
+		if entity.DroppedBy != "" {
+			dropped = append(dropped, entity)
+		} else {
+			live = append(live, entity)
+		}
+	}
+	return live, dropped, nil
 }
