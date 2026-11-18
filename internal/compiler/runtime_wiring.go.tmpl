@@ -279,9 +279,9 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 	}
 }
 
-// destinations gives the declared rules of each destination that the outbox worker of the service registers{{if .API}}:
-// those of the components, the after slots of the collections{{if .Consumers}} and the consumed destinations of the workers{{end}}{{else if .Consumers}}:
-// those of the components and the consumed destinations of the workers{{end}}; authz is the runtime's own.
+// destinations gives the declared rules of each destination that the outbox worker of the service registers: those
+// of the components{{if .API}} and of the after slots of the collections{{end}}{{if .Consumers}} and of the consumed destinations of the workers{{end}}.
+// The runtime adds those of authz itself.
 func destinations() []outbox.Rules {
 	rules := svcoutbox.Rules()
 {{- if .API}}
