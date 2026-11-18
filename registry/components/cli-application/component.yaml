@@ -1,6 +1,9 @@
 kind: component
 name: cli-application
-version: 1.8.1
+# Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
+# the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
+# does not give (security review of PR #442, I5).
+version: 1.9.0
 stage: ga
 output_namespace: cli
 config:

@@ -699,12 +699,13 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chain := [1]string{scope}
-	if detail := unreadParameters(r.URL.Query()); detail != "" {
+	parameters, detail := listQuery(r)
+	if detail != "" {
 		handleError(w, r, BadRequest(detail))
 		return
 	}
 	limit := 100
-	if text := r.URL.Query().Get("pageSize"); text != "" {
+	if text := parameters.Get("pageSize"); text != "" {
 		n, err := strconv.Atoi(text)
 		if err != nil || n < 1 {
 			handleError(w, r, BadRequest("pageSize must be a whole number of at least 1"))
@@ -712,24 +713,24 @@ func (h *OrgUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, query.MaxLimit)
 	}
-	order, err := listOrder(r.URL.Query().Get("orderBy"), map[string]bool{"email": true, "display_name": true, "role": true, "org_id": true, "metadata": true})
+	order, err := listOrder(parameters.Get("orderBy"), map[string]bool{"email": true, "display_name": true, "role": true, "org_id": true, "metadata": true})
 	if err != nil {
 		handleError(w, r, BadRequest(err.Error()))
 		return
 	}
-	fields, err := listFields(r.URL.Query().Get("fields"), map[string]bool{"email": true, "display_name": true, "role": true, "org_id": true, "metadata": true})
+	fields, err := listFields(parameters.Get("fields"), map[string]bool{"email": true, "display_name": true, "role": true, "org_id": true, "metadata": true})
 	if err != nil {
 		handleError(w, r, BadRequest(err.Error()))
 		return
 	}
-	where, err := query.ParseSearch(r.URL.Query().Get("search"), orgUsersSearchFields, query.MaxFilter-1)
+	where, err := query.ParseSearch(parameters.Get("search"), orgUsersSearchFields, query.MaxFilter-1)
 	if err != nil {
 		handleError(w, r, BadRequest("the search is not valid"))
 		return
 	}
 	where = append(where, query.Equal{Field: "org_id", Value: scope})
 	var after query.Cursor
-	if text := r.URL.Query().Get("cursor"); text != "" {
+	if text := parameters.Get("cursor"); text != "" {
 		if after, err = h.rt.Queries.ParseCursor(orgUsersListQuery, b.Tenant, b.Principal, text); err != nil {
 			handleError(w, r, BadRequest("the cursor is not valid"))
 			return

@@ -128,8 +128,35 @@ type RuntimeArchive struct {
 // such as one of a folder whose go.mod is a symbolic link, which the zip leaves out. It makes the zip in memory, and
 // hashes it and reads its go.mod from those bytes before it writes them, so no other process can change the zip
 // between the hash and the read (security review of PR #436, L1).
+// The zip is at most MaxRuntimeArchive bytes: a folder whose zip is larger is refused before the zip is complete, so
+// a wrong registry folder cannot make the archive hold about 1 GiB in memory (security review of PR #442, L2).
 func WriteRuntimeArchive(folder, modulePath, version, zipPath string) (RuntimeArchive, error) {
-	var zipped bytes.Buffer
+	return writeRuntimeArchive(folder, modulePath, version, zipPath, MaxRuntimeArchive)
+}
+
+// MaxRuntimeArchive is the largest module zip of a runtime folder that WriteRuntimeArchive makes, 64 MiB. The runtime
+// folder of the common registry gives a zip of a few MB.
+const MaxRuntimeArchive = 64 << 20
+
+// ErrRuntimeArchiveSize is the error of a runtime folder whose module zip is larger than its limit.
+var ErrRuntimeArchiveSize = errors.New("the module zip of the runtime folder is larger than its limit")
+
+// cappedBuffer is a buffer that refuses a write past limit bytes.
+type cappedBuffer struct {
+	bytes.Buffer
+	limit int
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if len(p) > b.limit-b.Len() {
+		return 0, ErrRuntimeArchiveSize
+	}
+	return b.Buffer.Write(p)
+}
+
+// writeRuntimeArchive is WriteRuntimeArchive with a zip of at most limit bytes.
+func writeRuntimeArchive(folder, modulePath, version, zipPath string, limit int) (RuntimeArchive, error) {
+	zipped := cappedBuffer{limit: limit}
 	if err := modzip.CreateFromDir(&zipped, module.Version{Path: modulePath, Version: version}, folder); err != nil {
 		return RuntimeArchive{}, fmt.Errorf("module zip of %s: %w", folder, err)
 	}

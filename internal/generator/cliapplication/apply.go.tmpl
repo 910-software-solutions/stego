@@ -16,7 +16,7 @@ import (
 )
 
 // ApplyResource binds a manifest kind to a collection with the generated REST
-// shape: resource objects have id; list objects have items and total.
+// shape: resource objects have id; list objects have items, and next while the list has more pages.
 // Named resources use metadata.name and PATCH. ImmutableIdentity enables
 // immutable resources whose lookup uses required string fields from spec.
 // Such resources have no PATCH fields; metadata.name is an optional output label.
