@@ -1,12 +1,16 @@
 package compiler
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/sumdb/dirhash"
+	modzip "golang.org/x/mod/zip"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/registry"
@@ -200,6 +204,102 @@ func TestArchetypeRuntimePin(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+		}
+	})
+}
+
+func TestRuntimeProxyServesThePinnedZip(t *testing.T) {
+	t.Run("ST-STD-RUNTIME-R04-T03 The local runtime proxy serves only the bytes of the zip whose sum the pin holds", func(t *testing.T) {
+		const version = "v0.1.0"
+		goMod := []byte("module " + registry.RuntimeModule + "\n\ngo 1.26\n")
+		// runtimeFolder writes a runtime folder with one package; a linked go.mod is a link to a go.mod outside it.
+		runtimeFolder := func(linked bool) string {
+			folder := filepath.Join(t.TempDir(), "runtime")
+			if err := os.MkdirAll(filepath.Join(folder, "money"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(folder, "money", "money.go"), []byte("package money\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if !linked {
+				if err := os.WriteFile(filepath.Join(folder, "go.mod"), goMod, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return folder
+			}
+			outside := filepath.Join(t.TempDir(), "go.mod")
+			if err := os.WriteFile(outside, goMod, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(folder, "go.mod")); err != nil {
+				t.Fatal(err)
+			}
+			return folder
+		}
+		// zipSum is the go.sum hash of the module zip of the folder, made apart from the code under test.
+		zipSum := func(folder string) string {
+			path := filepath.Join(t.TempDir(), "runtime.zip")
+			file, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := modzip.CreateFromDir(file, module.Version{Path: registry.RuntimeModule, Version: version}, folder); err != nil {
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			sum, err := dirhash.HashZip(path, dirhash.Hash1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return sum
+		}
+		stageProxy := func(folder, sum string) (string, string, error) {
+			stage := t.TempDir()
+			root, err := os.OpenRoot(stage)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer root.Close()
+			proxy, err := writeRuntimeProxy(folder, registry.RuntimePin{Module: registry.RuntimeModule, Version: version, Sum: sum}, root, stage)
+			return stage, proxy, err
+		}
+		versions := filepath.Join("github.com", "jsell-rh", "stego", "registry", "runtime", "@v")
+
+		// The pinned folder: the proxy serves the go.mod of the zip, and go.sum holds its hash.
+		folder := runtimeFolder(false)
+		stage, proxy, err := stageProxy(folder, zipSum(folder))
+		if err != nil || proxy == "" {
+			t.Fatalf("the pinned folder gave no proxy: %q, %v", proxy, err)
+		}
+		served, err := os.ReadFile(filepath.Join(proxy, versions, version+".mod"))
+		if err != nil || string(served) != string(goMod) {
+			t.Fatalf("the proxy serves the go.mod %q, %v; want %q", served, err, goMod)
+		}
+		modSum, err := dirhash.Hash1([]string{"go.mod"}, func(string) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(string(goMod))), nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		sums, err := os.ReadFile(filepath.Join(stage, "go.sum"))
+		if err != nil || !strings.Contains(string(sums), registry.RuntimeModule+" "+version+"/go.mod "+modSum+"\n") {
+			t.Fatalf("go.sum does not hold the hash of the served go.mod:\n%s", sums)
+		}
+
+		// A forged sum: no proxy, and no proxy folder stays behind.
+		stage, proxy, err = stageProxy(folder, pinSum)
+		if err != nil || proxy != "" {
+			t.Fatalf("a pin with another sum gave the proxy %q, %v", proxy, err)
+		}
+		if _, err := os.Lstat(filepath.Join(stage, "runtime-proxy")); !os.IsNotExist(err) {
+			t.Fatalf("a pin with another sum left the proxy folder: %v", err)
+		}
+
+		// A go.mod that is a link: the zip leaves it out, so the proxy has no go.mod of the pinned bytes to serve,
+		// and it refuses to serve the go.mod of the folder in its place.
+		linked := runtimeFolder(true)
+		if _, proxy, err = stageProxy(linked, zipSum(linked)); err == nil || proxy != "" || !strings.Contains(err.Error(), "no go.mod") {
+			t.Fatalf("a runtime folder with a linked go.mod gave the proxy %q, %v; want a refusal that the zip holds no go.mod", proxy, err)
 		}
 	})
 }
