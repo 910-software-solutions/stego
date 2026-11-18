@@ -430,3 +430,22 @@ func TestOutcomeTransient(t *testing.T) {
 		}
 	})
 }
+
+func TestInvalidRPC(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC42-T03 An invalid value over gRPC is InvalidArgument with the field and the reason in a BadRequest detail, and no value", func(t *testing.T) {
+		err := OutcomeOf(fmt.Errorf("fill: %w", &invalidError{field: "patient_ref", reason: "shorter than min_length 1"})).RPCStatus()
+		st := status.Convert(err)
+		if st.Code() != codes.InvalidArgument || st.Message() != ErrorCodeInvalid || len(st.Details()) != 1 {
+			t.Fatalf("the invalid value gave %v with %d details, want InvalidArgument invalid with one detail", st, len(st.Details()))
+		}
+		bad, ok := st.Details()[0].(*errdetails.BadRequest)
+		if !ok || len(bad.GetFieldViolations()) != 1 || bad.GetFieldViolations()[0].GetField() != "patient_ref" ||
+			bad.GetFieldViolations()[0].GetDescription() != "shorter than min_length 1" {
+			t.Fatalf("the detail is %v, want the field patient_ref and its reason", st.Details()[0])
+		}
+		// An outcome with no field has no detail.
+		if st := status.Convert(OutcomeOf(ErrDenied).RPCStatus()); st.Code() != codes.NotFound || len(st.Details()) != 0 {
+			t.Fatalf("a deny gave %v with %d details, want NotFound with none", st, len(st.Details()))
+		}
+	})
+}

@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -174,6 +175,20 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 		return Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: code, Audit: audit.OutcomeFailed}
+}
+
+// RPCStatus is the gRPC status of the outcome: the code of its HTTP status, and its fixed code as the message. An
+// invalid value also names its declared field and fixed reason in a google.rpc.BadRequest detail, as the field of
+// the HTTP problem does (walkthrough 10, B4); the detail holds no value of the request.
+func (o Outcome) RPCStatus() error {
+	st := status.New(RPCCode(o.Status), o.AnswerCode())
+	if o.Field != "" {
+		if detailed, err := st.WithDetails(&errdetails.BadRequest{FieldViolations: []*errdetails.BadRequest_FieldViolation{
+			{Field: o.Field, Description: o.Reason}}}); err == nil {
+			st = detailed
+		}
+	}
+	return st.Err()
 }
 
 // AnswerCode is the code of the answer to the client: the audit code commit_outcome_unknown is internal to a client.
@@ -369,7 +384,7 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 		result, failed := serveRun(ctx, rt, s, req, decode)
 		switch {
 		case failed != nil:
-			return none, status.Error(RPCCode(failed.Status), failed.AnswerCode())
+			return none, failed.RPCStatus()
 		case result.Problem == idempotency.ProblemInProgress:
 			return none, status.Error(codes.Aborted, result.Problem)
 		case result.Problem != "":

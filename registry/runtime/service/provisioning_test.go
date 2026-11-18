@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +16,7 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // gateFixture is the tenant check of a service whose provisioning routes are under /api/v1, with no tenant list: a
@@ -135,6 +139,63 @@ func TestTenantGate(t *testing.T) {
 		if _, err := svc.Authenticate(context.Background(), "Bearer "+token); status.Code(err) != codes.PermissionDenied ||
 			status.Convert(err).Message() != "tenant.not_provisioned" {
 			t.Errorf("a gRPC call with no tenant claim gave %v, want PERMISSION_DENIED with the code tenant.not_provisioned", err)
+		}
+	})
+}
+
+func TestTenantGateUnavailable(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC43-T03 A tenant list that the database cannot serve now is 503 with Retry-After over HTTP and Unavailable over gRPC", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		closed := listener.Addr().String()
+		_ = listener.Close()
+		db, err := sql.Open("pgx", "postgres://runtime:none@"+closed+"/app?sslmode=disable&connect_timeout=5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		gate, err := tenant.NewGate(db, "public", time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tp := gateFixture(t)
+		tp.gate = gate
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "orders", "u-1", time.Now())
+		claims["tenant"] = "t1"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		reached := false
+		router := http.NewServeMux()
+		router.HandleFunc("GET /api/v1/orders", func(http.ResponseWriter, *http.Request) { reached = true })
+		r := httptest.NewRequest("GET", "/api/v1/orders", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		verifier.Middleware(tp.gated(router, router)).ServeHTTP(w, r)
+		var problem struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &problem)
+		if w.Code != http.StatusServiceUnavailable || problem.Code != "unavailable" || w.Header().Get("Retry-After") == "" || reached ||
+			strings.Contains(w.Body.String(), "refused") {
+			t.Errorf("a tenant list that cannot be read answered %d %v %s and reached the handler %t; want 503 unavailable with Retry-After",
+				w.Code, w.Header(), w.Body.String(), reached)
+		}
+		svc := &Service{verifier: verifier, tenants: tp}
+		if _, err := svc.Authenticate(context.Background(), "Bearer "+token); status.Code(err) != codes.Unavailable ||
+			status.Convert(err).Message() != "unavailable" {
+			t.Errorf("a gRPC call gave %v, want UNAVAILABLE with the code unavailable", err)
 		}
 	})
 }
