@@ -818,9 +818,9 @@ func contractStatementRun(ctx context.Context, conn *sql.Conn, m Migration, c Co
 		if err == nil {
 			return nil
 		}
-		if c.Seal && s.Long && violatesCheck(err) {
-			// The VALIDATE of the completeness CHECK reads every row, also a row of a tenant that the tenant list
-			// does not hold, which the seal job does not seal (security review of PR #443, I4).
+		if c.Seal && s.Long && violatesCheck(err) && strings.Contains(s.SQL, "VALIDATE CONSTRAINT "+quoteIdentifier(c.Check)) {
+			// The VALIDATE of the completeness CHECK, Check, reads every row, also a row of a tenant that the tenant
+			// list does not hold, which the seal job does not seal (security review of PR #443, I4; re-review N5).
 			return &contractRefusal{text: fmt.Sprintf("the contract step of the schema change %s waits for its seal: a row has a clear value and no sealed value, and the seal job has sealed each row of the listed tenants, so the row is of a tenant that the tenant list stego_tenants does not hold; provision that tenant and run the release of the expand step %s until the seal job completes a pass, or remove the rows of that tenant", c.Change, c.Expand)}
 		}
 		if !lockTimedOut(err) {
