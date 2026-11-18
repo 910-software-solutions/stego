@@ -10,9 +10,12 @@
 # Version 1.10.0 writes and reads both columns of a readable secret whose seal step is open, and registers the key ring
 # for a service with a pii field too, which seals the stored answers of its idempotency keys (ST-SUP-RC32-OC21,
 # ST-SUP-RC32-OC23, decision on ST-SUP-Q182 (b)).
+# Version 1.11.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field, readable or
+# compare-only, or a pii field needs it (walkthrough 13, W13-B8): the variable stays not required on its own
+# (ST-SUP-RC32-OC21).
 kind: component
 name: command
-version: 1.10.0
+version: 1.11.0
 stage: ga
 output_namespace: commands
 
@@ -110,7 +113,7 @@ environment:
   - name: STEGO_SECRET_KEY_RING_FILE
     type: path
     required: false
-    description: "The key ring file of the secret fields and stored idempotency answers: a key ID and a base64 key of 32 bytes on each line; the first seals. The api, worker and controller modes need it."
+    description: "The key ring of the secret fields and stored answers: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a secret field, readable or compare-only, or a pii field."
     secret: false
     secret_source: {name: "{service}-secret-key-ring", key: key-ring}
     read_with: sealed

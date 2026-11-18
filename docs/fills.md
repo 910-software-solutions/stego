@@ -1,0 +1,876 @@
+# Fills: the developer reference
+
+This page is the reference for the developer who writes the fills of
+commands, queries and workers. It gives the field settings, the secret
+fields, the methods of a handle and the decision that each method makes, the
+change events, and how to test a fill.
+
+Read [Commands, queries and workers](commands-queries-workers.md) first. That
+page tells you how to declare a command, a query and a worker, and how to
+make, test and sign a fill.
+
+## The example service
+
+The example is the service `wallets`. A customer has wallets, and each wallet
+has transactions. Each wallet has a readable secret `api_key` and a
+compare-only secret `pin`. The commands take money from a wallet, move money
+between two wallets, change the PIN, and start a campaign of the tenant. The
+worker `sum-balances` writes the daily total of the balances every hour.
+
+A test of the STEGO repository runs `stego validate` on this declaration, with
+the schema and the proto file below (ST-STD-DOCS-R02). Each smaller part of a
+declaration on this page is a part of this declaration. The Go code on this
+page compiles against the code that `stego apply` writes for it.
+
+```yaml
+kind: service
+name: wallets
+archetype: rest-crud
+language: go
+base_path: /api/wallets/v1
+error_type_base: https://errors.example.test/wallets/
+
+tenancy:
+  kind: pooled
+  key: tenant_id
+  claim: tenant
+  provisioning: {resource_type: service, provision: provision, retire: retire, admin: admin}
+authorization:
+  provider: spicedb
+  schema_path: authz/schema.zed
+  subject_from_identity: user
+audit:
+  level: change
+
+entities:
+  - name: Customer
+    resource_type: customer
+    permissions: {create: public, read: view, list: view, update: edit, delete: edit}
+    public_reasons: {create: a new customer has no resource to decide on before it exists}
+    relationships:
+      - {relation: owner, subject_source: caller, subject_type: user}
+    fields:
+      - { name: name, type: string, min_length: 1, max_length: 120 }
+      - { name: email, type: string, max_length: 255, sensitivity: pii }
+  - name: Wallet
+    resource_type: wallet
+    permissions: {create: public, read: view, list: view, delete: edit}
+    public_reasons: {create: a new wallet is decided on edit of its customer through the reference customer_id}
+    references:
+      customer_id: {relation: customer, permission: edit}
+    fields:
+      - { name: customer_id, type: ref, to: Customer }
+      - { name: label, type: string, min_length: 1, max_length: 80 }
+      - { name: balance, type: int64, min: 0, default: 0, writable: never }
+      - { name: api_key, type: string, min_length: 16, max_length: 128, sensitivity: secret }
+      - { name: pin, type: string, min_length: 4, max_length: 12, sensitivity: secret, compare_only: true, writable: create }
+  - name: Transaction
+    resource_type: wallet_transaction
+    permissions: {read: view, list: view}
+    references:
+      wallet_id: {relation: wallet, permission: view}
+    fields:
+      - { name: wallet_id, type: ref, to: Wallet }
+      - { name: kind, type: enum, values: [deposit, withdrawal, transfer_in, transfer_out] }
+      - { name: amount, type: int64, min: 1 }
+  - name: Campaign
+    resource_type: campaign
+    permissions: {read: view, list: view}
+    fields:
+      - { name: title, type: string, min_length: 1, max_length: 80 }
+  - name: DailyTotal
+    resource_type: daily_total
+    permissions: {read: view, list: view}
+    fields:
+      - { name: wallets, type: int32, min: 0 }
+      - { name: balance, type: int64, min: 0 }
+
+collections:
+  customers:
+    entity: Customer
+    operations: [create, read, update, list]
+  customer-wallets:
+    entity: Wallet
+    scope: { customer_id: Customer }
+    operations: [create, read, list]
+  wallet-transactions:
+    entity: Transaction
+    scope: { wallet_id: Wallet }
+    operations: [read, list]
+
+commands:
+  - name: withdraw
+    writes: [Wallet, Transaction]
+    resource_type: wallet
+    permission: operate
+    resource_member: wallet_id
+    fill: withdraw
+    route: POST /wallets/{wallet_id}/withdrawals
+    refusals:
+      - {name: invalid_amount, code: amount.invalid, status: 422}
+      - {name: wrong_pin, code: pin.wrong, status: 403}
+      - {name: short_balance, code: balance.short, status: 409}
+  - name: transfer
+    writes: [Wallet, Transaction]
+    resource_type: wallet
+    permission: operate
+    resource_member: from_wallet_id
+    fill: transfer
+    route: POST /wallets/{from_wallet_id}/transfers
+    refusals:
+      - {name: no_target, code: transfer.no_target, status: 422}
+      - {name: short_balance, code: balance.short, status: 409}
+  - name: change-pin
+    writes: [Wallet]
+    resource_type: wallet
+    permission: edit
+    resource_member: wallet_id
+    fill: change-pin
+    route: POST /wallets/{wallet_id}/pin:change
+    refusals:
+      - {name: wrong_pin, code: pin.wrong, status: 403}
+  - name: start-campaign
+    writes: [Campaign]
+    resource_type: service
+    permission: start_campaign
+    fill: start-campaign
+    route: POST /campaigns
+
+queries:
+  - name: daily-totals
+    reads: [DailyTotal]
+    resource_type: daily_total
+    permission: view
+    fill: daily-totals
+    route: GET /daily-totals
+
+workers:
+  - name: sum-balances
+    trigger: every 1h
+    writes: [Wallet, DailyTotal]
+    resource_type: daily_total
+    permission: record
+    fill: sum-balances
+    lists:
+      - name: funded
+        entity: Wallet
+        filter:
+          - {field: balance, op: greater_than, value: 0}
+
+experimental_acceptances:
+  - {component: worker, accepted_until: 2027-03-31, reason: the daily totals of the balances}
+
+mixins:
+  - durable-events
+  - kafka-events
+
+overrides:
+  postgres-adapter: { schema_generation: tables-v1 }
+  command: { proto_files: [{path: proto/wallets.proto, import_path: wallets.proto}] }
+```
+
+The SpiceDB schema is at `authz/schema.zed`:
+
+```zed
+definition user {}
+
+definition service {
+	relation operator: user
+	relation admin: user
+	permission provision = operator
+	permission retire = operator
+	permission start_campaign = admin
+}
+
+definition customer {
+	relation owner: user
+	permission view = owner
+	permission edit = owner
+}
+
+definition wallet {
+	relation customer: customer
+	relation tenant: tenant
+	permission view = customer->view
+	permission edit = customer->edit
+	permission operate = customer->edit
+	permission record = tenant->worker_sum_balances
+}
+
+definition wallet_transaction {
+	relation wallet: wallet
+	permission view = wallet->view
+}
+
+definition campaign {
+	relation tenant: tenant
+	permission view = tenant->auditor
+}
+
+definition daily_total {
+	relation tenant: tenant
+	permission view = tenant->auditor
+	permission record = tenant->worker_sum_balances
+}
+
+definition service_account {}
+
+definition tenant {
+	relation auditor: user
+	relation worker_sum_balances: service_account
+	permission record = worker_sum_balances
+}
+
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+```
+
+The messages of the commands are at `proto/wallets.proto`:
+
+```proto
+syntax = "proto3";
+
+package wallets.v1;
+
+// WithdrawRequest takes an amount from a wallet. The PIN of the wallet must match.
+message WithdrawRequest {
+  string wallet_id = 1;
+  int64 amount = 2;
+  string pin = 3;
+}
+
+message WithdrawResponse {
+  string wallet_id = 1;
+  int64 balance = 2;
+}
+
+// TransferRequest moves an amount from one wallet to another.
+message TransferRequest {
+  string from_wallet_id = 1;
+  string to_wallet_id = 2;
+  int64 amount = 3;
+}
+
+message TransferResponse {
+  int64 from_balance = 1;
+  int64 to_balance = 2;
+}
+
+// ChangePinRequest sets a new PIN. The old PIN must match.
+message ChangePinRequest {
+  string wallet_id = 1;
+  string old_pin = 2;
+  string new_pin = 3;
+}
+
+message ChangePinResponse {
+  string wallet_id = 1;
+}
+
+// StartCampaignRequest starts a campaign of the tenant.
+message StartCampaignRequest {
+  string title = 1;
+}
+
+message StartCampaignResponse {
+  string campaign_id = 1;
+}
+```
+
+## The settings of a field
+
+Each field of an entity is one item of `fields`:
+
+<!-- excerpt -->
+```yaml
+      - { name: api_key, type: string, min_length: 16, max_length: 128, sensitivity: secret }
+```
+
+| Key | What it is |
+|---|---|
+| `name` | The name, in lower snake case. |
+| `type` | `string`, `int32`, `int64`, `float`, `double`, `bool`, `bytes`, `timestamp`, `enum`, `ref`, `jsonb` or `money`. |
+| `optional` | `true` when a row can have no value. The default is `false`. |
+| `default` | The value that a create stores when the request gives none. |
+| `min_length`, `max_length`, `pattern` | The bounds of a string. Each write checks them, and the answer of a broken bound is 400 `invalid`. |
+| `min`, `max` | The bounds of a number. |
+| `values` | The values of an `enum`. |
+| `to` | The entity that a `ref` refers to. |
+| `currency` | The ISO 4217 code of a `money` field. |
+| `unique` | `true` when no two rows of the tenant have the same value. |
+| `unique_composite` | The fields of a unique key with more than one field, such as `[team_id, name]`. |
+| `client_set` | `true` for a `timestamp` that the client sets, such as a due date. The server sets each other timestamp. |
+| `sensitivity` | `public`, `pii` or `secret`. The default is `public`. See below. |
+| `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
+| `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
+
+### sensitivity
+
+- `public`: an ordinary value.
+- `pii`: a personal value, such as an email. Answers hold it. The change
+  events never hold it, and the audit rows redact it, unless the declaration
+  sets `audit.pii` to `keep`. The runtime writes an audit row for each row of an
+  entity with a `pii` field that a fill reads. The idempotency store keeps
+  the answers of the commands, and thus such a value, for 24 hours by
+  default. Since runtime v0.138.0 it seals each stored answer of a service
+  with a `pii` field with the key ring (see
+  [Idempotency](commands-queries-workers.md#idempotency)).
+- `secret`: a value that no answer, audit row, change event, log or query
+  holds. The database stores it sealed. A secret is a `string` or a `jsonb`.
+
+A `secret` field cannot be `unique`, in a `unique_composite`, in an upsert key,
+`computed`, the subject of a relationship, or the field that a reference is
+held `within`. It cannot have a `default` or an implicit value. A schema change
+cannot rename it, retype it or give it a fill value. `stego validate` refuses
+each of these: a key on a secret tells which rows hold the same value, and a
+default puts the secret in clear in the declaration.
+
+### compare_only
+
+A `secret` field is readable, or it is compare-only:
+
+| | Readable secret (`api_key`) | Compare-only secret (`pin`, `compare_only: true`) |
+|---|---|---|
+| Stored as | AES-256-GCM, sealed with the key ring of the service | An Argon2id hash |
+| Go type in a command or a worker | `sealed.Secret` | `sealed.Compared` |
+| A fill can get the text | Yes, with `Reveal` | No. A fill can only check a value with `Matches`. |
+| Type | `string` or `jsonb` | `string` only |
+
+A service with a `secret` field, readable or compare-only, or a `pii` field
+needs the key ring of its secret fields, in the Secret
+`<service>-secret-key-ring`. The api, worker and controller modes do not start
+without it (runtime v0.138.0). The runtime keys the fingerprints of the stored
+answers with the ring and seals the answers, so a reader of the database
+cannot try each PIN against a stored request or read a stored `pii` value. See
+[Day-2 operations](operations.md) for the key ring, its backup and its
+rotation.
+
+A readable secret that the base release stores in clear, such as a field that
+was `pii` before, or a secret field of a release before runtime v0.135.0,
+moves to its sealed column with a seal step over two releases: see [Seal
+steps](schema-changes.md#seal-steps).
+
+### writable
+
+`writable` tells which collection writes can set the field:
+
+- `always`: a create and each update can set it.
+- `create`: only a create sets it. An update, an upsert of a stored row and a
+  patch refuse another value with 400.
+- `never`: no collection write sets it. A create stores its `default`, so the
+  field must be `optional` or have a `default`.
+
+A command and a worker can change the field in each case. Thus `balance:
+writable: never` lets only the commands of the example change a balance.
+
+<!-- excerpt -->
+```yaml
+      - { name: balance, type: int64, min: 0, default: 0, writable: never }
+```
+
+## Secret fields
+
+### Who reads a secret
+
+| Who | Readable secret | Compare-only secret |
+|---|---|---|
+| A collection create, update, upsert and patch | Takes it in the body. A write that leaves it out, or gives it empty, keeps the stored value. | Takes it in the body and stores its hash. |
+| A collection answer, a list, a query, an event, the audit | Never holds it. The OpenAPI document marks it `writeOnly`. | Never holds it. |
+| A command fill or a worker fill | Reads it with `Reveal`, sets it with `sealed.SecretOf`. | Checks a value with `Matches`, sets it with `sealed.ComparedOf`. |
+| A query fill | Never: the value of a query has no secret field. | Never. |
+
+No client can read a secret back. Only the fills of commands and workers can
+read a readable secret.
+
+A worker has no read-only access: to list the rows of an entity, it must
+declare the entity in `writes`. Thus the worker `sum-balances` of the example
+can read the `api_key` of each wallet of the tenant, and change each wallet.
+A fault in such a fill can leak or change each secret. Do not let a broad
+worker, such as a report, write an entity with a secret field: put the secret
+in an entity of its own, which the worker does not write. A read-only access of
+a worker (`reads`) is decided (ST-SUP-Q186 (a)) and not built yet.
+
+Do not put a secret in the response message of a command: the idempotency
+store keeps each answer of a command for the retention of its key. Since
+runtime v0.138.0, a service with a `secret` or a `pii` field seals each stored
+answer with its key ring (see
+[Idempotency](commands-queries-workers.md#idempotency)), but the answer is still
+kept, and a reader of the answer gets the secret.
+
+A field with `writable: create` or `never` that is a secret is never compared:
+an update that gives it, also with the stored value, gets 400. An answer never
+holds a secret: since rest-api 4.14.0 it leaves out the member of each secret
+field. An older rest-api gives a required secret as an empty member, such as
+`"api_key": ""`. A client that sends back a row that it read must leave out
+each secret member.
+
+### sealed.Secret
+
+`sealed.Secret` is the Go type of a readable secret in `out/commands` and
+`out/workers`. The package is `github.com/jsell-rh/stego/registry/runtime/sealed`.
+
+| Function or method | What it does |
+|---|---|
+| `sealed.SecretOf(text)` | Gives a Secret of the text. An empty text gives a Secret that is not set. |
+| `s.Reveal()` | Gives the text, or empty when it is not set. |
+| `s.IsSet()` | Tells whether the Secret has a text. |
+| `s.Equal(text)` | Tells, in constant time, whether the text is the secret. A Secret that is not set is equal to no text. |
+| `fmt`, `String`, `slog` | Give `[secret]`, never the text. |
+| `json.Marshal` | Gives `null`. A JSON decode into a Secret fails. |
+
+### sealed.Compared
+
+`sealed.Compared` is the Go type of a compare-only secret. A read gives the
+stored hash. It never gives the text.
+
+| Function or method | What it does |
+|---|---|
+| `sealed.ComparedOf(text)` | Gives a new value. The next write stores its Argon2id hash. |
+| `c.Matches(value)` | Tells whether the value is the secret. It compares in constant time. An empty value and a Compared that is not set match nothing. |
+| `c.IsSet()` | Tells whether the Compared has a new text or a stored hash. |
+| `fmt`, `String`, `slog` | Give `[secret]`. |
+| `json.Marshal` | Gives `null`. A JSON decode into a Compared fails. |
+
+Each check runs the Argon2id hash, with 19 MiB of memory. The runtime runs at
+most as many hashes at one time as the process has CPUs. Each other check
+waits.
+
+### Check a compare-only secret
+
+The fill of `withdraw` checks the PIN of the request against the stored hash.
+A wrong PIN is a declared refusal. A proto request has no bounds, so the
+amount can be 0 or below: the fill checks it first, before the PIN and the
+balance. Without that check, an amount of -1000 would add 1000 to the balance.
+
+```go
+// Withdraw is the business rule of a withdrawal: the new balance, or a declared refusal. It reads no handle, so a
+// plain unit test proves it.
+func Withdraw(pinMatches bool, balance, amount int64) (int64, error) {
+	if amount < 1 {
+		return 0, commands.WithdrawInvalidAmount
+	}
+	if !pinMatches {
+		return 0, commands.WithdrawWrongPin
+	}
+	if amount > balance {
+		return 0, commands.WithdrawShortBalance
+	}
+	return balance - amount, nil
+}
+
+// New gives the fill of the command withdraw.
+func New() commands.WithdrawFill {
+	return func(ctx context.Context, req *commands.WithdrawRequest, h *commands.WithdrawHandle) (*commands.WithdrawResponse, error) {
+		wallets, err := commands.WalletRepository(h)
+		if err != nil {
+			return nil, err
+		}
+		wallet, err := wallets.GetForUpdate(ctx, req.WalletId)
+		if err != nil {
+			return nil, err
+		}
+		v := wallet.Value()
+		balance, err := Withdraw(v.Pin.Matches(req.Pin), v.Balance, req.Amount)
+		if err != nil {
+			return nil, err
+		}
+		v.Balance = balance
+		updated, err := wallets.Update(ctx, wallet, v)
+		if err != nil {
+			return nil, err
+		}
+		transactions, err := commands.TransactionRepository(h)
+		if err != nil {
+			return nil, err
+		}
+		_, err = transactions.Create(ctx, commands.Transaction{WalletID: updated.ID(), Kind: "withdrawal", Amount: req.Amount}, updated)
+		if err != nil {
+			return nil, err
+		}
+		return &commands.WithdrawResponse{WalletId: updated.ID(), Balance: balance}, nil
+	}
+}
+```
+
+The fill reads the wallet with `GetForUpdate`, so no other command changes the
+balance before this transaction ends. The check runs before the balance check,
+so a wrong PIN tells nothing of the balance.
+
+A PIN of 4 digits has only 10,000 values, and the runtime does not limit the
+wrong attempts. A caller who may operate the wallet, such as with a stolen
+session, can try each value in some minutes. Thus limit the wrong attempts
+outside the fill, at the gateway or for each caller and wallet, and use a
+longer PIN where you can. A fill cannot count the wrong attempts itself: a
+refusal is an error of the fill, and the runtime commits nothing when the fill
+returns an error, so a counter that the fill writes before the refusal rolls
+back with it. A declared counter of wrong attempts that a refusal commits is
+decided (ST-SUP-Q185 (a)) and not built yet.
+
+To set a new PIN, give a new Compared to the value and update the row. The
+fill of `change-pin` does this:
+
+```go
+		v := wallet.Value()
+		if !v.Pin.Matches(req.OldPin) {
+			return nil, commands.ChangePinWrongPin
+		}
+		v.Pin = sealed.ComparedOf(req.NewPin)
+		if _, err := wallets.Update(ctx, wallet, v); err != nil {
+			return nil, err
+		}
+```
+
+The update checks the declared length of the new PIN, then stores its hash.
+A PIN that breaks the length is 400 `invalid`, with the field `pin` and no
+value.
+
+## The handle of a command and a worker
+
+### The repository of an entity
+
+A command fill and a worker fill get a repository for each entity in
+`writes`, such as `commands.WalletRepository(h)` or
+`workers.WalletRepository(h)`. A repository has these methods:
+
+| Method | What it does | The decision that it makes |
+|---|---|---|
+| `Get(ctx, id)` | Reads the row with no lock. | The read permission of the entity (`permissions.read`), for the caller of a command; the permission of the worker, for a worker. |
+| `GetForUpdate(ctx, id, parent...)` | Reads the row and locks it with `FOR NO KEY UPDATE` until the transaction ends. | The read permission, then the declared `permission` of the command on the row. A worker decides its own permission. |
+| `GetForDelete(ctx, id, parent...)` | As `GetForUpdate`, with `FOR UPDATE`. Use it before a delete, or before a change of a key column. | As `GetForUpdate`. |
+| `Create(ctx, value, parent...)` | Inserts a row, writes its audit row and, in a service with change events, stages its event. | For each reference of the row: the `permission` that the reference declares, else the permission of the command, on the referenced row. A command create of a row with no parent is covered by the decision before the fill. A worker create of a row with no parent is decided on the tenant resource. |
+| `Update(ctx, from, value, parent...)` | Writes the value over the loaded row `from`, only while the row still has the version of `from`. | The permission of the command on the row, or of the worker. |
+| `Delete(ctx, from, parent...)` | Deletes the loaded row `from`, with the same version check. | As `Update`. |
+| `List(ctx, list, limit, args...)` | Reads the rows of a declared list, at most `limit`, with no lock. | Keeps only the rows on which the caller has the list permission of the entity (else its read permission), or the worker its permission. |
+| `ListForUpdate(ctx, list, parent, args...)` | Reads the rows of a declared list with `lock: true`, and locks the allowed rows. | As `List`. |
+
+`parent` is the loaded row of the parent of a child entity, which the fill read
+through its own handle, such as `updated` in the create of a transaction
+above. An entity with no parent takes no `parent`.
+
+Each read of a row decides a permission. This is also true for a row other
+than the resource member of the command. In the example, the `transfer` fill
+reads the target wallet with `GetForUpdate`: the caller must have `view` and
+`operate` on the target wallet too. A row that is not there and a row that the
+caller may not read give the same error, `command.ErrNotFound`, and no data of
+the row. For a worker, the error of a row that it may not read or write also
+matches `command.ErrRefused`, so a worker fill can tell a deny from a missing
+row.
+
+Other errors of the handle:
+
+| Error | When |
+|---|---|
+| `command.ErrConflict` | The row changed since the fill read it, or a lock or a unique key failed. The runtime runs the fill again when the command sets `retry_on_conflict`, else the answer is 409. |
+| `command.ErrInvalid` | A value breaks a declared constraint. The answer is 400 `invalid` with the field. |
+| `command.ErrClosed` | The fill uses the handle after it returned, or with no handle. |
+| `command.ErrInternal` | A fault of the fill or of the generated code, such as a loaded value of another transaction. |
+
+After `ErrConflict`, `ErrInvalid` or `ErrInternal`, each later method of the
+handle gives the same error, and the runtime commits nothing.
+
+### Map an error of the handle to a refusal
+
+A fill that returns an error of the handle, such as `command.ErrNotFound`,
+gets the answer 500 with the code `internal`, and the transaction rolls back.
+The 500 is not the right answer for a client that gave a wrong ID. Thus test
+the error with `errors.Is`, and return a declared refusal. The fill of
+`transfer` does this for the target wallet:
+
+```go
+		to, err := wallets.GetForUpdate(ctx, req.ToWalletId)
+		if errors.Is(err, command.ErrNotFound) {
+			// The target wallet is not there, or the caller may not operate it.
+			return nil, commands.TransferNoTarget
+		}
+		if err != nil {
+			return nil, err
+		}
+```
+
+`command` is the package `github.com/jsell-rh/stego/registry/runtime/command`.
+The answer is then 422 with the code `transfer.no_target`. The refusal tells
+the same for a missing wallet and for a wallet of another customer, so it
+tells nothing of the rows of another customer.
+
+You do not need this for the resource member of the command: the runtime reads
+that row before the fill runs, and answers 404 when it is not there or the
+caller may not act on it.
+
+### Who writes the relations of a new row
+
+The runtime writes these SpiceDB relations of a new row, after the commit:
+
+- Each relation of `relationships` of the entity. With `subject_source:
+  caller`, the subject is the caller of the create, such as the `owner` of a
+  Customer. With `subject_source: field`, the subject is the ID in the field
+  that `subject_field` names.
+- The relation of each reference to its referenced row, such as
+  `wallet:<ID>#customer@customer:<ID>`.
+- The relation `tenant` to the tenant resource, when the type has the relation
+  `tenant`.
+
+No other code writes the `owner` of a row. Thus an entity whose permissions
+read `owner` must declare the relationship:
+
+<!-- excerpt -->
+```yaml
+    relationships:
+      - {relation: owner, subject_source: caller, subject_type: user}
+```
+
+With no `relationships`, no create writes `owner`, and only a command with
+`relationships_written` can write it. A command cannot write a relation of
+`relationships`, the relation of a reference, or `tenant`.
+
+The relay writes the tuples after the commit, often in less than one second.
+Until then, a write that is decided on the new row gets 404. See [Write a
+child at once after its
+parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent).
+
+### A command on the service-level resource
+
+A command whose `resource_type` is the resource type of the provisioning,
+such as `service`, has no resource member. The runtime decides it on the
+service-level resource of the tenant of the request. Its handle is another
+type: it has `Create<Entity>` and `Get<Entity>` for each entity that the
+command writes, and no repository, locked read, update, delete or list. The
+fill of `start-campaign`:
+
+```go
+// New gives the fill of the command start-campaign.
+func New() commands.StartCampaignFill {
+	return func(ctx context.Context, req *commands.StartCampaignRequest, h *commands.StartCampaignHandle) (*commands.StartCampaignResponse, error) {
+		campaign, err := h.CreateCampaign(ctx, commands.Campaign{Title: req.Title})
+		if err != nil {
+			return nil, err
+		}
+		return &commands.StartCampaignResponse{CampaignId: campaign.ID()}, nil
+	}
+}
+```
+
+The form `commands.CampaignRepository(h)` does not compile with this handle.
+An entity that such a command writes cannot have a parent. The caller needs
+`start_campaign` on `service:<base64url of the tenant ID>/<base64url of
+wallets>`, which the schema gives to `admin`. Provision writes the first
+admins (see [A command with no resource
+member](commands-queries-workers.md#a-command-with-no-resource-member)).
+
+### Rows with no parent, and who reads them
+
+The worker `sum-balances` creates a DailyTotal row with no parent:
+
+```go
+// New gives the fill of the worker sum-balances.
+func New() workers.SumBalancesFill {
+	return func(ctx context.Context, tick time.Time, h *workers.SumBalancesHandle) error {
+		wallets, err := workers.WalletRepository(h)
+		if err != nil {
+			return err
+		}
+		funded, err := wallets.List(ctx, workers.SumBalancesFunded, 1000)
+		if err != nil {
+			return err
+		}
+		total := workers.DailyTotal{Wallets: int32(len(funded))}
+		for _, w := range funded {
+			total.Balance += w.Value().Balance
+		}
+		totals, err := workers.DailyTotalRepository(h)
+		if err != nil {
+			return err
+		}
+		_, err = totals.Create(ctx, total)
+		return err
+	}
+}
+```
+
+The runtime relates such a row only to the tenant resource. Thus a person can
+read it only through a relation of the type `tenant`, such as `auditor` in the
+schema of the example:
+
+<!-- excerpt -->
+```zed
+definition daily_total {
+	relation tenant: tenant
+	permission view = tenant->auditor
+	permission record = tenant->worker_sum_balances
+}
+```
+
+No route and no declaration writes a relation of a person on the tenant
+resource: Provision writes the admins on the service-level resource, not on
+the tenant resource. Until the decided way is built (ST-SUP-Q183 (a): Provision relates the tenant
+resource to the service-level resource), an operator writes
+the grant in SpiceDB, on the tenant-qualified ID of the tenant resource. For
+the tenant `acme` and the user `dora` of the issuer
+`https://idp.example.test`:
+
+```bash
+b64() { printf %s "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }
+t=$(b64 acme)
+zed relationship create "tenant:$t/$t" auditor "user:$(b64 https://idp.example.test)|$(b64 dora)"
+```
+
+A grant on `tenant:acme` gives nothing. The ID of a user is the base64url of
+the issuer, a `|`, and the base64url of the `sub` claim. The issuer must be
+the `iss` claim of the token byte for byte: with another text, such as one
+with a `/` at the end, the grant names another user and gives nothing.
+
+The audit of the service does not see a grant that you write with `zed`.
+Record each such grant, who wrote it and why, in your own change log. To
+remove it, run `zed relationship delete` with the same three arguments. Retire
+of the tenant also removes it.
+
+In place of this, you can give the rows a parent that people can be granted
+on, such as a ledger row that a command on the service-level resource
+creates. Then the worker creates each row under that parent, and the parent's
+permissions decide the reads.
+
+### The lists of a worker see only rows with a tuple
+
+A worker list keeps only the rows on which the worker has its permission. A
+row with no tuple in SpiceDB, such as a row that a script wrote past the
+service, or a new row whose tuples the relay did not write yet, is not in the
+list. Thus `sum-balances` does not count a wallet that a script inserted into
+the table. Write the rows only through the service.
+
+## Change events
+
+With the mixins `durable-events` and `kafka-events`, each create, update and
+delete of an entity stages one change event in the transaction of its write.
+The worker mode sends it to Kafka. `kafka-events` needs `durable-events`:
+
+<!-- excerpt -->
+```yaml
+mixins:
+  - durable-events
+  - kafka-events
+```
+
+The value of the Kafka record is this JSON object, and nothing else:
+
+```json
+{"entity":"Wallet","action":"updated","id":"01a1efce-4159-74fc-81cd-da9fb5696bb8"}
+```
+
+| Member | What it is |
+|---|---|
+| `entity` | The name of the entity, as the declaration gives it. |
+| `action` | `created`, `updated` or `deleted`. |
+| `id` | The ID of the row. |
+
+The record has the headers `stego-event-id`, `stego-event-type` (the event
+kind, such as `wallets.wallet.updated`), `stego-event-action`,
+`stego-tenant` and `stego-idempotency-key`. Its key is `<tenant
+ID>\x1f<resource type>:<row ID>`. The header `stego-idempotency-key` is a
+SHA-256 over the tenant, the caller, the `Idempotency-Key` of the request and
+the event, and the audit row holds that key as the client sent it. Thus a client must
+never put a personal value, such as an email, in an `Idempotency-Key`.
+
+A worker that consumes the subscription of these events in another service
+gets this object as its message, and the event kind as its effect name:
+
+```go
+// Change is the payload of a change event.
+type Change struct {
+	Entity string `json:"entity"`
+	Action string `json:"action"`
+	ID     string `json:"id"`
+}
+```
+
+```go
+	return func(ctx context.Context, message json.RawMessage, effect string, h *workers.RecordWalletsHandle) error {
+		var c Change
+		if err := json.Unmarshal(message, &c); err != nil || effect != "wallets.wallet.updated" {
+			return workers.Refused(ErrBadMessage)
+		}
+		// c.ID is the ID of the wallet in the service wallets.
+		return nil
+	}
+```
+
+The event holds no field value, also no `public` field, so that no `pii` or
+`secret` value leaves the service in an event. A worker handle has no network
+client, so the consuming fill cannot read the amount or the balance from the
+service `wallets`. A declared projection of the fields that an event carries
+is decided (ST-SUP-Q184 (c)) and not built yet. Until then, a consumer can use
+only the ID and the action.
+
+## Test a fill
+
+`stego test` runs `go test` on each fill and records the evidence. A unit test
+cannot give a fill a real handle: STEGO has no test handle, and a handle needs
+the transaction, the tenant, the caller and the decisions of SpiceDB. With no
+handle, each method of a command or worker repository gives
+`command.ErrClosed`, and a query repository gives an error.
+
+Thus write a fill in two parts:
+
+1. Put the business rules in plain Go functions that read no handle, such as
+   `Withdraw` above. Test them with `go test`, with all the cases.
+2. Keep the code that uses the handle short, and prove it through the running
+   service: start the service with a local PostgreSQL and a local SpiceDB,
+   provision a tenant, and send the requests.
+
+A test of a rule:
+
+```go
+func TestWithdraw(t *testing.T) {
+	cases := []struct {
+		name            string
+		pin             bool
+		balance, amount int64
+		want            int64
+		err             error
+	}{
+		{"enough", true, 100, 40, 60, nil},
+		{"all", true, 100, 100, 0, nil},
+		{"short", true, 100, 101, 0, commands.WithdrawShortBalance},
+		{"wrong pin", false, 100, 1, 0, commands.WithdrawWrongPin},
+		{"zero", true, 100, 0, 0, commands.WithdrawInvalidAmount},
+		{"below zero", true, 100, -1000, 0, commands.WithdrawInvalidAmount},
+		{"below zero, wrong pin", false, 100, -1, 0, commands.WithdrawInvalidAmount},
+	}
+	for _, c := range cases {
+		got, err := Withdraw(c.pin, c.balance, c.amount)
+		if !errors.Is(err, c.err) || (err == nil && got != c.want) {
+			t.Errorf("%s: Withdraw = %d, %v; want %d, %v", c.name, got, err, c.want, c.err)
+		}
+	}
+}
+```
+
+A test can make a stored hash, to test a check of a compare-only secret:
+
+```go
+func TestPin(t *testing.T) {
+	hash, err := sealed.Hash("4711")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := sealed.ComparedHash(hash)
+	if !stored.Matches("4711") || stored.Matches("4712") || stored.Matches("") {
+		t.Fatal("the PIN check is wrong")
+	}
+}
+```
+
+A test can also call the fill with no handle, to prove that it reads through
+the handle first:
+
+```go
+func TestNoHandle(t *testing.T) {
+	_, err := New()(context.Background(), &commands.WithdrawRequest{WalletId: "w", Amount: 1, Pin: "4711"}, nil)
+	if !errors.Is(err, command.ErrClosed) {
+		t.Fatalf("the fill with no handle gave %v, want command.ErrClosed", err)
+	}
+}
+```
+
+For a command on the service-level resource, give
+`commands.NewStartCampaignHandle(nil)` in place of the handle.

@@ -72,7 +72,9 @@ another header for it), the certificate authorities of `STEGO_AUDIT_SINK_CA_FILE
 certificate of `STEGO_AUDIT_SINK_CLIENT_CERT_FILE` and `STEGO_AUDIT_SINK_CLIENT_KEY_FILE`; without
 it, to the table `stego_audit_sink.entries` in the service database. A separate sink is the
 stronger choice for production, because an administrator of the service database can change
-both. With the event-publisher mixin, each write of a collection puts its change event in the
+both. The mixin event-publisher is a deprecated alias of the two mixins durable-events, which
+stores each change event in the outbox, and kafka-events, which sends it to Kafka. Declare both:
+kafka-events needs durable-events, and validate refuses kafka-events alone. With the event-publisher mixin, each write of a collection puts its change event in the
 outbox in the transaction of its command, and the worker mode sends it to Kafka: it reads
 `STEGO_KAFKA_BROKERS` (or `STEGO_KAFKA_BROKERS_FILE`), `STEGO_KAFKA_TOPIC` for one declared
 topic (else each event goes to the topic of its entity, such as `user-management.user`, so the
@@ -435,7 +437,9 @@ slots:
 ```
 
 To declare commands, queries, workers and observations, and to write their
-fills, see [docs/commands-queries-workers.md](docs/commands-queries-workers.md). To take the change events
+fills, see [docs/commands-queries-workers.md](docs/commands-queries-workers.md). For the settings of a
+field, the secret fields, the methods of a handle and the decision of each, the change events and the
+tests of a fill, see the developer reference [docs/fills.md](docs/fills.md). To take the change events
 of another service, see [docs/subscriptions.md](docs/subscriptions.md).
 
 New fill methods return an error until you implement them. They use the generated
