@@ -214,7 +214,7 @@ func TestValues(t *testing.T) {
 	t.Run("ST-SUP-RP16-LC04-T01 A Secret and a Compared never print, log or encode their text", func(t *testing.T) {
 		const text = "s3cr3t-value-0042"
 		s, c := SecretOf(text), ComparedOf(text)
-		if s.Reveal() != text || !s.IsSet() || SecretOf("").IsSet() {
+		if s.Reveal() != text || !s.IsSet() || SecretOf("").IsSet() || !s.Equal(text) || s.Equal(text+"x") || s.Equal("") || SecretOf("").Equal("") {
 			t.Fatal("Reveal does not give the text of a Secret")
 		}
 		type row struct {

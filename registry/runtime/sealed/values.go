@@ -29,6 +29,10 @@ func (s Secret) Reveal() string { return s.text }
 // IsSet tells whether the secret has a text.
 func (s Secret) IsSet() bool { return s.set }
 
+// Equal tells, in constant time for texts of one length, whether text is the secret. A secret that is not set is
+// equal to no text, so a fill can check a given value with no import of its own.
+func (s Secret) Equal(text string) bool { return s.set && text != "" && constantEqual(s.text, text) }
+
 // String gives [secret].
 func (s Secret) String() string { return Redacted }
 
