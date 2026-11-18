@@ -236,8 +236,13 @@ func (h *OrgUsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		key = requestKey(requestID)
 	}
-	if _, err := decodeOrgUsers(body); err != nil {
+	given, err := decodeOrgUsers(body)
+	if err != nil {
 		h.rt.answerWrite(w, r, command.Request{}, "create", "member", "User", false, err)
+		return
+	}
+	if given.OrgID != "" && given.OrgID != scope {
+		handleError(w, r, Validation([]ValidationError{{Field: "org_id", Message: "the body names another Organization than the path; leave the field out or give the value of the path"}}))
 		return
 	}
 	fingerprint, err := idempotency.FieldFingerprint(r.Method, r.URL.Path, body, orgUsersCreateFields)
@@ -449,8 +454,13 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		handleError(w, r, BadRequest("the body cannot be read"))
 		return
 	}
-	if _, err := decodeOrgUsers(body); err != nil {
+	given, err := decodeOrgUsers(body)
+	if err != nil {
 		h.rt.answerWrite(w, r, command.Request{}, "update", "member", "User", false, err)
+		return
+	}
+	if given.OrgID != "" && given.OrgID != scope {
+		handleError(w, r, Validation([]ValidationError{{Field: "org_id", Message: "the body names another Organization than the path; leave the field out or give the value of the path"}}))
 		return
 	}
 	requestID := command.NewID()

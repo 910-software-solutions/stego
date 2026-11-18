@@ -475,7 +475,7 @@ spec:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      serviceAccountName: user-management
+      serviceAccountName: user-management-worker
       volumes:
         - emptyDir:
             sizeLimit: 64Mi
