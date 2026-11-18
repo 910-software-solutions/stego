@@ -1985,7 +1985,7 @@ func (w *runtimeHandlerWriter) create() {
 	w.f("func (h *%sHandler) Create(w http.ResponseWriter, r *http.Request) {\n", c.pascal)
 	w.start(true)
 	w.key(types.OpCreate)
-	w.f("\tif _, err := decode%s(body); err != nil {\n\t\th.rt.answerWrite(w, r, command.Request{}, \"create\", %q, %q, false, err)\n\t\treturn\n\t}\n", c.pascal, e.ResourceType, e.Name)
+	w.decodeBody("create")
 	w.f("\tfingerprint, err := idempotency.FieldFingerprint(r.Method, r.URL.Path, body, %sCreateFields)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n", c.camel)
 	w.f("\treq := h.rt.commandRequest(r, b, key, fingerprint, requestID, body, \"\")\n")
 	w.f("\tvar persisted %s\n", e.Name)
@@ -2015,7 +2015,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.f("// Update runs the generated command update of %s through Run, on the row of the path's ID.\n", c.decl.Name)
 	w.f("func (h *%sHandler) Update(w http.ResponseWriter, r *http.Request) {\n\tid := canonicalID(r.PathValue(\"id\"))\n", c.pascal)
 	w.start(true)
-	w.f("\tif _, err := decode%s(body); err != nil {\n\t\th.rt.answerWrite(w, r, command.Request{}, \"update\", %q, %q, false, err)\n\t\treturn\n\t}\n", c.pascal, e.ResourceType, e.Name)
+	w.decodeBody("update")
 	w.f("\trequestID := command.NewID()\n\tfingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n")
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, id)\n")
 	w.f("\tvar persisted %s\n", e.Name)
@@ -2058,6 +2058,23 @@ func (w *runtimeHandlerWriter) viewDiffers(name, value string) string {
 		}
 	}
 	return fmt.Sprintf("%s != %q", field, value)
+}
+
+// decodeBody writes the decode of the body of a create, an update or an upsert. On a scoped collection the path
+// names the parent, so a body that gives the scope field another value is refused with a 400 problem that names the
+// field, and not moved to the parent of the path in silence; a body that leaves the field out, or gives the value of
+// the path, is taken. Kubernetes refuses an object whose namespace is not that of the request path in the same way,
+// and AIP-203 refuses a changed value of an immutable field (walkthrough 8, step 30).
+func (w *runtimeHandlerWriter) decodeBody(op string) {
+	c, e := w.c, w.c.entity
+	if c.scope == "" {
+		w.f("\tif _, err := decode%s(body); err != nil {\n\t\th.rt.answerWrite(w, r, command.Request{}, %q, %q, %q, false, err)\n\t\treturn\n\t}\n", c.pascal, op, e.ResourceType, e.Name)
+		return
+	}
+	w.f("\tgiven, err := decode%s(body)\n\tif err != nil {\n\t\th.rt.answerWrite(w, r, command.Request{}, %q, %q, %q, false, err)\n\t\treturn\n\t}\n", c.pascal, op, e.ResourceType, e.Name)
+	w.f("\tif given.%s != \"\" && given.%s != scope {\n", toPascalCase(c.scope), toPascalCase(c.scope))
+	w.f("\t\thandleError(w, r, Validation([]ValidationError{{Field: %q, Message: %q}}))\n\t\treturn\n\t}\n", c.scope,
+		"the body names another "+c.decl.ParentEntity()+" than the path; leave the field out or give the value of the path")
 }
 
 // forceScope writes the server values of the scope field and the implicit fields of a written value: the scope
@@ -2140,7 +2157,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	w.f("// Upsert runs the generated command upsert of %s through Run: it creates the row of the natural key %s, or\n// updates the stored one, and answers 201 or 200 (ST-SUP-RC20-OC13).\n", c.decl.Name, strings.Join(c.decl.UpsertKey, ", "))
 	w.f("func (h *%sHandler) Upsert(w http.ResponseWriter, r *http.Request) {\n", c.pascal)
 	w.start(true)
-	w.f("\tif _, err := decode%s(body); err != nil {\n\t\th.rt.answerWrite(w, r, command.Request{}, \"upsert\", %q, %q, false, err)\n\t\treturn\n\t}\n", c.pascal, e.ResourceType, e.Name)
+	w.decodeBody("upsert")
 	w.f("\trequestID := command.NewID()\n\tfingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)\n\tif err != nil {\n\t\thandleError(w, r, BadRequest(\"the body is not a JSON object\"))\n\t\treturn\n\t}\n")
 	w.f("\treq := h.rt.commandRequest(r, b, requestKey(requestID), fingerprint, requestID, body, \"\")\n")
 	optimistic := c.decl.Concurrency == types.ConcurrencyOptimistic

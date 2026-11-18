@@ -266,6 +266,20 @@ field of an ancestor, but on a path of two or more levels it can find out, from
 200 against 404, whether an ancestor above the parent is of the next ancestor,
 and the `href` of the row names each ancestor.
 
+Because a list decides the read permission of the parent, a user who may view
+one shared row, and not its parent, gets 404 for the list of the rows of that
+parent. For example, a user who may view one variant of a listing, and not the
+listing, gets 404 for `/listings/{listing_id}/variants`, and 200 for
+`/listings/{listing_id}/variants/{id}`. To let such a user list the rows that
+are shared with the user, also declare a collection of the entity with no
+scope: its list gives each row that the caller may view, from all parents.
+
+The path of a scoped collection names the parent of a create, an update or an
+upsert. A body may leave the scope field out, or give the value of the path. A
+body that gives another value gets a 400 validation problem that names the
+field (rest-api 4.7.0), and the request changes nothing. An update does not
+move a row to another parent.
+
 Put the SpiceDB schema at `authz/schema.zed`:
 
 ```zed
