@@ -1508,6 +1508,9 @@ type state struct {
 	// notGranted is set when a statement failed with SQLSTATE 42501: the role of the transaction lacks a privilege,
 	// which a dispatch again does not change (decision on ST-SUP-Q141).
 	notGranted bool
+	// logged is set when a log line of ST-SUP-RP10-LC39 named the cause of the call's failure: a failed statement, or
+	// an internal error that breakWith logged. Run then writes no command.fill.failed line (ST-SUP-RP10-LC51).
+	logged bool
 
 	rt        *Runtime
 	tx        *sql.Tx
@@ -1613,6 +1616,7 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 	// text, so a call that ends with 500 internal is never an error that no log explains (walkthrough 7, B1;
 	// ST-SUP-RP10-LC39).
 	cause, class := statementCause(err, code)
+	s.logged = true
 	if ok, held := statementLog.Allow(s.action + "/" + cause + "/" + class); ok {
 		slog.ErrorContext(ctx, "command: a statement failed", "action", s.action, "step", step, "cause", cause,
 			"sqlstate_class", class, "held_back", held)
@@ -1692,6 +1696,8 @@ func (s *state) breakWith(err error) error {
 		s.broken = err
 		var internal *internalError
 		if errors.As(err, &internal) && !internal.statement && !internal.data {
+			// A sealed value that does not open keeps its class: Run logs it as sealed (ST-SUP-RP10-LC51).
+			s.logged = s.logged || !sealedFault(err)
 			if ok, held := statementLog.Allow(s.action + "/internal/" + internal.text); ok {
 				slog.Error("command: the call has an internal error", "action", s.action, "cause", "internal",
 					"reason", internal.text, "held_back", held)

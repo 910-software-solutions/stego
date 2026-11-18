@@ -572,6 +572,8 @@ func waitRerun(ctx context.Context, rt *Runtime, n int) bool {
 type fillFailure struct {
 	err      error
 	conflict bool
+	// logged is true when a log line of ST-SUP-RP10-LC39 already named the cause of the failure.
+	logged bool
 }
 
 func (f *fillFailure) Error() string { return f.err.Error() }
@@ -687,6 +689,10 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	}
 	var failure *fillFailure
 	switch {
+	case errors.As(err, &failure) && !failure.conflict && !failure.logged:
+		// A failure that no log line of ST-SUP-RP10-LC39 names gets its cause class, which OutcomeOf logs when it
+		// answers 500 (ST-SUP-RP10-LC51).
+		return Result{}, &fillFault{err: failure.err, action: cmd.spec.Name}, false
 	case errors.As(err, &failure):
 		return Result{}, failure.err, failure.conflict
 	case err != nil && tenant.Unavailable(err):
@@ -840,7 +846,7 @@ func callFill[R any](ctx context.Context, s *state, call *probe.Call, fill func(
 		// A fill that ignores a conflict cannot commit (ST-SUP-RP10-LC25).
 		return zero, &fillFailure{err: s.conflict, conflict: true}
 	case s.broken != nil:
-		return zero, &fillFailure{err: s.broken}
+		return zero, &fillFailure{err: s.broken, logged: s.logged}
 	case err != nil:
 		return zero, &fillFailure{err: err, conflict: errors.Is(err, ErrConflict)}
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -104,6 +105,49 @@ func TestCompat(t *testing.T) {
 		// a tag and not the branch (walkthrough 8 and 9, rank 3).
 		if !strings.Contains(stderr, "--base <release tag>") {
 			t.Fatalf("plan's refusal does not name --base <release tag>:\n%s", stderr)
+		}
+	})
+	t.Run("ST-GEN-INV38-T A changed body of a released migration is refused by compat, plan and apply", func(t *testing.T) {
+		t.Parallel()
+		s := newSmallService(t)
+		// The unchanged head passes.
+		if output, code := s.compat(t, "--base", "HEAD"); code != 0 {
+			t.Fatalf("compat of the unchanged head gave exit %d:\n%s", code, output)
+		}
+		// The base is a release whose generator wrote another body of 001_initial: its record lists another digest.
+		record := s.read(t, ".stego/state.yaml")
+		file := regexp.MustCompile(`(?m)^(\s+)(\S*migrations/001_initial\.sql): ([0-9a-f]{64})$`)
+		match := file.FindStringSubmatch(record)
+		if match == nil {
+			t.Fatalf("the record lists no 001_initial.sql:\n%s", record)
+		}
+		sum := sha256.Sum256([]byte("CREATE TABLE notes_of_an_earlier_release (id uuid PRIMARY KEY);\n"))
+		earlier := hex.EncodeToString(sum[:])
+		s.write(t, ".stego/state.yaml", strings.Replace(record, match[0], match[1]+match[2]+": "+earlier, 1))
+		git(t, s.service, "commit", "-q", "-am", "the record of a release with another body of 001_initial")
+		// The working folder keeps the record of the head, which apply wrote.
+		s.write(t, ".stego/state.yaml", record)
+		output, code := s.compat(t, "--base", "HEAD")
+		if code != 1 {
+			t.Fatalf("compat gave exit %d, want 1:\n%s", code, output)
+		}
+		for _, want := range []string{"ST-GEN-INV38", "001_initial", match[2], match[3], earlier, "never changes", "new schema step"} {
+			if !strings.Contains(output, want) {
+				t.Errorf("the fault of compat does not name %q:\n%s", want, output)
+			}
+		}
+		for _, verb := range []string{"plan", "apply"} {
+			before := s.read(t, ".stego/state.yaml")
+			stdout, stderr, err := s.stego(t, verb, "--base", "HEAD")
+			if code := exitCode(t, err); code == 0 || !strings.Contains(stdout+stderr, "ST-GEN-INV38") || !strings.Contains(stdout+stderr, "nothing is written") {
+				t.Fatalf("%s gave exit %d, want the refusal of the changed body:\n%s%s", verb, code, stdout, stderr)
+			}
+			if s.read(t, ".stego/state.yaml") != before {
+				t.Fatalf("the refused %s changed the record", verb)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(s.service, ".stego", "plan.yaml")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the refused plan saved a plan: %v", err)
 		}
 	})
 	t.Run("ST-GEN-UC14-R02-T01 With no record at the base ref, any stored shape is accepted", func(t *testing.T) {

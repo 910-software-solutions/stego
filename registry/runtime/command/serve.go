@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -142,15 +143,72 @@ const ErrorCodeInvalid = "invalid"
 // ErrorCodeUnavailable is the fixed code of a command that ErrUnavailable ended: the database could not serve now.
 const ErrorCodeUnavailable = "unavailable"
 
+// ErrorCodeNotFound is the fixed code of a command whose fill returned ErrNotFound, the error of its handle for a row
+// that is not there or that the caller may not read (ST-SUP-RP10-LC51).
+const ErrorCodeNotFound = "not_found"
+
+// fillFault is the error of a fill that failed with no log line of ST-SUP-RP10-LC39 that names its cause: the
+// command's name and the error, which OutcomeOf logs with its fixed cause class when it answers 500
+// (ST-SUP-RP10-LC51). It unwraps to the error, so each match of OutcomeOf sees the error of the fill.
+type fillFault struct {
+	err    error
+	action string
+}
+
+func (f *fillFault) Error() string { return f.err.Error() }
+func (f *fillFault) Unwrap() error { return f.err }
+
+// The fixed cause classes of the log line command.fill.failed (ST-SUP-RP10-LC51).
+const (
+	fillCauseError    = "fill_error"
+	fillCauseClosed   = "closed"
+	fillCauseInternal = "internal"
+	fillCauseSealed   = "sealed"
+	fillCausePanic    = "panic"
+	fillCauseDeadline = "deadline"
+)
+
+// fillCause gives the fixed cause class of the error of a fill that ends with 500, and never its text.
+func fillCause(err error) string {
+	switch {
+	case errors.Is(err, errPanic):
+		return fillCausePanic
+	case errors.Is(err, errDeadline) || errors.Is(err, context.DeadlineExceeded):
+		return fillCauseDeadline
+	case sealedFault(err):
+		return fillCauseSealed
+	case errors.Is(err, ErrClosed):
+		return fillCauseClosed
+	case errors.Is(err, ErrInternal):
+		return fillCauseInternal
+	}
+	return fillCauseError
+}
+
+// fillLog holds back the line command.fill.failed to one line for each command and cause class in each
+// authz.LogEvery, with the number of lines that it held back.
+var fillLog = authz.NewCauseLog(nil)
+
+// log writes the one error line command.fill.failed of a fill that ends with 500: the command's name and the fixed
+// cause class, and no error text and no value of a row or of the request (ST-SUP-RP10-LC51).
+func (f *fillFault) log() {
+	cause := fillCause(f.err)
+	if ok, held := fillLog.Allow(f.action + "/" + cause); ok {
+		slog.Error("command.fill.failed", "action", f.action, "cause", cause, "held_back", held)
+	}
+}
+
 // OutcomeOf maps an error of Run to its answer (ST-SUP-RP10-LC33, ST-SUP-RP10-LC34): a declared refusal among
 // refusals is its status and code; ErrDenied is 404 denied, the same answer as a missing row of a read
-// (ST-SUP-RP11-LC06); ErrInvalid is 400 invalid with the field it names (ST-SUP-Q118); a conflict after the last
-// attempt is 409 conflict; a decision that the provider could not make now (authz.Transient) is 503 undecided, which
-// the handler answers with Retry-After (ST-SUP-Q140); ErrUnavailable, a database that cannot serve now, is 503
-// unavailable with Retry-After; a COMMIT whose outcome is not known and
-// every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal that is not
-// one of refusals is an other error. No error text reaches the answer, the audit row or the log. Serve uses it, and
-// so does a handler that decodes its own body, such as the handlers of generated CRUD.
+// (ST-SUP-RP11-LC06); ErrNotFound that a fill returns is 404 not_found with the audit outcome failed, the same for a
+// row that is not there and one that the caller may not read (ST-SUP-RP10-LC51); ErrInvalid is 400 invalid with the
+// field it names (ST-SUP-Q118); a conflict after the last attempt is 409 conflict; a decision that the provider could
+// not make now (authz.Transient) is 503 undecided, which the handler answers with Retry-After (ST-SUP-Q140);
+// ErrUnavailable, a database that cannot serve now, is 503 unavailable with Retry-After; a COMMIT whose outcome is
+// not known and every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal
+// that is not one of refusals is an other error. A 500 of a fill whose cause no log line names writes the line
+// command.fill.failed with its cause class (ST-SUP-RP10-LC51). No error text reaches the answer, the audit row or the
+// log. Serve uses it, and so does a handler that decodes its own body, such as the handlers of generated CRUD.
 func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 	var refused *Refusal
 	if errors.As(err, &refused) {
@@ -162,6 +220,11 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 	}
 	if errors.Is(err, ErrDenied) {
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
+	}
+	if errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInternal) && !errors.Is(err, ErrConflict) {
+		// A fill that returns the not-found error of its handle: a row that is not there and a row that the caller
+		// may not read give the same answer (ST-SUP-RP10-LC13, ST-SUP-RP10-LC51).
+		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeNotFound, Audit: audit.OutcomeFailed}
 	}
 	var invalid *invalidError
 	if errors.As(err, &invalid) {
@@ -186,6 +249,10 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 		// A database that cannot serve now, such as in an outage, is 503 with Retry-After, never a bare 500
 		// (walkthrough 10, B7).
 		return Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
+	}
+	var fault *fillFault
+	if code == ErrorCodeInternal && errors.As(err, &fault) {
+		fault.log()
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: code, Audit: audit.OutcomeFailed}
 }
