@@ -85,7 +85,7 @@ class InstallationChecks(unittest.TestCase):
                              ("target_commitish", "main"), ("tag_name", "compiler-latest"), ("id", True)]:
             record = copy.deepcopy(self.release); record[field] = value; bad.append(record)
         record = copy.deepcopy(self.release); record["assets"][1] = record["assets"][0]; bad.append(record)
-        for field, value in [("id", True), ("size", True), ("size", 65 << 20),
+        for field, value in [("id", True), ("size", True), ("size", 129 << 20),
                              ("state", "new"), ("digest", "sha256:wrong"), ("name", "../compiler")]:
             record = copy.deepcopy(self.release); record["assets"][0][field] = value; bad.append(record)
         for record in bad:
