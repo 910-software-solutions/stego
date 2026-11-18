@@ -688,7 +688,13 @@ its backfill completes, or stop the release before, and run the job again.
 
 Then the step runs each statement in its own short transaction, under a lock
 timeout of 1 s, and again after a pause when a lock wait ends at that
-timeout, at most 10 times. For a required field it adds
+timeout, at most 10 times. For a field with a default, it first gives the
+new column the default of the field. The expand step added the column with
+no default, so the backfill finds each row there that it must fill. The
+manifest of the release of the expand step states no default for the column,
+so the same transaction gives the column the comment of a relaxed form that
+states the default (see [Relax steps](#relax-steps)); the schema check of
+that release then accepts the default while the release runs. For a required field it adds
 `CHECK (<new> IS NOT NULL) NOT VALID`, validates it, sets NOT NULL and drops
 the CHECK. Then it makes the old column nullable. Then one transaction
 checks the step again, drops the sync trigger, the completeness CHECK and the
@@ -716,8 +722,9 @@ report of a process with `release_stop`. Use the extended protocol.
 
 Limits: a release on a runtime library before v0.103.0 writes no report,
 and an expand step from a postgres-adapter before 6.4.0 made no table of the
-reports (ST-SUP-Q126). A contract step of a rename of a field with a default
-is not built yet.
+reports (ST-SUP-Q126). A contract step of a rename or a retype of a field
+with a default needs postgres-adapter 6.16.0 or later; an earlier one refuses
+it.
 
 ## The tenant key of each owned table
 

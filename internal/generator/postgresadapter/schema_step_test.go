@@ -136,16 +136,16 @@ func boardRetypeBase(ns, tenancyNS string) gen.Context {
 
 // boardRetype is boardRetypeBase with three changes at expand: the retype board-revision-retype of Board.revision from
 // string to int64 with text_to_int64 and int64_to_text and the fill value 0, whose conversion can fail; the retype
-// tag-level-retype of Tag.level from int64 to string with the pattern ^-?[0-9]{1,18}$, with int64_to_text and
-// text_to_int64, which is total both ways; and the require board-locale-require of the new field Board.locale, a
-// string of at most 10, with the fill value en. The entities are as the compiler gives them (gen.StoredNames): each
+// tag-level-retype of Tag.level from int64 to string with the pattern ^-?[0-9]{1,18}$ and the default 0, with
+// int64_to_text and text_to_int64, which is total both ways (a field with a default, walkthrough 14 W14-B3); and
+// the require board-locale-require of the new field Board.locale, a string of at most 10, with the fill value en. The entities are as the compiler gives them (gen.StoredNames): each
 // retyped field keeps its API name, in the column <field>_<type>.
 func boardRetype(ns, tenancyNS string) gen.Context {
 	ten := 10
 	ctx := boardRetypeBase(ns, tenancyNS)
 	ctx.Entities[0].Fields[1].Type = types.FieldTypeInt64
 	ctx.Entities[0].Fields = append(ctx.Entities[0].Fields, types.Field{Name: "locale", Type: types.FieldTypeString, MaxLength: &ten})
-	ctx.Entities[1].Fields[1] = types.Field{Name: "level", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$"}
+	ctx.Entities[1].Fields[1] = types.Field{Name: "level", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$", Default: "0"}
 	ctx.SchemaChanges = []types.SchemaChange{
 		{ID: "board-revision-retype", Kind: "retype", Entity: "Board", Field: "revision", From: "string", Conversion: "text_to_int64", InverseConversion: "int64_to_text", FillValue: 0},
 		{ID: "tag-level-retype", Kind: "retype", Entity: "Tag", Field: "level", From: "int64", Conversion: "int64_to_text", InverseConversion: "text_to_int64"},
@@ -373,11 +373,26 @@ func TestSchemaSteps(t *testing.T) {
 		if manifest := generated(t, files, "boards/schema_manifest.go"); !strings.Contains(manifest, `{Name: "boards_heading_not_null", Kind: manifest.KindCheck, Definition: "CHECK ((heading IS NOT NULL))", NotValid: true}`) {
 			t.Errorf("the manifest of the release of the rename does not name the NOT NULL CHECK of the contract step:\n%s", manifest)
 		}
-		// A contract of a rename of a field with a default is refused.
+		// The contract of a rename of a field with a default first gives the new column the default, with the comment
+		// of a relaxed form that states it, in one transaction, while the column has no default (walkthrough 14,
+		// W14-B3).
 		ctx = boardRenameContract("boards", "boardtenancy")
 		ctx.Entities[0].Fields[0].Default = "untitled"
-		if _, _, err := new(postgresadapter.Generator).Generate(ctx); err == nil || !strings.Contains(err.Error(), "with a default") {
-			t.Errorf("the contract of a rename of a field with a default gives %v, want a refusal", err)
+		files, _, err = new(postgresadapter.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatalf("the contract of a rename of a field with a default: %v", err)
+		}
+		contract := generated(t, files, "boards/migrations/step_0002_board-title-rename_contract.sql")
+		first := "COMMENT ON COLUMN public.\"boards\".\"heading\" IS 'stego relax step_0001_board-title-rename_expand\ndefault ''untitled''::character varying(40)';\n" +
+			"ALTER TABLE public.\"boards\" ALTER COLUMN \"heading\" SET DEFAULT 'untitled';\n"
+		if !strings.HasPrefix(contract, first) {
+			t.Errorf("the contract migration of a field with a default is\n%s\nwant it to start with\n%s", contract, first)
+		}
+		if migrate := generated(t, files, "boards/migrate.go"); !strings.Contains(migrate, `When: "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'public.\"boards\"'::pg_catalog.regclass AND a.attname = 'heading' AND NOT a.attisdropped)", Long: false, Guard: false, Also: []string{"ALTER TABLE public.\"boards\" ALTER COLUMN \"heading\" SET DEFAULT 'untitled'"}}`) {
+			t.Errorf("migrate.go does not give the default with its comment while the column has none:\n%s", migrate)
+		}
+		if manifest := generated(t, files, "boards/schema_manifest.go"); !strings.Contains(manifest, `{Name: "heading", Type: "character varying(40)", NotNull: true, Default: "'untitled'::character varying(40)"}`) {
+			t.Errorf("the manifest of the release after the rename of a field with a default is\n%s", manifest)
 		}
 	})
 	t.Run("ST-SUP-RC01-OC23-T02 The completeness CHECK and the backfill of a retype with no fill value allow a value that does not convert", func(t *testing.T) {
@@ -416,7 +431,7 @@ func TestSchemaSteps(t *testing.T) {
 			},
 			"one sync trigger on a table": func(ctx *gen.Context) {
 				*ctx = boardRetype(ctx.OutputNamespace, ctx.PeerNamespaces[gen.TenancyComponent])
-				ctx.Entities[1].Fields[1] = types.Field{Name: "level", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$"}
+				ctx.Entities[1].Fields[1] = types.Field{Name: "level", Type: types.FieldTypeString, Pattern: "^-?[0-9]{1,18}$", Default: "0"}
 				ctx.SchemaChanges[1].Entity, ctx.Entities[0].Fields = "Board", append(ctx.Entities[0].Fields, types.Field{Name: "level", Type: types.FieldTypeString, Column: "level_string"})
 				ctx.Entities[1].Fields = ctx.Entities[1].Fields[:1]
 			},
