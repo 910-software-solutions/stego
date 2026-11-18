@@ -160,15 +160,26 @@ func (tp *tenantProvisioning) exempted(router *http.ServeMux, r *http.Request) b
 	return tp.patterns[matched]
 }
 
+// unrouted tells whether the main router, router, matches r to no route: the router then answers it itself, 404 for
+// a path that no route holds or 405 for a path whose routes take another method, and the tenant check has nothing to
+// decide, so it does not run (ST-SUP-RC27-OC14). With no router, every request is routed.
+func unrouted(router *http.ServeMux, r *http.Request) bool {
+	if router == nil {
+		return false
+	}
+	_, pattern := router.Handler(r)
+	return pattern == ""
+}
+
 // gated serves next only for a request whose verified tenant is an active tenant of the tenant list, after the
 // verifier and before any handler, decision or fill; the two provisioning routes of the main router are exempt,
-// because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11). It answers any
-// other request with 403 and the code tenant.not_provisioned, also a verified token with no valid tenant claim, 503
+// because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11), and a request that
+// the main router matches to no route gets the answer of the router (ST-SUP-RC27-OC14). It answers any other request with 403 and the code tenant.not_provisioned, also a verified token with no valid tenant claim, 503
 // with Retry-After and the code unavailable when the database cannot serve the list now, or 500 when the list cannot
 // be read for another cause, with Cache-Control no-store.
 func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if tp.exempted(router, r) {
+		if tp.exempted(router, r) || unrouted(router, r) {
 			next.ServeHTTP(w, r)
 			return
 		}
