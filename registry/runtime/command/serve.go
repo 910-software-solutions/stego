@@ -17,13 +17,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	spb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
@@ -181,14 +183,26 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 // invalid value also names its declared field and fixed reason in a google.rpc.BadRequest detail, as the field of
 // the HTTP problem does (walkthrough 10, B4); the detail holds no value of the request.
 func (o Outcome) RPCStatus() error {
-	st := status.New(RPCCode(o.Status), o.AnswerCode())
+	st := &spb.Status{Code: int32(RPCCode(o.Status)), Message: o.AnswerCode()}
 	if o.Field != "" {
-		if detailed, err := st.WithDetails(&errdetails.BadRequest{FieldViolations: []*errdetails.BadRequest_FieldViolation{
-			{Field: o.Field, Description: o.Reason}}}); err == nil {
-			st = detailed
-		}
+		st.Details = []*anypb.Any{badRequest(o.Field, o.Reason)}
 	}
-	return st.Err()
+	return status.ErrorProto(st)
+}
+
+// badRequest is the google.rpc.BadRequest detail of one field violation, the field and the description, in the wire
+// form of its message: field_violations (1) of a FieldViolation with field (1) and description (2). It is written here
+// so the command runtime imports no more of the generated messages of googleapis than grpc does.
+func badRequest(field, description string) *anypb.Any {
+	var violation []byte
+	violation = protowire.AppendTag(violation, 1, protowire.BytesType)
+	violation = protowire.AppendString(violation, field)
+	violation = protowire.AppendTag(violation, 2, protowire.BytesType)
+	violation = protowire.AppendString(violation, description)
+	var message []byte
+	message = protowire.AppendTag(message, 1, protowire.BytesType)
+	message = protowire.AppendBytes(message, violation)
+	return &anypb.Any{TypeUrl: "type.googleapis.com/google.rpc.BadRequest", Value: message}
 }
 
 // AnswerCode is the code of the answer to the client: the audit code commit_outcome_unknown is internal to a client.
