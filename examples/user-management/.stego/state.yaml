@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118045112-65934f9ce81a
+        module_version: v0.0.0-20261118064556-bedfc4b69ba8
         vcs: git
-        revision: 65934f9ce81a093c5f170f9b31aec62c303b528c
+        revision: bedfc4b69ba80aa41c6ad8c29d9314f7d512d862
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 71d6f9dc9013d5411ba4b125beadbb89b5c763e70c17480fd5f80ae7bd37d950
+    registry_content_sha256: 38b163c10b1e7106f56b05ca25c60eea7ea9213b09d767b0b22b4eb2f98b175a
     components:
         audit-log:
             version: 1.2.0
@@ -71,11 +71,11 @@ last_applied:
             version: 6.12.0
             sha: d571782d3a1bd9b8f3acfd3360999120e5dfc481df1613441739200590623a64
         query:
-            version: 1.2.0
-            sha: 97a74b61e2d5cad28b48b8b8c5cc1549d020705af5f3aa3730ab266d9ce997cf
+            version: 1.3.0
+            sha: c9d82981e73b70264304530d85596c134ac9b1ec50e65065db30b403fc895145
         rest-api:
-            version: 4.5.0
-            sha: 968ef2d2c55f57b48bc60cf8911af3ce62db9fc940e62e5202957d24467c8f28
+            version: 4.6.0
+            sha: f5fa0ee0fc1399752944fb3474052c6347604727be11e3452ad289fbcc78d586
         spicedb-authz:
             version: 1.4.0
             sha: bc44dfacc5b8c323ef4988fda14d223f7c66d02f30ffbe65ffdec2a094217010
@@ -210,14 +210,14 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 89f5228b91e8d99260a5b65e4607ac27e9971fc2dc5270430534b2c2530e104a
-        architecture/index.html: 4e6d599ed47a69e90e0dc533cdefdea075d2f0d46a93d4d8cf0b5f5d86e31563
+        architecture/architecture.json: a134176887c395c1bfbde2331b166d2559a6c93ba4f91f351dc2972557acb80e
+        architecture/index.html: e46a9963129d82590c95854ebfc4685c584a96b8b17e983218ea73d674e46868
         deploy/base/deployment.yaml: 0fcdee6b2099653b966f753892ee02e446400c0dfa637cbd1d0b3f2207085bae
         deploy/base/kustomization.yaml: 85f6e6406f5dbe762f8cc35c9e2a0f740be5e20b7d2c522ec526a50dc094e721
-        deploy/base/migration-job.yaml: c9b75a639b892cb04e398d7b5786bc939ba15e58c9ab40ebc4b71a03762e775e
+        deploy/base/migration-job.yaml: 790f43fd6fdb1ef8d59b7bf649b200ee8efb2c3b86a05232c33c5e82aabb6cff
         deploy/base/service-account.yaml: 0d2b6d1b569463cae25b85eb2d9cc3dda50f28f9da57d1fd5ced3a729494686b
         deploy/base/service.yaml: dd7e3ab0ae398676abd0458c7a5d66c2d290bedab3a6235223256f7136d7f411
-        deploy/base/worker-deployment.yaml: b42024958416e6be9a530367fa47e038b48aac7b82d7fcd8cad77923575e86be
+        deploy/base/worker-deployment.yaml: d42b53bdfc9817c624e6484b2b0e4546b32b98381e25f65642bde32e1a8c2715
         deploy/components/fs-group/deployment-fs-group.yaml: 9a4f92991ebab2ead72ab1a3129ebf94f44fa63249b337e6e6ce8fa11944d667
         deploy/components/fs-group/job-fs-group.yaml: 389500eeeb23be25a964400924181063101a14e554cba01b66adfe7072f525a3
         deploy/components/fs-group/kustomization.yaml: a2d4d6333b32022bd78ae60a4b33c580e49299b925218db208ce70b461690839
@@ -230,10 +230,10 @@ last_applied:
         deploy/components/secret-files/remove-job-env.yaml: f57e5155aeca1b2c5c7ea554ad4f45a82a24a31843ce5333df3060acefcb6d8f
         deploy/components/secret-files/remove-worker-env.yaml: cc555d674c7317cd7ad7455bf16447ba5141469e4a262a6baef6833c078fd956
         deploy/environment-variables.md: e997f01db7f1b6ebf4e79501d7bd9f57768316d4b3db98c8cf9404aaa724a61f
-        deploy/platform-requirements.yaml: af67b02fd754c0f3dc0cac8d6d77147960cf6fb7ae5ec803b01654bf3ba28d8b
+        deploy/platform-requirements.yaml: 67bf021a30869cb607cdc3ca4863fe4a4a3e193021c89c747a8f13182826cd45
     archetype:
         name: rest-crud
-        version: 3.169.0
+        version: 3.170.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.131.0
