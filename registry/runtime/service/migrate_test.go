@@ -1739,6 +1739,32 @@ func TestMigrateLocks(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC35-OC19-T02 The job gives the worker role only SELECT on the table of an entity that a consuming worker only reads", func(t *testing.T) {
+		endpoint, key := startSpiceDB(t)
+		f := newFixture(t)
+		settings := MigrationSettings{DatabaseURL: f.database, SpiceDB: SpiceDB{Endpoint: endpoint, Key: key, InsecureLoopback: true}}
+		m := f.migration(nil)
+		m.Parts.Workers.Consumers = func(*command.Runtime, *outbox.Worker, func(string) command.WorkerObserver) error { return nil }
+		m.Parts.Workers.ConsumerReadTables = []string{"orders"}
+		if err := Migrate(context.Background(), settings, m); err != nil {
+			t.Fatal(err)
+		}
+		for privilege, want := range map[string]bool{"SELECT": true, "INSERT": false, "UPDATE": false, "DELETE": false} {
+			var has bool
+			if err := f.admin.QueryRow(`SELECT has_table_privilege($1, 'public.orders', $2)`, f.worker, privilege).Scan(&has); err != nil {
+				t.Fatal(err)
+			}
+			if has != want {
+				t.Errorf("the worker role holds %s on orders: %v, want %v", privilege, has, want)
+			}
+		}
+		// A read table that the runtime role gets no grant on is refused before the job opens the database.
+		m.Parts.Workers.ConsumerReadTables = []string{"foreign_orders"}
+		if err := Migrate(context.Background(), settings, m); Stage(err) != "migrate."+StepSettings {
+			t.Fatalf("the job with the read table foreign_orders gave %v at the stage %q, want %s", err, Stage(err), StepSettings)
+		}
+	})
+
 	t.Run("ST-SUP-RP14-LC03-T28 No committed step of a run again of the job leaves the worker role without a grant that the running release needs", func(t *testing.T) {
 		endpoint, key := startSpiceDB(t)
 		f := newFixture(t)

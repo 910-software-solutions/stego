@@ -263,6 +263,7 @@ func parts({{if .API}}afterSlots *api.AfterSlots{{end}}) service.Parts {
 			// The tables that the consumers write, on which the migration job grants the worker role SELECT, INSERT and
 			// UPDATE (ST-SUP-Q141).
 			ConsumerTables: workerrunners.ConsumerTables(),
+			ConsumerReadTables: workerrunners.ConsumerReadTables(),
 {{- end}}
 {{- if .Inbox}}
 			// The Kafka inbox of the declared subscription, which writes each record into the outbox for its worker

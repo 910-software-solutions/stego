@@ -573,6 +573,9 @@ func (d *deriver) plannedReads() error {
 		for _, name := range w.Writes {
 			uses = append(uses, use{name, fmt.Sprintf("workers[%d] (%s) writes it", i, w.Name), false})
 		}
+		for _, name := range w.Reads {
+			uses = append(uses, use{name, fmt.Sprintf("workers[%d] (%s) reads it", i, w.Name), false})
+		}
 	}
 	for _, u := range uses {
 		i, ok := index[u.entity]

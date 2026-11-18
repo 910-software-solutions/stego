@@ -196,6 +196,13 @@ func renderRelationHelper(w *writer, c *command, h relationHelper) {
 // for a generator that declares commands of its own, such as the rest-api generator for generated CRUD
 // (ST-SUP-RC20-OC37), so the entity code has one source. It refuses an entity that a command cannot write.
 func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey string, relations Relations) ([]byte, error) {
+	return EntityFileWithViews(pkg, names, nil, entities, tenantKey, relations)
+}
+
+// EntityFileWithViews is EntityFile with, for each entity of views, the read-only declarations of a worker that reads
+// it (ST-SUP-RC35-OC19): <Entity>View with no secret field, Loaded<Entity>View, <Entity>ViewEntity and the accessor
+// <Entity>Reader.
+func EntityFileWithViews(pkg string, names, views []string, entities []types.Entity, tenantKey string, relations Relations) ([]byte, error) {
 	byName := map[string]types.Entity{}
 	for _, e := range entities {
 		byName[e.Name] = e
@@ -212,19 +219,32 @@ func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey s
 		}
 		m.entities = append(m.entities, p)
 	}
+	var viewPlans []*entity
+	for _, name := range views {
+		e, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("command: the entity %s is not declared", name)
+		}
+		p, err := planEntity(e, byName, tenantKey, relations)
+		if err != nil {
+			return nil, fmt.Errorf("command: the entity %s: %w", name, err)
+		}
+		viewPlans = append(viewPlans, p.view())
+	}
+	all := &model{entities: append(append([]*entity(nil), m.entities...), viewPlans...)}
 	w := &writer{}
 	w.f("package %s\n\nimport (\n", pkg)
-	if m.usesBytes() {
+	if all.usesBytes() {
 		w.f("\t\"bytes\"\n")
 	}
 	if m.usesJSON() {
 		w.f("\t\"encoding/json\"\n")
 	}
-	if m.usesTime() {
+	if all.usesTime() {
 		w.f("\t\"time\"\n")
 	}
 	w.f("\n")
-	if m.usesAudit() {
+	if all.usesAudit() {
 		w.f("\t\"github.com/jsell-rh/stego/registry/runtime/audit\"\n")
 	}
 	w.f("\t\"github.com/jsell-rh/stego/registry/runtime/command\"\n")
@@ -234,6 +254,9 @@ func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey s
 	w.f(")\n\n")
 	for _, e := range m.entities {
 		renderEntity(w, e, tenantKey)
+	}
+	for _, e := range viewPlans {
+		renderView(w, e, tenantKey)
 	}
 	source, err := format.Source(w.Bytes())
 	if err != nil {
@@ -505,6 +528,23 @@ type ListParam struct {
 // binds none. Both order by the key, so a schema step that adds or renames a column changes the list with the release
 // and no fill gives SQL text. Lock is empty for a list that does not lock.
 func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey string) (ListPlan, error) {
+	return listStatements(list, entities, tenantKey, nil)
+}
+
+// ViewListStatements gives the plan of a declared list of a worker over an entity that it reads (ST-SUP-RC35-OC19):
+// the statements return the columns of the read-only declaration, which hold no secret column, and a list over it
+// does not lock. A parent term takes the loaded row of its parent as the worker has it: Loaded<Entity>View when the
+// worker reads the parent, else Loaded<Entity>.
+func ViewListStatements(list types.WorkerList, entities []types.Entity, tenantKey string, reads []string) (ListPlan, error) {
+	if list.Lock {
+		return ListPlan{}, fmt.Errorf("command: the list %s locks rows of %s, which the worker only reads (ST-DECL-INV94)", list.Name, list.Entity)
+	}
+	return listStatements(list, entities, tenantKey, reads)
+}
+
+// listStatements builds a list plan; reads is nil for a list over a written entity, and else the entities that the
+// worker reads, whose list reads the view of the entity.
+func listStatements(list types.WorkerList, entities []types.Entity, tenantKey string, reads []string) (ListPlan, error) {
 	byName := map[string]types.Entity{}
 	for _, e := range entities {
 		byName[e.Name] = e
@@ -516,6 +556,10 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 	e, err := planEntity(decl, byName, tenantKey, Relations{})
 	if err != nil {
 		return ListPlan{}, fmt.Errorf("command: the entity %s: %w", list.Entity, err)
+	}
+	columns := e.columns()
+	if reads != nil {
+		columns = e.view().columns()
 	}
 	if len(list.Filter) == 0 {
 		return ListPlan{}, fmt.Errorf("command: the list %s has no filter term", list.Name)
@@ -559,7 +603,11 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 			}
 			value = fmt.Sprintf("command.ListValue{Parent: %q}", field.decl.To)
 			plan.Parents = append(plan.Parents, field.decl.To)
-			plan.Params = append(plan.Params, ListParam{Name: term.Field, GoName: paramName(strings.TrimSuffix(term.Field, "_id")), GoType: "Loaded" + field.decl.To})
+			parentType := "Loaded" + field.decl.To
+			if slices.Contains(reads, field.decl.To) {
+				parentType += "View"
+			}
+			plan.Params = append(plan.Params, ListParam{Name: term.Field, GoName: paramName(strings.TrimSuffix(term.Field, "_id")), GoType: parentType})
 		} else if term.Param != "" {
 			goType, ok := paramTypes[field.decl.Type]
 			if !ok || seen[term.Param] || term.Value != nil || term.Now {
@@ -581,7 +629,7 @@ func ListStatements(list types.WorkerList, entities []types.Entity, tenantKey st
 		terms = append(terms, fmt.Sprintf("%s %s $%d", column, op, len(plan.Values)+2))
 	}
 	plan.Child, plan.References = e.resourceType == "" && len(e.references) > 0, len(e.references)
-	from := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s = $1", e.columns(), quote(e.table), quote(tenantKey))
+	from := fmt.Sprintf("SELECT %s FROM public.%s WHERE %s = $1", columns, quote(e.table), quote(tenantKey))
 	filter := " AND " + strings.Join(terms, " AND ")
 	plan.Read = from + filter + ` ORDER BY "id" LIMIT $2`
 	if list.Lock {

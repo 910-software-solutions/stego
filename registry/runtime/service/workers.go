@@ -135,6 +135,10 @@ type WorkerParts struct {
 	// the migration job grants the worker role SELECT, INSERT and UPDATE on (decision on ST-SUP-Q141, orchestrator
 	// under the owner's delegation, 2026-11-15).
 	ConsumerTables []string
+	// ConsumerReadTables are the tables in public of the entities that the workers with a consumes trigger only read,
+	// which the migration job grants the worker role SELECT on, and nothing more (ST-SUP-RC35-OC19, decision
+	// ST-SUP-Q186 (a)).
+	ConsumerReadTables []string
 }
 
 // InboxEnv is what the Kafka inbox of a subscription gets from the worker mode.

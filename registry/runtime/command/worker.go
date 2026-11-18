@@ -41,6 +41,9 @@ type WorkerSpec[P any] struct {
 	Interval time.Duration
 	// Writes are the entities that the worker declares it writes.
 	Writes []Declared
+	// Reads are the read-only declarations of the entities that the worker declares it reads (EntitySpec ReadOnly),
+	// which its fill reaches only through ReadRepo (ST-SUP-RP10-LC53, decision ST-SUP-Q186 (a)).
+	Reads []Declared
 	// Destinations are the outbox destinations of its effects.
 	Destinations []Destination
 	// Relations are the relations whose tuples its fill may write.
@@ -65,6 +68,7 @@ type Worker[P any] struct {
 	spec         WorkerSpec[P]
 	principal    authz.Principal
 	writes       map[Declared]bool
+	reads        map[Declared]bool
 	destinations map[string]Destination
 	bound        []authz.Relation
 	own          map[authz.Relation]bool
@@ -88,6 +92,10 @@ func NewWorker[P any](spec WorkerSpec[P]) (*Worker[P], error) {
 	if err != nil {
 		return nil, err
 	}
+	reads, err := checkReads(spec.Name, spec.Writes, spec.Reads)
+	if err != nil {
+		return nil, err
+	}
 	destinations, err := checkDestinations(spec.Name, spec.Destinations)
 	if err != nil {
 		return nil, err
@@ -96,13 +104,40 @@ func NewWorker[P any](spec WorkerSpec[P]) (*Worker[P], error) {
 	if err != nil {
 		return nil, err
 	}
-	lists, err := checkLists(spec.Name, spec.Lists, writes)
+	lists, err := checkLists(spec.Name, spec.Lists, writes, reads)
 	if err != nil {
 		return nil, err
 	}
 	bound, own := boundRelations(spec.Relations, spec.Writes)
-	return &Worker[P]{spec: spec, principal: principal, writes: writes, destinations: destinations, bound: bound, own: own,
+	return &Worker[P]{spec: spec, principal: principal, writes: writes, reads: reads, destinations: destinations, bound: bound, own: own,
 		changeEvents: changeEvents, lists: lists}, nil
+}
+
+// checkReads gives the read-only entities that the worker owner reads, and refuses a nil entity, an entity of reads
+// that is not read-only, a read-only entity in writes, and an entity name in both (ST-SUP-RP10-LC53).
+func checkReads(owner string, writes, declared []Declared) (map[Declared]bool, error) {
+	written := map[string]bool{}
+	for _, e := range writes {
+		if e != nil && e.readOnly() {
+			return nil, fmt.Errorf("command: %s writes the read-only entity %s; name it in Reads", owner, e.entityName())
+		}
+		if e != nil {
+			written[e.entityName()] = true
+		}
+	}
+	reads := make(map[Declared]bool, len(declared))
+	for _, e := range declared {
+		switch {
+		case e == nil:
+			return nil, fmt.Errorf("command: %s declares a nil entity in Reads", owner)
+		case !e.readOnly():
+			return nil, fmt.Errorf("command: %s reads %s, which is not a read-only entity", owner, e.entityName())
+		case written[e.entityName()]:
+			return nil, fmt.Errorf("command: %s both writes and reads %s", owner, e.entityName())
+		}
+		reads[e] = true
+	}
+	return reads, nil
 }
 
 // TickFill is the fill of a worker with an every trigger: it gets the scheduled tick time and the handle.
@@ -173,6 +208,7 @@ func RunWorker[P any](ctx context.Context, rt *Runtime, w *Worker[P], due time.T
 		}
 	}()
 	s := newState(ctx, rt, tx, t, w.principal, modeWorker, w.spec.Name, w.writes, w.destinations)
+	s.reads = w.reads
 	s.changeEvents = w.changeEvents
 	// A list value RunTime takes the due tick time (ST-SUP-RC35-OC15).
 	s.lists, s.runTime = w.lists, due
@@ -465,6 +501,7 @@ func RunConsumer[M, P any](ctx context.Context, rt *Runtime, w *Worker[P], tx *s
 		return outbox.PermanentRefusal(fmt.Errorf("%w: %s consumes no message that %q stages", errMessage, w.spec.Name, d.Origin))
 	}
 	s := newState(ctx, rt, tx, d.Tenant, w.principal, modeConsumer, w.spec.Name, w.writes, w.destinations)
+	s.reads = w.reads
 	s.changeEvents = w.changeEvents
 	// A list value RunTime takes the time at the start of the run on the runtime's clock (ST-SUP-RC35-OC15).
 	s.lists, s.runTime = w.lists, rt.clock().Now()

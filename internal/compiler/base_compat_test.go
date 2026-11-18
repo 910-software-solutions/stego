@@ -691,3 +691,75 @@ func TestBaseDrop(t *testing.T) {
 		}
 	})
 }
+
+// eventBase is a base whose Transaction declares the event fields wallet_id, kind and amount at version 1, with the
+// events line given in place of them.
+func eventBase(kind, amount, events string) string {
+	return `kind: service
+name: wallets
+archetype: rest-crud
+language: go
+base_path: /api/wallets/v1
+entities:
+  - name: Transaction
+    fields:
+      - { name: wallet_id, type: string }
+      - { name: kind, type: enum, values: [` + kind + `] }
+      - { name: amount, type: ` + amount + ` }
+      - { name: note, type: string, optional: true }
+` + events + `collections:
+  transactions:
+    entity: Transaction
+    operations: [create, read, list]
+mixins:
+  - durable-events
+  - kafka-events
+`
+}
+
+func TestBaseEventFields(t *testing.T) {
+	t.Parallel()
+	const kinds = "deposit, withdrawal"
+	base := []byte(eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount]}\n"))
+	cases := []struct {
+		name, head string
+		field      string
+		refused    bool
+	}{
+		{"the same head", string(base), "", false},
+		{"a head that adds the field note", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount, note]}\n"), "", false},
+		{"a head without amount", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind]}\n"), "amount", true},
+		{"a head with amount retyped", eventBase(kinds, "string", "    events: {fields: [wallet_id, kind, amount]}\n"), "amount", true},
+		{"a head with a value of kind removed", eventBase("deposit", "int64", "    events: {fields: [wallet_id, kind, amount]}\n"), "kind", true},
+		{"a head with no events", eventBase(kinds, "int64", ""), "", true},
+		{"a head with events at version 0", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind, amount], version: 0}\n"), "", true},
+		{"a head without amount at version 2", eventBase(kinds, "int64", "    events: {fields: [wallet_id, kind], version: 2}\n"), "", false},
+	}
+	for _, c := range cases {
+		t.Run("ST-GEN-INV39-T "+c.name, func(t *testing.T) {
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var faults []BaseFault
+			for _, fault := range check.Faults {
+				if fault.Rule == EventFieldsRule {
+					faults = append(faults, fault)
+				}
+			}
+			if !c.refused {
+				if len(faults) != 0 {
+					t.Fatalf("want accepted, got %+v", faults)
+				}
+				return
+			}
+			if len(faults) != 1 {
+				t.Fatalf("want one fault of %s, got %+v", EventFieldsRule, faults)
+			}
+			f := faults[0]
+			if f.Entity != "Transaction" || f.Field != c.field || !strings.Contains(f.Message, "events.version to 2") {
+				t.Fatalf("the fault does not name Transaction, the field %q and the remedy: %+v", c.field, f)
+			}
+		})
+	}
+}

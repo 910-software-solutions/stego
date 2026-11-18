@@ -608,3 +608,169 @@ func TestContractRuntimeImports(t *testing.T) {
 		}
 	})
 }
+
+// readsSchema is the schema of the test of the worker reads: the type tenant holds the relation of each worker, and
+// the permission record of the workers on wallets and totals.
+const readsSchema = `definition user {}
+
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
+definition service_account {}
+
+definition tenant {
+	relation worker_sum_balances: service_account
+	relation worker_record_wallets: service_account
+	permission record = worker_sum_balances + worker_record_wallets
+}
+
+definition wallet {
+	relation tenant: tenant
+	permission view = tenant->record
+	permission record = tenant->record
+}
+
+definition total {
+	relation tenant: tenant
+	permission view = tenant->record
+	permission record = tenant->record
+}
+`
+
+// readsEntities are Wallet, with a readable secret api_key and a compare-only secret pin, and Total.
+const readsEntities = `- name: Wallet
+  resource_type: wallet
+  permissions: {read: view, list: view}
+  fields:
+    - {name: label, type: string}
+    - {name: balance, type: int64}
+    - {name: api_key, type: string, sensitivity: secret}
+    - {name: pin, type: string, sensitivity: secret, compare_only: true}
+- name: Total
+  resource_type: total
+  permissions: {read: view, list: view}
+  fields:
+    - {name: balance, type: int64}
+`
+
+// readsContext is a service whose worker sum-balances, every 1h, reads Wallet and writes Total with the list funded
+// over Wallet, and whose worker record-wallets consumes wallet-changes and reads Wallet.
+func readsContext() gen.Context {
+	var entities []types.Entity
+	if err := yaml.Unmarshal([]byte(readsEntities), &entities); err != nil {
+		panic(err)
+	}
+	funded := types.WorkerList{Name: "funded", Entity: "Wallet", Filter: []types.ListTerm{{Field: "balance", Op: types.ListGreaterThan, Value: 0}}}
+	return gen.Context{
+		ModuleName: testModule, OutDirName: "out", OutputNamespace: "workers", ServiceName: "wallets", Entities: entities,
+		Workers: []gen.Worker{
+			{Worker: types.Worker{Name: "sum-balances", Trigger: "every 1h", Writes: []string{"Total"}, Reads: []string{"Wallet"},
+				ResourceType: "total", Permission: "record", Fill: types.FillNames{"sync-orders"}, Lists: []types.WorkerList{funded}}, FillSlot: workerSlot},
+			{Worker: types.Worker{Name: "record-wallets", Trigger: "consumes wallet-changes", Reads: []string{"Wallet"},
+				ResourceType: "wallet", Permission: "record", Fill: types.FillNames{"apply-replies"}}, FillSlot: workerSlot},
+		},
+		Authorization:  &types.Authorization{SchemaPath: "authz/schema.zed", SubjectFromIdentity: "user"},
+		Tenancy:        &gen.Tenancy{Key: "tenant_id"},
+		Destinations:   []gen.Destination{{Name: "wallet-changes", Component: "worker", MustLand: &yes, Idempotent: &yes}},
+		PeerNamespaces: map[string]string{"domain-probe": "probes"},
+		Inputs:         map[string][]byte{"authz/schema.zed": []byte(readsSchema)},
+	}
+}
+
+func TestWorkerReads(t *testing.T) {
+	t.Run("ST-SUP-RC35-OC19-T01 A worker with reads gets a view, a read-only declaration and a reader of each read entity", func(t *testing.T) {
+		ctx := readsContext()
+		files := generated(t, ctx)
+		squash := func(b []byte) string { return regexp.MustCompile(`[ \t]+`).ReplaceAllString(string(b), " ") }
+		contract, entities, runners := squash(files["workers/workers.go"]), squash(files["workers/entities.go"]), squash(files["workers/runners/runners.go"])
+		view, _, _ := strings.Cut(entities[strings.Index(entities, "type WalletView struct"):], "}")
+		for _, want := range []string{"ID string", "Label string", "Balance int64"} {
+			if !strings.Contains(view, want) {
+				t.Errorf("WalletView does not hold %s:\n%s", want, view)
+			}
+		}
+		if strings.Contains(view, "ApiKey") || strings.Contains(view, "Pin") {
+			t.Errorf("WalletView holds a secret field:\n%s", view)
+		}
+		for _, want := range []string{"type LoadedWalletView = command.Loaded[WalletView]", "var WalletViewEntity = command.Must(command.NewEntity(command.EntitySpec[WalletView]{",
+			"ReadOnly: true,", "func WalletReader[P any](h *command.Handle[P]) (*command.Reader[WalletView], error)"} {
+			if !strings.Contains(entities, want) {
+				t.Errorf("the entity file does not hold %s:\n%s", want, entities)
+			}
+		}
+		selectRow := entities[strings.Index(entities, "ReadOnly: true,"):]
+		selectRow, _, _ = strings.Cut(selectRow[strings.Index(selectRow, "Select:"):], "\n")
+		if strings.Contains(selectRow, "api_key") || strings.Contains(selectRow, "pin") {
+			t.Errorf("the Select of the view reads a secret column: %s", selectRow)
+		}
+		if strings.Contains(entities, "WalletRepository") || strings.Contains(entities, "\"github.com/jsell-rh/stego/registry/runtime/sealed\"") {
+			t.Errorf("the entity file gives a repository of Wallet, which no worker writes, or imports the sealed package:\n%s", entities)
+		}
+		list := contract[strings.Index(contract, "var SumBalancesFunded"):]
+		list, _, _ = strings.Cut(list, "}))")
+		if !strings.Contains(list, "command.NewList(WalletViewEntity") || strings.Contains(list, "Lock:") || strings.Contains(list, "api_key") {
+			t.Errorf("the list funded is not a list of the view with no lock and no secret column:\n%s", list)
+		}
+		for _, want := range []string{"Reads: []command.Declared{workers.WalletViewEntity}", "return []command.Declared{workers.TotalEntity, workers.WalletViewEntity}",
+			"func ConsumerReadTables() []string {\n return []string{\"wallets\"}\n}"} {
+			if !strings.Contains(runners, want) {
+				t.Errorf("the runners do not hold %s:\n%s", want, runners)
+			}
+		}
+		fill := []byte(`package syncorders
+
+import (
+	"context"
+	"time"
+
+	workers "example.com/orders/out/workers"
+)
+
+func New() workers.SumBalancesFill {
+	return func(ctx context.Context, tick time.Time, h *workers.SumBalancesHandle) error {
+		wallets, err := workers.WalletReader(h)
+		if err != nil {
+			return err
+		}
+		if _, err := wallets.Get(ctx, "id"); err != nil {
+			return err
+		}
+		funded, err := wallets.List(ctx, workers.SumBalancesFunded, 10)
+		if err != nil {
+			return err
+		}
+		var total int64
+		for _, w := range funded {
+			total += w.Value().Balance
+		}
+		totals, err := workers.TotalRepository(h)
+		if err != nil {
+			return err
+		}
+		_, err = totals.Create(ctx, workers.Total{Balance: total})
+		return err
+	}
+}
+`)
+		apply := []byte(`package applyreplies
+
+import (
+	"context"
+	"encoding/json"
+
+	workers "example.com/orders/out/workers"
+)
+
+func New() workers.RecordWalletsFill {
+	return func(ctx context.Context, message json.RawMessage, effect string, h *workers.RecordWalletsHandle) error {
+		_, err := workers.WalletReader(h)
+		return err
+	}
+}
+`)
+		p := newProject(t, ctx, map[string][]byte{"fills/sync-orders/fill.go": fill, "fills/apply-replies/fill.go": apply})
+		p.mustGo("vet", "./...")
+	})
+}

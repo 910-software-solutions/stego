@@ -84,3 +84,121 @@ func TestSecretFields(t *testing.T) {
 		}
 	})
 }
+
+// entityRuleFaults reads the declaration of ST-DECL-TD02 with the fields of Todo, the lines of Todo after its fields and the
+// declaration tail given, and gives the faults of the rule.
+func entityRuleFaults(t *testing.T, rule, entityTail, tail string, fields ...string) []ValidationError {
+	t.Helper()
+	body := "      " + strings.Join(fields, "\n      ")
+	if entityTail != "" {
+		body += "\n    " + entityTail
+	}
+	data := strings.Replace(td02Fields, "%s", body, 1) + tail
+	service, undeclared, err := parser.ReadServiceDeclaration([]byte(data), "service.yaml")
+	if err != nil || len(undeclared) != 0 {
+		t.Fatalf("read the declaration: %v %v", err, undeclared)
+	}
+	var faults []ValidationError
+	for _, fault := range Validate(service).All() {
+		if fault.Rule == rule {
+			faults = append(faults, fault)
+		}
+	}
+	return faults
+}
+
+func TestAttemptsCounter(t *testing.T) {
+	const title = "- {name: title, type: string}"
+	const pin = "- {name: pin, type: string, sensitivity: secret, compare_only: true}"
+	counter := func(settings string) string {
+		return "- {name: pin_attempts, type: int32, " + settings + "}"
+	}
+	const ok = "default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 5}"
+	t.Run("ST-DECL-INV104-T A counter of a compare-only secret is accepted", func(t *testing.T) {
+		if faults := entityRuleFaults(t, "attempts-counter", "", "", title, pin, counter(ok)); len(faults) != 0 {
+			t.Fatalf("want no fault, got %v", faults)
+		}
+	})
+	refused := []struct {
+		name   string
+		fields []string
+	}{
+		{"a limit of 0", []string{title, pin, counter("default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 0}")}},
+		{"a limit of 101", []string{title, pin, counter("default: 0, min: 0, writable: never, attempts: {counts: pin, limit: 101}")}},
+		{"counts of a readable secret", []string{title, "- {name: pin, type: string, sensitivity: secret}", counter(ok)}},
+		{"counts of a public field", []string{title, "- {name: pin, type: string}", counter(ok)}},
+		{"counts of a field that Todo does not declare", []string{title, counter(ok)}},
+		{"counts of itself", []string{title, pin, counter("default: 0, min: 0, writable: never, attempts: {counts: pin_attempts, limit: 5}")}},
+		{"a counter of type int64", []string{title, pin, "- {name: pin_attempts, type: int64, " + ok + "}"}},
+		{"an optional counter", []string{title, pin, counter("optional: true, " + ok)}},
+		{"a counter with the default 1", []string{title, pin, counter("default: 1, min: 0, writable: never, attempts: {counts: pin, limit: 5}")}},
+		{"a counter with a maximum", []string{title, pin, counter("max: 9, " + ok)}},
+		{"a counter that is writable always", []string{title, pin, counter("default: 0, min: 0, writable: always, attempts: {counts: pin, limit: 5}")}},
+		{"a pii counter", []string{title, pin, counter("sensitivity: pii, " + ok)}},
+		{"a unique counter", []string{title, pin, counter("unique: true, " + ok)}},
+		{"two counters of pin", []string{title, pin, counter(ok), "- {name: pin_tries, type: int32, " + ok + "}"}},
+	}
+	for _, c := range refused {
+		t.Run("ST-DECL-INV104-T "+c.name+" is refused", func(t *testing.T) {
+			faults := entityRuleFaults(t, "attempts-counter", "", "", c.fields...)
+			if len(faults) == 0 {
+				t.Fatal("want a fault of attempts-counter, got none")
+			}
+			for _, fault := range faults {
+				if !strings.Contains(fault.Message, "ST-DECL-INV104") || (!strings.Contains(fault.Message, `"pin_attempts"`) && !strings.Contains(fault.Message, `"pin_tries"`)) {
+					t.Errorf("the fault does not name the counter field and the rule: %s", fault.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestEventFields(t *testing.T) {
+	fields := []string{"- {name: title, type: string}", "- {name: done, type: bool, default: false}",
+		"- {name: email, type: string, sensitivity: pii}", "- {name: token, type: string, sensitivity: secret}"}
+	const mixins = "mixins:\n  - durable-events\n  - kafka-events\n"
+	accepted := map[string]string{
+		"of title and done":                          "events: {fields: [title, done]}",
+		"of title and email with a reason for email": "events: {fields: [title, email], version: 2, pii_reasons: {email: the ledger sends the receipt}}",
+	}
+	for name, events := range accepted {
+		t.Run("ST-DECL-INV105-T Event fields "+name+" are accepted", func(t *testing.T) {
+			if faults := entityRuleFaults(t, "event-fields", events, mixins, fields...); len(faults) != 0 {
+				t.Fatalf("want no fault, got %v", faults)
+			}
+		})
+	}
+	many := make([]string, 65)
+	for i := range many {
+		many[i] = "title"
+	}
+	refused := []struct{ name, events, tail, names string }{
+		{"with no field", "events: {fields: []}", mixins, "0"},
+		{"with 65 fields", "events: {fields: [" + strings.Join(many, ", ") + "]}", mixins, "65"},
+		{"of a field that Todo does not declare", "events: {fields: [colour]}", mixins, `"colour"`},
+		{"of title twice", "events: {fields: [title, title]}", mixins, `"title"`},
+		{"of the secret token", "events: {fields: [token]}", mixins, `"token"`},
+		{"of email with no reason", "events: {fields: [email]}", mixins, `"email"`},
+		{"with a reason for title", "events: {fields: [title], pii_reasons: {title: no reason}}", mixins, `"title"`},
+		{"of the version 0", "events: {fields: [title], version: 0}", mixins, "version"},
+		{"in a declaration that publishes no change events", "events: {fields: [title]}", "", "kafka-events"},
+	}
+	for _, c := range refused {
+		t.Run("ST-DECL-INV105-T Event fields "+c.name+" are refused", func(t *testing.T) {
+			faults := entityRuleFaults(t, "event-fields", c.events, c.tail, fields...)
+			if len(faults) == 0 {
+				t.Fatal("want a fault of event-fields, got none")
+			}
+			found := false
+			for _, fault := range faults {
+				if !strings.Contains(fault.Message, "ST-DECL-INV105") || !strings.Contains(fault.Message, `"Todo"`) {
+					t.Errorf("the fault does not name Todo and the rule: %s", fault.Message)
+				}
+				found = found || strings.Contains(fault.Message, c.names) || strings.Contains(fault.Found, c.names)
+			}
+			if !found {
+				t.Errorf("no fault names %s: %v", c.names, faults)
+			}
+		})
+	}
+}

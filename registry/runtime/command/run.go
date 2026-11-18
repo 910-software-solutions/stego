@@ -609,15 +609,18 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 		return Result{}, internalf("the transaction did not begin"), false
 	}
 	committed := false
+	var s *state
 	defer func() {
 		if !committed {
 			_ = tx.Rollback()
 			// The attempt's audit record rolled back with it, and it holds no chain lock any more, so a read of a
 			// rerun may write its own read row.
 			rt.cfg.Audit.Forget(req.RequestID)
+			// A wrong attempt of a counted secret survives the rollback (ST-SUP-RP10-LC54).
+			rt.commitAttempts(ctx, s)
 		}
 	}()
-	s := newState(ctx, rt, tx, req.Tenant, req.Principal, modeCommand, cmd.spec.Name, cmd.writes, cmd.destinations)
+	s = newState(ctx, rt, tx, req.Tenant, req.Principal, modeCommand, cmd.spec.Name, cmd.writes, cmd.destinations)
 	s.request = req
 	s.changeEvents = cmd.changeEvents
 	// The handle takes only the declared lists, and a list value RunTime takes the start of the attempt on the
@@ -706,6 +709,11 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	case !wrapped.Commit:
 		// A transient response of the fill: the wrapper stored nothing, and the attempt rolls back.
 		return Result{Response: wrapped.Response}, nil, false
+	}
+	// The checks of the counted secrets of the fill change the counts in the transaction that commits
+	// (ST-SUP-RP10-LC54).
+	if err := s.countAttempts(ctx); err != nil {
+		return Result{}, err, errors.Is(err, ErrConflict)
 	}
 	if err := commit(ctx, s); err != nil {
 		return Result{}, err, errors.Is(err, ErrConflict)

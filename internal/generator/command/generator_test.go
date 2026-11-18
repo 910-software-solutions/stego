@@ -1061,3 +1061,88 @@ func TestSealingEmission(t *testing.T) {
 		}
 	})
 }
+
+// walletEntities are the entities of the tests of the counter and the event fields: Wallet with a compare-only secret
+// pin, its counter pin_attempts with the limit 5 and no event fields, and Transaction with the event fields wallet_id,
+// kind and amount at version 2.
+func walletEntities() []types.Entity {
+	zero, two := 0.0, 2
+	return []types.Entity{
+		{Name: "Wallet", Fields: []types.Field{
+			{Name: "label", Type: types.FieldTypeString},
+			{Name: "pin", Type: types.FieldTypeString, Sensitivity: "secret", CompareOnly: true},
+			{Name: "pin_attempts", Type: types.FieldTypeInt32, Default: 0, Min: &zero, Writable: types.WritableNever, Attempts: &types.FieldAttempts{Counts: "pin", Limit: 5}},
+		}},
+		{Name: "Transaction", Fields: []types.Field{
+			{Name: "wallet_id", Type: types.FieldTypeString},
+			{Name: "kind", Type: types.FieldTypeEnum, Values: []string{"deposit", "withdrawal"}},
+			{Name: "amount", Type: types.FieldTypeInt64},
+			{Name: "note", Type: types.FieldTypeString, Optional: true},
+		}, Events: &types.EntityEvents{Fields: []string{"wallet_id", "kind", "amount"}, Version: &two}},
+	}
+}
+
+// buildEntityFile compiles the entity file of the package data against the runtime library of this repository.
+func buildEntityFile(t *testing.T, source []byte) {
+	t.Helper()
+	p := &project{t: t, dir: t.TempDir()}
+	runtimeDir, err := filepath.Abs(filepath.Join("..", "..", "..", "registry", "runtime"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sums, err := os.ReadFile(filepath.Join(runtimeDir, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.write("go.sum", sums)
+	p.write("go.mod", []byte("module example.com/wallets\n\ngo "+new(Generator).MinimumGoVersion()+
+		"\n\nrequire github.com/jsell-rh/stego/registry/runtime v0.2.0\n\nreplace github.com/jsell-rh/stego/registry/runtime => "+runtimeDir+"\n"))
+	p.write("data/entities.go", source)
+	p.mustGo("mod", "tidy")
+	p.mustGo("vet", "./...")
+}
+
+func TestCounterEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC24-T01 A counted compare-only field gets its counter and the CountedAt target in the scan", func(t *testing.T) {
+		source, err := EntityFile("data", []string{"Wallet", "Transaction"}, walletEntities(), "tenant_id", Relations{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		for _, want := range []string{
+			`var walletPinCounter = command.Must(command.NewCounter(command.CounterSpec{Entity: "Wallet", Field: "pin", Column: "pin_attempts", Limit: 5,`,
+			`Count: "UPDATE public.\"wallets\" SET \"pin_attempts\" = LEAST(\"pin_attempts\" + $3::integer, 5), \"version\" = \"version\" + 1, \"updated_time\" = now() WHERE \"tenant_id\" = $1 AND \"id\" = $2::uuid"`,
+			`Reset: "UPDATE public.\"wallets\" SET \"pin_attempts\" = 0 WHERE \"tenant_id\" = $1 AND \"id\" = $2::uuid AND \"pin_attempts\" <> 0"`,
+			`command.CountedAt(walletPinCounter, &v.ID, &v.Pin, &v.PinAttempts)`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("the entity file does not hold %s:\n%s", want, text)
+			}
+		}
+		buildEntityFile(t, source)
+	})
+}
+
+func TestEventDataEmission(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC25-T01 An entity with Events gets EventData and EventVersion, and one with none gets neither", func(t *testing.T) {
+		source, err := EntityFile("data", []string{"Wallet", "Transaction"}, walletEntities(), "tenant_id", Relations{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(source)
+		wallet, transaction, _ := strings.Cut(text, "// TransactionEntity is")
+		for _, want := range []string{
+			`EventData: func(v Transaction) map[string]any {`,
+			`return map[string]any{"wallet_id": v.WalletID, "kind": v.Kind, "amount": v.Amount}`,
+			"EventVersion: 2,",
+		} {
+			if !strings.Contains(transaction, want) {
+				t.Errorf("the declaration of Transaction does not hold %s:\n%s", want, transaction)
+			}
+		}
+		if strings.Contains(wallet, "EventData") || strings.Contains(wallet, "EventVersion") {
+			t.Errorf("the declaration of Wallet gives event data:\n%s", wallet)
+		}
+		buildEntityFile(t, source)
+	})
+}

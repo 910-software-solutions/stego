@@ -161,16 +161,26 @@ func (s *state) sealArgs(ctx context.Context, args []any) ([]any, error) {
 type openingRow struct {
 	Scanner
 	s *state
+	// locked tells that the transaction holds the lock of the row, which a counted compare-only value needs
+	// (ST-SUP-RP10-LC54).
+	locked bool
 }
 
-// opening wraps a row of a statement of the handle so that its scan opens each readable secret.
-func (s *state) opening(row Scanner) Scanner { return openingRow{Scanner: row, s: s} }
+// opening wraps a row of a statement of the handle so that its scan opens each readable secret and binds each counted
+// compare-only value to the counter of its row; locked tells that the statement locked the row or wrote it.
+func (s *state) opening(row Scanner, locked bool) Scanner {
+	return openingRow{Scanner: row, s: s, locked: locked}
+}
 
 func (o openingRow) Scan(dest ...any) error {
 	if err := o.Scanner.Scan(dest...); err != nil {
 		return err
 	}
 	for _, d := range dest {
+		if counted, ok := d.(*countedTarget); ok {
+			o.s.bindCounted(counted, o.locked)
+			continue
+		}
 		if sealing, ok := d.(sealingTarget); ok {
 			// A field whose seal step is open reads the clear value when the two columns differ (ST-SUP-RP10-LC49).
 			at := sealed.Place{Tenant: o.s.tenant.ID(), Table: sealing.s.table, Column: sealing.s.column}

@@ -71,7 +71,28 @@ func (s *Secret) UnmarshalJSON([]byte) error { return ErrDecode }
 // gave. It never gives a text: Matches checks a given value (ST-SUP-RP16-LC03, ST-SUP-RP16-LC04). Its state is behind
 // pointers to strings, as the text of Secret is: text is a new value that the next write hashes, and hash the stored
 // Argon2id string; at most one is set.
-type Compared struct{ text, hash *string }
+type Compared struct {
+	text, hash *string
+	// counter counts the checks of a stored value whose field has a counter of wrong attempts; nil counts nothing
+	// (ST-SUP-RP10-LC54).
+	counter Counter
+}
+
+// Counter counts the checks of a stored compare-only value whose field declares a counter of wrong attempts
+// (ST-DECL-INV104, ST-SUP-RP10-LC54). The command runtime binds it to each value that its handle reads.
+type Counter interface {
+	// Allow tells whether a check may run now: false at the limit, and for a value that its handle may not count.
+	Allow() bool
+	// Record records the result of one check.
+	Record(matched bool)
+}
+
+// CountedBy gives c with the counter k: each later Matches of a stored value asks k first and records its result in
+// k. The command runtime calls it for the value of a counted field that its handle reads.
+func CountedBy(c Compared, k Counter) Compared {
+	c.counter = k
+	return c
+}
 
 // ComparedOf gives the Compared of a new text, which the next write stores as its hash; an empty text gives a
 // Compared that is not set.
@@ -95,7 +116,18 @@ func (c Compared) IsSet() bool { return c.text != nil || c.hash != nil }
 
 // Matches tells whether value is the secret: against the stored hash in constant time, or against a new text that is
 // not stored yet, also in constant time. An empty value and a Compared that is not set match nothing.
+//
+// A stored value of a field with a counter of wrong attempts asks its counter first: when the counter does not allow
+// a check, Matches gives false and checks nothing; otherwise the counter records the result (ST-SUP-RP10-LC54).
 func (c Compared) Matches(value string) bool {
+	if c.counter != nil && c.hash != nil {
+		if !c.counter.Allow() {
+			return false
+		}
+		matched := value != "" && Matches(*c.hash, value)
+		c.counter.Record(matched)
+		return matched
+	}
 	switch {
 	case value == "":
 		return false
