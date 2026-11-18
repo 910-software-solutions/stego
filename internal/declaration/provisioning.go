@@ -122,5 +122,15 @@ func checkProvisioningSchema(service *types.ServiceDeclaration, schema *AuthzSch
 				Message: fmt.Sprintf("the tenant provisioning names the %s permission %q, which reaches a wildcard subject of the schema %s, so anyone could hold it; Provision and Retire are never public", part.what, part.value, schema.Path)})
 		}
 	}
+	// The tenant list of the operator is decided on list_tenants of the same resource, when the schema declares it,
+	// and is never public either (ST-SUP-RC27-OC16).
+	if definition.permissions[listTenantsPermission] && schema.reachesWildcard(provisioning.ResourceType, listTenantsPermission) {
+		faults = append(faults, ValidationError{Category: "authorization", Rule: "tenant-provisioning", Path: path + ".resource_type", Found: listTenantsPermission,
+			Message: fmt.Sprintf("the permission %q of the resource type %s reaches a wildcard subject of the schema %s, so anyone could list the tenants; the tenant list is never public", listTenantsPermission, provisioning.ResourceType, schema.Path)})
+	}
 	return append(faults, checkAdminRelation(service, schema, definition)...)
 }
+
+// listTenantsPermission is the permission of the service-level resource type that decides the tenant list of the
+// operator (ST-SUP-RC27-OC16).
+const listTenantsPermission = "list_tenants"

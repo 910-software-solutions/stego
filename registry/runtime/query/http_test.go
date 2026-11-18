@@ -415,7 +415,7 @@ func TestUnavailableAnswer(t *testing.T) {
 			}
 			w := httptest.NewRecorder()
 			status, code := answerOf(err, nil)
-			writeCodedProblem(w, status, code)
+			(*Runtime)(nil).writeCodedProblem(w, status, code)
 			if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" || strings.Contains(w.Body.String(), "refused") {
 				t.Fatalf("%s over HTTP gave %d %v %s, want 503 with Retry-After and no error text", name, w.Code, w.Header(), w.Body)
 			}
@@ -439,3 +439,117 @@ type sqlState string
 
 func (s sqlState) Error() string    { return "sqlstate " + string(s) }
 func (s sqlState) SQLState() string { return string(s) }
+
+func TestCursorKeyRing(t *testing.T) {
+	t.Run("ST-SUP-RP11-LC23-T01 Each key of the ring opens a cursor, and only the first seals", func(t *testing.T) {
+		e := newEnv(t)
+		keyA, keyB, keyC := bytes.Repeat([]byte{'a'}, MinCursorKey), bytes.Repeat([]byte{'b'}, MinCursorKey), bytes.Repeat([]byte{'c'}, MinCursorKey)
+		runtime := func(key []byte, extra ...[]byte) *Runtime {
+			t.Helper()
+			rt, err := New(Config{DB: e.db, Service: "orders", CursorKey: key, ExtraCursorKeys: extra})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return rt
+		}
+		q, err := NewQuery("list-orders")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tn, p := mustTenant(t, "t1"), mustPrincipal(t, "user:u-7")
+		seal := func(rt *Runtime) string {
+			t.Helper()
+			text, err := rt.CursorText(q, tn, p, KeyCursor("o2"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return text
+		}
+		opens := func(rt *Runtime, text string) bool {
+			c, err := rt.ParseCursor(q, tn, p, text)
+			if err != nil {
+				if !errors.Is(err, ErrBadCursor) {
+					t.Fatalf("ParseCursor gave %v, want nil or ErrBadCursor", err)
+				}
+				return false
+			}
+			after, ok := c.Key()
+			return ok && after == "o2"
+		}
+		// The three steps of a rotation from key A to key B: B as the extra key; B as the key and A as the extra
+		// key; B alone.
+		onlyA, step1, step2, onlyB := runtime(keyA), runtime(keyA, keyB), runtime(keyB, keyA), runtime(keyB)
+		fromA, fromStep1, fromStep2 := seal(onlyA), seal(step1), seal(step2)
+		for name, c := range map[string]struct {
+			rt   *Runtime
+			text string
+			want bool
+		}{
+			"step 1 opens a cursor of A":        {step1, fromA, true},
+			"A opens a cursor of step 1":        {onlyA, fromStep1, true},
+			"step 2 opens a cursor of step 1":   {step2, fromStep1, true},
+			"step 1 opens a cursor of step 2":   {step1, fromStep2, true},
+			"step 2 opens a cursor of A":        {step2, fromA, true},
+			"B opens a cursor of step 2":        {onlyB, fromStep2, true},
+			"A opens no cursor of step 2":       {onlyA, fromStep2, false},
+			"B opens no cursor of A":            {onlyB, fromA, false},
+			"step 2 opens no cursor of a key C": {step2, seal(runtime(keyC)), false},
+			"the ring opens no changed cursor":  {step2, fromA[:len(fromA)-2] + "AA", false},
+		} {
+			if got := opens(c.rt, c.text); got != c.want {
+				t.Errorf("%s: opened %v, want %v", name, got, c.want)
+			}
+		}
+		for name, cfg := range map[string]Config{
+			"an extra key that is short":   {DB: e.db, Service: "orders", CursorKey: keyA, ExtraCursorKeys: [][]byte{keyB[:MinCursorKey-1]}},
+			"an extra key that is the key": {DB: e.db, Service: "orders", CursorKey: keyA, ExtraCursorKeys: [][]byte{keyA}},
+			"an extra key with no key":     {DB: e.db, Service: "orders", ExtraCursorKeys: [][]byte{keyB}},
+		} {
+			if _, err := New(cfg); err == nil {
+				t.Errorf("New took %s", name)
+			}
+		}
+	})
+}
+
+func TestProblemForm(t *testing.T) {
+	t.Run("ST-SUP-RC33-OC12-T01 A query problem has the type of its code under the problem base, and about:blank with no base", func(t *testing.T) {
+		const base = "https://errors.example.test/orders/"
+		e := newEnv(t)
+		rt, err := New(Config{DB: e.db, Service: "orders", CursorKey: testCursorKey, ProblemBase: base})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct {
+			status int
+			code   string
+			want   string
+		}{
+			{http.StatusNotFound, "", base + "not-found"},
+			{http.StatusBadRequest, "", base + "bad-request"},
+			{http.StatusInternalServerError, ErrorCodeInternal, base + "internal"},
+			{http.StatusServiceUnavailable, ErrorCodeUnavailable, base + "unavailable"},
+			{http.StatusConflict, "order.closed", base + "order-closed"},
+		} {
+			w := httptest.NewRecorder()
+			rt.writeCodedProblem(w, c.status, c.code)
+			var p map[string]any
+			if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+				t.Fatal(err)
+			}
+			if p["type"] != c.want || w.Code != c.status {
+				t.Errorf("the problem %d %q has %v, want the type %s", c.status, c.code, p, c.want)
+			}
+			for member := range p {
+				if member != strings.ToLower(member) {
+					t.Errorf("the problem member %q is not snake_case", member)
+				}
+			}
+		}
+		w := httptest.NewRecorder()
+		(*Runtime)(nil).writeProblem(w, http.StatusNotFound)
+		if !strings.Contains(w.Body.String(), `"type":"about:blank"`) {
+			t.Errorf("with no base the problem is %s, want the type about:blank", w.Body)
+		}
+	})
+}

@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.179.0",
+    "archetype_version": "3.178.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -390,7 +390,7 @@
     {
       "id": "component:command",
       "name": "command",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared command in the transaction of the caller's tenant.",
@@ -413,7 +413,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "architecture"
         }
       }
@@ -608,7 +608,7 @@
     {
       "id": "component:query",
       "name": "query",
-      "version": "1.5.0",
+      "version": "1.6.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared query for the caller and gives back its rows.",
@@ -631,7 +631,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.5.0",
+          "version": "1.6.0",
           "field": "architecture"
         }
       }
@@ -782,7 +782,7 @@
     {
       "id": "component:tenancy",
       "name": "tenancy",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "stage": "ga",
       "layer": "authentication",
       "flow_part": "Checks that the caller's tenant is active and scopes the request to it.",
@@ -800,7 +800,7 @@
         "registry": {
           "part": "component",
           "name": "tenancy",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "architecture"
         }
       }
@@ -927,7 +927,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "provides"
         }
       }
@@ -1041,7 +1041,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.5.0",
+          "version": "1.6.0",
           "field": "provides"
         }
       }
@@ -1077,7 +1077,7 @@
         "registry": {
           "part": "component",
           "name": "tenancy",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "provides"
         }
       }
@@ -1109,7 +1109,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.179.0",
+          "version": "3.178.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1123,7 +1123,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.179.0",
+          "version": "3.178.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1137,7 +1137,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.179.0",
+          "version": "3.178.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1151,7 +1151,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.179.0",
+          "version": "3.178.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -1165,7 +1165,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.179.0",
+          "version": "3.178.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1179,7 +1179,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.179.0",
+          "version": "3.178.0",
           "field": "bindings.auth-provider"
         }
       }
@@ -1920,7 +1920,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -2064,7 +2064,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -2244,7 +2244,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -2388,7 +2388,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -2532,7 +2532,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -2731,7 +2731,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -2952,7 +2952,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -3149,7 +3149,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -3293,7 +3293,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -3503,7 +3503,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -3655,7 +3655,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -3865,7 +3865,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -4064,7 +4064,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -4269,7 +4269,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -4413,7 +4413,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -4565,7 +4565,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -4745,7 +4745,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "architecture"
             }
           }
@@ -5095,7 +5095,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.5.0",
+          "version": "1.6.0",
           "field": "needs"
         }
       }
@@ -5240,7 +5240,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -5259,7 +5259,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -5277,7 +5277,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -5295,7 +5295,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -5314,7 +5314,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -6618,7 +6618,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -6636,7 +6636,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -7381,7 +7381,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -7424,6 +7424,24 @@
       }
     },
     {
+      "id": "variable:STEGO_QUERY_CURSOR_EXTRA_KEY_FILE",
+      "name": "STEGO_QUERY_CURSOR_EXTRA_KEY_FILE",
+      "read_by": [
+        "component:query"
+      ],
+      "type": "path",
+      "required": false,
+      "secret": false,
+      "source": {
+        "registry": {
+          "part": "component",
+          "name": "query",
+          "version": "1.6.0",
+          "field": "environment"
+        }
+      }
+    },
+    {
       "id": "variable:STEGO_QUERY_CURSOR_KEY_FILE",
       "name": "STEGO_QUERY_CURSOR_KEY_FILE",
       "read_by": [
@@ -7436,7 +7454,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.5.0",
+          "version": "1.6.0",
           "field": "environment"
         }
       }
@@ -7490,7 +7508,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -7599,7 +7617,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -9546,7 +9564,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9561,7 +9579,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9576,7 +9594,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9591,7 +9609,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9606,7 +9624,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9621,7 +9639,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9636,7 +9654,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9651,7 +9669,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9666,7 +9684,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9681,7 +9699,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9696,7 +9714,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9711,7 +9729,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9726,7 +9744,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9741,7 +9759,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9756,7 +9774,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9771,7 +9789,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -9786,7 +9804,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -13116,7 +13134,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -13131,7 +13149,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -13146,7 +13164,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -13161,7 +13179,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -13176,7 +13194,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -13191,7 +13209,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15096,7 +15114,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15111,7 +15129,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15126,7 +15144,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15141,7 +15159,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15252,6 +15270,51 @@
           }
         },
         {
+          "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_EXTRA_KEY_FILE/read-by",
+          "about": "variable:STEGO_QUERY_CURSOR_EXTRA_KEY_FILE",
+          "name": "read by",
+          "value": "component:query",
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "query",
+              "version": "1.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_EXTRA_KEY_FILE/required",
+          "about": "variable:STEGO_QUERY_CURSOR_EXTRA_KEY_FILE",
+          "name": "required",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "query",
+              "version": "1.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
+          "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_EXTRA_KEY_FILE/secret",
+          "about": "variable:STEGO_QUERY_CURSOR_EXTRA_KEY_FILE",
+          "name": "secret",
+          "value": false,
+          "state": "stated",
+          "source": {
+            "registry": {
+              "part": "component",
+              "name": "query",
+              "version": "1.6.0",
+              "field": "environment"
+            }
+          }
+        },
+        {
           "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_KEY_FILE/read-by",
           "about": "variable:STEGO_QUERY_CURSOR_KEY_FILE",
           "name": "read by",
@@ -15261,7 +15324,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.5.0",
+              "version": "1.6.0",
               "field": "environment"
             }
           }
@@ -15276,7 +15339,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.5.0",
+              "version": "1.6.0",
               "field": "environment"
             }
           }
@@ -15291,7 +15354,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.5.0",
+              "version": "1.6.0",
               "field": "environment"
             }
           }
@@ -15396,7 +15459,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15411,7 +15474,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15426,7 +15489,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15681,7 +15744,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15696,7 +15759,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15711,7 +15774,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -15881,7 +15944,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0"
+              "version": "1.4.0"
             }
           }
         },
@@ -15915,7 +15978,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0"
+              "version": "1.4.0"
             }
           }
         },
@@ -15949,7 +16012,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0"
+              "version": "1.4.0"
             }
           }
         },
@@ -15983,7 +16046,7 @@
             "registry": {
               "part": "component",
               "name": "tenancy",
-              "version": "1.3.0"
+              "version": "1.4.0"
             }
           }
         },

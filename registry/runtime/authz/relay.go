@@ -112,6 +112,10 @@ type Relay struct {
 
 	// afterFloor runs after the floor is raised and before the delivery is done. Only a test sets it.
 	afterFloor func() error
+	// deleteLimit and deleteCalls bound the delete of a retired tenant's tuples: TenantDeleteLimit and
+	// TenantDeleteCalls, which only a test changes.
+	deleteLimit uint32
+	deleteCalls int
 }
 
 // NewRelay returns the relay of cfg. It refuses a configuration that lacks a part, such as the allow list of the
@@ -177,7 +181,7 @@ func NewRelay(cfg RelayConfig, options ...RelayOption) (*Relay, error) {
 		relations[relation] = true
 	}
 	r := &Relay{principal: principal, relationships: cfg.Relationships, db: cfg.DB, schema: schema, owners: owners,
-		relations: relations, marker: marker, bound: DefaultAlertBound}
+		relations: relations, marker: marker, bound: DefaultAlertBound, deleteLimit: TenantDeleteLimit, deleteCalls: TenantDeleteCalls}
 	for _, option := range options {
 		if option == nil {
 			continue
@@ -336,6 +340,9 @@ func (r *Relay) Deliver(ctx context.Context, tx *sql.Tx, delivery outbox.Deliver
 		return outbox.PermanentRefusal(err)
 	}
 	tuple := message.Tuple.tuple()
+	if message.Operation == OperationDeleteTenant {
+		return r.deliverTenantDelete(ctx, delivery, tuple)
+	}
 	// Only a relation of the allow list is written: a staged tuple of an undeclared relation, or of the floor
 	// marker, is refused for good and never reaches the provider (security review of PR #421, I3).
 	if !r.relations[Relation{ResourceType: tuple.Resource.Type, Name: tuple.Relation}] {
@@ -366,6 +373,124 @@ func (r *Relay) Deliver(ctx context.Context, tx *sql.Tx, delivery outbox.Deliver
 		}
 	}
 	return r.storeToken(ctx, tx, delivery, tuple, key, token)
+}
+
+// The bounds of the delete of the tuples of a retired tenant (ST-SUP-RC27-OC15): the most relationships of one call,
+// and the most calls of one attempt.
+const (
+	TenantDeleteLimit = 1000
+	TenantDeleteCalls = 10
+)
+
+// errTenantDeleteMore is the transient refusal of an attempt that deleted TenantDeleteCalls parts of a retired
+// tenant and left more: the outbox tries again, and the next attempt deletes the next parts.
+var errTenantDeleteMore = errors.New("authz: the delete of the tuples of the tenant has more parts")
+
+// deliverTenantDelete lands the delete of every relationship of one resource type of the retired tenant of the
+// delivery (ST-SUP-RC27-OC15): the payload's prefix must be the prefix of the outbox row's tenant; a type of which
+// the allow list holds no relation has no tuple to delete. With no lock it deletes at most TenantDeleteCalls parts of
+// TenantDeleteLimit, then raises the floor with the marker; an attempt that leaves more is a transient refusal. It logs the type and the
+// count of each attempt, and no resource ID and no subject.
+func (r *Relay) deliverTenantDelete(ctx context.Context, delivery outbox.Delivery, tuple Tuple) error {
+	if tuple.Resource.ID != TenantPrefix(delivery.Tenant) {
+		return outbox.PermanentRefusal(ErrOtherTenant)
+	}
+	known := false
+	for relation := range r.relations {
+		known = known || relation.ResourceType == tuple.Resource.Type
+	}
+	if resourceKey(tuple.Resource.Type, "") != delivery.ResourceKey {
+		return outbox.PermanentRefusal(errors.New("authz: the relay payload is for another resource key"))
+	}
+	if !known {
+		// The relay writes no relation of the type, so no tuple of it can be there: nothing is deleted, and no
+		// relationship outside the allow list is touched.
+		r.logTenantDelete(ctx, tuple.Resource.Type, 0, false)
+		return nil
+	}
+	deleter, ok := r.relationships.(PrefixDeleter)
+	if !ok {
+		return outbox.PermanentRefusal(errors.New("authz: the relationships port deletes no prefix"))
+	}
+	// The deletes run with no lock of the floor row, so the relay deliveries of the other tenants do not wait for
+	// them; the tenant is retired, so the order of its deletes against the floor does not matter (security review of
+	// PR #437, L2).
+	var deleted uint64
+	var err error
+	more := true
+	for call := 0; call < r.deleteCalls && more; call++ {
+		var n uint64
+		if n, more, err = deleter.DeletePrefix(ctx, tuple.Resource.Type, tuple.Resource.ID, r.deleteLimit); err != nil {
+			r.logTenantDelete(ctx, tuple.Resource.Type, deleted, true)
+			if deleted > 0 {
+				// The parts that landed raise the floor before the attempt ends.
+				_ = r.raiseFloor(ctx, tuple.Resource.Type)
+			}
+			if IsRefused(err) {
+				return outbox.PermanentRefusal(fmt.Errorf("authz: the provider refused the delete of the tuples of %s: %w", tuple.Resource.Type, err))
+			}
+			return fmt.Errorf("authz: the delete of the tuples of %s failed: %w", tuple.Resource.Type, err)
+		}
+		deleted += n
+	}
+	r.logTenantDelete(ctx, tuple.Resource.Type, deleted, more)
+	// The floor is raised after the parts of each attempt, also of one that leaves more, so a read at the floor
+	// sees each delete that landed.
+	if err := r.raiseFloor(ctx, tuple.Resource.Type); err != nil {
+		return err
+	}
+	if more {
+		return outbox.TransientRefusal(errTenantDeleteMore)
+	}
+	return nil
+}
+
+// raiseFloor touches the marker under the lock of the floor row and raises the floor to its token, in a short
+// transaction of its own: the token is at least as fresh as each delete that landed before it.
+func (r *Relay) raiseFloor(ctx context.Context, resourceType string) error {
+	floorTx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fixed("authz: the floor transaction cannot begin", err)
+	}
+	defer func() { _ = floorTx.Rollback() }()
+	var current string
+	if err := floorTx.QueryRowContext(ctx, "SELECT token FROM "+r.schema+".authz_floor WHERE only_row FOR UPDATE").Scan(&current); err != nil {
+		return fixed("authz: the floor row cannot be locked", err)
+	}
+	token, err := r.relationships.Write(ctx, []Tuple{r.marker}, nil, nil)
+	if err != nil {
+		return fmt.Errorf("authz: the marker after the delete of the tuples of %s failed: %w", resourceType, err)
+	}
+	if token.IsZero() {
+		return fmt.Errorf("authz: the provider gave no token for the delete of the tuples of %s", resourceType)
+	}
+	if _, err := floorTx.ExecContext(ctx, "UPDATE "+r.schema+".authz_floor SET token = $1, sequence = sequence + 1 WHERE only_row",
+		token.Text()); err != nil {
+		return fixed("authz: the floor cannot be written", err)
+	}
+	if err := floorTx.Commit(); err != nil {
+		return fixed("authz: the floor transaction cannot commit", err)
+	}
+	return nil
+}
+
+// TenantDeleteEvent is the event name of the log line of each attempt of the delete of a retired tenant's tuples.
+const TenantDeleteEvent = "authz.tenant_tuples.deleted"
+
+// logTenantDelete logs one attempt of the delete of a retired tenant's tuples: the resource type, the count of
+// deleted relationships and whether some remain; no resource ID and no subject (ST-SUP-RC27-OC15).
+func (r *Relay) logTenantDelete(ctx context.Context, resourceType string, deleted uint64, more bool) {
+	if r.logger == nil {
+		return
+	}
+	var record otellog.Record
+	record.SetEventName(TenantDeleteEvent)
+	record.SetSeverity(otellog.SeverityInfo)
+	record.SetSeverityText("INFO")
+	record.SetBody(attribute.StringValue("the relay deleted tuples of a retired tenant"))
+	record.AddAttributes(attribute.String("stego.resource_type", resourceType), attribute.Int64("stego.deleted", int64(deleted)),
+		attribute.Bool("stego.more", more))
+	r.logger.Emit(context.WithoutCancel(ctx), record)
 }
 
 // writeWithFloor writes the tuple and the marker in one request under the floor lock and raises the floor to the
@@ -456,6 +581,10 @@ func readPayload(body []byte, t tenant.Tenant) (payload, error) {
 	if message.Operation == OperationDeleteRelation && message.Version != payloadVersion {
 		return payload{}, errors.New("authz: the relay payload of a filtered delete is not of version 2")
 	}
+	// The delete of a retired tenant exists only at version 2 too (ST-SUP-RC27-OC15).
+	if message.Operation == OperationDeleteTenant && message.Version != payloadVersion {
+		return payload{}, errors.New("authz: the relay payload of a delete of a tenant is not of version 2")
+	}
 	switch message.Version {
 	case payloadVersion:
 	case payloadVersionKeys:
@@ -483,6 +612,13 @@ func readPayload(body []byte, t tenant.Tenant) (payload, error) {
 		}
 		if _, err := RelationFilter(tuple.Resource, tuple.Relation); err != nil {
 			return payload{}, err
+		}
+	case OperationDeleteTenant:
+		// The delete of a retired tenant names one resource type and the tenant prefix, and no relation and no
+		// subject (ST-SUP-RC27-OC15).
+		if tuple.Relation != "" || tuple.Subject != (Subject{}) || tuple.SubjectRelation != "" ||
+			validType("resource", tuple.Resource.Type) != nil {
+			return payload{}, errors.New("authz: the relay payload of a delete of a tenant is not valid")
 		}
 	default:
 		return payload{}, errors.New("authz: the relay payload has an unknown operation")

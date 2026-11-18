@@ -41,7 +41,7 @@ func TestSettings(t *testing.T) {
 		set := func(t *testing.T, env map[string]string) {
 			for _, name := range []string{DatabaseURLSetting, DatabaseURLFileSetting, MigrationDatabaseURLSetting,
 				MigrationDatabaseURLFileSetting, IssuerSetting, AudienceSetting, KeysURLSetting, KeysFileSetting, CAFileSetting,
-				SpiceDBEndpointSetting, SpiceDBKeyFileSetting, SpiceDBInsecureLoopbackSetting, CursorKeyFileSetting, VersionSetting} {
+				SpiceDBEndpointSetting, SpiceDBKeyFileSetting, SpiceDBInsecureLoopbackSetting, CursorKeyFileSetting, ExtraCursorKeyFileSetting, VersionSetting} {
 				t.Setenv(name, env[name])
 			}
 		}
@@ -126,6 +126,31 @@ func TestSettings(t *testing.T) {
 			api, err := ReadModeSettings(Auth{}, true)
 			if err == nil || api.CursorKey != nil {
 				t.Fatal("the api mode took a cursor key of fewer than 32 bytes")
+			}
+		})
+		t.Run("ST-SUP-RP11-LC23-T02 The api mode reads the extra cursor key, and refuses a short one or the same key", func(t *testing.T) {
+			set(t, with(nil))
+			if s, err := ReadModeSettings(Auth{}, true); err != nil || s.ExtraCursorKey != nil {
+				t.Fatalf("no extra key gave %v with an extra key of %d bytes, want none", err, len(s.ExtraCursorKey))
+			}
+			extra := []byte(strings.Repeat("e", 32))
+			set(t, with(map[string]string{ExtraCursorKeyFileSetting: writeFile(t, "extra.key", extra)}))
+			s, err := ReadModeSettings(Auth{}, true)
+			if err != nil || !bytes.Equal(s.ExtraCursorKey, extra) {
+				t.Fatalf("the extra key gave %v and %q", err, s.ExtraCursorKey)
+			}
+			if worker, err := ReadModeSettings(Auth{}, false); err != nil || worker.ExtraCursorKey != nil {
+				t.Fatalf("a process with no api mode gave %v and an extra key of %d bytes, want none", err, len(worker.ExtraCursorKey))
+			}
+			for name, file := range map[string]string{
+				"short":   writeFile(t, "extra-short.key", []byte("short")),
+				"the key": full[CursorKeyFileSetting],
+				"missing": filepath.Join(dir, "none.key"),
+			} {
+				set(t, with(map[string]string{ExtraCursorKeyFileSetting: file}))
+				if _, err := ReadModeSettings(Auth{}, true); err == nil || !strings.Contains(err.Error(), ExtraCursorKeyFileSetting) {
+					t.Errorf("an extra key that is %s gave %v, want a refusal that names %s", name, err, ExtraCursorKeyFileSetting)
+				}
 			}
 		})
 		t.Run("ST-SUP-RP14-LC01-T02 A declaration with discovery takes no key document and the CA file", func(t *testing.T) {

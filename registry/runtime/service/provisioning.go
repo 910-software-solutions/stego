@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -29,6 +30,10 @@ type Provisioning struct {
 	// AdminRelation is the declared relation of ResourceType that Provision gives each first administrator of a new
 	// tenant, or "" when the provisioning declares none (ST-SUP-RC27-OC13, ST-DECL-EN27).
 	AdminRelation string
+	// List is the permission list_tenants of ResourceType when the schema declares it, and ListRoute GET <base
+	// path>/stego/tenants, the tenant list of the operator; with no List, the service serves no tenant list
+	// (ST-SUP-RC27-OC16).
+	List, ListRoute string
 }
 
 // The path of the provisioning routes after the base path.
@@ -49,18 +54,26 @@ func (p *Provisioning) check() error {
 		p.RetireRoute != p.ProvisionRoute+RetireTailPath || strings.ContainsAny(base, " {}") {
 		return fmt.Errorf("service: the provisioning routes must be POST <base path>%s and POST <base path>%s%s", TenantsPath, TenantsPath, RetireTailPath)
 	}
+	if p.ListRoute != "" && p.ListRoute != "GET "+base {
+		return fmt.Errorf("service: the route of the tenant list must be GET <base path>%s", TenantsPath)
+	}
+	if p.List != "" && p.ListRoute == "" {
+		return errors.New("service: the tenant list needs its route")
+	}
 	return nil
 }
 
 // tenantProvisioning is what New makes of the declared provisioning: the gate of the tenant list, the routes that
 // the gate lets through, and the handlers of Provision and Retire.
 type tenantProvisioning struct {
-	gate        *tenant.Gate
-	exempt      *http.ServeMux
-	marker      *exemptRoute
-	patterns    map[string]bool
-	provision   http.Handler
-	retire      http.Handler
+	gate      *tenant.Gate
+	exempt    *http.ServeMux
+	marker    *exemptRoute
+	patterns  map[string]bool
+	provision http.Handler
+	retire    http.Handler
+	// list is the tenant list of the operator, or nil when the schema declares no list_tenants (ST-SUP-RC27-OC16).
+	list        http.Handler
 	problemType string
 	// rt is the command runtime of Provision and Retire, on which the controller mode reconciles the worker tuples
 	// (ST-SUP-RC35-OC13).
@@ -81,6 +94,12 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	tp.marker = &exemptRoute{}
 	tp.exempt.Handle(p.ProvisionRoute, tp.marker)
 	tp.exempt.Handle(p.RetireRoute, tp.marker)
+	if p.ListRoute != "" {
+		// The tenant list is decided on the service-level resource as Provision and Retire are, so the tenant check
+		// exempts it too (ST-SUP-RC27-OC16).
+		tp.patterns[p.ListRoute] = true
+		tp.exempt.Handle(p.ListRoute, tp.marker)
+	}
 	// Provision writes the tuple of each declared worker's relation on the new tenant, and Retire deletes it
 	// (ST-SUP-RC35-OC13).
 	spec := command.TenantSpec{ResourceType: p.ResourceType, Schema: schema, SubjectType: svc.parts.SubjectType,
@@ -88,6 +107,13 @@ func newProvisioning(svc *Service, rt *command.Runtime, p *Provisioning, schema 
 	if svc.provider != nil && svc.parts.declaresTenant() {
 		// A Retire also deletes the tuples of undeclared workers, under the fence of the release identity row.
 		spec.Reader = svc.provider
+	}
+	// A Retire deletes the tuples of each tenant-qualified type of the schema (ST-SUP-RC27-OC15).
+	for _, definition := range svc.parts.Definitions {
+		if definition != svc.parts.SubjectType && definition != authz.ServiceAccountType && definition != p.ResourceType &&
+			definition != authz.DefaultMarker.Resource.Type {
+			spec.TenantTypes = append(spec.TenantTypes, definition)
+		}
 	}
 	var err error
 	spec.Action, spec.Permission, spec.AdminRelation = tenant.ProvisionAction, p.Provision, p.AdminRelation
@@ -160,16 +186,84 @@ func (tp *tenantProvisioning) exempted(router *http.ServeMux, r *http.Request) b
 	return tp.patterns[matched]
 }
 
+// unrouted tells whether the main router, router, matches r to no route: the router then answers it itself, 404 for
+// a path that no route holds or 405 for a path whose routes take another method, and the tenant check has nothing to
+// decide, so it does not run (ST-SUP-RC27-OC14). With no router, every request is routed.
+func unrouted(router *http.ServeMux, r *http.Request) bool {
+	if router == nil {
+		return false
+	}
+	_, pattern := router.Handler(r)
+	return pattern == ""
+}
+
+// notRouted serves a request that the main router matches to no route: the answer of the router, 404 or 405 with its
+// Allow header, in the one problem form of the service (ST-SUP-RC27-OC14, ST-SUP-RC27-OC17); any other answer of
+// the router, such as the redirect of a path that it cleans, goes out as the router gave it.
+func (tp *tenantProvisioning) notRouted(router *http.ServeMux, w http.ResponseWriter, r *http.Request) {
+	h, _ := router.Handler(r)
+	answer := &routerAnswer{header: http.Header{}}
+	h.ServeHTTP(answer, r)
+	if answer.status == http.StatusNotFound || answer.status == http.StatusMethodNotAllowed {
+		if allow := answer.header.Get("Allow"); allow != "" {
+			w.Header().Set("Allow", allow)
+		}
+		writeTenantProblem(w, answer.status, tp.problemType, "")
+		return
+	}
+	for name, values := range answer.header {
+		w.Header()[name] = values
+	}
+	if answer.status == 0 {
+		answer.status = http.StatusOK
+	}
+	w.WriteHeader(answer.status)
+	_, _ = w.Write(answer.body.Bytes())
+}
+
+// routerAnswer keeps the answer of the main router to a request of no route, which is small: a status, its headers
+// and a short body.
+type routerAnswer struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (a *routerAnswer) Header() http.Header { return a.header }
+
+func (a *routerAnswer) WriteHeader(status int) {
+	if a.status == 0 {
+		a.status = status
+	}
+}
+
+func (a *routerAnswer) Write(b []byte) (int, error) {
+	if a.status == 0 {
+		a.status = http.StatusOK
+	}
+	if a.body.Len()+len(b) > maxRouterAnswer {
+		return len(b), nil
+	}
+	return a.body.Write(b)
+}
+
+// maxRouterAnswer bounds the body of the router's own answer that notRouted keeps.
+const maxRouterAnswer = 4096
+
 // gated serves next only for a request whose verified tenant is an active tenant of the tenant list, after the
 // verifier and before any handler, decision or fill; the two provisioning routes of the main router are exempt,
-// because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11). It answers any
-// other request with 403 and the code tenant.not_provisioned, also a verified token with no valid tenant claim, 503
+// because they are decided on the service-level resource and not on a tenant (ST-SUP-RC27-OC11), and a request that
+// the main router matches to no route gets the answer of the router (ST-SUP-RC27-OC14). It answers any other request with 403 and the code tenant.not_provisioned, also a verified token with no valid tenant claim, 503
 // with Retry-After and the code unavailable when the database cannot serve the list now, or 500 when the list cannot
 // be read for another cause, with Cache-Control no-store.
 func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if tp.exempted(router, r) {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if unrouted(router, r) {
+			tp.notRouted(router, w, r)
 			return
 		}
 		switch err := tp.admit(r.Context()); {
@@ -188,18 +282,31 @@ func (tp *tenantProvisioning) gated(router *http.ServeMux, next http.Handler) ht
 	})
 }
 
-// writeTenantProblem writes the problem response (RFC 9457) of a refused tenant, with the fixed code only.
-func writeTenantProblem(w http.ResponseWriter, httpStatus int, problemType, code string) {
-	if problemType == "" {
-		problemType = "about:blank"
+// writeTenantProblem writes the problem response (RFC 9457) of a refused tenant, with the fixed code only, for the
+// declared problem base.
+func writeTenantProblem(w http.ResponseWriter, httpStatus int, base, code string) {
+	// The type is the type of the code under the declared problem base, never the bare base (ST-SUP-RC27-OC17).
+	body := "{\"type\":" + strconv.Quote(authn.ProblemTypeOf(base, httpStatus, code)) + ",\"title\":" + strconv.Quote(http.StatusText(httpStatus)) +
+		",\"status\":" + strconv.Itoa(httpStatus)
+	if code != "" {
+		body += ",\"code\":" + strconv.Quote(code)
 	}
-	body := "{\"type\":" + strconv.Quote(problemType) + ",\"title\":" + strconv.Quote(http.StatusText(httpStatus)) +
-		",\"status\":" + strconv.Itoa(httpStatus) + ",\"code\":" + strconv.Quote(code) + "}"
+	body += "}"
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(httpStatus)
 	_, _ = io.WriteString(w, body)
+}
+
+// TenantList gives the handler of the tenant list of the operator, GET <base path>/stego/tenants, which the
+// generated code registers at the route of its entry of the operation-to-permission table, or nil for a service whose
+// schema declares no list_tenants (ST-SUP-RC27-OC16).
+func (svc *Service) TenantList() http.Handler {
+	if svc.tenants == nil || svc.tenants.list == nil {
+		return nil
+	}
+	return svc.tenants.list
 }
 
 // TenantRoutes gives the handlers of Provision and Retire, which the generated code registers at the routes of their

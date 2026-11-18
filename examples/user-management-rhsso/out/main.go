@@ -127,6 +127,7 @@ func run() (stegoErr error) {
 	mux.HandleFunc("PUT /api/user-mgmt/v1/organizations/{org_id}/orgsettings", orgSettingsHandler.Upsert)
 	mux.Handle("POST /api/user-mgmt/v1/stego/tenants", service.Routes())
 	mux.Handle("POST /api/user-mgmt/v1/stego/tenants/{tenantId}/retire", service.Routes())
+	mux.Handle("GET /api/user-mgmt/v1/stego/tenants", service.Routes())
 	mux.Handle("GET /api/user-mgmt/v1/stego/outbox/{destination}/parked", service.Routes())
 	mux.Handle("POST /api/user-mgmt/v1/stego/outbox/{destination}/parked/{action}", service.Routes())
 	mux.Handle("GET /authz/revocations/{id}", service.Routes())

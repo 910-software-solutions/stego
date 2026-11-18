@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -108,6 +109,39 @@ func (v *Verifier) token(value string) (string, string) {
 		return "", challengeRequest
 	}
 	return credential, ""
+}
+
+// ProblemTypeOf gives the type of a problem response of a service whose declared error type base is base, the
+// one form of every problem of the service (ST-SUP-RC32-OC19, ST-SUP-RC33-OC12, ST-SUP-RC27-OC17; ST-SUP-Q171 (a)):
+// base and a path fixed for each code, the code in lower case with each '.' and '_' as '-', such as
+// tenant-not-provisioned for tenant.not_provisioned; for a problem with no code, the name of its status as the CRUD
+// problems use it, such as not-found, or status-<n> for another status. With no base it is about:blank.
+func ProblemTypeOf(base string, status int, code string) string {
+	if base == "" {
+		return "about:blank"
+	}
+	if code != "" {
+		return base + strings.NewReplacer(".", "-", "_", "-").Replace(strings.ToLower(code))
+	}
+	if name, ok := statusNames[status]; ok {
+		return base + name
+	}
+	return base + "status-" + strconv.Itoa(status)
+}
+
+// statusNames are the paths of the problems with no code, by status, as the CRUD problems name them.
+var statusNames = map[int]string{
+	http.StatusBadRequest:            "bad-request",
+	http.StatusUnauthorized:          "unauthorized",
+	http.StatusForbidden:             "forbidden",
+	http.StatusNotFound:              "not-found",
+	http.StatusMethodNotAllowed:      "method-not-allowed",
+	http.StatusConflict:              "conflict",
+	http.StatusPreconditionFailed:    "precondition-failed",
+	http.StatusUnprocessableEntity:   "unprocessable-content",
+	http.StatusRequestEntityTooLarge: "content-too-large",
+	http.StatusInternalServerError:   "internal",
+	http.StatusServiceUnavailable:    "service-unavailable",
 }
 
 // problem is the problem document of a refusal (ST-SUP-RC20-OC01, OC03, OC04).

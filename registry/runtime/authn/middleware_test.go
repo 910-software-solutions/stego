@@ -284,3 +284,34 @@ func TestAuthenticate(t *testing.T) {
 		}
 	})
 }
+
+func TestProblemType(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC19-T01 The problem type is the code under the problem base, the status name with no code, and about:blank with no base", func(t *testing.T) {
+		const base = "https://errors.example.test/orders/"
+		for _, c := range []struct {
+			base   string
+			status int
+			code   string
+			want   string
+		}{
+			{base, http.StatusForbidden, "tenant.not_provisioned", base + "tenant-not-provisioned"},
+			{base, http.StatusNotFound, "denied", base + "denied"},
+			{base, http.StatusInternalServerError, "internal", base + "internal"},
+			{base, http.StatusServiceUnavailable, "unavailable", base + "unavailable"},
+			{base, http.StatusConflict, "Appointment.Not_Booked", base + "appointment-not-booked"},
+			{base, http.StatusBadRequest, "", base + "bad-request"},
+			{base, http.StatusUnauthorized, "", base + "unauthorized"},
+			{base, http.StatusNotFound, "", base + "not-found"},
+			{base, http.StatusMethodNotAllowed, "", base + "method-not-allowed"},
+			{base, http.StatusPreconditionFailed, "", base + "precondition-failed"},
+			{base, http.StatusUnprocessableEntity, "", base + "unprocessable-content"},
+			{base, http.StatusTeapot, "", base + "status-418"},
+			{"", http.StatusForbidden, "tenant.not_provisioned", "about:blank"},
+			{"", http.StatusNotFound, "", "about:blank"},
+		} {
+			if got := ProblemTypeOf(c.base, c.status, c.code); got != c.want {
+				t.Errorf("ProblemTypeOf(%q, %d, %q) = %q, want %q", c.base, c.status, c.code, got, c.want)
+			}
+		}
+	})
+}

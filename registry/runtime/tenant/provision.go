@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -220,6 +221,57 @@ func ReadIdentity(ctx context.Context, q Querier, schema string) (ReleaseIdentit
 
 // MaxListPage is the most tenants that one call of ListAfter gives.
 const MaxListPage = 1000
+
+// Entry is one tenant of the tenant list as the operator's list gives it (ST-SUP-RC27-OC16): its ID, when it was
+// provisioned, and when it was retired, or nil for an active tenant.
+type Entry struct {
+	ID            string
+	ProvisionedAt time.Time
+	RetiredAt     *time.Time
+}
+
+// Entries reads one page of the tenant list, active and retired tenants, of at most limit tenants in tenant ID
+// order after the tenant ID after, and tells whether more tenants follow (ST-SUP-RC27-OC16). An empty after starts
+// at the first tenant. It refuses a limit that is not from 1 to MaxListPage.
+func Entries(ctx context.Context, db *sql.DB, schema, after string, limit int) ([]Entry, bool, error) {
+	if db == nil {
+		return nil, false, errors.New("tenant: no database")
+	}
+	if limit < 1 || limit > MaxListPage {
+		return nil, false, fmt.Errorf("tenant: the page of the tenant list must hold from 1 to %d tenants, not %d", MaxListPage, limit)
+	}
+	quotedSchema, err := quoteName("schema", schema)
+	if err != nil {
+		return nil, false, err
+	}
+	rows, err := db.QueryContext(ctx, "SELECT tenant_id, provisioned_at, retired_at FROM "+quotedSchema+
+		".stego_tenants WHERE tenant_id > $1 ORDER BY tenant_id LIMIT $2", after, limit+1)
+	if err != nil {
+		return nil, false, fmt.Errorf("tenant: read a page of the tenant list: %w", err)
+	}
+	defer rows.Close()
+	var entries []Entry
+	for rows.Next() {
+		var e Entry
+		var retired sql.NullTime
+		if err := rows.Scan(&e.ID, &e.ProvisionedAt, &retired); err != nil {
+			return nil, false, fmt.Errorf("tenant: read a page of the tenant list: %w", err)
+		}
+		if retired.Valid {
+			at := retired.Time
+			e.RetiredAt = &at
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("tenant: read a page of the tenant list: %w", err)
+	}
+	more := len(entries) > limit
+	if more {
+		entries = entries[:limit]
+	}
+	return entries, more, nil
+}
 
 // ListAfter gives at most limit active tenants of the tenant list of schema whose IDs come after the ID after, in
 // the order of the collation of the column, which the primary key index serves, so a job that visits the list in pages holds one page at a time and resumes after the

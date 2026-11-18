@@ -506,7 +506,9 @@ func TestKeysStale(t *testing.T) {
 		// The server holds the refresh until the test releases it: no answer comes on a time limit.
 		release := server.Hold()
 		t.Cleanup(release)
-		c.add(MaxAge)
+		// Half the refresh age of a document with no Cache-Control: from there a known key ID is answered at once
+		// while one load runs (ST-SUP-RP13-LC23).
+		c.add(MaxAge / 2)
 		requests := server.Requests()
 		// The first load reached the server already; only the arrival of the refresh may end the context below.
 		for len(server.Arrived()) > 0 {
@@ -553,6 +555,87 @@ func TestKeysStale(t *testing.T) {
 			t.Errorf("the two tokens made %d requests, want the one refresh", n)
 		}
 	})
+}
+
+func TestKeysRefreshAge(t *testing.T) {
+	t.Run("ST-SUP-RP13-LC23-T01 The refresh age follows Cache-Control within its bounds, and a removed key stops at it", func(t *testing.T) {
+		for _, c := range []struct {
+			values []string
+			want   time.Duration
+		}{
+			{nil, MaxAge},
+			{[]string{"no-cache"}, MinAge},
+			{[]string{"public, no-store"}, MinAge},
+			{[]string{"max-age=0"}, MinAge},
+			{[]string{"max-age=10"}, MinAge},
+			{[]string{"public, max-age=180"}, 3 * time.Minute},
+			{[]string{"Max-Age=\"120\""}, 2 * time.Minute},
+			{[]string{"max-age=86400"}, MaxAge},
+			{[]string{"max-age=abc"}, MaxAge},
+			{[]string{"max-age=-5"}, MaxAge},
+			{[]string{"max-age=120", "max-age=240"}, 2 * time.Minute},
+		} {
+			if got := RefreshAge(c.values); got != c.want {
+				t.Errorf("RefreshAge(%q) = %s, want %s", c.values, got, c.want)
+			}
+		}
+
+		server := authntest.NewServer(t)
+		k1, k2 := authntest.NewKey(t, "k1"), authntest.NewKey(t, "k2")
+		server.Publish(k1, k2)
+		server.CacheControl("max-age=120")
+		c := newClock()
+		v, set := remoteVerifier(t, server, c)
+		requests := server.Requests()
+		c.add(59 * time.Second)
+		expectAccepted(t, v, tokenOf(t, k1, "k1"))
+		if n := server.Requests() - requests; n != 0 {
+			t.Fatalf("a known key ID before half the refresh age made %d requests, want none", n)
+		}
+		// From half the refresh age the cache answers at once, and one load runs beside the request.
+		c.add(2 * time.Second)
+		expectAccepted(t, v, tokenOf(t, k1, "k1"))
+		settle(set)
+		if n := server.Requests() - requests; n != 1 {
+			t.Fatalf("a known key ID at half the refresh age made %d requests, want the one load", n)
+		}
+		// The issuer removes k1. At the refresh age of that load, a token of k1 waits for a load and is denied.
+		server.Publish(k2)
+		c.add(119 * time.Second)
+		expectAccepted(t, v, tokenOf(t, k1, "k1"))
+		settle(set)
+		// That soft load already read the document without k1: k1 stops before the refresh age ends.
+		id, err := v.Verify(context.Background(), tokenOf(t, k1, "k1"))
+		expectRefused(t, id, err, errUnknownKey)
+
+		// With no Cache-Control and a load that fails at the refresh age, the cached key answers within the outage
+		// window; when the load succeeds, the key that the document no longer holds is denied.
+		server.CacheControl("")
+		server.Publish(k1, k2)
+		c2 := newClock()
+		v2, set2 := remoteVerifier(t, server, c2)
+		server.Fail(http.StatusServiceUnavailable)
+		c2.add(MaxAge)
+		expectAccepted(t, v2, tokenOf(t, k1, "k1"))
+		if !set2.idle() {
+			t.Fatal("a known key ID at the refresh age did not wait for the load")
+		}
+		server.Publish(k2)
+		c2.add(Cooldown)
+		id, err = v2.Verify(context.Background(), tokenOf(t, k1, "k1"))
+		expectRefused(t, id, err, errUnknownKey)
+		expectAccepted(t, v2, tokenOf(t, k2, "k2"))
+	})
+}
+
+// settle waits for the load of the key set that runs, if one runs.
+func settle(s *KeySet) {
+	s.mu.Lock()
+	flight := s.flight
+	s.mu.Unlock()
+	if flight != nil {
+		<-flight
+	}
 }
 
 func TestKeysPEM(t *testing.T) {

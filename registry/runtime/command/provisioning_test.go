@@ -1,6 +1,11 @@
 package command
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,6 +19,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/query"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -134,6 +140,195 @@ func TestProvisioning(t *testing.T) {
 		}
 		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'org-a' AND outcome = 'denied' AND action = $1`, ProvisionCommand); n != 1 || rt.UnlistedOutcomes() != 2 {
 			t.Fatalf("the denied call of bob left %d denied rows in org-a and the counter at %d, want one row and 2", n, rt.UnlistedOutcomes())
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC16-T01 The operator lists the tenants in pages with a cursor, a deny is 404, and each call is audited", func(t *testing.T) {
+		e := newEnv(t)
+		migration, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(migration)
+		rt := e.runtime(func(c *Config) { c.Entities = nil })
+		cursors, err := query.New(query.Config{DB: rt.cfg.DB, Service: "orders", CursorKey: bytes.Repeat([]byte{'k'}, query.MinCursorKey)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The caller's tenant ops is active, so each call writes its audit row in the chain of ops.
+		for _, id := range []string{"ops", "org-a", "org-b", "org-c"} {
+			e.exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('` + id + `')`)
+		}
+		e.exec(`UPDATE public.stego_tenants SET retired_at = now() WHERE tenant_id = 'org-b'`)
+		active := func(_ context.Context, t tenant.Tenant) (bool, error) { return t.ID() != "org-b", nil }
+		list, err := ServeTenantList(rt, TenantListSpec{ResourceType: "service", Schema: "public", SubjectType: "user",
+			Active: active, Cursors: cursors})
+		if err != nil {
+			t.Fatal(err)
+		}
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		tokenOf := func(subject string) string {
+			claims := authntest.Claims("https://issuer.example", "orders", subject, time.Now())
+			claims["tenant"] = "ops"
+			return authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		}
+		var decided []string
+		e.decision.setAllow(func(subject, action, resource string) bool {
+			decided = append(decided, action+" "+resource)
+			// The subject ID of a person ends with the base64url form of the sub claim: b3AtMQ for op-1.
+			return action == ListTenantsPermission && resource == "UNQUALIFIED service:orders" && strings.HasSuffix(subject, "|b3AtMQ")
+		})
+		defer e.decision.setAllow(nil)
+		get := func(subject, target string) (int, map[string]any) {
+			r := httptest.NewRequest(http.MethodGet, target, nil)
+			r.Header.Set("Authorization", "Bearer "+tokenOf(subject))
+			w := httptest.NewRecorder()
+			verifier.Middleware(list).ServeHTTP(w, r)
+			var body map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &body)
+			return w.Code, body
+		}
+		ids := func(body map[string]any) []string {
+			var out []string
+			items, _ := body["items"].([]any)
+			for _, item := range items {
+				m := item.(map[string]any)
+				out = append(out, fmt.Sprint(m["tenant_id"], " ", m["state"], " ", m["retired_at"] != nil, " ", m["provisioned_at"] != nil))
+			}
+			return out
+		}
+		status, first := get("op-1", "/stego/tenants?limit=2")
+		if status != http.StatusOK || !slices.Equal(ids(first), []string{"ops active false true", "org-a active false true"}) || first["next"] == nil {
+			t.Fatalf("the first page is %d %v, want ops and org-a with a cursor", status, first)
+		}
+		status, second := get("op-1", "/stego/tenants?limit=2&cursor="+first["next"].(string))
+		if status != http.StatusOK || !slices.Equal(ids(second), []string{"org-b retired true true", "org-c active false true"}) || second["next"] != nil {
+			t.Fatalf("the second page is %d %v, want org-b retired and org-c, with no cursor", status, second)
+		}
+		// The cursor of op-1 does not open for another principal, and a bad limit is 400.
+		if status, body := get("op-2", "/stego/tenants?cursor="+first["next"].(string)); status != http.StatusBadRequest || body["code"] != ErrorCodeInvalid {
+			t.Fatalf("the cursor of another principal gave %d %v, want 400 invalid", status, body)
+		}
+		if status, _ := get("op-1", "/stego/tenants?limit=0"); status != http.StatusBadRequest {
+			t.Fatalf("limit 0 gave %d, want 400", status)
+		}
+		// A caller without list_tenants gets 404 denied, and reads no list.
+		if status, body := get("op-2", "/stego/tenants"); status != http.StatusNotFound || body["code"] != ErrorCodeDenied || body["items"] != nil {
+			t.Fatalf("a caller without list_tenants got %d %v, want 404 denied", status, body)
+		}
+		if !slices.Contains(decided, "list_tenants UNQUALIFIED service:orders") {
+			t.Fatalf("the decisions were %v, want list_tenants on service:orders", decided)
+		}
+		// Each allowed call writes ok, the deny writes denied, in the chain of the caller's tenant.
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND action = 'list-tenants' AND outcome = 'ok'`); n != 2 {
+			t.Fatalf("%d ok rows of list-tenants, want 2", n)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND action = 'list-tenants' AND outcome = 'denied'`); n != 1 {
+			t.Fatalf("%d denied rows of list-tenants, want 1", n)
+		}
+		// A cursor that cannot be sealed after the allow is 500 internal, and audited as failed (security review of
+		// PR #437, I6a).
+		failing, err := ServeTenantList(rt, TenantListSpec{ResourceType: "service", Schema: "public", SubjectType: "user",
+			Active: active, Cursors: sealFails{cursors}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		list = failing
+		if status, body := get("op-1", "/stego/tenants?limit=1"); status != http.StatusInternalServerError || body["code"] != ErrorCodeInternal {
+			t.Fatalf("a cursor that is not sealed gave %d %v, want 500 internal", status, body)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND action = 'list-tenants' AND outcome = 'failed'`); n != 1 {
+			t.Fatalf("%d failed rows of list-tenants, want 1", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC15-T02 Retire stages the delete of the tuples of each tenant type of the retired tenant, and Provision stages none", func(t *testing.T) {
+		e := newEnv(t)
+		migration, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(migration)
+		rt := e.runtime(func(c *Config) { c.Entities = nil })
+		mux := http.NewServeMux()
+		for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+			"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+			h, err := ServeTenant(rt, TenantSpec{Action: action, ResourceType: "service", Permission: string(action), Schema: "public",
+				SubjectType: "user", TenantTypes: []string{"order", "tenant"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux.Handle(route, h)
+		}
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+		claims["tenant"] = "ops"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		e.decision.setAllow(func(_, _, resource string) bool { return resource == "UNQUALIFIED service:orders" })
+		defer e.decision.setAllow(nil)
+		send := func(path, key, body string) int {
+			r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set("Idempotency-Key", `"`+key+`"`)
+			w := httptest.NewRecorder()
+			verifier.Middleware(mux).ServeHTTP(w, r)
+			return w.Code
+		}
+		staged := func(tenantID string) []string {
+			rows, err := e.admin.QueryContext(e.ctx, `SELECT p->>'op' || ' ' || (p->'tuple'->>'resource_type') || ':' || (p->'tuple'->>'resource_id') || '#' ||
+ (p->'tuple'->>'relation') || ' ' || resource_key FROM (SELECT convert_from(payload, 'UTF8')::jsonb AS p, resource_key, created_at, id
+ FROM stego_outbox.messages WHERE tenant_id = $1 AND destination = 'authz') m ORDER BY created_at, id`, tenantID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var out []string
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					t.Fatal(err)
+				}
+				out = append(out, line)
+			}
+			return out
+		}
+		if got := send("/stego/tenants", "k-org-x", `{"tenant_id":"org-x"}`); got != http.StatusCreated {
+			t.Fatalf("the provision of org-x answered %d, want 201", got)
+		}
+		if got := staged("org-x"); len(got) != 0 {
+			t.Fatalf("the provision staged %v, want no delete", got)
+		}
+		if got := send("/stego/tenants/org-x/retire", "k-retire-org-x", ""); got != http.StatusOK {
+			t.Fatalf("the retire of org-x answered %d, want 200", got)
+		}
+		prefix := authz.TenantPrefix(mustTenant(t, "org-x"))
+		want := []string{"delete_tenant order:" + prefix + "# order:", "delete_tenant tenant:" + prefix + "# tenant:"}
+		if got := staged("org-x"); !slices.Equal(got, want) {
+			t.Fatalf("the retire of org-x staged %v, want %v", got, want)
+		}
+		// The replay of the retire stages no second delete.
+		if got := send("/stego/tenants/org-x/retire", "k-retire-org-x", ""); got != http.StatusOK || len(staged("org-x")) != 2 {
+			t.Fatalf("the replay of the retire answered %d and staged %v", got, staged("org-x"))
 		}
 	})
 
@@ -514,4 +709,11 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 		}
 	})
 
+}
+
+// sealFails is a cursor sealer that opens as the query runtime does and seals no cursor.
+type sealFails struct{ TenantCursors }
+
+func (sealFails) CursorText(*query.Query, tenant.Tenant, authz.Principal, query.Cursor) (string, error) {
+	return "", errors.New("query: the cursor was not sealed")
 }

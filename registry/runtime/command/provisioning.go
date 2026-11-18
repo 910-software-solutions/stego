@@ -26,6 +26,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/internal/txhold"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
+	"github.com/jsell-rh/stego/registry/runtime/query"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -100,6 +101,10 @@ type TenantSpec struct {
 	// whose issuer is not one of them, so no grant waits for a person whom no trusted issuer can name
 	// (ST-SUP-RC27-OC13, security review of PR #414, L1). With an admin relation, it holds at least one issuer.
 	TrustedIssuers []string
+	// TenantTypes are the resource types whose resource IDs are tenant-qualified (ST-SUP-RP06-LC22): each definition
+	// of the schema but the subject type, service_account and ResourceType. A Retire stages, for each, the delete of
+	// every relationship of the retired tenant, so no tuple of its rows stays in SpiceDB (ST-SUP-RC27-OC15).
+	TenantTypes []string
 }
 
 // The members of the body of a Provision that name the first administrators, and their bounds (ST-SUP-RC27-OC13).
@@ -223,6 +228,25 @@ func unrelateAdmins(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.T
 	}
 	if _, err := handle.UnrelateAll(ctx, resource, spec.AdminRelation); err != nil {
 		return fmt.Errorf("command: the delete of the admin relation %s#%s of the retired tenant was not staged: %w", spec.ResourceType, spec.AdminRelation, err)
+	}
+	return nil
+}
+
+// unrelateTenant stages, for a Retire of t, the delete of every relationship of each type of TenantTypes whose
+// resource ID is of t, through an authorization handle bound to the caller in the transaction tx of the Retire; the
+// relay deletes them in bounded parts (ST-SUP-RC27-OC15).
+func unrelateTenant(ctx context.Context, rt *Runtime, spec TenantSpec, tx *sql.Tx, req Request, t tenant.Tenant) error {
+	if spec.Action != tenant.RetireAction || len(spec.TenantTypes) == 0 {
+		return nil
+	}
+	handle, err := rt.cfg.Authz.Bind(tx, t, req.Principal, nil)
+	if err != nil {
+		return fmt.Errorf("command: the authorization handle of the tuples of the tenant was not bound: %w", err)
+	}
+	for _, resourceType := range spec.TenantTypes {
+		if _, err := handle.UnrelateTenant(ctx, resourceType); err != nil {
+			return fmt.Errorf("command: the delete of the tuples of %s of the retired tenant was not staged: %w", resourceType, err)
+		}
 	}
 	return nil
 }
@@ -431,31 +455,31 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
-			writeProblem(w, http.StatusMethodNotAllowed, "", "")
+			rt.writeProblem(w, http.StatusMethodNotAllowed, "", "")
 			return
 		}
 		b, err := BindIdentity(r.Context(), spec.SubjectType)
 		if err != nil {
-			writeProblem(w, http.StatusUnauthorized, "", "")
+			rt.writeProblem(w, http.StatusUnauthorized, "", "")
 			return
 		}
 		key, err := idempotency.KeyFrom(r.Header, true)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
+			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxTenantBody))
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		id, named, err := requestedTenant(spec.Action, r, body)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		if err := tenant.ValidID(id); err != nil {
-			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, TenantIDField)
+			rt.writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, TenantIDField)
 			return
 		}
 		var callerIssuer string
@@ -469,7 +493,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 		}
 		fingerprint, err := idempotency.Fingerprint(r.Method, r.URL.Path, body)
 		if err != nil {
-			writeProblem(w, http.StatusBadRequest, "", "")
+			rt.writeProblem(w, http.StatusBadRequest, "", "")
 			return
 		}
 		req := Request{Tenant: b.Tenant, Principal: b.Principal, Key: key, Fingerprint: fingerprint, Body: body,
@@ -477,7 +501,7 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 			Retention: spec.Retention}
 		result, made, err := runTenantOf(r.Context(), rt, spec, req, admins)
 		if errors.Is(err, errAdmins) {
-			writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
+			rt.writeFieldProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid, AdminsField)
 			return
 		}
 		if err != nil {
@@ -487,11 +511,11 @@ func ServeTenant(rt *Runtime, spec TenantSpec) (http.Handler, error) {
 			} else {
 				rt.unlistedOutcome(r.Context(), spec.command(), o)
 			}
-			writeProblem(w, o.Status, "", o.AnswerCode())
+			rt.writeProblem(w, o.Status, "", o.AnswerCode())
 			return
 		}
 		if result.Problem != "" {
-			writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
+			rt.writeProblem(w, result.Response.Status, rt.problemType(result.Problem), "")
 			return
 		}
 		for name, values := range result.Response.Header {
@@ -720,6 +744,10 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 			if err := unrelateUndeclared(ctx, rt, spec, tx, req, t, undeclared); err != nil {
 				return idempotency.Response{}, err
 			}
+			// A Retire deletes the tuples of the rows of the tenant, which stay in the database (ST-SUP-RC27-OC15).
+			if err := unrelateTenant(ctx, rt, spec, tx, req, t); err != nil {
+				return idempotency.Response{}, err
+			}
 			response, err := tenantResponse(spec.Action, t.ID())
 			if err != nil {
 				return idempotency.Response{}, err
@@ -877,3 +905,202 @@ func (h hookTx) QueryRowContext(ctx context.Context, query string, args ...any) 
 }
 
 func (hookTx) Rollback() error { return errors.New("command: a provisioning hook does not roll back") }
+
+// ListTenantsCommand is the action of the audit rows of the operator's tenant list, and ListTenantsPermission the
+// permission of the service-level resource that decides it (ST-SUP-RC27-OC16, ST-SUP-Q172 (a)).
+const (
+	ListTenantsCommand    = "list-tenants"
+	ListTenantsPermission = "list_tenants"
+	// DefaultTenantPage is the page of a tenant list request with no limit.
+	DefaultTenantPage = 100
+)
+
+// TenantCursors seals and opens the cursor of the tenant list, as the query runtime does for a list query
+// (ST-SUP-RP11-LC15).
+type TenantCursors interface {
+	CursorText(q *query.Query, t tenant.Tenant, p authz.Principal, c query.Cursor) (string, error)
+	ParseCursor(q *query.Query, t tenant.Tenant, p authz.Principal, text string) (query.Cursor, error)
+}
+
+// TenantListSpec is what the tenant list of a service needs: the service-level resource type, the schema of the
+// tenant list, the subject type of the persons, the Active of the tenant gate, and the cursors.
+type TenantListSpec struct {
+	ResourceType, Schema, SubjectType string
+	Active                            func(ctx context.Context, t tenant.Tenant) (bool, error)
+	Cursors                           TenantCursors
+}
+
+// tenantItem is one tenant of the answer of the tenant list.
+type tenantItem struct {
+	TenantID      string     `json:"tenant_id"`
+	State         string     `json:"state"`
+	ProvisionedAt time.Time  `json:"provisioned_at"`
+	RetiredAt     *time.Time `json:"retired_at,omitempty"`
+}
+
+// tenantListQuery is the name of the query of the cursor of the tenant list.
+const tenantListQuery = "stego-list-tenants"
+
+// ServeTenantList gives the handler of GET <base path>/stego/tenants, the tenant list of the operator
+// (ST-SUP-RC27-OC16, ST-SUP-Q172 (a)). It binds the verified caller (401), reads the limit and the cursor with the rules
+// of the declared lists (400 invalid), and decides the permission list_tenants on the service-level resource
+// <resource type>:<service name> at the floor before it reads the list; a deny is 404 denied. It answers 200 with
+// items, each tenant in tenant ID order with tenant_id, state, provisioned_at and retired_at, and next, the cursor of
+// the next page, which only the same caller can open. Each call writes one audit row list-tenants in the chain of the
+// caller's tenant, with the outcome ok or denied; when the caller's tenant is not an active tenant of the list, it
+// writes a counted log line instead, as Provision does (ST-SUP-RC27-OC10).
+func ServeTenantList(rt *Runtime, spec TenantListSpec) (http.Handler, error) {
+	switch {
+	case rt == nil || rt.cfg.DB == nil:
+		return nil, errors.New("command: the tenant list needs the command runtime")
+	case spec.ResourceType == "" || spec.Schema == "" || spec.SubjectType == "" || spec.Cursors == nil:
+		return nil, errors.New("command: the tenant list needs the resource type, the schema of the tenant list, the subject type and the cursors")
+	}
+	q, err := query.NewQuery(tenantListQuery)
+	if err != nil {
+		return nil, err
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			rt.writeProblem(w, http.StatusMethodNotAllowed, "", "")
+			return
+		}
+		b, err := BindIdentity(r.Context(), spec.SubjectType)
+		if err != nil {
+			rt.writeProblem(w, http.StatusUnauthorized, "", "")
+			return
+		}
+		limit, err := query.Limit(r)
+		if err != nil || limit > tenant.MaxListPage {
+			rt.writeProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid)
+			return
+		}
+		if limit == 0 {
+			limit = DefaultTenantPage
+		}
+		cursor, err := spec.Cursors.ParseCursor(q, b.Tenant, b.Principal, r.URL.Query().Get(query.CursorParameter))
+		after, ok := cursor.Key()
+		if err != nil || !ok {
+			rt.writeProblem(w, http.StatusBadRequest, "", ErrorCodeInvalid)
+			return
+		}
+		req := Request{Tenant: b.Tenant, Principal: b.Principal, RequestID: NewID(), ActorIP: remoteIP(r.RemoteAddr),
+			UserAgent: r.UserAgent(), Resource: rt.cfg.Service}
+		outcome := func(o Outcome) {
+			listed := spec.Active == nil
+			if !listed {
+				active, err := spec.Active(r.Context(), b.Tenant)
+				listed = err == nil && active
+			}
+			if !listed {
+				rt.unlistedOutcome(r.Context(), ListTenantsCommand, o)
+				return
+			}
+			recordCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), OutcomeTimeout)
+			defer cancel()
+			if o.Audit != audit.OutcomeOK {
+				_ = rt.RecordOutcome(recordCtx, req, ListTenantsCommand, spec.ResourceType, rt.cfg.Service, o.Audit, o.Code)
+				return
+			}
+			_ = rt.recordListed(recordCtx, req, spec.ResourceType)
+		}
+		allowed, err := decideTenantList(r.Context(), rt, spec, b)
+		if err != nil {
+			o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+			outcome(o)
+			rt.writeProblem(w, o.Status, "", o.AnswerCode())
+			return
+		}
+		if !allowed {
+			o := Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
+			outcome(o)
+			rt.writeProblem(w, o.Status, "", o.AnswerCode())
+			return
+		}
+		entries, more, err := tenant.Entries(r.Context(), rt.cfg.DB, spec.Schema, after, limit)
+		if err != nil {
+			o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+			outcome(o)
+			rt.writeProblem(w, o.Status, "", o.AnswerCode())
+			return
+		}
+		next := ""
+		if more && len(entries) > 0 {
+			if next, err = spec.Cursors.CursorText(q, b.Tenant, b.Principal, query.KeyCursor(entries[len(entries)-1].ID)); err != nil {
+				// Each failed call after the allow is audited too (security review of PR #437, I6a).
+				o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+				outcome(o)
+				rt.writeProblem(w, o.Status, "", o.AnswerCode())
+				return
+			}
+		}
+		items := make([]tenantItem, len(entries))
+		for i, e := range entries {
+			items[i] = tenantItem{TenantID: e.ID, State: "active", ProvisionedAt: e.ProvisionedAt.UTC()}
+			if e.RetiredAt != nil {
+				at := e.RetiredAt.UTC()
+				items[i].State, items[i].RetiredAt = "retired", &at
+			}
+		}
+		body, err := query.EncodePage(items, next)
+		if err != nil {
+			o := Outcome{Status: http.StatusInternalServerError, Code: ErrorCodeInternal, Audit: audit.OutcomeFailed}
+			outcome(o)
+			rt.writeProblem(w, o.Status, "", o.AnswerCode())
+			return
+		}
+		outcome(Outcome{Status: http.StatusOK, Audit: audit.OutcomeOK})
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}), nil
+}
+
+// recordListed writes the audit row ok of an allowed tenant list in a short transaction of the caller's tenant: the
+// action list-tenants, the caller as the actor and the service-level resource (ST-SUP-RC27-OC16).
+func (rt *Runtime) recordListed(ctx context.Context, req Request, resourceType string) error {
+	cfg := rt.cfg
+	e := audit.Event{
+		TenantID: req.Tenant.ID(), ActorID: req.Principal.Subject().String(), ActorKind: actorKind(req.Principal),
+		ActorIP: audit.Untrusted(req.ActorIP), UserAgent: audit.Untrusted(req.UserAgent),
+		Action: ListTenantsCommand, Operation: ListTenantsCommand, ResourceType: resourceType, ResourceID: cfg.Service,
+		Outcome: audit.OutcomeOK, RequestID: req.RequestID,
+		Service: cfg.Service, ServiceVersion: cfg.ServiceVersion, DeclarationVersion: cfg.DeclarationVersion,
+	}
+	if span := trace.SpanContextFromContext(ctx); span.IsValid() {
+		e.TraceID, e.SpanID = span.TraceID().String(), span.SpanID().String()
+	}
+	tx, err := tenant.Begin(ctx, cfg.DB, req.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := cfg.Audit.Record(ctx, tx, req.Tenant, []audit.Event{e}); err != nil {
+		rt.outcomeFailures.Add(1)
+		rt.logOutcomeFailure(ctx, e)
+		return err
+	}
+	return tenant.Commit(ctx, tx, req.Tenant)
+}
+
+// decideTenantList decides list_tenants on the service-level resource for the caller at the floor, in a read-only
+// transaction of the caller's tenant (ST-SUP-RC27-OC16).
+func decideTenantList(ctx context.Context, rt *Runtime, spec TenantListSpec, b Bound) (bool, error) {
+	tx, err := tenant.Begin(ctx, rt.cfg.DB, b.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	handle, err := rt.cfg.Authz.Bind(tx, b.Tenant, b.Principal, nil)
+	if err != nil {
+		return false, err
+	}
+	resource, err := authz.ServiceResource(spec.ResourceType, rt.cfg.Service)
+	if err != nil {
+		return false, err
+	}
+	return handle.DecideService(ctx, ListTenantsPermission, resource)
+}

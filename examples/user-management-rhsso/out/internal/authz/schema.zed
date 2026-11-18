@@ -5,6 +5,7 @@ definition service {
 	relation operator: user
 	permission provision = operator
 	permission retire = operator
+	permission list_tenants = operator
 }
 
 definition organization {

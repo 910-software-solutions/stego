@@ -305,6 +305,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 		// A consumer attempt that does not commit writes one warn log line (ST-SUP-RC35-OC06).
 		workers := config
 		workers.Logger = svc.telemetry.LoggerProvider()
+		if p.Provisioning != nil && p.declaresTenant() && svc.provider != nil {
+			// A consumer runs no fill before the tuple of its worker is in SpiceDB, which Provision and the reconcile
+			// of the controller write (ST-SUP-RC35-OC18).
+			workers.WorkerTuples = svc.provider
+		}
 		if svc.workers, err = command.New(ctx, workers); err != nil {
 			return nil, err
 		}
@@ -324,8 +329,18 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 	}
 	if svc.queries, err = query.New(query.Config{DB: svc.pool, AuditDB: svc.auditDB, Audit: svc.writer,
 		AuditSettings: p.AuditSettings, Authz: svc.authz, Service: p.Service, CursorKey: s.CursorKey,
+		ExtraCursorKeys: extraKeys(s.ExtraCursorKey), ProblemBase: p.ProblemType,
 		Meter: svc.telemetry.MeterProvider()}); err != nil {
 		return nil, err
+	}
+	// The tenant list of the operator, when the schema declares list_tenants (ST-SUP-RC27-OC16); its cursor is sealed
+	// as the query cursors are.
+	if svc.tenants != nil && p.Provisioning.List != "" {
+		if svc.tenants.list, err = command.ServeTenantList(svc.tenants.rt, command.TenantListSpec{
+			ResourceType: p.Provisioning.ResourceType, Schema: p.Workers.TenantSchema, SubjectType: p.SubjectType,
+			Active: svc.tenants.gate.Active, Cursors: svc.queries}); err != nil {
+			return nil, err
+		}
 	}
 	// The parked-message list and resolve of an operator, which the generated code serves in the api mode only
 	// (ST-SUP-RP14-LC09, ST-SUP-RP14-LC10).
@@ -729,4 +744,12 @@ func identityManifest(p Parts, runtimeRole string) manifest.Manifest {
 		CheckGrants: true,
 		Grants:      []manifest.Grant{{Role: runtimeRole, Privileges: []string{"SELECT"}}},
 	}}}
+}
+
+// extraKeys gives the extra cursor key as the list of query.Config, or none.
+func extraKeys(key []byte) [][]byte {
+	if len(key) == 0 {
+		return nil
+	}
+	return [][]byte{key}
 }
