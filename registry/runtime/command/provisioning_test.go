@@ -332,12 +332,10 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 			mux := http.NewServeMux()
 			for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
 				"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
-				relation := admin
-				if action == tenant.RetireAction {
-					relation = ""
-				}
+				// The Retire has the admin relation too, as the service gives it: it takes no admins and deletes the
+				// admin tuples of the tenant (security review of PR #414, L4).
 				h, err := ServeTenant(rt, TenantSpec{Action: action, ResourceType: "service", Permission: string(action), Schema: "public",
-					SubjectType: "user", AdminRelation: relation, TrustedIssuers: []string{"https://issuer.example", "https://other.example"}})
+					SubjectType: "user", AdminRelation: admin, TrustedIssuers: []string{"https://issuer.example", "https://other.example"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -492,6 +490,15 @@ END $f$`, `CREATE TRIGGER refuse_second_tuple BEFORE INSERT ON authz.authz_revoc
 		}
 		if got := tuples("org-a"); !slices.Equal(got, want) {
 			t.Fatalf("the replays staged more tuples: %v", got)
+		}
+		// A Retire of org-a deletes every tuple of the admin relation of org-a, whatever its subject, and of no other
+		// tenant (security review of PR #414, L4).
+		if got := send(withAdmin, "/stego/tenants/org-a/retire", "k-org-a-retire", `{"tenant_id":"org-a"}`); got.status != http.StatusOK {
+			t.Fatalf("the retire of org-a answered %d %s, want 200", got.status, got.body)
+		}
+		retired := append(slices.Clone(want), "delete_relation service:"+resource.ID+"#admin@:")
+		if got := tuples("org-a"); !slices.Equal(got, retired) {
+			t.Fatalf("the retire of org-a staged %v, want %v", got, retired)
 		}
 		// An admin relation that the runtime writes itself, or that is no relation, is refused before any request.
 		for _, relation := range []string{"tenant", "worker_sync", "a b"} {
