@@ -327,3 +327,34 @@ func withoutAuthorizationParts(t *testing.T, service string) string {
 	}
 	return strings.Join(kept, "\n")
 }
+
+func TestDroppedEntitySchema(t *testing.T) {
+	service, schema := td03Files(t)
+	// The entity Folder of TD03 with the resource type folder, which a drop removes, and the drop with its step.
+	dropped := func(resourceType string) string {
+		text := change(t, service, "entities:\n", "entities:\n  - name: Folder\n    dropped_by: folder-drop\n    fields:\n      - {name: label, type: string}\n    resource_type: "+resourceType+
+			"\n    public_reasons: {create: a folder has no resource to decide on}\n    permissions: {create: public, read: viewer, list: viewer}\n")
+		return text + "schema_changes:\n  - {id: folder-drop, kind: drop, entity: Folder}\nschema_history:\n  - {change: folder-drop, phase: expand}\n"
+	}
+	t.Run("ST-SUP-RC29-OC25-T01 A dropped entity whose definition the schema keeps is accepted", func(t *testing.T) {
+		expectAccepted(t, checkTD03(t, dropped("folder"), schema))
+	})
+	t.Run("ST-SUP-RC29-OC25-T01 A dropped entity whose definition the schema removes is refused", func(t *testing.T) {
+		fault := expectOneFault(t, checkTD03(t, dropped("archive"), schema), "schema-names", "dropped entity Folder", "archive", "keep its definition")
+		if fault.Path != "entities.Folder.resource_type" {
+			t.Errorf("the fault is at %s, want entities.Folder.resource_type", fault.Path)
+		}
+	})
+	t.Run("ST-SUP-RC29-OC25-T01 A live entity with the resource type of a dropped entity is refused", func(t *testing.T) {
+		faults := checkTD03(t, dropped("document"), schema)
+		found := false
+		for _, fault := range faults {
+			if fault.Path == "entities[0].resource_type" && strings.Contains(fault.Message, "of the dropped entity Folder") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no fault refuses Todo with the resource type of the dropped Folder: %+v", faults)
+		}
+	})
+}
