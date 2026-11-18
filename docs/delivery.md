@@ -64,6 +64,22 @@ Deployments:
 | `<service>` | `deploy/base/deployment.yaml` | `--mode=api` | `/readyz` | The Service selects it. |
 | `<service>-worker` | `deploy/base/worker-deployment.yaml` | `--mode=worker`, `--mode=controller` | `/readyz/modes` | No Service selects it, and it has no container port. |
 
+- Each Deployment runs as a ServiceAccount of its own name: `<service>` in `deploy/base/service-account.yaml`, and
+  `<service>-worker` in `deploy/base/worker-service-account.yaml`. Thus a token or an audit line of a worker pod
+  does not name the identity of the API, and a platform can grant each one apart. A cluster permission states no
+  mode, so the RoleBinding of the base binds both ServiceAccounts.
+- Upgrade note: before this change, the worker pods ran as the ServiceAccount `<service>`. A grant that you made
+  outside the base for `<service>` does not apply to `<service>-worker`. Before you apply a release that has
+  `worker-service-account.yaml`, give the same grant to `<service>-worker`, where the worker needs it:
+  - a workload identity annotation, such as `eks.amazonaws.com/role-arn` (IRSA) or
+    `iam.gke.io/gcp-service-account`, and the trust policy of that role, which names the ServiceAccount;
+  - `imagePullSecrets` on the ServiceAccount, when your overlay adds them there;
+  - a Vault Kubernetes auth role, whose `bound_service_account_names` must name `<service>-worker`;
+  - on OpenShift, an SCC that you granted to the ServiceAccount (`oc adm policy add-scc-to-user`);
+  - each RoleBinding or ClusterRoleBinding that your platform made for `<service>`.
+
+  If you do not, the worker pods start without that grant: they cannot pull the image, or they cannot get their
+  cloud or Vault credentials.
 - The liveness probe of each one is `/livez`. It answers 200 while the process runs, and it reads no database
   and no broker, so an outage of a dependency does not restart a pod.
 - `/readyz` tells whether the pod can take requests of the API. It does not read the worker and controller

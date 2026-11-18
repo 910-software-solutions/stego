@@ -54,7 +54,11 @@ comma-separated list of `name=origin`, such as
   A path with an encoded slash gets 400. The router of the service sends a
   path with a `.` or `..` segment, or an empty segment, to its clean form
   with 307 before the backend reads it, so such a path reaches no API; the
-  backend refuses it with 400 when it gets one.
+  backend refuses it with 400 when it gets one. From version 4.11.0, an API
+  path with a `;` in a segment (such as `..;`) or a `%` after the decode (a
+  double encoding, such as `%252e`) or bytes that are not UTF-8 after the
+  decode (such as the overlong dot `%C0%AE`) also gets 400, because a
+  lenient API server can read such a path as another path.
 - A `Location` of an answer must be under the prefix of the same API, with no
   `.` or `..` segment, plain or encoded, and no other encoded character.
 - Each API has a bounded client of its own, and its own share of the 16

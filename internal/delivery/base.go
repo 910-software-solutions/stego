@@ -25,10 +25,13 @@ const (
 	// WorkerDeploymentFile holds the Deployment <service>-worker of the worker and controller modes, when the base
 	// splits the modes (ST-DLV-UC07-R07).
 	WorkerDeploymentFile = BaseFolder + "/worker-deployment.yaml"
-	ServiceFile          = BaseFolder + "/service.yaml"
-	RoleFile             = BaseFolder + "/role.yaml"
-	RoleBindingFile      = BaseFolder + "/role-binding.yaml"
-	MigrationJobFile     = BaseFolder + "/migration-job.yaml"
+	// WorkerServiceAccountFile holds the ServiceAccount <service>-worker of the worker Deployment, so that the pods of
+	// the background modes do not run as the identity of the api mode (security review of PR #424).
+	WorkerServiceAccountFile = BaseFolder + "/worker-service-account.yaml"
+	ServiceFile              = BaseFolder + "/service.yaml"
+	RoleFile                 = BaseFolder + "/role.yaml"
+	RoleBindingFile          = BaseFolder + "/role-binding.yaml"
+	MigrationJobFile         = BaseFolder + "/migration-job.yaml"
 )
 
 // SecretFilesFolder is the folder, in the project folder, of the opt-in kustomize Component that gives each secret
@@ -78,7 +81,7 @@ const SecretFileMode = 0o400
 
 // BaseFiles are the paths of every file that the Kubernetes base may hold, in the order of the kustomization file,
 // and then the files of the Component secret-files and of the Component fs-group.
-var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, WorkerDeploymentFile, ServiceFile, RoleFile, RoleBindingFile, MigrationJobFile,
+var BaseFiles = []string{KustomizationFile, ServiceAccountFile, DeploymentFile, WorkerServiceAccountFile, WorkerDeploymentFile, ServiceFile, RoleFile, RoleBindingFile, MigrationJobFile,
 	SecretFilesKustomization, SecretFilesRemoval, SecretFilesMounts, SecretFilesWorkerRemoval, SecretFilesWorkerMounts, SecretFilesJobRemoval, SecretFilesJobMounts,
 	FSGroupKustomization, FSGroupDeployment, FSGroupWorker, FSGroupJob}
 
@@ -421,7 +424,7 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource,
 	// environment entries of its side of the modes. The base always writes the settings of the restricted Pod
 	// Security Standard and a read-only root file system, whatever level the requirements state; an overlay may
 	// relax them, the base never does (ST-DLV-Q14). The process writes its temporary files to an emptyDir at /tmp.
-	workload := func(side, readiness string, ports []any) (map[string]any, []secretFile) {
+	workload := func(side, account, readiness string, ports []any) (map[string]any, []secretFile) {
 		container := map[string]any{
 			"name":           service,
 			"image":          ImagePlaceholder(service),
@@ -444,7 +447,7 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource,
 		if len(environment) > 0 {
 			container["env"] = environment
 		}
-		return map[string]any{"serviceAccountName": service, "automountServiceAccountToken": len(permissions) > 0, "containers": []any{container},
+		return map[string]any{"serviceAccountName": account, "automountServiceAccountToken": len(permissions) > 0, "containers": []any{container},
 			"securityContext": map[string]any{"runAsNonRoot": true, "seccompProfile": map[string]any{"type": "RuntimeDefault"}},
 			"volumes":         []any{map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": TmpSizeLimit}}}}, switched
 	}
@@ -461,7 +464,7 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource,
 	if backgroundOnly {
 		side = workerSide
 	}
-	pod, switched := workload(side, readiness, ports)
+	pod, switched := workload(side, service, readiness, ports)
 	if err := add(DeploymentFile, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
 		"spec": map[string]any{"selector": map[string]any{"matchLabels": labels},
 			"template": map[string]any{"metadata": map[string]any{"labels": labels}, "spec": pod}}}); err != nil {
@@ -478,8 +481,14 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource,
 			return Base{}, BaseWritten{}, fmt.Errorf("the worker Deployment %s is not a Kubernetes name: a DNS label of at most 63 characters; use a service name of at most 56 characters", worker)
 		}
 		workerLabels := map[string]any{nameLabel: worker, partOfLabel: service, componentLabel: workerSide}
+		// The worker Deployment runs as its own ServiceAccount, of the name of the Deployment: a token or an audit
+		// line of a worker pod never names the identity of the api mode, and a platform can grant each side apart.
+		if err := add(WorkerServiceAccountFile, map[string]any{"apiVersion": "v1", "kind": "ServiceAccount",
+			"metadata": map[string]any{"name": worker, "labels": workerLabels}, "automountServiceAccountToken": len(permissions) > 0}); err != nil {
+			return Base{}, BaseWritten{}, err
+		}
 		var workerPod map[string]any
-		workerPod, workerSwitched = workload(workerSide, WorkerReadiness, nil)
+		workerPod, workerSwitched = workload(workerSide, worker, WorkerReadiness, nil)
 		if err := add(WorkerDeploymentFile, map[string]any{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]any{"name": worker, "labels": workerLabels},
 			"spec": map[string]any{"selector": map[string]any{"matchLabels": workerLabels},
 				"template": map[string]any{"metadata": map[string]any{"labels": workerLabels}, "spec": workerPod}}}); err != nil {
@@ -525,10 +534,15 @@ func WriteBase(service, release string, requirements []byte, probes ProbeSource,
 		if err := add(RoleFile, map[string]any{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "metadata": metadata, "rules": rules}); err != nil {
 			return Base{}, BaseWritten{}, err
 		}
-		// The subject names no namespace: the overlay's namespace sets it.
+		// The subject names no namespace: the overlay's namespace sets it. A cluster permission states no mode, so
+		// the Role binds the ServiceAccount of each Deployment.
+		subjects := []any{map[string]any{"kind": "ServiceAccount", "name": service}}
+		if worker != "" {
+			subjects = append(subjects, map[string]any{"kind": "ServiceAccount", "name": worker})
+		}
 		if err := add(RoleBindingFile, map[string]any{"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "metadata": metadata,
 			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": service},
-			"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": service}}}); err != nil {
+			"subjects": subjects}); err != nil {
 			return Base{}, BaseWritten{}, err
 		}
 	}
@@ -1057,6 +1071,9 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 	if worker != "" && worker != workerName(service) {
 		return nil, fmt.Errorf("%s holds the Deployment %s, not %s", WorkerDeploymentFile, worker, workerName(service))
 	}
+	if err := checkServiceAccounts(resources, service, worker); err != nil {
+		return nil, err
+	}
 	// The serving Deployment never references the Secret of the owner credential (ST-DLV-INV13).
 	for _, secret := range servingSecrets {
 		if isOwnerSecret(service, secret) {
@@ -1075,6 +1092,58 @@ func LoadBase(files map[string][]byte) (map[string]map[string]any, error) {
 		return nil, err
 	}
 	return resources, nil
+}
+
+// checkServiceAccounts holds the identities of a base (security review of PR #433, L1): the Deployment <service>
+// runs as the ServiceAccount <service>; a base with a worker Deployment holds the ServiceAccount <service>-worker
+// in WorkerServiceAccountFile, and the worker Deployment runs as it; a base with no worker Deployment holds no
+// worker ServiceAccount; and a RoleBinding binds exactly the ServiceAccounts of the Deployments, with no namespace,
+// which the overlay sets.
+func checkServiceAccounts(resources map[string]map[string]any, service, worker string) error {
+	nameOf := func(resource map[string]any) any {
+		metadata, _ := resource["metadata"].(map[string]any)
+		return metadata["name"]
+	}
+	runsAs := func(resource map[string]any) any {
+		spec, _ := resource["spec"].(map[string]any)
+		template, _ := spec["template"].(map[string]any)
+		pod, _ := template["spec"].(map[string]any)
+		return pod["serviceAccountName"]
+	}
+	if account, held := resources[ServiceAccountFile]; held && (account["kind"] != "ServiceAccount" || nameOf(account) != service) {
+		return fmt.Errorf("%s holds no ServiceAccount %s", ServiceAccountFile, service)
+	}
+	if runsAs(resources[DeploymentFile]) != service {
+		return fmt.Errorf("%s runs as the ServiceAccount %v, not %s", DeploymentFile, runsAs(resources[DeploymentFile]), service)
+	}
+	accounts := []any{service}
+	account, held := resources[WorkerServiceAccountFile]
+	switch {
+	case worker == "" && held:
+		return fmt.Errorf("%s holds a worker ServiceAccount, and the base has no worker Deployment", WorkerServiceAccountFile)
+	case worker != "" && (!held || account["kind"] != "ServiceAccount" || nameOf(account) != worker):
+		return fmt.Errorf("%s holds no ServiceAccount %s of the worker Deployment", WorkerServiceAccountFile, worker)
+	case worker != "":
+		if runsAs(resources[WorkerDeploymentFile]) != worker {
+			return fmt.Errorf("%s runs as the ServiceAccount %v, not %s", WorkerDeploymentFile, runsAs(resources[WorkerDeploymentFile]), worker)
+		}
+		accounts = append(accounts, worker)
+	}
+	if binding, held := resources[RoleBindingFile]; held {
+		subjects, _ := binding["subjects"].([]any)
+		var names []any
+		for _, subject := range subjects {
+			subject, _ := subject.(map[string]any)
+			if len(subject) != 2 || subject["kind"] != "ServiceAccount" {
+				return fmt.Errorf("%s binds a subject that is not a ServiceAccount of the base with no namespace: %v", RoleBindingFile, subject)
+			}
+			names = append(names, subject["name"])
+		}
+		if !slices.Equal(names, accounts) {
+			return fmt.Errorf("%s binds %v, not the ServiceAccounts %v of the Deployments", RoleBindingFile, names, accounts)
+		}
+	}
+	return nil
 }
 
 // keyReference is a reference to one key of a Secret or of a ConfigMap, with an optional flag that may only be true.
