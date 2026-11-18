@@ -330,7 +330,12 @@ is accepted.
 The key ring also keys the fingerprints of the idempotency keys of the
 service, because a request body can hold a secret. The table
 `idempotency_keys` holds an HMAC of each fingerprint with a key that is
-derived from the first key, and no plain hash of the body.
+derived from the first key, and no plain hash of the body. From runtime
+v0.138.0 the key ring also seals the stored answers of the idempotency keys,
+and a service with a `pii` field and no `secret` field needs a key ring too,
+because an answer can hold the `pii` field. Keep an earlier key in the ring
+at least for the idempotency retention after it stops being first: a replay
+of an answer that it sealed needs it.
 
 Make the first key ring in a file that only you can read, write it into the
 Secret, and remove the file:

@@ -13,14 +13,15 @@ import (
 type SchemaChange struct {
 	// ID is the change's name in lower kebab case, unique in the declaration.
 	ID string `yaml:"id"`
-	// Kind is add, rename, retype, require, drop, unique or relax.
+	// Kind is add, rename, retype, require, drop, unique, relax, within or seal.
 	Kind string `yaml:"kind"`
 	// Entity is the entity whose table the change changes.
 	Entity string `yaml:"entity"`
 	// Field is the field the change is about, by its name after the change; for unique, the name of the declared
 	// invariant of kind unique.
 	Field string `yaml:"field,omitempty"`
-	// From is, for rename, the field's name before the change, and for retype, the field's type before it.
+	// From is, for rename, the field's name before the change, for retype, the field's type before it, and for seal,
+	// the sensitivity of the field before it, public or pii, or empty when it had none.
 	From string `yaml:"from,omitempty"`
 	// Conversion is, for retype, the conversion from the old type to the new one, such as text_to_integer.
 	Conversion string `yaml:"conversion,omitempty"`

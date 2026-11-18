@@ -1,6 +1,3 @@
-# Version 1.9.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field, readable or
-# compare-only, or a pii field needs it (walkthrough 13, W13-B8; ST-SUP-RP14-LC12 as #443 builds it): the variable stays
-# not required on its own (ST-SUP-RC32-OC21).
 # Version 1.8.0 gives a readable secret field the type sealed.Secret and a compare-only one sealed.Compared, which the
 # command runtime seals or hashes at each write, and registers the key ring of the secret fields for a service with one
 # (ST-SUP-RC32-OC20, ST-SUP-RC32-OC21, decision ST-DECL-Q44).
@@ -10,9 +7,15 @@
 # whose resource type is the resource type of the tenant provisioning: it is decided on the service-level resource
 # of the tenant, and its handle offers only the create and the read (ST-SUP-RC32-OC15). Version 1.7.0 gives each
 # entity declaration its unique keys, so a unique violation names the fields of its key (ST-SUP-RC32-OC22).
+# Version 1.10.0 writes and reads both columns of a readable secret whose seal step is open, and registers the key ring
+# for a service with a pii field too, which seals the stored answers of its idempotency keys (ST-SUP-RC32-OC21,
+# ST-SUP-RC32-OC23, decision on ST-SUP-Q182 (b)).
+# Version 1.11.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field, readable or
+# compare-only, or a pii field needs it (walkthrough 13, W13-B8): the variable stays not required on its own
+# (ST-SUP-RC32-OC21).
 kind: component
 name: command
-version: 1.9.0
+version: 1.11.0
 stage: ga
 output_namespace: commands
 
@@ -110,7 +113,7 @@ environment:
   - name: STEGO_SECRET_KEY_RING_FILE
     type: path
     required: false
-    description: "The key ring file of the secret fields: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a service with a secret field, readable or compare-only, or a pii field."
+    description: "The key ring of the secret fields and stored answers: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a secret field, readable or compare-only, or a pii field."
     secret: false
     secret_source: {name: "{service}-secret-key-ring", key: key-ring}
     read_with: sealed

@@ -429,13 +429,22 @@ default is `24h`.
 
 To send the same answer again, the runtime keeps the whole answer of each
 key: its status, its headers and its body. The body holds the fields of the
-row, also a `pii` field, such as an email. Thus the table
-`idempotency_keys` holds that data in clear for the retention of the key, 24
-hours by default. A `secret` field is never in an answer, so it is never
-there. Protect the database and its backups as you protect the rows, and do
-not make the retention longer than your clients need. The Product owner
-decided that the runtime will seal the stored answers with the key ring of the
-secret fields (ST-SUP-Q182 (b)); until then, the answers are in clear.
+row, also a `pii` field, such as an email. From runtime v0.138.0, a service
+with a `pii` or a `secret` field seals the headers and the body of each
+stored answer with its key ring, with the tenant, the principal and the key
+as the place of the sealed value (ST-SUP-Q182 (b)). A replay opens them and
+gives back the first answer byte for byte. Such a service needs its key ring
+(see [Rotate and back up the key ring of the secret
+fields](operations.md#rotate-and-back-up-the-key-ring-of-the-secret-fields)).
+A service with no `pii` and no `secret` field keeps its answers in clear for
+the retention of the key, 24 hours by default: such an answer holds no
+personal data. Do not make the retention longer than your clients need.
+
+A key row that a release before v0.138.0 stored in clear does not match a
+retry of a release that seals, and a sealed row does not match a retry of a
+release before: the retry gets `idempotency-key-reused`, and the client sends
+it again with a new key. The runtime never answers the sealed bytes as a
+body.
 
 ### Refusals
 

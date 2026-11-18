@@ -48,6 +48,7 @@ const (
 	AnchorJobName    = "audit-anchor"
 	MaintainJobName  = "audit-maintain"
 	ResealJobName    = "reseal"
+	SealJobName      = "seal"
 )
 
 // ResealInterval is the interval of the re-seal job of the secret fields in the controller mode (ST-SUP-RP14-LC12).
@@ -514,6 +515,19 @@ func (svc *Service) resealJob() (*command.Reseal, error) {
 	return command.NewReseal(svc.pool, p.Workers.TenantSchema, svc.ring, p.Reseal)
 }
 
+// sealJob gives the seal job of the open seal steps of the service, or nil for a service with none
+// (ST-SUP-RP10-LC50, ST-SUP-RP14-LC12): it holds the backfill lease of each change for the holder of the controller.
+func (svc *Service) sealJob(holder string, settings lease.Settings) (*command.SealJob, error) {
+	p := svc.parts
+	if len(p.Seal) == 0 {
+		return nil, nil
+	}
+	if p.Workers.TenantSchema == "" {
+		return nil, errors.New("service: the seal job of the secret fields needs the schema of the tenant list")
+	}
+	return command.NewSealJob(svc.pool, p.Workers.TenantSchema, svc.ring, p.Seal, holder, settings)
+}
+
 // startController builds the audit jobs, the reconcile of the worker tuples and the controller lease loop that runs
 // them.
 func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Component, error) {
@@ -526,15 +540,19 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 	if err != nil {
 		return nil, err
 	}
-	if p.AuditJobs == nil && reconcile == nil && reseal == nil {
+	holder := c.Holder
+	if holder == "" {
+		holder = defaultHolder()
+	}
+	seal, err := svc.sealJob(holder, c.LeaseSettings)
+	if err != nil {
+		return nil, err
+	}
+	if p.AuditJobs == nil && reconcile == nil && reseal == nil && seal == nil {
 		return nil, nil
 	}
 	if p.AuditJobs != nil && (p.AnchorPeriod <= 0 || p.TenantSchema == "") {
 		return nil, errors.New("service: the audit jobs need the anchor period and the schema of the tenant list")
-	}
-	holder := c.Holder
-	if holder == "" {
-		holder = defaultHolder()
 	}
 	client, err := lease.New(svc.pool, ControllerLease, holder, c.LeaseSettings)
 	if err != nil {
@@ -580,6 +598,14 @@ func (svc *Service) startController(c StartConfig, w *Workers) ([]modes.Componen
 		// rotation (ST-SUP-RP10-LC46).
 		jobs = append(jobs, lease.Job{Name: ResealJobName, Interval: ResealInterval, Run: func(ctx context.Context, _ *lease.Held) error {
 			_, err := reseal.Run(ctx)
+			return err
+		}})
+	}
+	if seal != nil {
+		// The seal job seals and checks each row of an open seal step in passes, under the backfill lease of its
+		// change (ST-SUP-RP10-LC50).
+		jobs = append(jobs, lease.Job{Name: SealJobName, Interval: ResealInterval, Run: func(ctx context.Context, _ *lease.Held) error {
+			_, err := seal.Run(ctx)
 			return err
 		}})
 	}

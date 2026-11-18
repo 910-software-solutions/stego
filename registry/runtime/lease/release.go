@@ -86,15 +86,26 @@ var releaseName = regexp.MustCompile(`^[0-9a-z_-]{1,200}$`)
 
 // CleanReleases deletes in tx, a transaction of the owner role, the reports older than one day, which processes that
 // ended with no Stop left, and passes over each such row that another session holds, so it waits for no row lock of
-// the runtime role; on a database with no table of the reports it does nothing. The migration job runs it on each run
+// the runtime role; on a database with no table of the reports it does nothing. It keeps each report of a release
+// that sorts before the expand migration of an open seal change (ST-SUP-RP09-LC15). The migration job runs it on each run
 // (ST-SUP-RP09-LC14; security review of PR #316, M1).
 func CleanReleases(ctx context.Context, tx *sql.Tx) error {
 	var table bool
 	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.releases') IS NOT NULL").Scan(&table); err != nil || !table {
 		return err
 	}
+	// A report of a release before the expand migration of an open seal change stays, so the contract of the seal
+	// still sees that such a release ran after its pass started (ST-SUP-RP09-LC15).
+	var seals bool
+	if err := tx.QueryRowContext(ctx, "SELECT pg_catalog.to_regclass('stego_schema.seals') IS NOT NULL").Scan(&seals); err != nil {
+		return err
+	}
+	keep := ""
+	if seals {
+		keep = ` AND NOT EXISTS (SELECT 1 FROM stego_schema.seals s WHERE o.release COLLATE "C" < s.expand COLLATE "C")`
+	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM stego_schema.releases r WHERE r.holder IN (SELECT o.holder FROM stego_schema.releases o
- WHERE o.seen_at < pg_catalog.clock_timestamp() - interval '1 day' FOR UPDATE SKIP LOCKED)`)
+ WHERE o.seen_at < pg_catalog.clock_timestamp() - interval '1 day'`+keep+` FOR UPDATE SKIP LOCKED)`)
 	return err
 }
 
@@ -138,8 +149,9 @@ func (b *Beat) ready(ctx context.Context) (bool, error) {
 // StartBeat reports the process as the release release, with the label version (STEGO_SERVICE_VERSION), on db, the
 // pool of the runtime role: once before it returns and then every ReleaseEvery (ST-SUP-RP09-LC14). The holder is 16
 // random bytes, so no other process can stop the report. A report that fails, such as on a database where no step
-// has made the table yet, is logged once with no error text of the database and tried again at the next time; it
-// never stops the process. On a database where no step has made the function the report reads only the catalog, so
+// has made the table yet, is logged once with no error text of the database and tried again at the next time; a later
+// report never stops the process, and the first one does when the catalog shows the function and its call fails, so
+// the process restarts and serves no write unreported (security re-review of PR #443, N2). On a database where no step has made the function the report reads only the catalog, so
 // PostgreSQL logs no error, and logs at the debug level only; once the catalog shows the function, it calls it. The label keeps its printable ASCII characters, at most 64.
 func StartBeat(ctx context.Context, db *sql.DB, release, version string) (*Beat, error) {
 	return startBeat(ctx, db, release, version, ReleaseEvery)
@@ -155,7 +167,11 @@ func startBeat(ctx context.Context, db *sql.DB, release, version string, every t
 	}
 	b := &Beat{db: db, holder: hex.EncodeToString(raw), release: release, version: label(version), every: every,
 		stop: make(chan struct{}), done: make(chan struct{})}
-	b.beat(ctx)
+	// A first report that fails while the function is there stops the start, so the process restarts and never
+	// serves a write unreported while a seal is open (security re-review of PR #443, N2).
+	if err := b.beat(ctx); err != nil {
+		return nil, fmt.Errorf("lease: the first release report of %s failed: %w", release, err)
+	}
 	go b.run()
 	return b, nil
 }
@@ -171,8 +187,9 @@ func label(version string) string {
 	return b.String()
 }
 
-// beat writes one report under a time limit of one interval.
-func (b *Beat) beat(parent context.Context) {
+// beat writes one report under a time limit of one interval. It gives the error of a report that failed while the
+// catalog shows the function, and nil when no step has made the function yet.
+func (b *Beat) beat(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), b.every)
 	defer cancel()
 	made, err := b.ready(ctx)
@@ -180,7 +197,7 @@ func (b *Beat) beat(parent context.Context) {
 		// No step has made the function yet: the database has had no rename at expand, and no contract step reads
 		// the reports. The report is a quiet no-op until a step makes it.
 		slog.Debug("lease: the release report has no function yet", "release", b.release)
-		return
+		return nil
 	}
 	if err == nil {
 		_, err = b.db.ExecContext(ctx, "SELECT stego_schema.release_beat($1, $2, $3, $4)", b.holder, b.release, b.version, int(b.every/time.Millisecond))
@@ -198,6 +215,10 @@ func (b *Beat) beat(parent context.Context) {
 		b.failing = false
 		slog.Info("lease: the release report works again", "release", b.release)
 	}
+	if err != nil && made {
+		return err
+	}
+	return nil
 }
 
 func (b *Beat) run() {

@@ -74,6 +74,7 @@ func ValidateComposition(service *types.ServiceDeclaration, facts Facts) []Valid
 	faults = append(faults, validateSchemaChangeOpen(service)...)
 	faults = append(faults, validateSchemaChangeMode(service)...)
 	faults = append(faults, validateSchemaChangeValues(service)...)
+	faults = append(faults, validateSealChanges(service)...)
 	faults = append(faults, validateSchemaChangeCount(service)...)
 	faults = append(faults, validateObservationNames(service.Observations)...)
 	faults = append(faults, validateObservationKind(service.Observations)...)

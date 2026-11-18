@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jsell-rh/stego/internal/types"
 )
 
 // The proofs of the runtime data path through the stego binary: a service with data access on the runtime data path
@@ -645,3 +647,41 @@ func TestRuntimeWiring(t *testing.T) {
 // modesCheck is the check of the generated service that starts the binary with no mode option, with --mode api and
 // with --mode api --mode worker, and the refused starts of the modes (ST-GEN-INV26).
 const modesCheck = "ST-GEN-INV26-T The assembler wires each declared mode as a named set in one binary that a repeatable mode flag selects"
+
+func TestKeyRingWiring(t *testing.T) {
+	t.Run("ST-SUP-RP14-LC12-T02 A service with a pii field reads the key ring, and the controller seals each open seal under its lease", func(t *testing.T) {
+		service := func(sensitivity string) *types.ServiceDeclaration {
+			return &types.ServiceDeclaration{Entities: []types.Entity{{Name: "Member", Fields: []types.Field{{Name: "email", Type: types.FieldTypeString, Sensitivity: sensitivity}}}},
+				SchemaChanges: []types.SchemaChange{{ID: "member-email-seal", Kind: "seal", Entity: "Member", Field: "email", From: "pii"}, {ID: "member-code-seal", Kind: "seal", Entity: "Member", Field: "code"}},
+				SchemaHistory: []types.SchemaStep{{Change: "member-email-seal", Phase: "expand"}, {Change: "member-code-seal", Phase: "expand"}, {Change: "member-code-seal", Phase: "contract"}}}
+		}
+		for _, c := range []struct {
+			sensitivity string
+			ring        bool
+		}{{"pii", true}, {"secret", true}, {"", false}, {"public", false}} {
+			ring, seals := sealing(service(c.sensitivity))
+			if ring != c.ring || !slices.Equal(seals, []string{"member-email-seal"}) {
+				t.Errorf("a field of the sensitivity %q gives the ring %t and the open seals %v; want %t and member-email-seal alone", c.sensitivity, ring, seals, c.ring)
+			}
+		}
+		withRing, err := renderRuntimeWiring(runtimeWiringData{Ring: true, Seals: []string{"member-email-seal"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"github.com/jsell-rh/stego/registry/runtime/sealed"`, "service.ReadKeyRing()", "settings.Ring = ring", "KeyRing: true",
+			"Seal: svcstorage.SealColumns", `SealLeases: []string{"member-email-seal"}`} {
+			if !strings.Contains(string(withRing), want) {
+				t.Errorf("the wiring of a service with a pii field and an open seal does not hold %s", want)
+			}
+		}
+		plain, err := renderRuntimeWiring(runtimeWiringData{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, gone := range []string{"registry/runtime/sealed", "ReadKeyRing", "KeyRing:", "SealColumns", "SealLeases"} {
+			if strings.Contains(string(plain), gone) {
+				t.Errorf("the wiring of a service with no secret and no pii field holds %s", gone)
+			}
+		}
+	})
+}

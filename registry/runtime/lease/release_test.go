@@ -380,3 +380,47 @@ func TestReleaseQuiet(t *testing.T) {
 		}
 	})
 }
+
+func TestReleaseFirstBeat(t *testing.T) {
+	t.Run("ST-SUP-RP09-LC14-T04 A first report that fails while the function is there stops the start", func(t *testing.T) {
+		ctx := context.Background()
+		d := openDatabase(t)
+		role := "lease_first_beat_rt"
+		d.exec(t, "DROP ROLE IF EXISTS "+role)
+		d.exec(t, "CREATE ROLE "+role+" LOGIN PASSWORD 'lease-first'")
+		t.Cleanup(func() {
+			_, _ = d.other.Exec("DROP OWNED BY " + role)
+			_, _ = d.other.Exec("DROP ROLE IF EXISTS " + role)
+		})
+		config, err := pgx.ParseConfig(d.dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		config.User, config.Password = role, "lease-first"
+		pool := stdlib.OpenDB(*config)
+		t.Cleanup(func() { _ = pool.Close() })
+		// No step has made the function: the start goes on, and the report is a quiet no-op.
+		beat, err := startBeat(ctx, pool, "100_tenancy_row_security", "v1", time.Second)
+		if err != nil {
+			t.Fatalf("a start with no report function gives %v", err)
+		}
+		beat.Stop(ctx)
+		text, err := Releases(role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.exec(t, text)
+		// The function is there and its call fails: the start fails, so the process restarts.
+		d.exec(t, "REVOKE EXECUTE ON FUNCTION stego_schema.release_beat(text, text, text, integer) FROM "+role)
+		if beat, err := startBeat(ctx, pool, "100_tenancy_row_security", "v1", time.Second); err == nil {
+			beat.Stop(ctx)
+			t.Fatal("a start whose first report fails gives no error")
+		}
+		d.exec(t, "GRANT EXECUTE ON FUNCTION stego_schema.release_beat(text, text, text, integer) TO "+role)
+		beat, err = startBeat(ctx, pool, "100_tenancy_row_security", "v1", time.Second)
+		if err != nil {
+			t.Fatalf("a start whose first report works gives %v", err)
+		}
+		beat.Stop(ctx)
+	})
+}

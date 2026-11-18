@@ -80,6 +80,8 @@ archetype does not have the change.
 | 3.179.0 | 1.181.0 | 1.182.0 | `stego fill create` writes a test that does not name `ErrNotImplemented`. `stego test` names the cause when an old scaffold test still expects it. | [Write the tests of your fills](#write-the-tests-of-your-fills) |
 | runtime v0.134.0 | runtime v0.134.0 | - | A new consumer waits for its worker tuple, so a new subscription no longer parks its backlog. The refresh age of the OIDC key set is the `max-age` of the issuer. A second cursor key can open cursors. A route that does not exist answers 404. A retire removes the tuples of the rows of the tenant. A message that an older runtime counted toward poison keeps its count. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service), [Rotate the OIDC signing key](operations.md#rotate-the-oidc-signing-key), [Rotate the cursor key](operations.md#rotate-the-cursor-key). Before the upgrade, resolve each parked message of a consuming worker (see [See and resolve the parked messages](commands-queries-workers.md#see-and-resolve-the-parked-messages)): a message that the older runtime almost parked can park soon after the upgrade. |
 | 3.182.0 | 1.184.0 | - | Checking refuses a `route` on a query whose `method` is a gRPC server stream: no handler served it. The query contract names the repository of an entity with the plural of its table, such as `GetEntryEntries`; the old name, such as `GetEntryEntrys`, stays one release as a deprecated function. Runtime v0.136.0: a write waits for the revocation that `Authz-Revocation-After` names, and a unique violation names the fields of its key. | [Remove the route of a stream query](#remove-the-route-of-a-stream-query), [Use the new names of the query repositories](#use-the-new-names-of-the-query-repositories). A client that creates a child at once after its parent can send `Authz-Revocation-After` (see [Write a child at once after its parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent)). |
+| runtime v0.137.0 | runtime v0.137.0 | - | A field with `sensitivity: secret` is sealed at rest: the column of a readable secret holds sealed bytes (`bytea`), and a `compare_only` field holds an Argon2id hash. The api, worker and controller modes do not start without the key ring of the Secret `<service>-secret-key-ring`. In a fill, the type of a secret field is `sealed.Secret` (read its text with `Reveal()`) or `sealed.Compared` (check a value with `Matches`). A field that a release before v0.135.0 declared secret was stored in clear: `stego compat` and `stego plan` refuse the release until you declare a seal step for it. | [Seal the secret fields of a release before runtime v0.135.0](#seal-the-secret-fields-of-a-release-before-runtime-v01350) |
+| 3.189.0 | 1.190.0 | 1.191.0 | Runtime v0.138.0 and postgres-adapter 6.14.0: the seal step is built. A service with a `pii` field and no `secret` field also needs the key ring, which seals the stored answers of its idempotency keys. A retry of a key that the release before stored gets `idempotency-key-reused`. | [Make the key ring of a service with a pii field](#make-the-key-ring-of-a-service-with-a-pii-field) |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -290,6 +292,82 @@ For each fill that it names:
 A new `stego fill create` writes a test that passes while the fill is not
 written. When you write the fill, the test fails with a message that tells you
 to replace it. It does not stop the compile.
+
+## Seal the secret fields of a release before runtime v0.135.0
+
+Do this when your running release is before runtime v0.135.0
+(postgres-adapter 6.13.0) and its declaration has a field with `sensitivity:
+secret`. Do it in the first release with runtime v0.137.0 or later.
+
+Why: a release before runtime v0.135.0 stored a secret field in clear, in a
+column of its type, such as `character varying(128)`. A newer release stores
+it sealed, in a `bytea` column. The database holds the rows in clear, so the
+newer release must move them with a seal step (decision ST-DECL-Q44). Without
+it, `stego compat --base` and `stego plan --base` refuse the release with the
+fault `the head stores <Entity>.<field> sealed, which the base stores in
+clear`, and its suggested change is a seal `with from: secret`. The check reads
+the version of postgres-adapter in `.stego/state.yaml` of the base.
+
+1. If the running release is before runtime v0.120.0 (postgres-adapter
+   6.4.0), first deploy a release with runtime v0.120.0 or later and no new
+   schema step. Its processes report themselves, which the seal needs: `stego
+   compat` refuses the seal over an older release.
+2. Make the Secret `<service>-secret-key-ring` before you deploy. See [The key
+   ring](operations.md#the-key-ring). `stego env check` names it when it is
+   not there.
+3. Change each fill that reads or writes the secret field. Its Go type is
+   `sealed.Secret` (package `github.com/jsell-rh/stego/registry/runtime/sealed`):
+   read its text with `v.ApiKey.Reveal()`, and make a value with
+   `sealed.SecretOf(text)`. A `Secret` prints and logs as `[secret]` and
+   encodes as JSON `null`, so a log line does not hold the value.
+4. Declare a seal step with `from: secret` for each secret field, and keep the
+   field as it is:
+
+   ```yaml
+   schema_changes:
+     - {id: purse-api-key-seal, kind: seal, entity: Purse, field: api_key, from: secret}
+   schema_history:
+     - {change: purse-api-key-seal, phase: expand}
+   ```
+
+   The first migration `001_initial` stays the one of the running release.
+   Run `stego compat --base <tag>` and `stego plan --base <tag>`: they accept
+   the release.
+5. Deploy the release. The migration Job adds the column `api_key_sealed`, and
+   the release before goes on with the clear column while the Deployments
+   roll. The new release writes both columns. The controller seals each row
+   when no pod of the release before runs. See [Seal steps](schema-changes.md#seal-steps).
+   You can go back to the release before in this phase: it reads the clear
+   column, and the seal job checks each row again later. While a seal is open,
+   do not go back past a release that reports itself (runtime v0.120.0 or
+   later): an older release writes the clear column unseen.
+6. In the next release, declare the contract step of each seal. Until then the
+   clear column holds the secret, also in each backup that you take. Its migration
+   refuses until the seal job completed a pass after the last pod of the
+   release before stopped. Then it drops the clear column. After it, you cannot
+   go back to a release before the expand step.
+
+## Make the key ring of a service with a pii field
+
+Do this before you deploy a release with runtime v0.138.0 or later, for a
+service with a `pii` field and no `secret` field. A service with a `secret`
+field has its key ring already.
+
+Why: an answer of a command can hold a `pii` field, and the idempotency store
+keeps each answer for the retention of its key, 24 hours by default. From
+runtime v0.138.0 the store seals each answer with the key ring of the service
+(ST-SUP-Q182 (b)). The api, worker and controller modes do not start without
+it.
+
+1. Make the Secret `<service>-secret-key-ring` with the key `key-ring`, as
+   [The key ring](operations.md#the-key-ring) tells. Keep a copy of it in your
+   secret store.
+2. Run `stego env check`. It refuses an environment file that does not give
+   this Secret.
+
+A retry of an idempotency key that the release before stored, or that a
+newer release stored when you go back, gets `idempotency-key-reused`; the
+client sends it again with a new key.
 
 ## Remove the route of a stream query
 
