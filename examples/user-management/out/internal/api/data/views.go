@@ -47,6 +47,7 @@ func loadOrganizationView(r query.Row) (OrganizationView, error) {
 // sensitivity of its fields.
 var organizationViewEntity = must(query.NewEntity(query.Spec{Name: "Organization", Schema: "public", Table: "organizations", Key: "id",
 	Columns:      []string{"id", "name", "description", "created_time", "updated_time"},
+	ValidID:      query.ValidUUID,
 	ResourceType: "organization", ReadPermission: "view", ListPermission: "view",
 }, loadOrganizationView))
 
@@ -106,6 +107,7 @@ func loadUserView(r query.Row) (UserView, error) {
 // sensitivity of its fields.
 var userViewEntity = must(query.NewEntity(query.Spec{Name: "User", Schema: "public", Table: "users", Key: "id",
 	Columns:      []string{"id", "email", "display_name", "role", "org_id", "metadata", "created_time", "updated_time"},
+	ValidID:      query.ValidUUID,
 	ResourceType: "member", ReadPermission: "view", ListPermission: "view",
 }, loadUserView))
 
@@ -161,6 +163,7 @@ func loadOrgSettingView(r query.Row) (OrgSettingView, error) {
 // sensitivity of its fields.
 var orgSettingViewEntity = must(query.NewEntity(query.Spec{Name: "OrgSetting", Schema: "public", Table: "org_settings", Key: "id",
 	Columns:      []string{"id", "org_id", "key", "value", "generation", "created_time", "updated_time"},
+	ValidID:      query.ValidUUID,
 	ResourceType: "org_setting", ReadPermission: "view", ListPermission: "view",
 }, loadOrgSettingView))
 
@@ -216,6 +219,7 @@ func loadActivityEntryView(r query.Row) (ActivityEntryView, error) {
 // sensitivity of its fields.
 var activityEntryViewEntity = must(query.NewEntity(query.Spec{Name: "ActivityEntry", Schema: "public", Table: "activity_entries", Key: "id",
 	Columns:      []string{"id", "source_type", "source_id", "action", "detail", "created_time", "updated_time"},
+	ValidID:      query.ValidUUID,
 	ResourceType: "activity_entry", ReadPermission: "view", ListPermission: "view",
 }, loadActivityEntryView))
 

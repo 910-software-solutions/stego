@@ -18,6 +18,7 @@ import (
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -828,10 +829,20 @@ type undecidedError struct{ transient bool }
 func (e *undecidedError) Error() string        { return ErrUndecided.Error() }
 func (e *undecidedError) Is(target error) bool { return target == ErrUndecided }
 
-// Transient reports whether err is a read that the decision port could not decide now and a retry may pass
-// (authz.Transient): a handler answers it 503 with Retry-After, and every other ErrUndecided 500 (security review of
-// PR #354, L2; ST-SUP-Q140).
+// Transient reports whether err is a read that a retry may pass: one that the decision port could not decide now
+// (authz.Transient), or one that the database could not serve now, such as in an outage (tenant.Unavailable;
+// walkthrough 10, B7). A handler answers it 503 with Retry-After, and every other ErrUndecided 500 (security review
+// of PR #354, L2; ST-SUP-Q140).
 func Transient(err error) bool {
+	var undecided *undecidedError
+	if errors.As(err, &undecided) {
+		return undecided.transient
+	}
+	return tenant.Unavailable(err)
+}
+
+// undecidedNow reports whether err is a read that the decision port could not decide now.
+func undecidedNow(err error) bool {
 	var undecided *undecidedError
 	return errors.As(err, &undecided) && undecided.transient
 }

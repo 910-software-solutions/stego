@@ -766,6 +766,21 @@ Validate examines the permission on `resource_type` only. If another type in
 `writes` does not give the permission through the worker relation, the
 runtime refuses each read and write of the worker on those rows.
 
+3. When the worker creates a row with no parent, give the type `tenant` the
+   permission of the worker too. A row has no parent when its entity has a
+   resource type and no required reference to an entity with a resource type,
+   such as the local copy of an event of another service. The runtime decides
+   such a create on the tenant resource `tenant:<tenant>` with the permission
+   of the worker. A consuming worker also needs the permission of the stager
+   there.
+
+   For a worker `record-orders` with the permission `record`, the type
+   `tenant` holds `relation worker_record_orders: service_account` and
+   `permission record = worker_record_orders`.
+
+   Generation refuses a schema whose type `tenant` has no such permission,
+   and validate gives the warning `worker-root-create` before that.
+
 ### The fill of a worker
 
 The fill package exports `New`, as for a command. The type of the fill
@@ -985,6 +1000,93 @@ cause classes are:
 
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
+
+### A value that breaks a declared constraint
+
+Each entity checks the declared constraints of its fields before a create or
+an update sends a statement: `min_length`, `max_length`, `pattern`, `min`,
+`max` and the values of an enum. An optional field is checked only when it is
+set. A value that breaks one is answered 400 with the code `invalid` and the
+field, or `InvalidArgument` over gRPC. The reason names the constraint and its
+declared bound, never the value.
+
+When the table refuses a value that the check does not cover, the CHECK
+(SQLSTATE 23514), the NOT NULL (23502) or the foreign key (23503) of a
+declared field gives the same 400 with the field. A unique violation (23505)
+stays 409 `conflict`. A get query of a key that is not a UUID is a missing
+row: 404, or `NotFound` over gRPC, with no statement.
+
+### Outage answers
+
+When the authorization provider does not answer in the decision time limit,
+2 seconds by default, or the database cannot serve now, a command or a query
+answers 503 with `Retry-After`, or `Unavailable` over gRPC. It never waits
+for a provider that does not answer. The code of the answer is `undecided` for
+the provider and `unavailable` for the database. The database cannot serve
+now when it refuses, resets or loses the connection, or gives SQLSTATE class
+08, 57P01, 57P02, 57P03 or 53300. Each such step writes one warn line
+`command: the database cannot serve now` with the command and the step, at
+most one line in each 10 seconds. A COMMIT whose outcome is not known stays
+500, because the client must not take it as not done.
+
+### Read your own write over gRPC
+
+A gRPC command whose transaction wrote a tuple answers the header metadata
+`authz-revocation: pending` and `authz-revocation-location` with the path
+`/authz/revocations/{id}`, as the HTTP headers do. To read the write at once,
+send the request metadata `authz-revocation-after` with that path or the
+identity, and `prefer: wait=N` when you want a shorter wait. The query or the
+stream waits at most N seconds, the wait cap (10 seconds) and half the time
+that the deadline of the call leaves. It answers the last state in the header
+metadata `authz-revocation`, and `unknown` for a revocation that is not yours.
+A bad value is `InvalidArgument`.
+
+A Provision that grants admins or workers answers `Authz-Revocation: pending`
+with no location. Send `Prefer: wait=N` with the Provision to wait for the
+grants. When the answer says `complete`, the first command of an admin is
+decided with the grant. A wait that stays pending for the whole wait cap
+writes the warn line `authz.revocation.pending_past_cap`: check that the
+worker mode, which runs the relay, runs.
+
+### Release notes for runtime v0.133.0
+
+- Each call of the decision provider has a time limit, 2 seconds by default
+  (`authz.DefaultDecisionTimeout`, `authz.Config.DecisionTimeout`). A call
+  past it is transient: 503 with `Retry-After`, or `Unavailable` over gRPC.
+  New cause `authz.CauseStoreUnavailable` for a revocation floor that the
+  database cannot read now.
+- New function `tenant.Unavailable`. `command.ErrUnavailable` and the code
+  `command.ErrorCodeUnavailable` answer a database that cannot serve now with
+  503; `query.ErrorCodeUnavailable` does the same for a query, and
+  `query.Transient` also reports such an error. `command.RPCCode` maps 503 to
+  `Unavailable`.
+- `command.EntitySpec` has the new fields `Check` and `Constraints`, and the
+  new helpers `command.MinLength`, `MaxLength`, `OneOf` and `MustPattern`.
+  `query.Spec` has the new field `ValidID`, with `query.ValidUUID`.
+- A worker's create of a row with no parent is decided on the tenant resource
+  with the permission of the worker, and in a consumer also as the staging
+  principal (ST-SUP-Q164 (b)). New error `command.ErrNoParent` and function
+  `command.NoParentEntity` stay for the API; no call gives the error now. The
+  class `create_without_parent` is in `probe.WorkerCauses`.
+- `command.ServeRPC` sends the revocation metadata of a write.
+  `query.Runtime.AwaitWriteRPC` waits for the revocation of the request
+  metadata, which `query.ServeRPC` and `query.ServeStream` call;
+  `query.StreamRPC` has the new field `Runtime`. New constants
+  `authz.RevocationMetadata`, `RevocationLocationMetadata`,
+  `RevocationAfterMetadata` and `PreferMetadata`.
+- `command.ServeTenant` answers `Authz-Revocation: pending` for a Provision
+  that staged a tuple, and waits with `Prefer: wait=N`.
+- `authz.Config.PrincipalWaiters` (default `authz.DefaultPrincipalWaiters`, 4)
+  limits the waits of one principal. A wait that the cap ends while the
+  revocation is pending logs `authz.revocation.pending_past_cap`.
+- The status route and the generated wait code give no internal code when the
+  client goes away during a wait.
+- New function `service.ReadModeSettings`: only the api mode reads
+  `STEGO_QUERY_CURSOR_KEY_FILE`.
+- The failure class of the Kafka inbox names the operation that failed:
+  `broker:<CODE> (describe-configs)`, `(fetch)` or `(commit)`. New function
+  `kafkainbox.ValidateMigration` and the step `kafka_inbox_validate`, which
+  validates the CHECK of the refused reasons in a transaction of its own.
 
 ### Release notes for runtime v0.132.0
 

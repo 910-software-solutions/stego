@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/url"
 	"reflect"
 	"strings"
@@ -1775,6 +1776,127 @@ func TestWaitPoll(t *testing.T) {
 		}
 		if reads := rt.waitReads.Load(); reads < 5 || reads > 9 {
 			t.Fatalf("a wait of 3 s read the status %d times, want 5 to 9", reads)
+		}
+	})
+}
+
+func TestPrincipalWaiters(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC26-T01 One principal holds at most its own waiter places, and leaves places for the other principals of its tenant", func(t *testing.T) {
+		queue, err := outbox.New(fakeDB(t), outbox.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt, err := New(Config{Provider: &recorder{}, DB: fakeDB(t), Schema: "public", Outbox: queue, TenantWaiters: 6})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rt.principalWaiters != DefaultPrincipalWaiters || DefaultPrincipalWaiters >= DefaultTenantWaiters {
+			t.Fatalf("the principal waiter limit is %d (default %d), want the default, below the tenant limit %d", rt.principalWaiters, DefaultPrincipalWaiters, DefaultTenantWaiters)
+		}
+		t1, alice, bob := mustTenant(t, "t1"), mustPerson(t, "alice"), mustPerson(t, "bob")
+		for i := range DefaultPrincipalWaiters {
+			if !rt.startWait(t1, alice) {
+				t.Fatalf("wait %d of alice found no place, want one", i+1)
+			}
+		}
+		if rt.startWait(t1, alice) {
+			t.Fatalf("alice took a wait place over the principal limit of %d", DefaultPrincipalWaiters)
+		}
+		// Bob of the same tenant still waits; the tenant limit of 6 then stops him at 2.
+		for i := range 2 {
+			if !rt.startWait(t1, bob) {
+				t.Fatalf("wait %d of bob found no place while alice holds her limit, want one", i+1)
+			}
+		}
+		if rt.startWait(t1, bob) {
+			t.Fatal("bob took a place over the tenant limit of 6")
+		}
+		if len(rt.waiters) != 6 {
+			t.Fatalf("the runtime holds %d waiter places, want 6: a refused wait holds none", len(rt.waiters))
+		}
+		rt.endWait(t1, alice)
+		if !rt.startWait(t1, alice) {
+			t.Fatal("alice found no place after she gave one back")
+		}
+		if _, err := New(Config{Provider: &recorder{}, DB: fakeDB(t), Schema: "public", Outbox: queue, PrincipalWaiters: -1}); err == nil {
+			t.Fatal("New took a negative principal waiter limit")
+		}
+	})
+}
+
+// capClock is a wait clock whose bound ends when a wait asks for its poll timer, as when the wait cap ends while the
+// revocation is pending.
+type capClock struct {
+	mu  sync.Mutex
+	end context.CancelFunc
+}
+
+func (c *capClock) WithTimeout(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	ctx, end := context.WithCancel(parent)
+	c.mu.Lock()
+	c.end = end
+	c.mu.Unlock()
+	return ctx, end
+}
+
+func (c *capClock) After(time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.end()
+	return nil
+}
+
+func TestPendingPastCap(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC26-T02 A revocation that stays pending for the whole wait cap gives one warn line that names the relay, and none for a shorter wait", func(t *testing.T) {
+		env := newPG(t)
+		rt, err := New(Config{Provider: &recorder{}, DB: env.runtime, Schema: env.schema, Outbox: env.queue, WaitCap: 2 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt.waitClock = &capClock{}
+		var logs strings.Builder
+		previous, previousLog := slog.Default(), pendingLog
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		at := time.Unix(1000, 0)
+		pendingLog = NewCauseLog(func() time.Time { return at })
+		t.Cleanup(func() { slog.SetDefault(previous); pendingLog = previousLog })
+		tx, handle := env.begin(t, rt, "t1", mustPerson(t, "alice"), rel("document#viewer"))
+		revocation, err := handle.Relate(context.Background(), Tuple{Resource: doc("1"), Relation: "viewer", Subject: user("bob")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.commit(t, tx, "t1")
+		wait := func(d time.Duration) {
+			status, allowed, err := rt.WaitFor(context.Background(), mustTenant(t, "t1"), mustPerson(t, "alice"), revocation.ID(), d)
+			if err != nil || status.State != RevocationPending || allowed != min(d, 2*time.Second) {
+				t.Fatalf("a wait of %s answered %v, %s, %v, want pending", d, status, allowed, err)
+			}
+		}
+		// A wait of 1 s, which the caller cut and not the cap, gives no line.
+		wait(time.Second)
+		if logs.Len() != 0 {
+			t.Fatalf("a wait shorter than the cap logged: %s", logs.String())
+		}
+		wait(30 * time.Second)
+		line := logs.String()
+		if strings.Count(line, "\n") != 1 || !strings.Contains(line, "level=WARN") || !strings.Contains(line, PendingPastCapEvent) ||
+			!strings.Contains(line, "relay") || !strings.Contains(line, "wait_cap_seconds=2") {
+			t.Fatalf("the wait past the cap logged %q, want one warn line with the event, the relay and the cap", line)
+		}
+		for _, secret := range []string{revocation.ID().String(), "alice", "t1"} {
+			if strings.Contains(line, secret) {
+				t.Fatalf("the warn line holds %q: %s", secret, line)
+			}
+		}
+		// A second wait in the same interval is held back, and counted in the next line.
+		wait(30 * time.Second)
+		if strings.Count(logs.String(), "\n") != 1 {
+			t.Fatalf("a second wait in the interval logged again: %s", logs.String())
+		}
+		at = at.Add(LogEvery)
+		wait(30 * time.Second)
+		if !strings.Contains(logs.String(), "held_back=1") {
+			t.Fatalf("the line after the interval does not count the line held back: %s", logs.String())
 		}
 	})
 }

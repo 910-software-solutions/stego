@@ -43,10 +43,6 @@ requirements:
     components:
       - spicedb-authz
   - kind: configuration
-    name: STEGO_QUERY_CURSOR_KEY_FILE
-    components:
-      - query
-  - kind: configuration
     name: STEGO_SPICEDB_ENDPOINT
     components:
       - spicedb-authz
@@ -1134,12 +1130,13 @@ environment:
     read_by:
       - query
     type: path
-    required: true
-    description: The file of the key of the list cursors, at least 32 bytes, the same in each replica. The service does not start when it has no value.
+    required: false
+    description: The file of the key of the list cursors, at least 32 bytes, the same in each replica. Only the api mode reads it, and the api mode does not start when it has no value.
     secret: false
     secret_source:
       name: user-management-query-cursor
       key: key
+    read_by_mode: api
   - name: STEGO_RELAY_DATABASE_URL
     read_by:
       - postgres-adapter

@@ -123,6 +123,9 @@ func (h *AllUsersHandler) List(w http.ResponseWriter, r *http.Request) {
 			handleError(w, r, BadRequest("the Authz-Revocation-After header is not the identity of a revocation"))
 			return
 		}
+		if r.Context().Err() != nil {
+			return
+		}
 		handleError(w, r, InternalError("internal error"))
 		return
 	}

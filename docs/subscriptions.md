@@ -102,8 +102,10 @@ The worker mode reads these settings, with the connection settings
 When the sessions of the inbox fail 5 times in a row, for example because the
 topic is missing or the user may not read it, the readiness of the worker mode
 names the inbox and a fixed failure class, such as
-`broker:TOPIC_AUTHORIZATION_FAILED`, and the gauge `kafka.consumer.failing` is
-1. A session that reads the topic again clears both. In Kubernetes, the worker
+`broker:TOPIC_AUTHORIZATION_FAILED (describe-configs)`, and the gauge
+`kafka.consumer.failing` is 1. The class names the operation that failed at
+the broker: `describe-configs` (the check of the retention of the topic),
+`fetch` or `commit`. Thus a missing ACL names its operation. A session that reads the topic again clears both. In Kubernetes, the worker
 Deployment of the base is then not ready.
 
 ## Order of provision and start

@@ -7,18 +7,26 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+	spb "google.golang.org/genproto/googleapis/rpc/status"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
@@ -126,11 +134,15 @@ var ErrUndecided = errors.New("command: the permission of the command could not 
 // ErrorCodeInvalid is the fixed code of a command that ErrInvalid refused.
 const ErrorCodeInvalid = "invalid"
 
+// ErrorCodeUnavailable is the fixed code of a command that ErrUnavailable ended: the database could not serve now.
+const ErrorCodeUnavailable = "unavailable"
+
 // OutcomeOf maps an error of Run to its answer (ST-SUP-RP10-LC33, ST-SUP-RP10-LC34): a declared refusal among
 // refusals is its status and code; ErrDenied is 404 denied, the same answer as a missing row of a read
 // (ST-SUP-RP11-LC06); ErrInvalid is 400 invalid with the field it names (ST-SUP-Q118); a conflict after the last
 // attempt is 409 conflict; a decision that the provider could not make now (authz.Transient) is 503 undecided, which
-// the handler answers with Retry-After (ST-SUP-Q140); a COMMIT whose outcome is not known and
+// the handler answers with Retry-After (ST-SUP-Q140); ErrUnavailable, a database that cannot serve now, is 503
+// unavailable with Retry-After; a COMMIT whose outcome is not known and
 // every other error are 500 internal, the first with the audit code commit_outcome_unknown. A refusal that is not
 // one of refusals is an other error. No error text reaches the answer, the audit row or the log. Serve uses it, and
 // so does a handler that decodes its own body, such as the handlers of generated CRUD.
@@ -160,7 +172,38 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 		// with Retry-After, never a bare 500 (walkthrough 3, G4; ST-SUP-Q140).
 		return Outcome{Status: http.StatusServiceUnavailable, Code: audit.ErrorCodeUndecided, Audit: audit.OutcomeFailed}
 	}
+	if code == ErrorCodeInternal && errors.Is(err, ErrUnavailable) {
+		// A database that cannot serve now, such as in an outage, is 503 with Retry-After, never a bare 500
+		// (walkthrough 10, B7).
+		return Outcome{Status: http.StatusServiceUnavailable, Code: ErrorCodeUnavailable, Audit: audit.OutcomeFailed}
+	}
 	return Outcome{Status: http.StatusInternalServerError, Code: code, Audit: audit.OutcomeFailed}
+}
+
+// RPCStatus is the gRPC status of the outcome: the code of its HTTP status, and its fixed code as the message. An
+// invalid value also names its declared field and fixed reason in a google.rpc.BadRequest detail, as the field of
+// the HTTP problem does (walkthrough 10, B4); the detail holds no value of the request.
+func (o Outcome) RPCStatus() error {
+	st := &spb.Status{Code: int32(RPCCode(o.Status)), Message: o.AnswerCode()}
+	if o.Field != "" {
+		st.Details = []*anypb.Any{badRequest(o.Field, o.Reason)}
+	}
+	return status.ErrorProto(st)
+}
+
+// badRequest is the google.rpc.BadRequest detail of one field violation, the field and the description, in the wire
+// form of its message: field_violations (1) of a FieldViolation with field (1) and description (2). It is written here
+// so the command runtime imports no more of the generated messages of googleapis than grpc does.
+func badRequest(field, description string) *anypb.Any {
+	var violation []byte
+	violation = protowire.AppendTag(violation, 1, protowire.BytesType)
+	violation = protowire.AppendString(violation, field)
+	violation = protowire.AppendTag(violation, 2, protowire.BytesType)
+	violation = protowire.AppendString(violation, description)
+	var message []byte
+	message = protowire.AppendTag(message, 1, protowire.BytesType)
+	message = protowire.AppendBytes(message, violation)
+	return &anypb.Any{TypeUrl: "type.googleapis.com/google.rpc.BadRequest", Value: message}
 }
 
 // AnswerCode is the code of the answer to the client: the audit code commit_outcome_unknown is internal to a client.
@@ -356,7 +399,7 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 		result, failed := serveRun(ctx, rt, s, req, decode)
 		switch {
 		case failed != nil:
-			return none, status.Error(RPCCode(failed.Status), failed.AnswerCode())
+			return none, failed.RPCStatus()
 		case result.Problem == idempotency.ProblemInProgress:
 			return none, status.Error(codes.Aborted, result.Problem)
 		case result.Problem != "":
@@ -366,8 +409,21 @@ func ServeRPC[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, 
 		if err := protojson.Unmarshal(result.Response.Body, response); err != nil {
 			return none, status.Error(codes.Internal, ErrorCodeInternal)
 		}
+		sendRevocation(ctx, result.Response.Header)
 		return response, nil
 	}, nil
+}
+
+// sendRevocation sends the revocation of a committed command, which Run set in the headers Authz-Revocation and
+// Authz-Revocation-Location of the stored response, as the header metadata authz-revocation and
+// authz-revocation-location of the gRPC answer, so a replay sends the same values (ST-SUP-RP10-LC40, ST-SUP-Q163). A
+// response with no revocation sends neither. A context with no gRPC stream, such as of a direct call, sends nothing.
+func sendRevocation(ctx context.Context, header http.Header) {
+	state, location := header.Get(authz.RevocationHeader), header.Get(authz.RevocationLocationHeader)
+	if state == "" || location == "" {
+		return
+	}
+	_ = grpc.SetHeader(ctx, metadata.Pairs(authz.RevocationMetadata, state, authz.RevocationLocationMetadata, location))
 }
 
 // ServeRevocationStatus gives the handler of the revocation status route, GET /authz/revocations/{id}
@@ -404,6 +460,10 @@ func ServeRevocationStatus(rt *Runtime, subjectType string) http.Handler {
 		switch {
 		case errors.Is(err, authz.ErrRevocationNotFound):
 			writeProblem(w, http.StatusNotFound, "", ErrorCodeDenied)
+			return
+		case err != nil && r.Context().Err() != nil:
+			// The client went away during the wait: no one reads the answer, and it is no internal error of the
+			// service (review of PR #428, L1).
 			return
 		case err != nil:
 			writeProblem(w, http.StatusInternalServerError, "", ErrorCodeInternal)
@@ -442,6 +502,10 @@ func RPCCode(httpStatus int) codes.Code {
 		return codes.Aborted
 	case http.StatusPreconditionFailed:
 		return codes.FailedPrecondition
+	case http.StatusServiceUnavailable:
+		// A decision that the provider could not make now, or a database that cannot serve now: the client may try
+		// again (walkthrough 10, B5 and B7).
+		return codes.Unavailable
 	}
 	return codes.Internal
 }
@@ -543,6 +607,25 @@ func ValidUUID(id string) bool {
 	}
 	return true
 }
+
+// MinLength reports whether value has at least n characters (Unicode code points), the declared min_length of a
+// field (walkthrough 10, B4).
+func MinLength(value string, n int) bool { return utf8.RuneCountInString(value) >= n }
+
+// MaxLength reports whether value has at most n characters (Unicode code points), the declared max_length of a field.
+func MaxLength(value string, n int) bool { return utf8.RuneCountInString(value) <= n }
+
+// Finite reports whether value is a finite number: not NaN and not an infinity. A float field with a declared min or
+// max must be finite, as the CHECK of its table holds.
+func Finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
+
+// OneOf reports whether value is one of the declared values of an enum field.
+func OneOf(value string, values ...string) bool { return slices.Contains(values, value) }
+
+// MustPattern compiles the declared pattern of a field, an RE2 expression that matches anywhere in the value as a
+// JSON Schema pattern does, and panics when it does not compile. The generated code calls it once for each pattern,
+// in a package-level variable; the generator compiled the pattern first.
+func MustPattern(pattern string) *regexp.Regexp { return regexp.MustCompile(pattern) }
 
 // Must gives v, and panics on an error: for a declaration that the generator checked, such as one of NewEntity,
 // NewCommand or authz.ParseRelation, which does not fail.

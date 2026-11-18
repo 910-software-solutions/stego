@@ -9,12 +9,18 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
@@ -22,9 +28,11 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/authz"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/internal/authzclock"
+	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/query"
+	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
 // deliveredPort is a relationships port of the relay that records the resources of the tuples it wrote, and a
@@ -751,6 +759,365 @@ func TestReadYourWrites(t *testing.T) {
 	})
 }
 
-// relayRelations are the relations that the relay of the tests may write: those of the orders.
+// relayRelations are the relations that the relay of the tests may write: those of the orders, and the admin relation
+// of the service-level resource that Provision grants.
 var relayRelations = []authz.Relation{{ResourceType: "order", Name: "owner"}, {ResourceType: "order", Name: "customer"},
-	{ResourceType: "order", Name: "product"}, {ResourceType: "order", Name: "tenant"}}
+	{ResourceType: "order", Name: "product"}, {ResourceType: "order", Name: "tenant"}, {ResourceType: "service", Name: "admin"}}
+
+// headerStream is the server transport stream of a gRPC call in a test: it keeps the header metadata that the handler
+// sets.
+type headerStream struct {
+	mu sync.Mutex
+	md metadata.MD
+}
+
+func (h *headerStream) Method() string { return "/test.Orders/Place" }
+func (h *headerStream) SetHeader(md metadata.MD) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.md = metadata.Join(h.md, md)
+	return nil
+}
+func (h *headerStream) SendHeader(md metadata.MD) error { return h.SetHeader(md) }
+func (h *headerStream) SetTrailer(metadata.MD) error    { return nil }
+
+// header gives the values of the header metadata name.
+func (h *headerStream) header(name string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.md.Get(name)
+}
+
+// rpcCall gives a gRPC call context of who with the request metadata pairs, and the stream that keeps its header.
+func (r *revocationEnv) rpcCall(ctx context.Context, pairs ...string) (context.Context, *headerStream) {
+	stream := &headerStream{}
+	return metadata.NewIncomingContext(grpc.NewContextWithServerTransportStream(ctx, stream), metadata.Pairs(pairs...)), stream
+}
+
+func TestRevocationRPC(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC40-T01 A gRPC command that enqueued a tuple answers its revocation in the header metadata, the same on a replay, and no other answer does", func(t *testing.T) {
+		r := newRevocationEnv(t, 0, 0)
+		var create bool
+		var fail error
+		spec := ServeSpec[*structpb.Struct, *structpb.Struct, testProbe]{
+			Command: r.place, ResourceType: "order", SubjectType: "user", Status: http.StatusCreated,
+			NewRequest:  func() *structpb.Struct { return &structpb.Struct{} },
+			NewResponse: func() *structpb.Struct { return &structpb.Struct{} },
+			Resource:    func(*structpb.Struct) string { return "" },
+			Fill: func(ctx context.Context, request *structpb.Struct, h *Handle[testProbe]) (*structpb.Struct, error) {
+				if fail != nil {
+					return nil, fail
+				}
+				if create {
+					id := request.GetFields()["id"].GetStringValue()
+					if _, err := repo(t, h, r.orders).Create(ctx, placedOrder{ID: id, CustomerID: "c1", ProductID: "p1"}); err != nil {
+						return nil, err
+					}
+				}
+				return structpb.NewStruct(map[string]any{"done": true})
+			},
+		}
+		rpc, err := ServeRPC(r.rt, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		call := func(key, id string) (*headerStream, error) {
+			ctx, stream := r.rpcCall(r.identity["u-7@t1"], RPCKeyMetadata, `"`+key+`"`)
+			request, _ := structpb.NewStruct(map[string]any{"id": id})
+			_, err := rpc(ctx, request)
+			return stream, err
+		}
+		create = true
+		first, err := call("k-lc40-1", "rpc1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		location := first.header(authz.RevocationLocationMetadata)
+		if !slices.Equal(first.header(authz.RevocationMetadata), []string{"pending"}) || len(location) != 1 ||
+			!strings.HasPrefix(location[0], authz.RevocationPath) {
+			t.Fatalf("the create answered the header metadata %v, want authz-revocation: pending and one location", first.md)
+		}
+		if _, err := uuid.Parse(strings.TrimPrefix(location[0], authz.RevocationPath)); err != nil {
+			t.Fatalf("the location %s does not end in a revocation identity", location[0])
+		}
+		// The location is the one that the HTTP status route answers for the writer.
+		if answer, body, _ := r.status("u-7@t1", location[0], ""); answer.Code != http.StatusOK || body["state"] != "pending" {
+			t.Fatalf("the status of the gRPC revocation is %d %v, want pending", answer.Code, body)
+		}
+		replay, err := call("k-lc40-1", "rpc1")
+		if err != nil || !slices.Equal(replay.header(authz.RevocationLocationMetadata), location) ||
+			!slices.Equal(replay.header(authz.RevocationMetadata), []string{"pending"}) {
+			t.Fatalf("the replay answered %v, %v, want the same metadata", replay.md, err)
+		}
+		// A command that enqueues no tuple, and one that fails, send neither key.
+		create = false
+		if none, err := call("k-lc40-2", ""); err != nil || len(none.md) != 0 {
+			t.Fatalf("a command with no tuple answered the metadata %v, %v, want none", none.md, err)
+		}
+		create, fail = true, NewRefusal("place", "closed", http.StatusConflict, "place.closed")
+		if failed, err := call("k-lc40-3", "rpc3"); err == nil || len(failed.md) != 0 {
+			t.Fatalf("a failed command answered the metadata %v, %v, want an error and none", failed.md, err)
+		}
+	})
+	t.Run("ST-SUP-RP11-LC22-T01 A gRPC query waits for the revocation that its metadata names, within the prefer wait, the cap and the call deadline, and answers the state", func(t *testing.T) {
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 30*time.Second, 0, 0, clock)
+		queries := r.queries()
+		location := r.create("u-7@t1", "k-lc22-1", "q1", nil).Response.Header.Get(authz.RevocationLocationHeader)
+		id := strings.TrimPrefix(location, authz.RevocationPath)
+		await := func(ctx context.Context, who string, pairs ...string) (*headerStream, <-chan error) {
+			ctx, stream := r.rpcCall(ctx, pairs...)
+			b := r.bound(who)
+			done := make(chan error, 1)
+			go func() { done <- queries.AwaitWriteRPC(ctx, b.Tenant, b.Principal) }()
+			return stream, done
+		}
+		answer := func(done <-chan error) error {
+			select {
+			case err := <-done:
+				return err
+			case b := <-clock.bounds:
+				t.Fatalf("the call waits with a bound of %s, want an answer at once", b.d)
+				return nil
+			}
+		}
+		// No metadata waits for nothing and sends nothing; a bad value and two values are bad requests.
+		if stream, done := await(r.identity["u-7@t1"], "u-7@t1", "x-other", "1"); answer(done) != nil || len(stream.md) != 0 {
+			t.Fatalf("a call with no revocation metadata sent %v", stream.md)
+		}
+		for name, pairs := range map[string][]string{"a bad value": {authz.RevocationAfterMetadata, "not-an-id"},
+			"two values": {authz.RevocationAfterMetadata, id, authz.RevocationAfterMetadata, id},
+			"upper case": {authz.RevocationAfterMetadata, strings.ToUpper(id)}} {
+			if _, done := await(r.identity["u-7@t1"], "u-7@t1", pairs...); !errors.Is(answer(done), query.ErrBadRequest) {
+				t.Fatalf("%s is no bad request", name)
+			}
+		}
+		// The revocation of u-7@t1 is unknown to another principal and to another tenant, at once.
+		for _, who := range []string{"u-8@t1", "u-7@t2"} {
+			stream, done := await(r.identity[who], who, authz.RevocationAfterMetadata, location, authz.PreferMetadata, "wait=5")
+			b := clock.waitBound(t, nil)
+			if err := <-done; err != nil || !slices.Equal(stream.header(authz.RevocationMetadata), []string{query.RevocationUnknown}) {
+				t.Fatalf("%s waited for u-7@t1's revocation: %v %v, want unknown", who, err, stream.md)
+			}
+			b.end()
+		}
+		// The prefer wait bounds the wait: no relay runs, so it ends pending at its end.
+		stream, done := await(r.identity["u-7@t1"], "u-7@t1", authz.RevocationAfterMetadata, id, authz.PreferMetadata, "wait=2")
+		if b := clock.waitBound(t, nil); b.d != 2*time.Second {
+			t.Fatalf("a wait=2 call is bounded at %s, want 2 s", b.d)
+		}
+		clock.polled(t, nil)
+		clock.advance(2 * time.Second)
+		if err := <-done; err != nil || !slices.Equal(stream.header(authz.RevocationMetadata), []string{"pending"}) {
+			t.Fatalf("the wait answered %v %v, want pending", err, stream.md)
+		}
+		// The call deadline bounds the wait to half the time that it leaves, below the cap of 30 s.
+		ctx, cancel := context.WithTimeout(r.identity["u-7@t1"], 20*time.Second)
+		defer cancel()
+		stream, done = await(ctx, "u-7@t1", authz.RevocationAfterMetadata, location)
+		b := clock.waitBound(t, nil)
+		if b.d > 10*time.Second || b.d < 9*time.Second {
+			t.Fatalf("a call with a deadline 20 s away is bounded at %s, want half of it, below the cap", b.d)
+		}
+		clock.polled(t, nil)
+		// A client that cancels during the wait ends it with the error of its context: no internal error (review
+		// of PR #428, L1).
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("a cancelled wait gave %v, want the cancel", err)
+		}
+		_ = stream
+	})
+	t.Run("ST-SUP-RP11-LC22-T02 ServeStream waits before the read, refuses a bad value as InvalidArgument, and a stream with no runtime that names a revocation is Internal", func(t *testing.T) {
+		r := newRevocationEnv(t, 5*time.Second, 0)
+		queries := r.queries()
+		location := r.create("u-7@t1", "k-lc22-2", "q2", nil).Response.Header.Get(authz.RevocationLocationHeader)
+		r.startRelay()
+		var seen []string
+		var stream *headerStream
+		serve := func(rt *query.Runtime) func(context.Context, *structpb.Struct, func(*structpb.Struct) error) error {
+			h, err := query.ServeStream(query.StreamRPC[*structpb.Struct, *structpb.Struct, struct{}, string, struct{}]{
+				Bind: func(ctx context.Context) (query.Bound[struct{}], error) {
+					b, err := BindIdentity(ctx, "user")
+					return query.Bound[struct{}]{Tenant: b.Tenant, Principal: b.Principal}, err
+				},
+				Decode: func(*structpb.Struct) (struct{}, error) { return struct{}{}, nil },
+				Stream: func(context.Context, query.Bound[struct{}], struct{}, func(string) error) (uint64, error) {
+					seen = append(seen, strings.Join(stream.header(authz.RevocationMetadata), ","))
+					return 0, nil
+				},
+				NewMessage: func() *structpb.Struct { return &structpb.Struct{} },
+				Runtime:    rt,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return h
+		}
+		send := func(*structpb.Struct) error { return nil }
+		var ctx context.Context
+		ctx, stream = r.rpcCall(r.identity["u-7@t1"], authz.RevocationAfterMetadata, location, authz.PreferMetadata, "wait=5")
+		if err := serve(queries)(ctx, &structpb.Struct{}, send); err != nil || !slices.Equal(seen, []string{"complete"}) {
+			t.Fatalf("the stream ran with the state %v (%v), want the read after complete", seen, err)
+		}
+		ctx, stream = r.rpcCall(r.identity["u-7@t1"], authz.RevocationAfterMetadata, "not-an-id")
+		if err := serve(queries)(ctx, &structpb.Struct{}, send); status.Code(err) != codes.InvalidArgument || len(seen) != 1 {
+			t.Fatalf("a bad value gave %v and ran the stream %d times, want InvalidArgument and no read", err, len(seen)-1)
+		}
+		ctx, stream = r.rpcCall(r.identity["u-7@t1"], authz.RevocationAfterMetadata, location)
+		if err := serve(nil)(ctx, &structpb.Struct{}, send); status.Code(err) != codes.Internal || len(seen) != 1 {
+			t.Fatalf("a stream with no runtime gave %v, want Internal and no read", err)
+		}
+		ctx, stream = r.rpcCall(r.identity["u-7@t1"])
+		if err := serve(nil)(ctx, &structpb.Struct{}, send); err != nil || len(seen) != 2 {
+			t.Fatalf("a stream with no runtime and no revocation gave %v, want the read", err)
+		}
+	})
+}
+
+func TestRevocationCancel(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC35-T04 A client that cancels during the wait of the status route gets no answer and no internal error code", func(t *testing.T) {
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 5*time.Second, 0, 0, clock)
+		location := r.create("u-7@t1", "k-lc35-5", "o9", nil).Response.Header.Get(authz.RevocationLocationHeader)
+		ctx, cancel := context.WithCancel(otel.WithErrorCode(r.identity["u-7@t1"]))
+		request := httptest.NewRequestWithContext(ctx, http.MethodGet, location, nil)
+		request.Header.Set("Prefer", "wait=5")
+		answer := httptest.NewRecorder()
+		done := make(chan struct{})
+		go func() { defer close(done); ServeRevocationStatus(r.rt, "user").ServeHTTP(answer, request) }()
+		clock.waitBound(t, nil)
+		clock.polled(t, nil)
+		cancel()
+		<-done
+		code, _ := otel.ErrorCode(ctx)
+		if answer.Body.Len() != 0 || strings.Contains(answer.Body.String(), ErrorCodeInternal) || code != "" {
+			t.Fatalf("the cancelled wait answered %d %q with the log code %q, want no answer and no code", answer.Code, answer.Body, code)
+		}
+	})
+}
+
+func TestProvisionWaitLimit(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC41-T02 One principal holds at most MaxProvisionWaits Provision waits over all the tenants it provisions", func(t *testing.T) {
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 10*time.Second, 0, 0, clock)
+		migration, err := tenant.Migration("public", r.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.exec(migration)
+		h, err := ServeTenant(r.rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",
+			Schema: "public", SubjectType: "user", AdminRelation: "admin", TrustedIssuers: []string{"https://issuer.example"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		send := func(id string) <-chan *httptest.ResponseRecorder {
+			answers := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				request := httptest.NewRequestWithContext(r.identity["u-7@t1"], http.MethodPost, "/stego/tenants",
+					strings.NewReader(`{"tenant_id":"`+id+`","admins":[{"subject":"a-1"}]}`))
+				request.Header.Set("Idempotency-Key", `"k-lc41-t02-`+id+`"`)
+				request.Header.Set("Prefer", "wait=5")
+				answer := httptest.NewRecorder()
+				h.ServeHTTP(answer, request)
+				answers <- answer
+			}()
+			return answers
+		}
+		var waiting []<-chan *httptest.ResponseRecorder
+		for i := range MaxProvisionWaits {
+			answers := send(fmt.Sprintf("w%d", i))
+			waiting = append(waiting, answers)
+			select {
+			case <-clock.bounds:
+			case a := <-answers:
+				t.Fatalf("Provision %d answered %d %v before it waited", i, a.Code, a.Header())
+			}
+			clock.polled(t, nil)
+		}
+		// One more Provision of the same principal, of another tenant, answers pending at once and does not wait.
+		select {
+		case a := <-send("w-over"):
+			if a.Code != http.StatusCreated || a.Header().Get(authz.RevocationHeader) != "pending" || a.Header().Get("Preference-Applied") != "" {
+				t.Fatalf("the Provision over the limit answered %d %v, want 201 pending with no Preference-Applied", a.Code, a.Header())
+			}
+		case b := <-clock.bounds:
+			t.Fatalf("the Provision over the limit waits with a bound of %s", b.d)
+		}
+		clock.advance(5 * time.Second)
+		for _, answers := range waiting {
+			if a := <-answers; a.Header().Get("Preference-Applied") != "wait=5" {
+				t.Fatalf("a waiting Provision answered %v, want wait=5", a.Header())
+			}
+		}
+	})
+}
+
+func TestProvisionRevocation(t *testing.T) {
+	t.Run("ST-SUP-RP10-LC41-T01 Provision answers the revocation of its grants pending, waits for it with Prefer, and a replay does not wait", func(t *testing.T) {
+		provision := func(r *revocationEnv) func(key, body, prefer string) *httptest.ResponseRecorder {
+			migration, err := tenant.Migration("public", r.roles[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.exec(migration)
+			h, err := ServeTenant(r.rt, TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision",
+				Schema: "public", SubjectType: "user", AdminRelation: "admin", TrustedIssuers: []string{"https://issuer.example"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return func(key, body, prefer string) *httptest.ResponseRecorder {
+				request := httptest.NewRequestWithContext(r.identity["u-7@t1"], http.MethodPost, "/stego/tenants", strings.NewReader(body))
+				request.Header.Set("Idempotency-Key", `"`+key+`"`)
+				if prefer != "" {
+					request.Header.Set("Prefer", prefer)
+				}
+				answer := httptest.NewRecorder()
+				h.ServeHTTP(answer, request)
+				return answer
+			}
+		}
+		// With the clock of the test and no relay: no Prefer answers pending at once; Prefer waits to its end.
+		clock := newWaitClock(t)
+		r := newRevocationEnvClock(t, 10*time.Second, 0, 0, clock)
+		send := provision(r)
+		first := send("k-lc41-1", `{"tenant_id":"t9","admins":[{"subject":"a-1"}]}`, "")
+		if first.Code != http.StatusCreated || first.Header().Get(authz.RevocationHeader) != "pending" ||
+			first.Header().Get(authz.RevocationLocationHeader) != "" || first.Header().Get("Preference-Applied") != "" {
+			t.Fatalf("Provision answered %d %v, want 201 with Authz-Revocation: pending and no location", first.Code, first.Header())
+		}
+		replay := send("k-lc41-1", `{"tenant_id":"t9","admins":[{"subject":"a-1"}]}`, "wait=5")
+		select {
+		case b := <-clock.bounds:
+			t.Fatalf("the replay waits with a bound of %s, want no wait", b.d)
+		default:
+		}
+		if replay.Code != http.StatusCreated || replay.Header().Get(authz.RevocationHeader) != "pending" || replay.Header().Get("Preference-Applied") != "" {
+			t.Fatalf("the replay answered %d %v, want the stored pending answer", replay.Code, replay.Header())
+		}
+		answers := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answers <- send("k-lc41-2", `{"tenant_id":"t8","admins":[{"subject":"a-1"}]}`, "wait=3") }()
+		b := <-clock.bounds
+		if b.d != 3*time.Second {
+			t.Fatalf("a Provision with wait=3 is bounded at %s", b.d)
+		}
+		clock.polled(t, nil)
+		clock.advance(3 * time.Second)
+		if a := <-answers; a.Code != http.StatusCreated || a.Header().Get(authz.RevocationHeader) != "pending" || a.Header().Get("Preference-Applied") != "wait=3" {
+			t.Fatalf("a Provision whose grant no relay delivers answered %d %v, want 201 pending with wait=3", a.Code, a.Header())
+		}
+		// With the relay: the wait ends complete, and the grant is at the floor that a later decision reads.
+		real := newRevocationEnv(t, 10*time.Second, 0)
+		sendReal := provision(real)
+		real.startRelay()
+		if a := sendReal("k-lc41-3", `{"tenant_id":"t7","admins":[{"subject":"a-1"}]}`, "wait=10"); a.Code != http.StatusCreated ||
+			a.Header().Get(authz.RevocationHeader) != "complete" {
+			t.Fatalf("a Provision with the relay answered %d %v, want 201 complete", a.Code, a.Header())
+		}
+		// A Provision with no admin and no worker stages no tuple, and answers no revocation.
+		plain := sendReal("k-lc41-4", `{"tenant_id":"t6"}`, "wait=10")
+		if plain.Code != http.StatusBadRequest || plain.Header().Get(authz.RevocationHeader) != "" {
+			t.Fatalf("a Provision with no admins answered %d %v, want 400 and no revocation", plain.Code, plain.Header())
+		}
+	})
+}

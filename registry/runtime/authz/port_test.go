@@ -7,13 +7,18 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
+
+	"github.com/jsell-rh/stego/registry/runtime/outbox"
 )
 
 // recorder is the recording fake provider of the tests: it stores each request it gets and answers from its rules.
@@ -533,3 +538,152 @@ func reflectType(v any) reflect.Type {
 	}
 	return t
 }
+
+// hangingProvider is a decision provider that does not answer: each call waits until its context ends and gives the
+// error of the context, as a gRPC call to a paused SpiceDB does. It records the deadline of each call.
+type hangingProvider struct {
+	mu        sync.Mutex
+	deadlines []bool
+}
+
+func (h *hangingProvider) wait(ctx context.Context) error {
+	_, ok := ctx.Deadline()
+	h.mu.Lock()
+	h.deadlines = append(h.deadlines, ok)
+	h.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (h *hangingProvider) Evaluate(ctx context.Context, _ EvaluationRequest) (EvaluationResult, error) {
+	return EvaluationResult{}, h.wait(ctx)
+}
+
+func (h *hangingProvider) EvaluateBatch(ctx context.Context, _ BatchRequest) ([]EvaluationResult, error) {
+	return nil, h.wait(ctx)
+}
+
+func (h *hangingProvider) Search(ctx context.Context, _ SearchRequest) (SearchResult, error) {
+	return SearchResult{}, h.wait(ctx)
+}
+
+func (h *hangingProvider) Searches() bool { return true }
+
+// boundClock is a wait clock whose bounds the test ends: each WithTimeout records its time and gives a context that
+// ends when the test calls end, or when its parent ends.
+type boundClock struct {
+	mu     sync.Mutex
+	asked  []time.Duration
+	bounds chan context.CancelFunc
+}
+
+func (c *boundClock) WithTimeout(parent context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithDeadlineCause(parent, time.Now().Add(time.Hour), nil)
+	ended, end := context.WithCancelCause(ctx)
+	c.mu.Lock()
+	c.asked = append(c.asked, d)
+	c.mu.Unlock()
+	c.bounds <- func() { end(context.DeadlineExceeded) }
+	return &deadlineCtx{Context: ended}, func() { end(context.Canceled); cancel() }
+}
+
+func (c *boundClock) After(time.Duration) <-chan time.Time { return nil }
+
+// deadlineCtx is a context whose Err is DeadlineExceeded when its cause is, as the context of a timer that ran out.
+type deadlineCtx struct{ context.Context }
+
+func (d *deadlineCtx) Err() error {
+	if d.Context.Err() != nil && errors.Is(context.Cause(d.Context), context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return d.Context.Err()
+}
+
+func TestDecisionTimeout(t *testing.T) {
+	t.Run("ST-SUP-RP06-LC25-T01 Each provider call ends at the decision time limit with a transient error, and never waits for a provider that does not answer", func(t *testing.T) {
+		provider := &hangingProvider{}
+		port, err := NewPort(provider, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if port.timeout != DefaultDecisionTimeout || DefaultDecisionTimeout != 2*time.Second {
+			t.Fatalf("NewPort has the time limit %s and the default is %s, want 2 s", port.timeout, DefaultDecisionTimeout)
+		}
+		clock := &boundClock{bounds: make(chan context.CancelFunc, 8)}
+		port.clock = clock
+		request := EvaluationRequest{Subject: Subject{Type: "user", ID: "u-7"}, Action: Action{Name: "view"},
+			Resource: doc("1"), Consistency: Fresh()}
+		calls := map[string]func() error{
+			"Evaluate": func() error { _, err := port.Evaluate(context.Background(), request); return err },
+			"EvaluateBatch": func() error {
+				_, err := port.EvaluateBatch(context.Background(), BatchRequest{Evaluations: []EvaluationRequest{request}})
+				return err
+			},
+			"search": func() error {
+				_, err := port.search(context.Background(), SearchRequest{Subject: request.Subject, Action: request.Action,
+					ResourceType: "document", Consistency: Fresh()}, Token{})
+				return err
+			},
+		}
+		for name, call := range calls {
+			done := make(chan error, 1)
+			go func() { done <- call() }()
+			end := <-clock.bounds
+			select {
+			case err := <-done:
+				t.Fatalf("%s returned %v before its time limit ended", name, err)
+			default:
+			}
+			end()
+			err := <-done
+			if !Transient(err) || Cause(err) != CauseDeadline {
+				t.Fatalf("%s at the time limit gave %v (cause %s), want a transient error with the cause %s", name, err, Cause(err), CauseDeadline)
+			}
+		}
+		for _, d := range clock.asked {
+			if d != DefaultDecisionTimeout {
+				t.Fatalf("a provider call was bounded at %s, want %s", d, DefaultDecisionTimeout)
+			}
+		}
+		// The configuration sets another time limit, and refuses a negative one.
+		queue, err := outbox.New(fakeDB(t), outbox.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt, err := New(Config{Provider: provider, DB: fakeDB(t), Schema: "public", Outbox: queue, DecisionTimeout: 300 * time.Millisecond})
+		if err != nil || rt.port.timeout != 300*time.Millisecond {
+			t.Fatalf("New with a time limit of 300 ms gave %v, %v", rt, err)
+		}
+		if _, err := New(Config{Provider: provider, DB: fakeDB(t), Schema: "public", Outbox: queue, DecisionTimeout: -time.Second}); err == nil {
+			t.Fatal("New took a negative decision time limit")
+		}
+		// With the real clock, a short limit ends the call of a provider that does not answer.
+		port.clock, port.timeout = nil, time.Millisecond
+		if _, err := port.Evaluate(context.Background(), request); !Transient(err) {
+			t.Fatalf("a call past a limit of 1 ms gave %v, want a transient error", err)
+		}
+	})
+	t.Run("ST-SUP-RP06-LC25-T02 A revocation floor that the database cannot read now is a transient cause, and a refused statement is not", func(t *testing.T) {
+		refused := failedStatement("authz: the revocation floor cannot be read in the transaction", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
+		if !Transient(refused) || Cause(refused) != CauseStoreUnavailable {
+			t.Fatalf("a refused connection gave the cause %s (transient %v), want %s", Cause(refused), Transient(refused), CauseStoreUnavailable)
+		}
+		if text := refused.Error(); strings.Contains(text, "refused") || strings.Contains(text, "dial") {
+			t.Fatalf("the error holds the text of the cause: %s", text)
+		}
+		floor := fixed("authz: the revocation floor cannot be read", &pgError{code: "57P01"})
+		if !Transient(floor) || Cause(floor) != CauseStoreUnavailable {
+			t.Fatalf("a server that shuts down gave the cause %s, want %s", Cause(floor), CauseStoreUnavailable)
+		}
+		privilege := failedStatement("authz: the revocation floor cannot be read in the transaction", &pgError{code: "42501"})
+		if Transient(privilege) {
+			t.Fatalf("a privilege that the role lacks is transient (cause %s), want not", Cause(privilege))
+		}
+	})
+}
+
+// pgError is a database error with a SQLSTATE, as the driver gives it.
+type pgError struct{ code string }
+
+func (e *pgError) Error() string    { return "pg error " + e.code }
+func (e *pgError) SQLState() string { return e.code }

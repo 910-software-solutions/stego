@@ -54,6 +54,7 @@ definition service_account {}
 
 definition tenant {
 	relation worker_record_orders: service_account
+	permission record = worker_record_orders
 }
 `
 

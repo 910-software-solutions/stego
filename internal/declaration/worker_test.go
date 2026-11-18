@@ -425,8 +425,9 @@ func TestChildLists(t *testing.T) {
 	}
 }
 
-// TestWorkerRootCreate proves ST-SUP-RP10-LC17-T03: checking warns for each entity that a worker writes and cannot
-// create with no parent resource, and gives no warning for an entity whose create always has a parent.
+// TestWorkerRootCreate proves ST-SUP-RP10-LC17-T03: checking warns for each entity that a worker can create with no
+// parent when the type tenant of the schema has no permission of the worker, which generation refuses
+// (ST-SUP-RC35-OC17), and gives no warning when the schema has it or the entity always has a parent.
 func TestWorkerRootCreate(t *testing.T) {
 	ref := func(name, to string, optional bool) types.Field {
 		return types.Field{Name: name, Type: types.FieldTypeRef, To: to, Optional: optional}
@@ -443,40 +444,43 @@ func TestWorkerRootCreate(t *testing.T) {
 			Workers: []types.Worker{{Name: "track-patients", Trigger: "consumes patient-changes", Writes: writes, ResourceType: "patient_card", Permission: "track"}},
 		}
 	}
-	t.Run("ST-SUP-RP10-LC17-T03 a worker that writes a root entity is warned, with the entity and the cause", func(t *testing.T) {
-		warnings := RootCreateWarnings(service("Roster"))
-		if len(warnings) != 1 || warnings[0].Rule != "worker-root-create" || warnings[0].Path != "workers[0].writes" || warnings[0].Found != "Roster" {
-			t.Fatalf("warnings = %+v, want one worker-root-create warning for Roster", warnings)
+	schema := func(tenant string) *AuthzSchema {
+		t.Helper()
+		compiled, err := CompileAuthzSchema("authz/schema.zed", []byte("definition user {}\ndefinition service_account {}\ndefinition tenant {\n\trelation worker_track_patients: service_account\n"+tenant+"}\n"))
+		if err != nil {
+			t.Fatal(err)
 		}
-		for _, want := range []string{`worker "track-patients"`, "Roster", "roster", "ST-SUP-RP10-LC17", "fill_error", "no reference to an entity with a resource type", "ST-SUP-Q164"} {
+		return compiled
+	}
+	without, with := schema(""), schema("\tpermission track = worker_track_patients\n")
+	t.Run("ST-SUP-RP10-LC17-T03 a worker that writes a root entity and lacks its permission on tenant is warned, with the worker, the entity and the permission", func(t *testing.T) {
+		warnings := RootCreateWarnings(service("Roster", "PatientCard"), without)
+		if len(warnings) != 2 || warnings[0].Rule != "worker-root-create" || warnings[0].Path != "workers[0].writes" || warnings[0].Found != "Roster" || warnings[1].Found != "PatientCard" {
+			t.Fatalf("warnings = %+v, want one worker-root-create warning for Roster and one for PatientCard", warnings)
+		}
+		for _, want := range []string{`worker "track-patients"`, "Roster", "permission track", "tenant", "ST-SUP-RP10-LC17", "ST-SUP-RC35-OC17", "track = worker_track_patients"} {
 			if !strings.Contains(warnings[0].Message, want) {
 				t.Errorf("message %q does not hold %q", warnings[0].Message, want)
 			}
 		}
 	})
-	t.Run("ST-SUP-RP10-LC17-T03 an entity whose only reference is optional is warned, with the reference to set", func(t *testing.T) {
-		warnings := RootCreateWarnings(service("PatientCard"))
-		if len(warnings) != 1 || warnings[0].Found != "PatientCard" || !strings.Contains(warnings[0].Message, "sets roster_id") {
-			t.Fatalf("warnings = %+v, want one warning for PatientCard that names roster_id", warnings)
+	t.Run("ST-SUP-RP10-LC17-T03 a schema that gives the permission on tenant, an entity with a required reference, a child entity and no schema are not warned", func(t *testing.T) {
+		if warnings := RootCreateWarnings(service("Roster", "PatientCard"), with); len(warnings) != 0 {
+			t.Fatalf("warnings with the permission = %+v, want none", warnings)
 		}
-	})
-	t.Run("ST-SUP-RP10-LC17-T03 an entity with a required reference and a child entity are not warned", func(t *testing.T) {
-		if warnings := RootCreateWarnings(service("Visit", "Note")); len(warnings) != 0 {
+		if warnings := RootCreateWarnings(service("Visit", "Note"), without); len(warnings) != 0 {
 			t.Fatalf("warnings = %+v, want none", warnings)
 		}
-	})
-	t.Run("ST-SUP-RP10-LC17-T03 a service with no authorization is not warned, and Warnings gives the warning", func(t *testing.T) {
+		if warnings := RootCreateWarnings(service("Roster"), nil); len(warnings) != 0 {
+			t.Fatalf("warnings with no schema = %+v, want none", warnings)
+		}
 		open := service("Roster")
 		open.Authorization = nil
-		if warnings := RootCreateWarnings(open); len(warnings) != 0 {
-			t.Fatalf("warnings = %+v, want none", warnings)
+		if roots := RootCreates(open); len(roots) != 0 {
+			t.Fatalf("a service with no authorization gave the root creates %+v, want none", roots)
 		}
-		found := false
-		for _, w := range Warnings(service("Roster", "Visit")) {
-			found = found || w.Rule == "worker-root-create"
-		}
-		if !found {
-			t.Fatal("Warnings gives no worker-root-create warning")
+		if roots := RootCreates(service("Roster", "PatientCard", "Visit", "Note")); len(roots) != 2 || roots[0].Entity != "Roster" || roots[1].Entity != "PatientCard" {
+			t.Fatalf("the root creates are %+v, want Roster and PatientCard", roots)
 		}
 	})
 }

@@ -2843,8 +2843,14 @@ func TestMigrateInbox(t *testing.T) {
 			t.Fatal(err)
 		}
 		at := slices.Index(s.names, StepInbox)
-		if at < 1 || s.names[at-1] != StepAuditSink {
-			t.Fatalf("the job ran %v, want %s right after %s", s.names, StepInbox, StepAuditSink)
+		if at < 1 || s.names[at-1] != StepAuditSink || at+1 >= len(s.names) || s.names[at+1] != StepInboxValidate {
+			t.Fatalf("the job ran %v, want %s right after %s and then %s", s.names, StepInbox, StepAuditSink, StepInboxValidate)
+		}
+		// The CHECK of the reasons is validated, in the step of its own after the text (security review of PR #429, L2).
+		var notValid int
+		if err := f.admin.QueryRow(`SELECT count(*) FROM pg_catalog.pg_constraint
+			WHERE conrelid = 'stego_inbox.refused'::regclass AND contype = 'c' AND NOT convalidated`).Scan(&notValid); err != nil || notValid != 0 {
+			t.Fatalf("the table of the refused records has %d CHECKs that are not valid (%v), want 0", notValid, err)
 		}
 		var owned, insert bool
 		if err := f.admin.QueryRow(`SELECT (SELECT tableowner FROM pg_tables WHERE schemaname = 'stego_inbox' AND tablename = 'refused') = $1,
@@ -2862,7 +2868,8 @@ func TestMigrateInbox(t *testing.T) {
 		// A service with no subscription runs no such step.
 		s = &steps{backends: map[int]bool{}}
 		stepped = s.record(t)
-		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil || slices.Contains(s.names, StepInbox) {
+		if err := Migrate(context.Background(), settings, f.migration(nil)); err != nil || slices.Contains(s.names, StepInbox) ||
+			slices.Contains(s.names, StepInboxValidate) {
 			t.Fatalf("a job with no inbox text ran %v (%v)", s.names, err)
 		}
 	})

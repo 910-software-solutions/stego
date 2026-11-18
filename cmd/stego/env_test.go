@@ -329,12 +329,14 @@ func TestEnvironmentCheckFlow(t *testing.T) {
 // TestEnvironmentVariablesCheck proves the environment check of the environment variable list (ST-DLV-UC02-R05,
 // R06) and the follow-ups of the review of #338 (F1 to F7).
 func TestEnvironmentVariablesCheck(t *testing.T) {
-	const cursorLine = "  STEGO_QUERY_CURSOR_KEY_FILE: /etc/orders/cursor/key\n"
+	// The key file of SpiceDB is a required variable of the type path; the key of the list cursors is not required
+	// since only the api mode reads it (ST-SUP-RP14-LC11).
+	const cursorLine = "  STEGO_SPICEDB_KEY_FILE: /etc/orders/spicedb/key\n"
 	t.Run("ST-DLV-UC02-R06-T01 A required environment variable with no value fails the check, and is named", func(t *testing.T) {
 		c := newEnvCase(t)
 		c.change(t, "dev.yaml", cursorLine, "")
 		stdout, stderr, passed := c.check(t, "platform-requirements.yaml", "dev.yaml")
-		expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE")
+		expectFailed(t, stdout, stderr, passed, "STEGO_SPICEDB_KEY_FILE")
 		// A required secret variable has no configuration need: the check names it as a variable, and reads only
 		// its name when the file gives it. A required variable is in no group of one of, so the pair leaves its group.
 		c = newEnvCase(t)
@@ -379,10 +381,10 @@ func TestEnvironmentVariablesCheck(t *testing.T) {
 		}
 		for _, empty := range []string{"\"\"", "\"  \"", "\"\\t\""} {
 			c := newEnvCase(t)
-			c.change(t, "dev.yaml", cursorLine, "  STEGO_QUERY_CURSOR_KEY_FILE: "+empty+"\n")
+			c.change(t, "dev.yaml", cursorLine, "  STEGO_SPICEDB_KEY_FILE: "+empty+"\n")
 			stdout, stderr, passed = c.check(t, "platform-requirements.yaml", "dev.yaml")
-			expectFailed(t, stdout, stderr, passed, "STEGO_QUERY_CURSOR_KEY_FILE", "empty")
-			if blank := empty != "\"\""; blank != strings.Contains(stdout, "wrong type: configuration STEGO_QUERY_CURSOR_KEY_FILE: the configuration value of STEGO_QUERY_CURSOR_KEY_FILE is white space only") {
+			expectFailed(t, stdout, stderr, passed, "STEGO_SPICEDB_KEY_FILE", "empty")
+			if blank := empty != "\"\""; blank != strings.Contains(stdout, "wrong type: configuration STEGO_SPICEDB_KEY_FILE: the configuration value of STEGO_SPICEDB_KEY_FILE is white space only") {
 				t.Errorf("the value %s of the required variable: the check names it as white space only %v, want %v:\n%s", empty, !blank, blank, stdout)
 			}
 		}

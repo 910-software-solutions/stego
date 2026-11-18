@@ -165,7 +165,7 @@ shows its name only: give its value through a secret of the platform.
 
 | Variable | Type | Required | Default | Secret | Allowed values | Example | Description |
 |---|---|---|---|---|---|---|---|
-| `STEGO_QUERY_CURSOR_KEY_FILE` | path | yes | none | no | - | `/etc/stego/query/cursor-key` | The file of the key of the list cursors, at least 32 bytes, the same in each replica. The service does not start when it has no value. |
+| `STEGO_QUERY_CURSOR_KEY_FILE` | path | no | none | no | - | `/etc/stego/query/cursor-key` | The file of the key of the list cursors, at least 32 bytes, the same in each replica. Only the api mode reads it, and the api mode does not start when it has no value. |
 
 ## rest-api
 
@@ -232,7 +232,7 @@ alone reads a variable of the mode migrate; the serving Deployment never referen
 | `STEGO_KAFKA_CA_FILE` | `user-management-kafka-client` | `ca-crt` | the Deployment of the worker mode only (mode worker) |
 | `STEGO_KAFKA_PASSWORD_FILE` | `user-management-kafka-client` | `password` | the Deployment of the worker mode only (mode worker) |
 | `STEGO_MIGRATION_DATABASE_URL` | `user-management-database-owner` | `url` | the migration Job only (mode migrate) |
-| `STEGO_QUERY_CURSOR_KEY_FILE` | `user-management-query-cursor` | `key` | the Deployment |
+| `STEGO_QUERY_CURSOR_KEY_FILE` | `user-management-query-cursor` | `key` | the Deployment of the api mode only (mode api) |
 | `STEGO_RELAY_DATABASE_URL` | `user-management-database-relay` | `url` | the Deployment of the worker mode only (mode worker) |
 | `STEGO_SPICEDB_KEY_FILE` | `user-management-spicedb` | `preshared-key` | the Deployment and the migration Job |
 | `STEGO_WORKER_DATABASE_URL` | `user-management-database` | `worker-url` | the Deployment of the worker mode only (mode worker) |

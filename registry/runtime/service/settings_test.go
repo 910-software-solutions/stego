@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jsell-rh/stego/registry/runtime/query"
 	"github.com/jsell-rh/stego/registry/runtime/tenant"
 )
 
@@ -98,6 +100,32 @@ func TestSettings(t *testing.T) {
 			}
 			if _, err := ReadSettings(Auth{KeyFile: "/etc/keys/issuer.pem"}); err == nil || !strings.Contains(err.Error(), KeysURLSetting) {
 				t.Fatalf("a keys setting beside a declared key file gave %v", err)
+			}
+		})
+		t.Run("ST-SUP-RP14-LC11-T01 Only the api mode reads the key of the list cursors", func(t *testing.T) {
+			set(t, with(map[string]string{CursorKeyFileSetting: ""}))
+			if _, err := ReadModeSettings(Auth{}, true); err == nil || !strings.Contains(err.Error(), CursorKeyFileSetting) {
+				t.Fatalf("the api mode with no cursor key gave %v, want a refusal that names %s", err, CursorKeyFileSetting)
+			}
+			if _, err := ReadSettings(Auth{}); err == nil {
+				t.Fatal("ReadSettings, which reads every setting, took no cursor key")
+			}
+			worker, err := ReadModeSettings(Auth{}, false)
+			if err != nil || len(worker.CursorKey) != query.MinCursorKey {
+				t.Fatalf("a process with no api mode gave %v with a key of %d bytes, want a random key of %d", err, len(worker.CursorKey), query.MinCursorKey)
+			}
+			other, _ := ReadModeSettings(Auth{}, false)
+			if bytes.Equal(worker.CursorKey, other.CursorKey) || bytes.Equal(worker.CursorKey, make([]byte, query.MinCursorKey)) {
+				t.Fatal("a process with no api mode gets a fixed key, want a new random key each time")
+			}
+			// A cursor key file that the api mode refuses is not read by a process with no api mode.
+			set(t, with(map[string]string{CursorKeyFileSetting: writeFile(t, "short.key", []byte("short"))}))
+			if _, err := ReadModeSettings(Auth{}, false); err != nil {
+				t.Fatalf("a process with no api mode read the cursor key file: %v", err)
+			}
+			api, err := ReadModeSettings(Auth{}, true)
+			if err == nil || api.CursorKey != nil {
+				t.Fatal("the api mode took a cursor key of fewer than 32 bytes")
 			}
 		})
 		t.Run("ST-SUP-RP14-LC01-T02 A declaration with discovery takes no key document and the CA file", func(t *testing.T) {

@@ -130,15 +130,7 @@ func Serve[Req, Res, P any](rt *Runtime, s HTTP[Req, Res, P]) (http.Handler, err
 		ran = true
 		res, err := Run(r.Context(), rt, s.Query, b, req, s.Fill)
 		if err != nil {
-			status, code := statusOf(err), ""
-			if s.Refusal != nil {
-				if declared, declaredCode, ok := s.Refusal(err); ok && declared >= 400 && declared <= 599 {
-					status, code = declared, declaredCode
-				}
-			}
-			if code == "" && status == http.StatusInternalServerError {
-				code = ErrorCodeInternal
-			}
+			status, code := answerOf(err, s.Refusal)
 			// The completion log of the request holds the fixed code, never the error text (ST-SUP-RP03-LC12).
 			otel.SetErrorCode(r.Context(), code)
 			writeCodedProblem(w, status, code)
@@ -171,11 +163,34 @@ func statusOf(err error) int {
 	case errors.Is(err, ErrBadCursor), errors.Is(err, ErrBadRequest):
 		return http.StatusBadRequest
 	case Transient(err):
-		// A read that the provider could not decide now; a refusal of the provider is 500 (ST-SUP-Q140).
+		// A read that the provider could not decide now, or that the database could not serve now; a refusal of the
+		// provider is 500 (ST-SUP-Q140; walkthrough 10, B7).
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+// ErrorCodeUnavailable is the fixed code of a query that failed because the database cannot serve now.
+const ErrorCodeUnavailable = "unavailable"
+
+// answerOf gives the status and the fixed code of an error of Run: a declared refusal of refusal is its status and
+// code; a database that cannot serve now is 503 unavailable; an error that statusOf answers 500 has the code
+// internal; another status has no code.
+func answerOf(err error, refusal func(error) (int, string, bool)) (int, string) {
+	status, code := statusOf(err), ""
+	if refusal != nil {
+		if declared, declaredCode, ok := refusal(err); ok && declared >= 400 && declared <= 599 {
+			return declared, declaredCode
+		}
+	}
+	switch {
+	case status == http.StatusInternalServerError:
+		code = ErrorCodeInternal
+	case status == http.StatusServiceUnavailable && !undecidedNow(err):
+		code = ErrorCodeUnavailable
+	}
+	return status, code
 }
 
 // writeProblem writes the problem response of status.

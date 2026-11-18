@@ -7,7 +7,7 @@
     "id": "system:user-management",
     "name": "user-management",
     "archetype": "rest-crud",
-    "archetype_version": "3.177.0",
+    "archetype_version": "3.175.0",
     "language": "go",
     "base_path": "/api/user-mgmt/v1",
     "source": {
@@ -380,7 +380,7 @@
     {
       "id": "component:command",
       "name": "command",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared command in the transaction of the caller's tenant.",
@@ -403,7 +403,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "architecture"
         }
       }
@@ -572,7 +572,7 @@
     {
       "id": "component:query",
       "name": "query",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Runs the declared query for the caller and gives back its rows.",
@@ -595,7 +595,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "architecture"
         }
       }
@@ -603,7 +603,7 @@
     {
       "id": "component:rest-api",
       "name": "rest-api",
-      "version": "4.6.0",
+      "version": "4.7.0",
       "stage": "ga",
       "layer": "handler",
       "flow_part": "Decodes the request of a collection operation and calls its command or query.",
@@ -702,7 +702,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "architecture"
         }
       }
@@ -869,7 +869,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "requires"
         }
       }
@@ -917,7 +917,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "provides"
         }
       }
@@ -999,7 +999,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "provides"
         }
       }
@@ -1015,7 +1015,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "provides"
         }
       }
@@ -1031,7 +1031,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "provides"
         }
       }
@@ -1051,7 +1051,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "requires"
         }
       }
@@ -1099,7 +1099,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.177.0",
+          "version": "3.175.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1113,7 +1113,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.177.0",
+          "version": "3.175.0",
           "field": "bindings.durable-outbox"
         }
       }
@@ -1127,7 +1127,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.177.0",
+          "version": "3.175.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1150,7 +1150,7 @@
         "registry": {
           "part": "archetype",
           "name": "rest-crud",
-          "version": "3.177.0",
+          "version": "3.175.0",
           "field": "bindings.storage-adapter"
         }
       }
@@ -1768,7 +1768,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -1912,7 +1912,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2056,7 +2056,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2159,7 +2159,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2244,7 +2244,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2361,7 +2361,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2465,7 +2465,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2662,7 +2662,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2806,7 +2806,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -2920,7 +2920,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3016,7 +3016,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3168,7 +3168,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3282,7 +3282,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3367,7 +3367,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3473,7 +3473,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3577,7 +3577,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3763,7 +3763,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3907,7 +3907,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "architecture"
             }
           }
@@ -3988,22 +3988,6 @@
           "part": "component",
           "name": "postgres-adapter",
           "version": "6.12.0",
-          "field": "needs"
-        }
-      }
-    },
-    {
-      "id": "need:configuration.STEGO_QUERY_CURSOR_KEY_FILE",
-      "kind": "configuration",
-      "name": "STEGO_QUERY_CURSOR_KEY_FILE",
-      "stated_by": [
-        "component:query"
-      ],
-      "source": {
-        "registry": {
-          "part": "component",
-          "name": "query",
-          "version": "1.4.0",
           "field": "needs"
         }
       }
@@ -4238,7 +4222,7 @@
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "needs"
         }
       }
@@ -4311,7 +4295,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "environment"
         }
       }
@@ -4330,7 +4314,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "environment"
         }
       }
@@ -4348,7 +4332,7 @@
         "registry": {
           "part": "component",
           "name": "rest-api",
-          "version": "4.6.0",
+          "version": "4.7.0",
           "field": "environment"
         }
       }
@@ -4402,7 +4386,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -4421,7 +4405,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -4439,7 +4423,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -4457,7 +4441,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -4476,7 +4460,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -5835,7 +5819,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -5853,7 +5837,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -6602,7 +6586,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -6651,13 +6635,13 @@
         "component:query"
       ],
       "type": "path",
-      "required": true,
+      "required": false,
       "secret": false,
       "source": {
         "registry": {
           "part": "component",
           "name": "query",
-          "version": "1.4.0",
+          "version": "1.5.0",
           "field": "environment"
         }
       }
@@ -6711,7 +6695,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -6820,7 +6804,7 @@
         "registry": {
           "part": "component",
           "name": "command",
-          "version": "1.3.0",
+          "version": "1.4.0",
           "field": "environment"
         }
       }
@@ -8365,7 +8349,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8380,7 +8364,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8395,7 +8379,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8410,7 +8394,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8425,7 +8409,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8440,7 +8424,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8455,7 +8439,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8470,7 +8454,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8485,7 +8469,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8500,7 +8484,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8515,7 +8499,7 @@
             "registry": {
               "part": "component",
               "name": "rest-api",
-              "version": "4.6.0",
+              "version": "4.7.0",
               "field": "environment"
             }
           }
@@ -8620,7 +8604,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8635,7 +8619,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8650,7 +8634,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8665,7 +8649,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8680,7 +8664,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8695,7 +8679,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8710,7 +8694,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8725,7 +8709,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8740,7 +8724,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8755,7 +8739,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8770,7 +8754,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8785,7 +8769,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8800,7 +8784,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8815,7 +8799,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8830,7 +8814,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8845,7 +8829,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -8860,7 +8844,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -12340,7 +12324,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -12355,7 +12339,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -12370,7 +12354,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -12385,7 +12369,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -12400,7 +12384,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -12415,7 +12399,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14380,7 +14364,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14395,7 +14379,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14410,7 +14394,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14425,7 +14409,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14545,7 +14529,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -14554,13 +14538,13 @@
           "id": "fact:configuration/variable:STEGO_QUERY_CURSOR_KEY_FILE/required",
           "about": "variable:STEGO_QUERY_CURSOR_KEY_FILE",
           "name": "required",
-          "value": true,
+          "value": false,
           "state": "stated",
           "source": {
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -14575,7 +14559,7 @@
             "registry": {
               "part": "component",
               "name": "query",
-              "version": "1.4.0",
+              "version": "1.5.0",
               "field": "environment"
             }
           }
@@ -14680,7 +14664,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14695,7 +14679,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14710,7 +14694,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14965,7 +14949,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14980,7 +14964,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
@@ -14995,7 +14979,7 @@
             "registry": {
               "part": "component",
               "name": "command",
-              "version": "1.3.0",
+              "version": "1.4.0",
               "field": "environment"
             }
           }
