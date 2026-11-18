@@ -143,6 +143,10 @@ The check needs these details, which PostgreSQL does not give by default:
   the owner role. A grant to it gives `fault: grant`.
 - The migration login is INHERIT, the default, so that it can connect as a
   member of the owner role.
+- The owner role has one member, the migration login, and the runtime login
+  has no member (version 4.11.0 and later). Another member could take the role
+  and read or drop the session table, so the check refuses it with
+  `fault: owner` or `fault: login`.
 
 The Job takes `STEGO_RUNTIME_DATABASE_ROLE=<service>_runtime`, and the owner
 Secret holds the connection string of `<service>_migrator`.

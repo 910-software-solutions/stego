@@ -71,7 +71,7 @@ func TestUpgradeRoleMove(t *testing.T) {
 		}
 		for _, block := range sqlBlocks {
 			for _, statement := range block {
-				if strings.Contains(strings.ToUpper(statement), "PASSWORD") {
+				if strings.Contains(strings.ReplaceAll(strings.ToUpper(statement), "PASSWORD NULL", ""), "PASSWORD") {
 					t.Errorf("the role move holds a secret in its SQL: %q", statement)
 				}
 			}
@@ -205,9 +205,43 @@ func TestUpgradeRoleMove(t *testing.T) {
 		if err := runtimeDB.QueryRowContext(ctx, "SELECT count(*) FROM public.stego_browser_sessions").Scan(&sessions); err != nil || sessions != 1 {
 			t.Fatalf("the runtime login reads %d sessions after the move (%v), want the 1 session of the old release", sessions, err)
 		}
-		// The old owner login cannot log in any more.
+		// A login that is a member of the owner role, other than the migration login, or a member of the runtime login,
+		// can take that role: the Job refuses each with the class owner or login, and passes again after the REVOKE
+		// that the guide gives (security review of PR #435, M2).
+		extra := service + "_extra"
+		exec(admin, "CREATE ROLE "+extra+" LOGIN")
+		t.Cleanup(func() {
+			cleanup := stdlib.OpenDB(*cfg)
+			defer cleanup.Close()
+			_, _ = cleanup.ExecContext(context.Background(), "DROP ROLE IF EXISTS "+extra)
+		})
+		for _, c := range []struct{ role, class string }{{owner, "owner"}, {runtime, "login"}} {
+			exec(admin, "GRANT "+c.role+" TO "+extra)
+			found := 0
+			for _, query := range mapStatements(fill, sqlBlocks[2]) {
+				rows, err := adminInDatabase.QueryContext(ctx, query)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for rows.Next() {
+					found++
+				}
+				rows.Close()
+			}
+			if found != 1 {
+				t.Fatalf("the checks of the guide give %d rows for a member %s of %s, want 1", found, extra, c.role)
+			}
+			if class, _ := classOf(schema.Migrate(ctx)); class != c.class {
+				t.Fatalf("the Job with a member %s of %s gave the class %q, want %s", extra, c.role, class, c.class)
+			}
+			exec(admin, "REVOKE "+c.role+" FROM "+extra)
+			if err := schema.Migrate(ctx); err != nil {
+				t.Fatalf("the Job after the REVOKE: %v", err)
+			}
+		}
+		// The old owner login cannot log in any more: it is NOLOGIN, and PASSWORD NULL removed its old password.
 		old := open(login(owner, ownerPassword))
-		if err := old.PingContext(ctx); err == nil || !strings.Contains(err.Error(), "not permitted to log in") {
+		if err := old.PingContext(ctx); err == nil || !(strings.Contains(err.Error(), "not permitted to log in") || strings.Contains(err.Error(), "28P01")) {
 			t.Fatalf("the old owner login still logs in after the move: %v", err)
 		}
 	})
