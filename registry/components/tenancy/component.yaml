@@ -1,8 +1,10 @@
+# Version 1.4.0 answers an unknown route 404 before the tenant check, deletes the tuples of a retired tenant, serves
+# the tenant list of the operator, and gives each problem the type of its code (ST-SUP-RC27-OC14 to OC17).
 # Version 1.2.0 serves the declared tenant provisioning: Provision and Retire, decided on the service-level resource
 # and audited, and the tenant check of every other request (ST-SUP-RC27-OC09 to ST-SUP-RC27-OC12).
 kind: component
 name: tenancy
-version: 1.3.0
+version: 1.4.0
 stage: ga
 output_namespace: internal/tenancy
 
