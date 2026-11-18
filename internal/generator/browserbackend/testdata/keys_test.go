@@ -63,6 +63,36 @@ func TestSessionKeyFile(t *testing.T) {
 	})
 }
 
+func TestSessionKeyFault(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC59-T01 A refused session key file names its fault class and a remedy, and no byte of the file", func(t *testing.T) {
+		a := bytes.Repeat([]byte{0xa7}, 32)
+		encoded := base64.StdEncoding.EncodeToString(a)
+		cases := map[string]string{
+			// 32 raw bytes, as walkthrough 12 (W12-B8) wrote them, are not base64.
+			"encoding": string(a), "size": strings.Repeat(" ", 1025) + encoded, "document": `{"version":2,"keys":["` + encoded + `"]}`,
+			"count": `{"version":1,"keys":[]}`, "duplicate": string(keyRing(t, a, a)),
+		}
+		for class, raw := range cases {
+			_, err := sessionKeys([]byte(raw))
+			var fault interface{ FaultClass() string; FaultObject() string; FaultRemedy() string }
+			require(t, errors.As(err, &fault) && errors.Is(err, errSessionKeys), "the key fault "+class+" has no class")
+			require(t, fault.FaultClass() == class && fault.FaultObject() == "stego_browser_session_key_file", "the key fault "+class+" names "+fault.FaultClass())
+			remedy := fault.FaultRemedy()
+			require(t, strings.Contains(remedy, "openssl rand -base64 32") && strings.Contains(remedy, "STEGO_BROWSER_SESSION_KEY_FILE"), "the remedy does not tell how to write the file")
+			for i := 0; i < len(remedy); i++ {
+				require(t, remedy[i] >= 0x20 && remedy[i] <= 0x7e, "the remedy is not printable ASCII")
+			}
+			require(t, !strings.Contains(err.Error()+remedy, encoded) && !strings.Contains(err.Error()+remedy, string(a)), "the fault holds a byte of the file")
+		}
+		// A file that cannot be read is the class file, before any database or provider access.
+		o := setup(t).options
+		o.KeyFile = t.TempDir() + "/missing-session-keys"
+		_, err := newBackend(context.Background(), &sql.DB{}, o)
+		var fault interface{ FaultClass() string }
+		require(t, errors.As(err, &fault) && fault.FaultClass() == "file", "a key file that cannot be read has no class file")
+	})
+}
+
 func TestSessionKeyRollout(t *testing.T) {
 	db := database(t)
 	migrate(t, db)

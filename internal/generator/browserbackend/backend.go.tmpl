@@ -71,7 +71,7 @@ func newBackend(ctx context.Context,db *sql.DB,o options)(*Backend,error){
  });if err!=nil{return nil,err}
  var keys [][]byte
  err=startupStep(ctx,telemetry.StartupBrowserSessionKeys,func(context.Context)error{
-  raw,err:=client.ReadPrivateFile(o.KeyFile);if err!=nil{return errSession}
+  raw,err:=client.ReadPrivateFile(o.KeyFile);if err!=nil{return keyFaultOf("file")}
   defer clear(raw)
   keys,err=sessionKeys(raw);return err
  });if err!=nil{return nil,err}
