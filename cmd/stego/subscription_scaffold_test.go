@@ -31,6 +31,12 @@ experimental_acceptances:
 // relation worker_record_orders of each tenant (ST-SUP-RC35-OC13).
 const subscriptionSchema = `definition user {}
 
+// The operators who resolve a parked outbox message (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
 definition service {
 	relation operator: user
 	permission provision = operator

@@ -112,13 +112,27 @@ func runBuild(args []string) error {
 // evidence, or a key that SIGNERS lists did not sign that evidence. Plan and apply stop at such a fill
 // (ST-GEN-INV10), and so does the build, so that no unqualified fill reaches a binary, also one written after an
 // apply that wrote its contract (decision on ST-EXT-Q30). The check reads only the revision: no registry and no
-// network, as the build runs offline; plan and apply check each contract digest, which only apply changes.
+// network, as the build runs offline; plan and apply check each contract digest, which only apply changes. Before
+// the fills, it checks the generated folder once, also for a service that binds only slot fills or no fill
+// (compiler.CheckGeneratedTree).
 func checkBuildFills(module string) error {
-	// A module that is no STEGO service, or that holds no fill, builds no fill code.
-	for _, name := range []string{"service.yaml", "fills"} {
-		if _, err := os.Lstat(filepath.Join(module, name)); errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
+	// A module that is no STEGO service builds no generated code.
+	if _, err := os.Lstat(filepath.Join(module, "service.yaml")); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	state, err := compiler.LoadState(filepath.Join(module, ".stego", "state.yaml"))
+	if err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	if state.LastApplied == nil || state.LastApplied.Inputs == nil {
+		return errors.New("build: the source revision holds no complete generation state, so stego build cannot check its generated folder")
+	}
+	if err := compiler.CheckGeneratedTree(module, state.LastApplied.Inputs.Options.OutputDir); err != nil {
+		return fmt.Errorf("build: %w", err)
+	}
+	// A module that holds no fill builds no fill code.
+	if _, err := os.Lstat(filepath.Join(module, "fills")); errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
 	service, err := parser.ParseServiceDeclaration(filepath.Join(module, "service.yaml"))
 	if err != nil {

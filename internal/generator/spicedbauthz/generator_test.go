@@ -30,6 +30,12 @@ const componentFile = "../../../registry/components/spicedb-authz/component.yaml
 // is the second protected resource type, so that a wiring that holds only the first entity is caught.
 const documentSchema = `definition user {}
 
+// The operators who resolve a parked outbox message (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
+
 definition service_account {}
 
 definition document {
@@ -338,6 +344,12 @@ func TestChecking(t *testing.T) {
 func userManagementContext(t *testing.T) gen.Context {
 	t.Helper()
 	schema := `definition user {}
+
+// The operators who resolve a parked outbox message (ST-SUP-RC29-OC20).
+definition outbox_destination {
+	relation operator: user
+	permission resolve = operator
+}
 
 definition organization {
 	relation admin: user

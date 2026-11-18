@@ -120,3 +120,56 @@ collections:
 		}
 	})
 }
+
+func TestValidateUpsertKeyRequired(t *testing.T) {
+	declaration := `kind: service
+name: settings
+archetype: rest-crud
+language: go
+entities:
+  - name: Setting
+    fields:
+      - {name: key, type: string}
+      - {name: scope, type: string%s}
+      - {name: value, type: string}
+collections:
+  settings:
+    entity: Setting
+    operations: [upsert, read, list]
+    upsert_key: [key, scope]
+`
+	faults := func(t *testing.T, optional string) []ValidationError {
+		t.Helper()
+		service, undeclared, err := parser.ReadServiceDeclaration([]byte(strings.Replace(declaration, "%s", optional, 1)), "service.yaml")
+		if err != nil || len(undeclared) != 0 {
+			t.Fatalf("read the declaration: %v %v", err, undeclared)
+		}
+		var found []ValidationError
+		for _, fault := range Validate(service).All() {
+			if fault.Rule == "upsert-key" {
+				found = append(found, fault)
+			}
+		}
+		return found
+	}
+	t.Run("ST-DECL-INV99-T An upsert key with an optional field is refused: required fields are accepted", func(t *testing.T) {
+		if got := faults(t, ""); len(got) != 0 {
+			t.Fatalf("an upsert key of required fields gave the faults %+v, want none", got)
+		}
+	})
+	t.Run("ST-DECL-INV99-T An upsert key with an optional field is refused: an optional field is refused", func(t *testing.T) {
+		got := faults(t, ", optional: true")
+		if len(got) != 1 {
+			t.Fatalf("an upsert key with an optional field gave the faults %+v, want one", got)
+		}
+		fault := got[0]
+		if fault.Path != "collections.settings.upsert_key[1]" || fault.Found != "scope" {
+			t.Errorf("the fault has the path %q and found %q, want collections.settings.upsert_key[1] and scope", fault.Path, fault.Found)
+		}
+		for _, part := range []string{`"settings"`, "upsert_key", `"scope"`, "optional"} {
+			if !strings.Contains(fault.Message, part) {
+				t.Errorf("the fault does not name %s: %s", part, fault.Message)
+			}
+		}
+	})
+}

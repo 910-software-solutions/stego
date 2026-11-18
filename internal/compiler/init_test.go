@@ -409,3 +409,34 @@ func TestInitializeKeepsFileOfAnotherProcess(t *testing.T) {
 		}
 	})
 }
+
+func TestInitializeKeepsFileRenamedOverItsOwn(t *testing.T) {
+	t.Run("ST-DECL-UC01-R02-T05 A failed scaffold keeps a file that another process renamed over a file of the scaffold", func(t *testing.T) {
+		t.Setenv("STEGO_REGISTRY", "")
+		project := serviceFolder(t)
+		initDefaultRegistry(t, "example")
+		const other = "renamed here by another process\n"
+		publishedFault = func(name string) error {
+			if name != "service.yaml" {
+				return nil
+			}
+			// The other process writes its own file and renames it over the ignore file that the scaffold wrote.
+			initTestFile(t, project, "other.tmp", other)
+			if err := os.Rename(filepath.Join(project, "other.tmp"), filepath.Join(project, localStateIgnorePath)); err != nil {
+				t.Fatal(err)
+			}
+			return errors.New("the temporary file cannot be removed")
+		}
+		t.Cleanup(func() { publishedFault = nil })
+		_, err := Initialize(InitOptions{ProjectDir: project, Archetype: "example"})
+		if err == nil || !strings.Contains(err.Error(), "the temporary file cannot be removed") {
+			t.Fatalf("want the failed write of service.yaml, got %v", err)
+		}
+		if data, err := os.ReadFile(filepath.Join(project, localStateIgnorePath)); err != nil || string(data) != other {
+			t.Fatalf("the file that the other process renamed over the ignore file is gone or changed: %q, %v", data, err)
+		}
+		if _, err := os.Lstat(filepath.Join(project, "service.yaml")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the failed scaffold left its own service.yaml: %v", err)
+		}
+	})
+}
