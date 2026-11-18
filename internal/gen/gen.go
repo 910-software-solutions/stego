@@ -309,6 +309,8 @@ type Context struct {
 // (types.SchemaChange.RelaxedFrom), a within by taking the within off its reference, a drop of a field by giving the
 // entity back the field of its Definition in its place (DropDefinition), and a drop of an entity by giving back the
 // entity and the collections over it, which the declaration keeps with dropped_by (ST-GEN-Q47).
+// A seal is undone by giving the field its sensitivity From in its clear column, and for From secret the mark of a
+// secret that an older generator stored in clear (types.Field.ClearStored, ST-SUP-RC01-OC49).
 // AtSchemaStep refuses a change of another kind, and a change with no step.
 func (c Context) AtSchemaStep(steps int) (Context, error) {
 	first := map[string]int{}
@@ -323,7 +325,7 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 		if !stepped {
 			return Context{}, fmt.Errorf("schema change %q has no step in the schema history", change.ID)
 		}
-		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" && change.Kind != "drop" {
+		if change.Kind != "add" && change.Kind != "rename" && change.Kind != "retype" && change.Kind != "require" && change.Kind != "relax" && change.Kind != "within" && change.Kind != "drop" && change.Kind != "seal" {
 			return Context{}, fmt.Errorf("schema change %q has the kind %s, which generation does not carry out yet", change.ID, change.Kind)
 		}
 		if at >= steps {
@@ -406,6 +408,22 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 				return Context{}, fmt.Errorf("schema change %q: %s", change.ID, reason)
 			}
 			fields[found] = before
+			continue
+		}
+		if change.Kind == "seal" {
+			// A seal is undone by giving the field its sensitivity before the change, From, in its clear column
+			// (ST-SUP-RC01-OC49, ST-DECL-INV102).
+			fields := shaped.Entities[at].Fields
+			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == change.Field })
+			if found < 0 {
+				return Context{}, fmt.Errorf("schema change %q seals the field %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
+			}
+			fields[found].Sensitivity, fields[found].CompareOnly = change.From, false
+			// A field that its declaration named secret and that a generator before postgres-adapter 6.13.0 stored
+			// in clear: its stored shape is the field in clear, with its CHECKs and no search index (walkthrough 13,
+			// W13-B1).
+			fields[found].ClearStored = change.From == "secret"
+			fields[found].Column, fields[found].SealedFrom = "", ""
 			continue
 		}
 		if change.Kind == "rename" {
@@ -572,6 +590,56 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 		out[i] = entity
 	}
 	return out, nil
+}
+
+// SealColumn gives the sealed column of a field that a seal moves out of the clear column column: <column>_sealed,
+// cut as the other generated names are cut, as RetypeColumn cuts it (ST-SUP-RC01-OC49).
+func SealColumn(column string) string {
+	name := column + "_sealed"
+	if len(name) <= 63 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return name[:46] + "_" + hex.EncodeToString(sum[:8])
+}
+
+// SealedNames gives a copy of the entities in which each field that a schema change of kind seal names is stored in
+// its sealed column (SealColumn), with its clear column in SealedFrom while the history gives the change no contract
+// step: from its expand step to its contract step a release writes both columns (ST-SUP-RC01-OC49,
+// ST-SUP-RP10-LC49). No other schema change names a sealed field (ST-DECL-INV102), so its clear column is its name.
+func SealedNames(entities []types.Entity, changes []types.SchemaChange, history []types.SchemaStep) []types.Entity {
+	contracted := map[string]bool{}
+	for _, step := range history {
+		if step.Phase == "contract" {
+			contracted[step.Change] = true
+		}
+	}
+	sealed := map[[2]string]string{}
+	for _, change := range changes {
+		if change.Kind == "seal" {
+			sealed[[2]string{change.Entity, change.Field}] = change.ID
+		}
+	}
+	if len(sealed) == 0 {
+		return entities
+	}
+	out := make([]types.Entity, len(entities))
+	for i, entity := range entities {
+		entity.Fields = append([]types.Field(nil), entity.Fields...)
+		for j, field := range entity.Fields {
+			id, ok := sealed[[2]string{entity.Name, field.Name}]
+			if !ok {
+				continue
+			}
+			clear := field.ColumnName()
+			entity.Fields[j].Column = SealColumn(clear)
+			if !contracted[id] {
+				entity.Fields[j].SealedFrom = clear
+			}
+		}
+		out[i] = entity
+	}
+	return out
 }
 
 // DefinitionField reads the Definition of a retyped field, as [name:] type[, item]..., such as integer, min 0, into a

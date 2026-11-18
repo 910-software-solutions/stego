@@ -183,7 +183,7 @@ go 1.26.11
 require (
  github.com/google/uuid v1.6.0
  github.com/jackc/pgx/v5 v5.11.0
- github.com/jsell-rh/stego/registry/runtime v0.137.0
+ github.com/jsell-rh/stego/registry/runtime v0.138.0
 )
 
 replace github.com/jsell-rh/stego/registry/runtime => ` + runtimeDir + "\n"
@@ -273,6 +273,7 @@ func TestSyncTemplateCopy(t *testing.T) {
 			{"backfill table", "lease/backfill.go", "const BackfillsTable = `", backfillsTable},
 			{"backfill functions", "lease/backfill.go", "const BackfillFunctions = `", backfillFunctions},
 			{"release reports", "lease/release.go", "const releasesText = `", releasesText},
+			{"seal checkpoints", "lease/seal.go", "const sealsText = `", sealsText},
 		} {
 			if got := runtimeText(t, c.path, c.head); got != c.copy {
 				t.Errorf("the generator's copy of the %s differs from registry/runtime/%s", c.name, c.path)

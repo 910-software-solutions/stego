@@ -15,6 +15,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -244,6 +245,11 @@ func start(t *testing.T) *service {
 	s.key = authntest.NewKey(t, "k1")
 	cursor := make([]byte, 32)
 	_, _ = rand.Read(cursor)
+	// The service has a pii field, so it seals the stored answers of its idempotency keys with a throwaway key ring
+	// (ST-SUP-RP14-LC12, ST-SUP-RP07-LC13).
+	ringKey := make([]byte, 32)
+	_, _ = rand.Read(ringKey)
+	ring := writeFile(t, "key-ring", []byte("1 "+base64.StdEncoding.EncodeToString(ringKey)+"\n"))
 	grpcTLS := newAuthority(t, "grpc test service")
 	httpPort, grpcPort := freePort(t), freePort(t)
 	s.base = "http://127.0.0.1:" + httpPort
@@ -251,7 +257,7 @@ func start(t *testing.T) *service {
 	process.Env = append(append(os.Environ(), spice...),
 		"PORT="+httpPort, "DATABASE_URL="+withTLS(&u, stegoruntime.RuntimeRole, ca),
 		"STEGO_AUTHN_KEYS_FILE="+writeFile(t, "keys.json", authntest.Document(s.key.JWK())),
-		"STEGO_QUERY_CURSOR_KEY_FILE="+writeFile(t, "cursor.key", cursor), "STEGO_SERVICE_VERSION=1.0.0",
+		"STEGO_QUERY_CURSOR_KEY_FILE="+writeFile(t, "cursor.key", cursor), "STEGO_SERVICE_VERSION=1.0.0", "STEGO_SECRET_KEY_RING_FILE="+ring,
 		"STEGO_GRPC_ADDR=127.0.0.1:"+grpcPort, "STEGO_GRPC_TLS_CERT="+writeFile(t, "grpc.crt", grpcTLS.cert),
 		"STEGO_GRPC_TLS_KEY="+writeFile(t, "grpc.key", grpcTLS.key), "STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK=0")
 	process.Stdout, process.Stderr = s.log, s.log

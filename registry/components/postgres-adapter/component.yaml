@@ -1,9 +1,12 @@
 # Version 6.13.0 stores a readable secret field as sealed bytes (bytea) and a compare-only one as its Argon2id hash
 # (text), with no CHECK and no index, and emits the re-seal statements of each readable secret (ST-SUP-RC01-OC48,
 # decision ST-DECL-Q44).
+# Version 6.14.0 carries out the seal step: at expand the sealed column <column>_sealed beside the clear one, the
+# release reports and the seal checkpoint, the seal job statements, and at contract the check of each row and the drop
+# of the clear column (ST-SUP-RC01-OC49, ST-SUP-RC01-OC50, decision ST-DECL-Q44).
 kind: component
 name: postgres-adapter
-version: 6.13.0
+version: 6.14.0
 stage: ga
 output_namespace: internal/storage
 

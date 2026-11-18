@@ -396,12 +396,15 @@ func unemittedInvariants(invariants []types.DeclaredInvariant) error {
 }
 
 // storedEntities gives the live entities and the entities with dropped_by of the declaration with the stored names of
-// their fields (gen.StoredNames), read together, so that a rename names a field of either.
+// their fields (gen.StoredNames, gen.SealedNames), read together, so that a rename names a field of either.
 func storedEntities(svcDecl *types.ServiceDeclaration, changes []types.SchemaChange) (live, dropped []types.Entity, err error) {
 	all, err := gen.StoredNames(svcDecl.AllEntities(), svcDecl.Invariants, svcDecl.AllCollections(), changes)
 	if err != nil {
 		return nil, nil, err
 	}
+	// A field that a seal moves is stored in its sealed column, and in its clear column too while the seal is open
+	// (ST-SUP-RC01-OC49).
+	all = gen.SealedNames(all, changes, svcDecl.SchemaHistory)
 	for _, entity := range all {
 		if entity.DroppedBy != "" {
 			dropped = append(dropped, entity)

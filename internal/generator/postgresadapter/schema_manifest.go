@@ -389,6 +389,10 @@ func generateSchemaManifest(ctx gen.Context) (gen.File, error) {
 	if err != nil {
 		return gen.File{}, err
 	}
+	// This release writes the clear column of each open seal too (ST-SUP-RC01-OC49).
+	if models, err = openSeals(ctx, models, optional); err != nil {
+		return gen.File{}, err
+	}
 	release, err := lastMigration(ctx)
 	if err != nil {
 		return gen.File{}, err
