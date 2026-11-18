@@ -143,10 +143,20 @@ The check needs these details, which PostgreSQL does not give by default:
   the owner role. A grant to it gives `fault: grant`.
 - The migration login is INHERIT, the default, so that it can connect as a
   member of the owner role.
-- The owner role has one member, the migration login, and the runtime login
-  has no member (version 4.11.0 and later). Another member could take the role
-  and read or drop the session table, so the check refuses it with
-  `fault: owner` or `fault: login`.
+- The owner role has one member, the migration login, the migration login has
+  no member, and the runtime login has no member (version 4.11.0 and later).
+  Another member could take the role and read or drop the session table, so
+  the check refuses it with `fault: owner` or `fault: login`. The check counts
+  only a membership with INHERIT or SET. On PostgreSQL 16 and later, an
+  administrator that is not a superuser, such as the master user of a managed
+  server, gets a membership WITH ADMIN OPTION only in each role that it makes;
+  the check accepts it, and you must not revoke it, because the administrator
+  needs it to change a password. Such an administrator cannot make a database
+  that a role owns unless it can take that role: run
+  `GRANT <service>_owner TO <admin> WITH SET TRUE, INHERIT FALSE` before
+  `CREATE DATABASE`, run the grants of the database and of the schema `public`
+  after `SET ROLE <service>_owner` in one session, and then run
+  `REVOKE <service>_owner FROM <admin>`.
 
 The Job takes `STEGO_RUNTIME_DATABASE_ROLE=<service>_runtime`, and the owner
 Secret holds the connection string of `<service>_migrator`.

@@ -146,17 +146,27 @@ in this order:
 
 4. Make sure that the layout has no other membership and no other grant. Each
    of these queries must give no row. Run them connected to the database
-   `<service>`. For each row of the first two queries, run `REVOKE <role> FROM
-   <member>`. For each row of the third query, run `REVOKE ALL ON DATABASE
-   <service> FROM <grantee>`. The second query is important after the move:
-   a login that got the old LOGIN owner, such as a CI or DBA login, can still
-   take the owner role and read or drop the session table:
+   `<service>`. For each row of the first three queries, run `REVOKE <role>
+   FROM <member>`. For each row of the last query, run `REVOKE ALL ON DATABASE
+   <service> FROM <grantee>`. The second and the third query are important
+   after the move: a login that got the old LOGIN owner, such as a CI or DBA
+   login, or a member of the migration login, can still take the owner role and
+   read or drop the session table.
+
+   The queries list only the memberships that give the privileges of the role
+   (INHERIT or SET). On PostgreSQL 16 and later, an administrator that is not a
+   superuser, such as the master user of a managed server (Amazon RDS, Cloud
+   SQL, Azure), gets a membership WITH ADMIN OPTION only in each role that it
+   makes. That membership cannot use the role, and the check accepts it. Do not
+   revoke it: the administrator needs it to change the password of a login.
 
    ```sql
    -- The roles that the owner role and the runtime login are members of:
-   SELECT g.rolname AS role, m.rolname AS member FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles m ON m.oid = a.member WHERE m.rolname IN ('<service>_owner', '<service>_runtime');
+   SELECT g.rolname AS role, m.rolname AS member FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles m ON m.oid = a.member WHERE m.rolname IN ('<service>_owner', '<service>_runtime') AND (a.inherit_option OR a.set_option);
    -- The members of the owner role and the runtime login, other than the migration login:
-   SELECT g.rolname AS role, m.rolname AS member FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles m ON m.oid = a.member WHERE g.rolname IN ('<service>_owner', '<service>_runtime') AND m.rolname <> '<service>_migrator';
+   SELECT g.rolname AS role, m.rolname AS member FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles m ON m.oid = a.member WHERE g.rolname IN ('<service>_owner', '<service>_runtime') AND m.rolname <> '<service>_migrator' AND (a.inherit_option OR a.set_option);
+   -- The members of the migration login, which can take the owner role through it:
+   SELECT g.rolname AS role, m.rolname AS member FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles g ON g.oid = a.roleid JOIN pg_catalog.pg_roles m ON m.oid = a.member WHERE g.rolname = '<service>_migrator' AND (a.inherit_option OR a.set_option);
    -- The grants on the database to a role that is not the owner role or the runtime login:
    SELECT a.grantee, a.privilege_type FROM pg_catalog.pg_database d CROSS JOIN pg_catalog.aclexplode(d.datacl) a WHERE d.datname = '<service>' AND a.grantee NOT IN (SELECT oid FROM pg_catalog.pg_roles WHERE rolname IN ('<service>_owner', '<service>_runtime'));
    ```
@@ -172,8 +182,10 @@ in this order:
 
 `PASSWORD NULL` removes the old password of the owner role, so a later
 `ALTER ROLE ... LOGIN` cannot bring it back. The migration Job also refuses
-an owner role with a member other than the migration login, and a runtime
-login with a member, with the fault `owner` or `login`.
+an owner role with a member other than the migration login, a member of the
+migration login, and a runtime login with a member, with the fault `owner` or
+`login`. It counts only the memberships with INHERIT or SET, so an ADMIN-only
+membership of the administrator is accepted.
 
 When the Job still stops, its failure record names the fault class. See the
 list of what the check needs in the README of the component

@@ -255,3 +255,110 @@ func mapStatements(fill *strings.Replacer, statements []string) []string {
 	}
 	return out
 }
+
+func TestManagedAdminLayout(t *testing.T) {
+	t.Run("ST-SUP-RC02-OC56-T05 A layout that a non-superuser CREATEROLE administrator makes, as on a managed server, passes the mode migrate and Verify", func(t *testing.T) {
+		dsn := os.Getenv("STEGO_TEST_POSTGRES_DSN")
+		if dsn == "" {
+			if os.Getenv("STEGO_REQUIRE_POSTGRES") == "1" {
+				t.Fatal("database fixture is required")
+			}
+			t.Skip("database fixture is not configured")
+		}
+		var suffix [6]byte
+		if _, err := rand.Read(suffix[:]); err != nil {
+			t.Fatal(err)
+		}
+		service := fmt.Sprintf("managed_%x", suffix)
+		admin, owner, runtime, migrator := service+"_admin", service+"_owner", service+"_runtime", service+"_migrator"
+		adminPassword, runtimePassword, migratorPassword := fmt.Sprintf("ad%x", suffix), fmt.Sprintf("rt%x", suffix), fmt.Sprintf("mg%x", suffix)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		cfg, err := pgx.ParseConfig(dsn)
+		if err != nil {
+			t.Fatal("invalid database fixture configuration")
+		}
+		superuser := stdlib.OpenDB(*cfg)
+		defer superuser.Close()
+		t.Cleanup(func() {
+			cleanup := stdlib.OpenDB(*cfg)
+			defer cleanup.Close()
+			for _, query := range []string{"DROP DATABASE IF EXISTS " + service + " WITH (FORCE)", "DROP ROLE IF EXISTS " + migrator, "DROP ROLE IF EXISTS " + runtime, "DROP ROLE IF EXISTS " + owner, "DROP ROLE IF EXISTS " + admin} {
+				if _, err := cleanup.ExecContext(context.Background(), query); err != nil {
+					t.Error(err)
+				}
+			}
+		})
+		exec := func(db *sql.DB, statements ...string) {
+			t.Helper()
+			for _, statement := range statements {
+				if _, err := db.ExecContext(ctx, statement); err != nil {
+					t.Fatalf("%q: %v", statement, err)
+				}
+			}
+		}
+		as := func(user, password, database string) *sql.DB {
+			config := cfg.Copy()
+			config.User, config.Password, config.Database = user, password, database
+			config.RuntimeParams["search_path"] = "pg_catalog"
+			db := stdlib.OpenDB(*config)
+			t.Cleanup(func() { db.Close() })
+			return db
+		}
+		// The master user of a managed server: a login with CREATEROLE and CREATEDB that is not a superuser.
+		exec(superuser, "CREATE ROLE "+admin+" LOGIN CREATEROLE CREATEDB PASSWORD "+quoteLiteral(adminPassword))
+		// On PostgreSQL 16 and later the server gives the administrator an ADMIN-only membership in each role that it
+		// makes. To make the database of the owner role, it takes SET on that role for the setup and gives it back.
+		master := as(admin, adminPassword, "postgres")
+		exec(master,
+			"CREATE ROLE "+owner+" NOLOGIN NOINHERIT",
+			"CREATE ROLE "+runtime+" LOGIN NOINHERIT PASSWORD "+quoteLiteral(runtimePassword),
+			"CREATE ROLE "+migrator+" LOGIN PASSWORD "+quoteLiteral(migratorPassword)+" IN ROLE "+owner,
+			"GRANT "+owner+" TO "+admin+" WITH SET TRUE, INHERIT FALSE",
+			"CREATE DATABASE "+service+" OWNER "+owner)
+		// One session in the new database, opened while PUBLIC still has CONNECT: the administrator is no member of the
+		// owner role with INHERIT, so it has no CONNECT of its own after the REVOKE.
+		inDatabase := as(admin, adminPassword, service)
+		inDatabase.SetMaxOpenConns(1)
+		exec(inDatabase, "SET ROLE "+owner, "REVOKE ALL ON SCHEMA public FROM PUBLIC", "GRANT USAGE ON SCHEMA public TO "+runtime,
+			"REVOKE ALL ON DATABASE "+service+" FROM PUBLIC", "GRANT CONNECT ON DATABASE "+service+" TO "+runtime, "RESET ROLE")
+		inDatabase.Close()
+		exec(master, "REVOKE "+owner+" FROM "+admin)
+		var adminOnly int
+		if err := superuser.QueryRowContext(ctx, `SELECT count(*) FROM pg_catalog.pg_auth_members a JOIN pg_catalog.pg_roles m ON m.oid = a.member
+			WHERE m.rolname = $1 AND a.admin_option AND NOT a.inherit_option AND NOT a.set_option`, admin).Scan(&adminOnly); err != nil || adminOnly != 3 {
+			t.Fatalf("the administrator holds %d ADMIN-only memberships (%v), want 3: one in each role that it made", adminOnly, err)
+		}
+		login := func(user, password string) string {
+			return (&url.URL{Scheme: "postgres", User: url.UserPassword(user, password), Host: net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port)), Path: "/" + service, RawQuery: "sslmode=disable"}).String()
+		}
+		t.Setenv("STEGO_DATABASE_ALLOW_INSECURE_LOOPBACK", "1")
+		t.Setenv("DATABASE_URL", "")
+		t.Setenv("DATABASE_URL_FILE", "")
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL_FILE", "")
+		t.Setenv("STEGO_MIGRATION_DATABASE_URL", login(migrator, migratorPassword))
+		t.Setenv("STEGO_RUNTIME_DATABASE_ROLE", runtime)
+		for attempt := 1; attempt <= 2; attempt++ {
+			if err := schema.Migrate(ctx); err != nil {
+				class, object := classOf(err)
+				t.Fatalf("run %d of the mode migrate on the layout of a managed server: %v (stage %s, fault %s, object %s)", attempt, err, schema.Stage(err), class, object)
+			}
+		}
+		runtimeDB := as(runtime, runtimePassword, service)
+		if err := schema.Verify(ctx, runtimeDB); err != nil {
+			class, object := classOf(err)
+			t.Fatalf("the runtime login does not pass Verify on the layout of a managed server: %v (fault %s, object %s)", err, class, object)
+		}
+		// The administrator can still change the password of a login, which needs its ADMIN option.
+		exec(master, "ALTER ROLE "+runtime+" PASSWORD "+quoteLiteral(runtimePassword+"x"))
+		// A member of the migration login with SET can reach the owner role through it: the Job refuses it (N4).
+		exec(master, "GRANT "+migrator+" TO "+admin+" WITH SET TRUE")
+		if class, _ := classOf(schema.Migrate(ctx)); class != "owner" {
+			t.Fatalf("the Job with a member of the migration login gave the class %q, want owner", class)
+		}
+		exec(master, "REVOKE "+migrator+" FROM "+admin)
+		if err := schema.Migrate(ctx); err != nil {
+			t.Fatalf("the Job after the REVOKE: %v", err)
+		}
+	})
+}
