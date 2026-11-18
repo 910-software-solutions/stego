@@ -3,9 +3,11 @@ package declaration
 import (
 	"fmt"
 	"math/rand"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/jsell-rh/stego/internal/parser"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -171,8 +173,8 @@ func TestSchemaChangeValues(t *testing.T) {
 	})
 	for _, c := range []struct{ name, owner, change string }{
 		{"a retype whose Definition gives an int32 the default 0 in its range", "{name: owner, type: int64}", "{id: points-retype, kind: retype, entity: Todo, field: owner, from: int32, conversion: integer_to_int64, inverse_conversion: int64_to_integer, definition: \"int32, min 0, max 100, default 0\"}"},
-		{"a drop whose Definition gives a double the whole default 1", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"double, default 1\"}"},
-		{"a drop whose Definition gives a string a quoted default", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, max_length 5, default \\\"ab\\\"\"}"},
+		{"a drop whose Definition gives a double the whole default 1", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"double, default 1, first\"}"},
+		{"a drop whose Definition gives a string a quoted default", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, max_length 5, default \\\"ab\\\", first\"}"},
 	} {
 		t.Run("ST-DECL-INV62-T "+c.name+" is accepted", func(t *testing.T) {
 			wantNoFault(t, schemaFaults(t, with(c.owner, c.change)))
@@ -181,7 +183,7 @@ func TestSchemaChangeValues(t *testing.T) {
 	for _, c := range []struct{ name, owner, change, names string }{
 		{"a require of a field with a default", "{name: owner, type: string, max_length: 20, default: x}", "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: nobody}", `"owner-require"`},
 		{"a fill value longer than 20", required, "{id: owner-require, kind: require, entity: Todo, field: owner, fill_value: " + strings.Repeat("n", 21) + "}", "max_length 20"},
-		{"a drop of legacy whose Definition is int64 with the fill value abc", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: int64, fill_value: abc}", "abc"},
+		{"a drop of legacy whose Definition is int64 with the fill value abc", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"int64, first\", fill_value: abc}", "abc"},
 		{"a retype of owner whose Definition is not of its type From", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: int32}", "the retype is from string"},
 		{"a retype of owner whose Definition cannot be read", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, colour red\"}", "cannot be read"},
 		// The default of a Definition suits the field that the Definition gives (security review of PR #408).
@@ -190,7 +192,7 @@ func TestSchemaChangeValues(t *testing.T) {
 		{"a retype whose Definition default is above its max", "{name: owner, type: int64}", "{id: points-retype, kind: retype, entity: Todo, field: owner, from: int32, conversion: integer_to_int64, inverse_conversion: int64_to_integer, definition: \"int32, min 0, max 100, default 200\"}", "default 200"},
 		{"a retype whose Definition default is longer than its max_length", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, max_length 3, default abcd\"}", "longer than the max_length 3"},
 		{"a retype whose Definition default does not match its pattern", "{name: owner, type: int64}", "{id: owner-retype, kind: retype, entity: Todo, field: owner, from: string, conversion: text_to_int64, inverse_conversion: int64_to_text, definition: \"string, default ABC, pattern ^[a-z]+$\"}", "does not match the pattern"},
-		{"a drop whose Definition gives an int64 the default x", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"int64, default x\"}", "does not suit the type int64"},
+		{"a drop whose Definition gives an int64 the default x", required, "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"int64, default x, first\"}", "does not suit the type int64"},
 	} {
 		t.Run("ST-DECL-INV62-T "+c.name+" is refused", func(t *testing.T) {
 			wantFault(t, schemaFaults(t, with(c.owner, c.change), "schema-change-value"), c.names)
@@ -452,4 +454,90 @@ func TestSchemaStepShapeRandom(t *testing.T) {
 			}()
 		}
 	})
+}
+
+// withTag gives ST-DECL-TD02 with the schema changes and steps given and, unless tag is empty, the entity Tag of
+// tag, such as {name: Tag, dropped_by: tag-drop, fields: [{name: label, type: string}]}, with its collection tags.
+func withTag(tag string, changes []string, steps ...string) string {
+	service := todoFields([]string{"{name: title, type: string, min_length: 1, max_length: 255}", "{name: done, type: bool, default: false}"}, "", changes, steps...)
+	if tag == "" {
+		return service
+	}
+	service = strings.Replace(service, "entities:\n", "entities:\n  - "+tag+"\n", 1)
+	return strings.Replace(service, "collections:\n", "collections:\n  tags:\n    entity: Tag\n    operations: [create, list]\n", 1)
+}
+
+func TestSchemaChangeDrop(t *testing.T) {
+	dropped := "{name: Tag, dropped_by: tag-drop, fields: [{name: label, type: string}]}"
+	entityDrop := "{id: tag-drop, kind: drop, entity: Tag}"
+	t.Run("ST-DECL-INV58-T A drop of the entity Tag, which stays declared with dropped_by, is accepted", func(t *testing.T) {
+		wantNoFault(t, schemaFaults(t, withTag(dropped, []string{entityDrop}, "tag-drop expand")))
+		read, _, err := parser.ReadServiceDeclaration([]byte(withTag(dropped, []string{entityDrop}, "tag-drop expand")), "service.yaml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(read.Entities) != 1 || len(read.DroppedEntities) != 1 || len(read.Collections) != 1 || len(read.DroppedCollections) != 1 {
+			t.Errorf("the declaration keeps %d live and %d dropped entities, %d live and %d dropped collections; want 1 of each",
+				len(read.Entities), len(read.DroppedEntities), len(read.Collections), len(read.DroppedCollections))
+		}
+	})
+	for _, c := range []struct{ name, tag, change, names string }{
+		{"a drop of Tag that Tag declares live", "{name: Tag, fields: [{name: label, type: string}]}", entityDrop, "add dropped_by: tag-drop"},
+		{"a drop of Tag that the declaration does not declare", "", entityDrop, "declares no entity Tag with dropped_by: tag-drop"},
+		{"a dropped Tag that names another change", "{name: Tag, dropped_by: other-drop, fields: [{name: label, type: string}]}", entityDrop, "other-drop"},
+	} {
+		t.Run("ST-DECL-INV58-T "+c.name+" is refused", func(t *testing.T) {
+			service := withTag(c.tag, []string{c.change}, "tag-drop expand")
+			faults := schemaFaults(t, service, "schema-change-entity")
+			if !slices.ContainsFunc(faults, func(f ValidationError) bool { return strings.Contains(f.Message, c.names) }) {
+				t.Errorf("no fault names %q: %+v", c.names, faults)
+			}
+		})
+	}
+	t.Run("ST-DECL-INV58-T A dropped Tag whose dropped_by names no schema change is refused", func(t *testing.T) {
+		wantFault(t, schemaFaults(t, withTag(dropped, nil), "schema-change-entity"), "tag-drop", "declares no such change")
+	})
+	for _, c := range []struct{ name, change, names string }{
+		{"a Definition", "{id: tag-drop, kind: drop, entity: Tag, definition: \"label: string\"}", "takes no definition"},
+		{"a fill value", "{id: tag-drop, kind: drop, entity: Tag, fill_value: x}", "takes no fill_value"},
+	} {
+		t.Run("ST-DECL-INV57-T A drop of the whole entity Tag with "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, schemaFaults(t, withTag(dropped, []string{c.change}, "tag-drop expand"), "schema-change-kind"), c.names)
+		})
+	}
+	for _, name := range []string{"id", "created_time", "updated_time", "version", "authz_token"} {
+		t.Run("ST-DECL-INV58-T A drop of the column "+name+" that STEGO adds itself is refused", func(t *testing.T) {
+			change := "{id: legacy-drop, kind: drop, entity: Todo, field: " + name + ", definition: \"string, first\"}"
+			wantFault(t, schemaFaults(t, todoFields([]string{"{name: title, type: string, min_length: 1, max_length: 255}", "{name: done, type: bool, default: false}"}, "", []string{change}, "legacy-drop expand"), "schema-change-entity"), "adds to each table itself")
+		})
+	}
+	with := func(change string) string {
+		return todoFields([]string{"{name: title, type: string, min_length: 1, max_length: 255}", "{name: done, type: bool, default: false}"}, "",
+			[]string{change}, "legacy-drop expand")
+	}
+	for _, c := range []struct{ name, change string }{
+		{"a required string with min_length 1 and a fill value", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, fill_value: x, definition: \"string, min_length 1, after title\"}"},
+		{"an optional enum with no fill value", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"enum, values a b, optional, after done\"}"},
+		{"a required int32 at the first place", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"int32, min 0, unique, pii, first\"}"},
+	} {
+		t.Run("ST-DECL-INV62-T A drop of "+c.name+" is accepted", func(t *testing.T) {
+			wantNoFault(t, schemaFaults(t, with(c.change)))
+		})
+	}
+	for _, c := range []struct{ name, change, names string }{
+		{"a required string with min_length 1 and no fill value", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, min_length 1, after title\"}", "shorter than the min_length 1"},
+		{"a required enum with no fill value", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"enum, values a b, after title\"}", "give the drop a fill_value"},
+		{"a required timestamp with no fill value", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"timestamp, after title\"}", "has no zero value"},
+		{"a Definition with no place", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string\"}", "gives no place"},
+		{"a place after a field that Todo does not have", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, after colour\"}", "after colour"},
+		{"an item twice", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, optional, optional, first\"}", "optional twice"},
+		{"pii and secret both", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, pii, secret, first\"}", "sensitivity twice"},
+		{"values of a string", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, definition: \"string, values a b, first\"}", "only for an enum"},
+		{"a double with the fill value NaN", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, fill_value: .nan, definition: \"double, first\"}", "fill value NaN does not suit"},
+		{"a double with the fill value Inf", "{id: legacy-drop, kind: drop, entity: Todo, field: legacy, fill_value: .inf, definition: \"double, first\"}", "fill value +Inf does not suit"},
+	} {
+		t.Run("ST-DECL-INV62-T A drop of "+c.name+" is refused", func(t *testing.T) {
+			wantFault(t, schemaFaults(t, with(c.change), "schema-change-value"), c.names)
+		})
+	}
 }

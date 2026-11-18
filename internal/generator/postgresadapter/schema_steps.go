@@ -60,6 +60,9 @@ type schemaStep struct {
 type contractStep struct {
 	change, table, schema, tableName, check, definition, trigger, from, old, new, tenant, tenantSchema string
 	statements                                                                                         []contractStatement
+	// drop tells that the step is the contract of a drop, whose check is the running releases alone, while the old
+	// column from, or with no from the table, is there (ST-SUP-RC01-OC44, ST-SUP-RC01-OC47).
+	drop bool
 }
 
 // contractStatement is one statement of a contract step: its SQL; when, a query that gives whether the statement
@@ -210,6 +213,21 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			}
 			models = withColumnOf(models, earlier, change, pair.k)
 		}
+		// The old column or table of a drop stays in the database from its expand step until its contract step, so
+		// the models after each step between keep it, as the expand step leaves it (ST-SUP-RC01-OC34).
+		for _, change := range ctx.SchemaChanges {
+			e, c := expand[change.ID], contract[change.ID]
+			if change.Kind != "drop" || e == 0 || e > steps || (c != 0 && c <= steps) {
+				continue
+			}
+			earlier, err := at(e - 1)
+			if err != nil {
+				return nil, err
+			}
+			if models, err = withDropped(models, earlier, change); err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+		}
 		return models, nil
 	}
 	before, err := at(0)
@@ -227,13 +245,24 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 		if !ok {
 			return nil, fmt.Errorf("schema_history[%d] names the schema change %q, which schema_changes does not declare", i, step.Change)
 		}
-		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within") && step.Phase == "expand")
+		built := change.Kind == "rename" || change.Kind == "retype" || change.Kind == "require" || change.Kind == "drop" || ((change.Kind == "add" || change.Kind == "relax" || change.Kind == "within") && step.Phase == "expand")
 		if !built || (step.Phase != "expand" && step.Phase != "contract") {
-			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax and a within and the expand and contract steps of a rename, a retype and a require", i, step.Phase, change.ID, change.Kind)
+			return nil, fmt.Errorf("schema_history[%d]: the step %s of the schema change %s (%s) is not built; generation carries out only the expand step of an add, a relax and a within and the expand and contract steps of a rename, a retype, a require and a drop", i, step.Phase, change.ID, change.Kind)
 		}
 		after, err := at(i + 1)
 		if err != nil {
 			return nil, err
+		}
+		if change.Kind == "drop" && step.Phase == "expand" {
+			// A drop at expand keeps the old column or table and only takes from it what the release of the change
+			// does not write (ST-SUP-RC01-OC34).
+			body, err := dropExpandSQL(ctx, i+1, before, after, change)
+			if err != nil {
+				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
+			}
+			steps = append(steps, schemaStep{Name: StepMigrationName(i+1, change.ID, step.Phase), Change: change, Phase: step.Phase, Body: body})
+			before = after
+			continue
 		}
 		if change.Kind == "relax" {
 			relaxed, err := relaxSteps(i+1, before, after, change)
@@ -255,9 +284,12 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 				return nil, fmt.Errorf("schema_history[%d]: the contract step of %s has no expand step before it", i, change.ID)
 			}
 			var contract *contractStep
-			if change.Kind == "require" {
+			switch change.Kind {
+			case "require":
 				contract, err = requireContractSQL(before, after, change)
-			} else {
+			case "drop":
+				contract, err = dropContractSQL(ctx, before, after, change)
+			default:
 				contract, err = contractSQL(ctx, before, after, change)
 			}
 			if err != nil {
