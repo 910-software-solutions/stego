@@ -809,10 +809,10 @@ func RevisionFillCheck(projectDir, module string, svcDecl *types.ServiceDeclarat
 				continue
 			}
 			if !entry.Type().IsRegular() {
-				return nil, fmt.Errorf("the contract package %s holds %s, which is not a regular file; go build would compile it, so stego build refuses it", folder, name)
+				return nil, fmt.Errorf("the contract package %q holds %q, which is not a regular file; go build would compile it, so stego build refuses it", folder, name)
 			}
 			if buildsWithGo(name) {
-				return nil, fmt.Errorf("the contract package %s holds %s, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, name)
+				return nil, fmt.Errorf("the contract package %q holds %q, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, name)
 			}
 			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 				continue
@@ -874,10 +874,10 @@ func checkGeneratedTree(projectDir string) error {
 			return nil
 		}
 		if !entry.Type().IsRegular() {
-			return fmt.Errorf("the generated package %s holds %s, which is not a regular file; go build would compile it, so stego build refuses it", folder, base)
+			return fmt.Errorf("the generated package %q holds %q, which is not a regular file; go build would compile it, so stego build refuses it", folder, base)
 		}
 		if buildsWithGo(base) {
-			return fmt.Errorf("the generated package %s holds %s, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, base)
+			return fmt.Errorf("the generated package %q holds %q, which is not a Go file; go build would put it in the binary, so stego build refuses it", folder, base)
 		}
 		return nil
 	})

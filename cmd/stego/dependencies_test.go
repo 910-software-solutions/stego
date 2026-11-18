@@ -168,14 +168,16 @@ func TestGeneratedFolderRefusedBeforeBuild(t *testing.T) {
 			add  func(t *testing.T)
 			want string
 		}{
-			{"an assembler file", func(t *testing.T) { writeProjectFile(t, "out/internal/api/stub.s", "TEXT ·x(SB),0,$0\n") }, "holds stub.s, which is not a Go file"},
-			{"a system object", func(t *testing.T) { writeProjectFile(t, "out/internal/api/blob_amd64.syso", "\x7fELF") }, "holds blob_amd64.syso, which is not a Go file"},
-			{"a C file", func(t *testing.T) { writeProjectFile(t, "out/internal/api/glue.c", "int x;\n") }, "holds glue.c, which is not a Go file"},
+			{"an assembler file", func(t *testing.T) { writeProjectFile(t, "out/internal/api/stub.s", "TEXT ·x(SB),0,$0\n") }, `holds "stub.s", which is not a Go file`},
+			{"a system object", func(t *testing.T) { writeProjectFile(t, "out/internal/api/blob_amd64.syso", "\x7fELF") }, `holds "blob_amd64.syso", which is not a Go file`},
+			{"a C file", func(t *testing.T) { writeProjectFile(t, "out/internal/api/glue.c", "int x;\n") }, `holds "glue.c", which is not a Go file`},
+			// A name with control characters is named only escaped (sec-431 LOW-1).
+			{"a name with control characters", func(t *testing.T) { writeProjectFile(t, "out/internal/api/x\x1b[2K\r.s", "\n") }, `holds "x\x1b[2K\r.s", which is not a Go file`},
 			{"a linked Go file", func(t *testing.T) {
 				if err := os.Symlink(outside, filepath.Join("out", "internal", "api", "elsewhere.go")); err != nil {
 					t.Fatal(err)
 				}
-			}, "holds elsewhere.go, which is not a regular file"},
+			}, `holds "elsewhere.go", which is not a regular file`},
 		} {
 			before := treeOf(t, "out")
 			c.add(t)
@@ -184,7 +186,7 @@ func TestGeneratedFolderRefusedBeforeBuild(t *testing.T) {
 				fn   func([]string) error
 			}{{"plan", runPlan}, {"apply", runApply}, {"deps", runDependencies}} {
 				printed, err := capture(t, run.fn)
-				if err == nil || !strings.Contains(err.Error(), c.want) || !strings.Contains(err.Error(), "plan, apply and deps refuse it too") {
+				if err == nil || !strings.Contains(err.Error(), c.want) || strings.ContainsAny(err.Error(), "\x1b\r") || !strings.Contains(err.Error(), "plan, apply and deps refuse it too") {
 					t.Fatalf("%s: stego %s gave %v, want a refusal that says %q:\n%s", c.name, run.name, err, c.want, printed)
 				}
 			}
@@ -192,7 +194,7 @@ func TestGeneratedFolderRefusedBeforeBuild(t *testing.T) {
 			if err := os.RemoveAll(filepath.Join("out", "internal", "api", "stub.s")); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{"out/internal/api/blob_amd64.syso", "out/internal/api/glue.c", "out/internal/api/elsewhere.go"} {
+			for _, name := range []string{"out/internal/api/x\x1b[2K\r.s", "out/internal/api/blob_amd64.syso", "out/internal/api/glue.c", "out/internal/api/elsewhere.go"} {
 				if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
 					t.Fatal(err)
 				}

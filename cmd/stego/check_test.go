@@ -137,7 +137,7 @@ func TestCheckADeclaration(t *testing.T) {
 		if err := os.Symlink(elsewhere, p.path("out")); err != nil {
 			t.Fatal(err)
 		}
-		if document := check(t); document.Accepted || top(document, "fill-contract", "refusing symbolic link at out") != 1 {
+		if document := check(t); document.Accepted || top(document, "fill-contract", "the generated folder out is not a folder") != 1 {
 			t.Fatalf("validate does not name the linked out/ once at the top level: %+v", document.Faults)
 		}
 		if err := os.Remove(p.path("out")); err != nil {
@@ -327,6 +327,13 @@ func TestBrowserSettingFaults(t *testing.T) {
 			if _, value := resolvePath(t, []byte(service), c.path); value == nil || value.Value != c.found {
 				t.Fatalf("%s: the fault path %s does not lead to the value %q in the declaration", c.apis, c.path, c.found)
 			}
+		}
+		// An unknown override key with control characters reaches the prose output only escaped (sec-431 LOW-2).
+		service := strings.Replace(string(declared), "  browser-backend:\n", "  browser-backend:\n    \"evil\\e[31mRED\\rkey\": 1\n", 1)
+		putFile(t, project, "service.yaml", service)
+		prose := stegoIn(t, project, nil, "validate")
+		if prose.code == 0 || strings.ContainsAny(prose.stdout+prose.stderr, "\x1b\r") || !strings.Contains(prose.stdout, `evil\x1b[31mRED\rkey`) {
+			t.Fatalf("validate prints the unknown key with raw control characters, or does not name it escaped (exit %d):\n%q", prose.code, prose.stdout+prose.stderr)
 		}
 	})
 }

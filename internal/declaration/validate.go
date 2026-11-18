@@ -7,7 +7,9 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/parser"
@@ -36,6 +38,31 @@ type ValidationError struct {
 	Position int `json:"position,omitempty"`
 }
 
+// printable gives text with each control character but a line break and a tab written as a Go escape, such as \x1b
+// or \r.
+func printable(text string) string {
+	clean := true
+	for _, r := range text {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return text
+	}
+	var sb strings.Builder
+	for _, r := range text {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			quoted := strconv.QuoteRune(r)
+			sb.WriteString(quoted[1 : len(quoted)-1])
+			continue
+		}
+		sb.WriteRune(r)
+	}
+	return sb.String()
+}
+
 // Prose renders the fault for a person from its structured fields: the rule, the path, the message, what was
 // found and the allowed values.
 func (e ValidationError) Prose() string {
@@ -44,17 +71,20 @@ func (e ValidationError) Prose() string {
 	if rule == "" {
 		rule = e.Category
 	}
+	// A path and a message can hold text of the declaration or of a file name of the project, such as an override
+	// key, so each control character but a line break and a tab is escaped: no such text reaches a terminal or a CI
+	// log raw (sec-431 LOW-2). Found is quoted below.
 	if e.Path == "" {
-		fmt.Fprintf(&sb, "[%s] %s", rule, e.Message)
+		fmt.Fprintf(&sb, "[%s] %s", printable(rule), printable(e.Message))
 	} else {
-		fmt.Fprintf(&sb, "[%s] %s: %s", rule, e.Path, e.Message)
+		fmt.Fprintf(&sb, "[%s] %s: %s", printable(rule), printable(e.Path), printable(e.Message))
 	}
 	var details []string
 	if e.Found != "" {
 		details = append(details, fmt.Sprintf("found %q", e.Found))
 	}
 	if len(e.Allowed) > 0 {
-		details = append(details, "allowed: "+strings.Join(e.Allowed, ", "))
+		details = append(details, "allowed: "+printable(strings.Join(e.Allowed, ", ")))
 	}
 	if len(details) > 0 {
 		fmt.Fprintf(&sb, " (%s)", strings.Join(details, "; "))

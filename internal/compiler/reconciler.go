@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path"
@@ -401,14 +402,17 @@ type FillSlotReader func(path string) (slot string, err error)
 
 // checkBuiltFolder refuses, before plan, apply and deps, a folder out that holds a file that go build would put in
 // the binary and that the generated Go files do not show, such as a .s or a .syso file, or a link: stego build
-// refuses it (checkGeneratedTree), so the runs before it refuse it too, and the author learns of it at the first one
-// (walkthrough 8 and 9, rank 3). A project with no out folder, as a fresh clone, has nothing to refuse; a linked out
-// is refused where the plan reads the project.
+// refuses it (CheckGeneratedTree), so the runs before it refuse it too, and the author learns of it at the first one
+// (walkthrough 8 and 9, rank 3). It checks out, the one folder that stego build checks. A project with no out
+// folder, as a fresh clone, has nothing to refuse; any other error of reading out is a fault (sec-431 INFO-3). A
+// linked out is refused here, as stego build refuses it.
 func checkBuiltFolder(projectDir string) error {
-	if info, err := os.Lstat(filepath.Join(projectDir, "out")); err != nil || !info.IsDir() {
+	if _, err := os.Lstat(filepath.Join(projectDir, generatedFolder)); errors.Is(err, fs.ErrNotExist) {
 		return nil
+	} else if err != nil {
+		return fmt.Errorf("the generated folder %s cannot be read: %w", generatedFolder, err)
 	}
-	if err := checkGeneratedTree(projectDir); err != nil {
+	if err := CheckGeneratedTree(projectDir, generatedFolder); err != nil {
 		return fmt.Errorf("%w; remove it, as plan, apply and deps refuse it too", err)
 	}
 	return nil
