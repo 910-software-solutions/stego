@@ -238,6 +238,26 @@ The expand migration keeps the old column, its CHECK and its indexes:
 
 Each statement takes a short lock and reads no row.
 
+#### A client that still sends the dropped field
+
+The API of the expand release does not know the field. When a create or an
+update body holds it, the API ignores that member, as it ignores each member
+that the entity does not declare, and answers as for a body without it: a
+create gives 201, and the row has no value of the field. The API sends no
+message about it.
+
+This is intentional. In the time between the two releases, the release before
+and the new release serve the same routes, and a client that the release
+before knows still sends the field. A refusal (400) from the new release would
+make the writes of such a client fail by chance, at each request that the new
+release gets. The release before keeps the field: it writes the value, and
+the old column keeps it until the contract step.
+
+Thus, before the contract step, change each client to stop sending the field.
+A value that a client sends to the new release is lost. If a client must not
+lose it, keep the field in the API until each client stops sending it, and
+only then declare the drop.
+
 ### Remove an entity
 
 Keep the entity and the collections over it as they are, and add
