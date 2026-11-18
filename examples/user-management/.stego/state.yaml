@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118205222-58fd615b029e
+        module_version: v0.0.0-20261118211202-9ae578a315fc
         vcs: git
-        revision: 58fd615b029e4341e7faa4917b60c19b8ede7e59
+        revision: 9ae578a315fc9c7ee326f5f0fcfe930d21db8e80
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 78568c91adc1e46b97348413d9f4b61c91f3e58733fad04105619bac8da25958
+    registry_content_sha256: 77516c43d5b73e5430f2fcbb874e22aa4b65b6f9847d1d3c860eebdaeb96b842
     components:
         audit-log:
             version: 1.2.0
@@ -74,8 +74,8 @@ last_applied:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
         rest-api:
-            version: 4.15.0
-            sha: f8051182c358cff734d1e387e519996463c63f3f5383b341f30bbf88cf8158cd
+            version: 4.15.1
+            sha: 987b32c7e08d2c601aac84fce237b5d20d48fad2a9ba753a737494409f06e8d9
         spicedb-authz:
             version: 1.4.0
             sha: bc44dfacc5b8c323ef4988fda14d223f7c66d02f30ffbe65ffdec2a094217010
@@ -152,7 +152,7 @@ last_applied:
         internal/api/org_users_handler.go: 732e51ca6cf5e19f0184e64b5101dce7ac786011da207404400d7f638168b881
         internal/api/organizations_handler.go: 73c610975cbd61f02d171a084f26dd168dc5fc916885c840ffe71477bb4f4077
         internal/api/router.go: d6124ed4af38af0415a23e5bfcc77ada26e18fe0cea5cf71dee839d28ff93fa6
-        internal/api/runtime.go: 7a511afa1bfe88733c517ac0bb132ef40fe752b6f49b79e52a371dff57c8edf3
+        internal/api/runtime.go: 657f845669ccc9ad8799208104e5089e33f038cf6ee2bfd4627927292dae58a1
         internal/api/user_activity_handler.go: 1457a37f72a06727113b7d32b43f9e9820767934145ca9aa673560872107c8d7
         internal/api/validation.go: cc1aa843f9ef54e7f81d836a8be2271b884c8c40efee70fd97ed23575e00bf85
         internal/auditlog/audit.go: 7fa2142f0f392775f4e230cef051034f050d33723732be342d1ae8eed40364fc
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 4aa19b4b19afd2b0c35439a2d240152d07ae2ff6daa6857b15ce8ed45d3946fb
-        architecture/index.html: b802e3a7638e2960fa80947a6d2d0eba62ebbd74ad65a97e71878b7378ad02c6
+        architecture/architecture.json: 0f8e9da13d8efe22eca746d18573f400a7c42d4b86a9ef539b918e916d685fb9
+        architecture/index.html: 151df17aa98d6155025382f92795f2261ceab3429976c42d5e7de31f17070f0e
         deploy/base/deployment.yaml: ea22a1bda41f03346a2d2b2ffa2e321b33b2c803eb874cbbfae5611de163739d
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: f5b078f2e06cc5eb62812aaa5415cd561cbb5c64daee8f649020f3829f9ed771
