@@ -19,24 +19,24 @@ last_applied:
                 mode: 420
             go.mod:
                 exists: true
-                sha256: cd5ab73733bd0f699809b10b87448fc8d85dcdc6cd9e6c19aefc35a064b690d9
+                sha256: b03a9792af4f9a72322249ea9b3f64234e62d26397af580a957813ea6257d107
                 mode: 420
             go.sum:
                 exists: true
-                sha256: 9ad0d26f4f29d32ed5eb7d207831a547fa2b1c3122d69ffd47a1f7d74cd8e5f2
+                sha256: 7a00acb066797a435d0163af0434b06878b7270e5b5cbfa990e8a9861a669c2a
                 mode: 420
             service.yaml:
                 exists: true
                 sha256: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
                 mode: 420
-        sha256: ddc010a716ee0f0f49bfd0a8ff24c352f043f477ff912bdb4bdb44c3c2cb07b4
+        sha256: b864881539af0c4fd690854fcb1d4378684f2a6911d48ec1051b07db63fe5aae
     compiler_build:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261119031229-87c286ecf3fa
+        module_version: v0.0.0-20261119032014-6a38cf3bd5d6
         vcs: git
-        revision: 87c286ecf3fae471230876320db226c637265e05
+        revision: 6a38cf3bd5d6b2f4b1c5ede8e37912a1106da078
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
