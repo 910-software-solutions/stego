@@ -534,6 +534,9 @@ func (w *Worker) apply(ctx context.Context, tx *sql.Tx, d Delivery, reg Destinat
 			_ = tx.Rollback()
 			d.Receipt.State = from
 			w.databaseFailures.Add(1)
+			// The done of d rolls back with it, so a failed audit write holds the key: it is counted and alerted
+			// (ST-SUP-RP01-LC39; security review of PR #457, I1).
+			w.metrics.freeFailed(finish, d.Destination)
 			return false
 		}
 	}
@@ -558,30 +561,34 @@ func (w *Worker) apply(ctx context.Context, tx *sql.Tx, d Delivery, reg Destinat
 	return true
 }
 
-// freedMessage is one message that freeSuccessors moved back to pending: its ID, its group and the principal that
-// resolved it.
+// freedMessage is one message that freeSuccessors moved back to pending: its ID and its group.
 type freedMessage struct {
-	id               uuid.UUID
-	group, principal string
+	id    uuid.UUID
+	group string
 }
 
 // freeSuccessors moves, in tx, each later message of the key of d that is parked as poison back to pending, through
 // the relay function free_successors, when d is a message of the Kafka inbox that is now done (ST-SUP-RP01-LC39). It
 // calls the state hook of each and writes the audit row of each resolution not_acted in tx, so all commit with the
-// move of d or not at all. A worker with no auditor frees nothing, because it cannot write the audit row.
+// move of d or not at all. The subject of each resolution is the resolver that the destination is registered with
+// (SetResolver), never a column of the row (security review of PR #457, L2). A worker with no auditor, or a destination
+// with no resolver, frees nothing, because it cannot write the audit row.
 func (w *Worker) freeSuccessors(ctx context.Context, tx *sql.Tx, d Delivery, reg Destination) ([]freedMessage, error) {
-	if w.auditor == nil {
+	w.mu.Lock()
+	by := w.resolvers[d.Destination]
+	w.mu.Unlock()
+	if w.auditor == nil || by == "" {
 		return nil, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT r_id, r_group, r_principal FROM stego_outbox.free_successors($1::timestamptz, $2::uuid)`,
-		w.queue.now(), d.ID)
+	rows, err := tx.QueryContext(ctx, `SELECT r_id, r_group FROM stego_outbox.free_successors($1::timestamptz, $2::uuid, $3::text)`,
+		w.queue.now(), d.ID, by)
 	if err != nil {
 		return nil, canceled(ctx, err)
 	}
 	var freed []freedMessage
 	for rows.Next() {
 		var f freedMessage
-		if err := rows.Scan(&f.id, &f.group, &f.principal); err != nil {
+		if err := rows.Scan(&f.id, &f.group); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -607,11 +614,31 @@ func (w *Worker) freeSuccessors(ctx context.Context, tx *sql.Tx, d Delivery, reg
 			}
 		}
 		if err := w.auditor.Record(ctx, tx, AuditEntry{MessageID: f.id, Tenant: d.Tenant, Destination: d.Destination,
-			Subject: f.principal, Resolution: NotActed, At: at}); err != nil {
+			Subject: by, Resolution: NotActed, At: at}); err != nil {
 			return nil, err
 		}
 	}
 	return freed, nil
+}
+
+// SetResolver registers subject as the resolver of the parked messages of destination that a done message of the
+// Kafka inbox frees (ST-SUP-RP01-LC39): the system principal of the consuming worker of the subscription, which the
+// service gives from the inbox, so the audit row of each resolution names the worker's own identity (security review
+// of PR #457, L2). It refuses a destination that is not registered and a subject that is not a text of 1 to 255 bytes.
+func (w *Worker) SetResolver(destination, subject string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, ok := w.destinations[destination]; !ok {
+		return fmt.Errorf("outbox: the destination %s is not registered on this worker", destination)
+	}
+	if subject == "" || !validText(subject, MaxKeyBytes) {
+		return errors.New("outbox: a resolver needs a subject")
+	}
+	if w.resolvers == nil {
+		w.resolvers = map[string]string{}
+	}
+	w.resolvers[destination] = subject
+	return nil
 }
 
 // park moves a claimed message to parked, records the state it left, and raises one alert event and metric that

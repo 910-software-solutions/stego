@@ -135,14 +135,17 @@ type Worker struct {
 	metrics      *metrics
 	mu           sync.Mutex
 	destinations map[string]Destination
-	purges       []Purger
-	running      atomic.Bool
-	started      atomic.Bool
-	stop         chan struct{}
-	stopOnce     sync.Once
-	drain        chan struct{}
-	drainOnce    sync.Once
-	finished     chan struct{}
+	// resolvers are the subjects that resolve the parked messages that a done message frees, by destination
+	// (SetResolver, ST-SUP-RP01-LC39).
+	resolvers map[string]string
+	purges    []Purger
+	running   atomic.Bool
+	started   atomic.Bool
+	stop      chan struct{}
+	stopOnce  sync.Once
+	drain     chan struct{}
+	drainOnce sync.Once
+	finished  chan struct{}
 
 	delivered           atomic.Uint64
 	retried             atomic.Uint64
@@ -611,6 +614,7 @@ type metrics struct {
 	parks   metric.Int64Counter
 	hooks   metric.Int64Counter
 	freed   metric.Int64Counter
+	frees   metric.Int64Counter
 	logger  otellog.Logger
 	gauge   metric.Registration
 	enabled bool
@@ -645,6 +649,11 @@ func newMetrics(provider metric.MeterProvider, logs otellog.LoggerProvider, w *W
 	}
 	m.freed, err = meter.Int64Counter("outbox.parked.freed",
 		metric.WithDescription("The messages parked as poison that went back to pending after an earlier message of their key was done, by destination."))
+	if err != nil {
+		return nil, err
+	}
+	m.frees, err = meter.Int64Counter("outbox.parked.free_failures",
+		metric.WithDescription("The done messages whose free of the parked messages of their key failed, such as at the audit write, and rolled back, by destination."))
 	if err != nil {
 		return nil, err
 	}
@@ -715,6 +724,27 @@ func (m *metrics) freedSuccessor(ctx context.Context, destination string, id uui
 		record.SetSeverityText("INFO")
 		record.SetBody(attribute.StringValue("a parked message goes back to pending, because an earlier message of its key is done"))
 		record.AddAttributes(attribute.String("destination", destination), attribute.String("message_id", id.String()))
+		m.logger.Emit(ctx, record)
+	}
+}
+
+// freeFailed raises the alert event and metric of a done message whose free of the parked messages of its key failed,
+// such as at the write of an audit row, so the done rolled back and the key waits (ST-SUP-RP01-LC39; security review of
+// PR #457, I1). They name the destination only.
+func (m *metrics) freeFailed(ctx context.Context, destination string) {
+	if m == nil {
+		return
+	}
+	if m.enabled {
+		m.frees.Add(ctx, 1, metric.WithAttributes(attribute.String("destination", destination)))
+	}
+	if m.logger != nil {
+		var record otellog.Record
+		record.SetEventName("outbox.parked.free_failed")
+		record.SetSeverity(otellog.SeverityError)
+		record.SetSeverityText("ERROR")
+		record.SetBody(attribute.StringValue("a done message could not free the parked messages of its key, so its done was rolled back"))
+		record.AddAttributes(attribute.String("destination", destination))
 		m.logger.Emit(ctx, record)
 	}
 }

@@ -681,8 +681,10 @@ schema manifest` once for each difference, with its class, such as
 A table or a column that the older release uses can be missing, for example
 after a contract step of a later release dropped it. Then each statement on
 that table fails. In this case the error line says `the service starts not
-ready`, and each mode of the pod answers `/readyz` and `/readyz/modes` with
-503 and names the table or the column. The pod does not restart. A rollout of
+ready`, with the table or the column, and each mode of the pod answers
+`/readyz/modes`, the readiness probe of each Deployment, with 503. The answer
+names no table or column, because a caller of the network can read it: read
+the log of the pod. The pod does not restart. A rollout of
 the older release stops at its first pod, and the pods that serve stay. Roll
 forward to the release that changed the database. There is one exception: the
 release of the expand step of a seal goes on after the contract step drops

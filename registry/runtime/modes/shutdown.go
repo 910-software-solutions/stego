@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -28,6 +29,9 @@ type Staller interface {
 type Queue interface {
 	QueueReady() bool
 }
+
+// DatabaseUnreachable is the fixed reason of a mode that is not ready because its database does not answer a ping.
+const DatabaseUnreachable = "the database is not reachable"
 
 // ErrNotReady is the error of Ready when a mode is not ready.
 var ErrNotReady = errors.New("not ready")
@@ -120,7 +124,10 @@ func (r *Readiness) Ready(ctx context.Context, m Mode) error {
 			return fmt.Errorf("%s: %w: no database", m, ErrNotReady)
 		}
 		if err := r.db.PingContext(ctx); err != nil {
-			return fmt.Errorf("%s: %w: the database is not reachable: %w", m, ErrNotReady, err)
+			// The readiness answers network callers, so it gives a fixed reason; the error, which can name the host,
+			// the user or the database, goes only to the log (security review of PR #457, L3).
+			slog.WarnContext(ctx, "modes: the database is not reachable", "mode", string(m), "error", err)
+			return fmt.Errorf("%s: %w: %s", m, ErrNotReady, DatabaseUnreachable)
 		}
 		if m == Controller {
 			r.mu.Lock()

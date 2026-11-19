@@ -344,6 +344,13 @@ func (in *Inbox) nextAttempt() int {
 // Name is the name of the inbox among the components of the worker mode: inbox-<subscription>.
 func (in *Inbox) Name() string { return "inbox-" + in.sub.Name }
 
+// Destination is the outbox destination that the inbox writes each record to: the name of its subscription.
+func (in *Inbox) Destination() string { return in.sub.Name }
+
+// Principal is the system principal of the consuming worker of the subscription, the staging principal of each
+// message, as text: the resolver of the parked messages that a done message frees (ST-SUP-RP01-LC39).
+func (in *Inbox) Principal() string { return in.principal }
+
 // Purge removes at most limit refused records older than RefusedRetention, for the purge timer of the outbox
 // worker (outbox.Worker.AddPurge, ST-SUP-RP01-LC37).
 func (in *Inbox) Purge(ctx context.Context, limit int) (int64, error) {

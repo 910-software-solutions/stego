@@ -481,19 +481,46 @@ func TestNew(t *testing.T) {
 			}
 			const fault = "table public.orders: column gone is missing"
 			logs, ready := start(false)
-			if !errors.Is(ready, modes.ErrNotReady) || !strings.Contains(ready.Error(), fault) || !strings.Contains(ready.Error(), "roll forward") {
-				t.Fatalf("the api mode gave %v, want not ready with %q and the remedy", ready, fault)
+			// The readiness answers network callers, so it names no table or column; the log does (security review of
+			// PR #457, L3).
+			if !errors.Is(ready, modes.ErrNotReady) || strings.Contains(ready.Error(), "gone") || !strings.Contains(ready.Error(), "roll forward") {
+				t.Fatalf("the api mode gave %v, want not ready with the remedy and no column", ready)
 			}
-			if !errors.Is(blocked, modes.ErrNotReady) || !strings.Contains(blocked.Error(), "api: not ready") || !strings.Contains(blocked.Error(), fault) {
-				t.Fatalf("Blocked of the api mode gave %v, want not ready with %q", blocked, fault)
+			if !errors.Is(blocked, modes.ErrNotReady) || !strings.Contains(blocked.Error(), "api: not ready") || strings.Contains(blocked.Error(), "gone") {
+				t.Fatalf("Blocked of the api mode gave %v, want not ready and no column", blocked)
 			}
-			if !strings.Contains(logs, "the service starts not ready") {
+			if !strings.Contains(logs, "the service starts not ready") || !strings.Contains(logs, fault) {
 				t.Fatalf("the log does not say that the service starts not ready:\n%s", logs)
 			}
 			// A droppable column alerts and blocks nothing: the api mode waits only for its HTTP server.
 			logs, ready = start(true)
 			if ready == nil || strings.Contains(ready.Error(), fault) || blocked != nil || !strings.Contains(logs, fault) || strings.Contains(logs, "starts not ready") {
 				t.Fatalf("with the column droppable, the api mode gave %v and the log %s, want the alert and no block", ready, logs)
+			}
+		})
+
+		t.Run("ST-SUP-RP09-LC05-T08 A process of the api mode alone is not ready while its database does not answer, with a fixed reason", func(t *testing.T) {
+			ctx := context.Background()
+			declared := parts(nil, nil)
+			declared.Schema = ordersManifest()
+			svc, err := New(ctx, settings, declared)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = svc.Close() }()
+			if err := svc.Ping(ctx); err != nil {
+				t.Fatalf("Ping with the database up gave %v, want ready", err)
+			}
+			// The pool of the process no longer answers, as when the database is down.
+			_ = svc.pool.Close()
+			var got error
+			logs, _ := startCaptured(t, func() { got = svc.Ping(ctx) })
+			if !errors.Is(got, modes.ErrNotReady) || !strings.Contains(got.Error(), "api: not ready: "+modes.DatabaseUnreachable) {
+				t.Fatalf("Ping with the pool closed gave %v, want the fixed reason", got)
+			}
+			// The reason holds no text of the error, which can name the host, the user or the database.
+			if strings.Contains(got.Error(), "closed") || strings.Contains(got.Error(), f.runtime) || !strings.Contains(logs, "closed") {
+				t.Fatalf("the reason %q or the log %q is not as wanted: the error belongs in the log only", got, logs)
 			}
 		})
 

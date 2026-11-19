@@ -1582,7 +1582,8 @@ func TestDispatchPanic(t *testing.T) {
 // offset offset of the partition partition, staged by the consuming worker.
 func inboxMessage(key string, partition int32, offset int64) Message {
 	m := message("billing", key)
-	m.Principal, m.MustLand, m.Idempotent = "service:billing-worker", true, true
+	// The staging principal of the row is not the resolver: the worker gives its own (security review of PR #457, L2).
+	m.Principal, m.MustLand, m.Idempotent = "service_account:staged-by", true, true
 	m.Position = &Position{Partition: partition, Offset: offset}
 	return m
 }
@@ -1599,6 +1600,9 @@ func orderedDestination(t *testing.T, w *Worker, fail func(id uuid.UUID) error) 
 		mu.Unlock()
 		return fail(d.ID)
 	}})
+	if err := w.SetResolver("billing", "service_account:billing-worker"); err != nil {
+		t.Fatal(err)
+	}
 	return func() []uuid.UUID {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1692,7 +1696,7 @@ func TestKeyOrder(t *testing.T) {
 		cycle(t, w)
 		row := readRow(t, db, update.ID)
 		if row.State != Pending || row.Attempts != 0 || row.FailureCode != "" || row.Resolution.String != "not_acted" ||
-			row.ResolvedBy.String != "service:billing-worker" || row.OutgoingKey != update.ID.String() {
+			row.ResolvedBy.String != "service_account:billing-worker" || row.OutgoingKey != update.ID.String() {
 			t.Fatalf("the update after the created record is %+v, want pending as not_acted by the consuming worker", row)
 		}
 		if n := auditRows(t, db, update.ID); n != 1 {

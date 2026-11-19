@@ -337,8 +337,10 @@ func TestModeReadiness(t *testing.T) {
 			t.Fatalf("with the database reachable, worker gave %v, want ready", err)
 		}
 		d.proxy.stop()
-		if err := readiness.Ready(ctx, Worker); !errors.Is(err, ErrNotReady) {
-			t.Fatalf("with the database stopped, worker gave %v, want not ready", err)
+		// The reason is fixed: no text of the ping error, which can name the host or the user (security review of
+		// PR #457, L3).
+		if err := readiness.Ready(ctx, Worker); !errors.Is(err, ErrNotReady) || err.Error() != "worker: not ready: "+DatabaseUnreachable {
+			t.Fatalf("with the database stopped, worker gave %v, want not ready with the fixed reason", err)
 		}
 	})
 

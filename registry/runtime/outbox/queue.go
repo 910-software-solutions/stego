@@ -169,10 +169,13 @@ func Manifest(relayRole, runtimeRole, workerRole string) (manifest.Manifest, err
 	}
 	// The columns that an enqueue writes; the rest are the relay's.
 	inserted := []string{"id", "tenant_id", "destination", "resource_key", "kind", "payload", "outgoing_key", "group_id", "principal",
-		"origin", "created_at", "available_at", "must_land", "idempotent", "source_partition", "source_offset", "place"}
+		"origin", "created_at", "available_at", "must_land", "idempotent"}
+	// Only the worker role, which the Kafka inbox writes on, inserts the source position and the place (security review
+	// of PR #457, L1).
+	workerInserted := append(append([]string{}, inserted...), "source_partition", "source_offset", "place")
 	grants := []manifest.Grant{
 		{Role: runtimeRole, Privileges: []string{"SELECT"}}, {Role: workerRole, Privileges: []string{"SELECT"}},
-		{Role: runtimeRole, Privileges: []string{"INSERT"}, Columns: inserted}, {Role: workerRole, Privileges: []string{"INSERT"}, Columns: inserted},
+		{Role: runtimeRole, Privileges: []string{"INSERT"}, Columns: inserted}, {Role: workerRole, Privileges: []string{"INSERT"}, Columns: workerInserted},
 		{Role: relayRole, Privileges: []string{"SELECT", "UPDATE", "DELETE"}},
 	}
 	var functions []manifest.Function
@@ -206,6 +209,8 @@ func Manifest(relayRole, runtimeRole, workerRole string) (manifest.Manifest, err
 			// is the manifest's.
 			{Name: "messages_open_order", Columns: []string{"tenant_id", "destination", "resource_key", "sequence"}, Lookup: true,
 				Predicate: "(state <> ALL (ARRAY['done'::text, 'discarded'::text]))"},
+			{Name: "messages_open_place", Columns: []string{"tenant_id", "destination", "resource_key"}, Lookup: true,
+				Predicate: "((state <> ALL (ARRAY['done'::text, 'discarded'::text])) AND (place IS NOT NULL))"},
 			{Name: "messages_due", Columns: []string{"available_at", "sequence"}, Lookup: true,
 				Predicate: "(state = ANY (ARRAY['pending'::text, 'dispatching'::text, 'outcome_unknown'::text, 'reconciling'::text]))"},
 			{Name: "messages_done", Columns: []string{"done_at"}, Lookup: true, Predicate: "(state = 'done'::text)"},
@@ -235,7 +240,7 @@ var relayResults = map[string]string{
 		"r_failure_code text, r_available_at timestamp with time zone, r_created_at timestamp with time zone)",
 	"stego_outbox.oldest":          "TABLE(r_destination text, r_age double precision)",
 	"stego_outbox.resolve":         "TABLE(o_resolved_at timestamp with time zone, o_age_seconds double precision)",
-	"stego_outbox.free_successors": "TABLE(r_id uuid, r_group text, r_principal text)",
+	"stego_outbox.free_successors": "TABLE(r_id uuid, r_group text)",
 }
 
 // The relay functions, by their signature, for the grants and the checks.
@@ -250,7 +255,7 @@ var relayFunctions = []string{
 	"stego_outbox.blocked(timestamptz, integer)",
 	"stego_outbox.oldest(timestamptz)",
 	"stego_outbox.resolve(timestamptz, uuid, text, text, text)",
-	"stego_outbox.free_successors(timestamptz, uuid)",
+	"stego_outbox.free_successors(timestamptz, uuid, text)",
 }
 
 const migrationHead = `CREATE SCHEMA IF NOT EXISTS stego_outbox;
@@ -408,6 +413,10 @@ var queueObjects = func() string {
 	relay := []string{"{{relay_text}}"}
 	return index("messages_open_order", `CREATE INDEX IF NOT EXISTS messages_open_order ON stego_outbox.messages (tenant_id, destination, resource_key, sequence)
 	WHERE state NOT IN ('done', 'discarded');`) +
+		// The open messages with a place, which only a record that comes again has, so the order of a key reads
+		// them apart from the sequence range of messages_open_order (security review of PR #457, L4).
+		index("messages_open_place", `CREATE INDEX IF NOT EXISTS messages_open_place ON stego_outbox.messages (tenant_id, destination, resource_key)
+	WHERE state NOT IN ('done', 'discarded') AND place IS NOT NULL;`) +
 		index("messages_due", `CREATE INDEX IF NOT EXISTS messages_due ON stego_outbox.messages (available_at, sequence)
 	WHERE state IN ('pending', 'dispatching', 'outcome_unknown', 'reconciling');`) +
 		index("messages_done", `CREATE INDEX IF NOT EXISTS messages_done ON stego_outbox.messages (done_at) WHERE state = 'done';`) +
@@ -438,7 +447,11 @@ GRANT USAGE, CREATE ON SCHEMA stego_outbox TO {{relay}};
 REVOKE INSERT, UPDATE, DELETE ON stego_outbox.messages FROM {{runtime}}, {{worker}};
 GRANT SELECT ON stego_outbox.messages TO {{runtime}}, {{worker}};
 GRANT INSERT (id, tenant_id, destination, resource_key, kind, payload, outgoing_key, group_id, principal, origin,
-	must_land, idempotent, created_at, available_at, source_partition, source_offset, place) ON stego_outbox.messages TO {{runtime}}, {{worker}};
+	must_land, idempotent, created_at, available_at) ON stego_outbox.messages TO {{runtime}}, {{worker}};
+-- Only the Kafka inbox, on the worker role, writes the source position of a record and its place (ST-SUP-RP01-LC35;
+-- security review of PR #457, L1).
+REVOKE INSERT (source_partition, source_offset, place) ON stego_outbox.messages FROM {{runtime}};
+GRANT INSERT (source_partition, source_offset, place) ON stego_outbox.messages TO {{worker}};
 GRANT SELECT, UPDATE, DELETE ON stego_outbox.messages TO {{relay}};
 
 -- The relay functions are made as their owner, so a later run of the same text replaces them.
@@ -493,6 +506,11 @@ BEGIN
 			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
 				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
 					AND earlier.resource_key = m.resource_key
+					AND earlier.sequence < m.sequence AND m.place IS NULL AND earlier.place IS NULL
+					AND earlier.state NOT IN ('done', 'discarded'))
+			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
+				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
+					AND earlier.resource_key = m.resource_key AND (earlier.place IS NOT NULL OR m.place IS NOT NULL)
 					AND (COALESCE(earlier.place, earlier.sequence), COALESCE(earlier.source_offset, -1), earlier.sequence)
 						< (COALESCE(m.place, m.sequence), COALESCE(m.source_offset, -1), m.sequence)
 					AND earlier.state NOT IN ('done', 'discarded'))
@@ -553,6 +571,11 @@ BEGIN
 			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
 				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
 					AND earlier.resource_key = m.resource_key
+					AND earlier.sequence < m.sequence AND m.place IS NULL AND earlier.place IS NULL
+					AND earlier.state NOT IN ('done', 'discarded'))
+			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
+				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
+					AND earlier.resource_key = m.resource_key AND (earlier.place IS NOT NULL OR m.place IS NOT NULL)
 					AND (COALESCE(earlier.place, earlier.sequence), COALESCE(earlier.source_offset, -1), earlier.sequence)
 						< (COALESCE(m.place, m.sequence), COALESCE(m.source_offset, -1), m.sequence)
 					AND earlier.state NOT IN ('done', 'discarded'))
@@ -783,10 +806,12 @@ END
 $fn$;
 
 -- free_successors moves, in the transaction of the tenant of a message of the Kafka inbox that is done, each later
--- message of its key that is parked as poison back to pending, as a resolution not_acted by the staging principal of
--- the message, and gives each one (ST-SUP-RP01-LC39). Later is the order of the claim (ST-SUP-RP01-LC03).
-CREATE OR REPLACE FUNCTION stego_outbox.free_successors(p_now timestamptz, p_id uuid)
-RETURNS TABLE (r_id uuid, r_group text, r_principal text)
+-- message of its key that is parked as poison back to pending, as a resolution not_acted by the subject p_by, which
+-- the worker gives from its own registration, and gives each one (ST-SUP-RP01-LC39; security review of PR #457, L2).
+-- Later is the order of the claim (ST-SUP-RP01-LC03). The function of an earlier text with no subject goes.
+DROP FUNCTION IF EXISTS stego_outbox.free_successors(timestamptz, uuid);
+CREATE OR REPLACE FUNCTION stego_outbox.free_successors(p_now timestamptz, p_id uuid, p_by text)
+RETURNS TABLE (r_id uuid, r_group text)
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
 AS $fn$
 DECLARE
@@ -801,6 +826,9 @@ BEGIN
 	IF v_tenant IS NULL THEN
 		RAISE EXCEPTION 'outbox: a message frees its successors in a transaction of one tenant';
 	END IF;
+	IF p_by IS NULL OR octet_length(p_by) NOT BETWEEN 1 AND 255 THEN
+		RAISE EXCEPTION 'outbox: a resolution needs a subject';
+	END IF;
 	SELECT m.destination, m.resource_key, COALESCE(m.place, m.sequence), m.source_offset, m.sequence
 	INTO v_destination, v_key, v_place, v_offset, v_sequence
 	FROM stego_outbox.messages AS m
@@ -810,12 +838,12 @@ BEGIN
 	END IF;
 	RETURN QUERY
 	UPDATE stego_outbox.messages AS x SET state = 'pending', attempts = 0, failure_code = '', resolution = 'not_acted',
-		resolved_by = COALESCE(NULLIF(x.principal, ''), x.destination), resolved_at = v_now, parked_from = NULL,
+		resolved_by = p_by, resolved_at = v_now, parked_from = NULL,
 		parked_at = NULL, available_at = v_now, conflicts = 0, lookups = 0
 	WHERE x.tenant_id = v_tenant AND x.destination = v_destination AND x.resource_key = v_key
 		AND x.state = 'parked' AND x.failure_code = 'poison'
 		AND (COALESCE(x.place, x.sequence), COALESCE(x.source_offset, -1), x.sequence) > (v_place, v_offset, v_sequence)
-	RETURNING x.id, x.group_id, x.resolved_by;
+	RETURNING x.id, x.group_id;
 END
 $fn$;
 
@@ -831,7 +859,12 @@ WHERE m.state NOT IN ('done', 'discarded')
 	AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
 		WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
 			AND earlier.resource_key = m.resource_key
-			AND (COALESCE(earlier.place, earlier.sequence), COALESCE(earlier.source_offset, -1), earlier.sequence)
+			AND earlier.sequence < m.sequence AND m.place IS NULL AND earlier.place IS NULL
+					AND earlier.state NOT IN ('done', 'discarded'))
+			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
+				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
+					AND earlier.resource_key = m.resource_key AND (earlier.place IS NOT NULL OR m.place IS NOT NULL)
+					AND (COALESCE(earlier.place, earlier.sequence), COALESCE(earlier.source_offset, -1), earlier.sequence)
 						< (COALESCE(m.place, m.sequence), COALESCE(m.source_offset, -1), m.sequence)
 					AND earlier.state NOT IN ('done', 'discarded'))
 	AND (m.state IN ('dispatching', 'outcome_unknown', 'reconciling', 'parked')
@@ -865,7 +898,7 @@ BEGIN
 		'stego_outbox.blocked(timestamptz, integer)',
 		'stego_outbox.oldest(timestamptz)',
 		'stego_outbox.resolve(timestamptz, uuid, text, text, text)',
-		'stego_outbox.free_successors(timestamptz, uuid)'] LOOP
+		'stego_outbox.free_successors(timestamptz, uuid, text)'] LOOP
 		EXECUTE 'REVOKE ALL ON FUNCTION ' || f || ' FROM PUBLIC';
 		EXECUTE 'REVOKE ALL ON FUNCTION ' || f || ' FROM {{runtime}}';
 		EXECUTE 'GRANT EXECUTE ON FUNCTION ' || f || ' TO {{worker}}';
@@ -1142,7 +1175,18 @@ func (q *Queue) enqueue(ctx context.Context, tx *sql.Tx, once bool, messages []M
 		// The place of a record that comes again is the place of the first open message of its key from the same
 		// partition with a higher offset, in the order of the claim; the advisory lock of the key above holds it
 		// (ST-SUP-RP01-LC03).
-		result, err := tx.ExecContext(ctx, `WITH `+nowCTE+`
+		args := []any{q.now(), message.ID, tenantID.String, message.Destination, message.ResourceKey, message.Kind,
+			[]byte(message.Payload), outgoing, message.Group, message.Principal, message.Origin, message.MustLand,
+			message.Idempotent}
+		statement := `WITH ` + nowCTE + `
+			INSERT INTO stego_outbox.messages (id, tenant_id, destination, resource_key, kind, payload, outgoing_key,
+				group_id, principal, origin, must_land, idempotent, created_at, available_at)
+			SELECT $2, $3, $4, $5, $6, $7::bytea, $8, $9, $10, $11, $12, $13, now.t, now.t FROM now`
+		if message.Position != nil {
+			// Only a message of the Kafka inbox, on the worker role, names the position columns (security review of
+			// PR #457, L1).
+			args = append(args, partition, offset)
+			statement = `WITH ` + nowCTE + `
 			INSERT INTO stego_outbox.messages (id, tenant_id, destination, resource_key, kind, payload, outgoing_key,
 				group_id, principal, origin, must_land, idempotent, created_at, available_at, source_partition, source_offset, place)
 			SELECT $2, $3, $4, $5, $6, $7::bytea, $8, $9, $10, $11, $12, $13, now.t, now.t, $14::integer, $15::bigint,
@@ -1150,10 +1194,9 @@ func (q *Queue) enqueue(ctx context.Context, tx *sql.Tx, once bool, messages []M
 				WHERE x.tenant_id = $3 AND x.destination = $4 AND x.resource_key = $5
 					AND x.state NOT IN ('done', 'discarded') AND x.source_partition = $14::integer AND x.source_offset > $15::bigint
 				ORDER BY COALESCE(x.place, x.sequence), x.source_offset, x.sequence LIMIT 1)
-			FROM now`+conflict,
-			q.now(), message.ID, tenantID.String, message.Destination, message.ResourceKey, message.Kind,
-			[]byte(message.Payload), outgoing, message.Group, message.Principal, message.Origin, message.MustLand,
-			message.Idempotent, partition, offset)
+			FROM now`
+		}
+		result, err := tx.ExecContext(ctx, statement+conflict, args...)
 		if err != nil {
 			return 0, canceled(ctx, err)
 		}

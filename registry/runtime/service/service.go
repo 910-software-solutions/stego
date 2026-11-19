@@ -571,18 +571,31 @@ func (svc *Service) Blocked(selection modes.Selection) error {
 }
 
 // blockedReason gives the reason of the readiness of a process whose start check found the faults blocking, each a
-// missing table or column of the manifest (ST-SUP-RP14-LC06): it names at most the first three and the count of the
-// rest, which are catalog names only, and gives the remedy. It is empty with no fault.
+// missing table or column of the manifest (ST-SUP-RP14-LC06): a fixed text with the count of the faults and the
+// remedy. It is empty with no fault.
 func blockedReason(blocking []string) string {
 	if len(blocking) == 0 {
 		return ""
 	}
-	named := blocking[:min(len(blocking), 3)]
-	text := "the database does not hold the schema manifest of this release: " + strings.Join(named, "; ")
-	if rest := len(blocking) - len(named); rest > 0 {
-		text += fmt.Sprintf("; and %d more", rest)
+	// The readiness answers network callers, so the reason names no table or column; the log lines of the start name
+	// each one (security review of PR #457, L3).
+	return fmt.Sprintf("the database does not hold the schema manifest of this release (%d faults, which the log of the start names); a later release changed the database, so roll forward to that release", len(blocking))
+}
+
+// Ping gives, for a process of the api mode alone, which starts no worker, the error of an api mode that is not ready
+// because the database does not answer a ping, with the fixed reason of modes.DatabaseUnreachable, or nil (ST-SUP-RP09-LC05).
+// The error of the ping goes only to the log (security review of PR #457, L3).
+func (svc *Service) Ping(ctx context.Context) error {
+	if svc == nil || svc.pool == nil {
+		return fmt.Errorf("%s: %w: %s", modes.API, modes.ErrNotReady, modes.DatabaseUnreachable)
 	}
-	return text + "; a later release changed the database, so roll forward to that release"
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := svc.pool.PingContext(ctx); err != nil {
+		slog.WarnContext(ctx, "service: the database is not reachable", "mode", string(modes.API), "error", err)
+		return fmt.Errorf("%s: %w: %s", modes.API, modes.ErrNotReady, modes.DatabaseUnreachable)
+	}
+	return nil
 }
 
 // joinedManifest is the schema manifest that New checks at the start and the migration job checks at its end: the

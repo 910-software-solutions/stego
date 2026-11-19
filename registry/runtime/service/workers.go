@@ -434,6 +434,11 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		if err := w.worker.AddPurge(inbox.Purge); err != nil {
 			return nil, err
 		}
+		// The worker's own identity resolves the parked messages that a done message of the inbox frees, never a
+		// column of the row (ST-SUP-RP01-LC39; security review of PR #457, L2).
+		if err := w.worker.SetResolver(inbox.Destination(), inbox.Principal()); err != nil {
+			return nil, err
+		}
 	}
 	// Each registered destination has a claim slot of its own, so a service with more destinations than Concurrency
 	// runs one slot for each, and each slot holds one connection (ST-SUP-RP01-LC34).
