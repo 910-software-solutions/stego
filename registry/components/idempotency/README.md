@@ -27,6 +27,12 @@ runtime data path the rest-api handlers give command.Run the client's key on
 a create and a patch, and the runtime's field fingerprint over the fields of
 the operation. A PUT, a DELETE, and a create or a patch with no header that
 does not need one, run with a key of the request's own (ST-SUP-Q86). The
-generated commands do not use the settings and the fingerprint functions
-yet, and the conformance tests are not generated yet. Until the commands
-use them, the compiler does not select this component.
+generated commands do not use the fingerprint functions of this component
+yet, and the conformance tests are not generated yet.
+
+A stated `idempotency` setting selects this component. With it, the key is
+required on each operation that Required on names. With no setting, a
+create and a patch still keep the key that a request gives: a second request
+with the same key and body gets the stored answer, and another body with the
+key gets 422. The OpenAPI document then gives the header, not required, on
+each create and patch (ST-SUP-RC20-OC56).
