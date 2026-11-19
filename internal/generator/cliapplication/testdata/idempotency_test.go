@@ -72,6 +72,15 @@ func keySetup(t *testing.T, app Application) *keyFixture {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case action == "big":
+			// An answer body over the limit of the client.
+			w.WriteHeader(201)
+			w.Write(bytes.Repeat([]byte(" "), 4<<20+1))
+			return
+		case action == "302":
+			w.Header().Set("Location", "/elsewhere")
+			w.WriteHeader(302)
+			return
 		case action != "":
 			w.WriteHeader(map[string]int{"400": 400, "409": 409, "500": 500, "503": 503}[action])
 		case r.Method == "POST":
@@ -103,6 +112,14 @@ func keySetup(t *testing.T, app Application) *keyFixture {
 	}
 	return f
 }
+
+// keyedDocument is an OpenAPI document whose create and patch of records carry the Idempotency-Key header parameter,
+// the patch through a parameter of its path item, and whose patch of widgets does not.
+const keyedDocument = `{"openapi":"3.0.3","paths":{
+ "/records":{"get":{},"post":{"parameters":[{"name":"Idempotency-Key","in":"header"}]}},
+ "/records/{recordId}":{"parameters":[{"name":"idempotency-key","in":"header"}],"get":{},"patch":{},"delete":{}},
+ "/widgets":{"post":{"parameters":[{"name":"Idempotency-Key","in":"header"}]}},
+ "/widgets/{id}":{"patch":{"parameters":[{"name":"Idempotency-Key","in":"query"}]}}}}`
 
 // structuredKey is the form of the key that the CLI makes: a structured string that holds a random UUID.
 var structuredKey = regexp.MustCompile(`^"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"$`)
@@ -163,8 +180,34 @@ func TestWriteIdempotencyKeys(t *testing.T) {
 		check("create with 500", app, []string{"500"}, true, "POST", true, "create", "record", "--name", "first")
 		check("create with no answer", app, []string{"drop"}, true, "POST", true, "create", "record", "--name", "first")
 		check("patch with 503", app, []string{"503"}, true, "PATCH", true, "patch", "record", "one", "--name", "first")
-		keeps := app
-		keeps.IdempotentWrites = true
+		// The key is kept per command and per apply resource, as the OpenAPI document of the service states it.
+		keeps, err := IdempotentWritesFrom(app, []byte(keyedDocument))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var keyedNames []string
+		for _, c := range keeps.Commands {
+			if c.IdempotentWrites {
+				keyedNames = append(keyedNames, strings.Join(c.Name, " "))
+			}
+		}
+		for _, r := range keeps.Resources {
+			if r.IdempotentWrites {
+				keyedNames = append(keyedNames, r.Kind)
+			}
+		}
+		if strings.Join(keyedNames, ",") != "create record,patch record,Record" {
+			t.Errorf("IdempotentWritesFrom states the key kept for %v, want the create and the patch of a record and the resource Record", keyedNames)
+		}
+		if _, err := IdempotentWritesFrom(app, []byte(`{"paths":`)); err == nil {
+			t.Error("IdempotentWritesFrom read an invalid document")
+		}
+		wrong := keeps
+		wrong.Commands = append([]Command(nil), keeps.Commands...)
+		wrong.Commands[1].IdempotentWrites = true
+		if err := run(wrong, "get", "record", "one"); err == nil || !strings.Contains(err.Error(), "idempotent write") {
+			t.Errorf("a GET command with IdempotentWrites gave %v, want the definition refused", err)
+		}
 		// A service that keeps the key: an uncertain write is sent again one time with the same key and body.
 		check("kept create with no answer", keeps, []string{"drop"}, false, "POST POST", true, "create", "record", "--name", "first")
 		check("kept create with 500 two times", keeps, []string{"500", "500"}, true, "POST POST", true, "create", "record", "--name", "first")
@@ -181,6 +224,10 @@ func TestWriteIdempotencyKeys(t *testing.T) {
 		check("kept read with 500", keeps, []string{"500"}, true, "GET", false, "get", "record", "one")
 		check("kept read with no answer", keeps, []string{"drop"}, true, "GET", false, "get", "record", "one")
 		check("kept delete with 500", keeps, []string{"500"}, true, "DELETE", false, "delete", "record", "one", "--yes")
+		// Only a transport failure, an expired request and a 5xx answer leave a write uncertain: a redirect and an
+		// answer body over the limit are not sent again (security review of PR 447, I-2).
+		check("kept create with a redirect", keeps, []string{"302"}, true, "POST", true, "create", "record", "--name", "first")
+		check("kept create with a body over the limit", keeps, []string{"big"}, true, "POST", true, "create", "record", "--name", "first")
 		// The apply command: a lookup is a GET with no key; each create and patch has a key of its own.
 		input := applyFile(t, filepath.Join(f.directory, "input.yaml"), manifest("Record", "first", "{}")+"---\n"+manifest("Record", "second", "{}"))
 		f.next("drop")
@@ -212,6 +259,19 @@ func TestWriteIdempotencyKeys(t *testing.T) {
 		}
 		if got := f.got(); len(got) < 2 || got[len(got)-1].method != "POST" || got[len(got)-2].method != "POST" || got[len(got)-1].key != got[len(got)-2].key {
 			t.Errorf("the apply with a write that is uncertain two times sent %+v, want one create two times with one key", got)
+		}
+		// A resource whose patch does not carry the key in the document is not kept: its create is sent one time.
+		widgets := applyFile(t, filepath.Join(f.directory, "widgets.yaml"), manifest("Widget", "first", "{}"))
+		f.next("drop")
+		results, _, err = runApplyTest(t, keeps, "apply", "-f", widgets, "-o", "json")
+		var widgetWrites int
+		for _, r := range f.got() {
+			if r.method == "POST" {
+				widgetWrites++
+			}
+		}
+		if err == nil || len(results) != 1 || results[0].Status != "unknown" || widgetWrites != 1 {
+			t.Errorf("the apply of a widget with no answer gave %v %v after %d creates, want unknown after one", results, err, widgetWrites)
 		}
 	})
 }

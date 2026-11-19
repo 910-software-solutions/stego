@@ -221,7 +221,7 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 	if errors.Is(err, ErrDenied) {
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeDenied, Audit: audit.OutcomeDenied}
 	}
-	if errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInternal) && !errors.Is(err, ErrConflict) {
+	if errors.Is(err, ErrNotFound) && !errors.Is(err, ErrInternal) && !errors.Is(err, ErrConflict) && !unavailableNow(err) {
 		// A fill that returns the not-found error of its handle: a row that is not there and a row that the caller
 		// may not read give the same answer (ST-SUP-RP10-LC13, ST-SUP-RP10-LC51).
 		return Outcome{Status: http.StatusNotFound, Code: ErrorCodeNotFound, Audit: audit.OutcomeFailed}
@@ -255,6 +255,13 @@ func OutcomeOf(err error, refusals ...*Refusal) Outcome {
 		fault.log()
 	}
 	return Outcome{Status: http.StatusInternalServerError, Code: code, Audit: audit.OutcomeFailed}
+}
+
+// unavailableNow tells whether the error holds a cause of a 503 answer of OutcomeOf: a decision that the provider could
+// not make now, or a database that cannot serve now. An error that holds such a cause and ErrNotFound too is
+// answered 503, so that the caller tries again, and not 404 (security review of PR 448, I2).
+func unavailableNow(err error) bool {
+	return ErrorCode(err) == ErrorCodeInternal && (errors.Is(err, ErrUndecided) || authz.Transient(err) || errors.Is(err, ErrUnavailable))
 }
 
 // RPCStatus is the gRPC status of the outcome: the code of its HTTP status, and its fixed code as the message. An
@@ -655,6 +662,7 @@ func (rt *Runtime) writeFieldProblem(w http.ResponseWriter, httpStatus int, prob
 	}
 	b.WriteString("}")
 	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(b.Len()))
 	w.WriteHeader(httpStatus)
 	_, _ = io.WriteString(w, b.String())

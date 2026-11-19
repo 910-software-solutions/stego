@@ -21,7 +21,9 @@ import (
 // immutable resources whose lookup uses required string fields from spec.
 // Such resources have no PATCH fields; metadata.name is an optional output label.
 // An absent apiVersion is accepted for existing files. A supplied version must match.
-type ApplyResource struct {Kind,APIVersion,Path string;ImmutableIdentity []string;CreateFields,PatchFields []Field}
+// IdempotentWrites states that the service keeps the Idempotency-Key of the create and the patch of the resource,
+// as for a Command.
+type ApplyResource struct {Kind,APIVersion,Path string;ImmutableIdentity []string;CreateFields,PatchFields []Field;IdempotentWrites bool}
 type applyPlan struct {resource ApplyResource;name,id,method,path string;body map[string]json.RawMessage;payload []byte}
 type ApplyResult struct {Kind string `json:"kind"`;Name string `json:"name,omitempty"`;ID string `json:"id,omitempty"`;Status string `json:"status"`}
 
@@ -124,7 +126,7 @@ func runApply(ctx context.Context,app Application,args []string,output io.Writer
  for i,p:=range plans{
   if err:=ctx.Err();err!=nil{if outErr:=writeApply(destination,format,results);outErr!=nil{return outErr};return err}
   if p.method=="UNCHANGED"{results[i].Status="unchanged";continue}
-  response,retried,requestErr:=send(ctx,app,transport,p.method,p.path,headers,p.payload)
+  response,retried,requestErr:=send(ctx,p.resource.IdempotentWrites,transport,p.method,p.path,headers,p.payload)
   outcomeErr:=requestErr;results[i].Status="unknown"
   if requestErr==nil{
    // After a second request, the first one can still be in its transaction (409 in progress), so an answer that is
