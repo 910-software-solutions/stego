@@ -475,7 +475,8 @@ of the database does not hold them.
 
 Do these steps in this order:
 
-1. Stop the service. Pause the automatic sync of its Argo CD Application, if
+1. Stop the service: each process of each release, also of the release of the
+   expand step of a seal. Pause the automatic sync of its Argo CD Application, if
    it has one, so that Argo CD does not start it again. Then:
 
    ```sh
@@ -518,7 +519,14 @@ Do these steps in this order:
    contract step of a seal, the Job refuses at that step until the seal job of
    the release of its expand step completes a pass: see [Restore a database
    with an open or finished seal](schema-changes.md#restore-a-database-with-an-open-or-finished-seal).
-   A dump from before the seal holds the field in clear.
+   A dump from before the seal holds the field in clear. So when the dump is
+   from before the expand step or the contract step of a seal, first run the
+   release of the expand step: its migration Job and its worker Deployment,
+   which runs the controller, for one pass of the seal job. That takes 10 to
+   13 minutes or more: the first run of the job waits 3 minutes after the expand
+   step, and the job runs each 10 minutes. When it logs `seal of a secret
+   column` with `completed=true`, stop that release and run the migration Job
+   of the release that you start again. Only then does that Job pass.
 5. For each subscription of the service, set the offsets of its consumer group
    to one minute before `T0` (see below).
 6. List the messages of the destination `authz` that are not done, and review

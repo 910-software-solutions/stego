@@ -148,6 +148,7 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealContractFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, sealTogetherFaults(declaration, head)...)
 	return check, nil
 }
 
@@ -244,6 +245,46 @@ func sealContractFaults(applied *AppliedState, base, head *types.ServiceDeclarat
 			"the base runs a release with the runtime library before %s, or no pin, whose processes need the clear column of the seal %s, so each of their writes and reads of the entity would fail after its contract step drops the column; deploy a release with the runtime library %s or later, with the seal still at expand, first, and then declare the contract step", SealSwitchRuntimeVersion, step.Change, SealSwitchRuntimeVersion)}}
 	}
 	return nil
+}
+
+// sealTogetherFaults refuses a head with a new contract step of a seal of an entity while the base holds another seal
+// of the same entity open, at expand, that the head does not contract too: the release of the base switches the entity
+// to its statements after the contract only when every clear column of its open seals is gone (AfterSeal), so with one
+// clear column dropped and another there each of its writes and reads of the entity would fail (security review of
+// PR #452, L3; ST-SUP-RC01-OC49). The remedy is to contract the open seals of an entity in one release.
+func sealTogetherFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	changes := map[string]types.SchemaChange{}
+	for _, change := range head.SchemaChanges {
+		changes[change.ID] = change
+	}
+	open := map[string][]string{}
+	for _, change := range base.SchemaChanges {
+		if change.Kind == "seal" && phaseOf(base, change.ID) == "expand" {
+			open[change.Entity] = append(open[change.Entity], change.ID)
+		}
+	}
+	var faults []BaseFault
+	named := map[string]bool{}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		change, ok := changes[step.Change]
+		if step.Phase != "contract" || !ok || change.Kind != "seal" || named[change.Entity] {
+			continue
+		}
+		var left []string
+		for _, id := range open[change.Entity] {
+			if phaseOf(head, id) != "contract" {
+				left = append(left, id)
+			}
+		}
+		if len(left) == 0 {
+			continue
+		}
+		named[change.Entity] = true
+		faults = append(faults, BaseFault{Rule: StepLedgerRule, Entity: change.Entity, Message: fmt.Sprintf(
+			"the head contracts the seal %s of %s while the base holds the seal %s of the same entity open; the release of the base reads and writes the sealed columns alone only when the clear column of each open seal of the entity is gone, so after this contract each of its writes and reads of %s would fail; declare the contract step of each open seal of %s in the same release",
+			change.ID, change.Entity, strings.Join(left, ", "), change.Entity, change.Entity)})
+	}
+	return faults
 }
 
 // findStoredField gives the field of the entity of the declaration, live or dropped.
@@ -420,6 +461,33 @@ type baselineOutput struct {
 	baseMarker, headMarker string
 	// headChanges are the schema changes of the head, by which a fault of a changed table names its cause.
 	headChanges []types.SchemaChange
+	// built is the baseline of the base as the generator of its release built it, when that is a postgres-adapter
+	// before PublicSearchVersion and the base writes sensitivity: public on a field: that generator gave no search
+	// index on such a field (decision ST-DECL-Q46 (a)).
+	built []postgresadapter.BaselineTable
+}
+
+// PublicSearchVersion and PublicSearchRuntimeVersion are the first postgres-adapter and runtime library versions
+// whose generator reads a field written sensitivity: public as a field with no sensitivity, so a list searches it and
+// 001_initial gives its search index (decision ST-DECL-Q46 (a)).
+const (
+	PublicSearchVersion        = "6.19.0"
+	PublicSearchRuntimeVersion = "v0.157.0"
+)
+
+// writtenPublic gives a copy of the entities with each field written sensitivity: public marked pii, which, as the
+// generator before PublicSearchVersion read it, has no search index; and whether any field was written so.
+func writtenPublic(entities []types.Entity) ([]types.Entity, bool) {
+	out, any := slices.Clone(entities), false
+	for i := range out {
+		out[i].Fields = slices.Clone(out[i].Fields)
+		for j := range out[i].Fields {
+			if out[i].Fields[j].Sensitivity == "public" {
+				out[i].Fields[j].Sensitivity, any = "pii", true
+			}
+		}
+	}
+	return out, any
 }
 
 // generatedBaselines gives what the postgres-adapter generator writes for the baselines of the base and of the head,
@@ -446,10 +514,16 @@ func generatedBaselines(applied *AppliedState, base, head *types.ServiceDeclarat
 			baseComponents = []string{gen.TenancyComponent}
 		}
 	}
-	baseline := func(service *types.ServiceDeclaration, components []string) ([]postgresadapter.BaselineTable, string, error) {
+	baseline := func(service *types.ServiceDeclaration, components []string, older bool) ([]postgresadapter.BaselineTable, string, error) {
 		entities, dropped, err := storedEntities(service, service.SchemaChanges)
 		if err != nil {
 			return nil, "", err
+		}
+		if older {
+			var written bool
+			if entities, written = writtenPublic(entities); !written {
+				return nil, "", nil
+			}
 		}
 		return postgresadapter.Baseline(gen.Context{Entities: entities, Collections: service.Collections,
 			SchemaChanges: service.SchemaChanges, SchemaHistory: service.SchemaHistory, Tenancy: pooledTenancy(service, components),
@@ -457,11 +531,16 @@ func generatedBaselines(applied *AppliedState, base, head *types.ServiceDeclarat
 	}
 	out := &baselineOutput{headChanges: head.SchemaChanges}
 	var err error
-	if out.base, out.baseMarker, err = baseline(base, baseComponents); err != nil {
+	if out.base, out.baseMarker, err = baseline(base, baseComponents, false); err != nil {
 		return nil, false
 	}
-	if out.head, out.headMarker, err = baseline(head, selected(head)); err != nil {
+	if out.head, out.headMarker, err = baseline(head, selected(head), false); err != nil {
 		return nil, false
+	}
+	if before(applied, PublicSearchVersion, PublicSearchRuntimeVersion) {
+		if out.built, _, err = baseline(base, baseComponents, true); err != nil {
+			return nil, false
+		}
 	}
 	return out, true
 }
@@ -484,6 +563,19 @@ func (o *baselineOutput) faults(earlier []BaseFault) []BaseFault {
 		headTables[table.Table] = table
 	}
 	var faults []BaseFault
+	builtTables := map[string]postgresadapter.BaselineTable{}
+	for _, table := range o.built {
+		builtTables[table.Table] = table
+	}
+	for _, now := range o.base {
+		if built, ok := builtTables[now.Table]; ok && !named[now.Entity] && built.Indexes != now.Indexes {
+			// The database holds the indexes that the generator of the base built, and from PublicSearchVersion
+			// 001_initial gives a search index on a field written public (decision ST-DECL-Q46 (a)).
+			named[now.Entity] = true
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: now.Entity, Message: fmt.Sprintf(
+				"the base writes sensitivity: public on a field of %s that a list searches, and its release (postgres-adapter before %s) built no search index on it; from postgres-adapter %s a field written public is searched as one with no sensitivity, so 001_initial gives\n%sand the database holds\n%sNo schema change builds such an index yet, so the next migration job of a database with rows would fail; keep the release of the base until a schema change can build the index (ST-DECL-Q46)", now.Entity, PublicSearchVersion, PublicSearchVersion, now.Indexes, built.Indexes)})
+		}
+	}
 	for _, before := range o.base {
 		after, ok := headTables[before.Table]
 		switch {

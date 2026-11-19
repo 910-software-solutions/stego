@@ -594,6 +594,9 @@ func runAttempt[Req, P any](ctx context.Context, rt *Runtime, cmd *Command[P], r
 	outcome := otel.OutcomeRolledBack
 	defer func() { finish(outcome, reruns > 0, err != nil && !conflict) }()
 
+	// An entity that took its statements after a seal contract takes those of the spec again when the clear column
+	// and its checkpoint are back (security review of PR #452, L1), before the transaction begins.
+	recheckSeals(ctx, rt, cmd.writes)
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, req.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		if isConflict(ctx, err) {
