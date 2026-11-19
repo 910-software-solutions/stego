@@ -75,7 +75,10 @@ changes. The client refuses an all-zero pin.
 The client gives `ErrUntrusted` when the TLS handshake refuses the
 certificate of the service: a CA that does not sign the chain, another host
 name, an expired certificate, or a leaf that differs from the pin. The request
-was not sent. `ErrUntrusted` does not match `ErrTransport`, so a caller that
+was not sent. The client also gives `ErrUntrusted` for a TLS alert from the
+service, such as when the service requires a client certificate that the
+client does not give: the service refuses the TLS session and does not read
+the request. `ErrUntrusted` does not match `ErrTransport`, so a caller that
 sends a write again after a transport failure does not send it again.
 
 Version 2.0.0 passes the application factory the verifier alone:

@@ -90,7 +90,7 @@ gives the stored answer of a write that it did, so the write does not occur
 two times. The CLI does not send a GET, PUT, or DELETE again. It does not send
 a write again after any other answer, after a redirect, after an answer body
 over the client limit, after a certificate of the service that the TLS
-handshake refuses (`ErrUntrusted`), or after a request that the client refused
+handshake refuses or a TLS alert from the service (`ErrUntrusted`), or after a request that the client refused
 before it sent it. Without the flag, the CLI does not send the write again.
 After an uncertain failure, callers must check resource state before they
 retry a write.

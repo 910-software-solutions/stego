@@ -95,25 +95,37 @@ func TestIdempotencyKeyClients(t *testing.T) {
 
 func TestUntrustedServiceCertificate(t *testing.T) {
 	t.Run("ST-SUP-RC04-OC31-T03 A refused service certificate is ErrUntrusted and not a transport failure, so the CLI does not send a write again", func(t *testing.T) {
-		file, err := RenderCLI("client", "")
-		if err != nil {
+		runTrustTest(t, "TestUntrustedServiceCertificate")
+	})
+}
+
+func TestServiceTLSAlert(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC31-T04 A TLS alert from the service is ErrUntrusted and not a transport failure, so the CLI does not send a write again", func(t *testing.T) {
+		runTrustTest(t, "TestServiceTLSAlert")
+	})
+}
+
+// runTrustTest runs the test name of testdata/trust_test.go in a module that holds the client of RenderCLI.
+func runTrustTest(t *testing.T, name string) {
+	t.Helper()
+	file, err := RenderCLI("client", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	files := map[string][]byte{"go.mod": []byte("module example.com/trust-test\ngo 1.26.11\n"), "client.go": file.Bytes(),
+		"isolation_test.go": isolationTests, "trust_test.go": trustTests}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
 			t.Fatal(err)
 		}
-		dir := t.TempDir()
-		files := map[string][]byte{"go.mod": []byte("module example.com/trust-test\ngo 1.26.11\n"), "client.go": file.Bytes(),
-			"isolation_test.go": isolationTests, "trust_test.go": trustTests}
-		for name, data := range files {
-			if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		cmd := exec.Command("go", "test", "-count=1", "-mod=readonly", "-run=^TestUntrustedServiceCertificate$", "./...")
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GOWORK=off")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("the CLI client: %v\n%s", err, output)
-		}
-	})
+	}
+	cmd := exec.Command("go", "test", "-count=1", "-mod=readonly", "-run=^"+name+"$", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the CLI client: %v\n%s", err, output)
+	}
 }
 
 func TestCredentialLinkPolicy(t *testing.T) {

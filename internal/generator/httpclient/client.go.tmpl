@@ -42,8 +42,10 @@ var ErrTransport=errors.New("HTTP service request failed")
 var ErrDeadline=errors.New("HTTP service request expired")
 // ErrUntrusted is the error of a request whose TLS handshake refused the certificate of the service: a chain that the
 // CA does not sign, another host name, an expired certificate, or a leaf that differs from PeerCertificateSHA256.
-// The request was not sent, and a retry gets the same error, so it is not a transport failure (security review of
-// PR 449, INFO-3).
+// It is also the error of a TLS alert from the service, such as for a client certificate that the service requires
+// and this client does not give: the service refused the TLS session, so it did not read the request. The service did
+// not do the request, and a retry gets the same error, so it is not a transport failure (security review of PR 449,
+// INFO-3, and of PR 456, I1).
 var ErrUntrusted=errors.New("HTTP service certificate is not trusted")
 var errPeerDiffers=errors.New("HTTP peer certificate differs")
 // Client sends bounded requests to one configured HTTPS origin and path prefix.
@@ -99,13 +101,15 @@ func safePath(encoded string)bool{
  }
  return true
 }
-// untrusted tells whether err is a refusal of the certificate of the service in the TLS handshake.
+// untrusted tells whether err is a refusal of the certificate of the service in the TLS handshake, or a TLS alert
+// from the service, which crypto/tls gives as a net.OpError with the Op "remote error".
 func untrusted(err error)bool{
  var verification *tls.CertificateVerificationError
  var authority x509.UnknownAuthorityError
  var hostname x509.HostnameError
  var invalid x509.CertificateInvalidError
- return errors.Is(err,errPeerDiffers)||errors.As(err,&verification)||errors.As(err,&authority)||errors.As(err,&hostname)||errors.As(err,&invalid)
+ var alert *net.OpError
+ return errors.Is(err,errPeerDiffers)||errors.As(err,&verification)||errors.As(err,&authority)||errors.As(err,&hostname)||errors.As(err,&invalid)||(errors.As(err,&alert)&&alert.Op=="remote error")
 }
 func(c *Client)Close(){if c!=nil{c.closed.Store(true);if c.stop!=nil{c.stop()};c.transport.CloseIdleConnections()}}
 // Response contains a complete, bounded response. The transport closes the body.
