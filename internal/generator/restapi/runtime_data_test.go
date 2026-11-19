@@ -806,6 +806,7 @@ var crudCheckIDs = []string{
 	"ST-SUP-RC20-OC35-T03 A tenant in a query parameter is not accepted",
 	"ST-SUP-RC20-OC35-T04 A tenant in a body field is not accepted",
 	"ST-SUP-RC20-OC55-T01 A create, an update and an upsert refuse a member that they do not take, also in another letter case, store nothing, and take a read row sent back",
+	"ST-SUP-RC20-OC55-T07 A write refuses a member given twice, cuts a long member name, and ignores a server-set member of another type",
 	"ST-SUP-RC30-OC04-T01 The key row commits with the write",
 	"ST-SUP-RC30-OC04-T03 The same key from another tenant or principal is a new key",
 	"ST-SUP-RC28-OC02-T02 A committed mutation leaves exactly one audit row",

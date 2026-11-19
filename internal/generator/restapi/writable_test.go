@@ -241,8 +241,11 @@ func TestStrictBodies(t *testing.T) {
 		// decodes the body, and an implicit field with another value than that of the collection.
 		inOrder(t, "decodeTickets", handlerFunc(t, files, "tickets", "decodeTickets"),
 			`case "kind", "id", "href", "folder_id", "code", "title", "sku", "state", "meta", "due_at", "rank", "pin", "recovery":`,
-			"if unknown != \"\" {", "Validation([]ValidationError{{Field: unknown,", "json.Unmarshal(bodyBytes, &ticket)")
+			"if unknown != \"\" {", "Validation([]ValidationError{{Field: memberName(unknown),", "json.Unmarshal(bodyBytes, &ticket)")
 		inOrder(t, "decodeRedEvents", handlerFunc(t, files, "red-events", "decodeRedEvents"),
-			`if raw, ok := rawMap["source"]; ok && string(raw) != "null" {`, `value != "red"`, `Validation([]ValidationError{{Field: "source",`, "json.Unmarshal(bodyBytes, &event)")
+			"duplicateMember(bodyBytes)",
+			`if raw, ok := rawMap["source"]; ok && string(raw) != "null" {`, `value != "red"`, `Validation([]ValidationError{{Field: "source",`,
+			`delete(rawMap, member)`, "json.Unmarshal(bodyBytes, &event)", `event.Source != "" && event.Source != "red"`)
+		inOrder(t, "decodeTicketsPatch", handlerFunc(t, files, "tickets", "decodeTicketsPatch"), "duplicateMember(bodyBytes)", "if unknown != \"\" {")
 	})
 }

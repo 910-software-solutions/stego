@@ -867,6 +867,7 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\"slices\"\n")
 	fmt.Fprintf(&buf, "\t\"strconv\"\n")
 	fmt.Fprintf(&buf, "\t\"strings\"\n")
+	fmt.Fprintf(&buf, "\t\"unicode/utf8\"\n")
 	fmt.Fprintf(&buf, "\n")
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3\"\n")
 	fmt.Fprintf(&buf, "\t\"github.com/getkin/kin-openapi/openapi3filter\"\n")
@@ -1086,6 +1087,10 @@ func generateValidation(ns string) (gen.File, error) {
 	fmt.Fprintf(&buf, "\t\treturn \"\", false\n")
 	fmt.Fprintf(&buf, "\t}\n")
 	fmt.Fprintf(&buf, "\tmember, unquoteErr := strconv.Unquote(quoted)\n")
+	// The entry repeats at most 128 bytes of the name, cut on a character boundary (security review of PR #464).
+	fmt.Fprintf(&buf, "\tif cut := 128; len(member) > cut {\n")
+	fmt.Fprintf(&buf, "\t\tfor cut > 0 && !utf8.RuneStart(member[cut]) {\n\t\t\tcut--\n\t\t}\n")
+	fmt.Fprintf(&buf, "\t\tmember = member[:cut]\n\t}\n")
 	fmt.Fprintf(&buf, "\treturn member, unquoteErr == nil\n")
 	fmt.Fprintf(&buf, "}\n")
 

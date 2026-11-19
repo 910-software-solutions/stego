@@ -4729,7 +4729,7 @@ func TestRuntimeWrites(t *testing.T) {
 			t.Errorf("the patch request of orders is %v, want the members qty and kind (Order) and additionalProperties false", patch)
 		}
 		decode := handlerFunc(t, files, "orders", "decodeOrdersPatch")
-		inOrder(t, "decodeOrdersPatch", decode, `case "kind", "qty":`, "if unknown != \"\" {", "Validation([]ValidationError{{Field: unknown,", "json.Unmarshal(bodyBytes, &patch)")
+		inOrder(t, "decodeOrdersPatch", decode, `case "kind", "qty":`, "if unknown != \"\" {", "Validation([]ValidationError{{Field: memberName(unknown),", "json.Unmarshal(bodyBytes, &patch)")
 	})
 	t.Run("ST-SUP-RC20-OC16-T01 The emitted patch handler records who changed the record and when", func(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Repository.Update(")

@@ -1392,6 +1392,45 @@ func TestCrud(t *testing.T) {
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC55-T07 A write refuses a member given twice, cuts a long member name, and ignores a server-set member of another type", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		ticket := func(code, rest string) string {
+			return `{"folder_id":"` + folder + `","code":"` + code + `","sku":"s-` + code + `"` + rest + `}`
+		}
+		id := e.create(a, "tickets", "ticket", ticket("c1", `,"title":"first"`))
+		item := "/api/v1/tickets/" + id
+		twice := func(what string, r reply, member string) {
+			t.Helper()
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+member+`"`) || !strings.Contains(string(r.body), "more than once") || strings.Contains(string(r.body), "value-of-the-member") {
+				t.Errorf("%s answered %d %s, want 400 that names %s as given twice and holds no value", what, r.status, r.body, member)
+			}
+		}
+		twice("a create with title twice", e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c2", `,"title":"value-of-the-member","title":"b"`)), "title")
+		twice("an update with title twice, once escaped", e.send(a, http.MethodPut, item, "k-"+uuid.NewString(), ticket("c1", `,"title":"value-of-the-member","\u0074itle":"b"`)), "title")
+		twice("an upsert with title twice", e.send(a, http.MethodPut, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c1", `,"title":"value-of-the-member","title":"b"`)), "title")
+		twice("a patch with title twice", e.send(a, http.MethodPatch, item, "k-"+uuid.NewString(), `{"title":"value-of-the-member","title":"b"}`), "title")
+		// The implicit check cannot be passed by a second member that ends in null (security review of PR #464, LOW).
+		twice("a red event with source twice", e.send(a, http.MethodPost, "/api/v1/red-events", "k-"+uuid.NewString(), `{"source":"value-of-the-member","source":null,"note":"n"}`), "source")
+		if n := e.count(`SELECT count(*) FROM tickets WHERE tenant_id = $1 AND title = 'first'`, a.tenant.ID()); n != 1 || e.count(`SELECT count(*) FROM tickets WHERE tenant_id = $1`, a.tenant.ID()) != 1 || e.count(`SELECT count(*) FROM events WHERE tenant_id = $1`, a.tenant.ID()) != 0 {
+			t.Errorf("the refused writes changed a row: %d tickets with the first title", n)
+		}
+		// A problem repeats at most 128 bytes of a member name.
+		long := strings.Repeat("x", 300)
+		r := e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c3", `,"title":"t","`+long+`":1`))
+		if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+long[:128]+`"`) || strings.Contains(string(r.body), long[:129]) {
+			t.Errorf("a member of 300 bytes answered %d %s, want 400 whose field holds its first 128 bytes", r.status, r.body)
+		}
+		// A member that the server sets is ignored, also with a value of another JSON type.
+		if r := e.send(a, http.MethodPost, "/api/v1/tickets", "k-"+uuid.NewString(), ticket("c4", `,"title":"t","id":5,"href":[1]`)); r.status != http.StatusCreated || r.member(t, "id") == "5" {
+			t.Errorf("a create with id 5 and href [1] answered %d %s, want 201 with a new id", r.status, r.body)
+		}
+		if r := e.send(a, http.MethodPost, "/api/v1/meetings", "k-"+uuid.NewString(), `{"title":"m","starts_at":"2026-12-01T08:00:00Z","noted_at":7}`); r.status != http.StatusCreated {
+			t.Errorf("a create of a meeting with noted_at 7 answered %d %s, want 201", r.status, r.body)
+		}
+	})
+
 	t.Run("ST-SUP-RC30-OC04-T01 The key row commits with the write", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
