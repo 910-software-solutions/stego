@@ -84,6 +84,9 @@ func decodeOrganizations(bodyBytes []byte) (Organization, error) {
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return Organization{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
 	}
+	if member, twice := duplicateMember(bodyBytes); twice {
+		return Organization{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: "the body gives this member more than once"}})}
+	}
 	unknown := ""
 	for member := range rawMap {
 		switch member {
@@ -95,13 +98,19 @@ func decodeOrganizations(bodyBytes []byte) (Organization, error) {
 		}
 	}
 	if unknown != "" {
-		return Organization{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: "the member is not a field of Organization; a create, an update or an upsert takes only the fields of Organization and kind, in the letter case of the OpenAPI document"}})}
+		return Organization{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(unknown), Message: "the member is not a field of Organization; a create, an update or an upsert takes only the fields of Organization and kind, in the letter case of the OpenAPI document"}})}
 	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
 		if err := json.Unmarshal(kindRaw, &kind); err != nil || kind != "Organization" {
 			return Organization{}, &invalidRequest{problem: BadRequest("kind must be Organization")}
 		}
+	}
+	for _, member := range []string{"id", "href"} {
+		delete(rawMap, member)
+	}
+	if stripped, err := json.Marshal(rawMap); err == nil {
+		bodyBytes = stripped
 	}
 	var organization Organization
 	if err := json.Unmarshal(bodyBytes, &organization); err != nil {

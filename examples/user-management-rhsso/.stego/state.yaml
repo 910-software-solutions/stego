@@ -34,9 +34,9 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261119114256-1c09a8b64fb2
+        module_version: v0.0.0-20261119123542-4355950d97b2
         vcs: git
-        revision: 1c09a8b64fb287a2e64fd875277a735556c4a9f1
+        revision: 4355950d97b212b51991f2887589c938eb696718
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
@@ -134,12 +134,12 @@ last_applied:
         internal/api/discovery.go: 31cf4a80ece098d319dad61a8c861282481707c57deeaab8af29485c6ded4f85
         internal/api/errors.go: 528da3f0c26e6425f940c52d4733b4a7a46f92dd37cda03b097e8eff656d9840
         internal/api/openapi.json: 0147f051a2e4f371b555bb5d16ed3d9aefb0e8cb0863170448d53f4227b1ba64
-        internal/api/org_settings_handler.go: 8c23b28ff9c2f1b42b9ef54e0fcce5ce8709dbf5db6e8597e209bb20959a8862
-        internal/api/org_users_handler.go: 298029d86e9f703ebacaf9775a1db524894a85ef58e67146c179d0482a91e13c
-        internal/api/organizations_handler.go: 14f2d91fb93d55f333148339e0af178a253054df90db2a115b52aa37ead8807d
+        internal/api/org_settings_handler.go: b3984595318fe28edd822847ce728866d74b2281e9b230480937a472447b7e87
+        internal/api/org_users_handler.go: d3574d08c72ae5335e603b0f582afd76728d8255f68163b660bf031d53e48b45
+        internal/api/organizations_handler.go: 322fd477fc9179e1f2598201b73bb82de2f1d42d64e5f8fb1726dfd615a441e0
         internal/api/router.go: 015fe23fa351aba15bb5cfa5f7e5b0ada71215d6d50e4db74a5f73f0b07fe826
-        internal/api/runtime.go: d640ea24a526b8d3cbde10e8dfa24af77a23cf800ee923c8f134c45336aef26e
-        internal/api/validation.go: 542c85665ebddf00f09f3ee7503b7a7dca591a882997219ae6b97db49b40aa15
+        internal/api/runtime.go: 7f5b2c410e276bc2d785e59c840df3012679ab2dc2fe2ecf3ff1a2005ec5e059
+        internal/api/validation.go: b1ac759ce59900e5f94fa2ada68f52c0054a6aada0a1fdd543c67b89eb3b7b33
         internal/auditlog/audit.go: a18d0b5be27531bebccf58133dc6cb87198a44d7a7d694871557bfbf96d2f420
         internal/authz/authz.go: c0294e18f637f00e7907a5481a5968ef518182cbe2b813b335954b62a71cb144
         internal/authz/schema.zed: dd0aeb78dcda920a7adf1c59f491c6104f10082df9c35ca6885f89d5ea0c5d5c

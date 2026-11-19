@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -222,5 +223,11 @@ func unsupportedMember(err *openapi3.SchemaError) (string, bool) {
 		return "", false
 	}
 	member, unquoteErr := strconv.Unquote(quoted)
+	if cut := 128; len(member) > cut {
+		for cut > 0 && !utf8.RuneStart(member[cut]) {
+			cut--
+		}
+		member = member[:cut]
+	}
 	return member, unquoteErr == nil
 }

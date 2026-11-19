@@ -424,6 +424,49 @@ func callerName(ctx context.Context) string {
 // ptrOf gives a pointer to a copy of v.
 func ptrOf[T any](v T) *T { return &v }
 
+// maxMemberName is the most bytes of a member name of the body that a problem repeats (security review of PR #464).
+const maxMemberName = 128
+
+// memberName gives a member name of the body as a problem repeats it: at most maxMemberName bytes, cut on a
+// character boundary.
+func memberName(name string) string {
+	if len(name) <= maxMemberName {
+		return name
+	}
+	cut := maxMemberName
+	for cut > 0 && !utf8.RuneStart(name[cut]) {
+		cut--
+	}
+	return name[:cut]
+}
+
+// duplicateMember gives the first member name, after its escapes, that the top-level object of body gives more than
+// once. The JSON decoder keeps the last value of such a member, so a check of one value and a decode of another
+// could disagree: a write refuses the body (ST-SUP-RC20-OC15, ST-SUP-RC20-OC55, security review of PR #464).
+func duplicateMember(body []byte) (string, bool) {
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return "", false
+	}
+	seen := map[string]bool{}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		name, _ := token.(string)
+		if seen[name] {
+			return name, true
+		}
+		seen[name] = true
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
 // float32Of gives the API value of an optional float field of a view: nil for NULL.
 func float32Of(v *float64) *float32 {
 	if v == nil {

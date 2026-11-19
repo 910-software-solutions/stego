@@ -169,6 +169,9 @@ func decodeOrgUsers(bodyBytes []byte) (User, error) {
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return User{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
 	}
+	if member, twice := duplicateMember(bodyBytes); twice {
+		return User{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: "the body gives this member more than once"}})}
+	}
 	unknown := ""
 	for member := range rawMap {
 		switch member {
@@ -180,13 +183,19 @@ func decodeOrgUsers(bodyBytes []byte) (User, error) {
 		}
 	}
 	if unknown != "" {
-		return User{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: "the member is not a field of User; a create, an update or an upsert takes only the fields of User and kind, in the letter case of the OpenAPI document"}})}
+		return User{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(unknown), Message: "the member is not a field of User; a create, an update or an upsert takes only the fields of User and kind, in the letter case of the OpenAPI document"}})}
 	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
 		if err := json.Unmarshal(kindRaw, &kind); err != nil || kind != "User" {
 			return User{}, &invalidRequest{problem: BadRequest("kind must be User")}
 		}
+	}
+	for _, member := range []string{"id", "href"} {
+		delete(rawMap, member)
+	}
+	if stripped, err := json.Marshal(rawMap); err == nil {
+		bodyBytes = stripped
 	}
 	var user User
 	if err := json.Unmarshal(bodyBytes, &user); err != nil {
@@ -211,6 +220,9 @@ func decodeOrgUsersPatch(bodyBytes []byte) (OrgUsersPatchRequest, error) {
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return OrgUsersPatchRequest{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
 	}
+	if member, twice := duplicateMember(bodyBytes); twice {
+		return OrgUsersPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(member), Message: "the body gives this member more than once"}})}
+	}
 	unknown := ""
 	for member := range rawMap {
 		switch member {
@@ -222,7 +234,7 @@ func decodeOrgUsersPatch(bodyBytes []byte) (OrgUsersPatchRequest, error) {
 		}
 	}
 	if unknown != "" {
-		return OrgUsersPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: "the member is not a patchable field of org-users; a patch takes only display_name, role, metadata and kind"}})}
+		return OrgUsersPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: memberName(unknown), Message: "the member is not a patchable field of org-users; a patch takes only display_name, role, metadata and kind"}})}
 	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
