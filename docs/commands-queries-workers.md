@@ -439,6 +439,12 @@ back the transaction of the command, and the key with it. A request again
 with the same key then runs the fill again, and can get another answer. The
 rows that the fill writes and the effects that it stages in the
 outbox are in that transaction, so only the run that commits keeps them.
+One answer is not an error in this sense: a before slot of a collection that
+halts the command (its result sets `Halt` with a status). The command then
+commits with no write, and the runtime keeps the answer of the halt with the
+key, also when its status is a 4xx. A request again with the same key gets
+that stored answer, and the slot does not run again. A before slot that
+refuses the request (its result is not `Ok`) rolls back as an error does.
 Anything that the fill does outside the transaction, such as a log line,
 occurs again at each request. Thus, send each change to another system as an
 effect through the outbox (see [Effects](#effects)), never from the fill
