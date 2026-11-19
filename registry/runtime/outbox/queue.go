@@ -113,7 +113,9 @@ func Manifest(relayRole, runtimeRole, workerRole string) (manifest.Manifest, err
 		"failure_code", "text")
 	for _, c := range [][2]string{{"lease_token", "uuid"}, {"lease_until", "timestamp with time zone"}, {"last_token", "uuid"},
 		{"dispatched_at", "timestamp with time zone"}, {"parked_from", "text"}, {"parked_at", "timestamp with time zone"},
-		{"done_at", "timestamp with time zone"}, {"resolved_by", "text"}, {"resolved_at", "timestamp with time zone"}, {"resolution", "text"}} {
+		{"done_at", "timestamp with time zone"}, {"resolved_by", "text"}, {"resolved_at", "timestamp with time zone"}, {"resolution", "text"},
+		// The source position of a message of the Kafka inbox and its place (ST-SUP-RP01-LC03, ST-SUP-RP01-LC35).
+		{"source_partition", "integer"}, {"source_offset", "bigint"}, {"place", "bigint"}} {
 		columns = append(columns, manifest.Column{Name: c[0], Type: c[1]})
 	}
 	// The defaults of the migration; an enqueue leaves these columns out.
@@ -152,6 +154,8 @@ func Manifest(relayRole, runtimeRole, workerRole string) (manifest.Manifest, err
 		check("messages_principal_check", "CHECK ((octet_length(principal) <= 255))"),
 		check("messages_resolution_check", "CHECK ((resolution = ANY (ARRAY['acted'::text, 'not_acted'::text, 'discarded'::text])))"),
 		check("messages_resolved_by_check", "CHECK ((octet_length(resolved_by) <= 255))"),
+		// The source position of a message of the Kafka inbox, and its place (ST-SUP-RP01-LC03, ST-SUP-RP01-LC35).
+		check("messages_source_check", "CHECK ((((source_partition IS NULL) = (source_offset IS NULL)) AND (source_partition >= 0) AND (source_offset >= 0) AND ((place IS NULL) OR (source_offset IS NOT NULL)) AND (place >= 1)))"),
 		check("messages_resource_key_check", "CHECK (((octet_length(resource_key) >= 1) AND (octet_length(resource_key) <= 256)))"),
 		check("messages_state_check", "CHECK ((state = ANY ("+states+")))"),
 		check("messages_tenant_id_check", "CHECK (((octet_length(tenant_id) >= 1) AND (octet_length(tenant_id) <= 255)))"),
@@ -165,7 +169,7 @@ func Manifest(relayRole, runtimeRole, workerRole string) (manifest.Manifest, err
 	}
 	// The columns that an enqueue writes; the rest are the relay's.
 	inserted := []string{"id", "tenant_id", "destination", "resource_key", "kind", "payload", "outgoing_key", "group_id", "principal",
-		"origin", "created_at", "available_at", "must_land", "idempotent"}
+		"origin", "created_at", "available_at", "must_land", "idempotent", "source_partition", "source_offset", "place"}
 	grants := []manifest.Grant{
 		{Role: runtimeRole, Privileges: []string{"SELECT"}}, {Role: workerRole, Privileges: []string{"SELECT"}},
 		{Role: runtimeRole, Privileges: []string{"INSERT"}, Columns: inserted}, {Role: workerRole, Privileges: []string{"INSERT"}, Columns: inserted},
@@ -231,6 +235,7 @@ var relayResults = map[string]string{
 		"r_failure_code text, r_available_at timestamp with time zone, r_created_at timestamp with time zone)",
 	"stego_outbox.oldest":  "TABLE(r_destination text, r_age double precision)",
 	"stego_outbox.resolve": "TABLE(o_resolved_at timestamp with time zone, o_age_seconds double precision)",
+	"stego_outbox.free_successors": "TABLE(r_id uuid, r_group text, r_principal text)",
 }
 
 // The relay functions, by their signature, for the grants and the checks.
@@ -245,6 +250,7 @@ var relayFunctions = []string{
 	"stego_outbox.blocked(timestamptz, integer)",
 	"stego_outbox.oldest(timestamptz)",
 	"stego_outbox.resolve(timestamptz, uuid, text, text, text)",
+	"stego_outbox.free_successors(timestamptz, uuid)",
 }
 
 const migrationHead = `CREATE SCHEMA IF NOT EXISTS stego_outbox;
@@ -311,9 +317,30 @@ CREATE TABLE IF NOT EXISTS stego_outbox.messages (
 	resolved_by text CHECK (octet_length(resolved_by) <= 255),
 	resolved_at timestamptz,
 	resolution text CHECK (resolution IN ('acted', 'not_acted', 'discarded')),
+	source_partition integer,
+	source_offset bigint,
+	place bigint,
 	CHECK ((lease_token IS NULL) = (lease_until IS NULL)),
-	CHECK ((state = 'parked') = (parked_from IS NOT NULL))
+	CHECK ((state = 'parked') = (parked_from IS NOT NULL)),
+	CONSTRAINT messages_source_check CHECK ((source_partition IS NULL) = (source_offset IS NULL)
+		AND source_partition >= 0 AND source_offset >= 0 AND (place IS NULL OR source_offset IS NOT NULL) AND place >= 1)
 );
+
+-- A queue of an earlier migration gets the source position of the Kafka inbox and the place of a record that comes
+-- again (ST-SUP-RP01-LC03, ST-SUP-RP01-LC35): three nullable columns with no default, which change no row, and their
+-- check, which holds on each row that has them NULL. The catalog is read first, so a run that changes nothing takes
+-- no lock on the queue.
+DO $do$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute AS a WHERE a.attrelid = 'stego_outbox.messages'::regclass
+		AND a.attname = 'place' AND NOT a.attisdropped) THEN
+		PERFORM pg_catalog.set_config('lock_timeout', '1s', true);
+		ALTER TABLE stego_outbox.messages ADD COLUMN IF NOT EXISTS source_partition integer,
+			ADD COLUMN IF NOT EXISTS source_offset bigint, ADD COLUMN IF NOT EXISTS place bigint,
+			ADD CONSTRAINT messages_source_check CHECK ((source_partition IS NULL) = (source_offset IS NULL)
+				AND source_partition >= 0 AND source_offset >= 0 AND (place IS NULL OR source_offset IS NOT NULL) AND place >= 1);
+	END IF;
+END $do$;
 
 -- A queue of an earlier migration gets the column idempotent. The catalog is read first, because ADD COLUMN IF NOT
 -- EXISTS takes ACCESS EXCLUSIVE on the queue even when the column is there, and the job runs this text at each run.
@@ -411,7 +438,7 @@ GRANT USAGE, CREATE ON SCHEMA stego_outbox TO {{relay}};
 REVOKE INSERT, UPDATE, DELETE ON stego_outbox.messages FROM {{runtime}}, {{worker}};
 GRANT SELECT ON stego_outbox.messages TO {{runtime}}, {{worker}};
 GRANT INSERT (id, tenant_id, destination, resource_key, kind, payload, outgoing_key, group_id, principal, origin,
-	must_land, idempotent, created_at, available_at) ON stego_outbox.messages TO {{runtime}}, {{worker}};
+	must_land, idempotent, created_at, available_at, source_partition, source_offset, place) ON stego_outbox.messages TO {{runtime}}, {{worker}};
 GRANT SELECT, UPDATE, DELETE ON stego_outbox.messages TO {{relay}};
 
 -- The relay functions are made as their owner, so a later run of the same text replaces them.
@@ -466,7 +493,9 @@ BEGIN
 			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
 				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
 					AND earlier.resource_key = m.resource_key
-					AND earlier.sequence < m.sequence AND earlier.state NOT IN ('done', 'discarded'))
+					AND (COALESCE(earlier.place, earlier.sequence), COALESCE(earlier.source_offset, -1), earlier.sequence)
+						< (COALESCE(m.place, m.sequence), COALESCE(m.source_offset, -1), m.sequence)
+					AND earlier.state NOT IN ('done', 'discarded'))
 		ORDER BY m.sequence LIMIT p_limit FOR UPDATE OF m SKIP LOCKED
 	)
 	UPDATE stego_outbox.messages AS m
@@ -524,7 +553,9 @@ BEGIN
 			AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
 				WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
 					AND earlier.resource_key = m.resource_key
-					AND earlier.sequence < m.sequence AND earlier.state NOT IN ('done', 'discarded'))
+					AND (COALESCE(earlier.place, earlier.sequence), COALESCE(earlier.source_offset, -1), earlier.sequence)
+						< (COALESCE(m.place, m.sequence), COALESCE(m.source_offset, -1), m.sequence)
+					AND earlier.state NOT IN ('done', 'discarded'))
 		ORDER BY m.sequence LIMIT p_limit FOR UPDATE OF m SKIP LOCKED
 	)
 	UPDATE stego_outbox.messages AS m
@@ -751,6 +782,43 @@ BEGIN
 END
 $fn$;
 
+-- free_successors moves, in the transaction of the tenant of a message of the Kafka inbox that is done, each later
+-- message of its key that is parked as poison back to pending, as a resolution not_acted by the staging principal of
+-- the message, and gives each one (ST-SUP-RP01-LC39). Later is the order of the claim (ST-SUP-RP01-LC03).
+CREATE OR REPLACE FUNCTION stego_outbox.free_successors(p_now timestamptz, p_id uuid)
+RETURNS TABLE (r_id uuid, r_group text, r_principal text)
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $fn$
+DECLARE
+	v_now timestamptz := COALESCE(p_now, pg_catalog.clock_timestamp());
+	v_tenant text := NULLIF(pg_catalog.current_setting('app.tenant', true), '');
+	v_destination text;
+	v_key text;
+	v_place bigint;
+	v_offset bigint;
+	v_sequence bigint;
+BEGIN
+	IF v_tenant IS NULL THEN
+		RAISE EXCEPTION 'outbox: a message frees its successors in a transaction of one tenant';
+	END IF;
+	SELECT m.destination, m.resource_key, COALESCE(m.place, m.sequence), m.source_offset, m.sequence
+	INTO v_destination, v_key, v_place, v_offset, v_sequence
+	FROM stego_outbox.messages AS m
+	WHERE m.id = p_id AND m.tenant_id = v_tenant AND m.state = 'done' AND m.source_offset IS NOT NULL;
+	IF NOT FOUND THEN
+		RETURN;
+	END IF;
+	RETURN QUERY
+	UPDATE stego_outbox.messages AS x SET state = 'pending', attempts = 0, failure_code = '', resolution = 'not_acted',
+		resolved_by = COALESCE(NULLIF(x.principal, ''), x.destination), resolved_at = v_now, parked_from = NULL,
+		parked_at = NULL, available_at = v_now, conflicts = 0, lookups = 0
+	WHERE x.tenant_id = v_tenant AND x.destination = v_destination AND x.resource_key = v_key
+		AND x.state = 'parked' AND x.failure_code = 'poison'
+		AND (COALESCE(x.place, x.sequence), COALESCE(x.source_offset, -1), x.sequence) > (v_place, v_offset, v_sequence)
+	RETURNING x.id, x.group_id, x.resolved_by;
+END
+$fn$;
+
 CREATE OR REPLACE FUNCTION stego_outbox.blocked(p_now timestamptz, p_limit integer)
 RETURNS TABLE (r_tenant text, r_destination text, r_resource_key text, r_state text, r_attempts bigint,
 	r_failure_code text, r_available_at timestamptz, r_created_at timestamptz)
@@ -763,7 +831,9 @@ WHERE m.state NOT IN ('done', 'discarded')
 	AND NOT EXISTS (SELECT 1 FROM stego_outbox.messages AS earlier
 		WHERE earlier.tenant_id = m.tenant_id AND earlier.destination = m.destination
 			AND earlier.resource_key = m.resource_key
-			AND earlier.sequence < m.sequence AND earlier.state NOT IN ('done', 'discarded'))
+			AND (COALESCE(earlier.place, earlier.sequence), COALESCE(earlier.source_offset, -1), earlier.sequence)
+						< (COALESCE(m.place, m.sequence), COALESCE(m.source_offset, -1), m.sequence)
+					AND earlier.state NOT IN ('done', 'discarded'))
 	AND (m.state IN ('dispatching', 'outcome_unknown', 'reconciling', 'parked')
 		OR (m.lease_until IS NOT NULL AND m.lease_until > now.t)
 		OR (m.failure_code <> '' AND m.available_at > now.t))
@@ -794,7 +864,8 @@ BEGIN
 		'stego_outbox.expire_leases(timestamptz)',
 		'stego_outbox.blocked(timestamptz, integer)',
 		'stego_outbox.oldest(timestamptz)',
-		'stego_outbox.resolve(timestamptz, uuid, text, text, text)'] LOOP
+		'stego_outbox.resolve(timestamptz, uuid, text, text, text)',
+		'stego_outbox.free_successors(timestamptz, uuid)'] LOOP
 		EXECUTE 'REVOKE ALL ON FUNCTION ' || f || ' FROM PUBLIC';
 		EXECUTE 'REVOKE ALL ON FUNCTION ' || f || ' FROM {{runtime}}';
 		EXECUTE 'GRANT EXECUTE ON FUNCTION ' || f || ' TO {{worker}}';
@@ -834,6 +905,17 @@ type Message struct {
 	// Idempotent is true for a message of a destination registered as idempotent, such as authz: the row keeps it,
 	// and the relay function resolve refuses to resolve it as acted (ST-SUP-RP01-LC13).
 	Idempotent bool
+	// Position is the partition and the offset of the Kafka record of a message that the Kafka inbox writes, or nil
+	// for each other message. A message with a source that the queue writes while an open message of its key from
+	// the same partition has a higher offset takes its place just before the first such message, so its key keeps
+	// the order of its topic (ST-SUP-RP01-LC03, ST-SUP-RP01-LC35).
+	Position *Position
+}
+
+// Position is the position of a Kafka record in its topic: its partition and its offset, each 0 or more.
+type Position struct {
+	Partition int32
+	Offset    int64
 }
 
 // Receipt names one claim of a message: the message, the lease token of the claim, and the state the message was
@@ -1053,13 +1135,25 @@ func (q *Queue) enqueue(ctx context.Context, tx *sql.Tx, once bool, messages []M
 		if outgoing == "" {
 			outgoing = message.ID.String()
 		}
+		var partition, offset any
+		if message.Position != nil {
+			partition, offset = message.Position.Partition, message.Position.Offset
+		}
+		// The place of a record that comes again is the place of the first open message of its key from the same
+		// partition with a higher offset, in the order of the claim; the advisory lock of the key above holds it
+		// (ST-SUP-RP01-LC03).
 		result, err := tx.ExecContext(ctx, `WITH `+nowCTE+`
 			INSERT INTO stego_outbox.messages (id, tenant_id, destination, resource_key, kind, payload, outgoing_key,
-				group_id, principal, origin, must_land, idempotent, created_at, available_at)
-			SELECT $2, $3, $4, $5, $6, $7::bytea, $8, $9, $10, $11, $12, $13, now.t, now.t FROM now`+conflict,
+				group_id, principal, origin, must_land, idempotent, created_at, available_at, source_partition, source_offset, place)
+			SELECT $2, $3, $4, $5, $6, $7::bytea, $8, $9, $10, $11, $12, $13, now.t, now.t, $14::integer, $15::bigint,
+				(SELECT COALESCE(x.place, x.sequence) FROM stego_outbox.messages AS x
+				WHERE x.tenant_id = $3 AND x.destination = $4 AND x.resource_key = $5
+					AND x.state NOT IN ('done', 'discarded') AND x.source_partition = $14::integer AND x.source_offset > $15::bigint
+				ORDER BY COALESCE(x.place, x.sequence), x.source_offset, x.sequence LIMIT 1)
+			FROM now`+conflict,
 			q.now(), message.ID, tenantID.String, message.Destination, message.ResourceKey, message.Kind,
 			[]byte(message.Payload), outgoing, message.Group, message.Principal, message.Origin, message.MustLand,
-			message.Idempotent)
+			message.Idempotent, partition, offset)
 		if err != nil {
 			return 0, canceled(ctx, err)
 		}
@@ -1467,6 +1561,9 @@ func validateMessage(message Message, limit int) error {
 	}
 	if len(message.Payload) == 0 || len(message.Payload) > limit || !utf8.Valid(message.Payload) {
 		return errors.New("outbox: the payload size or encoding is not valid")
+	}
+	if message.Position != nil && (message.Position.Partition < 0 || message.Position.Offset < 0) {
+		return errors.New("outbox: the source partition and offset are 0 or more")
 	}
 	decoder := json.NewDecoder(bytes.NewReader(message.Payload))
 	decoder.UseNumber()

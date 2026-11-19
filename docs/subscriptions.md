@@ -144,6 +144,30 @@ could run now. The events of other rows continue. The later events wait until yo
 Thus a wrong start order can hold back many events. Do the steps above in order, and look at the parked list of
 each consuming destination after the first start.
 
+### Repair a wrong order with an offset reset
+
+The events that the consumer refused with `unknown-tenant` come again only after an offset reset (see
+[The offsets of a consumer group](operations.md#the-offsets-of-a-consumer-group) for the command). A later event of the same row can be parked meanwhile, such
+as an update whose fill needs the row that the created event makes. Do these steps:
+
+1. Provision the tenant in the consumer.
+2. Stop the worker Deployment of the consumer, reset the offsets of its group to the earliest offset
+   (`--to-earliest` in place of `--to-datetime`), and start the worker Deployment again.
+
+The worker keeps the order of the topic for each row. Each message holds the partition and the offset of its
+record, and a record that comes again takes its place before the later messages of its row. So the created event
+runs first, also when a later update of the same row is parked. When a message is done, each later message of the
+same row that is parked as `poison` goes back to pending at once, with no person. The parked list then shows it no
+more, and the audit has a row `resolve-parked-message` with the resolution `not_acted` and the consuming worker as
+the actor. A message that fails again parks again after 5 failures, and waits for the next earlier message of its row
+or for a person. A message parked for another reason waits for a person, as before. The worker drops each record
+that is already in its queue, so the reset applies no event twice.
+
+The order of the topic holds within one partition. When you add partitions to the topic, the events of one row can
+go to a new partition. Then a record of the old partition that comes again takes its place before the later messages
+of its row from the old partition only, and the messages of the new partition keep their place in the queue. So add
+partitions only when the parked list of each consuming destination is empty.
+
 ## Access to the topic
 
 The inbox trusts the header `stego-tenant` only because the platform lets

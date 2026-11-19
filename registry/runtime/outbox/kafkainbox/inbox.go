@@ -652,7 +652,10 @@ func (in *Inbox) take(ctx context.Context, record *kgo.Record) error {
 	}
 	message := outbox.Message{ID: MessageID(in.sub.Name, t.ID(), checked.eventID), Destination: in.sub.Name,
 		ResourceKey: checked.resourceKey, Kind: checked.kind, Payload: json.RawMessage(record.Value),
-		Principal: in.principal, Origin: in.sub.Name, MustLand: true, Idempotent: true}
+		Principal: in.principal, Origin: in.sub.Name, MustLand: true, Idempotent: true,
+		// The position of the record keeps the order of its key as in its topic, also for a record that an offset
+		// reset sends again (ST-SUP-RP01-LC03, ST-SUP-RP01-LC35).
+		Position: &outbox.Position{Partition: record.Partition, Offset: record.Offset}}
 	if err := outbox.ValidateMessage(message); err != nil || len(record.Value) > in.queue.PayloadLimit(in.sub.Name) {
 		return in.refuse(ctx, record, checked, ReasonNotOutboxMessage)
 	}

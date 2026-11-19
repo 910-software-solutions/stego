@@ -373,6 +373,13 @@ func (svc *Service) startWorker(ctx context.Context, c StartConfig, w *Workers) 
 		config = *c.WorkerConfig
 	}
 	config.Meter, config.Logger = svc.telemetry.MeterProvider(), svc.telemetry.LoggerProvider()
+	// A message of the Kafka inbox that is done frees the later messages of its key that are parked as poison, with the
+	// audit row of each resolution, in its transaction (ST-SUP-RP01-LC39). Only a service with the inbox has such
+	// messages, and its worker role holds the audit grants of its consuming workers (ST-SUP-Q141).
+	if config.Auditor == nil && p.Inbox != nil {
+		config.Auditor = &resolveAuditor{writer: svc.writer, settings: svc.parts.AuditSettings, service: svc.parts.Service,
+			version: svc.version, declaration: svc.parts.DeclarationVersion}
+	}
 	if svc.tenants != nil {
 		// A destination registered with ActiveTenants, such as the after slots, gets no message of a tenant that is
 		// not active (ST-SUP-RC27-OC12).

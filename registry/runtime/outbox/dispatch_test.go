@@ -1577,3 +1577,164 @@ func TestDispatchPanic(t *testing.T) {
 		}
 	})
 }
+
+// inboxMessage is a message of the Kafka inbox of the destination billing on the key key, from the record at the
+// offset offset of the partition partition, staged by the consuming worker.
+func inboxMessage(key string, partition int32, offset int64) Message {
+	m := message("billing", key)
+	m.Principal, m.MustLand, m.Idempotent = "service:billing-worker", true, true
+	m.Position = &Position{Partition: partition, Offset: offset}
+	return m
+}
+
+// orderedDestination registers billing on w with a handler that records the ID of each delivery in order and
+// answers with the error that fail gives for it.
+func orderedDestination(t *testing.T, w *Worker, fail func(id uuid.UUID) error) func() []uuid.UUID {
+	t.Helper()
+	var mu sync.Mutex
+	var handled []uuid.UUID
+	register(t, w, Destination{Name: "billing", MustLand: true, Idempotent: true, Handler: func(_ context.Context, _ *sql.Tx, d Delivery) error {
+		mu.Lock()
+		handled = append(handled, d.ID)
+		mu.Unlock()
+		return fail(d.ID)
+	}})
+	return func() []uuid.UUID {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]uuid.UUID(nil), handled...)
+	}
+}
+
+// poisoned is the refusal of a consuming worker that parks its message as poison (command.PoisonCode).
+func poisoned() error { return WithFailureCode(PermanentRefusal(errors.New("no invoice")), "poison") }
+
+func TestKeyOrder(t *testing.T) {
+	t.Run("ST-SUP-RP01-LC03-T05 A record that an offset reset sends again takes its place before the later messages of its key", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, newClock())
+		update, created, later := inboxMessage("shipment:1", 0, 20), inboxMessage("shipment:1", 0, 10), inboxMessage("shipment:1", 0, 30)
+		w := newWorker(t, q, nil)
+		handled := orderedDestination(t, w, func(id uuid.UUID) error {
+			if id == update.ID {
+				return PermanentRefusal(errors.New("no invoice"))
+			}
+			return nil
+		})
+		// The update parks; the later update waits behind it.
+		enqueue(t, db, q, update, later)
+		cycle(t, w)
+		cycle(t, w)
+		if row := readRow(t, db, update.ID); row.State != Parked {
+			t.Fatalf("the update is %s, want parked", row.State)
+		}
+		// The offset reset sends the created record again: it goes before the parked update and runs at once.
+		enqueue(t, db, q, created)
+		cycle(t, w)
+		cycle(t, w)
+		if a, b, c := readRow(t, db, created.ID), readRow(t, db, update.ID), readRow(t, db, later.ID); a.State != Done || b.State != Parked || c.State != Pending {
+			t.Fatalf("the created, update and later messages are %s, %s and %s, want done, parked and pending", a.State, b.State, c.State)
+		}
+		if got := handled(); !slices.Equal(got, []uuid.UUID{update.ID, created.ID}) {
+			t.Fatalf("the destination got %v, want the update and then the created record", got)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC03-T06 A key with messages of two partitions drains in one order, and no message holds back another for ever", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, newClock())
+		// B on p0 at offset 20, then C on p1 after the partitions changed, then A on p0 at offset 10, sent again by an
+		// offset reset. Offsets alone for p0 and the sequence for the rest would give A < B < C < A.
+		b, c, a := inboxMessage("shipment:1", 0, 20), inboxMessage("shipment:1", 1, 5), inboxMessage("shipment:1", 0, 10)
+		enqueue(t, db, q, b)
+		enqueue(t, db, q, c)
+		enqueue(t, db, q, a)
+		w := newWorker(t, q, nil)
+		handled := orderedDestination(t, w, func(uuid.UUID) error { return nil })
+		for i := 0; i < 6 && len(handled()) < 3; i++ {
+			cycle(t, w)
+		}
+		if got := handled(); !slices.Equal(got, []uuid.UUID{a.ID, b.ID, c.ID}) {
+			t.Fatalf("the destination got %v, want A, B and C (%v)", got, []uuid.UUID{a.ID, b.ID, c.ID})
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC39-T01 A message parked as poison goes back to pending when an earlier message of its key is done", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, newClock())
+		update, created := inboxMessage("shipment:1", 0, 20), inboxMessage("shipment:1", 0, 10)
+		other, refused := inboxMessage("shipment:2", 0, 21), inboxMessage("shipment:3", 0, 22)
+		invoiced := false
+		w := resolvingWorker(t, q, &fakeDecider{allow: true})
+		handled := orderedDestination(t, w, func(id uuid.UUID) error {
+			switch {
+			case id == created.ID:
+				invoiced = true
+			case id == update.ID && !invoiced, id == other.ID:
+				return poisoned()
+			case id == refused.ID:
+				return PermanentRefusal(errors.New("400"))
+			}
+			return nil
+		})
+		enqueue(t, db, q, update, other, refused)
+		for i := 0; i < 6 && len(handled()) < 3; i++ {
+			cycle(t, w)
+		}
+		for _, id := range []uuid.UUID{update.ID, other.ID, refused.ID} {
+			if row := readRow(t, db, id); row.State != Parked {
+				t.Fatalf("the message %s is %s, want parked", id, row.State)
+			}
+		}
+		// The created record comes again and is done: in its transaction the parked update goes back to pending,
+		// with no attempt and no failure code, as a resolution not_acted of the consuming worker with its audit row.
+		enqueue(t, db, q, created)
+		cycle(t, w)
+		row := readRow(t, db, update.ID)
+		if row.State != Pending || row.Attempts != 0 || row.FailureCode != "" || row.Resolution.String != "not_acted" ||
+			row.ResolvedBy.String != "service:billing-worker" || row.OutgoingKey != update.ID.String() {
+			t.Fatalf("the update after the created record is %+v, want pending as not_acted by the consuming worker", row)
+		}
+		if n := auditRows(t, db, update.ID); n != 1 {
+			t.Fatalf("the update has %d audit rows, want 1", n)
+		}
+		// A parked message of another key, and a message parked for another reason, stay parked.
+		if a, b := readRow(t, db, other.ID), readRow(t, db, refused.ID); a.State != Parked || b.State != Parked || auditRows(t, db, other.ID)+auditRows(t, db, refused.ID) != 0 {
+			t.Fatalf("the other messages are %s and %s, want parked and not resolved", a.State, b.State)
+		}
+		cycle(t, w)
+		if row := readRow(t, db, update.ID); row.State != Done {
+			t.Fatalf("the update is %s, want done after its created record", row.State)
+		}
+		if got := handled(); len(got) != 5 || got[3] != created.ID || got[4] != update.ID {
+			t.Fatalf("the destination got %v, want the created record and then the update last", got)
+		}
+	})
+
+	t.Run("ST-SUP-RP01-LC39-T02 A freed message that fails again parks again and stays parked, so no message loops", func(t *testing.T) {
+		db, _ := testDatabase(t)
+		q := newQueue(t, db, newClock())
+		update, created := inboxMessage("shipment:1", 0, 20), inboxMessage("shipment:1", 0, 10)
+		w := resolvingWorker(t, q, &fakeDecider{allow: true})
+		handled := orderedDestination(t, w, func(id uuid.UUID) error {
+			if id == update.ID {
+				return poisoned()
+			}
+			return nil
+		})
+		enqueue(t, db, q, update)
+		cycle(t, w)
+		enqueue(t, db, q, created)
+		cycle(t, w)
+		for i := 0; i < 5; i++ {
+			cycle(t, w)
+		}
+		row := readRow(t, db, update.ID)
+		if row.State != Parked || row.Attempts != 1 || row.FailureCode != "poison" {
+			t.Fatalf("the update is %+v, want parked as poison after one attempt since it was freed", row)
+		}
+		if n, got := auditRows(t, db, update.ID), handled(); n != 1 || len(got) != 3 {
+			t.Fatalf("the update has %d audit rows and the destination got %d deliveries, want 1 and 3", n, len(got))
+		}
+	})
+}

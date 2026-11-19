@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
@@ -153,6 +154,7 @@ type Worker struct {
 	conflicts           atomic.Uint64
 	lookups             atomic.Uint64
 	parked              atomic.Uint64
+	freed               atomic.Uint64
 	hookFailures        atomic.Uint64
 	donePurged          atomic.Uint64
 	purgeBatches        atomic.Uint64
@@ -608,6 +610,7 @@ type metrics struct {
 	delay   metric.Float64Histogram
 	parks   metric.Int64Counter
 	hooks   metric.Int64Counter
+	freed   metric.Int64Counter
 	logger  otellog.Logger
 	gauge   metric.Registration
 	enabled bool
@@ -637,6 +640,11 @@ func newMetrics(provider metric.MeterProvider, logs otellog.LoggerProvider, w *W
 	}
 	m.hooks, err = meter.Int64Counter("outbox.hook.failures",
 		metric.WithDescription("The state hook calls that failed or panicked, by destination."))
+	if err != nil {
+		return nil, err
+	}
+	m.freed, err = meter.Int64Counter("outbox.parked.freed",
+		metric.WithDescription("The messages parked as poison that went back to pending after an earlier message of their key was done, by destination."))
 	if err != nil {
 		return nil, err
 	}
@@ -687,6 +695,26 @@ func (m *metrics) parked(ctx context.Context, destination string, from State) {
 		record.SetSeverityText("WARN")
 		record.SetBody(attribute.StringValue("an outbox message is parked and waits for a person"))
 		record.AddAttributes(attribute.String("destination", destination), attribute.String("state", string(from)))
+		m.logger.Emit(ctx, record)
+	}
+}
+
+// freedSuccessor counts and logs one parked message that went back to pending after an earlier message of its key was
+// done, with the destination and the message ID and no payload (ST-SUP-RP01-LC39).
+func (m *metrics) freedSuccessor(ctx context.Context, destination string, id uuid.UUID) {
+	if m == nil {
+		return
+	}
+	if m.enabled {
+		m.freed.Add(ctx, 1, metric.WithAttributes(attribute.String("destination", destination)))
+	}
+	if m.logger != nil {
+		var record otellog.Record
+		record.SetEventName("outbox.parked.freed")
+		record.SetSeverity(otellog.SeverityInfo)
+		record.SetSeverityText("INFO")
+		record.SetBody(attribute.StringValue("a parked message goes back to pending, because an earlier message of its key is done"))
+		record.AddAttributes(attribute.String("destination", destination), attribute.String("message_id", id.String()))
 		m.logger.Emit(ctx, record)
 	}
 }

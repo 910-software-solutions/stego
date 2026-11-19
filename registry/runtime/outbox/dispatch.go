@@ -527,9 +527,23 @@ func (w *Worker) apply(ctx context.Context, tx *sql.Tx, d Delivery, reg Destinat
 			return false
 		}
 	}
+	var freed []freedMessage
+	if to == Done {
+		var err error
+		if freed, err = w.freeSuccessors(finish, tx, d, reg); err != nil {
+			_ = tx.Rollback()
+			d.Receipt.State = from
+			w.databaseFailures.Add(1)
+			return false
+		}
+	}
 	if err := tenant.Commit(finish, tx, d.Tenant); err != nil {
 		w.databaseFailures.Add(1)
 		return false
+	}
+	for _, f := range freed {
+		w.freed.Add(1)
+		w.metrics.freedSuccessor(finish, d.Destination, f.id)
 	}
 	switch to {
 	case Done:
@@ -542,6 +556,62 @@ func (w *Worker) apply(ctx context.Context, tx *sql.Tx, d Delivery, reg Destinat
 		w.metrics.parked(finish, d.Destination, from)
 	}
 	return true
+}
+
+// freedMessage is one message that freeSuccessors moved back to pending: its ID, its group and the principal that
+// resolved it.
+type freedMessage struct {
+	id               uuid.UUID
+	group, principal string
+}
+
+// freeSuccessors moves, in tx, each later message of the key of d that is parked as poison back to pending, through
+// the relay function free_successors, when d is a message of the Kafka inbox that is now done (ST-SUP-RP01-LC39). It
+// calls the state hook of each and writes the audit row of each resolution not_acted in tx, so all commit with the
+// move of d or not at all. A worker with no auditor frees nothing, because it cannot write the audit row.
+func (w *Worker) freeSuccessors(ctx context.Context, tx *sql.Tx, d Delivery, reg Destination) ([]freedMessage, error) {
+	if w.auditor == nil {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT r_id, r_group, r_principal FROM stego_outbox.free_successors($1::timestamptz, $2::uuid)`,
+		w.queue.now(), d.ID)
+	if err != nil {
+		return nil, canceled(ctx, err)
+	}
+	var freed []freedMessage
+	for rows.Next() {
+		var f freedMessage
+		if err := rows.Scan(&f.id, &f.group, &f.principal); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		freed = append(freed, f)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, canceled(ctx, err)
+	}
+	var at time.Time
+	if len(freed) > 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE($1::timestamptz, pg_catalog.clock_timestamp())`, w.queue.now()).Scan(&at); err != nil {
+			return nil, canceled(ctx, err)
+		}
+	}
+	for _, f := range freed {
+		if reg.StateHook != nil {
+			if err := callHook(ctx, reg.StateHook, tx, StateChange{ID: f.id, Group: f.group, Destination: d.Destination,
+				Tenant: d.Tenant, State: Pending}); err != nil {
+				return nil, err
+			}
+		}
+		if err := w.auditor.Record(ctx, tx, AuditEntry{MessageID: f.id, Tenant: d.Tenant, Destination: d.Destination,
+			Subject: f.principal, Resolution: NotActed, At: at}); err != nil {
+			return nil, err
+		}
+	}
+	return freed, nil
 }
 
 // park moves a claimed message to parked, records the state it left, and raises one alert event and metric that
