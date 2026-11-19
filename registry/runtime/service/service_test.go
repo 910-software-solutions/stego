@@ -453,13 +453,15 @@ func TestNew(t *testing.T) {
 		t.Run("ST-SUP-RP14-LC06-T04 A start on a database that lacks a column of the manifest is not ready and names the column, and a droppable column is ready", func(t *testing.T) {
 			ctx := context.Background()
 			// start starts the service with a manifest whose orders table needs the column gone, which the database
-			// does not hold, and gives the log and the readiness of its api mode.
+			// does not hold, and gives the log and the readiness of its api mode; blocked is what Blocked gives.
+			var blocked error
 			start := func(droppable bool) (string, error) {
 				t.Helper()
 				declared := parts(nil, nil)
 				declared.Schema = ordersManifest()
 				declared.Schema.Tables[0].Columns = append(declared.Schema.Tables[0].Columns, manifest.Column{Name: "gone", Type: "text", Droppable: droppable})
 				var ready error
+				blocked = nil
 				logs, _ := startCaptured(t, func() {
 					svc, err := New(ctx, settings, declared)
 					if err != nil {
@@ -472,6 +474,8 @@ func TestNew(t *testing.T) {
 					}
 					defer func() { _ = api.Shutdown(ctx) }()
 					ready = api.Readiness().Ready(ctx, modes.API)
+					// The generated readiness of a process of the api mode alone, which starts no worker, reads it.
+					blocked = svc.Blocked(modes.Selection{modes.API})
 				})
 				return logs, ready
 			}
@@ -480,12 +484,15 @@ func TestNew(t *testing.T) {
 			if !errors.Is(ready, modes.ErrNotReady) || !strings.Contains(ready.Error(), fault) || !strings.Contains(ready.Error(), "roll forward") {
 				t.Fatalf("the api mode gave %v, want not ready with %q and the remedy", ready, fault)
 			}
+			if !errors.Is(blocked, modes.ErrNotReady) || !strings.Contains(blocked.Error(), "api: not ready") || !strings.Contains(blocked.Error(), fault) {
+				t.Fatalf("Blocked of the api mode gave %v, want not ready with %q", blocked, fault)
+			}
 			if !strings.Contains(logs, "the service starts not ready") {
 				t.Fatalf("the log does not say that the service starts not ready:\n%s", logs)
 			}
 			// A droppable column alerts and blocks nothing: the api mode waits only for its HTTP server.
 			logs, ready = start(true)
-			if ready == nil || strings.Contains(ready.Error(), fault) || !strings.Contains(logs, fault) || strings.Contains(logs, "starts not ready") {
+			if ready == nil || strings.Contains(ready.Error(), fault) || blocked != nil || !strings.Contains(logs, fault) || strings.Contains(logs, "starts not ready") {
 				t.Fatalf("with the column droppable, the api mode gave %v and the log %s, want the alert and no block", ready, logs)
 			}
 		})

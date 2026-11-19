@@ -556,15 +556,18 @@ func (rt *Runtime) Run(ctx context.Context) error {
 
 // Readiness answers the readiness of the worker and controller modes that the process runs, and names each worker
 // that stopped and each job that is not healthy (ST-SUP-RP09-LC05); before Run started the workers they are not
-// ready. A process that runs neither mode is ready here.
+// ready. Each mode of the process, the api mode too, is not ready from the start when the database lacks a table or
+// a column of the schema manifest (ST-SUP-RP14-LC06). A process that runs neither the worker nor the controller mode
+// is ready here otherwise.
 func (rt *Runtime) Readiness() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rt.mu.Lock()
 		workers := rt.workers
 		rt.mu.Unlock()
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		var err error
+		err := rt.svc.Blocked(rt.selection)
 		switch {
+		case err != nil:
 		case workers != nil:
 			err = workers.Ready(r.Context())
 		case rt.selection.Has(modes.Worker) || rt.selection.Has(modes.Controller):

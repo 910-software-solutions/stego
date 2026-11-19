@@ -26,6 +26,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/otel"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
@@ -553,6 +554,20 @@ WHERE r.rolname = $1::pg_catalog.text AND pg_catalog.pg_has_role(current_user, r
 		return nil, nil, fmt.Errorf("service: %w", err)
 	}
 	return nil, nil, nil
+}
+
+// Blocked gives, for each mode of selection, the error of a mode that is not ready because the start check found a
+// table or a column of the manifest missing (ST-SUP-RP14-LC06, ST-SUP-RP09-LC05), or nil. The generated readiness of
+// a process that runs the api mode alone, which starts no worker, reads it too.
+func (svc *Service) Blocked(selection modes.Selection) error {
+	if svc == nil || svc.blocked == "" {
+		return nil
+	}
+	var errs []error
+	for _, m := range selection.Modes() {
+		errs = append(errs, fmt.Errorf("%s: %w: %s", m, modes.ErrNotReady, svc.blocked))
+	}
+	return errors.Join(errs...)
 }
 
 // blockedReason gives the reason of the readiness of a process whose start check found the faults blocking, each a
