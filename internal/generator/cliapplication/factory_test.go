@@ -196,3 +196,47 @@ func TestFactorySensitive(t *testing.T) {
 		}
 	})
 }
+
+// opaqueDocument holds the command describeKey, whose 200 answer the rest-api component marks x-stego-opaque at its
+// root (it holds a google.protobuf.Struct), and the command listKeys, whose answer is an object with no fixed members
+// and no mark.
+const opaqueDocument = `{"openapi": "3.0.3", "info": {"title": "keys", "version": "1"}, "paths": {
+ "/api/keys/v1/keys/{key_id}/state:describe": {"post": {"operationId": "describeKey", "x-stego-command": true,
+   "parameters": [{"name": "key_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+   "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}},
+   "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"type": "object", "x-stego-opaque": true,
+     "properties": {"data": {"type": "object"}}}}}}}}},
+ "/api/keys/v1/keys:list": {"post": {"operationId": "listKeys", "x-stego-command": true,
+   "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object"}}}},
+   "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"type": "object", "properties": {"data": {"type": "object"}}}}}}}}}}}`
+
+func TestFactoryOpaqueSensitive(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC33-T02 A command whose answer is marked x-stego-opaque is Sensitive, and a command whose answer has no mark is not", func(t *testing.T) {
+		ctx := gen.Context{ModuleName: "example.com/keys-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "keys", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(opaqueDocument)}
+		files, _, err := new(cliapplication.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var app string
+		for _, file := range files {
+			if file.Path == "cli/app/commands.go" {
+				app = string(file.Bytes())
+			}
+		}
+		line := func(name string) string {
+			for _, l := range strings.Split(app, "\n") {
+				if strings.Contains(l, `{Name: []string{"`+name+`"}`) {
+					return l
+				}
+			}
+			t.Fatalf("the definitions have no command %s:\n%s", name, app)
+			return ""
+		}
+		if describe := line("describe-key"); !strings.Contains(describe, "Sensitive: true,") {
+			t.Errorf("the command whose answer is opaque is not Sensitive: %s", describe)
+		}
+		if list := line("list-keys"); strings.Contains(list, "Sensitive") {
+			t.Errorf("the command whose answer has no mark is Sensitive: %s", list)
+		}
+	})
+}

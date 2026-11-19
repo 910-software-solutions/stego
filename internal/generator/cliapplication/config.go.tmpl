@@ -88,22 +88,39 @@ func logout(ctx context.Context,app Application)error{
  if err:=directory.Sync();err!=nil{return errors.New("cannot sync configuration directory")}
  return revokeErr
 }
+// readToken reads the token file: a private file (ownedPrivate) of at most 16,384 bytes. O_NOFOLLOW refuses a leaf
+// symbolic link, and readRegular a FIFO and a device.
 func readToken(name string)(string,error){
- data,err:=client.ReadPrivateFile(name);if err!=nil{return "",err};token:=strings.TrimSpace(string(data));if token==""{return "",errors.New("empty token file")}
+ file,err:=os.OpenFile(name,os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW,0);if err!=nil{return "",errors.New("cannot read token file")};defer file.Close()
+ data,err:=readRegular(file,16384,true);if err!=nil{return "",errors.New("invalid token file: it must be a regular file that you own, with no group or other access")}
+ token:=strings.TrimSpace(string(data));if token==""{return "",errors.New("empty token file")}
  for _,r:=range token{if !((r>='a'&&r<='z')||(r>='A'&&r<='Z')||(r>='0'&&r<='9')||strings.ContainsRune("-._~+/=",r)){return "",errors.New("invalid token file")}}
  return token,nil
 }
-// readBody reads a request body file and tells whether only its owner can
-// read it.
+// readBody reads a request body file and tells whether it is private
+// (ownedPrivate).
 func readBody(name string)([]byte,bool,error){
  // O_NOFOLLOW refuses a leaf symbolic link. readRegular refuses a FIFO and
  // a device.
  file,err:=os.OpenFile(name,os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW,0);if err!=nil{return nil,false,errors.New("cannot read request body file")};defer file.Close()
  info,err:=file.Stat();if err!=nil{return nil,false,errors.New("invalid CLI input file")}
- data,err:=readRegular(file,65536,false);return data,info.Mode().Perm()&0077==0,err
+ data,err:=readRegular(file,65536,false);return data,ownedPrivate(info),err
 }
+// ownedPrivate tells whether a file is private: the effective user owns it, as ssh checks for its keys, and it permits
+// no group or other access. Another user who owns the file could change it, or its mode, between two runs. The token
+// file, the configuration file and a body file that holds a secret field must be private (security review of PR
+// #462, L3).
+func ownedPrivate(info os.FileInfo)bool{
+ owner,ok:=info.Sys().(*syscall.Stat_t)
+ return ok&&int64(owner.Uid)==int64(effectiveUser())&&info.Mode().Perm()&0077==0
+}
+// effectiveUser gives the effective user ID of the process. Only the tests of this package change it, to see a file
+// of another user.
+var effectiveUser=os.Geteuid
+// readRegular reads a regular file of at most limit bytes from the open file, so the checks and the read are of one
+// file. With private, it refuses a file that is not ownedPrivate.
 func readRegular(file *os.File,limit int64,private bool)([]byte,error){
- info,err:=file.Stat();if err!=nil||!info.Mode().IsRegular()||info.Size()>limit||(private&&info.Mode().Perm()&0077!=0){return nil,errors.New("invalid CLI input file")}
+ info,err:=file.Stat();if err!=nil||!info.Mode().IsRegular()||info.Size()>limit||(private&&!ownedPrivate(info)){return nil,errors.New("invalid CLI input file")}
  data,err:=io.ReadAll(io.LimitReader(file,limit+1));if err!=nil||len(data)==0||int64(len(data))>limit{return nil,errors.New("invalid CLI input file")}
  return data,nil
 }

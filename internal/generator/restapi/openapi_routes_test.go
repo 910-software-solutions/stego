@@ -136,6 +136,39 @@ func TestCommandAndQueryRoutes(t *testing.T) {
 	})
 }
 
+func TestCommandKeptHeaderDocument(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC27-T02 The OpenAPI document describes Idempotency-Kept on each response of a command, and on no response of a query", func(t *testing.T) {
+		document, err := new(Generator).OpenAPIDocument(onRuntime(routesContext()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := openapi3.NewLoader().LoadFromData(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.Validate(context.Background()); err != nil {
+			t.Fatalf("the document is not valid OpenAPI: %v", err)
+		}
+		op := doc.Paths.Value("/api/todo/v1/todos/{todo_id}/state:close").Post
+		if op.Responses.Len() < 6 {
+			t.Fatalf("the command has %d responses, want its success, its problems and its refusal", op.Responses.Len())
+		}
+		for code, response := range op.Responses.Map() {
+			header := response.Value.Headers["Idempotency-Kept"]
+			if header == nil || len(header.Value.Schema.Value.Enum) != 1 || header.Value.Schema.Value.Enum[0] != "1" {
+				t.Errorf("the response %s of the command does not describe Idempotency-Kept with the one value 1", code)
+			}
+		}
+		for _, path := range []string{"/api/todo/v1/todos/{todoId}/summary", "/api/todo/v1/todos/open"} {
+			for code, response := range doc.Paths.Value(path).Get.Responses.Map() {
+				if response.Value.Headers["Idempotency-Kept"] != nil {
+					t.Errorf("the response %s of the query %s describes Idempotency-Kept", code, path)
+				}
+			}
+		}
+	})
+}
+
 // secretProto is routesProto with members that the proto marks debug_redact: a request string, a request list, a
 // member of a nested message, and a response string.
 const secretProto = `syntax = "proto3";
@@ -241,6 +274,62 @@ func TestCommandResponseSecretRoot(t *testing.T) {
 		}{{"a member at depth 9", deepSecretProto, true}, {"a member at depth 1", secretProto, true}, {"no marked member", routesProto, false}} {
 			if got := root(c.proto).Extensions["x-sensitive"] == true; got != c.secret {
 				t.Errorf("the response root of %s has x-sensitive %t, want %t", c.name, got, c.secret)
+			}
+		}
+	})
+}
+
+// opaqueProto is routesProto whose response holds an opaque member as the test case gives it in place of the member
+// detail.
+func opaqueProto(detail string) string {
+	return `syntax = "proto3";
+package todo.v1;
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+message Note { string text = 1; Inner inner = 2; }
+message Inner { ` + detail + ` }
+message CloseTodoRequest { string todo_id = 1; }
+message CloseTodoResponse {
+  string todo_id = 1;
+  Note note = 2;
+}
+`
+}
+
+func TestCommandOpaqueResponse(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC54-T06 A response that holds google.protobuf.Any, Struct, Value or ListValue at any depth is x-stego-opaque at its root, and is not x-sensitive", func(t *testing.T) {
+		for _, c := range []struct {
+			name, detail string
+			opaque       bool
+		}{
+			{"a Struct in a nested message", "google.protobuf.Struct data = 1;", true},
+			{"a list of Any", "repeated google.protobuf.Any items = 1;", true},
+			{"a map of Value", "map<string, google.protobuf.Value> values = 1;", true},
+			{"a ListValue", "google.protobuf.ListValue list = 1;", true},
+			{"a Timestamp only", "google.protobuf.Timestamp at = 1;", false},
+			{"plain members only", "string text = 1;", false},
+		} {
+			ctx := routesContext()
+			ctx.Inputs = map[string][]byte{"proto/todo.proto": []byte(opaqueProto(c.detail))}
+			document, err := new(Generator).OpenAPIDocument(onRuntime(ctx))
+			if err != nil {
+				t.Fatalf("%s: %v", c.name, err)
+			}
+			doc, err := openapi3.NewLoader().LoadFromData(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := doc.Validate(context.Background()); err != nil {
+				t.Fatalf("%s: the document is not valid OpenAPI: %v", c.name, err)
+			}
+			op := doc.Paths.Value("/api/todo/v1/todos/{todo_id}/state:close").Post
+			root := op.Responses.Value("200").Value.Content.Get("application/json").Schema.Value
+			if got := root.Extensions["x-stego-opaque"] == true; got != c.opaque {
+				t.Errorf("the response root of %s has x-stego-opaque %t, want %t", c.name, got, c.opaque)
+			}
+			if root.Extensions["x-sensitive"] != nil {
+				t.Errorf("the response root of %s is x-sensitive; the opaque mark asks no key ring", c.name)
 			}
 		}
 	})
