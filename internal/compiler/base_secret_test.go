@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -313,7 +314,7 @@ func TestBaseSealDrop(t *testing.T) {
 		seal := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n"
 		open := "  - {change: organization-description-seal, phase: expand}\n"
 		mottoDrop := "  - {id: organization-motto-drop, kind: drop, entity: Organization, field: motto, definition: \"string, optional, max_length 100, after description\"}\n"
-		descriptionDrop := "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, max_length 1000, sensitivity secret, after name\"}\n"
+		descriptionDrop := "  - {id: organization-description-drop, kind: drop, entity: Organization, field: description, definition: \"string, optional, max_length 1000, secret, after name\"}\n"
 		noMotto := strings.Replace(sealed, motto, "", 1)
 		noDescription := strings.Replace(clear, description+"\n      - { name: motto", "{ name: motto", 1)
 		check := func(base []byte, head string) BaseCheck {
@@ -326,8 +327,42 @@ func TestBaseSealDrop(t *testing.T) {
 		}
 		// The base holds the seal of description open: its release reads and writes the clear and the sealed column.
 		base := []byte(withChanges(sealed, seal, open))
-		if c := check(base, withChanges(noDescription, seal+descriptionDrop, open+"  - {change: organization-description-drop, phase: expand}\n")); !c.HasFaults() {
+		c := check(base, withChanges(noDescription, seal+descriptionDrop, open+"  - {change: organization-description-drop, phase: expand}\n"))
+		if !c.HasFaults() {
 			t.Error("a drop of description while its seal is open is accepted")
+		}
+		// The fault of the drop names the open seal and the remedy, to contract the seal first, and no other fault
+		// names description.
+		for _, fault := range c.Faults {
+			if fault.Field != "description" {
+				continue
+			}
+			if !strings.Contains(fault.Message, "seal organization-description-seal is open") || !strings.Contains(fault.Message, "contract the seal first") ||
+				len(fault.Declare) != 1 || fault.Declare[0].ID != "organization-description-seal" || fault.Declare[0].Phase != "contract" {
+				t.Errorf("the fault of the drop of description does not name the open seal and its contract: %+v", fault)
+			}
+		}
+		// The remedy of the fault goes through: a release with the contract step of the seal, then a release with the
+		// drop of description, whose definition states its sealed form.
+		contracted := open + "  - {change: organization-description-seal, phase: contract}\n"
+		if c := check(base, withChanges(sealed, seal, contracted)); c.HasFaults() {
+			t.Errorf("the contract of the open seal of description is refused: %+v", c.Faults)
+		}
+		if c := check([]byte(withChanges(sealed, seal, contracted)), withChanges(noDescription, seal+descriptionDrop, contracted+"  - {change: organization-description-drop, phase: expand}\n")); c.HasFaults() {
+			t.Errorf("the drop of description in the release after the contract of its seal is refused: %+v", c.Faults)
+		}
+		// A drop whose definition leaves out the item secret gets a fault that says to add it.
+		clearDrop := strings.Replace(descriptionDrop, ", secret, after name", ", after name", 1)
+		c = check([]byte(withChanges(sealed, seal, contracted)), withChanges(noDescription, seal+clearDrop, contracted+"  - {change: organization-description-drop, phase: expand}\n"))
+		if !slices.ContainsFunc(c.Faults, func(fault BaseFault) bool {
+			return strings.Contains(fault.Message, "add the item secret to the definition")
+		}) {
+			t.Errorf("a drop of the sealed description whose definition leaves out secret does not get a fault that says to add it: %+v", c.Faults)
+		}
+		for _, fault := range c.Faults {
+			if strings.Contains(fault.Message, "changes the secret form") {
+				t.Errorf("a drop of the sealed description whose definition leaves out secret also gets the fault of the secret form: %+v", fault)
+			}
 		}
 		if c := check(base, withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n")); c.HasFaults() {
 			t.Errorf("the expand of a drop of motto while the seal of description is open is refused: %+v", c.Faults)
@@ -337,6 +372,30 @@ func TestBaseSealDrop(t *testing.T) {
 		dropped := []byte(withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n"))
 		if c := check(dropped, withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n  - {change: organization-motto-drop, phase: contract}\n")); c.HasFaults() {
 			t.Errorf("the contract of the drop of motto while the seal of description is open is refused: %+v", c.Faults)
+		}
+	})
+}
+
+func TestBaseSealEntityDrop(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC49-T11 A drop of an entity with a field whose seal is open is refused with a fault that names the seal", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const action = "{ name: action, type: string, max_length: 100 }"
+		sealed := strings.Replace(td01, action, "{ name: action, type: string, max_length: 100, sensitivity: secret }", 1)
+		seal := "  - {id: activity-entry-action-seal, kind: seal, entity: ActivityEntry, field: action}\n"
+		open := "  - {change: activity-entry-action-seal, phase: expand}\n"
+		base := []byte(withChanges(sealed, seal, open))
+		dropped := strings.Replace(sealed, "  - name: ActivityEntry\n", "  - name: ActivityEntry\n    dropped_by: activity-entry-drop\n", 1)
+		head := withChanges(dropped, seal+"  - {id: activity-entry-drop, kind: drop, entity: ActivityEntry}\n", open+"  - {change: activity-entry-drop, phase: expand}\n")
+		c, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: base, Record: runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, head))
+		if err != nil {
+			t.Fatal(err)
+		}
+		named := slices.ContainsFunc(c.Faults, func(fault BaseFault) bool {
+			return fault.Entity == "ActivityEntry" && strings.Contains(fault.Message, "seal activity-entry-action-seal is open") &&
+				strings.Contains(fault.Message, "contract the seal first") && len(fault.Declare) == 1 && fault.Declare[0].Phase == "contract"
+		})
+		if !named {
+			t.Errorf("the drop of ActivityEntry while the seal of action is open is not refused with a fault that names the seal: %+v", c.Faults)
 		}
 	})
 }
