@@ -450,7 +450,7 @@ there, the seal job cannot run: from runtime v0.150.0 each run logs `the lease
 of the seal job is not in the lease table` at the level error, with the lease,
 and the controller reports the job as failed. Run the migration Job of the
 release of the expand step, and the job runs at its next tick. In the same
-way, from runtime v0.155.0, a run that finds no seal checkpoint while the
+way, from runtime v0.157.0, a run that finds no seal checkpoint while the
 clear column is still in the table logs `the seal of a secret column has no
 checkpoint while its clear column is there` at the level error and completes
 no pass; run the migration Job of the release of the expand step, which makes
@@ -566,7 +566,7 @@ take it through the steps again:
    next steps name. A process of the release of the expand step that ran
    after the contract reads and writes the sealed column alone until it
    stops, so on the restored database it would leave the clear value of a
-   row older than its sealed value. From runtime v0.155.0 such a process
+   row older than its sealed value. From runtime v0.157.0 such a process
    checks the table again, at most once each second, and writes the clear
    column again once the restore brings it back, but a call that runs while
    the restore runs can still write the sealed column alone. Then restore the
