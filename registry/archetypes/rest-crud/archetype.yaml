@@ -1,14 +1,14 @@
 kind: archetype
 name: rest-crud
 language: go
-version: 3.197.0
+version: 3.200.0
 # The runtime library that every service of this archetype imports (ST-SUP-INV10). It is the module in
 # registry/runtime, released with the common registry by the tag registry/runtime/<version>; sum is the go.sum hash
 # of that folder at the version. A new runtime version moves it in a new archetype version.
 runtime:
   module: github.com/jsell-rh/stego/registry/runtime
-  version: v0.149.0
-  sum: h1:pThJ7OBtPwB6y82ZD1TJY0JHVVOj+ygY8kvIXjfkh/E=
+  version: v0.151.0
+  sum: h1:MMBMcvNvZVC2ucbsJi8aIc906GQq8I1d947ujE1tidU=
 
 components:
   - rest-api

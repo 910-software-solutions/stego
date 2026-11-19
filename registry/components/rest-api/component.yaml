@@ -33,9 +33,11 @@
 # request validation does not check the body of a command (ST-SUP-RC20-OC53).
 # Version 4.18.0 skips the check of a body only for an operation whose x-stego-command marker is true (security review
 # of PR #454, INFO).
+# Version 4.20.0 calls the update of the runtime in the generated writes of an entity with its own resource type,
+# whose repository type takes no parent on Update (ST-SUP-RC32-OC26).
 kind: component
 name: rest-api
-version: 4.18.0
+version: 4.20.0
 stage: ga
 output_namespace: internal/api
 

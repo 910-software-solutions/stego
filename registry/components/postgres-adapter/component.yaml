@@ -10,9 +10,11 @@
 # Version 6.16.0 builds the contract step of a rename or a retype of a field with a default: it first gives the new
 # column the default, with the comment of a relaxed form that states it, so the release of the change still holds its
 # schema manifest (ST-SUP-RC01-OC39, walkthrough 14 W14-B3).
+# Version 6.18.0 marks the clear column of each open seal as droppable in the schema manifest, so a start without it
+# is ready (walkthrough 15, W15-B4, ST-SUP-RC01-OC12).
 kind: component
 name: postgres-adapter
-version: 6.16.0
+version: 6.18.0
 stage: ga
 output_namespace: internal/storage
 

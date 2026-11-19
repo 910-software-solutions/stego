@@ -13,9 +13,12 @@
 # Version 1.11.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field, readable or
 # compare-only, or a pii field needs it (walkthrough 13, W13-B8): the variable stays not required on its own
 # (ST-SUP-RC32-OC21).
+# Version 1.14.0 gives an entity with a resource type of its own the repository type <Entity>Repo, whose GetForUpdate,
+# GetForDelete, Update and Delete take no parent, and Move for an update that changes a reference (walkthrough 15,
+# W15-B3, ST-SUP-RC32-OC26).
 kind: component
 name: command
-version: 1.11.0
+version: 1.14.0
 stage: ga
 output_namespace: commands
 
