@@ -146,3 +146,49 @@ func TestFactorySecrets(t *testing.T) {
 		}
 	})
 }
+
+// sensitiveDocument has a command whose answer holds a member marked x-sensitive in an item of a list of a nested
+// object, and a command whose answer holds none.
+const sensitiveDocument = `{"openapi": "3.0.3", "info": {"title": "Generated API", "version": "1.0.0"},
+ "paths": {
+  "/api/keys/v1/keys:issue": {
+   "post": {"operationId": "issueKey", "x-stego-command": true, "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"label": {"type": "string"}}}}}},
+    "responses": {"201": {"description": "Issued", "content": {"application/json": {"schema": {"type": "object",
+     "properties": {"issued": {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "object",
+      "properties": {"value": {"type": "string", "format": "password", "x-sensitive": true}}}}}}}}}}}}}},
+  "/api/keys/v1/keys:count": {
+   "post": {"operationId": "countKeys", "x-stego-command": true, "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object",
+     "properties": {"pin": {"type": "string", "writeOnly": true, "x-sensitive": true}}}}}},
+    "responses": {"200": {"description": "Counted", "content": {"application/json": {"schema": {"type": "object", "properties": {"count": {"type": "integer"}}}}}}}}}}}`
+
+func TestFactorySensitive(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC33-T01 A command whose answer holds a secret is Sensitive, and a command whose answer holds none is not", func(t *testing.T) {
+		ctx := gen.Context{ModuleName: "example.com/keys-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "keys", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(sensitiveDocument)}
+		files, _, err := new(cliapplication.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var app string
+		for _, file := range files {
+			if file.Path == "cli/app/commands.go" {
+				app = string(file.Bytes())
+			}
+		}
+		line := func(name string) string {
+			for _, l := range strings.Split(app, "\n") {
+				if strings.Contains(l, `{Name: []string{"`+name+`"}`) {
+					return l
+				}
+			}
+			t.Fatalf("the definitions have no command %s:\n%s", name, app)
+			return ""
+		}
+		if issue := line("issue-key"); !strings.Contains(issue, "Sensitive: true,") {
+			t.Errorf("the command whose answer holds a secret is not Sensitive: %s", issue)
+		}
+		// A secret request member alone does not make the answer Sensitive.
+		if count := line("count-keys"); strings.Contains(count, "Sensitive") {
+			t.Errorf("the command whose answer holds no secret is Sensitive: %s", count)
+		}
+	})
+}

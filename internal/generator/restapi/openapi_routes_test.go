@@ -135,3 +135,65 @@ func TestCommandAndQueryRoutes(t *testing.T) {
 		}
 	})
 }
+
+// secretProto is routesProto with members that the proto marks debug_redact: a request string, a request list, a
+// member of a nested message, and a response string.
+const secretProto = `syntax = "proto3";
+package todo.v1;
+message Note { string text = 1; string token = 2 [debug_redact = true]; }
+message CloseTodoRequest {
+  string todo_id = 1;
+  string pin = 2 [debug_redact = true];
+  repeated string codes = 3 [debug_redact = true];
+  Note note = 4;
+  string reason = 5;
+}
+message CloseTodoResponse {
+  string todo_id = 1;
+  string api_key = 2 [debug_redact = true];
+}
+`
+
+func TestCommandSecretMembers(t *testing.T) {
+	t.Run("ST-SUP-RC20-OC54-T01 A member that the proto marks debug_redact is x-sensitive, a password string, and writeOnly in a request body", func(t *testing.T) {
+		ctx := routesContext()
+		ctx.Inputs = map[string][]byte{"proto/todo.proto": []byte(secretProto)}
+		document, err := new(Generator).OpenAPIDocument(onRuntime(ctx))
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := openapi3.NewLoader().LoadFromData(document)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.Validate(context.Background()); err != nil {
+			t.Fatalf("the document is not valid OpenAPI: %v", err)
+		}
+		op := doc.Paths.Value("/api/todo/v1/todos/{todo_id}/state:close").Post
+		body := op.RequestBody.Value.Content.Get("application/json").Schema.Value
+		response := op.Responses.Value("200").Value.Content.Get("application/json").Schema.Value
+		marks := func(s *openapi3.Schema) (bool, string, bool) {
+			return s.Extensions["x-sensitive"] == true, s.Format, s.WriteOnly
+		}
+		for _, c := range []struct {
+			name      string
+			schema    *openapi3.Schema
+			secret    bool
+			format    string
+			writeOnly bool
+		}{
+			{"the request member pin", body.Properties["pin"].Value, true, "password", true},
+			{"the request list codes", body.Properties["codes"].Value, true, "", true},
+			{"the member token of the nested message", body.Properties["note"].Value.Properties["token"].Value, true, "password", true},
+			{"the response member apiKey", response.Properties["apiKey"].Value, true, "password", false},
+			{"the request member reason", body.Properties["reason"].Value, false, "", false},
+			{"the member text of the nested message", body.Properties["note"].Value.Properties["text"].Value, false, "", false},
+			{"the response member todoId", response.Properties["todoId"].Value, false, "", false},
+		} {
+			secret, format, writeOnly := marks(c.schema)
+			if secret != c.secret || format != c.format || writeOnly != c.writeOnly {
+				t.Errorf("%s has x-sensitive %t, the format %q and writeOnly %t; want %t, %q and %t", c.name, secret, format, writeOnly, c.secret, c.format, c.writeOnly)
+			}
+		}
+	})
+}

@@ -299,6 +299,36 @@ The body of a command request is the JSON form of the request message
 `{"stockItemId": "...", "quantity": 2}`. protojson also accepts the proto
 field names, such as `stock_item_id`.
 
+### A secret member
+
+Mark a member that holds a secret, such as a PIN in a request or an API key
+in a response, with the standard protobuf option `debug_redact`:
+
+```proto
+message IssueKeyRequest {
+  string label = 1;
+  string pin = 2 [debug_redact = true];
+}
+message IssueKeyResponse {
+  string api_key = 1 [debug_redact = true];
+}
+```
+
+From rest-api 4.22.0, cli-application 1.13.0 and command 1.16.0:
+
+- The OpenAPI document gives the member `x-sensitive: true`, and the format
+  `password` for a string. A member of a request body is also `writeOnly`.
+- The generated CLI gives no flag to a secret request member. Give it in
+  `--body FILE`. A command whose answer holds a secret member is Sensitive:
+  it writes the answer only to `--output-file FILE`.
+- The service reads the key ring (`STEGO_SECRET_KEY_RING_FILE`), as for a
+  secret field. The ring keys the fingerprints of the idempotency keys and
+  seals the stored answers. Thus a stored API key and the fingerprint of a
+  body with a PIN are not in clear in the table `idempotency_keys`.
+
+The mark also works in nested messages, lists and maps. Other tools, such as
+the debug output of C++ and Java, also hide a member with this mark.
+
 ## Declare a command
 
 <!-- excerpt -->

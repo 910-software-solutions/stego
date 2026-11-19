@@ -19,9 +19,12 @@
 # Version 1.14.0 gives an entity with a resource type of its own the repository type <Entity>Repo, whose GetForUpdate,
 # GetForDelete, Update and Delete take no parent, and Move for an update that changes a reference (walkthrough 15,
 # W15-B3, ST-SUP-RC32-OC26).
+# Version 1.16.0 states that STEGO_SECRET_KEY_RING_FILE is also required when a command message has a member that the
+# proto marks debug_redact: such a service keys its idempotency fingerprints and seals its stored answers
+# (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12, ST-SUP-Q192).
 kind: component
 name: command
-version: 1.14.0
+version: 1.16.0
 stage: ga
 output_namespace: commands
 
@@ -119,8 +122,8 @@ environment:
   - name: STEGO_SECRET_KEY_RING_FILE
     type: path
     required: false
-    description: "The key ring of the secret fields and stored answers: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a secret field, readable or compare-only, or a pii field."
-    required_when: "the service has a secret field or a pii field"
+    description: "The key ring of the secret fields and stored answers: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a secret or pii field, or a secret command member."
+    required_when: "the service has a secret field or a pii field or a command member marked debug_redact"
     secret: false
     secret_source: {name: "{service}-secret-key-ring", key: key-ring}
     read_with: sealed

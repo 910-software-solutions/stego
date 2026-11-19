@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jsell-rh/stego/internal/gen"
 	"github.com/jsell-rh/stego/internal/types"
 )
 
@@ -683,6 +684,29 @@ func TestKeyRingWiring(t *testing.T) {
 			if strings.Contains(string(plain), gone) {
 				t.Errorf("the wiring of a service with no secret and no pii field holds %s", gone)
 			}
+		}
+	})
+}
+
+func TestCommandSecretRing(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC21-T03 A service whose command message has a member marked debug_redact reads the key ring", func(t *testing.T) {
+		proto := func(option string) gen.Context {
+			return gen.Context{ComponentConfig: map[string]any{"proto_files": []any{map[string]any{"path": "proto/keys.proto", "import_path": "keys/v1/keys.proto"}}},
+				ModuleName: "example.com/keys", OutDirName: "out", OutputNamespace: "commands",
+				Inputs: map[string][]byte{"proto/keys.proto": []byte("syntax = \"proto3\";\npackage keys.v1;\nmessage Key { string value = 1" + option + "; }\n" +
+					"message IssueKeyRequest { string label = 1; }\nmessage IssueKeyResponse { map<string, Key> keys = 1; }\n")}}
+		}
+		for _, c := range []struct {
+			option string
+			ring   bool
+		}{{" [debug_redact = true]", true}, {" [debug_redact = false]", false}, {"", false}} {
+			ring, err := commandSecrets(proto(c.option))
+			if err != nil || ring != c.ring {
+				t.Errorf("a member of a map value of a response with the option %q gives the ring %t (%v), want %t", c.option, ring, err, c.ring)
+			}
+		}
+		if ring, err := commandSecrets(gen.Context{}); err != nil || ring {
+			t.Errorf("a service with no command component gives the ring %t (%v), want false", ring, err)
 		}
 	})
 }
