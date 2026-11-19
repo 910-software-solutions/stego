@@ -13,9 +13,11 @@
 # Version 6.17.0 makes the row of the lease of the seal job in the transaction of the expand migration of a seal, so a
 # later migration job on a restored database makes it too, and the refusal of the seal contract names the migration
 # job of the release of the expand step (ST-SUP-RC01-OC49; walkthrough 14, W14-B7).
+# Version 6.18.0 marks the clear column of each open seal as droppable in the schema manifest, so a start without it
+# is ready (walkthrough 15, W15-B4, ST-SUP-RC01-OC12).
 kind: component
 name: postgres-adapter
-version: 6.17.0
+version: 6.18.0
 stage: ga
 output_namespace: internal/storage
 

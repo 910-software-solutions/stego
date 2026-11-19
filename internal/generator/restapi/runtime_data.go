@@ -2183,7 +2183,7 @@ func (w *runtimeHandlerWriter) update() {
 	w.forceScope("stored." + toPascalCase(c.scope))
 	w.before(types.OpUpdate, nil)
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
+	w.f("\t\tupdated, err := %s(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", updateCall(e), w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpdate, "persisted", "updated", nil)
 	w.respond("http.StatusOK", "persisted")
@@ -2385,7 +2385,7 @@ func (w *runtimeHandlerWriter) upsert() {
 	w.populateUpdate()
 	w.forceScope("scope")
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
+	w.f("\t\tupdated, err := %s(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", updateCall(e), w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpUpsert, "persisted", "updated", nil)
 	w.respond("http.StatusOK", "persisted")
@@ -2459,7 +2459,7 @@ func (w *runtimeHandlerWriter) patch() {
 		}
 	}
 	w.parents("stored")
-	w.f("\t\tupdated, err := repo.Update(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", w.kept(c.lower, "from"))
+	w.f("\t\tupdated, err := %s(ctx, from, %s, parents...)\n\t\tif err != nil {\n\t\t\treturn idempotency.Response{}, err\n\t\t}\n", updateCall(e), w.kept(c.lower, "from"))
 	w.f("\t\tpersisted = %s\n", w.fromData("updated.Value()"))
 	w.after(types.OpPatch, "persisted", "updated", fields)
 	w.respond("http.StatusOK", "persisted")
@@ -2702,4 +2702,14 @@ func renderChainLinks(ctx gen.Context, collections []*runtimeCollection) ([]byte
 		return nil, fmt.Errorf("rest-api: format links.go: %w", err)
 	}
 	return out, nil
+}
+
+// updateCall gives the call of the update of a generated write of e: the repository of an entity with a resource type
+// of its own takes no parent on Update, so the write calls the update of the runtime that it embeds, which takes the
+// parents of a changed reference (ST-SUP-RC32-OC26).
+func updateCall(e types.Entity) string {
+	if e.ResourceType != "" {
+		return "repo.Repository.Update"
+	}
+	return "repo.Update"
 }

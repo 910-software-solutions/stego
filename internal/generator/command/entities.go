@@ -848,5 +848,40 @@ func renderEntity(w *writer, e *entity, tenantKey string) {
 	}
 	w.f("}))\n\n")
 	w.f("// %sRepository gives the repository of %s of a command handle; the handle refuses an entity that its command does\n// not declare it writes.\n", e.goName, e.decl.Name)
-	w.f("func %sRepository[P any](h *command.Handle[P]) (*command.Repository[%s], error) {\n\treturn command.Repo(h, %sEntity)\n}\n\n", e.goName, e.goName, e.goName)
+	if e.resourceType == "" {
+		// A child entity has no resource type of its own: each locked read, update and delete takes the loaded value
+		// of its parent, so it keeps the repository of the runtime (ST-SUP-RC32-OC26).
+		w.f("func %sRepository[P any](h *command.Handle[P]) (*command.Repository[%s], error) {\n\treturn command.Repo(h, %sEntity)\n}\n\n", e.goName, e.goName, e.goName)
+		return
+	}
+	renderTypedRepository(w, e)
+}
+
+// renderTypedRepository writes the repository of an entity with a resource type of its own, which is not a child
+// entity (ST-SUP-RC32-OC26): the type <Entity>Repo embeds the repository of the runtime, and its GetForUpdate,
+// GetForDelete, Update and Delete take no parent, as the runtime refuses each parent of them, so a wrong parent does
+// not compile. An entity with a reference to an entity with a resource type also gets Move, the update that changes a
+// reference and takes the loaded value of each new referenced row (ST-SUP-RP10-LC05, ST-SUP-RP10-LC17).
+func renderTypedRepository(w *writer, e *entity) {
+	name, loaded := e.goName+"Repo", "command.Loaded["+e.goName+"]"
+	w.f("// %s is the repository of %s, an entity with the resource type %s of its own, which is no child entity: its\n", name, e.decl.Name, e.resourceType)
+	w.f("// locked reads, its update and its delete take no parent (ST-SUP-RC32-OC26). The methods of the runtime that it\n// does not hold are those of Repository.\n")
+	w.f("type %s struct{ *command.Repository[%s] }\n\n", name, e.goName)
+	w.f("func %sRepository[P any](h *command.Handle[P]) (*%s, error) {\n\trepo, err := command.Repo(h, %sEntity)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\treturn &%s{repo}, nil\n}\n\n", e.goName, name, e.goName, name)
+	w.f("// GetForUpdate reads the row id and locks it until the transaction ends. It takes no parent.\n")
+	w.f("func (r *%s) GetForUpdate(ctx context.Context, id string) (%s, error) {\n\treturn r.Repository.GetForUpdate(ctx, id)\n}\n\n", name, loaded)
+	w.f("// GetForDelete reads the row id and locks it for a delete or a change of a key. It takes no parent.\n")
+	w.f("func (r *%s) GetForDelete(ctx context.Context, id string) (%s, error) {\n\treturn r.Repository.GetForDelete(ctx, id)\n}\n\n", name, loaded)
+	if len(e.references) > 0 {
+		w.f("// Update writes value over the loaded row from and keeps each reference of the row. It takes no parent: an update\n// that changes a reference is Move.\n")
+	} else {
+		w.f("// Update writes value over the loaded row from. It takes no parent.\n")
+	}
+	w.f("func (r *%s) Update(ctx context.Context, from %s, value %s) (%s, error) {\n\treturn r.Repository.Update(ctx, from, value)\n}\n\n", name, loaded, e.goName, loaded)
+	w.f("// Delete deletes the loaded row from. It takes no parent.\n")
+	w.f("func (r *%s) Delete(ctx context.Context, from %s) error {\n\treturn r.Repository.Delete(ctx, from)\n}\n\n", name, loaded)
+	if len(e.references) > 0 {
+		w.f("// Move writes value over the loaded row from, where value changes a reference: parents are the loaded values of\n// the rows that the changed references name, each decided with the permission of its reference.\n")
+		w.f("func (r *%s) Move(ctx context.Context, from %s, value %s, parents ...command.Ref) (%s, error) {\n\treturn r.Repository.Update(ctx, from, value, parents...)\n}\n\n", name, loaded, e.goName, loaded)
+	}
 }
