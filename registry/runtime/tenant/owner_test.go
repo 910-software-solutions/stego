@@ -268,6 +268,11 @@ func TestStalePlans(t *testing.T) {
 		if !StalePlan(err) {
 			t.Fatalf("the read after the change gives %v, not a stale prepared statement", err)
 		}
+		// The server function names the error in each language of lc_messages, also when the text is not English.
+		var pg *pgconn.PgError
+		if !errors.As(err, &pg) || !StalePlan(&pgconn.PgError{Code: "0A000", Message: "translated", Routine: pg.Routine}) {
+			t.Fatal("StalePlan does not hold for the error of the server with a message in another language")
+		}
 		if StalePlan(errors.New("cached plan must not change result type")) || StalePlan(&pgconn.PgError{Code: "0A000", Message: "other"}) {
 			t.Fatal("StalePlan holds for an error that is not the refusal of a stale prepared statement")
 		}

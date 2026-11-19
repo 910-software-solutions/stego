@@ -141,11 +141,13 @@ func open(ctx context.Context, cfg Config) (*sql.DB, error) {
 			return checkConn(ctx, conn)
 		}),
 		stdlib.OptionResetSession(func(ctx context.Context, conn *pgx.Conn) error {
-			if err := resetPlans(ctx, conn); err != nil {
-				return driver.ErrBadConn
-			}
 			if err := checkConn(ctx, conn); err != nil {
 				// The pool discards the connection, and the next request gets a new one.
+				return driver.ErrBadConn
+			}
+			// The guard passed first, so the drop of the prepared statements runs only on a connection that the
+			// pool keeps (security review of PR #466, L1).
+			if err := resetPlans(ctx, conn); err != nil {
 				return driver.ErrBadConn
 			}
 			return nil
@@ -177,9 +179,12 @@ const planGeneration = "stego.tenant.plan_generation"
 // StalePlan tells whether err is the refusal of the server to run a prepared statement whose result columns changed
 // since the connection prepared it, SQLSTATE 0A000 "cached plan must not change result type", as after a column of
 // its table was dropped and added again (ST-SUP-RP04-LC11). The statement wrote nothing, so the call may run again.
+// The server function that gives the error, RevalidateCachedQuery, names it in every language of lc_messages; the
+// English text names it when the server sends no function (security review of PR #466, L2).
 func StalePlan(err error) bool {
 	var pg *pgconn.PgError
-	return errors.As(err, &pg) && pg.Code == "0A000" && strings.Contains(pg.Message, "cached plan must not change result type")
+	return errors.As(err, &pg) && pg.Code == "0A000" &&
+		(pg.Routine == "RevalidateCachedQuery" || strings.Contains(pg.Message, "cached plan must not change result type"))
 }
 
 // ResetStatements makes each connection of each pool that Open or OpenOwner gave drop the statements that it
