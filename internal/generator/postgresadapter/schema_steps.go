@@ -320,7 +320,7 @@ func schemaSteps(ctx gen.Context) ([]schemaStep, error) {
 			case "seal":
 				contract, err = sealContractSQL(ctx, before, after, change)
 			default:
-				contract, err = contractSQL(ctx, before, after, change)
+				contract, err = contractSQL(ctx, before, after, change, expand)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("schema change %s: %w", change.ID, err)
@@ -796,9 +796,13 @@ func renameSQL(ctx gen.Context, before, after []tableModel, change types.SchemaC
 // the sync trigger, after its check again, the completeness CHECK and K with its CHECK and its indexes, all in that
 // one transaction, so that no write of the release before changes K alone after the trigger is gone (security review
 // of PR #316, H1); then the function of the trigger. Each statement is IF EXISTS or has a query that tells whether it
-// still has to run, so a rerun after a failure part way recovers. It refuses a field with a default, which the
-// manifest of the release of the rename does not give U.
-func contractSQL(ctx gen.Context, before, after []tableModel, change types.SchemaChange) (*contractStep, error) {
+// still has to run, so a rerun after a failure part way recovers. For a field with a default, the first statement
+// gives U the default, which the expand step did not give it so that the backfill finds each row that it has to
+// fill, and in the same transaction the comment of a relaxed form that states the default and names the expand
+// migration expand: the manifest of the release of the change states no default for U, and its schema check accepts
+// the default of such a comment while that release still runs (ST-SUP-RC01-OC39, ST-SUP-RP15-LC04, walkthrough 14
+// W14-B3).
+func contractSQL(ctx gen.Context, before, after []tableModel, change types.SchemaChange, expand string) (*contractStep, error) {
 	pair, err := pairOf(ctx, change)
 	if err != nil {
 		return nil, err
@@ -807,18 +811,23 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 	old, okOld := findTable(before, name)
 	next, okNext := findTable(after, name)
 	if !okOld || !okNext {
-		return nil, fmt.Errorf("the rename names the entity %s, whose table is not there", change.Entity)
+		return nil, fmt.Errorf("the %s names the entity %s, whose table is not there", change.Kind, change.Entity)
 	}
 	k, okK := findColumn(old, pair.k)
 	u, okU := findColumn(next, pair.u)
 	if !okK || !okU {
-		return nil, fmt.Errorf("the contract of the rename of %s.%s to %s finds no column %s before the step or %s after it", change.Entity, change.From, change.Field, change.From, change.Field)
+		return nil, fmt.Errorf("the contract of the %s finds no column %s before the step or %s after it", changeText(change), pair.k, pair.u)
 	}
 	if _, kept := findColumn(next, pair.k); kept {
 		return nil, fmt.Errorf("the table %s keeps the column %s after the contract of its %s", name, pair.k, change.Kind)
 	}
 	if u.defaultClause != "" {
-		return nil, fmt.Errorf("the contract of the rename of %s.%s to %s is of a field with a default, which the schema manifest of the release of the rename does not give the new column; it is not built", change.Entity, change.From, change.Field)
+		if !strings.HasPrefix(u.manifestDefault, "'") {
+			return nil, fmt.Errorf("the contract of the %s is of a field whose default %s is no constant, which the schema check of the release of the change cannot accept on the new column; it is not built", changeText(change), u.manifestDefault)
+		}
+		if expand == "" {
+			return nil, fmt.Errorf("the contract of the %s has no expand step before it", changeText(change))
+		}
 	}
 	table := "public." + sqlIdentifier(name)
 	regclass := sqlString(table) + "::pg_catalog.regclass"
@@ -836,6 +845,13 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 		out.tenant, out.tenantSchema = sqlIdentifier(tenantColumn(ctx)), "public"
 	}
 	add := func(s contractStatement) { out.statements = append(out.statements, s) }
+	if u.defaultClause != "" {
+		comment := RelaxComment(expand, "", false, u.manifestDefault, nil)
+		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ALTER COLUMN %s SET%s", table, sqlIdentifier(u.name), u.defaultClause),
+			when: "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_attrdef d JOIN pg_catalog.pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = " +
+				regclass + " AND a.attname = " + sqlString(u.name) + " AND NOT a.attisdropped)",
+			also: []string{fmt.Sprintf("COMMENT ON COLUMN %s.%s IS %s", table, sqlIdentifier(u.name), sqlString(comment))}})
+	}
 	if u.notNull {
 		add(contractStatement{sql: fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s CHECK (%s IS NOT NULL) NOT VALID", table, sqlIdentifier(notNull), sqlIdentifier(u.name)),
 			when: attribute(u.name, " AND NOT a.attnotnull") + " AND NOT EXISTS (" + constraint + ")"})
@@ -851,6 +867,15 @@ func contractSQL(ctx gen.Context, before, after []tableModel, change types.Schem
 			fmt.Sprintf("ALTER TABLE %s DROP COLUMN IF EXISTS %s", table, sqlIdentifier(k.name))}})
 	add(contractStatement{sql: fmt.Sprintf("DROP FUNCTION IF EXISTS %s.%s()", StepSchema, sqlIdentifier(trigger))})
 	return out, nil
+}
+
+// changeText names a rename or a retype as a fault text names it: the rename of Board.title to heading, or the retype
+// of Board.revision from string.
+func changeText(change types.SchemaChange) string {
+	if change.Kind == "retype" {
+		return fmt.Sprintf("retype of %s.%s from %s", change.Entity, change.Field, change.From)
+	}
+	return fmt.Sprintf("%s of %s.%s to %s", change.Kind, change.Entity, change.From, change.Field)
 }
 
 // NotNullCheckName gives the name of the CHECK (U IS NOT NULL) that the contract step of a rename of a required field

@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261118222640-434cff4ee821
+        module_version: v0.0.0-20261118232123-5a5ff6885205
         vcs: git
-        revision: 434cff4ee8214e88acea4569a5e9277e9ebbb062
+        revision: 5a5ff68852058dbb5e33f76aeca558a9f898d5e7
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 9a9930efe96f586ab2b7c947a2f2d2b07282389a02ee2940d9a4e6d6cc389274
+    registry_content_sha256: b89deda706970b9c6fc7676639013f1c14823440003dcca0d1c9145a8473b7a3
     components:
         audit-log:
             version: 1.2.0
@@ -68,8 +68,8 @@ last_applied:
             version: 2.1.0
             sha: b29b2848da2274c2486d5cf6f9440b36e6d6b030a7b6936c786c6d92e2cbd779
         postgres-adapter:
-            version: 6.15.0
-            sha: 3ff1260bc5a2737cf1f4f6bcfd07366a36b214c6602916299415745e82e81667
+            version: 6.16.0
+            sha: 9a7d8477e44546b1c49ca3b10c9598def7fb37078f31ded2f5249aa2caac82b0
         query:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: d521915c811fbae2a4123bd0fc6dc737c023fdbf0c505a4adfb6cc69f9f04801
-        architecture/index.html: d2c39a46533aa5b5e2c14d74953222c1508cb098247e5bfc59954b1b78df375b
+        architecture/architecture.json: 472a80d9679503e0e17864ac017231554634994ab69a58d21dafa2d3c514e37d
+        architecture/index.html: 4071b5575577764d4c9d72a65eadd67fa385a7279082a9d64820a5bc7be9ffd7
         deploy/base/deployment.yaml: ea22a1bda41f03346a2d2b2ffa2e321b33b2c803eb874cbbfae5611de163739d
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: 9566621aa9ae86a67f7034d0da21be36c5b34074180795c3b8ae11a60e9a90a4

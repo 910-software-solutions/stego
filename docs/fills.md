@@ -763,13 +763,79 @@ on, such as a ledger row that a command on the service-level resource
 creates. Then the worker creates each row under that parent, and the parent's
 permissions decide the reads.
 
-### The lists of a worker see only rows with a tuple
+### The lists of a command and a worker see only rows with a tuple
 
-A worker list keeps only the rows on which the worker has its permission. A
-row with no tuple in SpiceDB, such as a row that a script wrote past the
-service, or a new row whose tuples the relay did not write yet, is not in the
-list. Thus `sum-balances` does not count a wallet that a script inserted into
-the table. Write the rows only through the service.
+A list of a command keeps only the rows on which the caller has the list
+permission of the entity (else its read permission). A worker list keeps only
+the rows on which the worker has its permission. A row with no tuple in
+SpiceDB, such as a row that a script wrote past the service, or a new row
+whose tuples the relay did not write yet, is not in the list. Thus
+`sum-balances` does not count a wallet that a script inserted into the table.
+Write the rows only through the service.
+
+The relay writes the tuples of a create after its commit, often in less than
+one second. Thus a command right after a create can miss the new row: its
+list does not hold the row, and `Get` of the row gives `command.ErrNotFound`.
+For example, a client that creates a record of a patient and at once sends a
+command that closes the open records of the patient can close every record
+but the new one. To decide the command after the tuples of the create, send
+the `Authz-Revocation-Location` of the create in the header
+`Authz-Revocation-After` of the command (see [Write a child at once after its
+parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent)).
+The command then waits for the tuples before its decision and its lists.
+
+## The handle of a query
+
+A query fill gets a read-only handle. For each entity in `reads`, the
+contract package has a function `queries.<Query><Entities>(h)` that gives the
+repository of the entity, such as `queries.DailyTotalsDailyTotals(h)` for the
+query `daily-totals`, which reads `DailyTotal`. The function refuses an
+entity that the query does not read. A query repository has two methods:
+
+| Method | What it does | The decision that it makes |
+|---|---|---|
+| `Get(ctx, id)` | Reads the row of the ID in the tenant of the caller, in the read-only transaction of the query. It gives a `queries.Loaded<Entity>`; `Value()` gives the value. | The read permission of the entity on the row. A row that is not there and a deny both give `queries.ErrNotFound`, with no data of the row. |
+| `List(ctx, request)` | Reads one page of the rows in the tenant: at most `request.Limit` values (0 is 100, the most is 1,000) after the cursor `request.After`, in the order `request.Order` and then by key, with only the rows whose fields equal each `query.Equal` of `request.Where` (at most 8). It gives a `queries.ListResult`: `Items`, `More` and `Next`, the cursor of the next page. | Keeps only the rows on which the caller has the permission of the query, for a list query, else the list permission of the entity. |
+
+The fill of a list query gets the cursor and the limit of the request in
+`req.After` and `req.Limit`. Give them to `List`, and give back `Next` and
+`More`, so the client gets the cursor of the next page. A field of
+sensitivity `pii` or `secret` cannot be in `Where`. A read of an entity with a
+`pii` field writes its audit row before the method returns. A query never
+writes: the handle has no write method, and the transaction is read only.
+
+## The imports of a fill
+
+A Go file of a fill that is built into the service imports only these
+packages: the slot contract of the fill (such as `<module>/out/commands`)
+and the runtime packages that the contract uses, the fill modules that the
+declaration lists in `fill_modules`, and the fill allow list of the Go
+standard library:
+
+`bytes`, `cmp`, `context`, `crypto/sha256`, `encoding/base64`,
+`encoding/hex`, `encoding/json`, `errors`, `fmt`, `hash`, `hash/crc32`,
+`iter`, `log`, `log/slog`, `maps`, `math`, `math/big`, `math/bits`,
+`regexp`, `slices`, `sort`, `strconv`, `strings`, `time`, `unicode`,
+`unicode/utf16` and `unicode/utf8`.
+
+`stego test` and `stego validate` refuse any other import, such as
+`crypto/subtle`, `os`, `net/http` or `database/sql`, with a fault that names
+the file and the import. They also follow the imports of a fill module, and
+refuse a database driver in it. Some functions of the allowed packages are
+refused too: `fmt.Print`, `fmt.Printf` and `fmt.Println`; the functions of
+`log` and `log/slog` that change, stop or go past the standard logger, such
+as `log.Fatal` and `slog.SetDefault`; and `time.AfterFunc` and
+`context.AfterFunc`, which start a goroutine. A test file, whose name ends in
+`_test.go`, is not built into the service, so it can import any module of
+`go.mod`.
+
+Thus a fill cannot import `crypto/subtle` to compare two secret values.
+Prefer a compare-only field and `sealed.Compared` (see [Check a compare-only
+secret](#check-a-compare-only-secret)): it checks a value against the stored
+hash with no timing leak. When the fill must compare two values that it has,
+compare their SHA-256 digests with `crypto/sha256`. Then the time of the
+compare does not show the values, but it can show how much of the two
+digests is the same.
 
 ## Change events
 

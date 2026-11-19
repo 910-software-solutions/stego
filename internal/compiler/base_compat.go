@@ -387,6 +387,8 @@ func droppedEntityFaults(base, head *types.ServiceDeclaration) []BaseFault {
 type baselineOutput struct {
 	base, head             []postgresadapter.BaselineTable
 	baseMarker, headMarker string
+	// headChanges are the schema changes of the head, by which a fault of a changed table names its cause.
+	headChanges []types.SchemaChange
 }
 
 // generatedBaselines gives what the postgres-adapter generator writes for the baselines of the base and of the head,
@@ -422,7 +424,7 @@ func generatedBaselines(applied *AppliedState, base, head *types.ServiceDeclarat
 			SchemaChanges: service.SchemaChanges, SchemaHistory: service.SchemaHistory, Tenancy: pooledTenancy(service, components),
 			DroppedEntities: dropped, DroppedCollections: service.DroppedCollections, EntityOrder: service.EntityOrder, CollectionOrder: service.CollectionOrder})
 	}
-	out := &baselineOutput{}
+	out := &baselineOutput{headChanges: head.SchemaChanges}
 	var err error
 	if out.base, out.baseMarker, err = baseline(base, baseComponents); err != nil {
 		return nil, false
@@ -460,7 +462,7 @@ func (o *baselineOutput) faults(earlier []BaseFault) []BaseFault {
 				"the baseline of the head has no table %s, and 001_initial of the base creates it; keep the entity %s of the base, or declare the schema change that removes it", before.Table, before.Entity)})
 		case before.Create != after.Create:
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: before.Entity, Message: fmt.Sprintf(
-				"the head changes the table %s of 001_initial with no schema step: the base creates\n%sand the head creates\n%sA database with rows holds the table of the base, so the head's migration job would fail its ledger check; keep the fields of %s in the order and with the settings of the base, and declare each change as a schema change", before.Table, before.Create, after.Create, before.Entity)})
+				"the head changes the table %s of 001_initial with no schema step: %sA database with rows holds the table of the base, so the head's migration job would fail its ledger check; keep the fields of %s in the order and with the settings of the base, and declare each change as a schema change", before.Table, createDifference(before, after, o.headChanges), before.Entity)})
 		case before.Indexes != after.Indexes:
 			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: before.Entity, Message: fmt.Sprintf(
 				"the collections or the fields over %s change its indexes in 001_initial: the base gives\n%sand the head gives\n%sNo schema change builds such an index yet, so the next migration job of a database with rows would fail; keep the list, the scope and implicit fields, the upsert keys of the collections over %s and the sensitivity of its searched fields as the base has them", before.Entity, before.Indexes, after.Indexes, before.Entity)})
@@ -1382,4 +1384,104 @@ func MigrationBodyFaults(base BaseSource, head map[string]string) ([]BaseFault, 
 			name, path, got, base.Ref, base.Commit, want)})
 	}
 	return faults, nil
+}
+
+// createDifference tells how the CREATE TABLE of a table in the baseline of the head differs from the one of the base:
+// each column or constraint that differs, is missing or is new, with its line in the base and in the head, and the
+// schema change of the head that gives the field of the base, which a rename, a retype or a drop takes from its
+// definition (walkthrough 14, W14-B3). When the two tables have the same columns and constraints in another order, it
+// gives the two texts.
+func createDifference(before, after postgresadapter.BaselineTable, changes []types.SchemaChange) string {
+	type item struct{ key, line string }
+	items := func(create string) []item {
+		var out []item
+		for _, line := range strings.Split(create, "\n") {
+			line = strings.TrimSuffix(strings.TrimSpace(line), ",")
+			key := ""
+			switch {
+			case strings.HasPrefix(line, `"`):
+				name, _, _ := strings.Cut(line[1:], `"`)
+				key = "column " + name
+			case strings.HasPrefix(line, `CONSTRAINT "`):
+				name, _, _ := strings.Cut(strings.TrimPrefix(line, `CONSTRAINT "`), `"`)
+				key = "constraint " + name
+			default:
+				continue
+			}
+			out = append(out, item{key, line})
+		}
+		return out
+	}
+	baseItems, headItems := items(before.Create), items(after.Create)
+	headLine, baseLine := map[string]string{}, map[string]string{}
+	for _, it := range headItems {
+		headLine[it.key] = it.line
+	}
+	for _, it := range baseItems {
+		baseLine[it.key] = it.line
+	}
+	var shared []string
+	for _, it := range baseItems {
+		if _, ok := headLine[it.key]; ok {
+			shared = append(shared, it.key)
+		}
+	}
+	var headOrder []string
+	for _, it := range headItems {
+		if _, ok := baseLine[it.key]; ok {
+			headOrder = append(headOrder, it.key)
+		}
+	}
+	whole := "the base creates\n" + before.Create + "and the head creates\n" + after.Create
+	if !slices.Equal(shared, headOrder) {
+		return whole
+	}
+	var text strings.Builder
+	fields := map[string]bool{}
+	for _, it := range baseItems {
+		switch got, ok := headLine[it.key]; {
+		case !ok:
+			fmt.Fprintf(&text, "the %s\n  %s\nof the base is not in the head.\n", it.key, it.line)
+		case got != it.line:
+			fmt.Fprintf(&text, "the %s is\n  %s\nin the base and\n  %s\nin the head.\n", it.key, it.line, got)
+		default:
+			continue
+		}
+		fields[it.key] = true
+	}
+	for _, it := range headItems {
+		if _, ok := baseLine[it.key]; !ok {
+			fmt.Fprintf(&text, "the %s\n  %s\nof the head is not in the base.\n", it.key, it.line)
+			fields[it.key] = true
+		}
+	}
+	if text.Len() == 0 {
+		return whole
+	}
+	table := strings.TrimPrefix(before.Table, "public.")
+	for _, change := range changes {
+		if change.Entity != before.Entity || (change.Kind != "rename" && change.Kind != "retype" && change.Kind != "drop") {
+			continue
+		}
+		name := change.Field
+		if change.Kind == "rename" {
+			name = change.From
+		}
+		named := false
+		for key := range fields {
+			for _, suffix := range []string{"check", "fkey", "key", "not_null", "complete"} {
+				named = named || key == "constraint "+table+"_"+name+"_"+suffix
+			}
+			named = named || key == "column "+name
+		}
+		if !named {
+			continue
+		}
+		if change.Definition == "" {
+			fmt.Fprintf(&text, "Cause: the %s %s gives no definition, so the head takes the field %s before the change with its type alone. Give in definition the field as the base declares it, with each of its settings, such as its default and its limits.\n", change.Kind, change.ID, name)
+			continue
+		}
+		fmt.Fprintf(&text, "Cause: the head takes the field %s before the change from the definition %q of the %s %s. Give in it each setting of the field as the base declares it, such as its default and its limits.\n", name, change.Definition, change.Kind, change.ID)
+	}
+	return text.String()
 }
