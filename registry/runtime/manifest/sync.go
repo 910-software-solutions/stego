@@ -338,7 +338,12 @@ type stepState struct {
 	// open, when it is not nil, names the completeness CHECKs that may be NOT VALID, by "schema.table\x1fname": the
 	// CHECKs of the open changes of the migration job before its backfills (Job.BeforeBackfill).
 	open map[string]bool
+	// blocking are the faults of a missing table or of a missing column that is not droppable (ST-SUP-RP15-LC05).
+	blocking []string
 }
+
+// block adds the fault f to the faults that block (Mismatch.Blocking).
+func (s *stepState) block(f string) { s.blocking = append(s.blocking, f) }
 
 // openCheck tells that the optional constraint n of the table t is the completeness CHECK of an open change that the
 // migration job checks before its backfills, which may still be NOT VALID (review of PR #305, M1).

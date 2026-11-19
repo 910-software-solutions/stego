@@ -61,7 +61,7 @@ Deployments:
 
 | Deployment | File | Modes (`args`) | Readiness | Service |
 |---|---|---|---|---|
-| `<service>` | `deploy/base/deployment.yaml` | `--mode=api` | `/readyz` | The Service selects it. |
+| `<service>` | `deploy/base/deployment.yaml` | `--mode=api` | `/readyz/modes` | The Service selects it. |
 | `<service>-worker` | `deploy/base/worker-deployment.yaml` | `--mode=worker`, `--mode=controller` | `/readyz/modes` | No Service selects it, and it has no container port. |
 
 - Each Deployment runs as a ServiceAccount of its own name: `<service>` in `deploy/base/service-account.yaml`, and
@@ -82,8 +82,13 @@ Deployments:
   cloud or Vault credentials.
 - The liveness probe of each one is `/livez`. It answers 200 while the process runs, and it reads no database
   and no broker, so an outage of a dependency does not restart a pod.
-- `/readyz` tells whether the pod can take requests of the API. It does not read the worker and controller
-  modes. Thus an outage of Kafka or of the audit sink does not remove the API from the endpoints of its Service.
+- `/readyz/modes` of the api pod tells whether the pod can take requests of the API: it reads the api mode only,
+  which the pod runs, and not the worker and controller modes. Thus an outage of Kafka or of the audit sink does
+  not remove the API from the endpoints of its Service. It answers 503 while the HTTP server does not accept, at
+  shutdown, and from the start when the database does not hold a table or a column that the code of the release
+  needs, such as after a roll back past a contract step (see [Which older releases can run on a newer
+  database](operations.md#which-older-releases-can-run-on-a-newer-database)). Then a rollout stops at its first
+  pod, and the pods that serve stay.
 - `/readyz/modes` answers 503 and names the cause when a worker stopped, such as
   `worker: not ready: the component inbox-order-changes stopped`. No traffic goes to the worker Deployment, so
   its readiness removes nothing from a Service. It shows a stopped worker in `kubectl get pods` and in the
@@ -108,8 +113,8 @@ Deployments:
   orders-worker, count: 2}]`.
 
 A service whose declared modes hold only the api mode, or only the worker and controller modes, gets one
-Deployment, with the readiness `/readyz` or `/readyz/modes`. A browser service has no modes: it gets one
-Deployment with the readiness `/readyz`.
+Deployment, with the readiness `/readyz/modes`. A browser service has no modes: it gets one Deployment with the
+readiness `/readyz` of health-check.
 
 Upgrade: before this release, the one Deployment `<service>` ran every mode, as `STEGO_MODE` selected. After the
 upgrade it runs the api mode only, whatever `STEGO_MODE` holds, and `<service>-worker` runs the worker and
@@ -128,7 +133,7 @@ Deployment runs and no pod of `<service>-worker` runs:
 - The creator of a new row gets 404 when it reads the row.
 - A write answers `Authz-Revocation: pending`, and its status route stays `pending`. A read with
   `Authz-Revocation-After` waits until the wait cap, then answers `Authz-Revocation: pending` with the 404.
-- `/readyz` of the api pod stays 200. This is correct: the readiness of the API does not read the worker modes, so
+- `/readyz/modes` of the api pod stays 200. This is correct: the readiness of the API does not read the worker modes, so
   an outage of the worker does not remove the API from its Service. Thus readiness does not show this case.
 
 When the worker pod starts, the relay delivers the tuples in order, and the grants and rows become visible. No

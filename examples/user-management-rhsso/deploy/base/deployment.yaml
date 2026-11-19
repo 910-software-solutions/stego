@@ -337,7 +337,7 @@ spec:
               protocol: TCP
           readinessProbe:
             httpGet:
-              path: /readyz
+              path: /readyz/modes
               port: 8080
           resources:
             limits:

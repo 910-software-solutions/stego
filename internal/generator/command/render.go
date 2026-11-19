@@ -217,6 +217,13 @@ func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey s
 	if m.usesBytes() {
 		w.f("\t\"bytes\"\n")
 	}
+	// The typed repository of an entity with a resource type of its own takes a context (ST-SUP-RC32-OC26).
+	for _, e := range m.entities {
+		if e.resourceType != "" {
+			w.f("\t\"context\"\n")
+			break
+		}
+	}
 	if m.usesJSON() {
 		w.f("\t\"encoding/json\"\n")
 	}
@@ -487,8 +494,8 @@ type ListPlan struct {
 	// seal step is open, which the runtime takes after the contract step drops the clear column (ST-SUP-RP10-LC49);
 	// empty for an entity with no open seal.
 	ReadAfterSeal, LockAfterSeal string
-	Values     []string
-	Params     []ListParam
+	Values                       []string
+	Params                       []ListParam
 	// Child tells that the entity is a child: it has no resource type and References references to entities with a
 	// resource type; Parents are the referenced entities of the parent terms (ST-DECL-INV94).
 	Child      bool

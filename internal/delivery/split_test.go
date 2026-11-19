@@ -84,8 +84,10 @@ func TestModeDeployments(t *testing.T) {
 		worker, workerLabels := container(t, deployments["orders-worker"])
 
 		// The probes and the modes of each Deployment.
-		if readinessOf(api) != "/readyz" || readinessOf(worker) != WorkerReadiness {
-			t.Errorf("the readiness probes are %s and %s, want /readyz and %s", readinessOf(api), readinessOf(worker), WorkerReadiness)
+		// Both Deployments of a service on the runtime data path take the readiness of the modes, so the api
+		// Deployment is not ready while its api mode is not (walkthrough 15, W15-B4).
+		if readinessOf(api) != WorkerReadiness || readinessOf(worker) != WorkerReadiness {
+			t.Errorf("the readiness probes are %s and %s, want %s for both", readinessOf(api), readinessOf(worker), WorkerReadiness)
 		}
 		for _, c := range []map[string]any{api, worker} {
 			if c["livenessProbe"].(map[string]any)["httpGet"].(map[string]any)["path"] != "/livez" {
@@ -157,7 +159,7 @@ func TestModeDeployments(t *testing.T) {
 			readiness string
 			worker    bool
 		}{
-			{[]string{"api"}, "/readyz", false},
+			{[]string{"api"}, WorkerReadiness, false},
 			{[]string{"worker", "controller"}, WorkerReadiness, true},
 			{nil, "/readyz", true},
 		} {

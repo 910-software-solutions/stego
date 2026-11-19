@@ -198,8 +198,9 @@ func TestKubernetesBaseApply(t *testing.T) {
 		if port == 0 {
 			t.Fatal("the platform requirements state no default for PORT, which health-check declares")
 		}
-		// The Deployment of the api mode has the readiness of health-check, and the Deployment orders-worker of the
-		// worker and controller modes the readiness of the modes (ST-DLV-UC07-R03, ST-DLV-UC07-R07).
+		// The service is on the runtime data path, so the Deployment of the api mode and the Deployment
+		// orders-worker of the worker and controller modes each have the readiness of the modes (ST-DLV-UC07-R03,
+		// ST-DLV-UC07-R07; walkthrough 15, W15-B4).
 		resources := buildBase(t, base)
 		deployments := 0
 		for _, resource := range resources {
@@ -207,10 +208,7 @@ func TestKubernetesBaseApply(t *testing.T) {
 				continue
 			}
 			deployments++
-			readiness := "/readyz"
-			if field(resource, "metadata", "name") == "orders-worker" {
-				readiness = delivery.WorkerReadiness
-			}
+			readiness := delivery.WorkerReadiness
 			container := containersOf(t, []map[string]any{resource})[0]
 			for probe, path := range map[string]string{"livenessProbe": "/livez", "readinessProbe": readiness} {
 				if got := field(container, probe, "httpGet", "path"); got != path {
