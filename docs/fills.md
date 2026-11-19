@@ -884,6 +884,20 @@ if err != nil {
 apiKey := base64.RawURLEncoding.EncodeToString(raw)
 ```
 
+For a code of digits, read all the bytes as one number and reduce that number
+once. Do not take one digit from each byte with `b % 10`: 256 is not a
+multiple of 10, so the digits 0 to 5 come more often than 6 to 9. With 32
+random bytes, the bias of one reduction is too small to measure:
+
+```go
+raw, err := command.NewToken(32)
+if err != nil {
+	return nil, err
+}
+n := new(big.Int).SetBytes(raw)
+code := fmt.Sprintf("%06d", n.Mod(n, big.NewInt(1_000_000)))
+```
+
 `command.NewID()` gives a new random UUID in its text form, with 122 random
 bits. Use it for a new ID. Do not make a secret from an ID, the time or the
 input with `crypto/sha256`: each person who knows the inputs can make the
