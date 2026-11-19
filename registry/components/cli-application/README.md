@@ -89,10 +89,18 @@ request can still be in its transaction, as a 409 answer shows. The service
 gives the stored answer of a write that it did, so the write does not occur
 two times. The CLI does not send a GET, PUT, or DELETE again. It does not send
 a write again after any other answer, after a redirect, after an answer body
-over the client limit, or after a request that the client refused before it
-sent it. Without the flag, the CLI does not send the write again. After an
-uncertain failure, callers must check resource state before they retry a
-write.
+over the client limit, after a certificate of the service that the TLS
+handshake refuses (`ErrUntrusted`), or after a request that the client refused
+before it sent it. Without the flag, the CLI does not send the write again.
+After an uncertain failure, callers must check resource state before they
+retry a write.
+
+The flag comes from the OpenAPI document that the CLI holds, which is the
+document of the service when the CLI was built. When a later release of the
+service stops to keep the key of a write, a CLI of an earlier release still
+sends that write again, and the write can then occur two times. Thus, build
+the CLI from the same release as the service that it calls, and build it again
+with each release of the service.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and
