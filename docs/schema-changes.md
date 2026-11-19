@@ -432,6 +432,15 @@ an open seal: give `--base` with the release that runs now. The first pass also 
 after the expand step, so that each running process of the release before
 reports itself first.
 
+So a seal takes 13 minutes or more before you can deploy its contract step.
+The controller runs the seal job at its start and then each 10 minutes. A run
+waits, and seals nothing, while the expand step is younger than 3 minutes or a
+process of a release before reported itself in its last three report
+intervals, such as in the last 30 seconds. Thus the first run after a
+rollout usually waits, and the first pass runs 10 minutes later. Look for the
+log line `seal of a secret column` with `completed=true` before you declare the
+contract step.
+
 The migration Job of the release with the expand step makes the row of the
 lease `stego.backfill.<change ID>` in the lease table. A later migration Job
 that applies the expand step, such as the Job of a later release on a restored
