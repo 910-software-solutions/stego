@@ -2,6 +2,12 @@
 # service when the declaration gives no factory_package (ST-SUP-RC04-OC32).
 kind: component
 name: cli-application
+# Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
+# (IdempotentWrites of Command and of ApplyResource, which IdempotentWritesFrom sets from the OpenAPI document of the
+# service), not with one flag of the application; it sends a write again only after a transport failure, an expired
+# request or a 5xx answer, not after a local refusal, a redirect or an answer body over the limit; and its client
+# refuses the key on a method other than POST and PATCH (security review of PR #447, L-2, I-2 and I-3). The field
+# IdempotentWrites of Application, from 1.10.0, which no release had, is removed.
 # Version 1.10.0 sends a new Idempotency-Key with each POST and PATCH, and sends an uncertain write again one time
 # with the same key when the application states that its service keeps the key (ST-SUP-RC04-OC31, ST-SUP-Q187).
 # It also gives one apply lookup a time limit of 60 s for all its pages, and refuses a list whose total at its end

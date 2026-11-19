@@ -62,17 +62,31 @@ not follow redirects or use environment proxy settings. CLI requests have a
 
 Each POST and PATCH request has a new `Idempotency-Key` header: a structured
 string that holds a random UUID. A service that does not use the key ignores
-it. Set `IdempotentWrites` in `command.Application` only when the service keeps
-the key (the idempotency component). Then the CLI sends a write again one time,
-with the same key and body, after a transport failure or a 5xx answer. It waits
-one second first, or follows a `Retry-After` of one to five seconds. When the
-second request gets no success, the outcome is unknown: the first request can
-still be in its transaction, as a 409 answer shows. The
-service gives the stored answer of a write that it did, so the write does not
-occur two times. The CLI does not send a GET, PUT, or DELETE again, and does
-not send a write again after any other answer. Without `IdempotentWrites`, the
-CLI sends no request again. After an uncertain failure, callers must check
-resource state before they retry a write.
+it. The client refuses the header on a GET, PUT, DELETE, or HEAD request.
+
+Set `IdempotentWrites` on a `command.Command` or a `command.ApplyResource`
+only when the service keeps the key of that write (the idempotency
+component). For an apply resource, the flag covers its create and its patch.
+`command.IdempotentWritesFrom(app, document)` sets the flag of each command
+and apply resource from the OpenAPI document of the service: true when the
+operation carries the `Idempotency-Key` header parameter, and false otherwise.
+The rest-api component states that parameter on each create and patch when
+the service has the idempotency component. A parameter that the document
+gives by `$ref` does not count. A command that is not a POST or a PATCH must
+not set the flag.
+
+With the flag, the CLI sends a write again one time, with the same key and
+body, after a transport failure, a request that expired, or a 5xx answer. It
+waits one second first, or follows a `Retry-After` of one to five seconds.
+When the second request gets no success, the outcome is unknown: the first
+request can still be in its transaction, as a 409 answer shows. The service
+gives the stored answer of a write that it did, so the write does not occur
+two times. The CLI does not send a GET, PUT, or DELETE again. It does not send
+a write again after any other answer, after a redirect, after an answer body
+over the client limit, or after a request that the client refused before it
+sent it. Without the flag, the CLI does not send the write again. After an
+uncertain failure, callers must check resource state before they retry a
+write.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and

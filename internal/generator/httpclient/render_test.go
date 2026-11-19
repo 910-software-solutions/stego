@@ -74,7 +74,7 @@ func TestIdempotencyKeyClients(t *testing.T) {
 			}
 			dir := t.TempDir()
 			files := map[string][]byte{"go.mod": []byte("module example.com/key-test\ngo 1.26.11\n"), "client.go": file.Bytes(), "isolation_test.go": isolationTests,
-				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst keyClient = %t\n", kind != "other"))}
+				"key_test.go": keyTests, "mode_test.go": []byte(fmt.Sprintf("package client\nconst keyClient = %t\nconst keyWritesOnly = %t\n", kind != "other", kind == "cli"))}
 			for name, data := range files {
 				if err := os.WriteFile(filepath.Join(dir, name), data, 0644); err != nil {
 					t.Fatal(err)

@@ -30,7 +30,7 @@ const FollowLinks LinkPolicy = false
 const RefuseLinks LinkPolicy = true
 
 func Render(namespace, tracing string, links LinkPolicy) (gen.File, error) {
-	return render(namespace, tracing, 0, links, false)
+	return render(namespace, tracing, 0, links, false, false)
 }
 
 // RenderProxy renders the client of an API proxy, which sends the Idempotency-Key header that the browser gives for
@@ -41,15 +41,16 @@ func RenderProxy(namespace, tracing string, port int, links LinkPolicy) (gen.Fil
 	if port != 0 && (port < 1024 || port > 65535) {
 		return gen.File{}, fmt.Errorf("local application port must be 1024 through 65535")
 	}
-	return render(namespace, tracing, port, links, true)
+	return render(namespace, tracing, port, links, true, false)
 }
 
 // RenderCLI renders the client of the generated CLI, which sends the Idempotency-Key header that the CLI makes for
 // each write. The CLI sends a write again only with the same key (ST-SUP-RC04-OC31), so it keeps the promise of the
-// key. The CLI reads its credential and CA files from paths that its user gives, so the client refuses a leaf
-// symbolic link.
+// key. The client refuses the key on a request that is not a POST or a PATCH, as the service ignores it there
+// (security review of PR 447, I-3). The CLI reads its credential and CA files from paths that its user gives, so the
+// client refuses a leaf symbolic link.
 func RenderCLI(namespace, tracing string) (gen.File, error) {
-	return render(namespace, tracing, 0, RefuseLinks, true)
+	return render(namespace, tracing, 0, RefuseLinks, true, true)
 }
 
 // RenderSDK renders the client of the generated Go SDK, which sends the Idempotency-Key header that the caller gives
@@ -67,11 +68,12 @@ func RenderLocalApplication(namespace, tracing string, port int, links LinkPolic
 	if port < 1024 || port > 65535 {
 		return gen.File{}, fmt.Errorf("local application port must be 1024 through 65535")
 	}
-	return render(namespace, tracing, port, links, false)
+	return render(namespace, tracing, port, links, false, false)
 }
 
-// keyHeader lets the client send the Idempotency-Key header.
-func render(namespace, tracing string, port int, links LinkPolicy, keyHeader bool) (gen.File, error) {
+// keyHeader lets the client send the Idempotency-Key header, and keyWritesOnly lets it send the header only on a POST
+// and a PATCH.
+func render(namespace, tracing string, port int, links LinkPolicy, keyHeader, keyWritesOnly bool) (gen.File, error) {
 	if err := gen.ValidatePath(namespace); err != nil {
 		return gen.File{}, err
 	}
@@ -90,9 +92,9 @@ func render(namespace, tracing string, port int, links LinkPolicy, keyHeader boo
 	}
 	var output bytes.Buffer
 	data := struct {
-		Package, Tracing, LocalAddress string
-		RefuseLinks, KeyHeader         bool
-	}{path.Base(namespace), tracing, fmt.Sprintf("127.0.0.1:%d", port), bool(links), keyHeader}
+		Package, Tracing, LocalAddress        string
+		RefuseLinks, KeyHeader, KeyWritesOnly bool
+	}{path.Base(namespace), tracing, fmt.Sprintf("127.0.0.1:%d", port), bool(links), keyHeader, keyWritesOnly}
 	if err = t.Execute(&output, data); err != nil {
 		return gen.File{}, err
 	}

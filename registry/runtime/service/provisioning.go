@@ -298,6 +298,7 @@ func writeTenantProblem(w http.ResponseWriter, httpStatus int, base, code string
 	body += "}"
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(httpStatus)
 	_, _ = io.WriteString(w, body)

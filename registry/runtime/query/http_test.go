@@ -551,5 +551,9 @@ func TestProblemForm(t *testing.T) {
 		if !strings.Contains(w.Body.String(), `"type":"about:blank"`) {
 			t.Errorf("with no base the problem is %s, want the type about:blank", w.Body)
 		}
+		// A browser does not sniff the problem as another type (security review of PR 445, I-2).
+		if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("the problem has X-Content-Type-Options %q, want nosniff", got)
+		}
 	})
 }
