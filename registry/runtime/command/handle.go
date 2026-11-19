@@ -123,6 +123,9 @@ type conflictError struct {
 	// sealSwitch is true for a statement that failed because the contract step of a seal dropped a clear column, after
 	// which the entity takes its statements after the contract (ST-SUP-RP10-LC49).
 	sealSwitch bool
+	// stalePlan is true for a statement that the server refused because a change of its table made the prepared
+	// statement of the connection stale (tenant.StalePlan); the pools drop their prepared statements (ST-SUP-RP04-LC11).
+	stalePlan bool
 	// key is the declared fields of the unique key that a unique violation broke, or empty when the entity does not
 	// declare the index (ST-SUP-RP10-LC48). It names no value.
 	key string
@@ -1639,6 +1642,13 @@ func (s *state) fail(ctx context.Context, step string, err error) error {
 		return s.breakWith(err)
 	}
 	code := sqlState(err)
+	if tenant.StalePlan(err) {
+		tenant.ResetStatements()
+		if s.conflict == nil {
+			s.conflict = &conflictError{text: step + " ran a prepared statement that a change of its table made stale", stalePlan: true}
+		}
+		return s.conflict
+	}
 	if isConflict(ctx, err) {
 		if s.conflict == nil {
 			s.conflict = &conflictError{text: fmt.Sprintf("%s ended with SQLSTATE %q or the deadline", step, code), unique: code == "23505"}

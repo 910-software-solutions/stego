@@ -321,6 +321,11 @@ func runFill[P any](ctx context.Context, rt *Runtime, q *Query, b Bound[P], body
 		fillErr = h.core.audit.failure()
 	}
 	if fillErr != nil {
+		// A stale prepared statement fails once in the process: the pools drop their prepared statements
+		// (ST-SUP-RP04-LC11).
+		if tenant.StalePlan(fillErr) {
+			tenant.ResetStatements()
+		}
 		return fillErr
 	}
 	if err := tenant.Commit(ctx, tx, b.Tenant); err != nil {
