@@ -35,12 +35,12 @@ const (
 
 // factoryCommand is one command of the generated definitions, in the form of command.Command.
 type factoryCommand struct {
-	Name                    string
-	Method, Path            string
-	ID, Query               bool
-	PathParameters          [][2]string
-	Fields                  []factoryField
-	Success, EmptyResponses []int
+	Name                        string
+	Method, Path                string
+	ID, Query, IdempotentWrites bool
+	PathParameters              [][2]string
+	Fields                      []factoryField
+	Success, EmptyResponses     []int
 }
 
 // factoryField is one request member of a command, in the form of command.Field.
@@ -53,6 +53,7 @@ type factoryField struct {
 type factoryResource struct {
 	Kind, APIVersion, Path    string
 	CreateFields, PatchFields []factoryField
+	IdempotentWrites          bool
 }
 
 // factorySource gives the Go source of the package app of the CLI: Commands, which returns the definitions of the
@@ -61,9 +62,10 @@ type factoryResource struct {
 // parameter is a required flag, {id} the flag --id; each member of a JSON body or query parameter of type string,
 // integer, boolean or a list of strings is a flag, and the other members go in --body FILE. A collection with a create,
 // a list and a patch at a path with no parameter is an apply resource, of the kind of the schema of its create request. An
-// operation with more members than the runtime takes, and the document after the most commands, are left out. The
-// CLI sends no write again (IdempotentWrites is false), since the document does not state which service keeps the
-// key of each write.
+// operation with more members than the runtime takes, and the document after the most commands, are left out. A
+// write states IdempotentWrites when its operation carries the Idempotency-Key header parameter, as
+// command.IdempotentWritesFrom sets it (ST-SUP-RC04-OC31): a command, and a create and a patch of a service with the
+// idempotency component.
 func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 	loader := openapi3.NewLoader()
 	doc, err := loader.LoadFromData(ctx.ServiceOpenAPI)
@@ -87,6 +89,7 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 		for _, method := range methods {
 			op := item.GetOperation(method)
 			c, ok := operationCommand(p, method, op)
+			c.IdempotentWrites = (method == "POST" || method == "PATCH") && keyed(item, op)
 			if ok && len(commands) < maxCommands {
 				commands = append(commands, c)
 			}
@@ -111,7 +114,7 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 	fmt.Fprintf(&b, "\t\tConfigEnv: %q,\n\t\tConfigName: %q,\n\t\tVersionCommand: true,\n", "APPLY_CONFIG", configName)
 	b.WriteString("\t\tCommands: []command.Command{\n")
 	for _, c := range commands {
-		fmt.Fprintf(&b, "\t\t\t{Name: []string{%q}, Method: %q, Path: %q, ID: %t, Query: %t,", c.Name, c.Method, c.Path, c.ID, c.Query)
+		fmt.Fprintf(&b, "\t\t\t{Name: []string{%q}, Method: %q, Path: %q, ID: %t, Query: %t, IdempotentWrites: %t,", c.Name, c.Method, c.Path, c.ID, c.Query, c.IdempotentWrites)
 		if len(c.PathParameters) > 0 {
 			b.WriteString(" PathParameters: []command.PathParameter{")
 			for _, p := range c.PathParameters {
@@ -130,7 +133,7 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 	if len(resources) > 0 {
 		b.WriteString("\t\tResources: []command.ApplyResource{\n")
 		for _, r := range resources {
-			fmt.Fprintf(&b, "\t\t\t{Kind: %q, APIVersion: %q, Path: %q,", r.Kind, r.APIVersion, r.Path)
+			fmt.Fprintf(&b, "\t\t\t{Kind: %q, APIVersion: %q, Path: %q, IdempotentWrites: %t,", r.Kind, r.APIVersion, r.Path, r.IdempotentWrites)
 			writeFields(&b, "CreateFields", r.CreateFields)
 			writeFields(&b, "PatchFields", r.PatchFields)
 			b.WriteString("},\n")
@@ -309,17 +312,32 @@ func applyResource(doc *openapi3.T, p string, item *openapi3.PathItem, service s
 	if !slicesContainsKey(r.CreateFields, "name") {
 		return r, false
 	}
-	if one := doc.Paths.Value(p + "/{id}"); one != nil && one.Patch != nil && one.Patch.RequestBody != nil && one.Patch.RequestBody.Value != nil {
+	one := doc.Paths.Value(p + "/{id}")
+	if one != nil && one.Patch != nil && one.Patch.RequestBody != nil && one.Patch.RequestBody.Value != nil {
 		if patch := one.Patch.RequestBody.Value.Content.Get("application/json"); patch != nil && patch.Schema != nil && patch.Schema.Value != nil {
 			r.PatchFields = bodyFields(patch.Schema.Value, map[string]bool{})
 		}
 	}
+	r.IdempotentWrites = keyed(item, item.Post) && one != nil && one.Patch != nil && keyed(one, one.Patch)
 	// The runtime needs the name among the fields of the create and of the patch, so a collection with no patch
 	// that takes the name is no apply resource: apply cannot change a resource that it finds.
 	if !slicesContainsKey(r.PatchFields, "name") || len(r.CreateFields) > maxFields || len(r.PatchFields) > maxFields {
 		return r, false
 	}
 	return r, true
+}
+
+// keyed tells whether an operation, with the parameters of its path item, carries the Idempotency-Key header
+// parameter. A parameter given by $ref is not followed, as command.IdempotentWritesFrom does not follow it.
+func keyed(item *openapi3.PathItem, op *openapi3.Operation) bool {
+	for _, params := range []openapi3.Parameters{item.Parameters, op.Parameters} {
+		for _, ref := range params {
+			if ref != nil && ref.Ref == "" && ref.Value != nil && ref.Value.In == "header" && strings.EqualFold(ref.Value.Name, "Idempotency-Key") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // slicesContainsKey tells whether one of the fields is a string field of the key.

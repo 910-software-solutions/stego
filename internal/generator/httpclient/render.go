@@ -34,8 +34,8 @@ func Render(namespace, tracing string, links LinkPolicy) (gen.File, error) {
 }
 
 // RenderProxy renders the client of an API proxy, which sends the Idempotency-Key header that the browser gives for
-// a command. The other clients refuse that header, except the client of RenderCLI: they do not retry, so they cannot
-// keep its promise. A proxy does not retry either; the browser that gave the key retries with it. A port that is not
+// a command. The other clients refuse that header, except the clients of RenderCLI and RenderSDK: they do not retry,
+// so they cannot keep its promise. A proxy does not retry either; the browser that gave the key retries with it. A port that is not
 // 0 adds the client of an application in the same network namespace, as RenderLocalApplication does.
 func RenderProxy(namespace, tracing string, port int, links LinkPolicy) (gen.File, error) {
 	if port != 0 && (port < 1024 || port > 65535) {
@@ -56,9 +56,10 @@ func RenderCLI(namespace, tracing string) (gen.File, error) {
 // RenderSDK renders the client of the generated Go SDK, which sends the Idempotency-Key header that the caller gives
 // as a parameter of a command or of a create: the route requires it (ST-SUP-RC20-OC53, ST-SUP-RC30-OC01), and the
 // caller, not the SDK, sends a write again with the same key, as the browser does through a proxy. The SDK itself
-// sends no request again (ST-SUP-RC06-OC02). It keeps the link behavior of Render.
+// sends no request again (ST-SUP-RC06-OC02). As the client of the CLI, it refuses the key on a request that is not a
+// POST or a PATCH. It keeps the link behavior of Render.
 func RenderSDK(namespace, tracing string) (gen.File, error) {
-	return render(namespace, tracing, 0, FollowLinks, true)
+	return render(namespace, tracing, 0, FollowLinks, true, true)
 }
 
 // RenderLocalApplication adds a client for an application in the same network

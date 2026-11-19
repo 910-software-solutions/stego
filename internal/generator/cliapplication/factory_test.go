@@ -58,11 +58,11 @@ func TestFactoryFromDocument(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		for _, want := range []string{`{Name: []string{"archive-note"}, Method: "POST", Path: "/api/notes/v1/notes/{note_id}/state:archive"`,
+		for _, want := range []string{`{Name: []string{"archive-note"}, Method: "POST", Path: "/api/notes/v1/notes/{note_id}/state:archive", ID: false, Query: false, IdempotentWrites: true`,
 			`PathParameters: []command.PathParameter{{Flag: "note-id", Key: "note_id"}}`, `{Flag: "reason", Key: "reason", Type: "string", Required: false}`,
 			`{Flag: "tags", Key: "tags", Type: "string-list", Required: false}`, `{Name: []string{"read-notes"}, Method: "GET", Path: "/api/notes/v1/notes/{id}", ID: true`,
-			`{Name: []string{"list-notes"}, Method: "GET", Path: "/api/notes/v1/notes", ID: false, Query: true`, `{Flag: "page-size", Key: "pageSize", Type: "integer", Required: false}`,
-			`{Kind: "Note", APIVersion: "notes/v1", Path: "/api/notes/v1/notes", CreateFields: []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}, {Flag: "size", Key: "size", Type: "integer", Required: false}}, PatchFields:`,
+			`{Name: []string{"list-notes"}, Method: "GET", Path: "/api/notes/v1/notes", ID: false, Query: true, IdempotentWrites: false`, `{Flag: "page-size", Key: "pageSize", Type: "integer", Required: false}`,
+			`{Kind: "Note", APIVersion: "notes/v1", Path: "/api/notes/v1/notes", IdempotentWrites: false, CreateFields: []command.Field{{Flag: "name", Key: "name", Type: "string", Required: true}, {Flag: "size", Key: "size", Type: "integer", Required: false}}, PatchFields:`,
 			`ConfigEnv:      "APPLY_CONFIG"`} {
 			if !strings.Contains(app, want) {
 				t.Errorf("the definitions do not hold %s:\n%s", want, app)

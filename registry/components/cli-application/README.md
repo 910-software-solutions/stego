@@ -24,9 +24,11 @@ package `<out>/cli/app`:
 - one `apply` resource for each collection with a create, a list and a patch
   that take a string `name`. The kind is the name of the entity.
 
-Run `<out>/cli/cmd --help` for the list. The CLI does not send a write again
-(`IdempotentWrites` is false). For other names or other commands, write your
-own factory package and set `factory_package`.
+Run `<out>/cli/cmd --help` for the list. Each write whose operation carries the
+`Idempotency-Key` header parameter states `IdempotentWrites`, as
+`IdempotentWritesFrom` sets it: each command, and the create and the patch of a
+service with the idempotency component. For other names or other commands,
+write your own factory package and set `factory_package`.
 
 The target must be Go 1.25.0 or later. Validation, plan, and apply reject an older
 target before generation. This requirement covers file operations and the OIDC dependency.
