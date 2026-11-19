@@ -29,9 +29,12 @@
 # sets X-Content-Type-Options: nosniff on each problem answer (security review of PR #442, L1 and I3).
 # Version 4.15.1 cuts a refused parameter name at 64 bytes when it has no character boundary in its first 64 bytes,
 # where it gave an empty name (security review of PR #445, I-4).
+# Version 4.16.0 lets an update leave out a secret field, or give it empty, and keep the stored value: the update
+# request requires no secret and holds no min_length or pattern of one (ST-SUP-RC20-OC48; walkthrough 14, W14-B4).
+# It refuses at checking a field named kind or href of an entity that a collection serves (ST-SUP-RC20-OC52).
 kind: component
 name: rest-api
-version: 4.15.1
+version: 4.16.0
 stage: ga
 output_namespace: internal/api
 

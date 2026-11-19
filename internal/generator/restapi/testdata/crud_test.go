@@ -3037,6 +3037,31 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 	})
 
+	t.Run("ST-SUP-RC20-OC48-T05 An update that leaves out a required secret, or gives it empty, answers 200 and keeps the stored value", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		token := "secret-" + uuid.NewString()
+		id := e.create(a, "customers", "customer", `{"name":"Kai","api_token":"`+token+`","plan":"free"}`)
+		path := "/api/v1/customers/" + id
+		// No response gives the secret back, so a client sends back a row that it read with no secret, or with the
+		// secret empty: each update is written and keeps the stored secret (walkthrough 14, W14-B4).
+		for _, body := range []string{`{"name":"Kai","plan":"pro"}`, `{"name":"Kai","api_token":"","plan":"team"}`} {
+			if r := e.send(a, http.MethodPut, path, "", body); r.status != http.StatusOK {
+				t.Fatalf("the update %s answered %d %s, want 200", body, r.status, r.body)
+			}
+			var stored []byte
+			var plan string
+			must(t, e.admin.QueryRowContext(e.ctx, `SELECT api_token, plan FROM customers WHERE id = $1::uuid`, id).Scan(&stored, &plan))
+			plain, err := e.ring.Open(stored, sealed.Place{Tenant: a.tenant.ID(), Table: "customers", Column: "api_token", Row: id})
+			if err != nil || string(plain) != token {
+				t.Errorf("after the update %s the stored secret does not open to the value of the create (%v)", body, err)
+			}
+			if !strings.Contains(body, plan) {
+				t.Errorf("the update %s stored the plan %q", body, plan)
+			}
+		}
+	})
+
 	t.Run("ST-SUP-RC28-OC01-T03 A secret field reaches neither before, after nor the stored row", func(t *testing.T) {
 		e := service(t)
 		a := e.as("u-1", newTenant())
