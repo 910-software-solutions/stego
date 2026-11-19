@@ -869,6 +869,30 @@ compare their SHA-256 digests with `crypto/sha256`. Then the time of the
 compare does not show the values, but it can show how much of the two
 digests is the same.
 
+### Declare a fill module
+
+To let the fills import a Go module, list it under `fill_modules` at the top
+level of the declaration, with the reason that the fills need it, so a
+reviewer can judge it:
+
+```yaml
+fill_modules:
+  - {module: github.com/google/uuid, reason: fills make request IDs}
+```
+
+Then add the module to `go.mod` with `go get`, as for any module. A fill can
+import each package of a listed module. The rules:
+
+- `module` is the module path, which has a dot in its first element. A
+  module whose path only starts with a listed path, such as
+  `github.com/google/uuidx`, is not listed.
+- `stego test` and `stego validate` follow the imports of the module too, and
+  refuse the fill when the module reaches a refused package, such as
+  `database/sql` or `os`, or prints, with a fault that names the chain of
+  imports.
+- A test file of a fill does not need the list: it can import any module of
+  `go.mod`.
+
 ## Change events
 
 With the mixins `durable-events` and `kafka-events`, each create, update and

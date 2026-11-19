@@ -885,7 +885,13 @@ experimental_acceptances:
 ### The two triggers
 
 - `every 1m`: the runtime runs the fill once in each tenant at each tick, in
-  one transaction of that tenant.
+  one transaction of that tenant. The ticks are at the multiples of the
+  interval since the Unix epoch, in UTC: `every 1h` runs at the start of
+  each hour, and `every 24h` at 00:00 UTC. The first tick is the first such
+  time after the worker starts, not the start: an `every 24h` worker that
+  starts at 10:00 UTC runs first at 00:00 UTC the next day. A tick that is
+  due while the service is stopped, or while a tick of the worker runs, is
+  not run later.
 - `consumes fulfillment`: the runtime runs the fill once for each message of
   the destination `fulfillment`, in the transaction of the tenant of the
   message. A command or a worker stages these messages as an effect.
