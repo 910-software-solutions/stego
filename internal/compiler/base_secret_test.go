@@ -98,6 +98,15 @@ func TestBaseSeal(t *testing.T) {
 		if err != nil || check.HasFaults() {
 			t.Fatalf("the contract of the seal is refused against its expand: %v %+v", err, check.Faults)
 		}
+		// A seal from public is the seal of a field with no sensitivity: the list of Organization searches
+		// description in the base, and the head with the seal undone keeps that search index (walkthrough 15, W15-B1).
+		fromPublic := withChanges(strings.Replace(td01, description, secret, 1),
+			"  - {id: organization-description-seal, kind: seal, entity: Organization, field: description, from: public}\n",
+			"  - {change: organization-description-seal, phase: expand}\n")
+		check, err = CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, SecretStorageVersion)}, parseHead(t, fromPublic))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("the seal from public of a searched field is refused against the base in clear: %v %+v", err, check.Faults)
+		}
 		// A seal that also changes the bounds of the field is refused: the field before the seal is the field of the
 		// head in clear (ST-DECL-INV102).
 		wider := withChanges(strings.Replace(td01, description, "{ name: description, type: string, optional: true, max_length: 2000, sensitivity: secret }", 1), change,

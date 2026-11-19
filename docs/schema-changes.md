@@ -366,7 +366,9 @@ schema_history:
 ```
 
 `from` is the sensitivity of the field in the base: `public`, `pii`, or no
-`from` when the field had none.
+`from` when the field had none. `from: public` and no `from` are the same: a
+field with no sensitivity is public, and a list searches it, so its search
+index stays on the clear column until the contract step drops the column.
 
 The seal changes the Go type of the field in the generated code at once, in
 the release with the expand step: a fill of a command or a worker that reads or
