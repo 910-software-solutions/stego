@@ -517,7 +517,10 @@ its build cache (`go env GOCACHE`). It makes the index one time and uses it
 again, because it takes the content of a module version as fixed. A released
 version of the STEGO runtime library never changes its content. A runtime
 version that you fetched before its release, such as from a branch of a pull
-request, can change its content and its sum before the release. When the
+request, can change its content and its sum before the release. Take such a
+new sum only from the go.sum line of the project that gives the version, and
+never turn off the check of sums (do not set GONOSUMDB, GONOSUMCHECK,
+GOSUMDB=off or GOFLAGS=-insecure). When the
 module cache then holds the new content and the build cache holds the index
 of the old content, a Go build can fail with an error such as:
 
