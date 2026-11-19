@@ -386,7 +386,9 @@ schema_history:
 ```
 
 `from` is the sensitivity of the field in the base: `public`, `pii`, or no
-`from` when the field had none.
+`from` when the field had none. `from: public` and no `from` are the same: a
+field with no sensitivity is public, and a list searches it, so its search
+index stays on the clear column until the contract step drops the column.
 
 The seal changes the Go type of the field in the generated code at once, in
 the release with the expand step: a fill of a command or a worker that reads or
@@ -461,6 +463,16 @@ an open seal: give `--base` with the release that runs now. The first pass also 
 after the expand step, so that each running process of the release before
 reports itself first.
 
+So a seal takes 10 to 13 minutes or more before you can deploy its contract
+step.
+The controller runs the seal job at its start and then each 10 minutes. A run
+waits, and seals nothing, while the expand step is younger than 3 minutes or a
+process of a release before reported itself in its last three report
+intervals, such as in the last 30 seconds. Thus the first run after a
+rollout usually waits, and the first pass runs 10 minutes later. Look for the
+log line `seal of a secret column` with `completed=true` before you declare the
+contract step.
+
 The migration Job of the release with the expand step makes the row of the
 lease `stego.backfill.<change ID>` in the lease table. A later migration Job
 that applies the expand step, such as the Job of a later release on a restored
@@ -468,7 +480,12 @@ database, makes it too, when the lease table is there. When the row is not
 there, the seal job cannot run: from runtime v0.150.0 each run logs `the lease
 of the seal job is not in the lease table` at the level error, with the lease,
 and the controller reports the job as failed. Run the migration Job of the
-release of the expand step, and the job runs at its next tick.
+release of the expand step, and the job runs at its next tick. In the same
+way, from runtime v0.157.0, a run that finds no seal checkpoint while the
+clear column is still in the table logs `the seal of a secret column has no
+checkpoint while its clear column is there` at the level error and completes
+no pass; run the migration Job of the release of the expand step, which makes
+the checkpoint.
 
 The service needs its key ring: the api, worker and controller modes read
 `STEGO_SECRET_KEY_RING_FILE` (see [Rotate and back up the key ring of the
@@ -526,6 +543,14 @@ after the contract logs the fault of the schema manifest for the clear column,
 which is an alert, and goes on in the same way. Thus you can also go back to
 the release of the expand step after the contract, but not past it.
 
+When an entity has two or more open seals, declare the contract step of each
+of them in the same release. A process of the release of the expand step reads
+and writes the sealed columns alone only when the clear column of each open
+seal of the entity is gone, so with one clear column dropped and another there
+it would answer 500 to each create, read and update of the entity. So `stego
+compat` and `stego plan` refuse the contract step of one seal of an entity
+while the base holds another seal of the same entity open.
+
 A process of a release of the expand step with a runtime before v0.150.0 needs
 the clear column: after the contract it answers 500 to each create, read and
 update of the entity until the release of the contract step replaces it
@@ -572,8 +597,15 @@ take it through the steps again:
    next steps name. A process of the release of the expand step that ran
    after the contract reads and writes the sealed column alone until it
    stops, so on the restored database it would leave the clear value of a
-   row older than its sealed value. Then restore the backup, as [Restore from
-   a backup](operations.md#restore-from-a-backup) tells.
+   row older than its sealed value. From runtime v0.157.0 such a process
+   checks the table again, at most once each second, and writes the clear
+   column again once the restore brings it back with the seal checkpoint of
+   its change, but a call that runs while the restore runs can still write the
+   sealed column alone. A clear column with no checkpoint, such as one added by
+   hand, gets no value: the process logs it at the level error and writes the
+   sealed column alone. Then restore the
+   backup, as [Restore from a backup](operations.md#restore-from-a-backup)
+   tells.
 2. Run the migration Job of the release that runs now. When the backup is from
    before the contract step of a seal, the Job applies the steps up to that
    contract step, makes the seal checkpoint and the lease of the seal job, and

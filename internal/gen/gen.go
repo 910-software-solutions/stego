@@ -417,8 +417,8 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 			continue
 		}
 		if change.Kind == "seal" {
-			// A seal is undone by giving the field its sensitivity before the change, From, in its clear column
-			// (ST-SUP-RC01-OC49, ST-DECL-INV102).
+			// A seal is undone by giving the field its sensitivity before the change, From, in its clear column; From
+			// public is the same field as no From (types.Field.Public) (ST-SUP-RC01-OC49, ST-DECL-INV102).
 			fields := shaped.Entities[at].Fields
 			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == change.Field })
 			if found < 0 {
@@ -679,7 +679,7 @@ func SealedNames(entities []types.Entity, changes []types.SchemaChange, history 
 			clear := field.ColumnName()
 			entity.Fields[j].Column = SealColumn(clear)
 			if !contracted[id] {
-				entity.Fields[j].SealedFrom = clear
+				entity.Fields[j].SealedFrom, entity.Fields[j].SealChange = clear, id
 			}
 		}
 		out[i] = entity

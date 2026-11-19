@@ -304,7 +304,7 @@ Each field of an entity is one item of `fields`:
 | `unique` | `true` when no two rows of the tenant have the same value. |
 | `unique_composite` | The fields of a unique key with more than one field, such as `[team_id, name]`. |
 | `client_set` | `true` for a `timestamp` that the client sets, such as a due date. The server sets each other timestamp. |
-| `sensitivity` | `public`, `pii` or `secret`. The default is `public`. See below. |
+| `sensitivity` | `public`, `pii` or `secret`. The default is `public`: `sensitivity: public` and no `sensitivity` are the same, and a list searches and orders the field. See below. |
 | `compare_only` | `true` for a `secret` that the service only checks and never reads back, such as a PIN. See below. |
 | `writable` | `always`, `create` or `never`: which collection writes can set the field. The default is `always`. See below. |
 

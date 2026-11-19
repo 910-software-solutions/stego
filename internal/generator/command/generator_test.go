@@ -1049,6 +1049,8 @@ func TestSealingEmission(t *testing.T) {
 			`\"note\" = $6, \"note_sealed\" = $7`,
 			`"note": "note",`, `"note_sealed": "note",`,
 			"Sealed: true,",
+			// The runtime takes the clear column again only while the checkpoint of its change is there.
+			"Clear: []string{\"note\"},\n\t\tChanges: []string{\"vault-note-seal\"},",
 		} {
 			if !strings.Contains(open, want) {
 				t.Errorf("the entity with an open seal does not hold %s:\n%s", want, open)

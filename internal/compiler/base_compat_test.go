@@ -316,6 +316,8 @@ func TestBaseCompat(t *testing.T) {
 			{"a field that is not searched marked pii", td01, strings.Replace(td01, "{ name: metadata, type: jsonb, optional: true }", "{ name: metadata, type: jsonb, optional: true, sensitivity: pii }", 1)},
 			{"a collection with no list and no upsert key", td01, strings.Replace(td01, "\nslots:", "\n  one-org:\n    entity: Organization\n    path_prefix: /one-org\n    operations: [read]\n\nslots:", 1)},
 			{"a rename of an implicit field of a list", td01, renamed},
+			// A field written public is a field with no sensitivity: its search index stays (decision ST-DECL-Q46 (a)).
+			{"a searched field written public", td01, strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: public }", 1)},
 		} {
 			base := []byte(c.base)
 			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: recordFor(base)}, parseHead(t, c.head))
@@ -327,6 +329,36 @@ func TestBaseCompat(t *testing.T) {
 					t.Errorf("%s: want no index fault, got %+v", c.name, fault)
 				}
 			}
+		}
+	})
+
+	t.Run("ST-GEN-INV33-T A base that writes sensitivity: public on a searched field is refused when the generator of its release built no search index on it", func(t *testing.T) {
+		t.Parallel()
+		td01 := string(userManagementBase(t))
+		written := strings.Replace(td01, "{ name: display_name, type: string, min_length: 1, max_length: 100 }", "{ name: display_name, type: string, min_length: 1, max_length: 100, sensitivity: public }", 1)
+		base := []byte(written)
+		for _, c := range []struct {
+			adapter string
+			refused bool
+		}{{"6.17.0", true}, {PublicSearchVersion, false}} {
+			check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: base, Record: adapterRecord(t, base, c.adapter)}, parseHead(t, written))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			for _, fault := range check.Faults {
+				refused = refused || (fault.Rule == BaseCompatRule && fault.Entity == "User" && strings.Contains(fault.Message, "writes sensitivity: public") &&
+					strings.Contains(fault.Message, `"users_display_name_search"`) && strings.Contains(fault.Message, "ST-DECL-Q46"))
+			}
+			if refused != c.refused {
+				t.Errorf("postgres-adapter %s: gives %+v, want refused %t", c.adapter, check.Faults, c.refused)
+			}
+		}
+		// A base that writes no sensitivity: public is not refused for it over an older generator.
+		plain := []byte(td01)
+		check, err := CheckBase(BaseSource{Ref: "main", Commit: "c0ffee", Declaration: plain, Record: adapterRecord(t, plain, "6.17.0")}, parseHead(t, td01))
+		if err != nil || check.HasFaults() {
+			t.Fatalf("the same declaration with no field written public is refused: %v %+v", err, check.Faults)
 		}
 	})
 
