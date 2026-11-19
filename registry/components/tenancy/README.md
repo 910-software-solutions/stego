@@ -6,6 +6,15 @@ role is a member of the purge and outbox relay roles WITH SET TRUE, INHERIT
 FALSE and no ADMIN, so the migration job can make their functions as those
 roles.
 
+The names of the roles start with the service name, with each `-` as `_`,
+because a PostgreSQL name in SQL with no quotes cannot hold a `-`. For the
+service `audit-export`, the role migration makes `audit_export_owner`,
+`audit_export_runtime`, `audit_export_worker`, `audit_export_relay`,
+`audit_export_idempotency_purge` and `audit_export_outbox_relay`, and the
+connection strings name these roles. The name of the database is yours: the
+examples use the service name with each `-` as `_` too, such as
+`audit_export`, so that no SQL statement needs quotes.
+
 The database administrator runs the role migration once, before the first
 migration job, connected to the database of the service. Run it with psql and
 `ON_ERROR_STOP`, so that psql stops at the first error:

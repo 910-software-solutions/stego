@@ -13,9 +13,12 @@
 # Version 1.11.0 says in the description of STEGO_SECRET_KEY_RING_FILE that a service with a secret field, readable or
 # compare-only, or a pii field needs it (walkthrough 13, W13-B8): the variable stays not required on its own
 # (ST-SUP-RC32-OC21).
+# Version 1.13.0 gives each entity with an open seal its statements, scan and values after the contract step, which
+# the runtime takes once the contract drops the clear column (ST-SUP-RC01-OC49, ST-SUP-RP10-LC49; walkthrough 14,
+# W14-B6), and states that STEGO_SECRET_KEY_RING_FILE is required when the service has a secret or a pii field.
 kind: component
 name: command
-version: 1.11.0
+version: 1.13.0
 stage: ga
 output_namespace: commands
 
@@ -114,6 +117,7 @@ environment:
     type: path
     required: false
     description: "The key ring of the secret fields and stored answers: a key ID and a base64 key of 32 bytes on each line; the first seals. Required for a secret field, readable or compare-only, or a pii field."
+    required_when: "the service has a secret field or a pii field"
     secret: false
     secret_source: {name: "{service}-secret-key-ring", key: key-ring}
     read_with: sealed

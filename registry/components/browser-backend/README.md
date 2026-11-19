@@ -89,9 +89,13 @@ the database and USAGE on the schema public, and a migration login that is a
 member of the owner role. Revoke the default PUBLIC grants on the database and
 on the schema public. The schema check refuses other attributes and grants, so
 use this SQL as it is. Replace `<service>` with the service name, with each `-`
-as `_`. Generation refuses a service name that gives a role name longer than
-the 63 bytes of a PostgreSQL name, because PostgreSQL cuts a longer name with
-no error.
+as `_`, also in the name of the database: a name with a `-` is not valid SQL
+with no quotes, so `CREATE ROLE clinician-portal_owner` fails. For the service
+`clinician-portal`, the roles are `clinician_portal_owner`,
+`clinician_portal_runtime` and `clinician_portal_migrator`, and the database
+is `clinician_portal`. Generation refuses a service name that gives a role
+name longer than the 63 bytes of a PostgreSQL name, because PostgreSQL cuts a
+longer name with no error.
 
 ```sql
 -- As a database administrator, connected to any database of the server:

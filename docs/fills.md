@@ -573,6 +573,12 @@ Other errors of the handle:
 After `ErrConflict`, `ErrInvalid` or `ErrInternal`, each later method of the
 handle gives the same error, and the runtime commits nothing.
 
+In one case the runtime runs a fill again also when the command sets no
+`retry_on_conflict`: once, when the contract step of a seal dropped a clear
+column while the call ran (see [Seal steps](schema-changes.md#seal-steps)). The
+rerun rolls back each write of the first attempt, but an effect of the fill
+outside the handle, such as a call to another system, runs twice.
+
 A fill that returns any other error gets the answer 500 with the code
 `internal`. The log then has one error line `command.fill.failed` with the
 command and a fixed cause class: `fill_error` for an error of the fill

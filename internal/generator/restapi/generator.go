@@ -65,6 +65,11 @@ func (*Generator) ValidateContext(ctx gen.Context) error {
 		return err
 	}
 
+	// A field of a served entity has no name of a member that the handler sets itself (ST-SUP-RC20-OC52).
+	if err := validateEnvelopeMembers(ctx.Collections, ctx.Entities); err != nil {
+		return err
+	}
+
 	// Check for collection-derived identifier collisions with generator-internal
 	// identifiers, entity struct names, and cross-collection derived names.
 	if err := checkCollectionNameCollisions(ctx.Collections, ctx.Entities); err != nil {
@@ -1190,6 +1195,14 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 				property.Description = keptUpdateDescription(f, property.Description)
 				property.Default = nil
 				updateSchema.Properties[f.Name] = property
+			} else if f.Secret() {
+				// No response gives a secret back, so an update that leaves it out, or gives it empty, keeps the stored
+				// value (ST-SUP-RC20-OC48): the member is optional, and the request check holds no min_length and no
+				// pattern of it, which an empty value would break; the check of the entity holds them on a value
+				// that the body gives (walkthrough 14, W14-B4).
+				property := updateSchema.Properties[f.Name]
+				property.MinLength, property.Pattern = nil, ""
+				updateSchema.Properties[f.Name] = property
 			} else if !f.Optional {
 				updateRequired = append(updateRequired, f.Name)
 			}
@@ -1206,7 +1219,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 			createSchema.Required = createRequired
 		}
 		spec.Components.Schemas[e.Name+"CreateRequest"] = createSchema
-		if hasKeptField(e) {
+		if hasUpdateRequest(e) {
 			if len(updateRequired) > 0 {
 				updateSchema.Required = updateRequired
 			}
@@ -1233,7 +1246,7 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 		collPascal := collectionToPascalCase(eb.Name)
 		createRef := "#/components/schemas/" + eb.Entity + "CreateRequest"
 		updateRef := createRef
-		if hasKeptField(entityMap[eb.Entity]) {
+		if hasUpdateRequest(entityMap[eb.Entity]) {
 			updateRef = "#/components/schemas/" + eb.Entity + "UpdateRequest"
 		}
 		for _, op := range eb.Operations {
@@ -1618,8 +1631,59 @@ func fieldToOpenAPISchema(f types.Field) openAPISchema {
 // setting changes nothing.
 func keptField(f types.Field) bool { return f.Kept() && !isServerManaged(f) }
 
+// envelopeMembers are the members that the handler of a collection sets itself beside the fields of an entity: kind,
+// which a request body may give only as the name of the entity, and href. The postgres adapter refuses a field named
+// id.
+var envelopeMembers = []string{"kind", "href"}
+
+// validateEnvelopeMembers refuses each field of an entity that a collection serves whose name is a member of
+// envelopeMembers: each create, update, upsert and patch of such an entity would answer 400, and each answer would
+// hold the member of the handler and not the field (ST-SUP-RC20-OC52; walkthrough 14, W14-B5). The fault names the
+// path of the field, the member and the remedy.
+func validateEnvelopeMembers(collections []types.Collection, entities []types.Entity) error {
+	served := map[string]string{}
+	for _, c := range collections {
+		if _, ok := served[c.Entity]; !ok {
+			served[c.Entity] = c.Name
+		}
+	}
+	var faults []string
+	for ei, e := range entities {
+		collection, ok := served[e.Name]
+		if !ok {
+			continue
+		}
+		for fi, f := range e.Fields {
+			if slices.Contains(envelopeMembers, f.Name) {
+				faults = append(faults, fmt.Sprintf("entities[%d].fields[%d].name: the entity %s, which the collection %s serves, has the field %q, and the API sets the member %s of each answer itself%s; give the field another name, and when the base stores it, add a field of another name and drop this one, because a rename keeps the API name",
+					ei, fi, e.Name, collection, f.Name, f.Name, envelopeEffect(f.Name, e.Name)))
+			}
+		}
+	}
+	if len(faults) > 0 {
+		return fmt.Errorf("field names that are members of the API (ST-SUP-RC20-OC52):\n  %s", strings.Join(faults, "\n  "))
+	}
+	return nil
+}
+
+// envelopeEffect tells what the member does to a field of its name: a body may give kind only as the entity name, so
+// each write with the field fails, and an answer holds the href of the handler and never the field.
+func envelopeEffect(member, entity string) string {
+	if member == "kind" {
+		return ", and refuses each create, update, upsert and patch whose kind is not " + entity
+	}
+	return ", so no answer holds the field"
+}
+
 // hasKeptField tells whether an entity has a field of keptField.
 func hasKeptField(e types.Entity) bool { return slices.ContainsFunc(e.Fields, keptField) }
+
+// hasUpdateRequest tells whether the update of an entity takes its own request schema, EntityUpdateRequest, and not
+// the create-request schema: an entity with a field of keptField, or with a secret field, which an update may leave
+// out (ST-SUP-RC20-OC47, ST-SUP-RC20-OC48).
+func hasUpdateRequest(e types.Entity) bool {
+	return hasKeptField(e) || slices.ContainsFunc(e.Fields, func(f types.Field) bool { return f.Secret() && !isServerManaged(f) })
+}
 
 // keptDescription gives the description of a field of keptField in the entity schema: when the field may be set,
 // after the description of its type (ST-SUP-RC20-OC47).
