@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -430,9 +431,11 @@ WHERE n.nspname = 'stego_schema' AND c.relname = 'migrations' AND c.relkind = 'r
 var ErrMigrationChanged = errors.New("the ledger holds another body of a migration of this release")
 
 // checkDigests reads, as the runtime role, the ledger row of each migration of digests and refuses a row whose
-// digest is not the digest of this release (ST-SUP-RP14-LC13). A row of a name that digests does not give, such as
-// a step of a later release, passes. The refusal names the migration and the two digests, no part of a body, and
-// the remedy, on a log line of the level error and in its error; New writes nothing before it.
+// digest is not the digest of this release (ST-SUP-RP14-LC13), and a migration of digests that has no row, as the
+// migration Job of this release writes a row for each (ErrMigrationPending; security review of PR 448, I1). A row of
+// a name that digests does not give, such as a step of a later release, passes. The refusal names the migration and
+// the digests, no part of a body, and the remedy, on a log line of the level error and in its error; New writes
+// nothing before it.
 func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[string]string) error {
 	if len(digests) == 0 {
 		return nil
@@ -443,12 +446,15 @@ func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[s
 		return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
 	}
 	defer rows.Close()
+	seen := make(map[string]bool, len(digests))
 	for rows.Next() {
 		var name, digest string
 		if err := rows.Scan(&name, &digest); err != nil {
 			return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
 		}
-		if want, ok := digests[name]; ok && digest != want {
+		want, ok := digests[name]
+		seen[name] = ok
+		if ok && digest != want {
 			text := fmt.Sprintf("the migration ledger %s holds the digest %q for the migration %s, and this release gives the digest %q for its body. "+
 				"The body of an applied migration never changes, so a change comes as a new schema step: deploy the release that applied it, "+
 				"or a release that keeps its body and brings the change in a new schema step; nothing repairs the digest", LedgerTable, digest, name, want)
@@ -459,7 +465,21 @@ func checkDigests(ctx context.Context, db *sql.DB, release string, digests map[s
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("service: read the digests of the migration ledger %s: %w", LedgerTable, err)
 	}
-	return nil
+	missing := make([]string, 0)
+	for name := range digests {
+		if !seen[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	text := fmt.Sprintf("the migration ledger %s holds no row of the migration %s of this release, which the migration Job of this release applies "+
+		"before the release migration %s. Run the migration Job of this release and wait until it completes; this process stops, and it starts again until then",
+		LedgerTable, strings.Join(missing, ", "), release)
+	slog.ErrorContext(ctx, "service: "+text, "migration", missing[0], "ledger", LedgerTable, "stage", "service.start.migration")
+	return fmt.Errorf("service: %w: %s", ErrMigrationPending, text)
 }
 
 // MaxLoggedFaults is the most faults of the schema manifest check that the start of a service logs, each on its own

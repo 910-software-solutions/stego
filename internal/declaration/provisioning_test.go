@@ -502,6 +502,11 @@ func TestTenantServiceRelation(t *testing.T) {
 		{"no tenant provisioning", change(t, service, line, "  provisioning: \n"), tenantOf("relation service: service"), "tenancy.provisioning", []string{"tenant provisioning", "service"}},
 		{"another subject type", service, tenantOf("relation service: user"), "tenancy.provisioning.resource_type", []string{"admits user", "relation service: service"}},
 		{"a second subject type", service, tenantOf("relation service: service | user"), "tenancy.provisioning.resource_type", []string{"service | user", "no other subject type"}},
+		{"a wildcard subject", service, tenantOf("relation service: service:*"), "tenancy.provisioning.resource_type", []string{"admits service:*", "no wildcard"}},
+		{"a userset subject", service, tenantOf("relation service: service#operator"), "tenancy.provisioning.resource_type", []string{"admits service#operator", "relation service: service"}},
+		{"a caveat subject", service, tenantOf("relation service: service with ip_allowed"), "tenancy.provisioning.resource_type", []string{"admits service with ip_allowed", "caveat"}},
+		{"an expiration subject", service, "use expiration\n" + tenantOf("relation service: service with expiration"), "tenancy.provisioning.resource_type", []string{"admits service with expiration", "expiration"}},
+		{"the plain subject and its wildcard", service, tenantOf("relation service: service | service:*"), "tenancy.provisioning.resource_type", []string{"service | service:*", "no wildcard"}},
 	} {
 		t.Run(inv103+": "+c.name, func(t *testing.T) {
 			var kept []ValidationError

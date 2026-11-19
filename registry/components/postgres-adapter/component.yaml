@@ -7,9 +7,12 @@
 # Version 6.15.0 refuses a changed body of an applied migration with a fault that names the migration, the two
 # digests and the remedy, and gives the digest of each migration to the start check of the service runtime
 # (ST-SUP-RC01-OC51, ST-SUP-RP14-LC13).
+# Version 6.16.0 builds the contract step of a rename or a retype of a field with a default: it first gives the new
+# column the default, with the comment of a relaxed form that states it, so the release of the change still holds its
+# schema manifest (ST-SUP-RC01-OC39, walkthrough 14 W14-B3).
 kind: component
 name: postgres-adapter
-version: 6.15.0
+version: 6.16.0
 stage: ga
 output_namespace: internal/storage
 

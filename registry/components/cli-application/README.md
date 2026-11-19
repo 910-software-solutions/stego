@@ -43,17 +43,31 @@ not follow redirects or use environment proxy settings. CLI requests have a
 
 Each POST and PATCH request has a new `Idempotency-Key` header: a structured
 string that holds a random UUID. A service that does not use the key ignores
-it. Set `IdempotentWrites` in `command.Application` only when the service keeps
-the key (the idempotency component). Then the CLI sends a write again one time,
-with the same key and body, after a transport failure or a 5xx answer. It waits
-one second first, or follows a `Retry-After` of one to five seconds. When the
-second request gets no success, the outcome is unknown: the first request can
-still be in its transaction, as a 409 answer shows. The
-service gives the stored answer of a write that it did, so the write does not
-occur two times. The CLI does not send a GET, PUT, or DELETE again, and does
-not send a write again after any other answer. Without `IdempotentWrites`, the
-CLI sends no request again. After an uncertain failure, callers must check
-resource state before they retry a write.
+it. The client refuses the header on a GET, PUT, DELETE, or HEAD request.
+
+Set `IdempotentWrites` on a `command.Command` or a `command.ApplyResource`
+only when the service keeps the key of that write (the idempotency
+component). For an apply resource, the flag covers its create and its patch.
+`command.IdempotentWritesFrom(app, document)` sets the flag of each command
+and apply resource from the OpenAPI document of the service: true when the
+operation carries the `Idempotency-Key` header parameter, and false otherwise.
+The rest-api component states that parameter on each create and patch when
+the service has the idempotency component. A parameter that the document
+gives by `$ref` does not count. A command that is not a POST or a PATCH must
+not set the flag.
+
+With the flag, the CLI sends a write again one time, with the same key and
+body, after a transport failure, a request that expired, or a 5xx answer. It
+waits one second first, or follows a `Retry-After` of one to five seconds.
+When the second request gets no success, the outcome is unknown: the first
+request can still be in its transaction, as a 409 answer shows. The service
+gives the stored answer of a write that it did, so the write does not occur
+two times. The CLI does not send a GET, PUT, or DELETE again. It does not send
+a write again after any other answer, after a redirect, after an answer body
+over the client limit, or after a request that the client refused before it
+sent it. Without the flag, the CLI does not send the write again. After an
+uncertain failure, callers must check resource state before they retry a
+write.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and
@@ -118,6 +132,60 @@ original authentication time. Logout attempts provider token revocation and
 then removes local configuration, even if revocation fails. A revocation error
 is reported. Provider browser cookies and other applications are outside this
 logout operation. The lock file remains in place.
+
+## The apply command
+
+`apply` creates or changes resources from a set of documents, as
+`kubectl apply` does. It is in each CLI that lists resources in
+`command.Application.Resources`; with no resources, it fails with
+`apply is not configured`.
+
+```
+apply -f FILE|DIRECTORY|- [--dry-run] [-o json] [--output-file FILE]
+```
+
+- `-f` (or `--filename`) names one file, a folder or `-` for stdin. In a
+  folder, apply reads each `.yaml`, `.yml` and `.json` file, at most 16
+  folders deep and 1,024 entries. Each file has at most 64 KiB, and all of
+  them have at most 1 MiB and 128 documents. A link is refused. `-k` is
+  refused: give rendered files.
+- `--dry-run` checks every document and contacts no server. Each document
+  gets the status `validated`.
+- `-o json` writes the results as a JSON list. Else each line is
+  `<kind>/"<name>" <status>`.
+- `--output-file FILE` writes the results to a new private file.
+
+A document holds the JSON subset of YAML: no aliases, merge keys or custom
+tags. Its keys are `apiVersion`, `kind`, `metadata` and `spec`, and no other:
+
+```yaml
+apiVersion: example.com/v1
+kind: Clinic
+metadata:
+  name: north
+spec:
+  code: NO
+```
+
+Give the application each kind as a `command.ApplyResource`: the `Kind`
+and the `APIVersion` that a document states, the `Path` of the collection,
+and the fields of a create (`CreateFields`) and of a patch (`PatchFields`).
+`metadata` holds `name`, `id` and `description`. A field of `metadata`, other
+than `id`, goes into the body, so it must not also be in `spec`.
+
+For each document, apply first finds the resource. With `metadata.id`, it
+reads `<Path>/<id>`. Else it lists `<Path>` with `search=name = '<name>'`,
+two values a page, and follows the `next` cursor. More than one match is
+refused: give `metadata.id`. A resource with `ImmutableIdentity` is found by
+those fields, and is never changed after its create.
+
+Apply checks every document and finds every resource before the first
+write. Then it sends a POST for a resource that it did not find, and a
+PATCH for one that it found, in the order of the documents. The status of
+each document is `created`, `configured`, `unchanged`, `failed`, `unknown`
+or `not_attempted`. Apply stops at the first write that fails. The writes
+before it stay. A status of `unknown` means that the write can have
+occurred: read the resource before you run apply again.
 
 Commands marked for confirmation require `--yes`. Interactive prompts,
 stdin bodies, legacy configuration migration, and automatic SDK generation

@@ -222,6 +222,7 @@ func (rt *Runtime) writeCodedProblem(w http.ResponseWriter, status int, code str
 	}
 	body, _ := json.Marshal(problem{Type: authn.ProblemTypeOf(base, status, code), Title: title, Status: status, Code: code})
 	w.Header().Set("Content-Type", "application/problem+json")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
 	_, _ = w.Write(body)

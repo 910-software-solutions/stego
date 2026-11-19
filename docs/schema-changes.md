@@ -556,6 +556,23 @@ its type: a retype from `int64` to `string` changes the value `14` to `"14"`,
 and a retype from `string` to `int64` changes `"14"` to `14`. The OpenAPI
 contract of the release after the change gives the new type. Thus a client
 that reads the field must accept both types while the two releases run.
+
+A retype also breaks the writes of an old client. Each release checks the
+JSON type of the field in a request body by its own OpenAPI contract. Thus
+the new release refuses a write of the old type with 400, such as
+`value must be a string` for `14`, and the old release refuses a write of the
+new type, such as `value must be an integer` for `"14"`. A client that writes
+the field must send the type of the release that gets its request. Before
+the rollout, change each client so that it reads both types, and so that it
+writes the new type only to the new release. Or move the clients only after
+the old release stops.
+
+Give the field before the change in `definition` with each of its
+settings, such as `int64, default 0`, also when the conversion does not need
+a constraint. With no definition, the field before the change has its type
+alone, so `stego compat` finds a table that differs from the base. The fault
+names each column and constraint that differs, with its form in the base and
+in the head, and names the retype that gives no definition.
 Its values go to a new column,
 `<field>_<type>`, such as `rank_string`, which stays its column after the
 contract step. The expand step adds the column, nullable, its CHECK
@@ -688,7 +705,13 @@ its backfill completes, or stop the release before, and run the job again.
 
 Then the step runs each statement in its own short transaction, under a lock
 timeout of 1 s, and again after a pause when a lock wait ends at that
-timeout, at most 10 times. For a required field it adds
+timeout, at most 10 times. For a field with a default, it first gives the
+new column the default of the field. The expand step added the column with
+no default, so the backfill finds each row there that it must fill. The
+manifest of the release of the expand step states no default for the column,
+so the same transaction gives the column the comment of a relaxed form that
+states the default (see [Relax steps](#relax-steps)); the schema check of
+that release then accepts the default while the release runs. For a required field it adds
 `CHECK (<new> IS NOT NULL) NOT VALID`, validates it, sets NOT NULL and drops
 the CHECK. Then it makes the old column nullable. Then one transaction
 checks the step again, drops the sync trigger, the completeness CHECK and the
@@ -716,8 +739,9 @@ report of a process with `release_stop`. Use the extended protocol.
 
 Limits: a release on a runtime library before v0.103.0 writes no report,
 and an expand step from a postgres-adapter before 6.4.0 made no table of the
-reports (ST-SUP-Q126). A contract step of a rename of a field with a default
-is not built yet.
+reports (ST-SUP-Q126). A contract step of a rename or a retype of a field
+with a default needs postgres-adapter 6.16.0 or later; an earlier one refuses
+it.
 
 ## The tenant key of each owned table
 

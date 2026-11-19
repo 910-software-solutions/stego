@@ -1,6 +1,8 @@
 kind: component
 name: go-sdk
-version: 2.0.4
+# Version 2.1.0: the common HTTPS client gives ErrTransport for a request that failed in transport or stopped
+# before the end of its answer, and ErrDeadline for a request whose time limit ended (security review of PR #447, I-2).
+version: 2.1.0
 stage: ga
 output_namespace: sdk
 config:
