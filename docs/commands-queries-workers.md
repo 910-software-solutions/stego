@@ -301,8 +301,13 @@ field names, such as `stock_item_id`.
 
 ### A secret member
 
-Mark a member that holds a secret, such as a PIN in a request or an API key
-in a response, with the standard protobuf option `debug_redact`:
+Mark each member that holds a secret, such as a PIN in a request or an API
+key in a response, with the standard protobuf option `debug_redact`. Without
+the mark, STEGO does not know that the member is a secret: the generated CLI
+gives it a flag, which puts the value in the shell history and the process
+list. `stego validate` warns (`unmarked-secret-member`) of a request member
+that has the name of a secret field of an entity that the command writes and
+has no mark.
 
 ```proto
 message IssueKeyRequest {

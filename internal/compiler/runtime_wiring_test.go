@@ -710,3 +710,28 @@ func TestCommandSecretRing(t *testing.T) {
 		}
 	})
 }
+
+func TestUnmarkedSecretMembers(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC28-T01 Validate warns of a command request member with the name of a secret field of a written entity and no debug_redact", func(t *testing.T) {
+		ctx := gen.Context{ComponentConfig: map[string]any{"proto_files": []any{map[string]any{"path": "proto/pay.proto", "import_path": "pay/v1/pay.proto"}}},
+			ModuleName: "example.com/pay", OutDirName: "out", OutputNamespace: "commands",
+			Inputs: map[string][]byte{"proto/pay.proto": []byte("syntax = \"proto3\";\npackage pay.v1;\n" +
+				"message VerifyPayoutRequest { string payout_account_id = 1; string payout_pin = 2; string note = 3; string iban = 4; }\nmessage VerifyPayoutResponse { bool verified = 1; }\n" +
+				"message ResetPinRequest { string payout_pin = 1 [debug_redact = true]; }\nmessage ResetPinResponse {}\n")}}
+		service := &types.ServiceDeclaration{
+			Entities: []types.Entity{{Name: "PayoutAccount", Fields: []types.Field{{Name: "payout_pin", Type: types.FieldTypeString, Sensitivity: "secret", CompareOnly: true},
+				{Name: "iban", Type: types.FieldTypeString, Sensitivity: "pii"}, {Name: "note", Type: types.FieldTypeString}}}},
+			Commands: []types.Command{{Name: "verify-payout", Writes: []string{"PayoutAccount"}}, {Name: "reset-pin", Writes: []string{"PayoutAccount"}}},
+		}
+		warnings := unmarkedSecretMembers(service, ctx)
+		if len(warnings) != 1 || warnings[0].Rule != "unmarked-secret-member" || warnings[0].Path != "commands[0]" || warnings[0].Found != "payout_pin" ||
+			!strings.Contains(warnings[0].Message, "[debug_redact = true]") {
+			t.Fatalf("the warnings are %+v, want one unmarked-secret-member of payout_pin at commands[0]", warnings)
+		}
+		// A command that does not write the entity gets no warning.
+		service.Commands[0].Writes = []string{"Other"}
+		if warnings := unmarkedSecretMembers(service, ctx); len(warnings) != 0 {
+			t.Errorf("a command that does not write the entity gets %+v", warnings)
+		}
+	})
+}

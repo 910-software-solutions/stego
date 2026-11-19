@@ -259,9 +259,58 @@ func validateSource(input ReconcilerInput, source *compilationSource) (*Validati
 			source.Resolved = resolved
 			result.Errors = append(result.Errors, validateOperationRoutes(svcDecl, resolved.HTTPRoutes)...)
 			result.Errors = append(result.Errors, validateOwnComponentRoutes(svcDecl, resolved.HTTPRoutes)...)
+			result.Warnings = append(result.Warnings, unmarkedSecretMembers(svcDecl, resolved.Contexts[commandComponent])...)
 		}
 	}
 	return result, nil
+}
+
+// unmarkedSecretMembers warns of each member of the request message of a command that has the name of a secret
+// field, readable or compare-only, of an entity that the command writes, and that the proto does not mark
+// debug_redact: the OpenAPI document then does not mark it, and the generated CLI gives it a flag, which puts the
+// secret in the shell history and the process list (walkthrough 16, W16-B2; ST-SUP-Q192). A proto that does not
+// compile gives none: the checks of the command component report it.
+func unmarkedSecretMembers(service *types.ServiceDeclaration, ctx gen.Context) []ValidationError {
+	if len(service.Commands) == 0 || ctx.ComponentConfig == nil {
+		return nil
+	}
+	descriptors, err := commandgen.MessageDescriptors(ctx)
+	if err != nil {
+		return nil
+	}
+	secrets := map[string]map[string]bool{}
+	for _, e := range service.Entities {
+		for _, f := range e.Fields {
+			if f.Secret() {
+				if secrets[e.Name] == nil {
+					secrets[e.Name] = map[string]bool{}
+				}
+				secrets[e.Name][f.Name] = true
+			}
+		}
+	}
+	var warnings []ValidationError
+	for i, c := range service.Commands {
+		request := descriptors[commandgen.GoName(c.Name)+"Request"]
+		if request == nil {
+			continue
+		}
+		fields := request.Fields()
+		for j := 0; j < fields.Len(); j++ {
+			f := fields.Get(j)
+			if commandgen.SecretMember(f) {
+				continue
+			}
+			for _, entity := range c.Writes {
+				if secrets[entity][string(f.Name())] {
+					warnings = append(warnings, ValidationError{Category: "command", Rule: "unmarked-secret-member", Path: fmt.Sprintf("commands[%d]", i), Found: string(f.Name()),
+						Message: fmt.Sprintf("the member %s of %s has the name of the secret field %s.%s and no [debug_redact = true]; the OpenAPI document does not mark it, and the generated CLI gives it a flag, which puts the secret in the shell history and the process list; mark it in the proto file", f.Name(), request.Name(), entity, f.Name())})
+					break
+				}
+			}
+		}
+	}
+	return warnings
 }
 
 // generatorInputFault gives the fault of a generator's inputs. When a generator names the setting and the value
