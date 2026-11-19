@@ -434,7 +434,7 @@ The migration Job of the release with the expand step makes the row of the
 lease `stego.backfill.<change ID>` in the lease table. A later migration Job
 that applies the expand step, such as the Job of a later release on a restored
 database, makes it too, when the lease table is there. When the row is not
-there, the seal job cannot run: from runtime v0.141.0 each run logs `the lease
+there, the seal job cannot run: from runtime v0.145.0 each run logs `the lease
 of the seal job is not in the lease table` at the level error, with the lease,
 and the controller reports the job as failed. Run the migration Job of the
 release of the expand step, and the job runs at its next tick.
@@ -484,7 +484,7 @@ The contract does not wait for the release of the expand step to stop, as the
 contract of a drop or a rename does not wait for the release of its expand
 step: deploy the release of the contract step in the usual order, its
 migration Job first and then its Deployments, while the release of the expand
-step serves. A process of the release of the expand step with runtime v0.141.0
+step serves. A process of the release of the expand step with runtime v0.145.0
 or later goes on after the contract: the first statement of the entity that
 fails because the clear column is gone makes the process read and write the
 sealed column alone from then on, and the call runs again once, so the client
@@ -495,12 +495,12 @@ after the contract logs the fault of the schema manifest for the clear column,
 which is an alert, and goes on in the same way. Thus you can also go back to
 the release of the expand step after the contract, but not past it.
 
-A process of a release of the expand step with a runtime before v0.141.0 needs
+A process of a release of the expand step with a runtime before v0.145.0 needs
 the clear column: after the contract it answers 500 to each create, read and
 update of the entity until the release of the contract step replaces it
 (walkthrough 14). So `stego compat` and `stego plan` refuse the contract step
-over a base whose record names a runtime before v0.141.0, or no runtime: first
-deploy a release with runtime v0.141.0 or later and the seal still at expand,
+over a base whose record names a runtime before v0.145.0, or no runtime: first
+deploy a release with runtime v0.145.0 or later and the seal still at expand,
 and then declare the contract step.
 
 ### Where the values of the field stay after the contract
