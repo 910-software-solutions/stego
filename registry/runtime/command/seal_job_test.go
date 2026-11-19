@@ -464,6 +464,79 @@ func TestSealContract(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("ST-SUP-RP10-LC49-T04 A process that took its statements after the contract writes the clear column again once a restore brings the column back", func(t *testing.T) {
+		n := newNoteEnv(t)
+		id := uuid.NewString()
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			_, err := r.Create(ctx, note{ID: id, Label: "x", Body: sealed.SecretOf(secret + "-before")})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// The contract drops the clear column, and the process takes its statements after the contract.
+		n.exec(`ALTER TABLE notes DROP COLUMN body`, `DELETE FROM stego_schema.seals WHERE change_id = '`+noteChange+`'`)
+		if got := n.read("org-a", id); got.Body.Reveal() != secret+"-before" || !n.notes.contracted.Load() {
+			t.Fatal("the entity did not take its statements after the contract")
+		}
+		// A restore of a backup from before the contract brings back the clear column, its value and the checkpoint,
+		// while the process runs on.
+		n.exec(`ALTER TABLE notes ADD COLUMN body text`, `UPDATE notes SET body = '`+secret+`-before'`,
+			"INSERT INTO stego_schema.seals (change_id, expand, created_at) VALUES ('"+noteChange+"', 'step_0002_note-body-seal_expand', clock_timestamp() - interval '10 minutes')")
+		// The next catalog check is due, as sealRecheck after the last one.
+		n.notes.recheckAt.Store(0)
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			l, err := r.GetForUpdate(ctx, id)
+			if err != nil {
+				return err
+			}
+			v := l.Value()
+			v.Body = sealed.SecretOf(secret + "-updated")
+			_, err = r.Update(ctx, l, v)
+			return err
+		}); err != nil {
+			t.Fatalf("an update after the restore fails: %v", err)
+		}
+		if n.notes.contracted.Load() {
+			t.Fatal("the entity keeps its statements after the contract on a table with the clear column")
+		}
+		// The update wrote both columns, so a read that takes the clear value first, and the seal job, keep it.
+		if clear, clearSet, opened, _ := n.opened("org-a", id); !clearSet || clear != secret+"-updated" || opened != secret+"-updated" {
+			t.Fatalf("after the restore the update leaves the clear column set %t and the sealed column opening to its value %t", clearSet && clear == secret+"-updated", opened == secret+"-updated")
+		}
+		if got := n.read("org-a", id); got.Body.Reveal() != secret+"-updated" {
+			t.Fatal("a read after the restore does not give the updated value")
+		}
+		n.noSecretOutside(secret)
+	})
+
+	t.Run("ST-SUP-RP10-LC50-T03 The seal job with no checkpoint completes nothing while the clear column is there, and logs the contract again after a restore", func(t *testing.T) {
+		n := newNoteEnv(t)
+		n.exec(`INSERT INTO notes (tenant_id, id, label, body) VALUES ('org-a', '` + uuid.NewString() + `', 'x', '` + secret + `')`)
+		// The checkpoint row is gone while the clear column is there, as before the migration job of the release:
+		// the run is no completed pass, fails with the remedy and seals nothing.
+		n.exec(`DELETE FROM stego_schema.seals WHERE change_id = '` + noteChange + `'`)
+		j := n.job()
+		results, err := j.Run(n.ctx)
+		if !errors.Is(err, ErrSealCheckpoint) || len(results) != 1 || results[0].Completed {
+			t.Fatalf("a run with no checkpoint and the clear column gives %+v, %v, want ErrSealCheckpoint and no completed pass", results, err)
+		}
+		if sealedRows := n.count(`SELECT count(*) FROM notes WHERE body_sealed IS NOT NULL`); sealedRows != 0 {
+			t.Fatalf("the run with no checkpoint sealed %d rows", sealedRows)
+		}
+		// The contract drops the clear column: the job has no work and takes the change as contracted.
+		n.exec(`ALTER TABLE notes DROP COLUMN body`)
+		if results, err := j.Run(n.ctx); err != nil || !results[0].Completed || !j.contracted[noteChange] {
+			t.Fatalf("a run after the contract gives %+v, %v, contracted %t, want no work", results, err, j.contracted[noteChange])
+		}
+		// A restore from before the contract brings the column and the checkpoint back: the job seals the row again
+		// and no longer takes the change as contracted.
+		n.exec(`ALTER TABLE notes ADD COLUMN body text`, `UPDATE notes SET body = '`+secret+`'`,
+			"INSERT INTO stego_schema.seals (change_id, expand, created_at) VALUES ('"+noteChange+"', 'step_0002_note-body-seal_expand', clock_timestamp() - interval '10 minutes')")
+		if results, err := j.Run(n.ctx); err != nil || !results[0].Completed || results[0].Sealed != 1 || j.contracted[noteChange] {
+			t.Fatalf("a run after the restore gives %+v, %v, contracted %t, want the row sealed", results, err, j.contracted[noteChange])
+		}
+	})
 }
 
 // sealState reads the seal checkpoint of the note change.

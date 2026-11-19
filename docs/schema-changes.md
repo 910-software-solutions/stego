@@ -448,7 +448,12 @@ database, makes it too, when the lease table is there. When the row is not
 there, the seal job cannot run: from runtime v0.150.0 each run logs `the lease
 of the seal job is not in the lease table` at the level error, with the lease,
 and the controller reports the job as failed. Run the migration Job of the
-release of the expand step, and the job runs at its next tick.
+release of the expand step, and the job runs at its next tick. In the same
+way, from runtime v0.155.0, a run that finds no seal checkpoint while the
+clear column is still in the table logs `the seal of a secret column has no
+checkpoint while its clear column is there` at the level error and completes
+no pass; run the migration Job of the release of the expand step, which makes
+the checkpoint.
 
 The service needs its key ring: the api, worker and controller modes read
 `STEGO_SECRET_KEY_RING_FILE` (see [Rotate and back up the key ring of the
@@ -560,8 +565,12 @@ take it through the steps again:
    next steps name. A process of the release of the expand step that ran
    after the contract reads and writes the sealed column alone until it
    stops, so on the restored database it would leave the clear value of a
-   row older than its sealed value. Then restore the backup, as [Restore from
-   a backup](operations.md#restore-from-a-backup) tells.
+   row older than its sealed value. From runtime v0.155.0 such a process
+   checks the table again, at most once each second, and writes the clear
+   column again once the restore brings it back, but a call that runs while
+   the restore runs can still write the sealed column alone. Then restore the
+   backup, as [Restore from a backup](operations.md#restore-from-a-backup)
+   tells.
 2. Run the migration Job of the release that runs now. When the backup is from
    before the contract step of a seal, the Job applies the steps up to that
    contract step, makes the seal checkpoint and the lease of the seal job, and

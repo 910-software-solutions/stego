@@ -941,6 +941,11 @@ func newState(ctx context.Context, rt *Runtime, tx *sql.Tx, t tenant.Tenant, p a
 	s := &state{rt: rt, tx: tx, tenant: t, principal: p, mode: m, action: action, writes: writes,
 		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{},
 		sealSwitches: sealSwitches.Load()}
+	// An entity that took its statements after a seal contract takes those of the spec again when the clear
+	// column is back (security review of PR #452, L1).
+	for d := range writes {
+		d.recheckSeal(ctx, rt.cfg.DB)
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		s.deadline = deadline
 	}
