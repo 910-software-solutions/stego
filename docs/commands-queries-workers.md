@@ -474,6 +474,11 @@ Each request of a command must have the header `Idempotency-Key`.
 The keys of each tenant and each caller are separate. Thus the same key from
 another caller, or in another tenant, is a new request.
 
+The header `Idempotency-Kept: 1` is for HTTP only. A command over gRPC gets no
+such metadata (ST-SUP-Q199 (d)). After a failure, a gRPC client sends the
+command again only with the same key: the service then gives the stored
+answer, or runs the command once.
+
 The runtime keeps only an answer that commits. It does not keep an error
 answer: a 404, a 400, a declared refusal, an answer of 5xx, an answer of
 429, or an answer 409 with the code `conflict`. For each of these, it rolls
@@ -767,6 +772,14 @@ func Fill(ctx context.Context, req queries.OpenOrdersRequest, h *queries.OpenOrd
 The request of a get query has one field for the member: `req.OrderID` for
 `orderId`. The response of a get query is any value that the handler can
 write as JSON.
+
+Do not put a secret in the answer of a query. The read-only value of an
+entity has no `secret` field, so a query fill cannot read a stored secret.
+The OpenAPI document gives a query answer as any JSON value, with no
+`x-sensitive` mark, and the generated CLI writes it to stdout. A call that
+makes a secret, such as a new API key, is a command with a `debug_redact`
+member in its response message (see [A secret member](#a-secret-member);
+ST-SUP-Q199 (a)).
 
 ### An optional field in a command and in a query
 
@@ -1265,6 +1278,14 @@ cause classes are:
 
 The runtime writes at most one line for each command or worker, cause and
 SQLSTATE class in each 10 seconds, with the number of lines that it held back.
+
+From runtime v0.165.0, a statement that the database refuses with SQLSTATE
+0A000 `cached plan must not change result type` is not a failed statement.
+This occurs when a person drops a column and adds it again while the service
+runs: the prepared statement of a connection is then stale. The runtime makes
+each connection of the pool prepare its statements again, and runs the
+command once more with no wait. A query answers 500 one time, and the next
+call passes (ST-SUP-RP04-LC11).
 
 ### A value that breaks a declared constraint
 

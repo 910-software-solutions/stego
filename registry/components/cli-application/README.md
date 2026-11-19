@@ -274,6 +274,15 @@ is refused in the same way, because apply cannot compare it. To
 change a create-only field, use a command of the service that changes it, or
 delete the resource and apply again when the collection has a delete.
 
+Apply compares a create-only field only when its type is a string, an
+integer, a boolean or a list of strings. It compares a string as text: a
+timestamp, such as `2026-01-01T00:00:00Z`, is the same value only when the
+document gives it in the form that the service returns. A field of type
+number or object has no apply field, so a document that gives it is refused
+with `invalid apply field`. A secret field is not in the answer, so apply
+cannot compare it. Leave such create-only fields out of a document that you
+apply again (security review of PR #461, I1).
+
 Commands marked for confirmation require `--yes`. Interactive prompts,
 stdin bodies, legacy configuration migration, and automatic SDK generation
 are not supplied by this version. Current file operations target Linux; other
