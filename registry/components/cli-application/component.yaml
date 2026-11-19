@@ -14,7 +14,9 @@
 # refuses a token file, a configuration file and a --body FILE that holds a secret body field when another user owns
 # it (security review of PR #462, L3).
 # Version 1.18.0 makes a command Sensitive when its answer is marked x-stego-opaque (ST-SUP-RC04-OC33, ST-SUP-Q194 (a)).
-# Version 1.19.0 gives no flag for a member of a create or an update request marked x-output-only, which the server
+# Version 1.20.0 states APPLY_CONFIG as read by the client alone (read_by_client): the CLI reads it, and no process
+# of the service does, so the platform requirements and the Kubernetes base no longer list it (walkthrough 17, W17-D2).
+# Version 1.21.0 gives no flag for a member of a create or an update request marked x-output-only, which the server
 # sets (ST-SUP-RC20-OC55, decision ST-SUP-Q195).
 kind: component
 name: cli-application
@@ -31,7 +33,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.19.0
+version: 1.21.0
 stage: ga
 output_namespace: cli
 config:
@@ -54,6 +56,7 @@ environment:
   - name: APPLY_CONFIG
     type: path
     required: false
-    description: "The file of the configuration of the apply command. When it has no value, the CLI uses apply/config.json in the configuration folder of the user."
+    description: "The file of the configuration of the generated CLI. When it has no value, the CLI uses <service>/config.json in the configuration folder of the user."
     secret: false
+    read_by_client: true
     example: "/home/user/.config/apply/config.json"

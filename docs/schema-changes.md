@@ -435,6 +435,13 @@ While the step is open:
   contract step.**
 - A read takes the clear value when the two columns differ, because only a
   release before writes the clear column alone.
+- The release before still reads the clear column, and its audit, its audit
+  sink and its outbox write the value in clear: of each row that it writes, and
+  of each row that it reads when the entity has a `pii` field, also of a row
+  that the release of the expand step made. The contract step does not remove these copies (see [Where the values
+  of the field stay after the contract](#where-the-values-of-the-field-stay-after-the-contract)).
+  So stop the release before as soon as the release of the expand step
+  serves. The seal job waits for that anyway.
 - `stego plan` lists the step with the backfill `the seal job of the
   controller under the lease stego.backfill.<change ID>`.
 - The controller runs the seal job each 10 minutes, under the lease
@@ -565,15 +572,18 @@ The contract removes the value in clear from the table only. Each copy that a
 release wrote while the field was not secret stays where it is:
 
 - The audit rows in `public.audit_event`: the state before and after of each
-  create and update, and the state of each pii read, of each release before
-  the expand step. The audit rows are chained by hashes, so STEGO does not
-  change them. From the release of the expand step on, no audit row holds the
-  value.
+  create and update, and the state of each pii read, that a release before
+  the expand step wrote, also while it ran beside the release of the expand
+  step. Such a row can hold the value of a row that the release of the expand
+  step made after the expand, because the release before reads it in clear
+  (walkthrough 17). The audit rows are chained by hashes, so STEGO does not
+  change them. No audit row of the release of the expand step, or of a later
+  release, holds the value.
 - The entries of the audit sink in `stego_audit_sink.entries` and the
   messages of the outbox in `stego_outbox.messages` that a release before the
-  expand step wrote, until their own retention removes them, and each copy in
-  the systems that read them, such as the topics of a consumer and the store of
-  the audit sink.
+  expand step wrote, also while the seal was open, until their own retention
+  removes them, and each copy in the systems that read them, such as the
+  topics of a consumer and the store of the audit sink.
 - The rows of the clear column in the WAL and in each backup taken before the
   contract, until the retention of the WAL and of the backups ends. A restore
   of such a backup brings the clear column back (see [Restore a database with
@@ -582,8 +592,11 @@ release wrote while the field was not secret stays where it is:
 Treat these copies as data of the class that the field had before the seal,
 such as `public` or `pii`, until their retention ends. To limit them, declare a
 field `sensitivity: secret` in its first release. How STEGO removes the copies
-in the audit, the audit sink and the outbox is an open question to the Product
-owner (ST-SUP-Q188).
+in the audit, the audit sink and the outbox is decided, and not built yet
+(ST-SUP-Q188): the deletion of the delivered outbox messages and audit sink
+entries of the entity, and later a redaction of the audit rows that keeps the
+chain valid. Both cover the copies that a release before wrote up to the
+contract step (ST-SUP-Q197).
 
 ### Restore a database with an open or finished seal
 
