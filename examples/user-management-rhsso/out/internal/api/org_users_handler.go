@@ -515,7 +515,7 @@ func (h *OrgUsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 			}
 			parents = append(parents, parent)
 		}
-		updated, err := repo.Update(ctx, from, orgUsersToData(user), parents...)
+		updated, err := repo.Repository.Update(ctx, from, orgUsersToData(user), parents...)
 		if err != nil {
 			return idempotency.Response{}, err
 		}
@@ -891,7 +891,7 @@ func (h *OrgUsersHandler) Patch(w http.ResponseWriter, r *http.Request) {
 			}
 			parents = append(parents, parent)
 		}
-		updated, err := repo.Update(ctx, from, orgUsersToData(user), parents...)
+		updated, err := repo.Repository.Update(ctx, from, orgUsersToData(user), parents...)
 		if err != nil {
 			return idempotency.Response{}, err
 		}
