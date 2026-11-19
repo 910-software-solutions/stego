@@ -35,8 +35,11 @@ package `<out>/cli/app`:
   of an entity that the command writes and no mark
   (`unmarked-secret-member`). A secret member cannot be a path parameter:
   generation refuses the route, because the URL goes in access logs;
-- `Sensitive` for a command whose answer holds a member marked `x-sensitive`:
-  it writes the answer only to `--output-file FILE`, and never to stdout;
+- `Sensitive` for a command whose answer holds a member marked `x-sensitive`,
+  or whose answer the document marks `x-stego-opaque` because it holds a
+  `google.protobuf.Any`, `Struct`, `Value` or `ListValue` member, which can
+  hold a secret that no mark reaches: it writes the answer only to
+  `--output-file FILE`, and never to stdout;
 - `--yes` for each delete;
 - one `apply` resource for each collection with a create, a list and a patch
   that take a string `name`, at a path with no parameter. The kind is the
@@ -71,8 +74,10 @@ reads the current token file before its request. Logout removes configuration
 and retains the externally owned token file. The factory selects the environment
 variable and application directory used to locate configuration.
 
-New directories use mode 0700. Configuration and token files must exclude group
-and other access. The configuration directory must exclude writes by other
+New directories use mode 0700. Configuration and token files must be owned by
+the effective user, as ssh checks for its keys, and must exclude group and other
+access. A body file that holds a secret member has the same rules. Thus a CLI
+that runs as root accepts only such files that root owns. The configuration directory must exclude writes by other
 users. Configuration reads reject leaf symlinks. Writes use an open directory
 handle, a random exclusive file, file sync, atomic rename, and directory sync.
 Failed writes do not replace configuration with partial JSON. Input files must
@@ -99,8 +104,8 @@ gives by `$ref` does not count. A command that is not a POST or a PATCH must
 not set the flag.
 
 With the flag, the CLI sends a write again one time, with the same key and
-body, after a transport failure, a request that expired, or a 5xx answer. It
-waits one second first, or follows a `Retry-After` of one to five seconds.
+body, after a transport failure, a request that expired, or a 5xx answer that
+carries the header `Idempotency-Kept: 1`. It waits one second first, or follows a `Retry-After` of one to five seconds.
 When the second request gets no success, the outcome is unknown: the first
 request can still be in its transaction, as a 409 answer shows. The service
 gives the stored answer of a write that it did, so the write does not occur
@@ -119,6 +124,19 @@ service stops to keep the key of a write, a CLI of an earlier release still
 sends that write again, and the write can then occur two times. Thus, build
 the CLI from the same release as the service that it calls, and build it again
 with each release of the service.
+
+The service tells on each answer to a write whose key it keeps that it keeps
+the key: the answer carries `Idempotency-Kept: 1`, also a problem and a 5xx
+answer. A 5xx answer with no such header, such as a 502 or a 504 of a proxy,
+or an answer of a service of another release, is not sent again: the command
+ends with an error that says that the write was not sent again and can have
+been done, so read the state of the resource before a new write. A transport
+failure or a request that expired gives no answer, so the flag decides there.
+When the flag says that the service keeps the key and a 2xx answer has no
+`Idempotency-Kept` header, the CLI writes a warning to standard error that the
+CLI and the service can be of different releases. The warning changes no
+answer and no exit code. A proxy in front of the service must not add
+`Idempotency-Kept`: the CLI trusts the header to send a write again.
 
 Request fields support string, string-list, integer, and boolean values. A
 string-list flag takes a JSON array. `--body FILE` accepts a JSON object and

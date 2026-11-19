@@ -397,8 +397,8 @@ func serveRun[Req, Res proto.Message, P any](ctx context.Context, rt *Runtime, s
 
 // Serve gives the HTTP handler of one command (ST-SUP-RP10-LC33). It binds the verified tenant and principal before
 // any transaction (401 when it cannot), reads the Idempotency-Key header (400 when it is required and missing or
-// malformed), decodes the body with protojson and the path parameters into the request message (400), and runs the
-// one fill through Run, which decides the permission before the fill. It answers ErrDenied with 404, a declared
+// malformed) and marks each later answer to a request with a key Idempotency-Kept: 1 (ST-SUP-RC32-OC27), decodes the
+// body with protojson and the path parameters into the request message (400), and runs the one fill through Run, which decides the permission before the fill. It answers ErrDenied with 404, a declared
 // refusal with its status and code, ErrConflict with 409 conflict, and ErrCommitUnknown and any other error with 500
 // internal; it writes the outcome audit row of a denied or failed command, and a problem response with a fixed
 // title, the status and the fixed code only.
@@ -422,6 +422,12 @@ func Serve[Req, Res proto.Message, P any](rt *Runtime, s ServeSpec[Req, Res, P])
 		if err != nil {
 			rt.writeProblem(w, http.StatusBadRequest, rt.problemType(idempotency.ProblemMissing), "")
 			return
+		}
+		if key != "" {
+			// The command keeps the key (ST-SUP-RP10-LC11): each answer from here on tells it, also a problem and a
+			// 5xx answer, so a client of another release knows that a second request with the key is safe
+			// (ST-SUP-RC32-OC27).
+			w.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBody))
 		if err != nil {
