@@ -87,17 +87,38 @@ func orgActivityPresented(v ActivityEntry) any {
 	return presentEntity(v, "ActivityEntry", v.ID, "/api/user-mgmt/v1/org-activity"+"/"+v.ID)
 }
 
-// decodeOrgActivity gives the ActivityEntry of a create or an update body. A kind member that is not ActivityEntry is refused, and the
-// client values of the server-managed fields are cleared (ST-SUP-RC20-OC17, ST-SUP-RC20-OC19).
+// decodeOrgActivity gives the ActivityEntry of a create, an update or an upsert body. Each member that is not kind, id, href or a
+// field of ActivityEntry, in its exact letter case, is refused, and so is a kind member that is not ActivityEntry and an implicit field
+// with another value than that of the collection; the client values of the server-managed fields are cleared
+// (ST-SUP-RC20-OC55, ST-SUP-RC20-OC17, ST-SUP-RC20-OC19, ST-SUP-RC20-OC23).
 func decodeOrgActivity(bodyBytes []byte) (ActivityEntry, error) {
 	var rawMap map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &rawMap); err != nil {
 		return ActivityEntry{}, &invalidRequest{problem: BadRequest("the body is not a JSON object")}
 	}
+	unknown := ""
+	for member := range rawMap {
+		switch member {
+		case "kind", "id", "href", "source_type", "source_id", "action", "detail":
+		default:
+			if unknown == "" || member < unknown {
+				unknown = member
+			}
+		}
+	}
+	if unknown != "" {
+		return ActivityEntry{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: "the member is not a field of ActivityEntry; a create, an update or an upsert takes only the fields of ActivityEntry and kind, in the letter case of the OpenAPI document"}})}
+	}
 	if kindRaw, ok := rawMap["kind"]; ok {
 		var kind string
 		if err := json.Unmarshal(kindRaw, &kind); err != nil || kind != "ActivityEntry" {
 			return ActivityEntry{}, &invalidRequest{problem: BadRequest("kind must be ActivityEntry")}
+		}
+	}
+	if raw, ok := rawMap["source_type"]; ok && string(raw) != "null" {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value != "Organization" {
+			return ActivityEntry{}, &invalidRequest{problem: Validation([]ValidationError{{Field: "source_type", Message: "the collection org-activity sets this field itself; leave it out or give the value of the collection"}})}
 		}
 	}
 	var activityentry ActivityEntry
