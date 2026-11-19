@@ -148,6 +148,7 @@ func CheckBase(base BaseSource, head *types.ServiceDeclaration) (BaseCheck, erro
 	check.Faults = append(check.Faults, relaxRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealRuntimeFaults(state.LastApplied, declaration, head)...)
 	check.Faults = append(check.Faults, sealContractFaults(state.LastApplied, declaration, head)...)
+	check.Faults = append(check.Faults, sealTogetherFaults(declaration, head)...)
 	return check, nil
 }
 
@@ -244,6 +245,46 @@ func sealContractFaults(applied *AppliedState, base, head *types.ServiceDeclarat
 			"the base runs a release with the runtime library before %s, or no pin, whose processes need the clear column of the seal %s, so each of their writes and reads of the entity would fail after its contract step drops the column; deploy a release with the runtime library %s or later, with the seal still at expand, first, and then declare the contract step", SealSwitchRuntimeVersion, step.Change, SealSwitchRuntimeVersion)}}
 	}
 	return nil
+}
+
+// sealTogetherFaults refuses a head with a new contract step of a seal of an entity while the base holds another seal
+// of the same entity open, at expand, that the head does not contract too: the release of the base switches the entity
+// to its statements after the contract only when every clear column of its open seals is gone (AfterSeal), so with one
+// clear column dropped and another there each of its writes and reads of the entity would fail (security review of
+// PR #452, L3; ST-SUP-RC01-OC49). The remedy is to contract the open seals of an entity in one release.
+func sealTogetherFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	changes := map[string]types.SchemaChange{}
+	for _, change := range head.SchemaChanges {
+		changes[change.ID] = change
+	}
+	open := map[string][]string{}
+	for _, change := range base.SchemaChanges {
+		if change.Kind == "seal" && phaseOf(base, change.ID) == "expand" {
+			open[change.Entity] = append(open[change.Entity], change.ID)
+		}
+	}
+	var faults []BaseFault
+	named := map[string]bool{}
+	for _, step := range head.SchemaHistory[min(len(base.SchemaHistory), len(head.SchemaHistory)):] {
+		change, ok := changes[step.Change]
+		if step.Phase != "contract" || !ok || change.Kind != "seal" || named[change.Entity] {
+			continue
+		}
+		var left []string
+		for _, id := range open[change.Entity] {
+			if phaseOf(head, id) != "contract" {
+				left = append(left, id)
+			}
+		}
+		if len(left) == 0 {
+			continue
+		}
+		named[change.Entity] = true
+		faults = append(faults, BaseFault{Rule: StepLedgerRule, Entity: change.Entity, Message: fmt.Sprintf(
+			"the head contracts the seal %s of %s while the base holds the seal %s of the same entity open; the release of the base reads and writes the sealed columns alone only when the clear column of each open seal of the entity is gone, so after this contract each of its writes and reads of %s would fail; declare the contract step of each open seal of %s in the same release",
+			change.ID, change.Entity, strings.Join(left, ", "), change.Entity, change.Entity)})
+	}
+	return faults
 }
 
 // findStoredField gives the field of the entity of the declaration, live or dropped.

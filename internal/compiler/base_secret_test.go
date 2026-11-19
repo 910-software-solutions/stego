@@ -248,3 +248,57 @@ func TestBaseSealReports(t *testing.T) {
 		}
 	})
 }
+
+func TestBaseSealTogether(t *testing.T) {
+	t.Run("ST-SUP-RC01-OC49-T09 The contract of one seal of an entity is refused while the base holds another seal of the entity open, and the contract of both is accepted", func(t *testing.T) {
+		td01 := string(userManagementBase(t))
+		const description = "{ name: description, type: string, optional: true, max_length: 1000 }"
+		// Organization has two fields in clear in the base, description and motto, and the release of the base
+		// seals both at expand.
+		clear := strings.Replace(td01, description, description+"\n      - { name: motto, type: string, optional: true, max_length: 100 }", 1)
+		sealed := strings.Replace(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1),
+			"max_length: 100 }", "max_length: 100, sensitivity: secret }", 1)
+		changes := "  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n" +
+			"  - {id: organization-motto-seal, kind: seal, entity: Organization, field: motto}\n"
+		expand := "  - {change: organization-description-seal, phase: expand}\n  - {change: organization-motto-seal, phase: expand}\n"
+		base := []byte(withChanges(sealed, changes, expand))
+		record := runtimeRecord(t, base, SecretStorageVersion, SealSwitchRuntimeVersion)
+		together := func(fault BaseFault) bool {
+			return fault.Rule == StepLedgerRule && strings.Contains(fault.Message, "contracts the seal organization-description-seal of Organization") &&
+				strings.Contains(fault.Message, "holds the seal organization-motto-seal of the same entity open") && strings.Contains(fault.Message, "in the same release")
+		}
+		for _, c := range []struct {
+			name, history string
+			refused       bool
+		}{
+			{"the contract of description alone", expand + "  - {change: organization-description-seal, phase: contract}\n", true},
+			{"the contract of both", expand + "  - {change: organization-description-seal, phase: contract}\n  - {change: organization-motto-seal, phase: contract}\n", false},
+		} {
+			check, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: base, Record: record}, parseHead(t, withChanges(sealed, changes, c.history)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refused := false
+			for _, fault := range check.Faults {
+				refused = refused || together(fault)
+			}
+			if refused != c.refused || (!c.refused && check.HasFaults()) {
+				t.Errorf("%s: gives %+v, want refused %t", c.name, check.Faults, c.refused)
+			}
+		}
+		// A base with description alone open: the head may open the seal of motto and contract description in one
+		// release, since the release of the base has one open seal of the entity.
+		one := []byte(withChanges(strings.Replace(clear, description, "{ name: description, type: string, optional: true, max_length: 1000, sensitivity: secret }", 1),
+			"  - {id: organization-description-seal, kind: seal, entity: Organization, field: description}\n", "  - {change: organization-description-seal, phase: expand}\n"))
+		head := withChanges(sealed, changes, "  - {change: organization-description-seal, phase: expand}\n  - {change: organization-motto-seal, phase: expand}\n  - {change: organization-description-seal, phase: contract}\n")
+		check, err := CheckBase(BaseSource{Ref: "r3", Commit: "c0ffee", Declaration: one, Record: runtimeRecord(t, one, SecretStorageVersion, SealSwitchRuntimeVersion)}, parseHead(t, head))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fault := range check.Faults {
+			if together(fault) || strings.Contains(fault.Message, "of the same entity open") {
+				t.Errorf("a contract over a base with one open seal of the entity is refused: %+v", fault)
+			}
+		}
+	})
+}

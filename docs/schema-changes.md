@@ -497,6 +497,14 @@ after the contract logs the fault of the schema manifest for the clear column,
 which is an alert, and goes on in the same way. Thus you can also go back to
 the release of the expand step after the contract, but not past it.
 
+When an entity has two or more open seals, declare the contract step of each
+of them in the same release. A process of the release of the expand step reads
+and writes the sealed columns alone only when the clear column of each open
+seal of the entity is gone, so with one clear column dropped and another there
+it would answer 500 to each create, read and update of the entity. So `stego
+compat` and `stego plan` refuse the contract step of one seal of an entity
+while the base holds another seal of the same entity open.
+
 A process of a release of the expand step with a runtime before v0.150.0 needs
 the clear column: after the contract it answers 500 to each create, read and
 update of the entity until the release of the contract step replaces it
