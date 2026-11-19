@@ -403,6 +403,14 @@ curl -X POST https://<host>/api/inventory/v1/stego/tenants/acme/retire \
   -H 'Idempotency-Key: "retire-acme"'
 ```
 
+A retire is for good. The tenant ID stays in the tenant list as retired, so
+a later provision of the same ID answers 409 with the code `tenant.retired`,
+and no route, worker or subscription of the service acts in that tenant
+again. (A provision of an ID that is active answers 409 with the code
+`tenant.provisioned`.) To serve the same customer again, provision a new
+tenant ID. A retire changes only the service that gets it: retire the tenant
+in each service of the chain.
+
 The
 [rpc-service guide](../registry/archetypes/rpc-service/README.md#tenants-and-the-first-grant)
 gives the rules of `admins`, the operator's own grant and how to write later
@@ -817,6 +825,54 @@ experimental_acceptances:
 - `consumes fulfillment`: the runtime runs the fill once for each message of
   the destination `fulfillment`, in the transaction of the tenant of the
   message. A command or a worker stages these messages as an effect.
+
+### A job that runs once a month
+
+The longest interval of `every` is `24h`. A worker has no calendar trigger,
+such as "on the first day of each month". For a job of each month, run the
+worker each hour, and let the fill find out if the month has a run already:
+
+1. Declare the worker with `trigger: every 1h`.
+2. Declare an entity that records each run, with the period as a field, such
+   as `MonthlyClose` with `period` (`pattern: "^[0-9]{4}-[0-9]{2}$"`). Put it
+   in `writes`.
+3. Declare a list of the runs of one period:
+
+   ```yaml
+       lists:
+         - name: closes-of-period
+           entity: MonthlyClose
+           filter:
+             - {field: period, op: equals, param: period}
+   ```
+
+4. In the fill, find the period from the tick, which is the time of the run.
+   Return with no change when the list holds a row of the period. Else do the
+   job, and create the row of the period in the same transaction:
+
+   ```go
+   first := time.Date(tick.Year(), tick.Month(), 1, 0, 0, 0, 0, time.UTC)
+   period := first.AddDate(0, -1, 0).Format("2006-01") // the month before the tick
+   closes, err := workers.MonthlyCloseRepository(h)
+   if err != nil {
+   	return err
+   }
+   done, err := closes.List(ctx, workers.MonthlyCloseClosesOfPeriodWith(period), 1)
+   if err != nil || len(done) > 0 {
+   	return err
+   }
+   // Close the month here, then record it.
+   _, err = closes.Create(ctx, workers.MonthlyClose{Period: period})
+   return err
+   ```
+
+The first run of each month closes the month before it. When the service is
+stopped at the start of a month, the first run after the start does the
+job. A run that fails commits nothing, so the next run does the job again.
+Each run reads one list in each tenant, which costs little. Use the first day
+of the month in UTC, as above, and not `tick.AddDate(0, -1, 0)`: on 31 March
+that gives 3 March. A daily job is `every 24h`. A worker that must run at one
+time of the day uses the same form: `every 1h` and a check of the hour.
 
 ### The permission of a worker
 
