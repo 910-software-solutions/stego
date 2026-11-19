@@ -21,6 +21,10 @@ package `<out>/cli/app`:
   argument `ID` for `{id}`;
 - a flag for each query parameter and body member of type string, integer,
   boolean or list of strings; give the other members in `--body FILE`;
+- no flag for a secret member, which the document marks `writeOnly` or
+  `x-sensitive`, such as a PIN: a flag puts its value in the shell history and
+  the process list. Give it in `--body FILE`, a file that only you can read;
+- `--yes` for each delete;
 - one `apply` resource for each collection with a create, a list and a patch
   that take a string `name`. The kind is the name of the entity.
 

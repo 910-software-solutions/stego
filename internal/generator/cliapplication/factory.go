@@ -35,12 +35,12 @@ const (
 
 // factoryCommand is one command of the generated definitions, in the form of command.Command.
 type factoryCommand struct {
-	Name                        string
-	Method, Path                string
-	ID, Query, IdempotentWrites bool
-	PathParameters              [][2]string
-	Fields                      []factoryField
-	Success, EmptyResponses     []int
+	Name                                 string
+	Method, Path                         string
+	ID, Query, IdempotentWrites, Confirm bool
+	PathParameters                       [][2]string
+	Fields                               []factoryField
+	Success, EmptyResponses              []int
 }
 
 // factoryField is one request member of a command, in the form of command.Field.
@@ -114,7 +114,7 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 	fmt.Fprintf(&b, "\t\tConfigEnv: %q,\n\t\tConfigName: %q,\n\t\tVersionCommand: true,\n", "APPLY_CONFIG", configName)
 	b.WriteString("\t\tCommands: []command.Command{\n")
 	for _, c := range commands {
-		fmt.Fprintf(&b, "\t\t\t{Name: []string{%q}, Method: %q, Path: %q, ID: %t, Query: %t, IdempotentWrites: %t,", c.Name, c.Method, c.Path, c.ID, c.Query, c.IdempotentWrites)
+		fmt.Fprintf(&b, "\t\t\t{Name: []string{%q}, Method: %q, Path: %q, ID: %t, Query: %t, IdempotentWrites: %t, Confirm: %t,", c.Name, c.Method, c.Path, c.ID, c.Query, c.IdempotentWrites, c.Confirm)
 		if len(c.PathParameters) > 0 {
 			b.WriteString(" PathParameters: []command.PathParameter{")
 			for _, p := range c.PathParameters {
@@ -168,7 +168,8 @@ func intList(codes []int) string {
 // operationCommand gives the command of one operation, and false for an operation that the command runtime cannot
 // call: a name, a route or a member that it does not take, or more members than it takes.
 func operationCommand(p, method string, op *openapi3.Operation) (factoryCommand, bool) {
-	c := factoryCommand{Name: commandName(op.OperationID), Method: method, Path: p}
+	// A delete asks for --yes (security review of PR #454, L1).
+	c := factoryCommand{Name: commandName(op.OperationID), Method: method, Path: p, Confirm: method == "DELETE"}
 	if !cliWord.MatchString(c.Name) || reservedName(c.Name) {
 		return c, false
 	}
@@ -244,7 +245,8 @@ func operationCommand(p, method string, op *openapi3.Operation) (factoryCommand,
 }
 
 // bodyFields gives a flag for each member of a body schema that the runtime takes, leaving out each member whose
-// flag another field already has, a readOnly member and a member of another type, which --body FILE gives.
+// flag another field already has, a readOnly member, a secret member (writeOnly or x-sensitive) and a member of
+// another type, which --body FILE gives.
 func bodyFields(schema *openapi3.Schema, flags map[string]bool) []factoryField {
 	required := map[string]bool{}
 	for _, name := range schema.Required {
@@ -258,7 +260,9 @@ func bodyFields(schema *openapi3.Schema, flags map[string]bool) []factoryField {
 	var fields []factoryField
 	for _, name := range names {
 		ref := schema.Properties[name]
-		if ref == nil || ref.Value == nil || ref.Value.ReadOnly {
+		// A secret member, writeOnly or x-sensitive, goes only in --body FILE: a flag would put it in the shell history
+		// and the process list (security review of PR #454, M1).
+		if ref == nil || ref.Value == nil || ref.Value.ReadOnly || ref.Value.WriteOnly || ref.Value.Extensions["x-sensitive"] == true {
 			continue
 		}
 		t, ok := fieldType(ref)

@@ -104,3 +104,45 @@ func TestFactoryFromDocument(t *testing.T) {
 		}
 	})
 }
+
+// secretDocument is a document with a create whose body has a writeOnly member, a member marked x-sensitive and a
+// plain member, and a delete.
+const secretDocument = `{"openapi": "3.0.3", "info": {"title": "Generated API", "version": "1.0.0"},
+ "paths": {
+  "/api/keys/v1/keys": {
+   "post": {"operationId": "createKeys", "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["pin"],
+     "properties": {"label": {"type": "string"}, "pin": {"type": "string", "writeOnly": true}, "token": {"type": "string", "x-sensitive": true}}}}}},
+    "responses": {"201": {"description": "Created", "content": {"application/json": {"schema": {"type": "object"}}}}}}},
+  "/api/keys/v1/keys/{id}": {
+   "delete": {"operationId": "deleteKeys", "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+    "responses": {"204": {"description": "Deleted"}}}}}}`
+
+func TestFactorySecrets(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC32-T02 A secret member has no flag, and a delete asks for --yes", func(t *testing.T) {
+		ctx := gen.Context{ModuleName: "example.com/keys-cli", OutDirName: "out", OutputNamespace: "cli", ServiceName: "keys", ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(secretDocument)}
+		files, _, err := new(cliapplication.Generator).Generate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var app string
+		for _, file := range files {
+			if file.Path == "cli/app/commands.go" {
+				app = string(file.Bytes())
+			}
+		}
+		if !strings.Contains(app, `{Flag: "label", Key: "label", Type: "string", Required: false}`) {
+			t.Errorf("the plain member has no flag:\n%s", app)
+		}
+		for _, secret := range []string{`Key: "pin"`, `Key: "token"`} {
+			if strings.Contains(app, secret) {
+				t.Errorf("the secret member %s has a flag, which puts it in the shell history and the process list:\n%s", secret, app)
+			}
+		}
+		if !strings.Contains(app, `{Name: []string{"delete-keys"}, Method: "DELETE", Path: "/api/keys/v1/keys/{id}", ID: true, Query: false, IdempotentWrites: false, Confirm: true,`) {
+			t.Errorf("the delete does not ask for --yes:\n%s", app)
+		}
+		if !strings.Contains(app, `{Name: []string{"create-keys"}, Method: "POST", Path: "/api/keys/v1/keys", ID: false, Query: false, IdempotentWrites: false, Confirm: false,`) {
+			t.Errorf("the create asks for --yes:\n%s", app)
+		}
+	})
+}
