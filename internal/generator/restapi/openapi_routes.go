@@ -93,9 +93,19 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 		writeOnlySecrets(&body)
 		for _, p := range params {
 			delete(body.Properties, p)
-			if f := request.Fields().ByName(protoreflect.Name(p)); f != nil {
-				delete(body.Properties, f.JSONName())
+			f := request.Fields().ByName(protoreflect.Name(p))
+			if f == nil {
+				f = request.Fields().ByJSONName(p)
 			}
+			if f == nil {
+				continue
+			}
+			// A path parameter goes in the URL, the access logs and a CLI flag, so it cannot hold a secret
+			// (security review of PR #460, L2).
+			if command.SecretMember(f) {
+				return nil, fmt.Errorf("the command %s has the path parameter %s, and the proto file marks the member %s of %sRequest debug_redact: a secret member cannot be a path parameter, because the URL goes in access logs and a CLI flag; give it in the body", c.Name, p, f.Name(), goName)
+			}
+			delete(body.Properties, f.JSONName())
 		}
 		status := "200"
 		last := routePath[strings.LastIndex(routePath, "/")+1:]
@@ -111,7 +121,7 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 				Description: "A structured string that holds a key, such as a quoted UUID; a second request with the same key gets the stored answer", Schema: openAPISchema{Type: "string"}}),
 			RequestBody: &openAPIRequestBody{Required: true, Content: jsonContent(body)},
 			Responses: map[string]openAPIResponse{
-				status: {Description: "The response of the command", Content: jsonContent(messageSchema(response, 0, map[protoreflect.FullName]bool{}))},
+				status: {Description: "The response of the command", Content: jsonContent(responseSchema(response))},
 				"400":  {Description: "Bad request: the body, a path parameter or the Idempotency-Key header is not valid"},
 				"401":  {Description: "Unauthorized"},
 				"404":  {Description: "Not found: the resource is not there, or the caller may not run the command on it"},
@@ -269,6 +279,16 @@ func messageSchema(m protoreflect.MessageDescriptor, depth int, seen map[protore
 		f := fields.Get(i)
 		schema.Properties[f.JSONName()] = fieldSchema(f, depth, seen)
 	}
+	return schema
+}
+
+// responseSchema gives the schema of the response message of a command. When the message holds a member that the
+// proto marks debug_redact at any depth, also deeper than the schema follows or past a recursive message, the root
+// carries x-sensitive, so the CLI still makes the command Sensitive (ST-SUP-RC20-OC54, security review of PR #460,
+// L1).
+func responseSchema(m protoreflect.MessageDescriptor) openAPISchema {
+	schema := messageSchema(m, 0, map[protoreflect.FullName]bool{})
+	schema.Sensitive = command.HoldsSecret(m)
 	return schema
 }
 

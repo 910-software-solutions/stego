@@ -120,7 +120,7 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  for _,f:=range c.Fields{fields[f.Flag]=f;if f.RelativeFlag!=""{fields[f.RelativeFlag]=f}}
  if len(arguments)==1&&arguments[0]=="--help"{
   var names []string;for _,f:=range c.Fields{names=append(names,"--"+f.Flag+" ("+f.Type+")");if f.RelativeFlag!=""{names=append(names,"--"+f.RelativeFlag+" DURATION (exclusive with --"+f.Flag+")")}}
-  for _,p:=range c.PathParameters{names=append(names,"--"+p.Flag+" ID (required)")};names=append(names,"--output-file FILE (- selects stdout)")
+  for _,p:=range c.PathParameters{names=append(names,"--"+p.Flag+" ID (required)")};if c.Sensitive{names=append(names,"--output-file FILE (required)")}else{names=append(names,"--output-file FILE (- selects stdout)")}
   if c.Method=="POST"||c.Method=="PUT"||c.Method=="PATCH"{names=append(names,"--body FILE")};if c.Confirm{names=append(names,"--yes")};sort.Strings(names)
   _,err:=fmt.Fprintln(output,strings.Join(names,"\n"));return err
  }
@@ -130,13 +130,17 @@ func Run(ctx context.Context,app Application,args []string,output io.Writer)erro
  if c.ID{if !identifier.MatchString(positions[0]){return errArguments};route=strings.Replace(route,"{id}",url.PathEscape(positions[0]),1)}
  for _,p:=range c.PathParameters{value,ok:=values[p.Flag];if !ok||!identifier.MatchString(value){return errArguments};route=strings.Replace(route,"{"+p.Key+"}",url.PathEscape(value),1);delete(values,p.Flag)}
  outputFile,outputSet:=values["output-file"];delete(values,"output-file")
- if (outputSet&&outputFile=="")||(c.Sensitive&&!outputSet){return errors.New("this command requires --output-file FILE; use - only for explicit stdout output")}
+ if outputSet&&outputFile==""{return errors.New("this command requires --output-file FILE; use - only for explicit stdout output")}
+ // The answer of a Sensitive command holds a secret: it goes only to a private file, never to stdout (security review of PR #460, I1).
+ if c.Sensitive&&(!outputSet||outputFile=="-"){return errors.New("this command answer holds a secret and requires --output-file FILE; stdout is not permitted")}
  if c.Confirm{if values["yes"]!="true"{return errors.New("confirmation required: pass --yes")};delete(values,"yes")}
  body:=map[string]json.RawMessage{}
  if name,ok:=values["body"];ok{
   if c.Query||(c.Method!="POST"&&c.Method!="PATCH"&&c.Method!="PUT")||len(values)!=1{return errArguments}
-  data,err:=readBody(name);if err!=nil{return err}
+  data,private,err:=readBody(name);if err!=nil{return err}
   if body,err=object(data);err!=nil{return err};delete(values,"body")
+  // A file that holds a secret body field is private, as the token file is (security review of PR #460, L3).
+  for _,f:=range c.BodyFields{if _,ok:=body[f.Key];ok&&!private{return errors.New("a request body file that holds a secret field must not permit access by other users")}}
  }
  now:=time.Now()
  for flag,value:=range values{

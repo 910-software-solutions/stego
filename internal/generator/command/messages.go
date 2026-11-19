@@ -73,6 +73,8 @@ type messageField struct {
 	// presence is true for a proto3 optional field or a member of a oneof, whose zero value is not the same as
 	// not set.
 	presence bool
+	// secret is true for a field that the proto file marks debug_redact (ST-SUP-RC20-OC54).
+	secret bool
 }
 
 // isString tells whether the field is a plain string field, which a path parameter or the resource member can be:
@@ -185,7 +187,7 @@ func compileMessages(ctx gen.Context) (*messages, error) {
 			for _, f := range msg.Fields {
 				m.fields = append(m.fields, &messageField{goName: f.GoName, protoName: string(f.Desc.Name()),
 					jsonName: f.Desc.JSONName(), kind: f.Desc.Kind(), list: f.Desc.IsList() || f.Desc.IsMap(),
-					presence: f.Desc.HasOptionalKeyword() || f.Desc.ContainingOneof() != nil})
+					presence: f.Desc.HasOptionalKeyword() || f.Desc.ContainingOneof() != nil, secret: SecretMember(f.Desc)})
 			}
 			ms.byName[m.name] = m
 			ms.descriptors[m.name] = msg.Desc

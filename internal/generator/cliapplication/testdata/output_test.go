@@ -88,11 +88,11 @@ func TestScopedCredentialOutput(t *testing.T) {
 			}
 		}
 		for _, id := range []string{"../escape", "bad/value", "%2f", ""} {
-			if err := run("issue", "key", "--project-id", id, "--name", "build", "--output-file", "-"); err == nil {
+			if err := run("issue", "key", "--project-id", id, "--name", "build", "--output-file", filepath.Join(directory, "path.json")); err == nil {
 				t.Fatal("invalid path value accepted")
 			}
 		}
-		if err := run("issue", "key", "--name", "build", "--output-file", "-"); err == nil {
+		if err := run("issue", "key", "--name", "build", "--output-file", filepath.Join(directory, "path.json")); err == nil {
 			t.Fatal("missing path value accepted")
 		}
 		if calls.Load() != 0 {
@@ -124,12 +124,15 @@ func TestScopedCredentialOutput(t *testing.T) {
 		}
 		mode.Store(0)
 		target.Store("")
-		if err := run(append(args, "--output-file", "-")...); err != nil || !strings.Contains(output.String(), "one-time-secret") {
-			t.Fatal("explicit stdout output failed")
+		before := calls.Load()
+		if err := run(append(args, "--output-file", "-")...); err == nil || output.Len() != 0 || calls.Load() != before {
+			t.Fatal("a sensitive answer was permitted on explicit stdout")
 		}
 		body := filepath.Join(directory, "body.json")
 		os.WriteFile(body, []byte(`{"name":"build"}`), 0600)
-		if err := run("issue", "key", "--project-id", "project-one", "--body", body, "--output-file", "-"); err != nil {
+		scoped := filepath.Join(directory, "scoped.json")
+		target.Store(scoped)
+		if err := run("issue", "key", "--project-id", "project-one", "--body", body, "--output-file", scoped); err != nil {
 			t.Fatal("body file did not work with scoped output")
 		}
 	}

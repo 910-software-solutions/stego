@@ -320,3 +320,54 @@ func run2(app Application, args ...string) error {
 	var output bytes.Buffer
 	return Run(context.Background(), app, args, &output)
 }
+
+func TestPrivateSecretBodyFile(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC32-T04 A body file that holds a secret field and permits access by other users is refused", func(t *testing.T) {
+		app := applyDefinition()
+		app.Commands = append(app.Commands,
+			Command{Name: []string{"issue", "key"}, Method: "POST", Path: "/keys", Fields: []Field{{Flag: "label", Key: "label", Type: "string"}},
+				BodyFields: []Field{{Key: "pin", Type: "string"}}, Success: []int{201}},
+			Command{Name: []string{"label", "key"}, Method: "POST", Path: "/labels", Fields: []Field{{Flag: "label", Key: "label", Type: "string"}}, Success: []int{201}})
+		f := keySetup(t, app)
+		write := func(name, data string, mode os.FileMode) string {
+			t.Helper()
+			path := filepath.Join(f.directory, name)
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}
+		for _, mode := range []os.FileMode{0640, 0604, 0660} {
+			f.next()
+			body := write("secret.json", `{"label":"a","pin":"482913"}`, mode)
+			if err := run2(app, "issue", "key", "--body", body); err == nil || !strings.Contains(err.Error(), "must not permit access by other users") {
+				t.Errorf("a body file of mode %o that holds the pin gave %v, want the refusal", mode, err)
+			}
+			if got := f.got(); len(got) != 0 {
+				t.Errorf("a refused body file of mode %o reached the server: %+v", mode, got)
+			}
+			os.Remove(body)
+		}
+		f.next()
+		if err := run2(app, "issue", "key", "--body", write("private.json", `{"label":"a","pin":"482913"}`, 0600)); err != nil {
+			t.Errorf("a private body file that holds the pin gave %v", err)
+		}
+		if err := run2(app, "issue", "key", "--body", write("plain.json", `{"label":"a"}`, 0644)); err != nil {
+			t.Errorf("a shared body file with no secret field gave %v", err)
+		}
+		if err := run2(app, "label", "key", "--body", write("label.json", `{"label":"a"}`, 0644)); err != nil {
+			t.Errorf("a shared body file of a command with no secret field gave %v", err)
+		}
+		if got := f.got(); len(got) != 3 {
+			t.Errorf("the server got %d requests, want 3", len(got))
+		}
+		// A command that is not Sensitive still writes its answer to stdout on an explicit selection.
+		var output bytes.Buffer
+		if err := Run(context.Background(), app, []string{"label", "key", "--label", "b", "--output-file", "-"}, &output); err != nil || !strings.Contains(output.String(), `"id"`) {
+			t.Errorf("explicit stdout of a command that is not Sensitive gave %v and %q", err, output.String())
+		}
+	})
+}

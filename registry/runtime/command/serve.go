@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -27,6 +28,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/jsell-rh/stego/registry/runtime/audit"
@@ -114,7 +117,34 @@ func (s ServeSpec[Req, Res, P]) check(rt *Runtime) error {
 		s.Resource == nil || s.SubjectType == "" || s.Status < 200 || s.Status > 299 {
 		return errors.New("command: Serve needs the runtime, the command, the subject type, a 2xx status, the messages, the resource and the fill")
 	}
+	// A message member that the proto marks debug_redact is a secret: without the key ring, keyed would store its
+	// fingerprint and its answer in clear (ST-SUP-RP14-LC12, security review of PR #460, L4).
+	if rt.cfg.Ring == nil && (holdsSecret(s.NewRequest().ProtoReflect().Descriptor(), map[protoreflect.FullName]bool{}) ||
+		holdsSecret(s.NewResponse().ProtoReflect().Descriptor(), map[protoreflect.FullName]bool{})) {
+		return fmt.Errorf("command: the command %s has a message member marked debug_redact, and the runtime has no key ring", s.Command.spec.Name)
+	}
 	return nil
+}
+
+// holdsSecret tells whether the message m, or a message of one of its members at any depth, has a member that its
+// proto file marks with the standard field option debug_redact = true (ST-SUP-RP14-LC12).
+func holdsSecret(m protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) bool {
+	if seen[m.FullName()] {
+		return false
+	}
+	seen[m.FullName()] = true
+	fields := m.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if options, ok := f.Options().(*descriptorpb.FieldOptions); ok && options.GetDebugRedact() {
+			return true
+		}
+		// The message of a map member is its entry message, whose member value holds the value message.
+		if f.Message() != nil && holdsSecret(f.Message(), seen) {
+			return true
+		}
+	}
+	return false
 }
 
 // Outcome is how a command handler answers an error of Run (ST-SUP-RP10-LC34): the HTTP status, the fixed code and
