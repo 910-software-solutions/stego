@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
+	"github.com/jsell-rh/stego/registry/runtime/audit"
 	"github.com/jsell-rh/stego/registry/runtime/authn"
 	"github.com/jsell-rh/stego/registry/runtime/authn/authntest"
 	"github.com/jsell-rh/stego/registry/runtime/authz"
@@ -141,6 +142,85 @@ func TestProvisioning(t *testing.T) {
 		}
 		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'org-a' AND outcome = 'denied' AND action = $1`, ProvisionCommand); n != 1 || rt.UnlistedOutcomes() != 2 {
 			t.Fatalf("the denied call of bob left %d denied rows in org-a and the counter at %d, want one row and 2", n, rt.UnlistedOutcomes())
+		}
+	})
+
+	t.Run("ST-SUP-RC27-OC09-T06 A Provision, a Retire and a tenant list that the provider cannot decide now are 503 undecided with Retry-After", func(t *testing.T) {
+		e := newEnv(t)
+		migration, err := tenant.Migration("public", e.roles[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.exec(migration)
+		e.exec(`INSERT INTO public.stego_tenants (tenant_id) VALUES ('ops'), ('org-a')`)
+		rt := e.runtime(func(c *Config) { c.Entities = nil })
+		cursors, err := query.New(query.Config{DB: rt.cfg.DB, Service: "orders", CursorKey: bytes.Repeat([]byte{'k'}, query.MinCursorKey)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		active := func(context.Context, tenant.Tenant) (bool, error) { return true, nil }
+		mux := http.NewServeMux()
+		for route, action := range map[string]tenant.RequestAction{"POST /stego/tenants": tenant.ProvisionAction,
+			"POST /stego/tenants/{tenantId}/retire": tenant.RetireAction} {
+			h, err := ServeTenant(rt, TenantSpec{Action: action, ResourceType: "service", Permission: string(action), Schema: "public",
+				SubjectType: "user", Active: active})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mux.Handle(route, h)
+		}
+		list, err := ServeTenantList(rt, TenantListSpec{ResourceType: "service", Schema: "public", SubjectType: "user",
+			Active: active, Cursors: cursors})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux.Handle("GET /stego/tenants", list)
+		signing := authntest.NewKey(t, "k1")
+		keys, err := authn.ParseKeys(authntest.Document(signing.JWK()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		verifier, err := authn.New(authn.Settings{Issuer: "https://issuer.example", Audience: "orders", ProblemCode: "ORDERS",
+			Keys: keys, TenantClaim: "tenant"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(verifier.Stop)
+		claims := authntest.Claims("https://issuer.example", "orders", "op-1", time.Now())
+		claims["tenant"] = "ops"
+		token := authntest.Mint(t, authntest.Header("k1"), claims, signing)
+		send := func(method, path, body string) *httptest.ResponseRecorder {
+			r := httptest.NewRequest(method, path, strings.NewReader(body))
+			r.Header.Set("Authorization", "Bearer "+token)
+			if method == http.MethodPost {
+				r.Header.Set("Idempotency-Key", `"k-`+NewID()+`"`)
+			}
+			w := httptest.NewRecorder()
+			verifier.Middleware(mux).ServeHTTP(w, r)
+			return w
+		}
+		// The provider runs out of time on each decision, as for some seconds after a schema write.
+		e.decision.setFail(func(string) error { return fmt.Errorf("the provider call: %w", context.DeadlineExceeded) })
+		defer e.decision.setFail(nil)
+		for _, c := range []struct{ method, path, body string }{{http.MethodPost, "/stego/tenants", `{"tenant_id":"org-x"}`},
+			{http.MethodPost, "/stego/tenants/org-a/retire", ""}, {http.MethodGet, "/stego/tenants", ""}} {
+			w := send(c.method, c.path, c.body)
+			var body map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &body)
+			if w.Code != http.StatusServiceUnavailable || body["code"] != audit.ErrorCodeUndecided || w.Header().Get("Retry-After") == "" {
+				t.Fatalf("%s %s answered %d %v %v, want 503 undecided with Retry-After", c.method, c.path, w.Code, w.Header(), body)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM public.stego_tenants WHERE tenant_id = 'org-x' OR retired_at IS NOT NULL`); n != 0 {
+			t.Fatalf("the undecided calls changed %d rows of the tenant list, want none", n)
+		}
+		if n := e.count(`SELECT count(*) FROM audit_event WHERE tenant_id = 'ops' AND outcome = 'failed'`); n != 3 {
+			t.Fatalf("%d failed rows in the chain of ops, want 3", n)
+		}
+		// A provider that refuses the call stays 500 internal.
+		e.decision.setFail(func(string) error { return errors.New("the provider refused the call") })
+		if w := send(http.MethodPost, "/stego/tenants", `{"tenant_id":"org-y"}`); w.Code != http.StatusInternalServerError || w.Header().Get("Retry-After") != "" {
+			t.Fatalf("a refused provider call answered %d %v, want 500 with no Retry-After", w.Code, w.Header())
 		}
 	})
 

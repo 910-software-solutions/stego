@@ -31,9 +31,11 @@
 # where it gave an empty name (security review of PR #445, I-4).
 # Version 4.17.0 describes each command and each get or list query in the OpenAPI document, at its route, and the
 # request validation does not check the body of a command (ST-SUP-RC20-OC53).
+# Version 4.18.0 skips the check of a body only for an operation whose x-stego-command marker is true (security review
+# of PR #454, INFO).
 kind: component
 name: rest-api
-version: 4.17.0
+version: 4.18.0
 stage: ga
 output_namespace: internal/api
 
