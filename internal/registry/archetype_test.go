@@ -73,7 +73,7 @@ func TestRestCrudArchetypeParsesFromLiveRegistry(t *testing.T) {
 		t.Errorf("Conventions.CORS = %q, want %q", a.Conventions.CORS, "enabled")
 	}
 
-	wantMixins := []string{"event-publisher", "durable-events", "kafka-events", "async-worker"}
+	wantMixins := []string{"event-publisher", "durable-events", "kafka-events", "async-worker", "go-sdk", "cli-application"}
 	if len(a.CompatibleMixins) != len(wantMixins) {
 		t.Fatalf("CompatibleMixins count = %d, want %d", len(a.CompatibleMixins), len(wantMixins))
 	}
@@ -117,8 +117,8 @@ func TestLiveRegistryLoadsAllArchetypeComponents(t *testing.T) {
 	if restAPI == nil {
 		t.Fatal("Component(rest-api) returned nil")
 	}
-	if restAPI.Version != "4.15.1" {
-		t.Errorf("rest-api Version = %q, want %q", restAPI.Version, "4.15.1")
+	if restAPI.Version != "4.18.0" {
+		t.Errorf("rest-api Version = %q, want %q", restAPI.Version, "4.18.0")
 	}
 
 	pg := reg.Component("postgres-adapter")
