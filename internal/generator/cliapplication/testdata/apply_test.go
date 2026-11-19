@@ -40,6 +40,8 @@ type applyFixture struct {
 	rows      map[string]map[string]any
 	order     []string
 	directory string
+	// last is the body of the last write.
+	last map[string]any
 }
 
 func applySetup(t *testing.T) *applyFixture {
@@ -152,6 +154,13 @@ func applySetup(t *testing.T) *applyFixture {
 			path += "/" + id
 		} else {
 			id = path[strings.LastIndex(path, "/")+1:]
+		}
+		f.last = maps.Clone(body)
+		if stored, ok := f.rows[path]; ok && r.Method == "PATCH" {
+			// A patch changes only the fields that its body gives.
+			merged := maps.Clone(stored)
+			maps.Copy(merged, body)
+			body = merged
 		}
 		body["id"] = id
 		f.rows[path] = body
@@ -511,6 +520,46 @@ func TestApplyRejectsMalformedListPage(t *testing.T) {
 		f.mu.Unlock()
 		if err == nil || !strings.Contains(err.Error(), "apply lookup exceeded its time limit") || writes != 0 || pages != 1 {
 			t.Errorf("a lookup past its time limit gave %v with %d writes and %d pages, want the time limit error, no write and one page", err, writes, pages)
+		}
+	})
+}
+
+func applyCreateOnlyDefinition() Application {
+	app := definition()
+	create := []Field{{Flag: "name", Key: "name", Type: "string", Required: true}, {Flag: "code", Key: "code", Type: "string", Required: true}, {Flag: "count", Key: "count", Type: "integer"}}
+	patch := []Field{{Flag: "name", Key: "name", Type: "string"}, {Flag: "count", Key: "count", Type: "integer"}}
+	app.Resources = append(app.Resources, ApplyResource{Kind: "Record", APIVersion: "example/v1", Path: "/records", CreateFields: create, PatchFields: patch})
+	return app
+}
+
+func TestApplyCreateOnlyFields(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC35-T01 An apply of the same documents again leaves out a create-only field, and refuses another value before any write", func(t *testing.T) {
+		f := applySetup(t)
+		app := applyCreateOnlyDefinition()
+		same := applyFile(t, filepath.Join(f.directory, "same.yaml"), manifest("Record", "first", `{"code":"UTR1","count":9007199254740993}`))
+		first, _, err := runApplyTest(t, app, "apply", "-f", same, "-o", "json")
+		if err != nil || len(first) != 1 || first[0].Status != "created" || f.writes != 1 {
+			t.Fatal("apply creation", first, err)
+		}
+		second, _, err := runApplyTest(t, app, "apply", "-f", same, "-o", "json")
+		f.mu.Lock()
+		_, sent := f.last["code"]
+		f.mu.Unlock()
+		if err != nil || len(second) != 1 || second[0].Status != "configured" || second[0].ID != first[0].ID || f.writes != 2 || sent {
+			t.Fatal("a second apply of the same document did not patch without the create-only field", second, err, sent)
+		}
+		other := applyFile(t, filepath.Join(f.directory, "other.yaml"), manifest("Record", "first", `{"code":"SECRETVALUE","count":2}`))
+		_, output, err := runApplyTest(t, app, "apply", "-f", other, "-o", "json")
+		if err == nil || !strings.Contains(err.Error(), "field code of Record \"first\"") || !strings.Contains(err.Error(), "another value") ||
+			strings.Contains(err.Error()+output, "SECRETVALUE") || f.writes != 2 {
+			t.Fatal("apply did not refuse another value of a create-only field before any write", err, output)
+		}
+		f.mu.Lock()
+		delete(f.rows["/records/"+first[0].ID], "code")
+		f.mu.Unlock()
+		_, _, err = runApplyTest(t, app, "apply", "-f", same, "-o", "json")
+		if err == nil || !strings.Contains(err.Error(), "field code of Record \"first\"") || !strings.Contains(err.Error(), "does not return it") || f.writes != 2 {
+			t.Fatal("apply did not refuse a create-only field that the answer does not hold", err)
 		}
 	})
 }
