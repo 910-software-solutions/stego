@@ -133,10 +133,14 @@ func TestFactorySecrets(t *testing.T) {
 		if !strings.Contains(app, `{Flag: "label", Key: "label", Type: "string", Required: false}`) {
 			t.Errorf("the plain member has no flag:\n%s", app)
 		}
-		for _, secret := range []string{`Key: "pin"`, `Key: "token"`} {
+		for _, secret := range []string{`Flag: "pin"`, `Flag: "token"`} {
 			if strings.Contains(app, secret) {
 				t.Errorf("the secret member %s has a flag, which puts it in the shell history and the process list:\n%s", secret, app)
 			}
+		}
+		// Only --body FILE gives a secret member.
+		if !strings.Contains(app, `BodyFields: []command.Field{{Flag: "", Key: "pin", Type: "string", Required: true}, {Flag: "", Key: "token", Type: "string", Required: false}}`) {
+			t.Errorf("the secret members are not body fields:\n%s", app)
 		}
 		if !strings.Contains(app, `{Name: []string{"delete-keys"}, Method: "DELETE", Path: "/api/keys/v1/keys/{id}", ID: true, Query: false, IdempotentWrites: false, Confirm: true,`) {
 			t.Errorf("the delete does not ask for --yes:\n%s", app)

@@ -41,6 +41,8 @@ type factoryCommand struct {
 	PathParameters                       [][2]string
 	Fields                               []factoryField
 	Success, EmptyResponses              []int
+	// BodyFields are the secret members, which have no flag and which only --body FILE gives (ST-SUP-RC04-OC32).
+	BodyFields []factoryField
 	// Sensitive tells that a success answer holds a secret, so the CLI writes it only to --output-file
 	// (ST-SUP-RC04-OC33).
 	Sensitive bool
@@ -129,6 +131,7 @@ func factorySource(ctx gen.Context, runtimeImport string) ([]byte, error) {
 			b.WriteString("},")
 		}
 		writeFields(&b, "Fields", c.Fields)
+		writeFields(&b, "BodyFields", c.BodyFields)
 		fmt.Fprintf(&b, " Success: %s,", intList(c.Success))
 		if len(c.EmptyResponses) > 0 {
 			fmt.Fprintf(&b, " EmptyResponses: %s,", intList(c.EmptyResponses))
@@ -227,9 +230,10 @@ func operationCommand(p, method string, op *openapi3.Operation) (factoryCommand,
 		}
 		if media := op.RequestBody.Value.Content.Get("application/json"); media != nil && media.Schema != nil && media.Schema.Value != nil {
 			c.Fields = append(c.Fields, bodyFields(media.Schema.Value, flags)...)
+			c.BodyFields = secretFields(media.Schema.Value)
 		}
 	}
-	if len(c.Fields) > maxFields {
+	if len(c.Fields)+len(c.BodyFields) > maxFields {
 		return c, false
 	}
 	for code, ref := range op.Responses.Map() {
@@ -283,6 +287,31 @@ func bodyFields(schema *openapi3.Schema, flags map[string]bool) []factoryField {
 		}
 		flags[flag] = true
 		fields = append(fields, factoryField{Flag: flag, Key: name, Type: t, Required: required[name]})
+	}
+	return fields
+}
+
+// secretFields gives a body field, with no flag, for each secret member of a body schema (writeOnly or
+// x-sensitive) of a type that the runtime takes, so --body FILE can give it while no flag takes it.
+func secretFields(schema *openapi3.Schema) []factoryField {
+	required := map[string]bool{}
+	for _, name := range schema.Required {
+		required[name] = true
+	}
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var fields []factoryField
+	for _, name := range names {
+		ref := schema.Properties[name]
+		if ref == nil || ref.Value == nil || ref.Value.ReadOnly || !(ref.Value.WriteOnly || ref.Value.Extensions["x-sensitive"] == true) {
+			continue
+		}
+		if t, ok := fieldType(ref); ok && cliProperty.MatchString(name) {
+			fields = append(fields, factoryField{Key: name, Type: t, Required: required[name]})
+		}
 	}
 	return fields
 }

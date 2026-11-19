@@ -2,6 +2,7 @@
 # service when the declaration gives no factory_package (ST-SUP-RC04-OC32).
 # Version 1.13.0 makes a command Sensitive, so it writes its answer only to --output-file, when a success answer of
 # its operation holds a member marked x-sensitive (ST-SUP-RC04-OC33, ST-SUP-Q192).
+# It gives each secret request member, which has no flag, as a body field that --body FILE gives (ST-SUP-RC04-OC32).
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
