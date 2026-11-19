@@ -2044,15 +2044,14 @@ func (w *runtimeHandlerWriter) deliverAfter() bool {
 }
 
 // key writes the read of the idempotency key of a create or a patch: required when the declaration requires it,
-// and the request's own key when the client sends none (ST-SUP-RC30-OC01). With the idempotency component, each
+// and the request's own key when the client sends none (ST-SUP-RC30-OC01). With or without the idempotency component, each
 // answer from here on to a request with a key carries Idempotency-Kept: 1, a problem and a 5xx answer too
-// (ST-SUP-RC30-OC08).
+// (ST-SUP-RC30-OC08, ST-SUP-RC20-OC56).
 func (w *runtimeHandlerWriter) key(op types.Operation) {
 	required := w.keys != nil && w.keys.required[op]
 	w.f("\tkey, err := idempotency.KeyFrom(r.Header, %t)\n\tif err != nil {\n\t\tkeyMissing(w, r, err)\n\t\treturn\n\t}\n", required)
-	if w.keys != nil {
-		w.f("\tif key != \"\" {\n\t\tw.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)\n\t}\n")
-	}
+	// The handler keeps the key that the request gives also with no idempotency component (ST-SUP-RC20-OC56).
+	w.f("\tif key != \"\" {\n\t\tw.Header().Set(idempotency.KeptHeader, idempotency.KeptValue)\n\t}\n")
 	w.f("\trequestID := command.NewID()\n\tif key == \"\" {\n\t\tkey = requestKey(requestID)\n\t}\n")
 }
 

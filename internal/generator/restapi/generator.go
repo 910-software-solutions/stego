@@ -3205,9 +3205,9 @@ func withKeptHeader(op openAPIOperation) openAPIOperation {
 }
 
 // optionalKey adds the Idempotency-Key header parameter, not required, to a create or a patch operation of a service
-// with no idempotency component, with the 400 and 422 responses of the key: the handler keeps the key that the request
-// gives, gives the stored answer to a second request with the key and the same body, and refuses another body with
-// the key (ST-SUP-RC20-OC56). A generated client then takes the key as a parameter of the operation
+// with no idempotency component, with the 400 and 422 responses of the key and the header Idempotency-Kept on each
+// response: the handler keeps the key that the request gives, gives the stored answer to a second request with the
+// key and the same body, and refuses another body with the key (ST-SUP-RC20-OC56). A generated client then takes the key as a parameter of the operation
 // (ST-SUP-RC06-OC10).
 func optionalKey(op openAPIOperation) openAPIOperation {
 	op.Parameters = append(append([]openAPIParam{}, op.Parameters...), openAPIParam{
@@ -3225,7 +3225,7 @@ func optionalKey(op openAPIOperation) openAPIOperation {
 	}
 	responses["422"] = openAPIResponse{Description: "The Idempotency-Key was used with another request"}
 	op.Responses = responses
-	return op
+	return withKeptHeader(op)
 }
 
 // revocationRoute is the path of the revocation status route that the runtime wiring registers beside the collection
