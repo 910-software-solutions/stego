@@ -38,7 +38,8 @@ type documentOperation struct {
 		Required bool   `json:"required"`
 	} `json:"parameters"`
 	Responses map[string]struct {
-		Description string `json:"description"`
+		Description string                     `json:"description"`
+		Headers     map[string]json.RawMessage `json:"headers"`
 	} `json:"responses"`
 }
 
@@ -136,6 +137,40 @@ func TestIdempotencyKeyHeader(t *testing.T) {
 			}
 			if _, refused := operation.Responses["422"]; takes && !refused {
 				t.Errorf("without the idempotency component, %s has no 422 response for a key used with another request", name)
+			}
+		}
+	})
+}
+
+func TestIdempotencyKeptHeaderDocument(t *testing.T) {
+	t.Run("ST-SUP-RC30-OC08-T01 The OpenAPI document describes Idempotency-Kept on each response of a create and a patch, and on no other operation", func(t *testing.T) {
+		operations := todoOperations(t, todoIdempotencyContext(types.OpCreate))
+		for _, name := range []string{"POST /api/todo/v1/todos", "PATCH /api/todo/v1/todos/{id}"} {
+			operation := operations[name]
+			if len(operation.Responses) < 4 {
+				t.Fatalf("%s has the responses %v, want a success and the idempotency problems", name, operation.Responses)
+			}
+			for code, response := range operation.Responses {
+				if _, ok := response.Headers["Idempotency-Kept"]; !ok {
+					t.Errorf("the response %s of %s does not describe Idempotency-Kept", code, name)
+				}
+			}
+		}
+		for _, name := range []string{"GET /api/todo/v1/todos", "GET /api/todo/v1/todos/{id}", "PUT /api/todo/v1/todos/{id}", "DELETE /api/todo/v1/todos/{id}"} {
+			for code, response := range operations[name].Responses {
+				if _, ok := response.Headers["Idempotency-Kept"]; ok {
+					t.Errorf("the response %s of %s describes Idempotency-Kept", code, name)
+				}
+			}
+		}
+		// Without the idempotency component, the service keeps no key of a create or a patch.
+		ctx := todoIdempotencyContext(types.OpCreate)
+		ctx.PeerNamespaces = nil
+		for name, operation := range todoOperations(t, ctx) {
+			for code, response := range operation.Responses {
+				if _, ok := response.Headers["Idempotency-Kept"]; ok {
+					t.Errorf("without the idempotency component, the response %s of %s describes Idempotency-Kept", code, name)
+				}
 			}
 		}
 	})

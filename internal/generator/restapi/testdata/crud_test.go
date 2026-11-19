@@ -746,6 +746,17 @@ func (e *env) as(subject, tenantID string) caller {
 // HTTPS URL, so the service gets a TLS listener that passes each request to its handler through serve.
 func (e *env) cli(t *testing.T, c caller, serve func(w http.ResponseWriter, r *http.Request, next http.Handler)) func(name string) ([]map[string]string, error) {
 	t.Helper()
+	apply := e.cliWarn(t, c, serve)
+	return func(name string) ([]map[string]string, error) {
+		t.Helper()
+		results, _, err := apply(name)
+		return results, err
+	}
+}
+
+// cliWarn is cli whose apply also gives what the CLI wrote to standard error.
+func (e *env) cliWarn(t *testing.T, c caller, serve func(w http.ResponseWriter, r *http.Request, next http.Handler)) func(name string) ([]map[string]string, string, error) {
+	t.Helper()
 	program := os.Getenv("STEGO_TEST_CLI")
 	if program == "" {
 		t.Fatal("the check needs STEGO_TEST_CLI, the generated CLI program: a missing result is not a pass")
@@ -758,7 +769,7 @@ func (e *env) cli(t *testing.T, c caller, serve func(w http.ResponseWriter, r *h
 	ca, token, config := dir+"/ca.pem", dir+"/token", dir+"/config.json"
 	must(t, os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: listener.Certificate().Raw}), 0o600))
 	must(t, os.WriteFile(token, []byte(c.token), 0o600))
-	run := func(args ...string) (string, error) {
+	run := func(args ...string) (string, string, error) {
 		t.Helper()
 		cmd := exec.Command(program, args...)
 		cmd.Env = append(os.Environ(), "CRUD_CLI_CONFIG="+config)
@@ -768,25 +779,46 @@ func (e *env) cli(t *testing.T, c caller, serve func(w http.ResponseWriter, r *h
 		if err != nil {
 			err = fmt.Errorf("%w: %s", err, stderr.String())
 		}
-		return stdout.String(), err
+		return stdout.String(), stderr.String(), err
 	}
-	if out, err := run("login", "--url", listener.URL, "--token-file", token, "--ca-file", ca); err != nil {
+	if out, _, err := run("login", "--url", listener.URL, "--token-file", token, "--ca-file", ca); err != nil {
 		t.Fatalf("the CLI login failed: %v %s", err, out)
 	}
-	return func(name string) ([]map[string]string, error) {
+	return func(name string) ([]map[string]string, string, error) {
 		t.Helper()
 		file := dir + "/" + name + ".yaml"
 		must(t, os.WriteFile(file, []byte("apiVersion: crud/v1\nkind: Folder\nmetadata: {name: label}\nspec: {name: "+name+"}\n"), 0o600))
-		out, err := run("apply", "-f", file, "-o", "json")
+		out, warned, err := run("apply", "-f", file, "-o", "json")
 		var results []map[string]string
 		if out != "" {
 			must(t, json.Unmarshal([]byte(out), &results))
 		}
-		return results, err
+		return results, warned, err
 	}
 }
 
 func newTenant() string { return "t-" + uuid.NewString()[:8] }
+
+// failInsert makes the database fail each insert into table whose column holds value, until the check ends, as a
+// fault of the database does: the service then answers the write with a 5xx.
+func (e *env) failInsert(t *testing.T, table, column, value string) {
+	t.Helper()
+	name := "fail_" + strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	_, err := e.admin.ExecContext(e.ctx, `CREATE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.`+column+` = '`+value+`' THEN
+    RAISE EXCEPTION 'the check fails this insert';
+  END IF;
+  RETURN NEW;
+END $$`)
+	must(t, err)
+	_, err = e.admin.ExecContext(e.ctx, `CREATE TRIGGER `+name+` BEFORE INSERT ON `+table+` FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
+	must(t, err)
+	t.Cleanup(func() {
+		_, _ = e.admin.ExecContext(context.Background(), `DROP TRIGGER IF EXISTS `+name+` ON `+table)
+		_, _ = e.admin.ExecContext(context.Background(), `DROP FUNCTION IF EXISTS `+name+`()`)
+	})
+}
 
 // own writes the owner relation of the caller on a resource of the caller's tenant in SpiceDB.
 func (e *env) own(c caller, resourceType, id string) { e.relate(c, "owner", resourceType, id) }
@@ -3652,6 +3684,146 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		if len(replayed) != 1 || replayed[0] != "true" {
 			t.Errorf("the answer of the second create of lost had Idempotent-Replayed %q, want true", replayed)
+		}
+	})
+
+	t.Run("ST-SUP-RC30-OC08-T02 Each answer of the generated service to a create or a patch with a key carries Idempotency-Kept: 1, a problem and a 503 too, and no other answer carries it", func(t *testing.T) {
+		e := service(t)
+		a := e.as("kept-1", newTenant())
+		kept := func(r reply) string { return strings.Join(r.header.Values("Idempotency-Kept"), ",") }
+		key := "k-" + uuid.NewString()
+		created := e.send(a, http.MethodPost, "/api/v1/orders", key, `{"sku":"s-kept","qty":1}`)
+		if created.status != http.StatusCreated {
+			t.Fatalf("the create answered %d %s, want 201", created.status, created.body)
+		}
+		id := created.member(t, "id")
+		e.own(a, "order", id)
+		patchKey := "k-" + uuid.NewString()
+		for _, c := range []struct {
+			name, method, path, key, body string
+			status                        int
+			kept                          bool
+		}{
+			{"the create", "", "", "", "", 0, true},
+			{"the create given again", http.MethodPost, "/api/v1/orders", key, `{"sku":"s-kept","qty":1}`, http.StatusCreated, true},
+			{"a create with a used key and another body", http.MethodPost, "/api/v1/orders", key, `{"sku":"s-kept","qty":2}`, http.StatusUnprocessableEntity, true},
+			{"a create whose body is not valid", http.MethodPost, "/api/v1/orders", "k-" + uuid.NewString(), `{"sku":`, http.StatusBadRequest, true},
+			{"a patch", http.MethodPatch, "/api/v1/orders/" + id, patchKey, `{"qty":2}`, http.StatusOK, true},
+			{"the patch given again", http.MethodPatch, "/api/v1/orders/" + id, patchKey, `{"qty":2}`, http.StatusOK, true},
+			{"a patch of a row that is not there", http.MethodPatch, "/api/v1/orders/" + uuid.NewString(), "k-" + uuid.NewString(), `{"qty":2}`, http.StatusNotFound, true},
+			{"a create with no key", http.MethodPost, "/api/v1/orders", "", `{"sku":"s-kept","qty":1}`, http.StatusBadRequest, false},
+			{"a read with a key", http.MethodGet, "/api/v1/orders/" + id, "k-" + uuid.NewString(), "", http.StatusOK, false},
+			{"a list with a key", http.MethodGet, "/api/v1/orders", "k-" + uuid.NewString(), "", http.StatusOK, false},
+			{"an update with a key", http.MethodPut, "/api/v1/customers/" + uuid.NewString(), "k-" + uuid.NewString(), `{"name":"n"}`, 0, false},
+			{"a delete with a key", http.MethodDelete, "/api/v1/orders/" + id, "k-" + uuid.NewString(), "", http.StatusNoContent, false},
+		} {
+			r := created
+			if c.method != "" {
+				r = e.send(a, c.method, c.path, c.key, c.body)
+			}
+			if c.status != 0 && r.status != c.status {
+				t.Errorf("%s answered %d %s, want %d", c.name, r.status, r.body, c.status)
+			}
+			if want := map[bool]string{true: "1", false: ""}[c.kept]; kept(r) != want {
+				t.Errorf("%s answered %d with Idempotency-Kept %q, want %q", c.name, r.status, kept(r), want)
+			}
+		}
+		// A patch that the provider cannot decide now answers 503, and the answer tells that the key is kept, so a
+		// second request with the key is safe.
+		other := e.create(a, "orders", "order", `{"sku":"s-kept","qty":1}`)
+		e.decision.fail(t, status.Error(codes.Unavailable, "connection refused"))
+		unavailable := e.send(a, http.MethodPatch, "/api/v1/orders/"+other, "k-"+uuid.NewString(), `{"qty":3}`)
+		e.decision.fail(t, nil)
+		if unavailable.status != http.StatusServiceUnavailable || kept(unavailable) != "1" {
+			t.Errorf("a patch that the provider could not decide answered %d with Idempotency-Kept %q, want 503 with 1", unavailable.status, kept(unavailable))
+		}
+		// A create that the database fails answers 500, and the answer tells that the key is kept too.
+		name := "s-fail-" + uuid.NewString()[:8]
+		e.failInsert(t, "orders", "sku", name)
+		failed := e.send(a, http.MethodPost, "/api/v1/orders", "k-"+uuid.NewString(), `{"sku":"`+name+`","qty":1}`)
+		if failed.status < 500 || kept(failed) != "1" {
+			t.Errorf("a create that the database failed answered %d %s with Idempotency-Kept %q, want a 5xx with 1", failed.status, failed.body, kept(failed))
+		}
+	})
+
+	t.Run("ST-SUP-RC04-OC34-T02 The emitted CLI sends a write again after a 5xx of the service with Idempotency-Kept, not after a 5xx with none, and warns when a 2xx has none", func(t *testing.T) {
+		e := service(t)
+		a := e.as("cli-kept", newTenant())
+		// The listener passes each request as it is, except a POST, as the mode says: proxy answers 502 itself as a
+		// proxy does, and strip takes Idempotency-Kept out of the answer of the service, as a service of another
+		// release gives it. The database fails each insert of the folder busy, so the service answers its create with
+		// a 5xx.
+		busy := "busy-" + uuid.NewString()[:8]
+		e.failInsert(t, "folders", "name", busy)
+		var mu sync.Mutex
+		mode := ""
+		var posts []string
+		apply := e.cliWarn(t, a, func(w http.ResponseWriter, r *http.Request, next http.Handler) {
+			mu.Lock()
+			current := mode
+			if r.Method == http.MethodPost {
+				posts = append(posts, r.Header.Get("Idempotency-Key"))
+			}
+			mu.Unlock()
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+			switch current {
+			case "proxy":
+				w.WriteHeader(http.StatusBadGateway)
+			case "strip":
+				answer := httptest.NewRecorder()
+				next.ServeHTTP(answer, r)
+				for name, values := range answer.Header() {
+					if name != "Idempotency-Kept" {
+						w.Header()[name] = values
+					}
+				}
+				w.WriteHeader(answer.Code)
+				_, _ = w.Write(answer.Body.Bytes())
+			default:
+				next.ServeHTTP(w, r)
+			}
+		})
+		folders := func(name string) int {
+			return e.count(`SELECT count(*) FROM folders WHERE tenant_id = $1 AND name = $2`, a.tenant.ID(), name)
+		}
+		run := func(m, name string) ([]map[string]string, string, error, []string) {
+			t.Helper()
+			mu.Lock()
+			mode, posts = m, nil
+			mu.Unlock()
+			results, warned, err := apply(name)
+			mu.Lock()
+			defer mu.Unlock()
+			return results, warned, err, append([]string(nil), posts...)
+		}
+		// A service of this release: the create succeeds with the header, and the CLI warns of nothing.
+		if results, warned, err, sent := run("", "plain"); err != nil || len(results) != 1 || results[0]["status"] != "created" || len(sent) != 1 || warned != "" {
+			t.Fatalf("the apply of plain gave %v %v after %d creates and the warning %q, want created after one and no warning", results, err, len(sent), warned)
+		}
+		// A 5xx of the service carries the header: the CLI sends the create again with the same key, the second
+		// answer is a 5xx too, and the outcome is unknown.
+		results, _, err, sent := run("", busy)
+		if err == nil || len(results) != 1 || results[0]["status"] != "unknown" || len(sent) != 2 || sent[0] == "" || sent[0] != sent[1] {
+			t.Errorf("the apply of busy with a 5xx of the service gave %v %v after the creates %q, want unknown after two creates with one key", results, err, sent)
+		}
+		if n := folders(busy); n != 0 {
+			t.Errorf("%d folders busy after two creates that the database failed, want 0", n)
+		}
+		// A 502 of a proxy carries no header: the CLI does not send the create again.
+		results, _, err, sent = run("proxy", "gate")
+		if err == nil || len(results) != 1 || results[0]["status"] != "unknown" || len(sent) != 1 {
+			t.Errorf("the apply of gate with a 502 of a proxy gave %v %v after %d creates, want unknown after one", results, err, len(sent))
+		}
+		// A 2xx with no header: the create is done, and the CLI warns on standard error that the releases can differ.
+		results, warned, err, sent := run("strip", "old")
+		if err != nil || len(results) != 1 || results[0]["status"] != "created" || len(sent) != 1 || !strings.Contains(warned, "different releases") {
+			t.Errorf("the apply of old with no header gave %v %v after %d creates and the warning %q, want created after one and the warning", results, err, len(sent), warned)
+		}
+		if n := folders("old"); n != 1 {
+			t.Errorf("%d folders old, want 1", n)
 		}
 	})
 

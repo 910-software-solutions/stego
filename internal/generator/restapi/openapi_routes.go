@@ -131,6 +131,7 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 		}
 		op.Parameters = append(op.Parameters, revocationParameters()...)
 		refusals(op.Responses, c.Refusals)
+		op = withKeptHeader(op)
 		if err := add(ctx.BasePath+routePath, "post", op); err != nil {
 			return nil, err
 		}
@@ -285,10 +286,13 @@ func messageSchema(m protoreflect.MessageDescriptor, depth int, seen map[protore
 // responseSchema gives the schema of the response message of a command. When the message holds a member that the
 // proto marks debug_redact at any depth, also deeper than the schema follows or past a recursive message, the root
 // carries x-sensitive, so the CLI still makes the command Sensitive (ST-SUP-RC20-OC54, security review of PR #460,
-// L1).
+// L1). When the message holds a google.protobuf.Any, Struct, Value or ListValue member at any depth, the root carries
+// x-stego-opaque, so the CLI makes the command Sensitive too; the service needs no key ring for it (decision
+// ST-SUP-Q194 (a)).
 func responseSchema(m protoreflect.MessageDescriptor) openAPISchema {
 	schema := messageSchema(m, 0, map[protoreflect.FullName]bool{})
 	schema.Sensitive = command.HoldsSecret(m)
+	schema.Opaque = command.HoldsOpaque(m)
 	return schema
 }
 

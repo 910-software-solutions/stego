@@ -8,6 +8,12 @@
 # Version 1.16.0 leaves out of the patch of apply each create-only field whose value is the stored one, and refuses
 # another value before any write, so an apply of the same documents again succeeds (ST-SUP-RC04-OC35). It gives no
 # flag for the member kind of a patch request or for a member marked x-kept, which a patch cannot change.
+# Version 1.17.0 sends a write again after a 5xx answer only when the answer carries Idempotency-Kept: 1, ends with
+# an error that the write can have been done after a 5xx answer with no header, warns on standard error when a 2xx
+# answer of a write whose key the definition states kept has no header (ST-SUP-RC04-OC34, ST-SUP-Q193 (a)), and
+# refuses a token file, a configuration file and a --body FILE that holds a secret body field when another user owns
+# it (security review of PR #462, L3).
+# Version 1.18.0 makes a command Sensitive when its answer is marked x-stego-opaque (ST-SUP-RC04-OC33, ST-SUP-Q194 (a)).
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -23,7 +29,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.16.0
+version: 1.18.0
 stage: ga
 output_namespace: cli
 config:

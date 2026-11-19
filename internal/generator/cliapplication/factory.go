@@ -322,14 +322,15 @@ func secretFields(schema *openapi3.Schema) []factoryField {
 }
 
 // holdsSecret tells whether a schema, or a schema of a member, an item, a map value or a part of it at any depth, is
-// marked x-sensitive (ST-SUP-RC04-OC33).
+// marked x-sensitive, or x-stego-opaque for an answer whose content the document cannot describe, which can hold a
+// secret (ST-SUP-RC04-OC33, decision ST-SUP-Q194 (a)).
 func holdsSecret(ref *openapi3.SchemaRef, seen map[*openapi3.Schema]bool) bool {
 	if ref == nil || ref.Value == nil || seen[ref.Value] {
 		return false
 	}
 	s := ref.Value
 	seen[s] = true
-	if s.Extensions["x-sensitive"] == true {
+	if s.Extensions["x-sensitive"] == true || s.Extensions["x-stego-opaque"] == true {
 		return true
 	}
 	parts := []*openapi3.SchemaRef{s.Items, s.Not, s.AdditionalProperties.Schema}

@@ -17,7 +17,8 @@ declaration. For each declared command it generates:
   its fill folder.
 
 The handlers verify the identity, take the tenant from the verified claim,
-require the Idempotency-Key header, and answer a deny with 403, a declared
+require the Idempotency-Key header, put the header `Idempotency-Kept: 1` on
+each answer to a request with a key (ST-SUP-RC32-OC27), and answer a deny with 403, a declared
 refusal with its status and code, a conflict with 409 and the code conflict
 (ABORTED over gRPC), and any other error with 500 and the code internal. They
 write the audit row of a denied or a failed command in its own short
