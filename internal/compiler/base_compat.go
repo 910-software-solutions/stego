@@ -417,10 +417,20 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 		// collections describe them.
 		faults = append(faults, collectionIndexFaults(base, head)...)
 	}
-	shapeFaults := baselineFaults(shapeAt(base, 0), shapeAt(head, 0))
+	// A drop of a field whose seal is open has a fault that names the seal, in place of the fault of its stored form.
+	sealDrops := openSealDropFaults(base, head)
+	named := map[[2]string]bool{}
+	for _, fault := range sealDrops {
+		named[[2]string{fault.Entity, fault.Field}] = true
+	}
+	shapeFaults := sealDrops
+	for _, fault := range baselineFaults(shapeAt(base, 0), shapeAt(head, 0)) {
+		if !named[[2]string{fault.Entity, fault.Field}] {
+			shapeFaults = append(shapeFaults, fault)
+		}
+	}
 	// The baselines leave out what a step of the base added, required or retyped, so the head with only its new
 	// steps undone must also be the stored shape of the base as it runs now, with every field in full.
-	named := map[[2]string]bool{}
 	for _, fault := range shapeFaults {
 		named[[2]string{fault.Entity, fault.Field}] = true
 	}
@@ -432,6 +442,32 @@ func validateBaseSchema(applied *AppliedState, base, head *types.ServiceDeclarat
 	faults = append(faults, shapeFaults...)
 	if ok {
 		faults = append(faults, generated.faults(faults)...)
+	}
+	return faults
+}
+
+// openSealDropFaults refuses a drop that the head declares of a field whose seal the base holds open: the base has
+// the expand step of the seal and not its contract step, so the release that runs now reads and writes the clear
+// and the sealed column of the field. The fault names the seal and tells to contract it first
+// (ST-SUP-RC01-OC49-T10).
+func openSealDropFaults(base, head *types.ServiceDeclaration) []BaseFault {
+	var faults []BaseFault
+	for _, drop := range head.SchemaChanges {
+		if drop.Kind != "drop" || drop.Field == "" || slices.ContainsFunc(base.SchemaChanges, func(c types.SchemaChange) bool { return c.ID == drop.ID }) {
+			continue
+		}
+		for _, seal := range base.SchemaChanges {
+			if seal.Kind != "seal" || seal.Entity != drop.Entity || seal.Field != drop.Field ||
+				!slices.Contains(base.SchemaHistory, types.SchemaStep{Change: seal.ID, Phase: "expand"}) ||
+				slices.Contains(base.SchemaHistory, types.SchemaStep{Change: seal.ID, Phase: "contract"}) {
+				continue
+			}
+			faults = append(faults, BaseFault{Rule: BaseCompatRule, Entity: drop.Entity, Field: drop.Field, Message: fmt.Sprintf(
+				"the drop %s removes %s.%s, whose seal %s is open in the base: the release that runs now reads and writes the clear and the sealed column of %s; "+
+					"contract the seal first, with the step {change: %s, phase: contract} in a release of its own, then drop the field in a later release",
+				drop.ID, drop.Entity, drop.Field, seal.ID, drop.Field, seal.ID),
+				Declare: []SuggestedChange{suggestion(base, seal.ID, "contract")}})
+		}
 	}
 	return faults
 }

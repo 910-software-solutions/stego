@@ -326,8 +326,20 @@ func TestBaseSealDrop(t *testing.T) {
 		}
 		// The base holds the seal of description open: its release reads and writes the clear and the sealed column.
 		base := []byte(withChanges(sealed, seal, open))
-		if c := check(base, withChanges(noDescription, seal+descriptionDrop, open+"  - {change: organization-description-drop, phase: expand}\n")); !c.HasFaults() {
+		c := check(base, withChanges(noDescription, seal+descriptionDrop, open+"  - {change: organization-description-drop, phase: expand}\n"))
+		if !c.HasFaults() {
 			t.Error("a drop of description while its seal is open is accepted")
+		}
+		// The fault of the drop names the open seal and the remedy, to contract the seal first, and no other fault
+		// names description.
+		for _, fault := range c.Faults {
+			if fault.Field != "description" {
+				continue
+			}
+			if !strings.Contains(fault.Message, "seal organization-description-seal is open") || !strings.Contains(fault.Message, "contract the seal first") ||
+				len(fault.Declare) != 1 || fault.Declare[0].ID != "organization-description-seal" || fault.Declare[0].Phase != "contract" {
+				t.Errorf("the fault of the drop of description does not name the open seal and its contract: %+v", fault)
+			}
 		}
 		if c := check(base, withChanges(noMotto, seal+mottoDrop, open+"  - {change: organization-motto-drop, phase: expand}\n")); c.HasFaults() {
 			t.Errorf("the expand of a drop of motto while the seal of description is open is refused: %+v", c.Faults)
