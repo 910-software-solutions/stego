@@ -7,6 +7,9 @@
 # Version 6.15.0 refuses a changed body of an applied migration with a fault that names the migration, the two
 # digests and the remedy, and gives the digest of each migration to the start check of the service runtime
 # (ST-SUP-RC01-OC51, ST-SUP-RP14-LC13).
+# Version 6.16.0 builds the contract step of a rename or a retype of a field with a default: it first gives the new
+# column the default, with the comment of a relaxed form that states it, so the release of the change still holds its
+# schema manifest (ST-SUP-RC01-OC39, walkthrough 14 W14-B3).
 # Version 6.17.0 makes the row of the lease of the seal job in the transaction of the expand migration of a seal, so a
 # later migration job on a restored database makes it too, and the refusal of the seal contract names the migration
 # job of the release of the expand step (ST-SUP-RC01-OC49; walkthrough 14, W14-B7).

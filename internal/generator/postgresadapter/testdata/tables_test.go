@@ -2930,7 +2930,8 @@ CREATE EVENT TRIGGER fail_drop ON ddl_command_start WHEN TAG IN ('DROP INDEX') E
 		want := map[string]column{
 			"revision_int64": {Name: "revision_int64", Type: "bigint", NotNull: true},
 			"locale":         {Name: "locale", Type: "character varying(10)", NotNull: true, Default: "'en'::character varying"},
-			"level_string":   {Name: "level_string", Type: "text", NotNull: true},
+			// The contract gives the new column of a field with a default its default (walkthrough 14, W14-B3).
+			"level_string": {Name: "level_string", Type: "text", NotNull: true, Default: "'0'::text"},
 		}
 		for _, table := range []string{"boards", "tags"} {
 			for _, c := range columns(t, up, table) {
@@ -2956,6 +2957,30 @@ CREATE EVENT TRIGGER fail_drop ON ddl_command_start WHEN TAG IN ('DROP INDEX') E
 			if err := manifest.Check(ctx, runtime, owned(m)); err != nil {
 				t.Errorf("the schema manifest of the release %s refuses the database after the contract: %v", name, err)
 			}
+		}
+		// The release of the retype states no default for level_string, and accepts the default of the contract only
+		// with the comment of its relaxed form; with no comment it refuses it.
+		var comment string
+		if err := up.QueryRow(`SELECT pg_catalog.col_description('public.tags'::regclass, (SELECT attnum FROM pg_catalog.pg_attribute WHERE attrelid = 'public.tags'::regclass AND attname = 'level_string'))`).Scan(&comment); err != nil {
+			t.Fatal(err)
+		}
+		if comment != "stego relax step_0002_tag-level-retype_expand\ndefault '0'::text" {
+			t.Errorf("the comment of level_string after the contract is %q", comment)
+		}
+		if _, err := up.Exec(`COMMENT ON COLUMN public."tags"."level_string" IS NULL`); err != nil {
+			t.Fatal(err)
+		}
+		if err := manifest.Check(ctx, runtime, owned(boardsrt.SchemaManifest)); err == nil || !strings.Contains(err.Error(), "level_string") {
+			t.Errorf("the schema manifest of the release of the retype accepts the default of level_string with no comment: %v", err)
+		}
+		if _, err := up.Exec(`COMMENT ON COLUMN public."tags"."level_string" IS E'stego relax step_0002_tag-level-retype_expand\ndefault ''0''::text'`); err != nil {
+			t.Fatal(err)
+		}
+		if code := write(t, up, "tenant-a", `INSERT INTO public."tags" ("id", "title") VALUES (gen_random_uuid(), $1)`, "plain"); code != "" {
+			t.Fatalf("an insert with no level after the contract: %s", code)
+		}
+		if got := rowsOf(t, up, "tags", "level_string")["plain"]; !slices.Equal(got, []string{"0"}) {
+			t.Errorf("an insert with no level reads %v after the contract, want the default 0", got)
 		}
 		// A second run of the migration job changes nothing.
 		was = catalog(t, up)
