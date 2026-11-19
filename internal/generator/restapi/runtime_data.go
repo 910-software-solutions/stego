@@ -138,7 +138,7 @@ func (c *runtimeCollection) hrefExpr(v string) string {
 // search does not take: a pii or secret field, whose match would tell its value (ST-SUP-RP11-LC20), a ref, and a
 // field of a jsonb, bytes or timestamp type.
 func searchKind(f types.Field) string {
-	if f.Sensitivity != "" {
+	if !f.Public() {
 		return ""
 	}
 	switch f.Type {
@@ -2549,7 +2549,7 @@ func (w *runtimeHandlerWriter) list() {
 	var fields []string
 	// A pii or secret field orders no list: the order would tell its value (ST-SUP-RP11-LC20).
 	for _, f := range e.Fields {
-		if f.Sensitivity == "" {
+		if f.Public() {
 			fields = append(fields, fmt.Sprintf("%q: true", f.Name))
 		}
 	}

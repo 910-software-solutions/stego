@@ -16,9 +16,10 @@
 # Version 1.13.0 gives each entity with an open seal its statements, scan and values after the contract step, which
 # the runtime takes once the contract drops the clear column (ST-SUP-RC01-OC49, ST-SUP-RP10-LC49; walkthrough 14,
 # W14-B6), and states that STEGO_SECRET_KEY_RING_FILE is required when the service has a secret or a pii field.
+# Version 1.15.0 takes a field written sensitivity: public as a field with no sensitivity (decision ST-DECL-Q46 (a)).
 kind: component
 name: command
-version: 1.13.0
+version: 1.15.0
 stage: ga
 output_namespace: commands
 

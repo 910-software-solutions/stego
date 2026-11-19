@@ -36,18 +36,6 @@ type SchemaChange struct {
 	Definition string `yaml:"definition,omitempty"`
 }
 
-// SealedSensitivity gives, for a seal, the sensitivity of the field before the change as the declaration of the base
-// writes a field that is public: no sensitivity for From public or empty, which mean the same field (ST-DECL-EN03),
-// and From for pii or secret. The search of a list, its search index in 001_initial and its order read a public field
-// by its empty sensitivity, so a seal from public over a field that a list searches keeps the search index of the
-// base (walkthrough 15, W15-B1).
-func (c SchemaChange) SealedSensitivity() string {
-	if c.From == "public" {
-		return ""
-	}
-	return c.From
-}
-
 // SchemaStep is one entry of the declaration's ordered schema history (ST-DECL-EN22): a schema change and the phase
 // it moves to, expand or contract. The phase of a change is the phase of its last step.
 type SchemaStep struct {

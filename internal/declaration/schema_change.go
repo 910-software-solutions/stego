@@ -297,7 +297,7 @@ func shapeAtStep(service *types.ServiceDeclaration, change types.SchemaChange) s
 		case "seal":
 			// A seal is undone by giving the field its sensitivity before the change (ST-DECL-INV102).
 			if found >= 0 {
-				fields[found].Sensitivity, fields[found].CompareOnly = other.SealedSensitivity(), false
+				fields[found].Sensitivity, fields[found].CompareOnly = other.From, false
 			}
 		case "drop":
 			// A drop is undone as gen.Context.AtSchemaStep undoes it: a drop of an entity by the entity that the

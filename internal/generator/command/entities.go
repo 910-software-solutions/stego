@@ -284,7 +284,8 @@ func planEntity(e types.Entity, byName map[string]types.Entity, tenantKey string
 			p.deep = true
 		}
 		switch f.Sensitivity {
-		case "", "none":
+		// A field written public is a field with no sensitivity (decision ST-DECL-Q46 (a)).
+		case "", "none", "public":
 		case "pii":
 			p.pii = true
 		case "secret":

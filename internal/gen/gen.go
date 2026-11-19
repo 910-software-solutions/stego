@@ -315,9 +315,8 @@ type Context struct {
 // (types.SchemaChange.RelaxedFrom), a within by taking the within off its reference, a drop of a field by giving the
 // entity back the field of its Definition in its place (DropDefinition), and a drop of an entity by giving back the
 // entity and the collections over it, which the declaration keeps with dropped_by (ST-GEN-Q47).
-// A seal is undone by giving the field its sensitivity From in its clear column, with no sensitivity for From public
-// (types.SchemaChange.SealedSensitivity), and for From secret the mark of a secret that an older generator stored in
-// clear (types.Field.ClearStored, ST-SUP-RC01-OC49).
+// A seal is undone by giving the field its sensitivity From in its clear column, and for From secret the mark of a
+// secret that an older generator stored in clear (types.Field.ClearStored, ST-SUP-RC01-OC49).
 // AtSchemaStep refuses a change of another kind, and a change with no step.
 func (c Context) AtSchemaStep(steps int) (Context, error) {
 	first := map[string]int{}
@@ -418,14 +417,14 @@ func (c Context) AtSchemaStep(steps int) (Context, error) {
 			continue
 		}
 		if change.Kind == "seal" {
-			// A seal is undone by giving the field its sensitivity before the change, From, in its clear column, and a
-			// field from public no sensitivity, as the base writes it (ST-SUP-RC01-OC49, ST-DECL-INV102).
+			// A seal is undone by giving the field its sensitivity before the change, From, in its clear column; From
+			// public is the same field as no From (types.Field.Public) (ST-SUP-RC01-OC49, ST-DECL-INV102).
 			fields := shaped.Entities[at].Fields
 			found := slices.IndexFunc(fields, func(f types.Field) bool { return f.Name == change.Field })
 			if found < 0 {
 				return Context{}, fmt.Errorf("schema change %q seals the field %s.%s, which the declaration does not have", change.ID, change.Entity, change.Field)
 			}
-			fields[found].Sensitivity, fields[found].CompareOnly = change.SealedSensitivity(), false
+			fields[found].Sensitivity, fields[found].CompareOnly = change.From, false
 			// A field that its declaration named secret and that a generator before postgres-adapter 6.13.0 stored
 			// in clear: its stored shape is the field in clear, with its CHECKs and no search index (walkthrough 13,
 			// W13-B1).

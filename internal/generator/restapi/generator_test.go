@@ -4494,6 +4494,27 @@ func TestRuntimeList(t *testing.T) {
 		if customers := handlerMethod(t, files, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true})`) {
 			t.Error("the customers list orders by a sensitive field")
 		}
+		// A field written sensitivity: public is a public field, as one with no sensitivity: a list orders and
+		// searches it (decision ST-DECL-Q46 (a)).
+		written := crudContext()
+		for i := range written.Entities {
+			for j := range written.Entities[i].Fields {
+				if written.Entities[i].Name == "Customer" && written.Entities[i].Fields[j].Name == "plan" {
+					written.Entities[i].Fields[j].Sensitivity = "public"
+				}
+			}
+		}
+		writtenFiles := crudFiles(t, written)
+		if customers := handlerMethod(t, writtenFiles, "customers", "List"); !strings.Contains(customers, `listOrder(parameters.Get("orderBy"), map[string]bool{"plan": true})`) {
+			t.Error("the customers list does not order by a field written public")
+		}
+		searched := false
+		for _, content := range writtenFiles {
+			searched = searched || strings.Contains(string(content), `var customersSearchFields = map[string]query.FieldKind{"plan": query.`)
+		}
+		if !searched {
+			t.Error("the customers list does not search a field written public")
+		}
 		helperRun(t, "TestOrderField")
 	})
 	t.Run("ST-SUP-RC20-OC10-T02 A direction other than asc or desc is refused", func(t *testing.T) {

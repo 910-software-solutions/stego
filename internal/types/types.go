@@ -144,6 +144,11 @@ var WritableValues = []string{WritableAlways, WritableCreate, WritableNever}
 // ST-SUP-RC20-OC46).
 func (f Field) Kept() bool { return f.Writable == WritableCreate || f.Writable == WritableNever }
 
+// Public tells whether the field is of the sensitivity public: written public, or with no sensitivity, which means the
+// same (ST-DECL-EN03, decision ST-DECL-Q46 (a)). A list searches and orders a public field, and its table has a search
+// index on it.
+func (f Field) Public() bool { return f.Sensitivity == "" || f.Sensitivity == "public" }
+
 // Secret tells whether the field is of the sensitivity secret (ST-DECL-EN03).
 func (f Field) Secret() bool { return f.Sensitivity == "secret" }
 
