@@ -309,15 +309,9 @@ list. `stego validate` warns (`unmarked-secret-member`) of a request member
 that has the name of a secret field of an entity that the command writes and
 has no mark.
 
-```proto
-message IssueKeyRequest {
-  string label = 1;
-  string pin = 2 [debug_redact = true];
-}
-message IssueKeyResponse {
-  string api_key = 1 [debug_redact = true];
-}
-```
+For example, write `string pin = 2 [debug_redact = true];` in the request
+message `IssueKeyRequest` and `string api_key = 1 [debug_redact = true];` in
+the response message `IssueKeyResponse`.
 
 From rest-api 4.22.0, cli-application 1.13.0 and command 1.16.0:
 
