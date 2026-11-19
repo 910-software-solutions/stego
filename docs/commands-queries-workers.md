@@ -424,6 +424,16 @@ Each request of a command must have the header `Idempotency-Key`.
 The keys of each tenant and each caller are separate. Thus the same key from
 another caller, or in another tenant, is a new request.
 
+The runtime does not keep an answer of 5xx, an answer of 429, or an answer
+409 with the code `conflict`. It rolls back the transaction of the command,
+and the key with it. A request again with the same key then runs the fill
+again. The rows that the fill writes and the effects that it stages in the
+outbox are in that transaction, so only the run that commits keeps them.
+Anything that the fill does outside the transaction, such as a log line,
+occurs again at each request. Thus, send each change to another system as an
+effect through the outbox (see [Effects](#effects)), never from the fill
+directly. A worker then sends it after the commit.
+
 The runtime keeps each key for the time in `idempotency.retention`. The
 default is `24h`.
 
