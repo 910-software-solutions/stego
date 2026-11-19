@@ -432,7 +432,8 @@ an open seal: give `--base` with the release that runs now. The first pass also 
 after the expand step, so that each running process of the release before
 reports itself first.
 
-So a seal takes 13 minutes or more before you can deploy its contract step.
+So a seal takes 10 to 13 minutes or more before you can deploy its contract
+step.
 The controller runs the seal job at its start and then each 10 minutes. A run
 waits, and seals nothing, while the expand step is younger than 3 minutes or a
 process of a release before reported itself in its last three report

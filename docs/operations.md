@@ -522,8 +522,8 @@ Do these steps in this order:
    A dump from before the seal holds the field in clear. So when the dump is
    from before the expand step or the contract step of a seal, first run the
    release of the expand step: its migration Job and its worker Deployment,
-   which runs the controller, for one pass of the seal job. That takes 13
-   minutes or more: the first run of the job waits 3 minutes after the expand
+   which runs the controller, for one pass of the seal job. That takes 10 to
+   13 minutes or more: the first run of the job waits 3 minutes after the expand
    step, and the job runs each 10 minutes. When it logs `seal of a secret
    column` with `completed=true`, stop that release and run the migration Job
    of the release that you start again. Only then does that Job pass.
