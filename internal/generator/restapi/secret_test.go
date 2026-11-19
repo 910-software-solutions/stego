@@ -56,7 +56,7 @@ func TestSecretFields(t *testing.T) {
 		}
 		handler := findFileContent(t, files, "internal/api/vaults_handler.go")
 		for _, want := range []string{"func vaultsKeepSecrets(next, stored data.Vault) data.Vault", "if !next.ApiToken.IsSet() {",
-			"repo.Update(ctx, from, vaultsKeepSecrets(vaultsToData(vault), from.Value()), parents...)", `ApiToken: sealed.SecretOf(v.ApiToken)`,
+			"repo.Repository.Update(ctx, from, vaultsKeepSecrets(vaultsToData(vault), from.Value()), parents...)", `ApiToken: sealed.SecretOf(v.ApiToken)`,
 			`Pin: sealed.ComparedOf(vaultsText(v.Pin))`, `ApiToken: ""`, `Pin: nil`} {
 			if !strings.Contains(handler, want) {
 				t.Errorf("the handler has no %s", want)

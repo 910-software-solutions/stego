@@ -479,7 +479,7 @@ func (e *env) holdTuples(c caller, id string) []holdTuple {
 }
 
 // holdRepositories gives the loaded order, the parent of a Hold, and the Hold repository of the handle.
-func (e *env) holdRepositories(ctx context.Context, h *commands.ReserveAndChargeHandle, order string) (command.Ref, *command.Repository[commands.Hold]) {
+func (e *env) holdRepositories(ctx context.Context, h *commands.ReserveAndChargeHandle, order string) (command.Ref, *commands.HoldRepo) {
 	orders, err := commands.OrderRepository(h)
 	must(e.t, err)
 	holds, err := commands.HoldRepository(h)

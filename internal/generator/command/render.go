@@ -217,6 +217,13 @@ func EntityFile(pkg string, names []string, entities []types.Entity, tenantKey s
 	if m.usesBytes() {
 		w.f("\t\"bytes\"\n")
 	}
+	// The typed repository of an entity with a resource type of its own takes a context (ST-SUP-RC32-OC26).
+	for _, e := range m.entities {
+		if e.resourceType != "" {
+			w.f("\t\"context\"\n")
+			break
+		}
+	}
 	if m.usesJSON() {
 		w.f("\t\"encoding/json\"\n")
 	}

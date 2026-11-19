@@ -82,6 +82,7 @@ archetype does not have the change.
 | 3.182.0 | 1.184.0 | - | Checking refuses a `route` on a query whose `method` is a gRPC server stream: no handler served it. The query contract names the repository of an entity with the plural of its table, such as `GetEntryEntries`; the old name, such as `GetEntryEntrys`, stays one release as a deprecated function. Runtime v0.136.0: a write waits for the revocation that `Authz-Revocation-After` names, and a unique violation names the fields of its key. | [Remove the route of a stream query](#remove-the-route-of-a-stream-query), [Use the new names of the query repositories](#use-the-new-names-of-the-query-repositories). A client that creates a child at once after its parent can send `Authz-Revocation-After` (see [Write a child at once after its parent](commands-queries-workers.md#write-a-child-at-once-after-its-parent)). |
 | runtime v0.137.0 | runtime v0.137.0 | - | A field with `sensitivity: secret` is sealed at rest: the column of a readable secret holds sealed bytes (`bytea`), and a `compare_only` field holds an Argon2id hash. The api, worker and controller modes do not start without the key ring of the Secret `<service>-secret-key-ring`. In a fill, the type of a secret field is `sealed.Secret` (read its text with `Reveal()`) or `sealed.Compared` (check a value with `Matches`). A field that a release before v0.135.0 declared secret was stored in clear: `stego compat` and `stego plan` refuse the release until you declare a seal step for it. | [Seal the secret fields of a release before runtime v0.135.0](#seal-the-secret-fields-of-a-release-before-runtime-v01350) |
 | 3.189.0 | 1.190.0 | 1.191.0 | Runtime v0.138.0 and postgres-adapter 6.14.0: the seal step is built. A service with a `pii` field and no `secret` field also needs the key ring, which seals the stored answers of its idempotency keys. A retry of a key that the release before stored gets `idempotency-key-reused`. | [Make the key ring of a service with a pii field](#make-the-key-ring-of-a-service-with-a-pii-field) |
+| 3.200.0 | 1.200.0 | 1.200.0 | command 1.14.0: the repository of an entity with its own resource type is the type `<Entity>Repo`. Its `GetForUpdate`, `GetForDelete`, `Update` and `Delete` take no parent, and an update that changes a reference is `Move`. A fill that gives a parent to one of them does not compile: `too many arguments in call to`. | [Give no parent where the repository takes none](#give-no-parent-where-the-repository-takes-none) |
 | each release | each release | - | A release that adds a subscription. | [Add a subscription to a running service](#add-a-subscription-to-a-running-service) |
 
 ## Move a browser-service database to the owner and migrator logins
@@ -401,6 +402,34 @@ has a new name.
    `staticcheck` (SA1019) and `gopls` name each call of a deprecated function.
 2. Run `stego test` and `stego fill sign <fill>` for each fill that you
    changed.
+
+## Give no parent where the repository takes none
+
+Do this in the first release at rest-crud 3.200.0, rpc-service 1.200.0 or
+browser-service 1.200.0.
+
+Why: the runtime refused at run time each parent of a locked read, an update
+that keeps its references and a delete of an entity with its own resource
+type, and the command answered 500 (walkthrough 15). The generated repository
+of such an entity now takes no parent for these calls, so the mistake fails
+in `go build` and `stego test`. See [The repository of an
+entity](fills.md#the-repository-of-an-entity).
+
+1. Run `stego test`. Go names each call to change, such as `too many
+   arguments in call to parcels.Update`.
+2. Change each call that it names:
+   - Remove the parent, or `nil`, from `GetForUpdate`, `GetForDelete`,
+     `Delete` and an `Update` that keeps the references of the row.
+   - Replace `Update` with `Move` for an update that changes a reference,
+     and keep its parents: `parcels.Move(ctx, from, value, newShipment)`.
+3. A fill that keeps the repository in a variable or a parameter of the type
+   `*command.Repository[<Entity>]` uses the type `*commands.<Entity>Repo` or
+   `*workers.<Entity>Repo` in its place.
+4. Run `stego test` and `stego fill sign <fill>` for each fill that you
+   changed.
+
+A child entity, which has no resource type of its own, does not change: its
+calls still take the loaded parent row.
 
 ## Add a subscription to a running service
 
