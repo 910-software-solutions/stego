@@ -204,6 +204,19 @@ then removes local configuration, even if revocation fails. A revocation error
 is reported. Provider browser cookies and other applications are outside this
 logout operation. The lock file remains in place.
 
+## The environment of the CLI
+
+The CLI reads one environment variable of its own:
+
+| Variable | Required | Description |
+|---|---|---|
+| `APPLY_CONFIG` | no | The file of the configuration of the CLI: the URL, the CA file, the token file or the OIDC session. When it has no value, the CLI uses `<service>/config.json` in the configuration folder of the user (`os.UserConfigDir`, such as `~/.config/applicants/config.json`). |
+
+Set it on the computer of the user that runs the CLI, never on a pod of the
+service. The component states it with `read_by_client: true`, so the platform
+requirements, the environment variable reference, `stego env check` and the
+Kubernetes base of the service do not list it (walkthrough 17, W17-D2).
+
 ## The apply command
 
 `apply` creates or changes resources from a set of documents, as
