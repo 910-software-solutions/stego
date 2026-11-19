@@ -32,6 +32,26 @@ still sends and reads `title`, and the column of the table has the new name
 too. A new name in the API is a breaking change for each client, and a
 schema change never makes one.
 
+The rest of the declaration names a renamed field by its declared name, the
+new name. In the example above, the `patchable` list of a collection names
+`heading`, and the patch request of the collection still takes `title`, as
+the create and the update do. Do not write the API name `title` in
+`patchable`: checking refuses it, because the entity does not declare a
+field `title`.
+
+Generation does not rename a field yet when another part of the declaration
+names it by its declared name and STEGO does not map that name to the
+column. These parts are: a reference (`references`, or a field of type
+`ref`), a `unique_composite`, an invariant, the `scope`, the `implicit`
+fields or the `upsert_key` of a collection, and the context fields or the
+generation fields of the entity. The same parts, and also `patchable`, stop
+a retype. `stego validate` and `stego plan` refuse such a change. The fault
+names the entity, the field and the part that names it, such as `the entity
+Cart: generation does not rename the field customer_ref yet, because the
+collection carts names it by its declared name`. To change the name of such
+a field in the store, add a field with the new name and drop the old one.
+This changes the API, so it is a breaking change for each client.
+
 Checking holds each schema change against its field as its own step leaves
 it: the declared field with each later step undone, the last first
 (ST-DECL-Q17). So one field can change more than once. A retype from `int32`

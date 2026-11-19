@@ -148,13 +148,17 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 	if err != nil {
 		return nil, err
 	}
+	// The patchable fields of a collection name a renamed field by its declared name; the generators read its API
+	// name.
+	collections := gen.StoredCollections(svcDecl.Collections, schemaChanges)
+	droppedCollections := gen.StoredCollections(svcDecl.DroppedCollections, schemaChanges)
 	for _, compName := range componentNames {
 		comp := components[compName]
 		generator := input.Generators[compName]
 		ctx := gen.Context{
 			Conventions:     conventions,
 			Entities:        entities,
-			Collections:     svcDecl.Collections,
+			Collections:     collections,
 			SchemaChanges:   schemaChanges,
 			SchemaHistory:   schemaHistory,
 			SlotBindings:    svcDecl.Slots,
@@ -187,7 +191,7 @@ func prepareComponents(input ReconcilerInput, source *compilationSource, baselin
 			// The entities with dropped_by and their collections only give back the stored shape of the steps
 			// before their drop (ST-GEN-Q47).
 			DroppedEntities:    dropped,
-			DroppedCollections: svcDecl.DroppedCollections,
+			DroppedCollections: droppedCollections,
 			EntityOrder:        svcDecl.EntityOrder,
 			CollectionOrder:    svcDecl.CollectionOrder,
 		}
