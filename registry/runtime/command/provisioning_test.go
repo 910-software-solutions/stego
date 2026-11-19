@@ -3,9 +3,11 @@ package command
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -965,6 +967,48 @@ func TestProvisioningRelations(t *testing.T) {
 		}
 		if status, body := f.send("/stego/tenants", "k-r1", `{"tenant_id":"org-k","admins":[]}`); status != http.StatusUnprocessableEntity && status != http.StatusConflict && status != http.StatusBadRequest {
 			t.Fatalf("another body under the key answered %d %s, want a refusal", status, body)
+		}
+	})
+}
+
+func TestProvisioningUnavailable(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC09-T07 A Provision whose decision cannot begin on a database that cannot serve now is 503 undecided, and a long run of one cause logs an error", func(t *testing.T) {
+		// No server listens on port 1, so each connection is refused, as for a database that is down.
+		db, err := sql.Open("pgx", "postgres://stego:none@127.0.0.1:1/stego?sslmode=disable&connect_timeout=5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		var logs bytes.Buffer
+		previous, heldLog, heldRuns := slog.Default(), decisionLog, tenantRuns
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+		decisionLog, tenantRuns = authz.NewCauseLog(func() time.Time { return now }), authz.NewCauseRuns(func() time.Time { return now })
+		t.Cleanup(func() { slog.SetDefault(previous); decisionLog, tenantRuns = heldLog, heldRuns })
+		rt := &Runtime{cfg: Config{DB: db, Service: "orders"}}
+		spec := TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision", Schema: "public", SubjectType: "user"}
+		decide := func(want ...string) {
+			t.Helper()
+			logs.Reset()
+			_, err := decideTenant(context.Background(), rt, spec, Request{Tenant: mustTenant(t, "ops"), Resource: "org-x"})
+			if o := tenantOutcome(err); !errors.Is(err, ErrUndecided) || o.Status != http.StatusServiceUnavailable || o.Code != audit.ErrorCodeUndecided {
+				t.Fatalf("decideTenant gives %v and the answer %d %s, want ErrUndecided and 503 undecided", err, o.Status, o.Code)
+			}
+			for _, part := range append(want, "step=decide_tenant", "permission=provision", "cause="+authz.CauseStoreUnavailable, "transient=true") {
+				if !strings.Contains(logs.String(), part) {
+					t.Errorf("the log %q does not hold %s", logs.String(), part)
+				}
+			}
+			if strings.Contains(logs.String(), "127.0.0.1") {
+				t.Errorf("the log %q holds the text of the database error", logs.String())
+			}
+		}
+		decide("level=WARN", "run_seconds=0")
+		now = now.Add(LongUndecided)
+		decide("level=ERROR", "run_seconds=120")
+		// A failure that a retry does not change, such as the zero tenant, stays 500 internal.
+		if _, err := decideTenant(context.Background(), rt, spec, Request{Resource: "org-x"}); errors.Is(err, ErrUndecided) || !errors.Is(err, ErrInternal) {
+			t.Errorf("decideTenant with the zero tenant gives %v, want an internal error", err)
 		}
 	})
 }
