@@ -1459,6 +1459,25 @@ func generateOpenAPI(ns string, entities []types.Entity, collections []types.Col
 						patchSchema.Properties[f.Name] = fieldToOpenAPISchema(f)
 					}
 				}
+				// A patch also takes each field that a collection write cannot change, with its stored value, so a
+				// client can send back a row that it read (ST-SUP-RC20-OC46); x-kept marks it.
+				for _, f := range entity.Fields {
+					_, scoped := eb.Scope[f.Name]
+					_, implicit := eb.Implicit[f.Name]
+					if patchableSet[f.Name] || !keptField(f) || scoped || implicit {
+						continue
+					}
+					property := fieldToOpenAPISchema(f)
+					property.Description = keptPatchDescription(f, property.Description)
+					property.Default, property.Kept = nil, true
+					patchSchema.Properties[f.Name] = property
+				}
+				// A patch takes only these members and kind, the name of the entity, and refuses each other member
+				// (ST-SUP-RC20-OC15, security review of PR #461, M1).
+				if _, field := patchSchema.Properties["kind"]; !field {
+					patchSchema.Properties["kind"] = openAPISchema{Type: "string", Enum: []string{eb.Entity}, Description: "The name of the entity; a patch may leave it out."}
+				}
+				patchSchema.Closed = true
 				patchSchemaName := collPascal + "PatchRequest"
 				spec.Components.Schemas[patchSchemaName] = patchSchema
 
@@ -1715,6 +1734,14 @@ func keptUpdateDescription(f types.Field, typeDescription string) string {
 		return "A secret: a create sets it, and no response gives it back. An update cannot take this secret field: the body must leave it out."
 	}
 	return joinDescription(typeDescription, "An update cannot change this field: the body may leave it out or give its stored value.")
+}
+
+// keptPatchDescription gives the description of a field of keptField in a patch-request schema (ST-SUP-RC20-OC46).
+func keptPatchDescription(f types.Field, typeDescription string) string {
+	if f.Secret() {
+		return "A secret: a create sets it, and no response gives it back. A patch cannot take this secret field: the body must leave it out."
+	}
+	return joinDescription(typeDescription, "A patch cannot change this field: the body may leave it out or give its stored value.")
 }
 
 // isServerManaged returns true when a field's value is assigned by the server,
@@ -2151,6 +2178,26 @@ type openAPISchema struct {
 	AdditionalProperties *openAPISchema `json:"additionalProperties,omitempty"`
 	// Sensitive marks a secret member of a command message (ST-SUP-RC20-OC54).
 	Sensitive bool `json:"x-sensitive,omitempty"`
+	// Kept marks a member of a patch request that a collection write cannot change: the body may leave it out or give
+	// its stored value, and a client has no reason to send it (ST-SUP-RC20-OC46).
+	Kept bool `json:"x-kept,omitempty"`
+	// Closed writes additionalProperties: false, so the object takes no member that Properties does not name (the
+	// patch request, ST-SUP-RC20-OC15). It is not written with AdditionalProperties.
+	Closed bool `json:"-"`
+}
+
+// MarshalJSON writes the schema, with additionalProperties: false when it is Closed and gives no AdditionalProperties.
+func (s openAPISchema) MarshalJSON() ([]byte, error) {
+	type plain openAPISchema
+	data, err := json.Marshal(plain(s))
+	if err != nil || !s.Closed || s.AdditionalProperties != nil || len(data) < 2 || data[len(data)-1] != '}' {
+		return data, err
+	}
+	closed := []byte(`"additionalProperties":false}`)
+	if len(data) > 2 {
+		closed = append([]byte(","), closed...)
+	}
+	return append(data[:len(data)-1:len(data)-1], closed...), nil
 }
 
 // validateCollectionOperations checks that every collection has at least one

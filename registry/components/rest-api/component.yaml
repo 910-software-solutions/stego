@@ -43,9 +43,13 @@
 # Version 4.22.0 marks a member of a command message that the proto marks debug_redact as a secret in the OpenAPI
 # document: x-sensitive, the format password for a string, and writeOnly in a request body (ST-SUP-RC20-OC54,
 # ST-SUP-Q192).
+# Version 4.24.0 refuses each member of a patch body that is not kind, a patchable field or a field that a collection
+# write cannot change, in its exact letter case, with a 400 validation problem that names the member, and closes the
+# patch request of the OpenAPI document with additionalProperties: false (ST-SUP-RC20-OC15, security review of PR
+# #461, M1).
 kind: component
 name: rest-api
-version: 4.22.0
+version: 4.24.0
 stage: ga
 output_namespace: internal/api
 

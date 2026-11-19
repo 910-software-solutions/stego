@@ -1516,9 +1516,10 @@ func (w *runtimeHandlerWriter) helpers() {
 			w.f("\t%s *%s `json:%q`\n", toPascalCase(f.Name), fieldTypeToGo(f.Type), f.Name)
 		}
 		w.f("}\n\n")
-		w.f("// decode%sPatch gives the patch of a patch body. A kind member that is not %s is refused.\n", c.pascal, e.Name)
+		w.f("// decode%sPatch gives the patch of a patch body. A kind member that is not %s is refused, and so is each\n// member that is not kind or the API name of a patchable field, in its exact letter case (ST-SUP-RC20-OC15).\n", c.pascal, e.Name)
 		w.f("func decode%sPatch(bodyBytes []byte) (%sPatchRequest, error) {\n", c.pascal, c.pascal)
 		w.f("\tvar rawMap map[string]json.RawMessage\n\tif err := json.Unmarshal(bodyBytes, &rawMap); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body is not a JSON object\")}\n\t}\n", c.pascal)
+		w.patchMembers()
 		w.f("\tif kindRaw, ok := rawMap[\"kind\"]; ok {\n\t\tvar kind string\n\t\tif err := json.Unmarshal(kindRaw, &kind); err != nil || kind != %q {\n\t\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"kind must be %s\")}\n\t\t}\n\t}\n", e.Name, c.pascal, e.Name)
 		w.clientTimeText(c.pascal+"PatchRequest{}", c.patchFields())
 		w.f("\tvar patch %sPatchRequest\n\tif err := json.Unmarshal(bodyBytes, &patch); err != nil {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: BadRequest(\"the body does not decode into the patch of %s\")}\n\t}\n", c.pascal, c.pascal, e.Name)
@@ -1527,6 +1528,36 @@ func (w *runtimeHandlerWriter) helpers() {
 		w.f("\treturn patch, nil\n}\n\n")
 	}
 	w.keptCheck()
+}
+
+// patchMembers writes, in the decode of a patch body, the refusal of each member that is not kind or the API name of
+// a patchable field. The JSON decoder ignores an unknown member and matches a member name to a field with no regard
+// to case, so a patch that names a field it cannot change, or the declared name of a renamed field, would answer 200
+// and change nothing. The problem names the first such member in byte order and holds no value (ST-SUP-RC20-OC15,
+// security review of PR #461, M1).
+func (w *runtimeHandlerWriter) patchMembers() {
+	c := w.c
+	names := []string{"kind"}
+	for _, f := range c.patchFields() {
+		if !slices.Contains(names, f.Name) {
+			names = append(names, f.Name)
+		}
+	}
+	allowed := slices.Clone(names)
+	// A field that a collection write cannot change is checked by its own rule: the body may give its stored value
+	// (ST-SUP-RC20-OC46).
+	for _, f := range w.keptFields() {
+		if _, scoped := c.decl.Scope[f.Name]; !scoped && !slices.Contains(allowed, f.Name) {
+			allowed = append(allowed, f.Name)
+		}
+	}
+	quoted := make([]string, len(allowed))
+	for i, name := range allowed {
+		quoted[i] = strconv.Quote(name)
+	}
+	message := "the member is not a patchable field of " + c.decl.Name + "; a patch takes only " + strings.Join(names[1:], ", ") + " and kind"
+	w.f("\tunknown := \"\"\n\tfor member := range rawMap {\n\t\tswitch member {\n\t\tcase %s:\n\t\tdefault:\n\t\t\tif unknown == \"\" || member < unknown {\n\t\t\t\tunknown = member\n\t\t\t}\n\t\t}\n\t}\n", strings.Join(quoted, ", "))
+	w.f("\tif unknown != \"\" {\n\t\treturn %sPatchRequest{}, &invalidRequest{problem: Validation([]ValidationError{{Field: unknown, Message: %q}})}\n\t}\n", c.pascal, message)
 }
 
 // clientTimeExample is the example of an RFC 3339 time in the problem of a client-set timestamp.

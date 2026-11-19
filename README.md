@@ -299,9 +299,14 @@ A collection with `patch` must give `patchable`, and `patchable` needs
 `patch`. The entity names the permission of the patch in `permissions`, as
 for each operation. A patchable field must be a field of the entity, and must
 not be computed, a `ref`, an implicit field or the scope field of the
-collection, or have `writable: create` or `writable: never`. A patch changes
-no field that is not patchable. The OpenAPI document gives the body of the
-patch as the schema `<Collection>PatchRequest`. The `apply` command of the
+collection, or have `writable: create` or `writable: never`. A patch body
+may hold only the patchable fields, `kind` (the name of the entity), and a
+field that a collection write cannot change with its stored value. The
+names must match in letter case. A patch refuses each other member with a
+400 validation problem that names the member (rest-api 4.24.0), such as a
+field that is not patchable or the new name of a renamed field, and changes
+nothing. The OpenAPI document gives the body of the patch as the schema
+`<Collection>PatchRequest`, with `additionalProperties: false`. The `apply` command of the
 generated CLI changes a resource that it finds with this patch, so a
 collection is an apply resource only when it has `create`, `list` and
 `patch`, has no scope, and both the create and `patchable` hold a text field
