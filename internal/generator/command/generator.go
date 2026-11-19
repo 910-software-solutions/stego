@@ -501,6 +501,12 @@ func (m *model) planRoute(cmd *command) error {
 		if f == nil || !f.isString() {
 			return fmt.Errorf("command: the route of %s has the path parameter %s, which is not a string field of the message %s", decl.Name, name, cmd.request.name)
 		}
+		// A path parameter goes in the URL, the access logs and a CLI flag, so it cannot hold a secret; this holds
+		// for each archetype that mounts the command routes, also one with no rest-api (ST-SUP-RC20-OC54, security
+		// review of PR #462, L2).
+		if f.secret {
+			return fmt.Errorf("command: the route of %s has the path parameter %s, and the proto file marks the member %s of %s debug_redact: a secret member cannot be a path parameter, because the URL goes in access logs and a CLI flag; give it in the body", decl.Name, name, f.protoName, cmd.request.name)
+		}
 		cmd.params = append(cmd.params, param{name: name, field: f})
 	}
 	// A POST to a collection path creates a resource and answers 201; a POST to one resource answers 200.

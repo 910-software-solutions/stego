@@ -23,7 +23,9 @@ package `<out>/cli/app`:
   boolean or list of strings; give the other members in `--body FILE`;
 - no flag for a secret member, which the document marks `writeOnly` or
   `x-sensitive`, such as a PIN: a flag puts its value in the shell history and
-  the process list. Give it in `--body FILE`, a file that only you can read.
+  the process list. Give it in `--body FILE`, a file that only you can read:
+  the CLI refuses a body file that holds a secret member when the group or
+  other users have access to the file.
   A secret field of an entity is `writeOnly` in the document of its
   collection. A member of a command message is a secret only when its proto
   file marks it `[debug_redact = true]`: mark each secret member of a command
@@ -31,9 +33,10 @@ package `<out>/cli/app`:
   (see [A secret member](../../../docs/commands-queries-workers.md#a-secret-member)).
   `stego validate` warns of a request member with the name of a secret field
   of an entity that the command writes and no mark
-  (`unmarked-secret-member`);
+  (`unmarked-secret-member`). A secret member cannot be a path parameter:
+  generation refuses the route, because the URL goes in access logs;
 - `Sensitive` for a command whose answer holds a member marked `x-sensitive`:
-  it writes the answer only to `--output-file FILE`;
+  it writes the answer only to `--output-file FILE`, and never to stdout;
 - `--yes` for each delete;
 - one `apply` resource for each collection with a create, a list and a patch
   that take a string `name`. The kind is the name of the entity.
@@ -131,8 +134,10 @@ validation error. A write or sync error keeps the file for inspection; it can
 contain the only copy of a credential. No file failure falls back to stdout.
 A successful response with no body creates an empty file when requested.
 
-Commands marked `Sensitive` require `--output-file`. Use `--output-file -` to
-select stdout explicitly. Other commands use stdout by default. This output
+Commands marked `Sensitive` require `--output-file FILE` and refuse
+`--output-file -`: their answer holds a secret, and stdout can go to a
+terminal or a log. Other commands use stdout by default, and `--output-file -`
+selects stdout explicitly. This output
 choice does not change uncertain mutation results: check resource state before
 a retry. A process crash can leave an empty or partial private file. The CLI
 cannot recover a secret that the server returned only once.

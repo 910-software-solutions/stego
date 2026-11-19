@@ -24,9 +24,11 @@
 # Version 1.16.0 states that STEGO_SECRET_KEY_RING_FILE is also required when a command message has a member that the
 # proto marks debug_redact: such a service keys its idempotency fingerprints and seals its stored answers
 # (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12, ST-SUP-Q192).
+# Version 1.17.0 refuses a command route whose path parameter is a member that the proto marks debug_redact, also for
+# an archetype with no rest-api (ST-SUP-RC20-OC54; security review of PR #462, L2).
 kind: component
 name: command
-version: 1.16.0
+version: 1.17.0
 stage: ga
 output_namespace: commands
 

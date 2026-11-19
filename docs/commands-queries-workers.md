@@ -325,6 +325,19 @@ From rest-api 4.22.0, cli-application 1.13.0 and command 1.16.0:
   seals the stored answers. Thus a stored API key and the fingerprint of a
   body with a PIN are not in clear in the table `idempotency_keys`.
 
+From rest-api 4.23.0, cli-application 1.15.0 and runtime v0.160.0:
+
+- A command whose answer holds a secret member at any depth is Sensitive,
+  also when the member is deeper than the OpenAPI document shows.
+- A secret member cannot be a path parameter. Generation refuses the route,
+  because the URL goes in access logs. Give the member in the body.
+- A Sensitive command refuses `--output-file -`: its answer never goes to
+  stdout.
+- The CLI refuses a `--body FILE` that holds a secret member when the group
+  or other users have access to the file. Use `chmod 600 FILE`.
+- The runtime refuses to serve a command with a secret member when the
+  service has no key ring.
+
 The mark also works in nested messages, lists and maps. Other tools, such as
 the debug output of C++ and Java, also hide a member with this mark.
 

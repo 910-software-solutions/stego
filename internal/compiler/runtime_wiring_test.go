@@ -3,6 +3,7 @@ package compiler
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -411,6 +412,39 @@ func TestRuntimeDataPath(t *testing.T) {
 			if !strings.Contains(wiring, want) {
 				t.Errorf("the runtime verifier does not take the declared setting %s", want)
 			}
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC54-T04 The members token and pin of verify-order, which the fixture proto marks debug_redact, are secrets in the generated service", func(t *testing.T) {
+		shop := newWiringProject(t, stego, runtimeArchetype)
+		shop.stego("apply")
+		var document struct {
+			Paths map[string]map[string]struct {
+				RequestBody struct {
+					Content map[string]struct {
+						Schema struct {
+							Properties map[string]map[string]any `json:"properties"`
+						} `json:"schema"`
+					} `json:"content"`
+				} `json:"requestBody"`
+			} `json:"paths"`
+		}
+		if err := json.Unmarshal([]byte(shop.read("out/internal/api/openapi.json")), &document); err != nil {
+			t.Fatal(err)
+		}
+		body := document.Paths["/api/shop/v1/orders/{orderId}/verify"]["post"].RequestBody.Content["application/json"].Schema.Properties
+		for name, secret := range map[string]bool{"token": true, "pin": true, "orderId": false} {
+			member := body[name]
+			if secret && (member == nil || member["x-sensitive"] != true || member["writeOnly"] != true || member["format"] != "password") {
+				t.Errorf("the request member %s of verify-order is %v, want x-sensitive, writeOnly and the format password", name, member)
+			}
+			if !secret && member != nil && member["x-sensitive"] != nil {
+				t.Errorf("the plain request member %s of verify-order is %v", name, member)
+			}
+		}
+		// The service reads the key ring, which keys the fingerprint of a verify-order body (ST-SUP-RP14-LC12).
+		if !strings.Contains(shop.read("out/"+RuntimeWiringNamespace+"/runtime.go"), "service.ReadKeyRing()") {
+			t.Error("the runtime wiring of the service does not read the key ring")
 		}
 	})
 
