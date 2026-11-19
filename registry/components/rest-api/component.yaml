@@ -43,9 +43,12 @@
 # Version 4.22.0 marks a member of a command message that the proto marks debug_redact as a secret in the OpenAPI
 # document: x-sensitive, the format password for a string, and writeOnly in a request body (ST-SUP-RC20-OC54,
 # ST-SUP-Q192).
+# Version 4.23.0 marks the root of a command response x-sensitive when the message holds such a member at any depth,
+# also deeper than the schema follows, and refuses a path parameter that is such a member (security review of
+# PR #460, L1 and L2).
 kind: component
 name: rest-api
-version: 4.22.0
+version: 4.23.0
 stage: ga
 output_namespace: internal/api
 
