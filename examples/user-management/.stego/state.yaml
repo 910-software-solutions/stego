@@ -34,14 +34,14 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261119071641-18ac26d26151
+        module_version: v0.0.0-20261119083935-95426349b70e
         vcs: git
-        revision: 18ac26d26151f136672f2b61014ad2457d25b536
+        revision: 95426349b70ee76e1f57db7af8302c1469702ab3
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 06db8c8e59b55ba76f9e94626a33112f8ae118f3a520ec60d108d2b079716fb9
+    registry_content_sha256: f29d58dbce7e82160dad0e960636e7f9b2119333b09aa23324df00a72d1434a7
     components:
         audit-log:
             version: 1.2.0
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 6cbfe0a5f5c86279538dc46d5b3959ee102f884e077cfd460c4f33553b51a54c
-        architecture/index.html: 237a7156cbe908478446e99c607258e0c16c11b996667154020a9439de78e919
+        architecture/architecture.json: 769594d6aad189459fed63d0c602ef783a28b2c52c0ea02f82f54fdf06837c25
+        architecture/index.html: 85a21a0682e60080709c8bd977fe35862dc1b3437b154244246b188ff010021c
         deploy/base/deployment.yaml: f757ac733f521f217e954f6df579a86bb2bb8c8a3438ac095a5f3803fa4db4b9
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: b3be0787516e5bf77bca941f7579aebe32e7b71131a28537b8ee46d3626ed3bf
@@ -234,7 +234,7 @@ last_applied:
         deploy/platform-requirements.yaml: 7724068292bbca4dc9a0379c8817e944c5896e285c41a58bfc19720854950638
     archetype:
         name: rest-crud
-        version: 3.211.0
+        version: 3.213.0
         runtime:
             module: github.com/jsell-rh/stego/registry/runtime
             version: v0.158.0
