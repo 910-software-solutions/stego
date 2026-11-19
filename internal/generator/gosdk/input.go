@@ -11,8 +11,8 @@ func (*Generator) InputFiles(config map[string]any) ([]gen.InputFile, error) {
 	return gen.SourceInputs(names), err
 }
 
-// loadDocument loads the document of the client and marks each required secret member of a request as a plain Go
-// field (requiredSecretsPlain).
+// loadDocument loads the document of the client, marks each required secret member of a request as a plain Go field
+// (requiredSecretsPlain), and tags each secret member so its struct prints with the member redacted (secretTag).
 func loadDocument(ctx gen.Context) (*openapi3.T, error) {
 	doc, err := openapicontract.Load(ctx)
 	if err != nil {
@@ -22,8 +22,16 @@ func loadDocument(ctx gen.Context) (*openapi3.T, error) {
 	return doc, nil
 }
 
-// skipOptionalPointer is the extension of the pinned OpenAPI backend that gives a property a Go type with no pointer.
-const skipOptionalPointer = "x-go-type-skip-optional-pointer"
+// skipOptionalPointer is the extension of the pinned OpenAPI backend that gives a property a Go type with no pointer,
+// and extraTags the one that adds struct tags to its Go field.
+const (
+	skipOptionalPointer = "x-go-type-skip-optional-pointer"
+	extraTags           = "x-oapi-codegen-extra-tags"
+)
+
+// secretTag is the struct tag that marks the Go field of a secret (writeOnly) member: the generated String, GoString
+// and LogValue of its struct redact the field (redactionFile, security review of PR #467, L1).
+const secretTag = "sdk"
 
 // requiredSecretsPlain marks each required, writeOnly and not nullable member of an object schema of doc, in the
 // components and in the request bodies, so that the backend gives it a plain Go field. The backend gives each writeOnly
@@ -39,6 +47,15 @@ func requiredSecretsPlain(doc *openapi3.T) {
 		}
 		schema := ref.Value
 		seen[schema] = true
+		for _, property := range schema.Properties {
+			if property == nil || property.Value == nil || property.Ref != "" || !property.Value.WriteOnly {
+				continue
+			}
+			if property.Extensions == nil {
+				property.Extensions = map[string]any{}
+			}
+			property.Extensions[extraTags] = map[string]any{secretTag: "secret"}
+		}
 		for _, name := range schema.Required {
 			property := schema.Properties[name]
 			if property == nil || property.Value == nil || property.Ref != "" || !property.Value.WriteOnly || property.Value.Nullable {

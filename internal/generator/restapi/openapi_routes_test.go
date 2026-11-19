@@ -399,3 +399,39 @@ func TestRouteDocument(t *testing.T) {
 		}
 	})
 }
+
+func TestRouteDocumentSecretMembers(t *testing.T) {
+	t.Run("ST-SUP-RC32-OC29-T03 With no rest-api, the route document marks a debug_redact request member and a response that holds one", func(t *testing.T) {
+		// The context of the command component of a service with no rest-api, whose command messages have
+		// debug_redact members (security review of PR #467, I2).
+		ctx := routesContext()
+		ctx.Inputs = map[string][]byte{"proto/todo.proto": []byte(secretProto)}
+		ctx.ComponentConfig, ctx.OutputNamespace = ctx.PeerConfigs["command"], ctx.PeerNamespaces["command"]
+		ctx.PeerConfigs, ctx.PeerNamespaces, ctx.Collections = nil, nil, nil
+		data, err := new(Generator).RouteOpenAPIDocument(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, err := openapi3.NewLoader().LoadFromData(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := doc.Validate(context.Background()); err != nil {
+			t.Fatalf("the route document is not valid OpenAPI: %v", err)
+		}
+		op := doc.Paths.Value("/api/todo/v1/todos/{todo_id}/state:close").Post
+		pin := op.RequestBody.Value.Content.Get("application/json").Schema.Value.Properties["pin"].Value
+		if pin.Extensions["x-sensitive"] != true || pin.Format != "password" || !pin.WriteOnly {
+			t.Errorf("the request member pin has x-sensitive %v, the format %q and writeOnly %t; want true, password and true", pin.Extensions["x-sensitive"], pin.Format, pin.WriteOnly)
+		}
+		response := op.Responses.Value("200").Value.Content.Get("application/json").Schema.Value
+		if response.Extensions["x-sensitive"] != true {
+			t.Errorf("the response root of the command, which holds the secret apiKey, has x-sensitive %v; want true", response.Extensions["x-sensitive"])
+		}
+		reason := op.RequestBody.Value.Content.Get("application/json").Schema.Value.Properties["reason"].Value
+		if reason.Extensions["x-sensitive"] != nil || reason.WriteOnly {
+			t.Error("the request member reason, which is not debug_redact, is marked a secret")
+		}
+	})
+}
+

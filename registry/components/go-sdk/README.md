@@ -29,6 +29,11 @@ A secret member of a request, such as a PIN, is never in an answer. When the
 request requires it, it is a plain field, such as `PortalPin string`; when the
 request does not require it, such as on an update that keeps the stored value,
 it is a pointer.
+The methods `String`, `GoString` and `LogValue` of a request type with a
+secret member print `[redacted]` in place of its value, so `fmt` and
+`log/slog` do not show it. The JSON body that the SDK sends holds the value.
+Other ways to print a value, such as a copy into a map, show the secret: do
+not log request structs.
 
 STEGO supplies a bounded HTTPS transport. Select `otel-tracing` to include shared
 logs, metrics, and traces. The application supplies no client transport code.
