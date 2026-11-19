@@ -9,6 +9,25 @@ network access. For an asynchronous delete, use `Success: []int{202}` and
 `EmptyResponses: []int{202}`. A nonempty response then fails the contract. Other
 accepted codes require valid JSON. HTTP 204 and 205 always require an empty body.
 
+To get the CLI of the service's own API, bind the mixin `cli-application` in
+the service declaration (`mixins: [cli-application]`); the rest-crud archetype
+lists it. With no `factory_package`, STEGO makes the definitions from the
+OpenAPI document that the rest-api component writes for the service, in the
+package `<out>/cli/app`:
+
+- one command for each operation, named by the words of its operationId,
+  such as `create-clinics`, `read-clinics` and `discharge-patient`;
+- a required flag for each path parameter, such as `--clinic-id`, and the
+  argument `ID` for `{id}`;
+- a flag for each query parameter and body member of type string, integer,
+  boolean or list of strings; give the other members in `--body FILE`;
+- one `apply` resource for each collection with a create, a list and a patch
+  that take a string `name`. The kind is the name of the entity.
+
+Run `<out>/cli/cmd --help` for the list. The CLI does not send a write again
+(`IdempotentWrites` is false). For other names or other commands, write your
+own factory package and set `factory_package`.
+
 The target must be Go 1.25.0 or later. Validation, plan, and apply reject an older
 target before generation. This requirement covers file operations and the OIDC dependency.
 

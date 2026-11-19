@@ -52,6 +52,14 @@ func RenderCLI(namespace, tracing string) (gen.File, error) {
 	return render(namespace, tracing, 0, RefuseLinks, true)
 }
 
+// RenderSDK renders the client of the generated Go SDK, which sends the Idempotency-Key header that the caller gives
+// as a parameter of a command or of a create: the route requires it (ST-SUP-RC20-OC53, ST-SUP-RC30-OC01), and the
+// caller, not the SDK, sends a write again with the same key, as the browser does through a proxy. The SDK itself
+// sends no request again (ST-SUP-RC06-OC02). It keeps the link behavior of Render.
+func RenderSDK(namespace, tracing string) (gen.File, error) {
+	return render(namespace, tracing, 0, FollowLinks, true)
+}
+
 // RenderLocalApplication adds a client for an application in the same network
 // namespace. The compiler fixes its unprivileged port. The application must
 // listen only on 127.0.0.1. New still requires verified HTTPS.

@@ -308,3 +308,54 @@ func TestGeneratedNameConflicts(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceDocument(t *testing.T) {
+	t.Run("ST-SUP-RC06-OC09-T01 With no document the client is made from the service's own OpenAPI document, and with neither it is refused", func(t *testing.T) {
+		given := fixture()
+		want, _, err := new(Generator).Generate(given)
+		if err != nil {
+			t.Fatal(err)
+		}
+		own := gen.Context{ModuleName: given.ModuleName, OutputNamespace: given.OutputNamespace, ComponentConfig: map[string]any{}, ServiceOpenAPI: []byte(sample)}
+		if names, err := new(Generator).InputFiles(own.ComponentConfig); err != nil || len(names) != 0 {
+			t.Fatalf("with no document the SDK names the inputs %v, %v; want none", names, err)
+		}
+		got, wiring, err := new(Generator).Generate(own)
+		if err != nil {
+			t.Fatalf("the client of the service's own document: %v", err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("the client of the service's own document has %d files, want %d", len(got), len(want))
+		}
+		for i := range got {
+			if got[i].Path != want[i].Path || !bytes.Equal(got[i].Bytes(), want[i].Bytes()) {
+				t.Errorf("the file %s differs from the client of the same document given as a file", got[i].Path)
+			}
+		}
+		// A module is required only when a generated file imports it, so go mod tidy keeps each requirement.
+		for module := range wiring.GoModRequires {
+			found := false
+			for _, f := range got {
+				found = found || bytes.Contains(f.Bytes(), []byte(`"`+module))
+			}
+			if !found {
+				t.Errorf("the SDK requires %s, which no generated file imports", module)
+			}
+		}
+		own.ServiceOpenAPI = nil
+		if err := new(Generator).ValidateContext(own); err == nil || !strings.Contains(err.Error(), "the setting document, or the rest-api component") {
+			t.Errorf("with no document and no service document the SDK gives %v, want a refusal that names the setting", err)
+		}
+	})
+	t.Run("ST-SUP-RC06-OC10-T01 The client sends the idempotency key that its caller gives", func(t *testing.T) {
+		files, _, err := new(Generator).Generate(fixture())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range files {
+			if strings.HasSuffix(f.Path, "internal/transport/client.go") && strings.Contains(string(f.Bytes()), `"idempotency-key",`) {
+				t.Errorf("the transport of the SDK refuses the Idempotency-Key header that its caller gives")
+			}
+		}
+	})
+}

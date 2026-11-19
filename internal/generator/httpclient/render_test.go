@@ -55,8 +55,8 @@ func testStreams(t *testing.T, options bool) {
 }
 
 func TestIdempotencyKeyClients(t *testing.T) {
-	t.Run("ST-SUP-RC02-OC07-T02 Only the clients of the API proxy and of the CLI send Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
-		for _, kind := range []string{"other", "proxy", "cli"} {
+	t.Run("ST-SUP-RC02-OC07-T02 Only the clients of the API proxy, of the CLI and of the Go SDK send Idempotency-Key; the other HTTPS clients refuse it", func(t *testing.T) {
+		for _, kind := range []string{"other", "proxy", "cli", "sdk"} {
 			var file gen.File
 			var err error
 			switch kind {
@@ -66,6 +66,8 @@ func TestIdempotencyKeyClients(t *testing.T) {
 				file, err = RenderProxy("client", "", 0, FollowLinks)
 			case "cli":
 				file, err = RenderCLI("client", "")
+			case "sdk":
+				file, err = RenderSDK("client", "")
 			}
 			if err != nil {
 				t.Fatal(err)

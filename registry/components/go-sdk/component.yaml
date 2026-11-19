@@ -1,6 +1,8 @@
+# Version 2.1.0 makes the client from the OpenAPI document of the service when the declaration gives no document
+# (ST-SUP-RC06-OC09).
 kind: component
 name: go-sdk
-version: 2.0.4
+version: 2.1.0
 stage: ga
 output_namespace: sdk
 config:

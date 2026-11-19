@@ -288,6 +288,12 @@ type Context struct {
 	// of ST-DECL-INV73 (ST-SUP-RC33-OC08). Generators must not change it.
 	QueryStreams map[string]bool
 
+	// ServiceOpenAPI is the OpenAPI document that the rest-api component emits for the service, which the compiler
+	// gives the client components go-sdk and cli-application when their declaration names no document and no
+	// factory, so that each client is generated from the service's own API (ST-SUP-RC06-OC09, ST-SUP-RC04-OC32). It
+	// is nil for every other component and when the rest-api component is not active.
+	ServiceOpenAPI []byte
+
 	// DroppedEntities are the entities that the declaration declares with dropped_by, and DroppedCollections the
 	// collections over them (ST-DECL-EN02, ST-GEN-Q47): Entities and Collections do not hold them, so no generator
 	// gives them an API, a client, a repository, a handler or a manifest entry, and AtSchemaStep gives them back for
@@ -893,6 +899,12 @@ const (
 	EmitterProcessMethod EmitterKind = "process method"
 	EmitterSlotBinding   EmitterKind = "slot binding"
 )
+
+// OpenAPIProvider is a generator that emits the OpenAPI document of the service: the rest-api component. The
+// compiler gives the document to the client components that name no document of their own (ServiceOpenAPI).
+type OpenAPIProvider interface {
+	OpenAPIDocument(ctx Context) ([]byte, error)
+}
 
 // Emitter is one command, query, worker, process method or slot binding.
 // Name is its declared name, and collection.slot for a slot binding.
