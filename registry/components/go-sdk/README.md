@@ -1,8 +1,23 @@
 # Go SDK
 
-This component generates typed Go clients from captured OpenAPI 3.0 contracts.
-Select `go-sdk` in an archetype or mixin. Set `document` to the root contract and
+This component generates typed Go clients from OpenAPI 3.0 contracts.
+
+To get the client of the service's own API, bind the mixin `go-sdk` in the
+service declaration, such as `mixins: [go-sdk]`. The rest-crud archetype
+lists it. With no `document` setting, the client is made from the OpenAPI document that
+the rest-api component writes for the service in the same run
+(`out/internal/api/openapi.json`). Thus it has a method for each collection
+route, each command and each get or list query, and it never differs from the
+service. The package is `out/sdk`. To make a client of another API, set
+`document` under `overrides.go-sdk` to the root contract in the project, and
 list its other files in `references`.
+
+A command, and a create of a service with the idempotency component, require
+the header `Idempotency-Key`. Give it in the parameters of the method, such as
+`DischargePatientParams{IdempotencyKey: key}`: a structured string, such as a
+quoted UUID. The SDK sends the key that you give, and never sends a request
+again. To send a write again after an unknown outcome, send it with the same
+key.
 
 STEGO supplies a bounded HTTPS transport. Select `otel-tracing` to include shared
 logs, metrics, and traces. The application supplies no client transport code.

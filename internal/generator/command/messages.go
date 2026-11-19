@@ -54,6 +54,8 @@ func protoSources(config map[string]any) ([]protoSource, error) {
 type messages struct {
 	plugin *protogen.Plugin
 	byName map[string]*message
+	// descriptors are the descriptors of the top-level messages, by Go name.
+	descriptors map[string]protoreflect.MessageDescriptor
 }
 
 // message is one top-level message of the command proto files.
@@ -170,7 +172,7 @@ func compileMessages(ctx gen.Context) (*messages, error) {
 	if err != nil {
 		return nil, fmt.Errorf("command: the command messages cannot be prepared: %w", err)
 	}
-	ms := &messages{plugin: plugin, byName: map[string]*message{}}
+	ms := &messages{plugin: plugin, byName: map[string]*message{}, descriptors: map[string]protoreflect.MessageDescriptor{}}
 	for _, file := range plugin.Files {
 		if !file.Generate {
 			continue
@@ -186,10 +188,27 @@ func compileMessages(ctx gen.Context) (*messages, error) {
 					presence: f.Desc.HasOptionalKeyword() || f.Desc.ContainingOneof() != nil})
 			}
 			ms.byName[m.name] = m
+			ms.descriptors[m.name] = msg.Desc
 		}
 	}
 	return ms, nil
 }
+
+// MessageDescriptors compiles the proto files of the setting proto_files of the command component, which ctx gives
+// in its ComponentConfig and Inputs, and gives the descriptor of each top-level message by its Go name, such as
+// DischargePatientRequest. The rest-api component reads them to describe the request and the response of each
+// command in its OpenAPI document (ST-SUP-RC20-OC53).
+func MessageDescriptors(ctx gen.Context) (map[string]protoreflect.MessageDescriptor, error) {
+	ms, err := compileMessages(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ms.descriptors, nil
+}
+
+// GoName gives the Go name of a declared command or query name, as the command and query contracts name it, such
+// as DischargePatient for discharge-patient.
+func GoName(name string) string { return mixedCase(name) }
 
 // messageFiles writes the Go code of the command messages with protoc-gen-go into the contract package.
 func (m *model) messageFiles() ([]gen.File, error) {
