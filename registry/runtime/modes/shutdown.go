@@ -37,6 +37,8 @@ type Readiness struct {
 	db        Pinger
 	accepting atomic.Bool
 	stopping  atomic.Bool
+	// blocked is the reason that makes every mode not ready from the start, or nil (Block).
+	blocked atomic.Pointer[string]
 
 	mu        sync.Mutex
 	backfills []Staller
@@ -83,6 +85,14 @@ func (l *listener) Accept() (net.Conn, error) {
 	return conn, err
 }
 
+// Block makes every mode not ready from now on with reason, such as a database that lacks a table or a column of the
+// schema manifest (ST-SUP-RP09-LC05, ST-SUP-RP14-LC06). An empty reason blocks nothing.
+func (r *Readiness) Block(reason string) {
+	if reason != "" {
+		r.blocked.Store(&reason)
+	}
+}
+
 // Fail makes every mode not ready from now on. It is the first step of the shutdown.
 func (r *Readiness) Fail() {
 	r.stopping.Store(true)
@@ -90,10 +100,14 @@ func (r *Readiness) Fail() {
 
 // Ready answers the readiness of the mode m: api is ready when the HTTP server accepts requests; worker when the
 // database is reachable; controller when the database is reachable, whether or not the replica holds the lease,
-// it watches at least one controller queue and each runs and is ready, and no backfill it watches is stalled. Every mode is not ready once the shutdown began.
+// it watches at least one controller queue and each runs and is ready, and no backfill it watches is stalled. Every mode is not ready once the shutdown began,
+// and from the start with the reason of Block.
 func (r *Readiness) Ready(ctx context.Context, m Mode) error {
 	if r.stopping.Load() {
 		return fmt.Errorf("%s: %w: the replica is shutting down", m, ErrNotReady)
+	}
+	if reason := r.blocked.Load(); reason != nil && m != All {
+		return fmt.Errorf("%s: %w: %s", m, ErrNotReady, *reason)
 	}
 	switch m {
 	case API:

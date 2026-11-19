@@ -27,6 +27,7 @@ import (
 	"github.com/jsell-rh/stego/registry/runtime/internal/seal"
 	"github.com/jsell-rh/stego/registry/runtime/internal/staging"
 	"github.com/jsell-rh/stego/registry/runtime/manifest"
+	"github.com/jsell-rh/stego/registry/runtime/modes"
 	"github.com/jsell-rh/stego/registry/runtime/outbox"
 	"github.com/jsell-rh/stego/registry/runtime/probe"
 	"github.com/jsell-rh/stego/registry/runtime/query"
@@ -449,6 +450,46 @@ func TestNew(t *testing.T) {
 			}
 		})
 
+		t.Run("ST-SUP-RP14-LC06-T04 A start on a database that lacks a column of the manifest is not ready and names the column, and a droppable column is ready", func(t *testing.T) {
+			ctx := context.Background()
+			// start starts the service with a manifest whose orders table needs the column gone, which the database
+			// does not hold, and gives the log and the readiness of its api mode.
+			start := func(droppable bool) (string, error) {
+				t.Helper()
+				declared := parts(nil, nil)
+				declared.Schema = ordersManifest()
+				declared.Schema.Tables[0].Columns = append(declared.Schema.Tables[0].Columns, manifest.Column{Name: "gone", Type: "text", Droppable: droppable})
+				var ready error
+				logs, _ := startCaptured(t, func() {
+					svc, err := New(ctx, settings, declared)
+					if err != nil {
+						t.Fatalf("New gave %v, want a start", err)
+					}
+					defer func() { _ = svc.Close() }()
+					api, err := svc.Start(ctx, StartConfig{Selection: modes.Selection{modes.API}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = api.Shutdown(ctx) }()
+					ready = api.Readiness().Ready(ctx, modes.API)
+				})
+				return logs, ready
+			}
+			const fault = "table public.orders: column gone is missing"
+			logs, ready := start(false)
+			if !errors.Is(ready, modes.ErrNotReady) || !strings.Contains(ready.Error(), fault) || !strings.Contains(ready.Error(), "roll forward") {
+				t.Fatalf("the api mode gave %v, want not ready with %q and the remedy", ready, fault)
+			}
+			if !strings.Contains(logs, "the service starts not ready") {
+				t.Fatalf("the log does not say that the service starts not ready:\n%s", logs)
+			}
+			// A droppable column alerts and blocks nothing: the api mode waits only for its HTTP server.
+			logs, ready = start(true)
+			if ready == nil || strings.Contains(ready.Error(), fault) || !strings.Contains(logs, fault) || strings.Contains(logs, "starts not ready") {
+				t.Fatalf("with the column droppable, the api mode gave %v and the log %s, want the alert and no block", ready, logs)
+			}
+		})
+
 		t.Run("ST-SUP-RP14-LC06-T03 The start check holds the grants of the entity tables and the audit tables, and New refuses parts with no runtime grants", func(t *testing.T) {
 			// The table of a declared entity with the authorization token, as the PostgreSQL adapter gives it.
 			orders := manifest.Table{Schema: "public", Name: "orders", RowSecurity: true, Entity: true,
@@ -560,7 +601,7 @@ func TestNew(t *testing.T) {
 				}()
 				var got []string
 				logs, _ := startCaptured(t, func() {
-					if got, err = checkSchema(context.Background(), rt, declared); err != nil {
+					if got, _, err = checkSchema(context.Background(), rt, declared); err != nil {
 						t.Fatalf("the check after %q gave %v, want an alert", change, err)
 					}
 				})
@@ -611,12 +652,12 @@ func TestNew(t *testing.T) {
 			defer rt.Close()
 			ctx := context.Background()
 			declared := parts(nil, nil)
-			if _, err := checkSchema(ctx, rt, declared); err != nil {
+			if _, _, err := checkSchema(ctx, rt, declared); err != nil {
 				t.Fatalf("the start check as a runtime role that is not the owner role gave %v", err)
 			}
 			refused := func(what string, p Parts) {
 				t.Helper()
-				if _, err := checkSchema(ctx, rt, p); err == nil || !strings.Contains(err.Error(), "is the owner role "+p.OwnerRole+" or a member of it") {
+				if _, _, err := checkSchema(ctx, rt, p); err == nil || !strings.Contains(err.Error(), "is the owner role "+p.OwnerRole+" or a member of it") {
 					t.Errorf("the start check with %s gave %v, want a refusal of the runtime role", what, err)
 				}
 			}
@@ -639,7 +680,7 @@ func TestNew(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := checkSchema(ctx, rt, declared); err != nil {
+			if _, _, err := checkSchema(ctx, rt, declared); err != nil {
 				t.Fatalf("the start check after the memberships are revoked gave %v", err)
 			}
 		})

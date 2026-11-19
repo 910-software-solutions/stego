@@ -674,6 +674,16 @@ pod of the older release logs the error `the database does not satisfy the
 schema manifest` once for each difference, with its class, such as
 `class=owner`. The pod starts and serves. This is expected during a rollback.
 
+A table or a column that the older release uses can be missing, for example
+after a contract step of a later release dropped it. Then each statement on
+that table fails. In this case the error line says `the service starts not
+ready`, and each mode of the pod answers `/readyz` and `/readyz/modes` with
+503 and names the table or the column. The pod does not restart. A rollout of
+the older release stops at its first pod, and the pods that serve stay. Roll
+forward to the release that changed the database. There is one exception: the
+release of the expand step of a seal goes on after the contract step drops
+the clear column, so its pods are ready.
+
 Do these steps for a rollback:
 
 1. Deploy only the Deployments of the older release. Do not run its migration

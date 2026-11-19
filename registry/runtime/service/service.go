@@ -192,6 +192,9 @@ type Service struct {
 	version     string
 	beat        *lease.Beat
 	tenants     *tenantProvisioning
+	// blocked is the reason that makes each mode not ready from the start: the start check found a table or a
+	// column of the manifest missing (ST-SUP-RP14-LC06), or empty.
+	blocked string
 }
 
 // New wires the runtimes of one service from its settings and its declared parts (ST-SUP-RP14-LC02): it opens the
@@ -235,10 +238,11 @@ func New(ctx context.Context, s Settings, p Parts) (_ *Service, err error) {
 			return nil, err
 		}
 	}
-	classes, err := checkSchema(ctx, svc.pool, p)
+	classes, blocking, err := checkSchema(ctx, svc.pool, p)
 	if err != nil {
 		return nil, err
 	}
+	svc.blocked = blockedReason(blocking)
 	if svc.auditDB, err = tenant.Open(ctx, pools); err != nil {
 		return nil, &databaseError{err}
 	}
@@ -492,15 +496,16 @@ const MaxLoggedFaults = 50
 // finding F10 of the schema-change research, owner, 2026-11-13): checkSchema logs each fault, up to MaxLoggedFaults, on a line of its own at
 // the level error, with its class (manifest.FaultClass), which names only objects of the catalog and no row value,
 // and gives the classes of the faults, each once, so that New emits the probe observation schema.manifest.mismatch
-// for each class and starts; the migration job refuses the same database. Any other failure of the check,
+// for each class and starts, and the faults that block (manifest.Mismatch.Blocking), with which the process starts
+// not ready (ST-SUP-RP14-LC06); the migration job refuses the same database. Any other failure of the check,
 // and parts that give no manifest, it refuses. The audit triggers' functions are those that the audit DDL makes for
 // the declared anchor period (Parts.Workers.AnchorPeriod), and audit_maintain is the one of the declared retention
 // (Parts.Workers.RetentionMonths).
-func checkSchema(ctx context.Context, db *sql.DB, p Parts) ([]string, error) {
+func checkSchema(ctx context.Context, db *sql.DB, p Parts) (classes, blocking []string, err error) {
 	// The check runs as the runtime role, which alone may run audit_maintain.
 	var runtimeRole string
 	if err := db.QueryRowContext(ctx, "SELECT current_user").Scan(&runtimeRole); err != nil {
-		return nil, fmt.Errorf("service: read the runtime role: %w", err)
+		return nil, nil, fmt.Errorf("service: read the runtime role: %w", err)
 	}
 	// The runtime role is not the owner role and is no member of it (ST-SUP-RC01-OC21), which New refuses and does not
 	// alert: the owner role owns the tables, so it is not held by their row-level security, and it runs the backfill,
@@ -510,26 +515,29 @@ func checkSchema(ctx context.Context, db *sql.DB, p Parts) ([]string, error) {
 	var owner bool
 	if err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_roles r
 WHERE r.rolname = $1::pg_catalog.text AND pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER'))`, p.OwnerRole).Scan(&owner); err != nil {
-		return nil, fmt.Errorf("service: read the membership of the runtime role: %w", err)
+		return nil, nil, fmt.Errorf("service: read the membership of the runtime role: %w", err)
 	}
 	if owner {
-		return nil, fmt.Errorf("service: the runtime role %s is the owner role %s or a member of it; give DATABASE_URL the login of the runtime role", runtimeRole, p.OwnerRole)
+		return nil, nil, fmt.Errorf("service: the runtime role %s is the owner role %s or a member of it; give DATABASE_URL the login of the runtime role", runtimeRole, p.OwnerRole)
 	}
 	want, err := joinedManifest(p, runtimeRole)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	err = manifest.Check(ctx, db, want)
 	var mismatch *manifest.Mismatch
 	if errors.As(err, &mismatch) {
-		var classes []string
 		for i, fault := range mismatch.Faults {
 			class := manifest.FaultClass(fault)
 			// At most MaxLoggedFaults lines, and one line with the count of the rest, as a role that can make
 			// catalog objects can make thousands of faults (review of PR #305, L2). Each fault still gives its class.
+			// A fault that blocks says that the service starts not ready (ST-SUP-RP14-LC06, ST-SUP-RP15-LC05).
 			if i < MaxLoggedFaults {
-				slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; the service starts, and the migration job refuses it",
-					"class", class, "fault", fault)
+				text := "service: the database does not satisfy the schema manifest; the service starts, and the migration job refuses it"
+				if slices.Contains(mismatch.Blocking, fault) {
+					text = "service: the database does not satisfy the schema manifest; the service starts not ready, and the migration job refuses it"
+				}
+				slog.ErrorContext(ctx, text, "class", class, "fault", fault)
 			}
 			if !slices.Contains(classes, class) {
 				classes = append(classes, class)
@@ -538,12 +546,27 @@ WHERE r.rolname = $1::pg_catalog.text AND pg_catalog.pg_has_role(current_user, r
 		if rest := len(mismatch.Faults) - MaxLoggedFaults; rest > 0 {
 			slog.ErrorContext(ctx, "service: the database does not satisfy the schema manifest; more faults are not logged", "faults", rest)
 		}
-		return classes, nil
+		return classes, mismatch.Blocking, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("service: %w", err)
+		return nil, nil, fmt.Errorf("service: %w", err)
 	}
-	return nil, nil
+	return nil, nil, nil
+}
+
+// blockedReason gives the reason of the readiness of a process whose start check found the faults blocking, each a
+// missing table or column of the manifest (ST-SUP-RP14-LC06): it names at most the first three and the count of the
+// rest, which are catalog names only, and gives the remedy. It is empty with no fault.
+func blockedReason(blocking []string) string {
+	if len(blocking) == 0 {
+		return ""
+	}
+	named := blocking[:min(len(blocking), 3)]
+	text := "the database does not hold the schema manifest of this release: " + strings.Join(named, "; ")
+	if rest := len(blocking) - len(named); rest > 0 {
+		text += fmt.Sprintf("; and %d more", rest)
+	}
+	return text + "; a later release changed the database, so roll forward to that release"
 }
 
 // joinedManifest is the schema manifest that New checks at the start and the migration job checks at its end: the

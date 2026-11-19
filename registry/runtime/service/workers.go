@@ -289,6 +289,9 @@ func (svc *Service) Start(ctx context.Context, c StartConfig) (_ *Workers, err e
 		return nil, err
 	}
 	w.readiness = modes.NewReadiness(svc.pool)
+	// A database that lacks a table or a column of the manifest makes each mode not ready from the start, so a
+	// rollout of a release before a contract step stops at its first replica (ST-SUP-RP14-LC06).
+	w.readiness.Block(svc.blocked)
 	w.readiness.WatchQueue(controllerQueue{w: w})
 	drain := c.DrainBound
 	if drain <= 0 {
