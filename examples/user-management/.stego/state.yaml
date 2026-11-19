@@ -34,21 +34,21 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261119085015-cab598e5e633
+        module_version: v0.0.0-20261119092125-ed460df63755
         vcs: git
-        revision: cab598e5e63350a87c111a598ac634002439b5f8
+        revision: ed460df63755770c56750349fd077f09b560f824
         source_state: clean
     service_name: user-management
     service_hash: bf9ae6f59e42415acf7e472f491e4544a532f496a834c92a946f82bc5aa4d40b
     registry_sha: env-override
-    registry_content_sha256: 928f338a25c8217254756618459c0e598362edfe04605af2e8dfe679b36b90ac
+    registry_content_sha256: 1eb7ac0ab9b909afa699322ce247993a12978a067fa24dc9224340012fa30262
     components:
         audit-log:
             version: 1.2.0
             sha: 39bb7d80ebafdd90d980dd5316a791f587ae889f7d956d0a132ff5daf4b8ca55
         command:
-            version: 1.16.0
-            sha: 11a1dfbaf9171815f6c9bbfea2e0e1ddfd7a014c60d3f45d7bd3885acdbf8fbf
+            version: 1.17.0
+            sha: eb9b89d619eee87eba4f3cea63b3f2ee7e1cf5e915940ebde3d1187a6e1238b6
         domain-probe:
             version: 1.0.1
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
@@ -210,8 +210,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 315aecfe820d5a59718614ec3963d222ab1f5632c96ba560f39d3ef11e702dc7
-        architecture/index.html: 050d182345df9840b422df80f16fc4ea9d7948c9591ed5cca78c388b141d4047
+        architecture/architecture.json: 55ba139f80ea2689570edc68c18e7c5befe13988d90864986604d3136391a86a
+        architecture/index.html: b5e9b8e1bf2be06b43742dd4c3ef7070df69f91dedf9b85181328b85734bda5e
         deploy/base/deployment.yaml: f757ac733f521f217e954f6df579a86bb2bb8c8a3438ac095a5f3803fa4db4b9
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: 2824333939a8a205a0a58f610730e3b6017fc5401637a2149499150f983351e9
