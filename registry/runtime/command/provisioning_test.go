@@ -987,14 +987,14 @@ func TestProvisioningUnavailable(t *testing.T) {
 		t.Cleanup(func() { slog.SetDefault(previous); decisionLog, tenantRuns = heldLog, heldRuns })
 		rt := &Runtime{cfg: Config{DB: db, Service: "orders"}}
 		spec := TenantSpec{Action: tenant.ProvisionAction, ResourceType: "service", Permission: "provision", Schema: "public", SubjectType: "user"}
-		decide := func(want ...string) {
+		decide := func(rt *Runtime, want ...string) {
 			t.Helper()
 			logs.Reset()
 			_, err := decideTenant(context.Background(), rt, spec, Request{Tenant: mustTenant(t, "ops"), Resource: "org-x"})
 			if o := tenantOutcome(err); !errors.Is(err, ErrUndecided) || o.Status != http.StatusServiceUnavailable || o.Code != audit.ErrorCodeUndecided {
 				t.Fatalf("decideTenant gives %v and the answer %d %s, want ErrUndecided and 503 undecided", err, o.Status, o.Code)
 			}
-			for _, part := range append(want, "step=decide_tenant", "permission=provision", "cause="+authz.CauseStoreUnavailable, "transient=true") {
+			for _, part := range append(want, "step=decide_tenant", "permission=provision", "cause="+authz.CauseStoreUnavailable, "transient=true", `msg="command: the transaction of the tenant decision`) {
 				if !strings.Contains(logs.String(), part) {
 					t.Errorf("the log %q does not hold %s", logs.String(), part)
 				}
@@ -1003,12 +1003,27 @@ func TestProvisioningUnavailable(t *testing.T) {
 				t.Errorf("the log %q holds the text of the database error", logs.String())
 			}
 		}
-		decide("level=WARN", "run_seconds=0")
+		decide(rt, "level=WARN", "run_seconds=0")
 		now = now.Add(LongUndecided)
-		decide("level=ERROR", "run_seconds=120")
-		// A failure that a retry does not change, such as the zero tenant, stays 500 internal.
+		decide(rt, "level=ERROR", "run_seconds=120")
+		// The runtime of another service in the same process has its own run and its own log limit (security
+		// review of PR #456, I2).
+		decide(&Runtime{cfg: Config{DB: db, Service: "billing"}}, "level=WARN", "run_seconds=0")
+		// So has the tenant list, also for a TenantSpec permission named list_tenants.
+		_, down := tenant.Begin(context.Background(), db, mustTenant(t, "ops"), nil)
+		logs.Reset()
+		logTenantDecision(context.Background(), tenantLogKey{service: "orders", step: "list_tenants", permission: "provision"}, down)
+		if line := logs.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "step=list_tenants") || !strings.Contains(line, "run_seconds=0") {
+			t.Errorf("the log of the tenant list is %q, want a warning of its own run", line)
+		}
+		// A failure that a retry does not change, such as the zero tenant, stays 500 internal, and its line names
+		// the transaction, not the provider (security review of PR #456, I3).
+		logs.Reset()
 		if _, err := decideTenant(context.Background(), rt, spec, Request{Resource: "org-x"}); errors.Is(err, ErrUndecided) || !errors.Is(err, ErrInternal) {
 			t.Errorf("decideTenant with the zero tenant gives %v, want an internal error", err)
+		}
+		if line := logs.String(); !strings.Contains(line, `msg="command: the transaction of the tenant decision did not begin"`) || strings.Contains(line, "provider") {
+			t.Errorf("the log of the zero tenant is %q, want the line of a transaction that did not begin", line)
 		}
 	})
 }

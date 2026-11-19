@@ -443,8 +443,11 @@ One answer is not an error in this sense: a before slot of a collection that
 halts the command (its result sets `Halt` with a status). The command then
 commits with no write, and the runtime keeps the answer of the halt with the
 key, also when its status is a 4xx. A request again with the same key gets
-that stored answer, and the slot does not run again. A before slot that
-refuses the request (its result is not `Ok`) rolls back as an error does.
+that stored answer, and the slot does not run again. But a halt with a status
+of 500 or more, or 429, is not kept: the command rolls back as for an error
+answer, and a request again with the same key runs the slot again. A before
+slot that refuses the request (its result is not `Ok`) rolls back as an error
+does.
 Anything that the fill does outside the transaction, such as a log line,
 occurs again at each request. Thus, send each change to another system as an
 effect through the outbox (see [Effects](#effects)), never from the fill
