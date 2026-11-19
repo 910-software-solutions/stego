@@ -4703,10 +4703,10 @@ func TestRuntimeWrites(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC15-T02 The emitted patch handler reads, merges and saves", func(t *testing.T) {
 		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "repo.GetForDelete(ctx, id)", "stored := todosFromData(from.Value())",
 			"todo := stored", "if patch.Title != nil {", "todo.Title = *patch.Title", "if patch.Done != nil {", "todo.Done = ptrOf(*patch.Done)",
-			"repo.Update(ctx, from, todosToData(todo), parents...)")
+			"repo.Repository.Update(ctx, from, todosToData(todo), parents...)")
 	})
 	t.Run("ST-SUP-RC20-OC16-T01 The emitted patch handler records who changed the record and when", func(t *testing.T) {
-		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Update(")
+		inOrder(t, "todos Patch", handlerMethod(t, files, "todos", "Patch"), "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "repo.Repository.Update(")
 		// The command runtime sets updated_time at each update of a row, a patch too.
 		if !strings.Contains(string(files["api/data/entities.go"]), `\"generation\" = $13, \"version\" = \"version\" + 1, \"updated_time\" = now()`) {
 			t.Error("the update of a todo does not set updated_time to the time of the change")
@@ -4725,11 +4725,11 @@ func TestRuntimeWrites(t *testing.T) {
 		inOrder(t, "decodeFolderSettings", handlerFunc(t, files, "folder-settings", "decodeFolderSettings"), "setting.CreatedBy = nil", "setting.UpdatedBy = nil", "setting.Generation = 0")
 		inOrder(t, "folder-settings Upsert", handlerMethod(t, files, "folder-settings", "Upsert"),
 			"setting.CreatedBy = ptrOf(callerName(r.Context()))", "setting.Generation = 1", "repo.Create(",
-			"setting.CreatedBy = stored.CreatedBy", "setting.UpdatedBy = ptrOf(callerName(r.Context()))", "setting.Generation = stored.Generation + 1", "repo.Update(")
+			"setting.CreatedBy = stored.CreatedBy", "setting.UpdatedBy = ptrOf(callerName(r.Context()))", "setting.Generation = stored.Generation + 1", "repo.Repository.Update(")
 	})
 	t.Run("ST-SUP-RC20-OC18-T01 The emitted update handler keeps create-only values and raises the generation", func(t *testing.T) {
 		inOrder(t, "todos Update", handlerMethod(t, files, "todos", "Update"), "repo.GetForDelete(ctx, id)", "stored := todosFromData(from.Value())",
-			"todo.ID = id", "todo.CreatedBy = stored.CreatedBy", "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "todo.Generation = stored.Generation + 1", "repo.Update(")
+			"todo.ID = id", "todo.CreatedBy = stored.CreatedBy", "todo.UpdatedBy = ptrOf(callerName(r.Context()))", "todo.Generation = stored.Generation + 1", "repo.Repository.Update(")
 	})
 	kind := func(t *testing.T, collection, decode, op, entity string) {
 		t.Helper()

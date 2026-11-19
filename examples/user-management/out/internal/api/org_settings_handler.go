@@ -363,7 +363,7 @@ func (h *OrgSettingsHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 			}
 			parents = append(parents, parent)
 		}
-		updated, err := repo.Update(ctx, from, orgSettingsToData(orgsetting), parents...)
+		updated, err := repo.Repository.Update(ctx, from, orgSettingsToData(orgsetting), parents...)
 		if err != nil {
 			return idempotency.Response{}, err
 		}

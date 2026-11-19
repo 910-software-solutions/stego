@@ -4,6 +4,7 @@ package data
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 
 	"github.com/jsell-rh/stego/registry/runtime/command"
@@ -84,8 +85,39 @@ var OrganizationEntity = command.Must(command.NewEntity(command.EntitySpec[Organ
 
 // OrganizationRepository gives the repository of Organization of a command handle; the handle refuses an entity that its command does
 // not declare it writes.
-func OrganizationRepository[P any](h *command.Handle[P]) (*command.Repository[Organization], error) {
-	return command.Repo(h, OrganizationEntity)
+// OrganizationRepo is the repository of Organization, an entity with the resource type organization of its own, which is no child entity: its
+// locked reads, its update and its delete take no parent (ST-SUP-RC32-OC26). The methods of the runtime that it
+// does not hold are those of Repository.
+type OrganizationRepo struct {
+	*command.Repository[Organization]
+}
+
+func OrganizationRepository[P any](h *command.Handle[P]) (*OrganizationRepo, error) {
+	repo, err := command.Repo(h, OrganizationEntity)
+	if err != nil {
+		return nil, err
+	}
+	return &OrganizationRepo{repo}, nil
+}
+
+// GetForUpdate reads the row id and locks it until the transaction ends. It takes no parent.
+func (r *OrganizationRepo) GetForUpdate(ctx context.Context, id string) (command.Loaded[Organization], error) {
+	return r.Repository.GetForUpdate(ctx, id)
+}
+
+// GetForDelete reads the row id and locks it for a delete or a change of a key. It takes no parent.
+func (r *OrganizationRepo) GetForDelete(ctx context.Context, id string) (command.Loaded[Organization], error) {
+	return r.Repository.GetForDelete(ctx, id)
+}
+
+// Update writes value over the loaded row from. It takes no parent.
+func (r *OrganizationRepo) Update(ctx context.Context, from command.Loaded[Organization], value Organization) (command.Loaded[Organization], error) {
+	return r.Repository.Update(ctx, from, value)
+}
+
+// Delete deletes the loaded row from. It takes no parent.
+func (r *OrganizationRepo) Delete(ctx context.Context, from command.Loaded[Organization]) error {
+	return r.Repository.Delete(ctx, from)
 }
 
 // User is a row of the entity User, as its command handle reads and writes it.
@@ -175,8 +207,44 @@ var UserEntity = command.Must(command.NewEntity(command.EntitySpec[User]{
 
 // UserRepository gives the repository of User of a command handle; the handle refuses an entity that its command does
 // not declare it writes.
-func UserRepository[P any](h *command.Handle[P]) (*command.Repository[User], error) {
-	return command.Repo(h, UserEntity)
+// UserRepo is the repository of User, an entity with the resource type member of its own, which is no child entity: its
+// locked reads, its update and its delete take no parent (ST-SUP-RC32-OC26). The methods of the runtime that it
+// does not hold are those of Repository.
+type UserRepo struct{ *command.Repository[User] }
+
+func UserRepository[P any](h *command.Handle[P]) (*UserRepo, error) {
+	repo, err := command.Repo(h, UserEntity)
+	if err != nil {
+		return nil, err
+	}
+	return &UserRepo{repo}, nil
+}
+
+// GetForUpdate reads the row id and locks it until the transaction ends. It takes no parent.
+func (r *UserRepo) GetForUpdate(ctx context.Context, id string) (command.Loaded[User], error) {
+	return r.Repository.GetForUpdate(ctx, id)
+}
+
+// GetForDelete reads the row id and locks it for a delete or a change of a key. It takes no parent.
+func (r *UserRepo) GetForDelete(ctx context.Context, id string) (command.Loaded[User], error) {
+	return r.Repository.GetForDelete(ctx, id)
+}
+
+// Update writes value over the loaded row from and keeps each reference of the row. It takes no parent: an update
+// that changes a reference is Move.
+func (r *UserRepo) Update(ctx context.Context, from command.Loaded[User], value User) (command.Loaded[User], error) {
+	return r.Repository.Update(ctx, from, value)
+}
+
+// Delete deletes the loaded row from. It takes no parent.
+func (r *UserRepo) Delete(ctx context.Context, from command.Loaded[User]) error {
+	return r.Repository.Delete(ctx, from)
+}
+
+// Move writes value over the loaded row from, where value changes a reference: parents are the loaded values of
+// the rows that the changed references name, each decided with the permission of its reference.
+func (r *UserRepo) Move(ctx context.Context, from command.Loaded[User], value User, parents ...command.Ref) (command.Loaded[User], error) {
+	return r.Repository.Update(ctx, from, value, parents...)
 }
 
 // OrgSetting is a row of the entity OrgSetting, as its command handle reads and writes it.
@@ -250,6 +318,44 @@ var OrgSettingEntity = command.Must(command.NewEntity(command.EntitySpec[OrgSett
 
 // OrgSettingRepository gives the repository of OrgSetting of a command handle; the handle refuses an entity that its command does
 // not declare it writes.
-func OrgSettingRepository[P any](h *command.Handle[P]) (*command.Repository[OrgSetting], error) {
-	return command.Repo(h, OrgSettingEntity)
+// OrgSettingRepo is the repository of OrgSetting, an entity with the resource type org_setting of its own, which is no child entity: its
+// locked reads, its update and its delete take no parent (ST-SUP-RC32-OC26). The methods of the runtime that it
+// does not hold are those of Repository.
+type OrgSettingRepo struct {
+	*command.Repository[OrgSetting]
+}
+
+func OrgSettingRepository[P any](h *command.Handle[P]) (*OrgSettingRepo, error) {
+	repo, err := command.Repo(h, OrgSettingEntity)
+	if err != nil {
+		return nil, err
+	}
+	return &OrgSettingRepo{repo}, nil
+}
+
+// GetForUpdate reads the row id and locks it until the transaction ends. It takes no parent.
+func (r *OrgSettingRepo) GetForUpdate(ctx context.Context, id string) (command.Loaded[OrgSetting], error) {
+	return r.Repository.GetForUpdate(ctx, id)
+}
+
+// GetForDelete reads the row id and locks it for a delete or a change of a key. It takes no parent.
+func (r *OrgSettingRepo) GetForDelete(ctx context.Context, id string) (command.Loaded[OrgSetting], error) {
+	return r.Repository.GetForDelete(ctx, id)
+}
+
+// Update writes value over the loaded row from and keeps each reference of the row. It takes no parent: an update
+// that changes a reference is Move.
+func (r *OrgSettingRepo) Update(ctx context.Context, from command.Loaded[OrgSetting], value OrgSetting) (command.Loaded[OrgSetting], error) {
+	return r.Repository.Update(ctx, from, value)
+}
+
+// Delete deletes the loaded row from. It takes no parent.
+func (r *OrgSettingRepo) Delete(ctx context.Context, from command.Loaded[OrgSetting]) error {
+	return r.Repository.Delete(ctx, from)
+}
+
+// Move writes value over the loaded row from, where value changes a reference: parents are the loaded values of
+// the rows that the changed references name, each decided with the permission of its reference.
+func (r *OrgSettingRepo) Move(ctx context.Context, from command.Loaded[OrgSetting], value OrgSetting, parents ...command.Ref) (command.Loaded[OrgSetting], error) {
+	return r.Repository.Update(ctx, from, value, parents...)
 }

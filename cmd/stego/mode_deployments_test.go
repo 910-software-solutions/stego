@@ -24,7 +24,7 @@ func TestModeDeploymentsOfScaffolds(t *testing.T) {
 			return string(data)
 		}
 		api, worker := read(project, "deploy/base/deployment.yaml"), read(project, "deploy/base/worker-deployment.yaml")
-		for _, want := range []string{"- --mode=api", "path: /readyz\n", "path: /livez"} {
+		for _, want := range []string{"- --mode=api", "path: /readyz/modes\n", "path: /livez"} {
 			if !strings.Contains(api, want) {
 				t.Errorf("the Deployment of the api mode does not hold %q:\n%s", want, api)
 			}

@@ -323,10 +323,11 @@ type tableModel struct {
 }
 
 // columnModel is one column: its name, its type, its NOT NULL, its DEFAULT clause, and its default as the schema
-// manifest states it (ST-SUP-RC01-OC12).
+// manifest states it (ST-SUP-RC01-OC12). droppable marks the clear column of an open seal, which the manifest names
+// as droppable, because the release goes on after the contract step drops it (ST-SUP-RP15-LC05).
 type columnModel struct {
 	name, typ, defaultClause, manifestDefault string
-	notNull                                   bool
+	notNull, droppable                        bool
 }
 
 // checkModel is one CHECK constraint: its name, its expression, and its definition as pg_get_constraintdef

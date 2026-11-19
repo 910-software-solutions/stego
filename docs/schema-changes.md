@@ -738,6 +738,23 @@ value at once. A require has no sync trigger and no backfill. Its contract
 step makes the column NOT NULL in short steps (a CHECK `NOT VALID`, its
 validation, `SET NOT NULL`, the drop of the CHECK) and keeps the default.
 
+A require also breaks the writes of an old client, as a retype does, while
+the two releases run:
+
+- The new release requires the field in its OpenAPI contract. Thus it
+  refuses with 400 a create from a client that does not send the field.
+- The old release does not know the field. Thus it drops the field from a
+  request that holds it, and each row that it creates gets the fill value.
+  In walkthrough 15, a new client sent `contents` in each create of a
+  Parcel, and the 15 parcels that the old release created hold `unknown`,
+  the fill value of `parcel-contents-require`.
+
+Before the rollout, change each client so that it sends the field only to
+the new release, and so that it sends the field in each create there. Or
+move the clients only after the old release stops. After the rollout, find
+the rows that hold the fill value, and correct the ones whose value is not
+correct.
+
 A retype whose conversion is not total declares its fill value with its
 expand step. A later release cannot add or change it, because the expand
 step holds it and its ledger digest covers it: the check against the base

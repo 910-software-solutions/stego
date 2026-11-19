@@ -534,22 +534,48 @@ value.
 
 A command fill and a worker fill get a repository for each entity in
 `writes`, such as `commands.WalletRepository(h)` or
-`workers.WalletRepository(h)`. A repository has these methods:
+`workers.WalletRepository(h)`.
+
+Two kinds of entity have repositories of different forms:
+
+- A child entity has no resource type of its own and a reference to an
+  entity with one, such as a line item under an order. Its rows have no
+  permissions of their own: each locked read, update and delete decides on
+  the row of its parent, so each of these takes the loaded parent row.
+- Each other entity has its own resource type, also when it has a reference
+  to another entity, such as a Parcel under a Shipment. Its rows have their
+  own permissions, so its locked reads, update and delete take no parent.
+
+The repository of an entity with its own resource type is the generated type
+`<Entity>Repo`, such as `commands.WalletRepo`. It has these methods:
 
 | Method | What it does | The decision that it makes |
 |---|---|---|
 | `Get(ctx, id)` | Reads the row with no lock. | The read permission of the entity (`permissions.read`), for the caller of a command; the permission of the worker, for a worker. |
-| `GetForUpdate(ctx, id, parent...)` | Reads the row and locks it with `FOR NO KEY UPDATE` until the transaction ends. | The read permission, then the declared `permission` of the command on the row. A worker decides its own permission. |
-| `GetForDelete(ctx, id, parent...)` | As `GetForUpdate`, with `FOR UPDATE`. Use it before a delete, or before a change of a key column. | As `GetForUpdate`. |
-| `Create(ctx, value, parent...)` | Inserts a row, writes its audit row and, in a service with change events, stages its event. | For each reference of the row: the `permission` that the reference declares, else the permission of the command, on the referenced row. A command create of a row with no parent is covered by the decision before the fill. A worker create of a row with no parent is decided on the tenant resource. |
-| `Update(ctx, from, value, parent...)` | Writes the value over the loaded row `from`, only while the row still has the version of `from`. | The permission of the command on the row, or of the worker. |
-| `Delete(ctx, from, parent...)` | Deletes the loaded row `from`, with the same version check. | As `Update`. |
+| `GetForUpdate(ctx, id)` | Reads the row and locks it with `FOR NO KEY UPDATE` until the transaction ends. | The read permission, then the declared `permission` of the command on the row. A worker decides its own permission. |
+| `GetForDelete(ctx, id)` | As `GetForUpdate`, with `FOR UPDATE`. Use it before a delete, or before a change of a key column. | As `GetForUpdate`. |
+| `Create(ctx, value, parent...)` | Inserts a row, writes its audit row and, in a service with change events, stages its event. `parent` is the loaded row of each reference of the new row. | For each reference of the row: the `permission` that the reference declares, else the permission of the command, on the referenced row. A command create of a row with no reference is covered by the decision before the fill. A worker create of a row with no reference is decided on the tenant resource. |
+| `Update(ctx, from, value)` | Writes the value over the loaded row `from`, only while the row still has the version of `from`. The value keeps each reference of the row. | The permission of the command on the row, or of the worker. |
+| `Move(ctx, from, value, parent...)` | As `Update`, for a value that changes a reference. `parent` is the loaded row that each changed reference names. Only an entity with a reference has it. | As `Update`, and for each changed reference the decision of `Create` on its new row. |
+| `Delete(ctx, from)` | Deletes the loaded row `from`, with the same version check. | As `Update`. |
 | `List(ctx, list, limit, args...)` | Reads the rows of a declared list, at most `limit`, with no lock. | Keeps only the rows on which the caller has the list permission of the entity (else its read permission), or the worker its permission. |
-| `ListForUpdate(ctx, list, parent, args...)` | Reads the rows of a declared list with `lock: true`, and locks the allowed rows. | As `List`. |
+| `ListForUpdate(ctx, list, nil, args...)` | Reads the rows of a declared list with `lock: true`, and locks the allowed rows. The parent is `nil`. | As `List`. |
 
-`parent` is the loaded row of the parent of a child entity, which the fill read
-through its own handle, such as `updated` in the create of a transaction
-above. An entity with no parent takes no `parent`.
+The repository of a child entity is `*command.Repository[<Entity>]`. Its
+`GetForUpdate(ctx, id, parent)`, `GetForDelete(ctx, id, parent)`,
+`Create(ctx, value, parent)`, `Update(ctx, from, value, parent)`,
+`Delete(ctx, from, parent)` and `ListForUpdate(ctx, list, parent, args...)`
+take the loaded row of the parent, which the fill read through its own
+handle, such as `updated` in the create of a transaction above. The
+decisions are those of the table, on the row of the parent. An entity with
+no resource type and no reference also has the repository
+`*command.Repository[<Entity>]`, and each of its methods takes no parent: pass
+none.
+
+A parent that the repository does not take does not compile: `go build` and
+`stego test` give `too many arguments in call to parcels.Update`. For an
+update that keeps the references of the row, give no parent. For an update
+that changes a reference, call `Move` with the new referenced row.
 
 Each read of a row decides a permission. This is also true for a row other
 than the resource member of the command. In the example, the `transfer` fill

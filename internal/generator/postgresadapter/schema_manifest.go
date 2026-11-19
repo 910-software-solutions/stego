@@ -198,11 +198,16 @@ func manifestSource(models []tableModel, key string, optional map[string][]syncT
 		fmt.Fprintf(&b, "{Schema: %q, Name: %q, Entity: true,\n", "public", table.name)
 		b.WriteString("Columns: []manifest.Column{\n")
 		for _, column := range table.columns {
+			droppable := ""
+			if column.droppable {
+				// A start on a database without it alerts and is ready (ST-SUP-RC01-OC12, ST-SUP-RP15-LC05).
+				droppable = ", Droppable: true"
+			}
 			if column.manifestDefault != "" {
-				fmt.Fprintf(&b, "{Name: %q, Type: %q, NotNull: %t, Default: %q},\n", column.name, column.typ, column.notNull, column.manifestDefault)
+				fmt.Fprintf(&b, "{Name: %q, Type: %q, NotNull: %t, Default: %q%s},\n", column.name, column.typ, column.notNull, column.manifestDefault, droppable)
 				continue
 			}
-			fmt.Fprintf(&b, "{Name: %q, Type: %q, NotNull: %t},\n", column.name, column.typ, column.notNull)
+			fmt.Fprintf(&b, "{Name: %q, Type: %q, NotNull: %t%s},\n", column.name, column.typ, column.notNull, droppable)
 		}
 		b.WriteString("},\nConstraints: []manifest.Constraint{\n")
 		fmt.Fprintf(&b, "{Name: %q, Kind: manifest.KindPrimaryKey, Definition: %q},\n", primaryName(table.name),
