@@ -741,6 +741,29 @@ parameter, such as `limit` or `PageSize`, and the detail names the parameter
 of the next request. A cursor is valid only for the same list, tenant and
 caller. Another cursor gives 400.
 
+## Commands and queries in the OpenAPI document
+
+From rest-api 4.17.0, the OpenAPI document of the service
+(`out/internal/api/openapi.json`, also served at its discovery route) holds
+each command and each get or list query that the service serves over HTTP, at
+its route. Its operationId is the name in lower camel case, such as
+`dischargePatient`. A command has its path parameters, the required header
+`Idempotency-Key`, the request and the response message in their protobuf
+JSON form, and a response for each refusal. A list query has `cursor` and
+`limit`. A stream query is served over gRPC only, so it is not in the
+document.
+
+The protobuf JSON form names each member in lower camel case, such as
+`closedRecords`, and gives a 64-bit integer as a string. A request can give a
+member by either name, such as `insurance_number` or `insuranceNumber`. Thus
+the request validation of the document does not check the body of a command;
+the command runtime decodes it.
+
+The generated clients come from this document. Bind the mixin `go-sdk` for a
+Go client (`out/sdk`) and the mixin `cli-application` for a CLI
+(`out/cli/cmd`), with `mixins: [go-sdk, cli-application]`. See the READMEs of [go-sdk](../registry/components/go-sdk/README.md) and
+[cli-application](../registry/components/cli-application/README.md).
+
 ## Declare a worker
 
 <!-- excerpt -->
@@ -1224,7 +1247,7 @@ decided with the grant. A wait that stays pending for the whole wait cap
 writes the warn line `authz.revocation.pending_past_cap`: check that the
 worker mode, which runs the relay, runs.
 
-### Release notes for runtime v0.140.0
+### Release notes for runtime v0.148.0
 
 - A worker can declare `reads: [Entity]`. Its fill gets a read-only
   repository `<Entity>Reader`, of the new type `command.Reader`, with `Get` and

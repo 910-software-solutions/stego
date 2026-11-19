@@ -47,9 +47,17 @@ func sourceNames(config map[string]any) (string, []string, error) {
 	return root, names, nil
 }
 func InputFiles(config map[string]any) ([]string, error) {
+	if _, set := config["document"]; !set {
+		// With no document, the client is made from the service's own document, which no file holds
+		// (ST-SUP-RC06-OC09); Load refuses when the compiler gives none.
+		return nil, nil
+	}
 	_, names, err := sourceNames(config)
 	return names, err
 }
+
+// serviceDocument is the name under which Load reads the service's own OpenAPI document (gen.Context.ServiceOpenAPI).
+const serviceDocument = "openapi.json"
 
 // Check syntax before the OpenAPI loader. YAML aliases and duplicate keys must
 // not change the meaning of a captured contract.
@@ -85,7 +93,9 @@ func checkDocument(data []byte) error {
 				}
 				seen[key.Value] = true
 				if strings.HasPrefix(strings.ToLower(key.Value), "x-") {
-					if key.Value != "x-sensitive" || value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
+					// x-stego-command marks the operation of a command in the document of the rest-api component
+					// (ST-SUP-RC20-OC53).
+					if (key.Value != "x-sensitive" && key.Value != "x-stego-command") || value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
 						return fmt.Errorf("unsupported OpenAPI extension")
 					}
 					// All body fields are excluded from diagnostics, including sensitive fields.
@@ -108,13 +118,20 @@ func checkDocument(data []byte) error {
 	return visit(&root, 0)
 }
 func Load(ctx gen.Context) (*openapi3.T, error) {
-	root, names, err := sourceNames(ctx.ComponentConfig)
-	if err != nil {
+	inputs := ctx.Inputs
+	root, names, err := "", []string(nil), error(nil)
+	if _, set := ctx.ComponentConfig["document"]; !set {
+		// The service's own document, which the rest-api component emits in the same generation (ST-SUP-RC06-OC09).
+		if ctx.ServiceOpenAPI == nil {
+			return nil, fmt.Errorf("SDK requires the setting document, or the rest-api component, whose OpenAPI document of the service the client is then made from")
+		}
+		root, names, inputs = serviceDocument, []string{serviceDocument}, map[string][]byte{serviceDocument: ctx.ServiceOpenAPI}
+	} else if root, names, err = sourceNames(ctx.ComponentConfig); err != nil {
 		return nil, err
 	}
 	sources := map[string][]byte{}
 	for _, name := range names {
-		data, present := ctx.Inputs[name]
+		data, present := inputs[name]
 		if !present {
 			return nil, fmt.Errorf("missing captured OpenAPI source %q", name)
 		}

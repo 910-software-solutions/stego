@@ -55,7 +55,7 @@ func NewValidationMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			if route.Operation == nil || route.Operation.RequestBody == nil {
+			if route.Operation == nil || route.Operation.RequestBody == nil || route.Operation.Extensions["x-stego-command"] != nil {
 				next.ServeHTTP(w, r)
 				return
 			}

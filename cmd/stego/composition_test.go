@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -69,6 +70,48 @@ func TestDeclareComposition(t *testing.T) {
 		fault := refusedFault(t, td02+"modes: [api, batch]\n", "modes[1]")
 		if fault.Found != "batch" || !slices.Equal(fault.Allowed, []string{"api", "worker", "controller"}) || !strings.Contains(fault.Message, `"batch"`) {
 			t.Errorf("want a fault that names batch and allows api, worker and controller, got %+v", fault)
+		}
+	})
+
+	t.Run("ST-DECL-UC09-R07-T01 A service selects its generated clients by their mixins, and a client mixin that the archetype does not list is refused", func(t *testing.T) {
+		project := td02Project(t, td02+"mixins: [go-sdk, cli-application]\n")
+		document, run := validateJSON(t, project)
+		if run.code != 0 || !document.Accepted || len(document.Faults) != 0 {
+			t.Fatalf("the client mixins were refused: exit %d\n%s%s", run.code, run.stdout, run.stderr)
+		}
+		if apply := stegoIn(t, project, nil, "apply"); apply.code != 0 {
+			t.Fatalf("stego apply of the client mixins: %s%s", apply.stdout, apply.stderr)
+		}
+		for _, name := range []string{"out/sdk/api.go", "out/cli/app/commands.go", "out/cli/cmd/main.go"} {
+			if _, err := os.Stat(filepath.Join(project, name)); err != nil {
+				t.Errorf("the generated client file %s is not there: %v", name, err)
+			}
+		}
+		// The settings of a client are accepted under overrides only with its mixin.
+		if !strings.Contains(td02, "\noverrides:\n") {
+			t.Fatal("ST-DECL-TD02 has no overrides")
+		}
+		refused := stegoIn(t, td02Project(t, strings.Replace(td02, "\noverrides:\n", "\noverrides:\n  go-sdk: {document: api.yaml}\n", 1)), nil, "validate")
+		if refused.code == 0 || !strings.Contains(refused.stdout+refused.stderr, "overrides.go-sdk") {
+			t.Errorf("overrides.go-sdk with no mixin was accepted: %s%s", refused.stdout, refused.stderr)
+		}
+		// A registry whose rest-crud does not list go-sdk refuses the mixin and names the mixins that it lists.
+		source, _ := declaringRegistry(t)
+		registry := filepath.Join(t.TempDir(), "registry")
+		if output, err := exec.Command("cp", "-R", source, registry).CombinedOutput(); err != nil {
+			t.Fatalf("copy the registry: %v\n%s", err, output)
+		}
+		archetype := filepath.Join(registry, "archetypes", "rest-crud", "archetype.yaml")
+		data, err := os.ReadFile(archetype)
+		if err != nil || !strings.Contains(string(data), "\n  - go-sdk\n") {
+			t.Fatalf("the rest-crud archetype does not list go-sdk: %v", err)
+		}
+		if err := os.WriteFile(archetype, []byte(strings.Replace(string(data), "\n  - go-sdk\n", "\n", 1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		other := stegoIn(t, td02Project(t, td02+"mixins: [go-sdk]\n"), []string{"STEGO_REGISTRY=" + registry}, "validate")
+		if text := other.stdout + other.stderr; other.code == 0 || !strings.Contains(text, `mixin "go-sdk" is not compatible`) || !strings.Contains(text, "cli-application") {
+			t.Errorf("a client mixin that the archetype does not list was not refused with the mixins it lists: %s", text)
 		}
 	})
 
