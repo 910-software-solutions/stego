@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jsell-rh/stego/registry/runtime/idempotency"
 	"github.com/jsell-rh/stego/registry/runtime/lease"
 	"github.com/jsell-rh/stego/registry/runtime/sealed"
@@ -405,6 +406,38 @@ func TestSealContract(t *testing.T) {
 			t.Fatalf("a new process of the release reads %v after the contract", err)
 		}
 		n.noSecretOutside(secret)
+	})
+
+	t.Run("ST-SUP-RP10-LC49-T03 A call that began before another call switched the entity, and then fails with an undefined column, runs again with the statements after the contract", func(t *testing.T) {
+		n := newNoteEnv(t)
+		undefined := &pgconn.PgError{Code: undefinedColumn}
+		// The clear column is there: an undefined column of another cause switches nothing.
+		if n.notes.switchAfterSeal(n.ctx, n.pool, undefined, sealSwitches.Load()) || n.notes.contracted.Load() {
+			t.Fatal("an undefined column while the clear column is there switches the entity")
+		}
+		began := sealSwitches.Load()
+		n.exec(`ALTER TABLE notes DROP COLUMN body`)
+		// One call switches the entity.
+		if !n.notes.switchAfterSeal(n.ctx, n.pool, undefined, sealSwitches.Load()) || !n.notes.contracted.Load() {
+			t.Fatal("the first undefined column after the contract does not switch the entity")
+		}
+		// A call that began before that switch ran a statement before the contract: the same conflict, which Run runs
+		// again once (security review of PR #452, L2).
+		if !n.notes.switchAfterSeal(n.ctx, n.pool, undefined, began) {
+			t.Fatal("a call that began before the switch and failed with an undefined column is not the conflict of the switch")
+		}
+		state := &state{rt: n.rt, sealSwitches: began}
+		if err := state.failOf(n.ctx, n.notes, "read Note", undefined); !sealSwitched(err) {
+			t.Fatalf("failOf of a call that began before the switch gives %v, want the conflict of the switch", err)
+		}
+		// A call that began after the switch ran the statements after the contract: its undefined column is its own
+		// failure, and another error is never the switch.
+		if n.notes.switchAfterSeal(n.ctx, n.pool, undefined, sealSwitches.Load()) {
+			t.Fatal("a call that began after the switch takes its undefined column as the switch")
+		}
+		if n.notes.switchAfterSeal(n.ctx, n.pool, &pgconn.PgError{Code: "23505"}, began) {
+			t.Fatal("another SQLSTATE is the switch")
+		}
 	})
 
 	t.Run("ST-SUP-RP10-LC50-T02 The seal job has no work after the contract step and fails with the remedy when its lease row is missing", func(t *testing.T) {

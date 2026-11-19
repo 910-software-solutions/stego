@@ -557,6 +557,8 @@ type Entity[T any] struct {
 	// contracted is set once the contract step of the open seals of the entity dropped their clear columns: the
 	// statements, the scan and the values of AfterSeal then run (ST-SUP-RP10-LC49).
 	contracted atomic.Bool
+	// switchedAt is the count of sealSwitches at the switch of the entity.
+	switchedAt atomic.Int64
 	// owner is the runtime that registered the entity in its Config.Entities; an entity registers with one runtime
 	// only.
 	owner *Runtime
@@ -1539,6 +1541,10 @@ type state struct {
 	// notGranted is set when a statement failed with SQLSTATE 42501: the role of the transaction lacks a privilege,
 	// which a dispatch again does not change (decision on ST-SUP-Q141).
 	notGranted bool
+	// sealSwitches is the count of the switches of entities to their statements after a seal contract when the
+	// attempt began: a statement of an entity that switched later can still be one of the statements before the
+	// contract (ST-SUP-RP10-LC49; security review of PR #452, L2).
+	sealSwitches int64
 	// logged is set when a log line of ST-SUP-RP10-LC39 named the cause of the call's failure: a failed statement, or
 	// an internal error that breakWith logged. Run then writes no command.fill.failed line (ST-SUP-RP10-LC51).
 	logged bool

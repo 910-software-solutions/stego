@@ -939,7 +939,8 @@ var errDeadline = &conflictError{text: "the run reached its deadline before the 
 func newState(ctx context.Context, rt *Runtime, tx *sql.Tx, t tenant.Tenant, p authz.Principal, m mode, action string,
 	writes map[Declared]bool, destinations map[string]Destination) *state {
 	s := &state{rt: rt, tx: tx, tenant: t, principal: p, mode: m, action: action, writes: writes,
-		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{}}
+		destinations: destinations, stagedK: map[string]bool{}, written: map[rowKey]int64{}, changes: map[string]int{},
+		sealSwitches: sealSwitches.Load()}
 	if deadline, ok := ctx.Deadline(); ok {
 		s.deadline = deadline
 	}

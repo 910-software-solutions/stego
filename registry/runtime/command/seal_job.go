@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jsell-rh/stego/registry/runtime/lease"
@@ -93,8 +94,8 @@ func (s *Sealing) resolve(ctx context.Context, ring *sealed.Ring, at sealed.Plac
 // the generated statements, scan and values with the sealed column alone of each readable secret whose seal step is
 // open, which the runtime takes once the contract has dropped the clear columns, so a process of the release of the
 // expand step goes on after the contract (walkthrough 14, W14-B6). Table is the table of the entity with its schema,
-// such as public.patients, and Clear the clear columns that the contract steps drop. The statements take the
-// parameters of EntitySpec's statements of the same names.
+// each name quoted, such as public."patients", and Clear the clear columns that the contract steps drop. The
+// statements take the parameters of EntitySpec's statements of the same names.
 type AfterSeal[T any] struct {
 	Table string
 	Clear []string
@@ -165,8 +166,13 @@ const undefinedColumn = "42703"
 
 // sealSwitch is an entity whose statements can move to those after the contract step of its open seals.
 type sealSwitch interface {
-	switchAfterSeal(ctx context.Context, db *sql.DB, err error) bool
+	switchAfterSeal(ctx context.Context, db *sql.DB, err error, began int64) bool
 }
+
+// sealSwitches counts the switches of every entity of the process to its statements after a seal contract, and each
+// entity keeps the count at its own switch, so an attempt that began before it can tell its statements from those
+// after the contract.
+var sealSwitches atomic.Int64
 
 // switchAfterSeal takes the statements of AfterSeal from now on, and reports true, when err of a statement of the
 // entity is SQLSTATE 42703 and the catalog shows that each clear column of AfterSeal is gone from its table, which is
@@ -174,10 +180,18 @@ type sealSwitch interface {
 // that already took them, and a catalog that still shows a clear column or that it cannot read: an undefined column
 // of another cause keeps the statements, so no write of the seal goes to the sealed column alone while a release
 // before reads the clear column. The first switch of an entity logs it once, with no value.
-func (e *Entity[T]) switchAfterSeal(ctx context.Context, db *sql.DB, err error) bool {
+func (e *Entity[T]) switchAfterSeal(ctx context.Context, db *sql.DB, err error, began int64) bool {
 	a := e.spec.AfterSeal
-	if a == nil || db == nil || e.contracted.Load() || sqlState(err) != undefinedColumn {
+	if a == nil || db == nil || sqlState(err) != undefinedColumn {
 		return false
+	}
+	// A call that began before another call switched the entity ran a statement before the contract: it is the
+	// same conflict, which Run runs again once with the statements after the contract (security review of PR #452,
+	// L2). A call that began after the switch ran the statements after the contract, and its error is its own.
+	if e.contracted.Load() {
+		// Zero is a switch that has not stored its count yet.
+		at := e.switchedAt.Load()
+		return at == 0 || at > began
 	}
 	// The transaction of the statement failed, so the check reads the catalog on the pool, in a short time of its own.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), catalogWait)
@@ -189,6 +203,7 @@ func (e *Entity[T]) switchAfterSeal(ctx context.Context, db *sql.DB, err error) 
 		}
 	}
 	if e.contracted.CompareAndSwap(false, true) {
+		e.switchedAt.Store(sealSwitches.Add(1))
 		slog.InfoContext(ctx, "command: the contract step of a seal dropped the clear columns; the entity reads and writes its sealed columns alone",
 			"entity", e.spec.Name, "table", a.Table)
 	}
@@ -213,7 +228,7 @@ func sealSwitched(err error) bool {
 // failOf is fail for a statement of the entity e: when the contract step of an open seal of e dropped its clear
 // columns (switchAfterSeal), the call is a conflict that Run runs again with the statements after the contract.
 func (s *state) failOf(ctx context.Context, e sealSwitch, step string, err error) error {
-	if e != nil && e.switchAfterSeal(ctx, s.rt.cfg.DB, err) {
+	if e != nil && e.switchAfterSeal(ctx, s.rt.cfg.DB, err, s.sealSwitches) {
 		if s.conflict == nil {
 			s.conflict = &conflictError{text: step + " ran before the entity took its statements after the seal contract", sealSwitch: true}
 		}

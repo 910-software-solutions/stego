@@ -536,9 +536,13 @@ restore a backup from before the contract step of a seal, or from before its
 expand step, the database goes back to that schema, and a later release must
 take it through the steps again:
 
-1. Restore the backup, as [Restore from a
-   backup](operations.md#restore-from-a-backup) tells, and keep the
-   Deployments stopped.
+1. Stop every process of every release of the service first, also of the
+   release of the expand step, and start only the new processes that the
+   next steps name. A process of the release of the expand step that ran
+   after the contract reads and writes the sealed column alone until it
+   stops, so on the restored database it would leave the clear value of a
+   row older than its sealed value. Then restore the backup, as [Restore from
+   a backup](operations.md#restore-from-a-backup) tells.
 2. Run the migration Job of the release that runs now. When the backup is from
    before the contract step of a seal, the Job applies the steps up to that
    contract step, makes the seal checkpoint and the lease of the seal job, and

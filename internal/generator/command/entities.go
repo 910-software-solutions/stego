@@ -501,7 +501,7 @@ func renderAfterSeal(w *writer, e *entity, tenantKey string) {
 		clearColumns = append(clearColumns, fmt.Sprintf("%q", column))
 	}
 	w.f("\t// The statements after the contract step of each open seal, which the runtime takes once the contract has\n\t// dropped the clear columns (ST-SUP-RP10-LC49).\n")
-	w.f("\tAfterSeal: &command.AfterSeal[%s]{\n\t\tTable: %q,\n\t\tClear: []string{%s},\n", e.goName, "public."+e.table, strings.Join(clearColumns, ", "))
+	w.f("\tAfterSeal: &command.AfterSeal[%s]{\n\t\tTable: %q,\n\t\tClear: []string{%s},\n", e.goName, "public."+quote(e.table), strings.Join(clearColumns, ", "))
 	w.f("\t\tSelect: %q,\n\t\tSelectForUpdate: %q,\n\t\tSelectForDelete: %q,\n\t\tInsert: %q,\n\t\tUpdate: %q,\n", selectRow, forUpdate, forDelete, insert, update)
 	renderScanValues(w, after, "\t\t")
 	w.f("\t},\n")
