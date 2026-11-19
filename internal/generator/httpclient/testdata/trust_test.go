@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -120,6 +121,71 @@ func TestServiceTLSAlert(t *testing.T) {
 		}
 		if sent != 0 {
 			t.Errorf("the service handled %d requests in a refused TLS session, want none", sent)
+		}
+	})
+}
+
+// alertText is the error of a TLS alert, as crypto/tls gives it in a net.OpError with the Op "remote error".
+type alertText string
+
+func (a alertText) Error() string { return string(a) }
+
+// alertConn is a connection that, once its alert is set, gives the remote alert text in place of each read.
+type alertConn struct {
+	net.Conn
+	alert *atomic.Value
+}
+
+func (c alertConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if text, _ := c.alert.Load().(string); text != "" {
+		return 0, &net.OpError{Op: "remote error", Err: alertText(text)}
+	}
+	return n, err
+}
+
+func TestServiceTLSAlertReused(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC31-T05 A TLS alert on a reused connection, or one that is not a handshake or certificate alert, is ErrTransport", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		defer server.Close()
+		// The client dials the plain server through alertConn, which it takes as a TLS connection, so the test sets
+		// the alert that the service sends.
+		client := func(alert *atomic.Value) *Client {
+			c, err := New(Options{BaseURL: strings.Replace(server.URL, "http:", "https:", 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+				conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+				return alertConn{Conn: conn, alert: alert}, err
+			}
+			return c
+		}
+		post := func(c *Client) error {
+			_, err := c.Do(context.Background(), http.MethodPost, "/records", nil, []byte(`{}`))
+			return err
+		}
+		for _, alert := range []string{"tls: certificate required", "tls: bad record MAC", "tls: internal error"} {
+			var value atomic.Value
+			c := client(&value)
+			if err := post(c); err != nil {
+				t.Fatalf("the first request: %v", err)
+			}
+			value.Store(alert)
+			if err := post(c); !errors.Is(err, ErrTransport) || errors.Is(err, ErrUntrusted) {
+				t.Errorf("the alert %q on a reused connection gives %v, want ErrTransport", alert, err)
+			}
+			c.Close()
+		}
+		for alert, want := range map[string]error{"tls: certificate required": ErrUntrusted, "tls: handshake failure": ErrUntrusted,
+			"tls: bad record MAC": ErrTransport, "tls: internal error": ErrTransport} {
+			var value atomic.Value
+			value.Store(alert)
+			c := client(&value)
+			if err := post(c); !errors.Is(err, want) {
+				t.Errorf("the alert %q on a new connection gives %v, want %v", alert, err, want)
+			}
+			c.Close()
 		}
 	})
 }

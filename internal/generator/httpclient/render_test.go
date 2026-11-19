@@ -105,6 +105,12 @@ func TestServiceTLSAlert(t *testing.T) {
 	})
 }
 
+func TestServiceTLSAlertReused(t *testing.T) {
+	t.Run("ST-SUP-RC04-OC31-T05 A TLS alert on a reused connection, or one that is not a handshake or certificate alert, is ErrTransport, so the CLI does not tell a write not done", func(t *testing.T) {
+		runTrustTest(t, "TestServiceTLSAlertReused")
+	})
+}
+
 // runTrustTest runs the test name of testdata/trust_test.go in a module that holds the client of RenderCLI.
 func runTrustTest(t *testing.T, name string) {
 	t.Helper()
