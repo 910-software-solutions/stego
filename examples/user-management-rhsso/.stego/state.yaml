@@ -34,21 +34,21 @@ last_applied:
         go_version: go1.26.11
         goos: linux
         goarch: amd64
-        module_version: v0.0.0-20261119060635-940dd8af2ff1
+        module_version: v0.0.0-20261119062743-069864f89fc1
         vcs: git
-        revision: 940dd8af2ff169a540c42a38ba4ee71d8931b135
+        revision: 069864f89fc1bb523708439b17400c0f4dd4850d
         source_state: clean
     service_name: user-management
     service_hash: 59eb019ac9584302b5674f2fe6b6da7392c364b74e7d578e3e55c98f7eb227ca
     registry_sha: env-override
-    registry_content_sha256: 9b115ebcbb68ba1da4ba0328cbe57ce756c335f7b08598b9bd6b4306500983f4
+    registry_content_sha256: ee54491ab394ae8dc3fb74294ec5c634f308112f1340d9b3a59460e57ed75e4f
     components:
         audit-log:
             version: 1.2.0
             sha: 39bb7d80ebafdd90d980dd5316a791f587ae889f7d956d0a132ff5daf4b8ca55
         command:
-            version: 1.14.0
-            sha: c1db90964ac97c4bb838e879febad28c3007637f9b18905788b518f07d324824
+            version: 1.16.0
+            sha: 95a02284f7a79f006579d6f35ce033ecc9d50740e107c0f6d1995eb0dacbb213
         domain-probe:
             version: 1.0.1
             sha: 64c9d9bdc36f4cf2bb4e37e005941cb4386f19319f438db8765161a0bc429458
@@ -71,8 +71,8 @@ last_applied:
             version: 1.7.0
             sha: 925bad91109be661d7ba9d61098eb052722f4b3b7c147e24ef23318fee9234a8
         rest-api:
-            version: 4.20.0
-            sha: d7acac6f98bd54290daa6aac6ad4f5c1abc2cf7957dbaf07a99cf1d8415bc733
+            version: 4.22.0
+            sha: cc6036a689d1292e93f54697fbc9a97021943521fb589d4d416f31855e30fb3a
         rh-sso-auth:
             version: 2.2.0
             sha: b30e541e47e930936ebfbac00e4b49afc51445c0ee29d067e9622f5959749a3e
@@ -195,8 +195,8 @@ last_applied:
         tracing/startup.go: ba2cc8272fddb2c9c18cf10199b7ffe3df430ea88f3d02a6902e00908d154160
     project_files:
         Containerfile: aa9ad80a168a8bcb17c69b33ac8adc1d2de4513b4f3fb7572b0da6a809e00564
-        architecture/architecture.json: 11cb3b47cf2d22ac41159b87ebcdc20a70473f462dd53a00e70a4c693924579c
-        architecture/index.html: ca039382e4e9abb74e380abb569513c4de44cb42458bd745d3e1c2a40a37d4c0
+        architecture/architecture.json: e0128c07b4ff068cd4826abacb96e162ab5a60e911f9005d736225020b126e82
+        architecture/index.html: c35153e0f94cf6be9c79305daa75b5c8bb8e4e317231f13e300cf52e81e993da
         deploy/base/deployment.yaml: 87dc5f8a718f0b15b484fd183b6eacc61f0f3b55a0e1cca36acd7c482f4ed0c7
         deploy/base/kustomization.yaml: 5b4c08fa7e27b8ccbfbb762e65ad27c7090cfd84ae97801034913ad3fe7a7147
         deploy/base/migration-job.yaml: d112a195c8a66a508cef8db079031de125ce92a00eb5c7573146d55f13600025
