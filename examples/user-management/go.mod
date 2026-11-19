@@ -6,7 +6,7 @@ go 1.26.11
 
 require (
 	github.com/authzed/authzed-go v1.11.0
-	github.com/getkin/kin-openapi v0.150.0
+	github.com/getkin/kin-openapi v0.149.0
 	github.com/google/uuid v1.6.0
 )
 
