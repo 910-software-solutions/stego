@@ -525,9 +525,9 @@ func generatedBaselines(applied *AppliedState, base, head *types.ServiceDeclarat
 				return nil, "", nil
 			}
 		}
-		return postgresadapter.Baseline(gen.Context{Entities: entities, Collections: service.Collections,
+		return postgresadapter.Baseline(gen.Context{Entities: entities, Collections: gen.StoredCollections(service.Collections, service.SchemaChanges),
 			SchemaChanges: service.SchemaChanges, SchemaHistory: service.SchemaHistory, Tenancy: pooledTenancy(service, components),
-			DroppedEntities: dropped, DroppedCollections: service.DroppedCollections, EntityOrder: service.EntityOrder, CollectionOrder: service.CollectionOrder})
+			DroppedEntities: dropped, DroppedCollections: gen.StoredCollections(service.DroppedCollections, service.SchemaChanges), EntityOrder: service.EntityOrder, CollectionOrder: service.CollectionOrder})
 	}
 	out := &baselineOutput{headChanges: head.SchemaChanges}
 	var err error

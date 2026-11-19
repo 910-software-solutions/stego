@@ -1270,7 +1270,8 @@ func TestCrud(t *testing.T) {
 	t.Run("ST-SUP-RC20-OC35-T04 A tenant in a body field is not accepted", func(t *testing.T) {
 		e := service(t)
 		tenantRoutes(e, e.as("u-1", newTenant()), func(r *http.Request) {
-			if r.Body == nil || r.Method == http.MethodDelete || r.Method == http.MethodGet {
+			// A patch refuses each member that it does not take, a tenant too (ST-SUP-RC20-OC15-T03).
+			if r.Body == nil || r.Method == http.MethodDelete || r.Method == http.MethodGet || r.Method == http.MethodPatch {
 				return
 			}
 			data, err := io.ReadAll(r.Body)
@@ -3243,7 +3244,9 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		for name, body := range map[string]string{
 			"sku":   `{"title":"third","sku":"s2"}`,
-			"state": `{"title":"third","State":"closed"}`,
+			"state": `{"title":"third","state":"closed"}`,
+			// A member matches a field only in its exact letter case (ST-SUP-RC20-OC15).
+			"State": `{"title":"third","State":"open"}`,
 			"rank":  `{"title":"third","rank":1}`,
 			"meta":  `{"title":"third","meta":{}}`,
 		} {
@@ -3254,6 +3257,31 @@ SELECT $1, ('ffffffff-0000-4000-8000-' || lpad(g::text, 12, '0'))::uuid, 'red', 
 		}
 		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'second' AND sku = 's1' AND state = 'open' AND rank IS NULL AND meta IS NULL`, id); n != 1 {
 			t.Errorf("%d ticket rows as the first patch left them, want 1", n)
+		}
+	})
+
+	t.Run("ST-SUP-RC20-OC15-T03 A patch refuses a member that is not kind, a patchable field or a kept field, also in another letter case, and changes nothing", func(t *testing.T) {
+		e := service(t)
+		a := e.as("u-1", newTenant())
+		folder := e.create(a, "folders", "folder", `{"name":"one"}`)
+		id := e.create(a, "tickets", "ticket", `{"folder_id":"`+folder+`","code":"c1","title":"first","sku":"s1"}`)
+		path := "/api/v1/tickets/" + id
+		for member, body := range map[string]string{
+			"Title":     `{"Title":"value-of-the-member"}`,
+			"titel":     `{"titel":"value-of-the-member"}`,
+			"folder_id": `{"title":"second","folder_id":"value-of-the-member"}`,
+			"href":      `{"title":"second","href":"value-of-the-member"}`,
+		} {
+			r := e.send(a, http.MethodPatch, path, "k-"+uuid.NewString(), body)
+			if r.status != http.StatusBadRequest || !strings.Contains(string(r.body), `"field":"`+member+`"`) || strings.Contains(string(r.body), "value-of-the-member") {
+				t.Errorf("a patch %s answered %d %s, want 400 that names %s and holds no value", body, r.status, r.body, member)
+			}
+		}
+		if n := e.count(`SELECT count(*) FROM tickets WHERE id = $1::uuid AND title = 'first'`, id); n != 1 {
+			t.Errorf("%d ticket rows as the create left them, want 1", n)
+		}
+		if r := e.send(a, http.MethodPatch, path, "k-"+uuid.NewString(), `{"kind":"Ticket","title":"second"}`); r.status != http.StatusOK || r.member(t, "title") != "second" {
+			t.Errorf("a patch with kind and a patchable field answered %d %s, want 200 with the new title", r.status, r.body)
 		}
 	})
 

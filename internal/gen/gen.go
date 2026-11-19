@@ -534,17 +534,13 @@ func insertInOrder[T any](list []T, item T, order []string, name func(T) string)
 // API name of the field before its first rename and the column of its declared name (ST-GEN-UC12-R04): a rename
 // does not rename the field in the API, so every generator of an API, a client or a fill reads Name, and the
 // generators of the tables and the statements read ColumnName. A chain of renames on one entity, From of one being
-// Field of an earlier one, gives the first From. It refuses a rename of a field that something other than the field
-// names, by the declared name, because those names are not mapped yet: a reference field, a unique_composite, an
-// invariant, the scope, implicit fields, upsert key or patchable fields of a collection, the context fields or the
-// generation fields of the entity.
+// Field of an earlier one, gives the first From. The patchable fields of a collection name a renamed field by its
+// declared name too, and StoredCollections gives them its API name. It refuses a rename of a field that something
+// else names, by the declared name, because those names are not mapped yet: a reference field, a unique_composite,
+// an invariant, the scope, implicit fields or upsert key of a collection, the context fields or the generation fields
+// of the entity.
 func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, collections []types.Collection, changes []types.SchemaChange) ([]types.Entity, error) {
-	renamed := map[[2]string]string{}
-	for _, change := range changes {
-		if change.Kind == "rename" {
-			renamed[[2]string{change.Entity, change.Field}] = change.From
-		}
-	}
+	renamed := renames(changes)
 	retyped := map[[2]string]bool{}
 	for _, change := range changes {
 		if change.Kind == "retype" {
@@ -565,7 +561,7 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 				if ok {
 					return nil, fmt.Errorf("the entity %s: generation does not rename and retype the field %s both yet", entity.Name, field.Name)
 				}
-				if reason := namedElsewhere(entity, field.Name, invariants, collections); reason != "" {
+				if reason := namedElsewhere(entity, field.Name, invariants, collections, true); reason != "" {
 					return nil, fmt.Errorf("the entity %s: generation does not retype the field %s yet, because %s names it by its declared name; STEGO does not map that name to the column yet", entity.Name, field.Name, reason)
 				}
 				column := RetypeColumn(field.Name, field.Type)
@@ -578,14 +574,8 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 			if !ok {
 				continue
 			}
-			for steps := 0; steps <= len(changes); steps++ {
-				earlier, again := renamed[[2]string{entity.Name, from}]
-				if !again {
-					break
-				}
-				from = earlier
-			}
-			if reason := namedElsewhere(entity, field.Name, invariants, collections); reason != "" {
+			from = firstName(renamed, entity.Name, from)
+			if reason := namedElsewhere(entity, field.Name, invariants, collections, false); reason != "" {
 				return nil, fmt.Errorf("the entity %s: generation does not rename the field %s yet, because %s names it by its declared name; STEGO does not map that name to the column yet", entity.Name, field.Name, reason)
 			}
 			if slices.ContainsFunc(entities[i].Fields, func(f types.Field) bool { return f.Name == from }) {
@@ -596,6 +586,55 @@ func StoredNames(entities []types.Entity, invariants []types.DeclaredInvariant, 
 		out[i] = entity
 	}
 	return out, nil
+}
+
+// StoredCollections gives a copy of the collections in which each patchable field that a schema change of kind
+// rename names has its API name, the From of its first rename, as StoredNames gives the field (ST-GEN-UC12-R04): the
+// declaration names the field by its declared name, and every generator reads the API name, so the patch request
+// keeps the name of the release before.
+func StoredCollections(collections []types.Collection, changes []types.SchemaChange) []types.Collection {
+	renamed := renames(changes)
+	if len(renamed) == 0 || len(collections) == 0 {
+		return collections
+	}
+	out := slices.Clone(collections)
+	for i, collection := range out {
+		if len(collection.Patchable) == 0 {
+			continue
+		}
+		patchable := slices.Clone(collection.Patchable)
+		for j, field := range patchable {
+			if from, ok := renamed[[2]string{collection.Entity, field}]; ok {
+				patchable[j] = firstName(renamed, collection.Entity, from)
+			}
+		}
+		out[i].Patchable = patchable
+	}
+	return out
+}
+
+// renames gives the From of each schema change of kind rename, by its entity and its Field.
+func renames(changes []types.SchemaChange) map[[2]string]string {
+	renamed := map[[2]string]string{}
+	for _, change := range changes {
+		if change.Kind == "rename" {
+			renamed[[2]string{change.Entity, change.Field}] = change.From
+		}
+	}
+	return renamed
+}
+
+// firstName follows a chain of renames on the entity back from the name from, the From of a rename, to the From of
+// the first rename: the API name of the field. The number of steps is limited, so a cycle cannot loop.
+func firstName(renamed map[[2]string]string, entity, from string) string {
+	for steps := 0; steps <= len(renamed); steps++ {
+		earlier, again := renamed[[2]string{entity, from}]
+		if !again {
+			break
+		}
+		from = earlier
+	}
+	return from
 }
 
 // SealColumn gives the sealed column of a field that a seal moves out of the clear column column: <column>_sealed,
@@ -828,8 +867,9 @@ func RetypeField(change types.SchemaChange) types.Field {
 	return types.Field{Name: change.Field, Type: types.FieldType(change.From)}
 }
 
-// namedElsewhere tells what, other than the field itself, names the field of the entity, or empty.
-func namedElsewhere(entity types.Entity, field string, invariants []types.DeclaredInvariant, collections []types.Collection) string {
+// namedElsewhere tells what, other than the field itself, names the field of the entity, or empty. patchable tells
+// whether the patchable fields of a collection count: StoredCollections maps them for a rename.
+func namedElsewhere(entity types.Entity, field string, invariants []types.DeclaredInvariant, collections []types.Collection, patchable bool) string {
 	if _, ok := entity.References[field]; ok {
 		return "a reference"
 	}
@@ -855,7 +895,7 @@ func namedElsewhere(entity types.Entity, field string, invariants []types.Declar
 		}
 		_, scope := collection.Scope[field]
 		_, implicit := collection.Implicit[field]
-		if scope || implicit || slices.Contains(collection.UpsertKey, field) || slices.Contains(collection.Patchable, field) {
+		if scope || implicit || slices.Contains(collection.UpsertKey, field) || (patchable && slices.Contains(collection.Patchable, field)) {
 			return "the collection " + collection.Name
 		}
 	}

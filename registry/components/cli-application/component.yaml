@@ -5,6 +5,9 @@
 # It gives each secret request member, which has no flag, as a body field that --body FILE gives (ST-SUP-RC04-OC32).
 # Version 1.15.0 refuses --output-file - for a Sensitive command, and refuses a --body FILE that holds a secret body
 # field when the group or other users have access to it (security review of PR #460, I1 and L3).
+# Version 1.16.0 leaves out of the patch of apply each create-only field whose value is the stored one, and refuses
+# another value before any write, so an apply of the same documents again succeeds (ST-SUP-RC04-OC35). It gives no
+# flag for the member kind of a patch request or for a member marked x-kept, which a patch cannot change.
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -20,7 +23,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.15.0
+version: 1.16.0
 stage: ga
 output_namespace: cli
 config:

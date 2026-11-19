@@ -294,7 +294,7 @@ func checkSchema(s schema, models map[string]schema, depth int) error {
 	}
 	for key := range s {
 		switch key {
-		case "$ref", "type", "format", "nullable", "properties", "required", "items", "additionalProperties", "allOf", "oneOf", "anyOf", "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties", "readOnly", "writeOnly", "description", "title", "default", "example", "deprecated", "externalDocs", "xml", "x-sensitive":
+		case "$ref", "type", "format", "nullable", "properties", "required", "items", "additionalProperties", "allOf", "oneOf", "anyOf", "enum", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties", "readOnly", "writeOnly", "description", "title", "default", "example", "deprecated", "externalDocs", "xml", "x-sensitive", "x-kept":
 		default:
 			return fmt.Errorf("unsupported TypeScript schema keyword %q", key)
 		}
