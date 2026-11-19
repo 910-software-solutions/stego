@@ -206,6 +206,39 @@ func MessageDescriptors(ctx gen.Context) (map[string]protoreflect.MessageDescrip
 	return ms.descriptors, nil
 }
 
+// SecretMember tells whether the proto file marks the member f with the standard field option debug_redact = true,
+// which makes it a secret of the command message (ST-SUP-RC20-OC54, decision ST-SUP-Q192 (a)).
+func SecretMember(f protoreflect.FieldDescriptor) bool {
+	options, ok := f.Options().(*descriptorpb.FieldOptions)
+	return ok && options.GetDebugRedact()
+}
+
+// HoldsSecret tells whether the message m, or a message of one of its members at any depth, has a member that
+// SecretMember marks. A service with such a command message reads the key ring, which keys its idempotency
+// fingerprints and seals its stored answers (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12).
+func HoldsSecret(m protoreflect.MessageDescriptor) bool {
+	return holdsSecret(m, map[protoreflect.FullName]bool{})
+}
+
+func holdsSecret(m protoreflect.MessageDescriptor, seen map[protoreflect.FullName]bool) bool {
+	if seen[m.FullName()] {
+		return false
+	}
+	seen[m.FullName()] = true
+	fields := m.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		f := fields.Get(i)
+		if SecretMember(f) {
+			return true
+		}
+		// The message of a map member is its entry message, whose member value holds the value message.
+		if f.Message() != nil && holdsSecret(f.Message(), seen) {
+			return true
+		}
+	}
+	return false
+}
+
 // GoName gives the Go name of a declared command or query name, as the command and query contracts name it, such
 // as DischargePatient for discharge-patient.
 func GoName(name string) string { return mixedCase(name) }

@@ -15,6 +15,7 @@ import (
 	"text/template"
 
 	"github.com/jsell-rh/stego/internal/gen"
+	"github.com/jsell-rh/stego/internal/generator/command"
 	"github.com/jsell-rh/stego/internal/generator/spicedbauthz"
 	"github.com/jsell-rh/stego/internal/generator/tenancy"
 	"github.com/jsell-rh/stego/internal/registry"
@@ -154,6 +155,12 @@ func runtimeWiring(in runtimeWiringInput) ([]gen.File, ComponentWiring, error) {
 		}
 	}
 	data.Ring, data.Seals = sealing(svc)
+	if !data.Ring && len(svc.Commands) > 0 {
+		var err error
+		if data.Ring, err = commandSecrets(in.Contexts[commandComponent]); err != nil {
+			return nil, ComponentWiring{}, err
+		}
+	}
 	if slices.Contains(in.Names, idempotencyComponent) && svc.Idempotency != nil {
 		data.Idempotency = pkg(idempotencyComponent)
 	}
@@ -298,6 +305,25 @@ func sealing(svc *types.ServiceDeclaration) (ring bool, seals []string) {
 		}
 	}
 	return ring, seals
+}
+
+// commandSecrets tells whether a message of the proto files of the command component holds a member that the proto
+// marks debug_redact: the service then reads the key ring, which keys the fingerprints of its idempotency keys and
+// seals its stored answers, as for a secret field (ST-SUP-RC32-OC21, ST-SUP-RP14-LC12, decision ST-SUP-Q192 (a)).
+func commandSecrets(ctx gen.Context) (bool, error) {
+	if ctx.ComponentConfig == nil {
+		return false, nil
+	}
+	descriptors, err := command.MessageDescriptors(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range descriptors {
+		if command.HoldsSecret(m) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // renderRuntimeWiring renders the runtime wiring package.

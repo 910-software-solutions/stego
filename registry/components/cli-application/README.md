@@ -23,7 +23,17 @@ package `<out>/cli/app`:
   boolean or list of strings; give the other members in `--body FILE`;
 - no flag for a secret member, which the document marks `writeOnly` or
   `x-sensitive`, such as a PIN: a flag puts its value in the shell history and
-  the process list. Give it in `--body FILE`, a file that only you can read;
+  the process list. Give it in `--body FILE`, a file that only you can read.
+  A secret field of an entity is `writeOnly` in the document of its
+  collection. A member of a command message is a secret only when its proto
+  file marks it `[debug_redact = true]`: mark each secret member of a command
+  request and response, such as `string pin = 2 [debug_redact = true];`
+  (see [A secret member](../../../docs/commands-queries-workers.md#a-secret-member)).
+  `stego validate` warns of a request member with the name of a secret field
+  of an entity that the command writes and no mark
+  (`unmarked-secret-member`);
+- `Sensitive` for a command whose answer holds a member marked `x-sensitive`:
+  it writes the answer only to `--output-file FILE`;
 - `--yes` for each delete;
 - one `apply` resource for each collection with a create, a list and a patch
   that take a string `name`. The kind is the name of the entity.

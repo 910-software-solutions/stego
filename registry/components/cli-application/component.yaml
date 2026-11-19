@@ -1,5 +1,8 @@
 # Version 1.12.0 makes the definitions of the commands and the apply resources from the OpenAPI document of the
 # service when the declaration gives no factory_package (ST-SUP-RC04-OC32).
+# Version 1.13.0 makes a command Sensitive, so it writes its answer only to --output-file, when a success answer of
+# its operation holds a member marked x-sensitive (ST-SUP-RC04-OC33, ST-SUP-Q192).
+# It gives each secret request member, which has no flag, as a body field that --body FILE gives (ST-SUP-RC04-OC32).
 kind: component
 name: cli-application
 # Version 1.11.0 states that the service keeps the Idempotency-Key per command and per apply resource
@@ -15,7 +18,7 @@ name: cli-application
 # Version 1.9.0 gives the apply lookup the list parameters of the generated service, pageSize and search, and follows
 # the next cursor of each page; before, it sent page and size, which the list refuses, and read total, which the list
 # does not give (security review of PR #442, I5).
-version: 1.12.0
+version: 1.13.0
 stage: ga
 output_namespace: cli
 config:

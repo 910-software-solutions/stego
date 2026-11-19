@@ -878,9 +878,11 @@ func runTenantOf(ctx context.Context, rt *Runtime, spec TenantSpec, req Request,
 func decideTenant(ctx context.Context, rt *Runtime, spec TenantSpec, req Request) (tenant.Decision, error) {
 	tx, err := tenant.Begin(ctx, rt.cfg.DB, req.Tenant, &sql.TxOptions{Isolation: sql.LevelReadCommitted, ReadOnly: true})
 	decided := tenantLogKey{service: rt.cfg.Service, step: "decide_tenant", permission: spec.Permission}
+	begun := decided
+	begun.begin = true
+	// The begin has a run of its own, which a begin that succeeds ends (security review of PR #458, I2).
+	logTenantDecision(ctx, begun, err)
 	if err != nil {
-		decided.begin = true
-		logTenantDecision(ctx, decided, err)
 		if authz.Transient(err) {
 			// A database that cannot serve now, such as for a lost connection, is 503 with Retry-After, as the
 			// tenant list answers it (security review of PR #455, I1).
@@ -925,13 +927,21 @@ var tenantRuns = authz.NewCauseRuns(nil)
 // tenantLogKey names a decision of a tenant permission in the log: the service, the step, such as decide_tenant
 // or list_tenants, and the permission. Its key holds all three, so the runtimes of two services in one process, or a
 // TenantSpec permission named list_tenants and the tenant list, do not share a run or a log limit (security review of
-// PR #456, I2). begin tells a failure to begin the transaction of the decision, before the provider is asked.
+// PR #456, I2). begin tells a failure to begin the transaction of the decision, before the provider is asked. The key
+// holds begin too, so a failure to begin and a failure of the provider of the same cause, such as a store that cannot
+// serve, do not share a run or a log limit (security review of PR #458, I2).
 type tenantLogKey struct {
 	service, step, permission string
 	begin                     bool
 }
 
-func (d tenantLogKey) key() string { return d.service + "/" + d.step + "/" + d.permission }
+func (d tenantLogKey) key() string {
+	k := d.service + "/" + d.step + "/" + d.permission
+	if d.begin {
+		k += "/begin"
+	}
+	return k
+}
 
 // logTenantDecision records err, the outcome of the decision d, and logs a failure with the permission and the fixed
 // cause, as each other failed decision is logged (ST-SUP-Q140): at most one line for each decision and cause in each

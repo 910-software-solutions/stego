@@ -40,9 +40,12 @@
 # whose repository type takes no parent on Update (ST-SUP-RC32-OC26).
 # Version 4.21.0 lets a list search and order a field written sensitivity: public, as one with no sensitivity
 # (decision ST-DECL-Q46 (a)).
+# Version 4.22.0 marks a member of a command message that the proto marks debug_redact as a secret in the OpenAPI
+# document: x-sensitive, the format password for a string, and writeOnly in a request body (ST-SUP-RC20-OC54,
+# ST-SUP-Q192).
 kind: component
 name: rest-api
-version: 4.21.0
+version: 4.22.0
 stage: ga
 output_namespace: internal/api
 

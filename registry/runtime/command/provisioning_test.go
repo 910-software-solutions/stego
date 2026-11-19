@@ -972,7 +972,7 @@ func TestProvisioningRelations(t *testing.T) {
 }
 
 func TestProvisioningUnavailable(t *testing.T) {
-	t.Run("ST-SUP-RC27-OC09-T07 A Provision whose decision cannot begin on a database that cannot serve now is 503 undecided, and a long run of one cause logs an error", func(t *testing.T) {
+	t.Run("ST-SUP-RC27-OC09-T07 A Provision whose decision cannot begin on a database that cannot serve now is 503 undecided, a long run of one cause logs an error, and the begin and the provider have runs of their own", func(t *testing.T) {
 		// No server listens on port 1, so each connection is refused, as for a database that is down.
 		db, err := sql.Open("pgx", "postgres://stego:none@127.0.0.1:1/stego?sslmode=disable&connect_timeout=5")
 		if err != nil {
@@ -1016,6 +1016,17 @@ func TestProvisioningUnavailable(t *testing.T) {
 		if line := logs.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, "step=list_tenants") || !strings.Contains(line, "run_seconds=0") {
 			t.Errorf("the log of the tenant list is %q, want a warning of its own run", line)
 		}
+		// A failure of the provider of the same cause has a run and a log limit of its own, apart from the begin
+		// (security review of PR #458, I2).
+		logs.Reset()
+		logTenantDecision(context.Background(), tenantLogKey{service: "orders", step: "decide_tenant", permission: "provision"}, down)
+		if line := logs.String(); !strings.Contains(line, "level=WARN") || !strings.Contains(line, `msg="command: the authorization provider could not decide"`) || !strings.Contains(line, "run_seconds=0") {
+			t.Errorf("the log of a provider failure after a long run of begin failures is %q, want a warning of its own run", line)
+		}
+		// A begin that succeeds ends the run of the begin, so the next failure to begin starts a new run.
+		logTenantDecision(context.Background(), tenantLogKey{service: "orders", step: "decide_tenant", permission: "provision", begin: true}, nil)
+		now = now.Add(authz.LogEvery)
+		decide(rt, "level=WARN", "run_seconds=0")
 		// A failure that a retry does not change, such as the zero tenant, stays 500 internal, and its line names
 		// the transaction, not the provider (security review of PR #456, I3).
 		logs.Reset()

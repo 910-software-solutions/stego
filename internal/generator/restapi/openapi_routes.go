@@ -90,6 +90,7 @@ func routeOperations(ctx gen.Context) (map[string]map[string]openAPIOperation, e
 		}
 		params := pathParameters(routePath)
 		body := messageSchema(request, 0, map[protoreflect.FullName]bool{})
+		writeOnlySecrets(&body)
 		for _, p := range params {
 			delete(body.Properties, p)
 			if f := request.Fields().ByName(protoreflect.Name(p)); f != nil {
@@ -271,17 +272,45 @@ func messageSchema(m protoreflect.MessageDescriptor, depth int, seen map[protore
 	return schema
 }
 
-// fieldSchema gives the schema of one member of a message in its protobuf JSON form.
+// fieldSchema gives the schema of one member of a message in its protobuf JSON form. A member that the proto file
+// marks debug_redact is a secret: x-sensitive, and the format password for a string (ST-SUP-RC20-OC54).
 func fieldSchema(f protoreflect.FieldDescriptor, depth int, seen map[protoreflect.FullName]bool) openAPISchema {
-	if f.IsMap() {
+	var schema openAPISchema
+	switch {
+	case f.IsMap():
 		value := singleSchema(f.MapValue(), depth, seen)
-		return openAPISchema{Type: "object", AdditionalProperties: &value}
+		schema = openAPISchema{Type: "object", AdditionalProperties: &value}
+	case f.IsList():
+		item := singleSchema(f, depth, seen)
+		schema = openAPISchema{Type: "array", Items: &item}
+	default:
+		schema = singleSchema(f, depth, seen)
 	}
-	item := singleSchema(f, depth, seen)
-	if f.IsList() {
-		return openAPISchema{Type: "array", Items: &item}
+	if command.SecretMember(f) {
+		schema.Sensitive = true
+		if schema.Type == "string" && schema.Format == "" {
+			schema.Format = "password"
+		}
 	}
-	return item
+	return schema
+}
+
+// writeOnlySecrets marks each secret member of a request body writeOnly, at any depth: a request member is never in
+// an answer (ST-SUP-RC20-OC54).
+func writeOnlySecrets(s *openAPISchema) {
+	if s.Sensitive {
+		s.WriteOnly = true
+	}
+	for name, p := range s.Properties {
+		writeOnlySecrets(&p)
+		s.Properties[name] = p
+	}
+	if s.Items != nil {
+		writeOnlySecrets(s.Items)
+	}
+	if s.AdditionalProperties != nil {
+		writeOnlySecrets(s.AdditionalProperties)
+	}
 }
 
 // singleSchema gives the schema of one value of the kind of f.
