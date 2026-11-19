@@ -511,6 +511,65 @@ func TestSealContract(t *testing.T) {
 		n.noSecretOutside(secret)
 	})
 
+	t.Run("ST-SUP-RP10-LC49-T06 Two declarations of one entity, as the command contract and the rest-api data package give them, each switch after the contract and each go back after a restore", func(t *testing.T) {
+		n := newNoteEnv(t)
+		// The second declaration of Note, on a runtime of its own, as a process holds the copy of the command
+		// contract and the copy of internal/api/data; its idempotency keys differ from those of the first.
+		other, err := NewEntity(noteSpec())
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := &noteEnv{env: n.env, notes: other, ring: n.ring, reads: 1000}
+		m.rt = n.env.runtime(func(c *Config) { c.Entities = []Declared{other}; c.Ring = n.ring })
+		m.cmd = n.env.command("keep-note-copy", nil, other)
+		id := uuid.NewString()
+		if err := n.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			_, err := r.Create(ctx, note{ID: id, Label: "x", Body: sealed.SecretOf(secret + "-before")})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		n.exec(`ALTER TABLE notes DROP COLUMN body`, `DELETE FROM stego_schema.seals WHERE change_id = '`+noteChange+`'`)
+		for i, d := range []*noteEnv{n, m} {
+			if got := d.read("org-a", id); got.Body.Reveal() != secret+"-before" || !d.notes.contracted.Load() {
+				t.Fatalf("declaration %d did not take its statements after the contract", i+1)
+			}
+		}
+		n.exec(`ALTER TABLE notes ADD COLUMN body text`, `UPDATE notes SET body = '`+secret+`-before'`,
+			"INSERT INTO stego_schema.seals (change_id, expand, created_at) VALUES ('"+noteChange+"', 'step_0002_note-body-seal_expand', clock_timestamp() - interval '10 minutes')")
+		// Each declaration checks the catalog at its own next attempt, and the reset of one leaves the other as it is
+		// until then.
+		n.notes.recheckAt.Store(0)
+		other.recheckAt.Store(0)
+		_ = n.read("org-a", id)
+		if n.notes.contracted.Load() || !other.contracted.Load() {
+			t.Fatalf("after an attempt of the first declaration, it is contracted %t and the second %t, want false and true", n.notes.contracted.Load(), other.contracted.Load())
+		}
+		if err := m.write("org-a", func(ctx context.Context, r *Repository[note]) error {
+			l, err := r.GetForUpdate(ctx, id)
+			if err != nil {
+				return err
+			}
+			v := l.Value()
+			v.Body = sealed.SecretOf(secret + "-updated")
+			_, err = r.Update(ctx, l, v)
+			return err
+		}); err != nil {
+			t.Fatalf("an update of the second declaration after the restore fails: %v", err)
+		}
+		if other.contracted.Load() {
+			t.Fatal("the second declaration keeps its statements after the contract on a table with the clear column")
+		}
+		// The update of the second declaration wrote both columns, so the first reads its value.
+		if clear, clearSet, opened, _ := n.opened("org-a", id); !clearSet || clear != secret+"-updated" || opened != secret+"-updated" {
+			t.Fatalf("the update of the second declaration leaves the clear column set %t and the sealed column opening to its value %t", clearSet && clear == secret+"-updated", opened == secret+"-updated")
+		}
+		if got := n.read("org-a", id); got.Body.Reveal() != secret+"-updated" {
+			t.Fatal("the first declaration does not read the value that the second wrote")
+		}
+		n.noSecretOutside(secret)
+	})
+
 	t.Run("ST-SUP-RP10-LC49-T05 A process that took its statements after the contract keeps the sealed column alone when a clear column comes back with no seal checkpoint", func(t *testing.T) {
 		var logs bytes.Buffer
 		previous := slog.Default()
